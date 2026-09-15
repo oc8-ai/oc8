@@ -13,6 +13,7 @@ import {
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
+import { ApiKeysPanel } from "@/components/api-keys-panel";
 import { BackupPanel } from "@/components/backup-panel";
 import { CredentialPicker } from "@/components/credential-picker";
 import { OnboardingWizard } from "@/components/onboarding/onboarding-wizard";
@@ -41,6 +42,7 @@ function SettingsPage() {
         <PilotSetup onOpenWizard={() => setSetupOpen(true)} />
         <OrganizationPanel />
         <MailServerSetting />
+        <ApiKeysPanel />
         <BackupPanel />
       </div>
       {setupOpen && (

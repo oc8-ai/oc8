@@ -44,8 +44,12 @@ def test_exported_tables_excludes_the_denylist() -> None:
     # pattern as push_subscription" is about access control, not portability;
     # dashboard_preset, added by migration 0089, stays INCLUDED for the same
     # reason as member_dashboard_layout -- a saved arrangement is portable
-    # company data, not instance-bound).
-    assert len(exported) == 56
+    # company data, not instance-bound; api_key, added by migration 0093,
+    # stays INCLUDED too -- unlike push_subscription/secret/tenant_dek, its
+    # token_hash carries no instance-bound key material, just sha256 of a
+    # random secret the member already holds, so it still validates
+    # correctly after a restore into another instance.
+    assert len(exported) == 57
 
 
 def test_table_by_name_returns_a_real_table() -> None:
