@@ -44,7 +44,12 @@ from oc8.schemas.requests import (
     ResetPasswordRequest,
     UpdateDisplayNameRequest,
 )
-from oc8.tenants.provision import TenantExists, create_tenant, list_tenants
+from oc8.tenants.provision import (
+    TenantExists,
+    create_tenant,
+    get_singleton_organization,
+    list_tenants,
+)
 from oc8.workspace.members import list_members, seats_for
 
 router = APIRouter()
@@ -856,32 +861,7 @@ class PasswordSessionInfo(CamelModel):
     display_name: str | None = None
 
 
-async def _get_singleton_organization(db: AsyncSession) -> m.Organization:
-    """Resolve the singleton Organization for Community single-instance.
-
-    Per spec §3.2, Community has exactly one active Organization (root).
-    This function enforces that invariant at runtime for password auth.
-
-    Raises:
-        HTTPException(404): if no Organization exists (setup not complete)
-        HTTPException(409): if multiple Organizations exist (data corruption)
-    """
-    result = await db.execute(select(m.Organization))
-    orgs = result.scalars().all()
-
-    if len(orgs) == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Instance not initialized. No Organization found.",
-        )
-
-    if len(orgs) > 1:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Multi-organization configuration detected. Setup is ambiguous.",
-        )
-
-    return orgs[0]
+_get_singleton_organization = get_singleton_organization
 
 
 async def _count_members_in_org(db: AsyncSession, org_id: uuid.UUID) -> int:

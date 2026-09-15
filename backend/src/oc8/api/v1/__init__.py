@@ -7,6 +7,7 @@ from fastapi import APIRouter
 from oc8.api.v1 import (
     agents,
     agents_write,
+    api_keys,
     approvals,
     audit,
     auth,
@@ -55,6 +56,7 @@ from oc8.api.v1 import (
 api_router = APIRouter()
 api_router.include_router(auth.router, tags=["auth"])
 api_router.include_router(totp.router, tags=["auth"])
+api_router.include_router(api_keys.router, tags=["settings"])
 api_router.include_router(departments.router, tags=["departments"])
 api_router.include_router(onboarding.router, tags=["onboarding"])
 api_router.include_router(agents.router, tags=["agents"])

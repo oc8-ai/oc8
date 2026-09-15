@@ -651,6 +651,68 @@ export function useOrganizationSettings() {
   });
 }
 
+// Self-service API keys (Settings -> API keys), authenticating the outward
+// MCP gateway (`/mcp/external`, api/mcp_external.py). Always the CALLER's own
+// keys -- there is no id-scoped read here to mirror, since the backend
+// derives `memberId` from the bearer token on every one of these routes
+// (api/v1/api_keys.py), never from a path parameter.
+export interface ApiKeyDTO {
+  id: string;
+  name: string;
+  tokenPrefix: string;
+  enabled: boolean;
+  allowedOrigins: string[];
+  lastUsedAt: string | null;
+  createdAt: string;
+}
+
+export interface ApiKeyCreatedDTO extends ApiKeyDTO {
+  // Present ONLY in the create response -- shown once, never retrievable again.
+  token: string;
+}
+
+const API_KEYS_KEY = ["settings", "api-keys"] as const;
+
+export function useApiKeys() {
+  return useQuery({
+    queryKey: API_KEYS_KEY,
+    queryFn: () => api.get<ApiKeyDTO[]>("/settings/api-keys"),
+  });
+}
+
+export function useCreateApiKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { name: string; allowedOrigins: string[] }) =>
+      api.post<ApiKeyCreatedDTO>("/settings/api-keys", body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: API_KEYS_KEY }),
+  });
+}
+
+export function useUpdateApiKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      keyId,
+      ...body
+    }: {
+      keyId: string;
+      name?: string;
+      enabled?: boolean;
+      allowedOrigins?: string[];
+    }) => api.patch<ApiKeyDTO>(`/settings/api-keys/${keyId}`, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: API_KEYS_KEY }),
+  });
+}
+
+export function useDeleteApiKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (keyId: string) => api.delete<void>(`/settings/api-keys/${keyId}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: API_KEYS_KEY }),
+  });
+}
+
 export function useUpdateOrganizationSettings() {
   const qc = useQueryClient();
   return useMutation({
