@@ -9,6 +9,12 @@ const sendMessageMock = vi.fn();
 const renameSessionMock = vi.fn();
 const deleteSessionMock = vi.fn();
 const uploadAttachmentMock = vi.fn();
+// Defaulted here, not reset in every describe's beforeEach: none of the
+// existing suites care about clarifications, and a bare `vi.fn()` default
+// (returning undefined) would make `useClarifications`'s `{ data }`
+// destructure throw before any of those tests get to render.
+const clarificationsMock = vi.fn(() => ({ data: [] }));
+const answerClarificationMock = vi.fn();
 
 vi.mock("@/lib/hooks-chat", () => ({
   useChatSessions: (agentId?: string) => sessionsMock(agentId),
@@ -18,6 +24,11 @@ vi.mock("@/lib/hooks-chat", () => ({
   useRenameChatSession: () => ({ mutate: renameSessionMock }),
   useDeleteChatSession: () => ({ mutate: deleteSessionMock }),
   useUploadChatAttachment: () => ({ mutate: uploadAttachmentMock, isPending: false }),
+}));
+
+vi.mock("@/lib/hooks", () => ({
+  useClarifications: () => clarificationsMock(),
+  useAnswerClarification: () => ({ mutate: answerClarificationMock, isPending: false }),
 }));
 
 import { ChatWindow } from "@/components/chat-window";
@@ -139,6 +150,98 @@ describe("ChatWindow", () => {
     });
     renderChat();
     expect(screen.getByText("Wochenbericht")).toBeInTheDocument();
+  });
+});
+
+describe("ChatWindow waiting_for_input", () => {
+  beforeEach(() => {
+    sessionsMock.mockReset();
+    messagesMock.mockReset();
+    answerClarificationMock.mockReset();
+    clarificationsMock.mockReturnValue({ data: [] });
+    sessionsMock.mockReturnValue({
+      data: [{ id: "s1", agentId: "agent-1", title: "", createdAt: "2026-08-27T00:00:00Z" }],
+      isLoading: false,
+    });
+    messagesMock.mockReturnValue({
+      data: [
+        {
+          id: "m1",
+          sessionId: "s1",
+          role: "user",
+          content: "Wo soll ich den Export ablegen?",
+          runId: null,
+          renderedComponents: [],
+          createdAt: "2026-08-27T00:00:00Z",
+        },
+      ],
+      isLoading: false,
+    });
+  });
+
+  // A run parked here never gets an assistant ChatMessage (executor.py
+  // skips record_assistant_reply for waiting_for_input on purpose), so
+  // without reading the open Clarification the box would say "is
+  // thinking…" forever with no way for the reader to unblock it.
+  it("shows the agent's question instead of the thinking indicator once a clarification is open", () => {
+    clarificationsMock.mockReturnValue({
+      data: [
+        {
+          id: "c1",
+          runId: "r1",
+          agentId: "agent-1",
+          agentName: "Nora",
+          departmentId: "d1",
+          departmentName: "Ops",
+          question: "Odoo Documents, Odoo Spreadsheets, or a manual export?",
+          status: "open",
+          createdAt: "2026-08-27T00:00:00Z",
+        },
+      ],
+      isLoading: false,
+    });
+    renderChat();
+    expect(
+      screen.getByText("Odoo Documents, Odoo Spreadsheets, or a manual export?"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/is thinking/i)).not.toBeInTheDocument();
+  });
+
+  it("submits the typed reply as the clarification's answer, not a new chat message", () => {
+    clarificationsMock.mockReturnValue({
+      data: [
+        {
+          id: "c1",
+          runId: "r1",
+          agentId: "agent-1",
+          agentName: "Nora",
+          departmentId: "d1",
+          departmentName: "Ops",
+          question: "Odoo Documents, Odoo Spreadsheets, or a manual export?",
+          status: "open",
+          createdAt: "2026-08-27T00:00:00Z",
+        },
+      ],
+      isLoading: false,
+    });
+    renderChat();
+
+    fireEvent.change(screen.getByPlaceholderText(/your answer/i), {
+      target: { value: "Odoo Documents" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^answer$/i }));
+
+    expect(answerClarificationMock).toHaveBeenCalledWith(
+      { clarificationId: "c1", answer: "Odoo Documents" },
+      expect.anything(),
+    );
+    expect(sendMessageMock).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the thinking indicator when no clarification is open for this agent", () => {
+    clarificationsMock.mockReturnValueOnce({ data: [], isLoading: false });
+    renderChat();
+    expect(screen.getByText(/is thinking/i)).toBeInTheDocument();
   });
 });
 
