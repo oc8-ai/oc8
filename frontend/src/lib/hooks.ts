@@ -897,11 +897,16 @@ export const useApprovals = (status = "pending") => {
  *
  * Only `status=open` is served — the backend refuses anything else rather than
  * quietly returning the open ones, so there is no parameter here to get wrong.
+ *
+ * `refetchInterval` defaults to off (the sidebar badge only needs it on
+ * navigation/focus) — chat-window.tsx passes one while a session's run is
+ * outstanding, so a question that opens mid-chat surfaces without a reload.
  */
-export const useClarifications = () =>
+export const useClarifications = (refetchInterval: number | false = false) =>
   useQuery({
     queryKey: keys.clarifications,
     queryFn: () => api.get<Clarification[]>("/clarifications?status=open"),
+    refetchInterval,
   });
 
 /** The task board across every department this caller can see -- `GET /tasks`. */
