@@ -26,6 +26,7 @@ export function ApiKeysPanel() {
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [origins, setOrigins] = useState("");
+  const [expiresAt, setExpiresAt] = useState("");
   const [revealed, setRevealed] = useState<ApiKeyCreatedDTO | null>(null);
 
   const handleCreate = async () => {
@@ -34,10 +35,17 @@ export function ApiKeysPanel() {
       .map((o) => o.trim())
       .filter(Boolean);
     try {
-      const created = await createKey.mutateAsync({ name: name.trim(), allowedOrigins });
+      const created = await createKey.mutateAsync({
+        name: name.trim(),
+        allowedOrigins,
+        // The <input type="date"> value is a bare "YYYY-MM-DD" -- expand to
+        // end-of-day so the key stays usable through the selected day.
+        expiresAt: expiresAt ? `${expiresAt}T23:59:59` : null,
+      });
       setRevealed(created);
       setName("");
       setOrigins("");
+      setExpiresAt("");
       setCreating(false);
     } catch (err) {
       toast.error(
@@ -124,6 +132,19 @@ export function ApiKeysPanel() {
               {t("Leave empty to allow any origin.", "Leer lassen, um jede Origin zuzulassen.")}
             </span>
           </label>
+          <label className="block text-xs text-muted-foreground">
+            {t("Expires (optional)", "Läuft ab (optional)")}
+            <input
+              type="date"
+              value={expiresAt}
+              min={new Date().toISOString().slice(0, 10)}
+              onChange={(e) => setExpiresAt(e.target.value)}
+              className="mt-1 w-full rounded-md border border-border bg-background/30 px-3 py-2 text-sm text-foreground"
+            />
+            <span className="mt-1 block text-[11px] text-muted-foreground">
+              {t("Leave empty to never expire.", "Leer lassen, damit der Key nie abläuft.")}
+            </span>
+          </label>
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -161,55 +182,70 @@ export function ApiKeysPanel() {
 
       {keys.length > 0 && (
         <ul className="mt-4 space-y-2">
-          {keys.map((key) => (
-            <li
-              key={key.id}
-              className="flex flex-wrap items-center gap-3 rounded-md border border-border bg-background/30 px-3 py-2 text-sm"
-            >
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="truncate font-medium">{key.name}</span>
-                  <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
-                    oc8_ak_{key.tokenPrefix}…
-                  </span>
+          {keys.map((key) => {
+            const expired = key.expiresAt ? new Date(key.expiresAt) <= new Date() : false;
+            return (
+              <li
+                key={key.id}
+                className="flex flex-wrap items-center gap-3 rounded-md border border-border bg-background/30 px-3 py-2 text-sm"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate font-medium">{key.name}</span>
+                    <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                      oc8_ak_{key.tokenPrefix}…
+                    </span>
+                    {expired && (
+                      <span className="rounded-full border border-[color:var(--status-error)]/40 px-1.5 py-0.5 text-[10px] text-[color:var(--status-error)]">
+                        {t("Expired", "Abgelaufen")}
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-0.5 text-[11px] text-muted-foreground">
+                    {key.allowedOrigins.length > 0
+                      ? key.allowedOrigins.join(", ")
+                      : t("Any origin", "Jede Origin")}
+                    {" · "}
+                    {key.lastUsedAt
+                      ? t(
+                          `Last used ${new Date(key.lastUsedAt).toLocaleString()}`,
+                          `Zuletzt verwendet ${new Date(key.lastUsedAt).toLocaleString()}`,
+                        )
+                      : t("Never used", "Nie verwendet")}
+                    {" · "}
+                    {key.expiresAt
+                      ? t(
+                          `Expires ${new Date(key.expiresAt).toLocaleDateString()}`,
+                          `Läuft ab am ${new Date(key.expiresAt).toLocaleDateString()}`,
+                        )
+                      : t("Never expires", "Läuft nie ab")}
+                  </p>
                 </div>
-                <p className="mt-0.5 text-[11px] text-muted-foreground">
-                  {key.allowedOrigins.length > 0
-                    ? key.allowedOrigins.join(", ")
-                    : t("Any origin", "Jede Origin")}
-                  {" · "}
-                  {key.lastUsedAt
-                    ? t(
-                        `Last used ${new Date(key.lastUsedAt).toLocaleString()}`,
-                        `Zuletzt verwendet ${new Date(key.lastUsedAt).toLocaleString()}`,
-                      )
-                    : t("Never used", "Nie verwendet")}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => handleToggle(key.id, !key.enabled)}
-                disabled={updateKey.isPending}
-                className={cn(
-                  "inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-50",
-                  key.enabled
-                    ? "border-border text-foreground"
-                    : "border-border text-muted-foreground",
-                )}
-              >
-                <Power className="h-3 w-3" />
-                {key.enabled ? t("Enabled", "Aktiviert") : t("Disabled", "Deaktiviert")}
-              </button>
-              <button
-                type="button"
-                onClick={() => handleDelete(key.id)}
-                disabled={deleteKey.isPending}
-                className="shrink-0 rounded-md p-1.5 text-muted-foreground hover:text-[color:var(--status-error)] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
-            </li>
-          ))}
+                <button
+                  type="button"
+                  onClick={() => handleToggle(key.id, !key.enabled)}
+                  disabled={updateKey.isPending}
+                  className={cn(
+                    "inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-50",
+                    key.enabled
+                      ? "border-border text-foreground"
+                      : "border-border text-muted-foreground",
+                  )}
+                >
+                  <Power className="h-3 w-3" />
+                  {key.enabled ? t("Enabled", "Aktiviert") : t("Disabled", "Deaktiviert")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDelete(key.id)}
+                  disabled={deleteKey.isPending}
+                  className="shrink-0 rounded-md p-1.5 text-muted-foreground hover:text-[color:var(--status-error)] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </li>
+            );
+          })}
         </ul>
       )}
     </Panel>

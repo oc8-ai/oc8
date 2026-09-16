@@ -36,7 +36,7 @@ from oc8 import models as m
 from oc8.apikeys.service import API_KEY_PREFIX, find_enabled_by_token, touch_last_used
 from oc8.auth import Principal
 from oc8.authz.authority import authority_for_principal
-from oc8.authz.permissions import COPILOT, MANAGE, VIEW, perm
+from oc8.authz.permissions import COPILOT, MANAGE, MEMBER_ROLE, VIEW, perm
 from oc8.copilot.capabilities import InvalidOperation, operation_references
 from oc8.copilot.models import CopilotOperation, CopilotProposal
 from oc8.copilot.proposals import (
@@ -76,6 +76,14 @@ async def _verify_api_key(
     A token carries no tenant hint of its own, so the singleton Organization
     is resolved first (Community: exactly one), the same way `password_login`
     resolves it (`tenants/provision.py`'s `get_singleton_organization`).
+
+    `role=MEMBER_ROLE`, not `""`: `authority_for_principal` falls back to this
+    token floor (`permissions_for(principal.role)`) whenever the member has no
+    `role_id` override, which -- per `authz/authority.py` -- is virtually every
+    member on every live tenant today. `MEMBER_ROLE` is the exact floor
+    `password_login` mints for that same member, so a self-service key stays
+    "never more powerful than the person who created it" for the common case
+    too, not just for members an admin has explicitly assigned a role to.
     """
     token = creds.credentials
     unauthorized = HTTPException(
@@ -105,7 +113,7 @@ async def _verify_api_key(
         await touch_last_used(db, api_key)
         subject = member.subject
 
-    return Principal(subject=subject, tenant_id=org.id, role="", kind="operator")
+    return Principal(subject=subject, tenant_id=org.id, role=MEMBER_ROLE, kind="operator")
 
 
 async def _api_key_db(

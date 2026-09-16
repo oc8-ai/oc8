@@ -2,9 +2,10 @@
 
 A key's authenticated access is never wider than its owner's own live
 permissions (resolved fresh, per call, by the outward MCP route -- see
-`api/mcp_external.py`) -- so this module carries no scopes/expiry of its own,
-only what identifies the key (name, prefix) and what narrows where it may be
-used from (allowed_origins).
+`api/mcp_external.py`) -- so this module carries no scopes of its own, only
+what identifies the key (name, prefix), what narrows where it may be used
+from (allowed_origins), and how long it stays usable (expires_at, set by the
+member at creation -- not a tenant-wide policy).
 """
 
 from __future__ import annotations
@@ -46,6 +47,7 @@ async def create_api_key(
     member_id: uuid.UUID,
     name: str,
     allowed_origins: list[str] | None = None,
+    expires_at: dt.datetime | None = None,
 ) -> tuple[ApiKey, str]:
     """Returns the row and the plaintext token -- shown to the caller once,
     never persisted or retrievable again."""
@@ -57,6 +59,7 @@ async def create_api_key(
         token_hash=token_hash,
         token_prefix=token_prefix,
         allowed_origins=list(allowed_origins or []),
+        expires_at=expires_at,
     )
     db.add(row)
     await db.flush()
@@ -107,10 +110,19 @@ async def delete_api_key(db: AsyncSession, *, member_id: uuid.UUID, key_id: uuid
 async def find_enabled_by_token(db: AsyncSession, *, token: str) -> ApiKey | None:
     """Looked up within an already tenant-bound session -- see
     `api/mcp_external.py`'s auth dependency, which resolves the singleton
-    tenant first (a token carries no tenant hint of its own)."""
+    tenant first (a token carries no tenant hint of its own).
+
+    An expired key comes back as None, same as a disabled or unknown one --
+    the caller (`_verify_api_key`) already answers all three with the same
+    generic 401, so there is nothing to distinguish here."""
+    now = dt.datetime.now(tz=dt.UTC)
     return (
         await db.execute(
-            select(ApiKey).where(ApiKey.token_hash == hash_token(token), ApiKey.enabled.is_(True))
+            select(ApiKey).where(
+                ApiKey.token_hash == hash_token(token),
+                ApiKey.enabled.is_(True),
+                (ApiKey.expires_at.is_(None)) | (ApiKey.expires_at > now),
+            )
         )
     ).scalar_one_or_none()
 

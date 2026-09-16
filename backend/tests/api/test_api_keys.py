@@ -1,6 +1,7 @@
 # backend/tests/api/test_api_keys.py
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 
 import pytest
@@ -110,6 +111,87 @@ async def test_create_rejects_an_origin_with_a_path_with_422(
                 headers={"Authorization": f"Bearer {token}"},
             )
     assert r.status_code == 422, r.text
+
+
+async def test_create_with_no_expiry_never_expires(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    token = await _member_with_session(app_session, tenant, "no-expiry@example.com")
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            r = await c.post(
+                "/api/v1/settings/api-keys",
+                json={"name": "k", "allowedOrigins": []},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    assert r.status_code == 201, r.text
+    assert r.json()["expiresAt"] is None
+
+
+async def test_create_with_a_future_expiry(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    token = await _member_with_session(app_session, tenant, "expiry@example.com")
+    app = create_app()
+    expires_at = dt.datetime.now(tz=dt.UTC) + dt.timedelta(days=30)
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            r = await c.post(
+                "/api/v1/settings/api-keys",
+                json={"name": "k", "allowedOrigins": [], "expiresAt": expires_at.isoformat()},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    assert r.status_code == 201, r.text
+    assert r.json()["expiresAt"] is not None
+
+
+async def test_create_rejects_a_past_expiry_with_422(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    token = await _member_with_session(app_session, tenant, "past-expiry@example.com")
+    app = create_app()
+    past = dt.datetime.now(tz=dt.UTC) - dt.timedelta(days=1)
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            r = await c.post(
+                "/api/v1/settings/api-keys",
+                json={"name": "k", "allowedOrigins": [], "expiresAt": past.isoformat()},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    assert r.status_code == 422, r.text
+
+    async with app_session(tenant) as db:
+        rows = (await db.execute(m.ApiKey.__table__.select())).fetchall()
+        assert rows == []
+
+
+async def test_update_can_set_and_then_clear_the_expiry(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    token = await _member_with_session(app_session, tenant, "update-expiry@example.com")
+    app = create_app()
+    future = dt.datetime.now(tz=dt.UTC) + dt.timedelta(days=7)
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            created = await c.post(
+                "/api/v1/settings/api-keys",
+                json={"name": "k", "allowedOrigins": []},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            key_id = created.json()["id"]
+
+            set_expiry = await c.patch(
+                f"/api/v1/settings/api-keys/{key_id}",
+                json={"expiresAt": future.isoformat()},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert set_expiry.status_code == 200, set_expiry.text
+            assert set_expiry.json()["expiresAt"] is not None
+
+            cleared = await c.patch(
+                f"/api/v1/settings/api-keys/{key_id}",
+                json={"expiresAt": None},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["expiresAt"] is None
 
 
 async def test_list_returns_only_the_caller_own_keys(app_session: AppSessionFactory) -> None:

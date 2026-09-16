@@ -7,12 +7,16 @@ import uuid
 
 import pytest
 from asgi_lifespan import LifespanManager
+from fastapi.security import HTTPAuthorizationCredentials
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import NullPool, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from starlette.requests import Request
 
 from oc8 import models as m
+from oc8.api.mcp_external import _verify_api_key
 from oc8.apikeys.service import create_api_key
+from oc8.authz.permissions import MEMBER_ROLE
 from oc8.config import get_settings
 from oc8.main import create_app
 from tests.conftest import AppSessionFactory
@@ -73,6 +77,7 @@ async def _api_key_token(
     *,
     allowed_origins: list[str] | None = None,
     enabled: bool = True,
+    expires_at: dt.datetime | None = None,
 ) -> str:
     async with app_session(tenant) as db:
         row, token = await create_api_key(
@@ -81,6 +86,7 @@ async def _api_key_token(
             member_id=member_id,
             name="k",
             allowed_origins=allowed_origins,
+            expires_at=expires_at,
         )
         row.enabled = enabled
         await db.flush()
@@ -233,6 +239,48 @@ async def test_a_disabled_key_is_401(app_session: AppSessionFactory) -> None:
                 headers={"Authorization": f"Bearer {token}"},
             )
     assert r.status_code == 401
+
+
+async def test_an_expired_key_is_401(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    await _sole_organization(app_session, tenant)
+    member_id = await _member_with_role(app_session, tenant, "expired@example.com", "org_admin")
+    token = await _api_key_token(
+        app_session,
+        tenant,
+        member_id,
+        expires_at=dt.datetime.now(tz=dt.UTC) - dt.timedelta(seconds=1),
+    )
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            r = await c.post(
+                "/mcp/external",
+                json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    assert r.status_code == 401
+
+
+async def test_a_key_with_a_future_expiry_still_works(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    await _sole_organization(app_session, tenant)
+    member_id = await _member_with_role(app_session, tenant, "not-yet@example.com", "org_admin")
+    token = await _api_key_token(
+        app_session,
+        tenant,
+        member_id,
+        expires_at=dt.datetime.now(tz=dt.UTC) + dt.timedelta(days=1),
+    )
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            r = await c.post(
+                "/mcp/external",
+                json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    assert r.status_code == 200, r.text
 
 
 async def test_an_origin_not_on_the_allowlist_is_403(app_session: AppSessionFactory) -> None:
@@ -560,6 +608,37 @@ async def test_a_bare_member_role_cannot_even_list_proposals(
                 headers={"Authorization": f"Bearer {token}"},
             )
     assert r.status_code == 403, r.text
+
+
+async def test_a_member_with_no_role_id_mints_the_member_role_token_floor(
+    app_session: AppSessionFactory,
+) -> None:
+    """Every member starts with `role_id IS NULL` (no admin has touched the
+    Role Builder for them yet) -- that is the case `_verify_api_key` must
+    mint `MEMBER_ROLE` for, the same token floor `password_login` gives this
+    same member, not the empty permission set an unrecognised role name (the
+    bug this pins: a hardcoded `role=""`) resolves to. Calls `_verify_api_key`
+    directly rather than through a tools/call round-trip: nothing this
+    router's own `_require` checks (`copilot:manage`/`copilot:view`) is
+    actually in `MEMBER_ROLE`'s grant (`copilot:use` only), so an HTTP-level
+    assertion here would pass identically under the bug it is meant to catch."""
+    tenant = uuid.uuid4()
+    await _sole_organization(app_session, tenant)
+    async with app_session(tenant) as db:
+        member = m.OrgMember(
+            tenant_id=tenant,
+            subject="no-role-row@example.com",
+            subject_uuid=uuid.uuid5(uuid.NAMESPACE_URL, "oc8:local:no-role-row@example.com"),
+            role_id=None,
+        )
+        db.add(member)
+        await db.flush()
+        member_id = member.id
+    token = await _api_key_token(app_session, tenant, member_id)
+    request = Request({"type": "http", "headers": []})
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+    principal = await _verify_api_key(request, creds)
+    assert principal.role == MEMBER_ROLE
 
 
 async def test_disabling_the_owning_member_disables_every_key_they_hold(
