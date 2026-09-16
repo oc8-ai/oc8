@@ -40,3 +40,6 @@ class ApiKey(Base, PkMixin, TenantMixin, TimestampMixin):
     #: header). Empty list = unrestricted.
     allowed_origins: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     last_used_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: Set by the member who creates the key, not a tenant-wide policy. NULL
+    #: means the key never expires.
+    expires_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

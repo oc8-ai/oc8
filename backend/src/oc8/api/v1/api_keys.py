@@ -64,6 +64,9 @@ class ApiKeyDTO(CamelModel):
     allowed_origins: list[str]
     last_used_at: dt.datetime | None
     created_at: dt.datetime
+    #: NULL means the key never expires. Set by the member at creation,
+    #: never a tenant-wide policy -- see `models/api_keys.py`.
+    expires_at: dt.datetime | None
 
 
 class ApiKeyCreatedDTO(ApiKeyDTO):
@@ -72,25 +75,45 @@ class ApiKeyCreatedDTO(ApiKeyDTO):
     token: str
 
 
+def _check_future(value: dt.datetime | None) -> dt.datetime | None:
+    if value is not None and value <= dt.datetime.now(tz=dt.UTC):
+        raise ValueError("expiresAt must be in the future")
+    return value
+
+
 class CreateApiKeyRequest(CamelModel):
     name: str = Field(min_length=1, max_length=200)
     allowed_origins: list[str] = Field(default_factory=list)
+    expires_at: dt.datetime | None = None
 
     @field_validator("allowed_origins")
     @classmethod
     def _check_origins(cls, values: list[str]) -> list[str]:
         return _validated_origins(values)
 
+    @field_validator("expires_at")
+    @classmethod
+    def _check_expires_at(cls, value: dt.datetime | None) -> dt.datetime | None:
+        return _check_future(value)
+
 
 class UpdateApiKeyRequest(CamelModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     enabled: bool | None = None
     allowed_origins: list[str] | None = None
+    #: Included only if the caller wants to change it -- omit to leave
+    #: untouched, `null` to clear (never expires), a future timestamp to set.
+    expires_at: dt.datetime | None = None
 
     @field_validator("allowed_origins")
     @classmethod
     def _check_origins(cls, values: list[str] | None) -> list[str] | None:
         return None if values is None else _validated_origins(values)
+
+    @field_validator("expires_at")
+    @classmethod
+    def _check_expires_at(cls, value: dt.datetime | None) -> dt.datetime | None:
+        return _check_future(value)
 
 
 def _to_dto(row: ApiKey) -> ApiKeyDTO:
@@ -102,6 +125,7 @@ def _to_dto(row: ApiKey) -> ApiKeyDTO:
         allowed_origins=list(row.allowed_origins or []),
         last_used_at=row.last_used_at,
         created_at=row.created_at,
+        expires_at=row.expires_at,
     )
 
 
@@ -136,6 +160,7 @@ async def create_own_api_key(
         member_id=member_id,
         name=body.name,
         allowed_origins=body.allowed_origins,
+        expires_at=body.expires_at,
     )
     await append_event(
         db,
@@ -144,7 +169,11 @@ async def create_own_api_key(
         actor_id=member_id,
         category="api_key",
         action="api_key.created",
-        resource={"api_key_id": str(row.id), "name": row.name},
+        resource={
+            "api_key_id": str(row.id),
+            "name": row.name,
+            "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+        },
         reason="self-service API key created through POST /settings/api-keys",
         principal=principal,
     )
@@ -180,6 +209,8 @@ async def update_own_api_key(
         row.name = body.name
     if body.allowed_origins is not None:
         row.allowed_origins = body.allowed_origins
+    if "expires_at" in body.model_fields_set:
+        row.expires_at = body.expires_at
 
     await db.commit()
     return _to_dto(row)

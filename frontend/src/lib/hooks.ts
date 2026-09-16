@@ -638,6 +638,8 @@ export interface ApiKeyDTO {
   allowedOrigins: string[];
   lastUsedAt: string | null;
   createdAt: string;
+  // null = never expires. Set by the member at creation, not a tenant-wide policy.
+  expiresAt: string | null;
 }
 
 export interface ApiKeyCreatedDTO extends ApiKeyDTO {
@@ -657,7 +659,7 @@ export function useApiKeys() {
 export function useCreateApiKey() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { name: string; allowedOrigins: string[] }) =>
+    mutationFn: (body: { name: string; allowedOrigins: string[]; expiresAt?: string | null }) =>
       api.post<ApiKeyCreatedDTO>("/settings/api-keys", body),
     onSuccess: () => qc.invalidateQueries({ queryKey: API_KEYS_KEY }),
   });
@@ -674,6 +676,8 @@ export function useUpdateApiKey() {
       name?: string;
       enabled?: boolean;
       allowedOrigins?: string[];
+      // Omit to leave untouched, `null` to clear (never expires).
+      expiresAt?: string | null;
     }) => api.patch<ApiKeyDTO>(`/settings/api-keys/${keyId}`, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: API_KEYS_KEY }),
   });

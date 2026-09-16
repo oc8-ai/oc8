@@ -56,6 +56,7 @@ const KEY: ApiKeyDTO = {
   allowedOrigins: [],
   lastUsedAt: null,
   createdAt: "2026-08-27T00:00:00Z",
+  expiresAt: null,
 };
 
 function renderPanel() {
@@ -105,12 +106,46 @@ describe("ApiKeysPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: /^create$/i }));
 
     await waitFor(() =>
-      expect(createKeyMock).toHaveBeenCalledWith({ name: "Claude Desktop", allowedOrigins: [] }),
+      expect(createKeyMock).toHaveBeenCalledWith({
+        name: "Claude Desktop",
+        allowedOrigins: [],
+        expiresAt: null,
+      }),
     );
     expect(
       await screen.findByText("Copy this key now — it will not be shown again."),
     ).toBeInTheDocument();
     expect(screen.getByText("oc8_ak_ab12cdefgh")).toBeInTheDocument();
+  });
+
+  it("passes the chosen expiry date, expanded to end-of-day", async () => {
+    getKeysMock.mockResolvedValue([]);
+    createKeyMock.mockResolvedValue({ ...KEY, token: "oc8_ak_x" });
+    renderPanel();
+
+    await screen.findByText("No API keys yet.");
+    fireEvent.click(screen.getByRole("button", { name: /new key/i }));
+    fireEvent.change(screen.getByPlaceholderText("e.g. Claude Desktop"), {
+      target: { value: "n8n" },
+    });
+    fireEvent.change(screen.getByLabelText(/expires/i), {
+      target: { value: "2030-01-15" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^create$/i }));
+
+    await waitFor(() =>
+      expect(createKeyMock).toHaveBeenCalledWith({
+        name: "n8n",
+        allowedOrigins: [],
+        expiresAt: "2030-01-15T23:59:59",
+      }),
+    );
+  });
+
+  it("shows an Expired badge for a key past its expiry", async () => {
+    getKeysMock.mockResolvedValue([{ ...KEY, expiresAt: "2020-01-01T00:00:00Z" }]);
+    renderPanel();
+    expect(await screen.findByText("Expired")).toBeInTheDocument();
   });
 
   it("splits comma-separated allowed origins into a trimmed list", async () => {
@@ -132,6 +167,7 @@ describe("ApiKeysPanel", () => {
       expect(createKeyMock).toHaveBeenCalledWith({
         name: "n8n",
         allowedOrigins: ["https://a.com", "https://b.com"],
+        expiresAt: null,
       }),
     );
   });
