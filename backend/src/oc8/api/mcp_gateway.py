@@ -43,6 +43,7 @@ from oc8.agent.control_tools import (
     execute_control_tool,
 )
 from oc8.agent.engine import _authorize, _call_sig
+from oc8.agent.mcp_client import resolve_auth_header
 from oc8.agent.mcp_env import has_oauth_ref, resolve_mcp_env
 from oc8.agent.mcp_requirements import wrap_with_requirements
 from oc8.agent.outward import (
@@ -320,6 +321,7 @@ async def _list_tools(
             # that failure would take the whole list down -- which is exactly the
             # incident the except below was written for.
             env = await _env(conn, db, run.tenant_id)
+            headers = resolve_auth_header(cfg, env)
             # Wrapped HERE, not in mcp_pool: the pool has no cfg, and this is
             # the launch path every packaged/containerized runtime uses. Without
             # it a connection's `requirements` overlay reaches the in-process
@@ -333,6 +335,10 @@ async def _list_tools(
                 command=command,
                 args=args,
                 env=env,
+                transport=conn.transport,
+                server_url=conn.server_url,
+                headers=headers,
+                http_tools=list(cfg.get("http_tools", [])),
                 reusable=not has_oauth_ref(cfg),
             )
         except Exception:
@@ -941,6 +947,7 @@ async def _call_tool(
         # of this, and a failure there belongs to the model as a tool error --
         # not as a 500 out of the whole tools/call.
         env = await _env(conn, db, run.tenant_id)
+        headers = resolve_auth_header(cfg, env)
         # Reused across calls: the handshake behind this costs ~3s and the call
         # itself ~50ms, so paying it per call was the whole of the latency. Not
         # reused when the environment carries a minted token that expires.
@@ -953,6 +960,10 @@ async def _call_tool(
             env=env,
             tool=tc.name,
             arguments=tc.arguments,
+            transport=conn.transport,
+            server_url=conn.server_url,
+            headers=headers,
+            http_tools=list(cfg.get("http_tools", [])),
             reusable=not has_oauth_ref(cfg),
         )
     except Exception as exc:  # surface to the model, not as a broken server
