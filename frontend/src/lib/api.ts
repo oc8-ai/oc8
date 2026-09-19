@@ -226,6 +226,14 @@ const ROOT_API_URL = API_URL.replace(/\/api\/v1\/?$/, "");
 
 export interface SsoExchangeResponse {
   token: string;
+  /** True when `token` is a NARROW totp:challenge-scoped token rather than a
+   *  session: the SSO callback must render the TOTP challenge instead of
+   *  storing it. Same field the password login's own response carries for
+   *  the same decision -- both screens branch on it identically. */
+  requiresTotpCode?: boolean;
+  /** True when `token` is a NARROW totp:enroll-scoped token: the member owes
+   *  us an enrollment before any session exists. */
+  requiresTotpEnrollment?: boolean;
 }
 
 export async function exchangeSsoCode(code: string): Promise<SsoExchangeResponse> {
