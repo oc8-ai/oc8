@@ -26,7 +26,7 @@ from oc8.agent.control_tools import (
     execute_control_tool,
     offered_tools,
 )
-from oc8.agent.mcp_client import McpSession
+from oc8.agent.mcp_client import open_tool_session, resolve_auth_header
 from oc8.agent.mcp_env import resolve_mcp_env
 from oc8.agent.mcp_requirements import wrap_with_requirements
 from oc8.agent.outward import (
@@ -1534,10 +1534,27 @@ async def run_agent(
                     env = await resolve_mcp_env(
                         db, tenant_id=tenant_id, cfg=cfg, connection_name=mcp_conn.name
                     )
-                    command, args = wrap_with_requirements(
-                        cfg.get("command", ""), cfg.get("args", []), cfg
-                    )
-                    async with McpSession(command, args, env=env) as server:
+                    headers = resolve_auth_header(cfg, env)
+                    if mcp_conn.transport == "manual_http":
+                        tool_session = await open_tool_session(
+                            transport="manual_http",
+                            server_url=mcp_conn.server_url,
+                            http_tools=list(cfg.get("http_tools", [])),
+                            headers=headers,
+                        )
+                    else:
+                        command, args = wrap_with_requirements(
+                            cfg.get("command", ""), cfg.get("args", []), cfg
+                        )
+                        tool_session = await open_tool_session(
+                            transport=mcp_conn.transport,
+                            command=command,
+                            args=args,
+                            server_url=mcp_conn.server_url,
+                            headers=headers,
+                            env=env,
+                        )
+                    async with tool_session as server:
                         return await loop(apply_tool_notes(server.tools, cfg), server)
                 return await loop([], None)
             finally:
