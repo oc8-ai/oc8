@@ -19,27 +19,15 @@ from oc8.api.v1.chat import _owned_session
 from oc8.authz.authority import authority_for_principal, tenant_wide_read
 from oc8.authz.permissions import AGENT, VIEW, perm
 from oc8.authz.scope import HumanActor
-from oc8.knowledge.ingest import MAX_DOCUMENT_LENGTH, IngestionError, extract_text
 from oc8.schemas.dto import FileAttachmentDTO
 from oc8.storage import s3
+from oc8.storage.attachments import (
+    AttachmentTooLarge,
+    UnsupportedContentType,
+    store_attachment_bytes,
+)
 
 router = APIRouter()
-
-_MAX_BYTES = 25 * 1024 * 1024
-_ALLOWED_CONTENT_TYPES = {
-    "application/pdf",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    "text/csv",
-    "text/plain",
-    "text/markdown",
-    "text/html",
-    "image/png",
-    "image/jpeg",
-    "image/gif",
-    "image/webp",
-}
-_IMAGE_CONTENT_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
 
 
 def _attachment_dto(row: m.FileAttachment) -> FileAttachmentDTO:
@@ -56,62 +44,21 @@ def _attachment_dto(row: m.FileAttachment) -> FileAttachmentDTO:
 async def _store_upload(
     db: DbSession, *, tenant_id: uuid.UUID, owner_type: str, owner_id: uuid.UUID, file: UploadFile
 ) -> m.FileAttachment:
-    if file.content_type not in _ALLOWED_CONTENT_TYPES:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY, f"unsupported content type: {file.content_type!r}"
-        )
     raw = await file.read()
-    if len(raw) > _MAX_BYTES:
-        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "file exceeds 25 MB limit")
-
-    is_image = file.content_type in _IMAGE_CONTENT_TYPES
-    extracted_text: str | None = None
-    if not is_image:
-        import base64
-
-        binary_types = {
-            "application/pdf",
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        }
-        payload = (
-            base64.b64encode(raw).decode()
-            if file.content_type in binary_types
-            else raw.decode("utf-8", errors="replace")
+    try:
+        return await store_attachment_bytes(
+            db,
+            tenant_id=tenant_id,
+            owner_type=owner_type,
+            owner_id=owner_id,
+            filename=file.filename or "upload",
+            raw=raw,
+            content_type=file.content_type or "application/octet-stream",
         )
-        try:
-            extracted_text = extract_text(content=payload, content_type=file.content_type)
-        except IngestionError:
-            extracted_text = None  # upload still succeeds -- see Global Constraints
-        if extracted_text is not None and len(extracted_text) > MAX_DOCUMENT_LENGTH:
-            # Truncate, never refuse -- the design doc's Extraction Pipeline
-            # section applies the SAME 200,000-char cap the knowledge-base
-            # ingest path uses, and `extract_text` itself does not enforce it
-            # (its KB caller does, by failing the job -- not an option here,
-            # where an oversized-but-readable file must still upload). Without
-            # this, a 25 MB spreadsheet's whole extracted text is appended
-            # verbatim to the run's task text and sent to the model: nothing
-            # downstream bounds it, since `trim_to_budget` always keeps the
-            # newest message even when it alone blows the context budget.
-            extracted_text = extracted_text[:MAX_DOCUMENT_LENGTH]
-
-    bucket_key = f"{tenant_id}/{owner_type}/{uuid.uuid4()}-{file.filename}"
-    await s3.put_object(bucket_key, raw, file.content_type)
-
-    row = m.FileAttachment(
-        tenant_id=tenant_id,
-        owner_type=owner_type,
-        owner_id=owner_id,
-        bucket_key=bucket_key,
-        filename=file.filename or "upload",
-        content_type=file.content_type,
-        size_bytes=len(raw),
-        extracted_text=extracted_text,
-        is_image=is_image,
-    )
-    db.add(row)
-    await db.flush()
-    return row
+    except UnsupportedContentType as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    except AttachmentTooLarge as exc:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, str(exc)) from exc
 
 
 @router.post(
@@ -157,15 +104,27 @@ async def _owned_attachment(
     exact same session-ownership check against the message's session. Either
     branch failing -- session/message missing, or found but not owned by this
     actor -- is the same 404 as above.
+
+    `agent_run` (a file an agent produced during a run -- see
+    `oc8.runtime.workspace`/`write_output_file`) shares the `agent_instructions`
+    visibility check: `owner_id` is the `AgentRun.id`, resolved to its
+    `agent_id` first, then gated the same way.
     """
     row = await db.get(m.FileAttachment, attachment_id)
     if row is None or row.tenant_id != actor.principal.tenant_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "file not found")
-    if row.owner_type == "agent_instructions":
+    if row.owner_type in ("agent_instructions", "agent_run"):
+        if row.owner_type == "agent_run":
+            run = await db.get(m.AgentRun, row.owner_id)
+            if run is None or run.tenant_id != actor.principal.tenant_id:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "file not found")
+            agent_id = run.agent_id
+        else:
+            agent_id = row.owner_id
         authority = await authority_for_principal(request, db, actor.principal)
         tenant_wide = tenant_wide_read(authority, perm(AGENT, VIEW))
         agent = await visible_agent(
-            db, scope=actor.scope, tenant_wide=tenant_wide, agent_id=row.owner_id
+            db, scope=actor.scope, tenant_wide=tenant_wide, agent_id=agent_id
         )
         if agent is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "file not found")

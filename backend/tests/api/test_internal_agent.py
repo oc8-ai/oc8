@@ -303,7 +303,12 @@ async def test_step_offers_the_same_tools_as_the_in_process_engine(
         )
         offered_in_process = sorted(
             t.name for t in offered_tools(
-                agent, assigned_skills=pre.assigned_skills, active_skills=[], mcp_tools=[]
+                agent, assigned_skills=pre.assigned_skills, active_skills=[], mcp_tools=[],
+                # The in-process engine always passes this (it has no workspace
+                # mount); this agent has no runtime_ref set either, so it falls
+                # back to the builtin isolated shell -- also with no local
+                # filesystem -- and must offer the same tool for parity.
+                offer_write_output_file=True,
             )
         )
 
@@ -312,6 +317,53 @@ async def test_step_offers_the_same_tools_as_the_in_process_engine(
     assert "ask_user" in offered_isolated
     assert "delegate_task" in offered_isolated, "a team lead must be able to delegate"
     assert any(n.startswith("skill_") for n in offered_isolated), "skills must be invocable"
+    assert "write_output_file" in offered_isolated
+
+
+@pytest.mark.asyncio
+async def test_step_withholds_write_output_file_from_a_real_runtime_plugin(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real runtime plugin (e.g. claude_code_runtime) has its own local file
+    tools inside its container -- offering write_output_file too would be
+    redundant. Only the builtin isolated shell (or an unset runtime_ref, which
+    falls back to it) has no filesystem of its own and needs the tool."""
+    from asgi_lifespan import LifespanManager
+    from httpx import ASGITransport, AsyncClient
+
+    from oc8.main import create_app
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        lead, _mate, run = await _seed_lead_with_mate_and_skill(db, tenant)
+        lead.runtime_ref = str(uuid.uuid4())
+        lead_id, run_id = lead.id, run.id
+
+    seen: dict[str, Any] = {}
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        seen["tools"] = kw["tools"]
+        return CompletionResult(
+            text="fertig", tool_calls=[], usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="stop", provider="ollama", model="m",
+        )
+
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+    token = _agent_token(tenant, lead_id, run_id)
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post(
+                f"/api/v1/internal/agent/{run_id}/step",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert r.status_code == 200, r.text
+
+    offered = {t.name for t in seen["tools"]}
+    assert "write_output_file" not in offered
 
 
 @pytest.mark.asyncio

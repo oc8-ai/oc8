@@ -461,26 +461,16 @@ export const useAgent = (id: string) => {
 };
 
 export interface WorkspaceFileDTO {
-  name: string;
-  path: string; // relative to the run's workspace root, posix-style
-  size: number;
+  id: string; // FileAttachment id -- download via GET /files/{id}
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+  runId: string; // which of the agent's runs produced this file
+  createdAt: string;
 }
 
 export interface WorkspaceFilesDTO {
-  // False for an agent whose runtime never wrote a host workspace directory
-  // (e.g. the in-process "Standard" runtime) -- distinct from an empty
-  // `files` array, which means "this runtime supports it but there's
-  // nothing there yet".
-  applicable: boolean;
-  runId?: string | null;
   files: WorkspaceFileDTO[];
-  message?: string | null;
-}
-
-export interface WorkspaceFileContentDTO {
-  path: string;
-  content: string;
-  truncated: boolean;
 }
 
 export const useAgentWorkspaceFiles = (agentId: string) =>
@@ -489,22 +479,6 @@ export const useAgentWorkspaceFiles = (agentId: string) =>
     queryFn: () => api.get<WorkspaceFilesDTO>(`/agents/${agentId}/workspace/files`),
     enabled: !!agentId,
   });
-
-// `path` is the relative path returned in a WorkspaceFileDTO ("src/index.ts",
-// possibly nested). `encodeURIComponent` turns its `/` into `%2F`, which the
-// ASGI server decodes back to a literal `/` before FastAPI's `{file_path:
-// path}` converter ever sees it -- the standard way to pass a nested path as
-// a single path parameter.
-export function useAgentWorkspaceFile(agentId: string, path: string | null) {
-  return useQuery({
-    queryKey: ["agents", agentId, "workspace", "file", path],
-    queryFn: () =>
-      api.get<WorkspaceFileContentDTO>(
-        `/agents/${agentId}/workspace/files/${encodeURIComponent(path as string)}`,
-      ),
-    enabled: !!agentId && !!path,
-  });
-}
 
 export interface Board {
   tasks: Task[];

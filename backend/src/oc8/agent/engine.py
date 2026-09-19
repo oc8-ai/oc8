@@ -720,6 +720,9 @@ async def run_agent(
                     has_knowledge=has_knowledge,
                     has_instruction_files=has_instruction_files,
                     copilot_permissions=copilot_permissions,
+                    # The in-process engine is the one runtime with no
+                    # /workspace mount of its own -- see offered_tools' docstring.
+                    offer_write_output_file=True,
                 )
 
             # Advisory loop-hygiene guard (track_repeat_tool_call, shared with the
