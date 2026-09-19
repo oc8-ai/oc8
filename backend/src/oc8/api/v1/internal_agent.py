@@ -380,7 +380,8 @@ async def step(
     # This endpoint only ever runs for a containerized runtime (the in-process
     # engine calls offered_tools directly, never over HTTP). A real runtime
     # plugin (e.g. claude_code_runtime) has its own local file tools, so only
-    # offer write_output_file for the builtin isolated shell, which has none.
+    # offer write_output_file -- and, for the same reason, run_shell -- for
+    # the builtin isolated shell, which has none of its own.
     offer_write_output_file = (
         not agent.runtime_ref or agent.runtime_ref == BUILTIN_ISOLATED_RUNTIME_REF
     )

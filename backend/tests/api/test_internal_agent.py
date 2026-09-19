@@ -307,20 +307,30 @@ async def test_step_offers_the_same_tools_as_the_in_process_engine(
                 # The in-process engine always passes this (it has no workspace
                 # mount); this agent has no runtime_ref set either, so it falls
                 # back to the builtin isolated shell -- also with no local
-                # filesystem or local shell -- and must offer the same tools
-                # for parity.
+                # filesystem -- and must offer the same tool for parity.
                 offer_write_output_file=True,
-                offer_run_shell=True,
+                # Deliberately NOT offer_run_shell=True here: engine.py's
+                # loop()._offered() never passes it either. Only the
+                # isolated runtime's isolated_shell.py can pre-execute a
+                # command locally and hand back a local_result -- the
+                # in-process engine has no equivalent, so real production
+                # in-process runs correctly never offer run_shell. That
+                # asymmetry is asserted explicitly below instead of being
+                # papered over by a synthetic match.
             )
         )
 
-    assert offered_isolated == offered_in_process
+    # run_shell is the one intentional asymmetry between the two runtimes
+    # (see the comment above) -- assert it directly rather than forcing the
+    # two lists to artificially match.
+    assert "run_shell" in offered_isolated
+    assert "run_shell" not in offered_in_process
+    assert [n for n in offered_isolated if n != "run_shell"] == offered_in_process
     assert "memory_write" in offered_isolated
     assert "ask_user" in offered_isolated
     assert "delegate_task" in offered_isolated, "a team lead must be able to delegate"
     assert any(n.startswith("skill_") for n in offered_isolated), "skills must be invocable"
     assert "write_output_file" in offered_isolated
-    assert "run_shell" in offered_isolated
 
 
 @pytest.mark.asyncio
