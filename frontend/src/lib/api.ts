@@ -238,6 +238,46 @@ export async function exchangeSsoCode(code: string): Promise<SsoExchangeResponse
   return (await res.json()) as SsoExchangeResponse;
 }
 
+export interface SsoSamlConfig {
+  enabled: boolean;
+  idpEntityId: string;
+  idpSsoUrl: string;
+  defaultRoleId: string;
+  emailAttribute: string;
+  displayNameAttribute: string;
+  spEntityId: string;
+  acsUrl: string;
+}
+
+export interface SsoSamlConfigInput {
+  metadataXml: string;
+  defaultRoleId: string;
+  emailAttribute?: string;
+  displayNameAttribute?: string;
+  enabled?: boolean;
+}
+
+export async function getSsoSamlConfig(): Promise<SsoSamlConfig | null> {
+  const res = await fetch(`${API_URL}/sso/saml`, {
+    headers: { authorization: `Bearer ${await getToken()}` },
+  });
+  if (!res.ok) throw await toError(res);
+  return (await res.json()) as SsoSamlConfig | null;
+}
+
+export async function putSsoSamlConfig(input: SsoSamlConfigInput): Promise<SsoSamlConfig> {
+  const res = await fetch(`${API_URL}/sso/saml`, {
+    method: "PUT",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${await getToken()}`,
+    },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw await toError(res);
+  return (await res.json()) as SsoSamlConfig;
+}
+
 // ---- Company backup / restore -----------------------------------------------
 // These three don't fit `api.*`: export returns a binary blob, and preview /
 // restore send multipart/form-data (a file), not JSON. `BackupPreviewDTO` and
