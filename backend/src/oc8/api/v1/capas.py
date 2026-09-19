@@ -78,7 +78,7 @@ class InstantiateDepartmentRequest(CamelModel):
 
 
 class CapaExportItem(BaseModel):
-    kind: Literal["department", "agent", "skill"]
+    kind: Literal["department", "agent", "skill", "tool_pack"]
     id: uuid.UUID
     name: str
     version: str = "1.0.0"
@@ -1294,6 +1294,7 @@ async def export_capas(
         build_agent_export,
         build_department_export,
         build_skill_export,
+        build_tool_pack_export,
     )
     from oc8.capas.export_package import build_zip
 
@@ -1323,6 +1324,10 @@ async def export_capas(
                     capa_name=item.name,
                     version=item.version,
                     summary=item.summary,
+                )
+            elif item.kind == "tool_pack":
+                exported = await build_tool_pack_export(
+                    db, tenant_id=principal.tenant_id, capa_id=item.id
                 )
             else:
                 exported = await build_skill_export(
