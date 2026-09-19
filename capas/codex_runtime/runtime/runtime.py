@@ -25,6 +25,7 @@ from cli_harness.outcome import no_terminal_event
 from cli_harness.park import POLL_INTERVAL_S, is_parked
 from cli_harness.session_state import clear_session_id, get_session_id, set_session_id
 from cli_harness.tail import tail_new_lines
+from cli_harness.toolchain import TOOLCHAIN_NOTE
 from oc8 import models as m
 from oc8.agent.engine import RunResult, open_run_task
 from oc8.config import get_settings
@@ -307,7 +308,9 @@ class CodexRuntime:
             name=container_name(agent.name, "codex", run_id),
             # Identity for the startup reaper; the name is only for humans.
             labels={RUN_LABEL: str(run_id)},
-            command=_build_command(task_text=task_text, resume_session_id=resume_session_id),
+            command=_build_command(
+                task_text=f"{task_text}\n\n{TOOLCHAIN_NOTE}", resume_session_id=resume_session_id
+            ),
             env={
                 "OPENAI_BASE_URL": f"{settings.internal_base_url}/llm",
                 "OPENAI_API_KEY": token,

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from cli_harness.toolchain import TOOLCHAIN_NOTE
 
 from oc8 import models as m
 from oc8.sandbox.types import ExecResult, SandboxHandle
@@ -699,7 +700,7 @@ async def test_task_text_cannot_be_parsed_as_a_flag(
         await ClaudeCodeRuntime().execute(
             db, agent=agent, task_text=hostile, tenant_id=tenant, run_id=run_id
         )
-    assert driver.specs[0].command[-2:] == ["--", hostile]
+    assert driver.specs[0].command[-2:] == ["--", f"{hostile}\n\n{TOOLCHAIN_NOTE}"]
 
     driver.specs.clear()
     agent2, run_id2 = await _seed_agent(
@@ -711,7 +712,7 @@ async def test_task_text_cannot_be_parsed_as_a_flag(
             db, agent=agent2, task_text=hostile, tenant_id=tenant, run_id=run_id2
         )
     resume_spec = driver.specs[0]
-    assert resume_spec.command[-2:] == ["--", hostile]
+    assert resume_spec.command[-2:] == ["--", f"{hostile}\n\n{TOOLCHAIN_NOTE}"]
     assert "claude-sess-9" in resume_spec.command
 
 
@@ -808,3 +809,43 @@ async def test_the_run_token_is_never_put_on_the_command_line(
     assert written["mcpServers"]["oc8"]["headers"]["Authorization"] == f"Bearer {token}"
     # 0600: it outlives the container on the host.
     assert oct(Path(mount.host_path).stat().st_mode)[-3:] == "600"  # noqa: ASYNC240
+
+
+async def test_the_toolchain_note_is_appended_to_the_task_prompt(
+    app_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from runtime.runtime import ClaudeCodeRuntime
+
+    result_event = (
+        '{"type":"result","subtype":"success","result":"done","session_id":"claude-sess-1"}'
+    )
+    driver = _FakeDriver([result_event], exit_code=0)
+    _install(monkeypatch, driver)
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        dept = m.Department(tenant_id=tenant, name="Eng", frame={})
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(
+            tenant_id=tenant,
+            department_id=dept.id,
+            name="Coder",
+            status="running",
+            narrowing={},
+            definition={},
+        )
+        db.add(agent)
+        await db.flush()
+        run = m.AgentRun(tenant_id=tenant, agent_id=agent.id, state="running", context={})
+        db.add(run)
+        await db.flush()
+        run_id = run.id
+
+        await ClaudeCodeRuntime().execute(
+            db, agent=agent, task_text="fix the bug", tenant_id=tenant, run_id=run_id,
+        )
+
+    spec = driver.specs[0]
+    assert spec.command[-1].startswith("fix the bug\n\n")
+    assert "Playwright" in spec.command[-1]
