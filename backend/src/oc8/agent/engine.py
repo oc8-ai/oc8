@@ -409,6 +409,17 @@ def _authorize(
         # successful call from being audited as a denial for a tool that was
         # never going to be enforced by this frame in the first place.
         return Decision(Effect.ALLOW)
+    if tc.name == "run_shell":
+        # Like propose_change and decide_approval, immediately above: it
+        # belongs to no connection, so the department frame has nothing to
+        # decide it against, and execute_control_tool never reads this
+        # decision for run_shell either (see RUN_SHELL's dispatch in
+        # control_tools.py, which only checks for a local_result) -- without
+        # this special case, a run with no MCP connection bound (only the
+        # builtin isolated shell offers run_shell at all -- see
+        # internal_agent.py's offer_run_shell) would have every successful
+        # call audited as a denial.
+        return Decision(Effect.ALLOW)
     if tc.name == "delegate_task":
         if not agent.is_team_lead:
             return Decision(Effect.DENY, "only a team lead can delegate tasks")

@@ -393,6 +393,7 @@ async def step(
         has_instruction_files=has_instruction_files,
         copilot_permissions=copilot_permissions,
         offer_write_output_file=offer_write_output_file,
+        offer_run_shell=offer_write_output_file,
     )
 
     resolved_tools = tools
@@ -602,6 +603,10 @@ class ToolBody(BaseModel):
     id: str
     name: str
     arguments: dict[str, Any] = {}
+    #: Present only for run_shell: isolated_shell.py already executed the
+    #: command locally before this POST (see its module docstring) -- this is
+    #: the already-computed result to record, not to execute.
+    local_result: dict[str, Any] | None = None
 
 
 class ToolResult(BaseModel):
@@ -754,6 +759,7 @@ async def tool(
             mcp_conn=conn,
             originating_operator=run.context.get("originating_operator"),
             run_id=run.id,
+            local_result=body.local_result,
         )
         if task is not None
         else None

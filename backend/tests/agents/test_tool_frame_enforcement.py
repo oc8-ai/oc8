@@ -150,3 +150,15 @@ def test_decide_approval_is_allowed_on_a_connection_less_run() -> None:
         agent=agent,
     )
     assert d.effect is Effect.ALLOW
+
+
+def test_run_shell_is_allowed_on_a_connection_less_run() -> None:
+    """Same shape as propose_change/decide_approval, above: run_shell also
+    belongs to no connection -- only the builtin isolated shell ever offers
+    it (internal_agent.py's offer_run_shell), and that runtime has no MCP
+    connection of its own either -- so without its own special case here
+    every successful call would fall through to the frame check's DENY and be
+    audited as a denial, even though execute_control_tool never reads this
+    decision for run_shell and dispatches it regardless."""
+    d = _authz(_call("run_shell", command="echo hi"), key=None)
+    assert d.effect is Effect.ALLOW
