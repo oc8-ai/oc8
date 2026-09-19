@@ -6,7 +6,7 @@ the isolated runtime's /step endpoint.
 
 from __future__ import annotations
 
-#: Ported from DeepSeek Harness's goal-round-driver, adapted to oc8's bounded
+#: Ported from a prior reference harness's goal-round-driver, adapted to oc8's bounded
 #: step loop: there is no separate session-level "goal" object here, no idle
 #: detection, and no multi-session resume -- a run is already one bounded
 #: execution with its own step budget. Reusing the already-model-facing
