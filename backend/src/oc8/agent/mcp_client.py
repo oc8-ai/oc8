@@ -14,8 +14,10 @@ from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, cast
 
+import httpx2
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
 
 from oc8.constants import CORE_VERSION
 from oc8.modelrouter.types import NeutralTool
@@ -235,12 +237,18 @@ class McpSession:
         args: list[str],
         env: dict[str, str] | None = None,
         *,
+        transport: str = "stdio",
+        server_url: str = "",
+        headers: dict[str, str] | None = None,
         timeout_s: float | None = None,
     ) -> None:
-        self._params = StdioServerParameters(
-            command=command,
-            args=args,
-            env=_safe_env(env),
+        self._transport = transport
+        self._server_url = server_url
+        self._headers = dict(headers or {})
+        self._params = (
+            StdioServerParameters(command=command, args=args, env=_safe_env(env))
+            if transport == "stdio"
+            else None
         )
         self._stack = AsyncExitStack()
         self._session: ClientSession | None = None
@@ -250,19 +258,35 @@ class McpSession:
 
     async def __aenter__(self) -> McpSession:
         try:
-            read, write = await self._stack.enter_async_context(
-                # Capture the server's stderr instead of letting it default to
-                # ours. When a stdio server dies during start-up the SDK raises
-                # a transport-level error -- "Connection closed" -- which says
-                # nothing about WHY. The reason is on the child's stderr, and
-                # without this it reached the operator's screen not at all: an
-                # Odoo connection refused with a precise `403: MCP Server is
-                # disabled globally` was shown as "Connection closed", and read
-                # as a credentials problem.
-                # cast: the parameter is typed `TextIO`, but the SDK only ever
-                # writes and flushes it, which is all `_StderrTail` implements.
-                stdio_client(self._params, errlog=cast("TextIO", self._errlog))
-            )
+            if self._transport == "http":
+                # Create an HTTP client with configured headers and timeout,
+                # then pass it to the streamable-HTTP transport.
+                http_client = await self._stack.enter_async_context(
+                    create_mcp_http_client(
+                        headers=self._headers or None,
+                        timeout=httpx2.Timeout(self._timeout_s) if self._timeout_s else None,
+                    )
+                )
+                read, write = await self._stack.enter_async_context(
+                    streamable_http_client(
+                        self._server_url,
+                        http_client=http_client,
+                    )
+                )
+            else:
+                read, write = await self._stack.enter_async_context(
+                    # Capture the server's stderr instead of letting it default to
+                    # ours. When a stdio server dies during start-up the SDK raises
+                    # a transport-level error -- "Connection closed" -- which says
+                    # nothing about WHY. The reason is on the child's stderr, and
+                    # without this it reached the operator's screen not at all: an
+                    # Odoo connection refused with a precise `403: MCP Server is
+                    # disabled globally` was shown as "Connection closed", and read
+                    # as a credentials problem.
+                    # cast: the parameter is typed `TextIO`, but the SDK only ever
+                    # writes and flushes it, which is all `_StderrTail` implements.
+                    stdio_client(self._params, errlog=cast("TextIO", self._errlog))
+                )
             # The session default, so it covers the handshake too: `initialize` and
             # `list_tools` are requests like any other, and a server that never
             # answers the first of them hung the run before it had done anything.
@@ -277,8 +301,9 @@ class McpSession:
             # __aexit__ is never called when __aenter__ raises. Without this,
             # that child process leaks for as long as it keeps running.
             await self._stack.aclose()
-            reason = self._errlog.last_meaningful_line()
-            self._errlog.tee_to_log(connection=self._params.command)
+            reason = self._errlog.last_meaningful_line() if self._transport == "stdio" else ""
+            if self._transport == "stdio":
+                self._errlog.tee_to_log(connection=self._params.command)  # type: ignore[union-attr]
             self._errlog.close()
             if reason and isinstance(exc, Exception):
                 raise McpServerStartupError(f"{exc or type(exc).__name__}: {reason}") from exc
