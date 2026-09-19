@@ -42,7 +42,7 @@ from oc8.agent.engine import (
     tool_output_budget_reminder,
     track_repeat_tool_call,
 )
-from oc8.agent.mcp_client import McpSession
+from oc8.agent.mcp_client import open_tool_session, resolve_auth_header
 from oc8.agent.mcp_env import resolve_mcp_env
 from oc8.agent.mcp_requirements import wrap_with_requirements
 from oc8.agent.outward import (
@@ -350,8 +350,27 @@ async def step(
         if conn is not None and not tool_schemas_raw:
             cfg = _mcp_params(conn)
             env = await _mcp_env(conn, db, run.tenant_id)
-            command, args = wrap_with_requirements(cfg.get("command", ""), cfg.get("args", []), cfg)
-            async with McpSession(command, args, env=env) as s:
+            headers = resolve_auth_header(cfg, env)
+            if conn.transport == "manual_http":
+                tool_session = await open_tool_session(
+                    transport="manual_http",
+                    server_url=conn.server_url,
+                    http_tools=list(cfg.get("http_tools", [])),
+                    headers=headers,
+                )
+            else:
+                command, args = wrap_with_requirements(
+                    cfg.get("command", ""), cfg.get("args", []), cfg
+                )
+                tool_session = await open_tool_session(
+                    transport=conn.transport,
+                    command=command,
+                    args=args,
+                    server_url=conn.server_url,
+                    headers=headers,
+                    env=env,
+                )
+            async with tool_session as s:
                 tool_schemas_raw = [
                     {"name": t.name, "description": t.description, "parameters": t.parameters}
                     for t in apply_tool_notes(s.tools, cfg)
@@ -871,10 +890,27 @@ async def tool(
                 # as a tool error, exactly like an unreachable bridge. A
                 # replayed write needs no bridge and now mints nothing.
                 env = await _mcp_env(conn, db, run.tenant_id)
-                command, args = wrap_with_requirements(
-                    cfg.get("command", ""), cfg.get("args", []), cfg
-                )
-                async with McpSession(command, args, env=env) as s:
+                headers = resolve_auth_header(cfg, env)
+                if conn.transport == "manual_http":
+                    tool_session = await open_tool_session(
+                        transport="manual_http",
+                        server_url=conn.server_url,
+                        http_tools=list(cfg.get("http_tools", [])),
+                        headers=headers,
+                    )
+                else:
+                    command, args = wrap_with_requirements(
+                        cfg.get("command", ""), cfg.get("args", []), cfg
+                    )
+                    tool_session = await open_tool_session(
+                        transport=conn.transport,
+                        command=command,
+                        args=args,
+                        server_url=conn.server_url,
+                        headers=headers,
+                        env=env,
+                    )
+                async with tool_session as s:
                     output = await s.call(tc.name, tc.arguments)
             except Exception as exc:  # surface to the model
                 output = f"ERROR: {exc}"
