@@ -19,8 +19,14 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Field } from "@/components/agent-identity-fields";
+import { useConfirm } from "@/hooks/use-confirm";
 import { api } from "@/lib/api";
-import { useEnablePlugin, useInstallCustomCapa, useTestMcpConnectionById } from "@/lib/hooks";
+import {
+  useDisablePlugin,
+  useEnablePlugin,
+  useInstallCustomCapa,
+  useTestMcpConnectionById,
+} from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 
 type ServerType = "stdio" | "remote_mcp" | "manual_http";
@@ -108,6 +114,15 @@ const SERVER_TYPES: Array<{
 ];
 
 const HTTP_METHODS: HttpToolDraft["method"][] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
+
+// Tailwind class names can't be built via template literals (e.g. `grid-cols-${n}`)
+// -- they have to appear as static strings for the build to extract them.
+// `steps.length` is 3 for manual_http (the "test" step is filtered out) or 4
+// otherwise, so those are the only two cases this needs to cover.
+const STEP_DOT_GRID_COLS: Record<number, string> = {
+  3: "grid-cols-3",
+  4: "grid-cols-4",
+};
 
 type StepKey = "type" | "connection" | "test" | "summary";
 
@@ -251,6 +266,20 @@ export function CustomMcpWizard({
   const installCustomCapa = useInstallCustomCapa();
   const enablePlugin = useEnablePlugin();
   const testConnection = useTestMcpConnectionById();
+  const disablePlugin = useDisablePlugin();
+  // "Test connection" (step 3) genuinely installs+enables+configures a real
+  // capa against the backend -- there's no separate sandbox/dry-run path.
+  // If the wizard is then cancelled instead of saved, that capa would
+  // otherwise sit there enabled with nothing telling the user it happened.
+  // There is no delete/uninstall-capa endpoint anywhere in this codebase
+  // (checked routes/capas.tsx, lib/hooks.ts, and the backend's capas router
+  // -- only install/enable/disable/setup exist, and routes/capas.tsx's own
+  // comments confirm "disabled" is the closest analog to removal a capa
+  // has, there being no soft-delete column for it), so `requestClose` reuses
+  // that existing, non-destructive `useDisablePlugin` -- the same one
+  // routes/capas.tsx's own "Disable" action calls -- rather than inventing
+  // new backend surface.
+  const { confirm, ConfirmDialog } = useConfirm();
 
   const steps =
     state.serverType === "manual_http" ? ALL_STEPS.filter((s) => s.key !== "test") : ALL_STEPS;
@@ -269,6 +298,42 @@ export function CustomMcpWizard({
   function close() {
     reset();
     onOpenChange(false);
+  }
+
+  // Cancel/close entry point for every path that is NOT a completed Save
+  // (backdrop click, the header X, and Back from step 1). If step 3 already
+  // installed+enabled a real capa via "Test connection", closing without
+  // saving would otherwise silently leave it live. Ask first, and reuse the
+  // codebase's existing (non-destructive) disable action if the user wants
+  // it turned back off -- see the comment by `useDisablePlugin` above for
+  // why there's nothing stronger to call.
+  async function requestClose() {
+    if (busy) return;
+    if (!state.installedPluginId) {
+      close();
+      return;
+    }
+    const ok = await confirm({
+      title: "Cancel and leave this capa installed?",
+      description: `Testing the connection already installed and enabled "${state.name || "this capa"}" in your workspace -- that's not undone by closing this dialog. You can disable it now so it isn't left running unnoticed, or go back and finish saving it.`,
+      confirmLabel: "Disable & cancel",
+      cancelLabel: "Keep editing",
+    });
+    if (!ok) return;
+    try {
+      await disablePlugin.mutateAsync({
+        pluginId: state.installedPluginId,
+        reason: "Cancelled from the custom MCP wizard after a connection test",
+      });
+    } catch (err) {
+      toast.error(
+        err instanceof Error
+          ? err.message
+          : "Could not disable this capa -- it's still enabled; disable it from the Capas page.",
+      );
+    } finally {
+      close();
+    }
   }
 
   function update(patch: Partial<WizardState>) {
@@ -311,7 +376,7 @@ export function CustomMcpWizard({
 
   function handleBack() {
     if (step === 0) {
-      close();
+      void requestClose();
       return;
     }
     setStepError(null);
@@ -428,386 +493,395 @@ export function CustomMcpWizard({
   const isLastStep = step === steps.length - 1;
 
   return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4 backdrop-blur-md animate-in fade-in duration-200"
-      onClick={(e) => e.target === e.currentTarget && close()}
-    >
-      <div className="w-full max-w-3xl overflow-hidden rounded-2xl border border-border bg-panel shadow-2xl animate-in fade-in zoom-in-95 duration-200">
-        {/* Header */}
-        <header className="relative border-b border-border px-6 pb-5 pt-6">
-          <div className="flex items-start justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <div className="grid h-11 w-11 place-items-center rounded-xl bg-primary/15 text-primary glow-teal">
-                <StepIcon className="h-5 w-5" />
-              </div>
-              <div>
-                <h3 className="font-serif text-2xl leading-none">Connect a custom MCP or API</h3>
-                <p className="mt-1.5 text-xs text-muted-foreground">
-                  Step {step + 1} of {steps.length} · {activeStep.subtitle}
-                </p>
-              </div>
-            </div>
-            <button
-              onClick={close}
-              className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted-foreground transition hover:bg-background/40 hover:text-foreground"
-              aria-label="Close"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-
-          {/* Progress bar */}
-          <div className="mt-5">
-            <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-background/60">
-              <div
-                className="absolute inset-y-0 left-0 rounded-full bg-primary transition-[width] duration-500 ease-out"
-                style={{
-                  width: `${progress}%`,
-                  boxShadow: "0 0 12px color-mix(in oklab, var(--primary) 60%, transparent)",
-                }}
-              />
-            </div>
-            <ol className="mt-3 grid grid-cols-4 gap-2">
-              {steps.map((s, i) => (
-                <li key={s.key} className="flex min-w-0 items-center gap-2">
-                  <span
-                    className={cn(
-                      "grid h-5 w-5 shrink-0 place-items-center rounded-full text-[10px] font-semibold transition",
-                      i < step
-                        ? "bg-primary text-primary-foreground"
-                        : i === step
-                          ? "bg-primary/20 text-primary ring-1 ring-primary"
-                          : "bg-background/60 text-muted-foreground",
-                    )}
-                  >
-                    {i < step ? <Check className="h-3 w-3" /> : i + 1}
-                  </span>
-                  <span
-                    className={cn(
-                      "truncate text-[11px]",
-                      i === step
-                        ? "text-foreground"
-                        : i < step
-                          ? "text-muted-foreground"
-                          : "text-muted-foreground/60",
-                    )}
-                  >
-                    {s.title}
-                  </span>
-                </li>
-              ))}
-            </ol>
-          </div>
-        </header>
-
-        {/* Body */}
-        <div
-          key={step}
-          className="max-h-[62vh] space-y-4 overflow-y-auto px-6 py-6 animate-in fade-in slide-in-from-right-2 duration-300"
-        >
-          {activeStep.key === "type" && (
-            <div className="space-y-4">
-              <Field label="Name">
-                <input
-                  value={state.name}
-                  onChange={(e) => update({ name: e.target.value })}
-                  placeholder="e.g. Internal ticketing API"
-                  autoFocus
-                  className="w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
-                />
-              </Field>
-              <Field label="Summary">
-                <input
-                  value={state.summary}
-                  onChange={(e) => update({ summary: e.target.value })}
-                  placeholder="A short description for this capa's card"
-                  className="w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
-                />
-              </Field>
-              <Field label="Server type">
-                <div className="grid gap-2.5 sm:grid-cols-3">
-                  {SERVER_TYPES.map((type) => {
-                    const Icon = type.icon;
-                    const selected = state.serverType === type.id;
-                    return (
-                      <button
-                        key={type.id}
-                        type="button"
-                        onClick={() => update({ serverType: type.id })}
-                        className={cn(
-                          "cursor-pointer rounded-xl border-2 p-4 text-left transition",
-                          selected
-                            ? "border-primary bg-primary/5"
-                            : "border-border bg-background/30 hover:border-primary/40",
-                        )}
-                      >
-                        <Icon
-                          className={cn(
-                            "h-5 w-5",
-                            selected ? "text-primary" : "text-muted-foreground",
-                          )}
-                        />
-                        <div className="mt-2 text-sm font-medium">{type.title}</div>
-                        <div className="mt-1 text-[11px] text-muted-foreground">
-                          {type.description}
-                        </div>
-                      </button>
-                    );
-                  })}
+    <>
+      {ConfirmDialog}
+      <div
+        className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4 backdrop-blur-md animate-in fade-in duration-200"
+        onClick={(e) => {
+          if (e.target === e.currentTarget) void requestClose();
+        }}
+      >
+        <div className="w-full max-w-3xl overflow-hidden rounded-2xl border border-border bg-panel shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+          {/* Header */}
+          <header className="relative border-b border-border px-6 pb-5 pt-6">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="grid h-11 w-11 place-items-center rounded-xl bg-primary/15 text-primary glow-teal">
+                  <StepIcon className="h-5 w-5" />
                 </div>
-              </Field>
+                <div>
+                  <h3 className="font-serif text-2xl leading-none">Connect a custom MCP or API</h3>
+                  <p className="mt-1.5 text-xs text-muted-foreground">
+                    Step {step + 1} of {steps.length} · {activeStep.subtitle}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => void requestClose()}
+                className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted-foreground transition hover:bg-background/40 hover:text-foreground"
+                aria-label="Close"
+              >
+                <X className="h-4 w-4" />
+              </button>
             </div>
-          )}
 
-          {activeStep.key === "connection" && state.serverType === "stdio" && (
-            <div className="space-y-4">
-              <Field label="Command">
-                <input
-                  value={state.command}
-                  onChange={(e) => update({ command: e.target.value })}
-                  placeholder="npx -y …"
-                  className="w-full rounded-md border border-border bg-background/40 px-3 py-2 font-mono text-sm outline-none focus:border-primary/50"
+            {/* Progress bar */}
+            <div className="mt-5">
+              <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-background/60">
+                <div
+                  className="absolute inset-y-0 left-0 rounded-full bg-primary transition-[width] duration-500 ease-out"
+                  style={{
+                    width: `${progress}%`,
+                    boxShadow: "0 0 12px color-mix(in oklab, var(--primary) 60%, transparent)",
+                  }}
                 />
-              </Field>
-              <Field label="Arguments (space-separated)">
-                <input
-                  value={state.args}
-                  onChange={(e) => update({ args: e.target.value })}
-                  className="w-full rounded-md border border-border bg-background/40 px-3 py-2 font-mono text-sm outline-none focus:border-primary/50"
-                />
-              </Field>
-              <EnvRowsEditor
-                rows={state.envRows}
-                onAdd={addEnvRow}
-                onChange={updateEnvRow}
-                onRemove={removeEnvRow}
-              />
-            </div>
-          )}
-
-          {activeStep.key === "connection" && state.serverType === "remote_mcp" && (
-            <div className="space-y-4">
-              <Field label="Server URL">
-                <input
-                  value={state.serverUrl}
-                  onChange={(e) => update({ serverUrl: e.target.value })}
-                  placeholder="https://…"
-                  className="w-full rounded-md border border-border bg-background/40 px-3 py-2 font-mono text-sm outline-none focus:border-primary/50"
-                />
-              </Field>
-              <Field label="Transport">
-                <div className="grid grid-cols-2 gap-2">
-                  {(["http", "sse"] as const).map((t) => (
-                    <button
-                      key={t}
-                      type="button"
-                      onClick={() => update({ remoteTransport: t })}
+              </div>
+              <ol
+                className={cn("mt-3 grid gap-2", STEP_DOT_GRID_COLS[steps.length] ?? "grid-cols-4")}
+              >
+                {steps.map((s, i) => (
+                  <li key={s.key} className="flex min-w-0 items-center gap-2">
+                    <span
                       className={cn(
-                        "rounded-md border px-3 py-2 text-xs uppercase tracking-wide transition",
-                        state.remoteTransport === t
-                          ? "border-primary bg-primary/10 text-primary"
-                          : "border-border bg-background/30 text-muted-foreground hover:border-primary/40",
+                        "grid h-5 w-5 shrink-0 place-items-center rounded-full text-[10px] font-semibold transition",
+                        i < step
+                          ? "bg-primary text-primary-foreground"
+                          : i === step
+                            ? "bg-primary/20 text-primary ring-1 ring-primary"
+                            : "bg-background/60 text-muted-foreground",
                       )}
                     >
-                      {t}
-                    </button>
-                  ))}
-                </div>
-              </Field>
-              <AuthHeaderFields state={state} onChange={update} />
-            </div>
-          )}
-
-          {activeStep.key === "connection" && state.serverType === "manual_http" && (
-            <div className="space-y-4">
-              <Field label="Base URL">
-                <input
-                  value={state.baseUrl}
-                  onChange={(e) => update({ baseUrl: e.target.value })}
-                  placeholder="https://api.example.com"
-                  className="w-full rounded-md border border-border bg-background/40 px-3 py-2 font-mono text-sm outline-none focus:border-primary/50"
-                />
-              </Field>
-              <AuthHeaderFields state={state} onChange={update} />
-              <div>
-                <div className="mb-2 flex items-center justify-between">
-                  <span className="text-xs uppercase tracking-wider text-muted-foreground">
-                    Tools
-                  </span>
-                  <button
-                    type="button"
-                    onClick={addHttpTool}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background/40 px-2.5 py-1.5 text-xs font-medium text-foreground transition hover:bg-background/70"
-                  >
-                    <Plus className="h-3.5 w-3.5" /> Add tool
-                  </button>
-                </div>
-                {state.httpTools.length === 0 && (
-                  <p className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
-                    No endpoints described yet — add at least one to continue.
-                  </p>
-                )}
-                <div className="space-y-3">
-                  {state.httpTools.map((tool, i) => (
-                    <div
-                      key={i}
-                      className="space-y-2 rounded-lg border border-border bg-background/20 p-3"
+                      {i < step ? <Check className="h-3 w-3" /> : i + 1}
+                    </span>
+                    <span
+                      className={cn(
+                        "truncate text-[11px]",
+                        i === step
+                          ? "text-foreground"
+                          : i < step
+                            ? "text-muted-foreground"
+                            : "text-muted-foreground/60",
+                      )}
                     >
-                      <div className="flex items-center justify-between">
-                        <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                          Tool {i + 1}
-                        </span>
+                      {s.title}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          </header>
+
+          {/* Body */}
+          <div
+            key={step}
+            className="max-h-[62vh] space-y-4 overflow-y-auto px-6 py-6 animate-in fade-in slide-in-from-right-2 duration-300"
+          >
+            {activeStep.key === "type" && (
+              <div className="space-y-4">
+                <Field label="Name">
+                  <input
+                    value={state.name}
+                    onChange={(e) => update({ name: e.target.value })}
+                    placeholder="e.g. Internal ticketing API"
+                    autoFocus
+                    className="w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
+                  />
+                </Field>
+                <Field label="Summary">
+                  <input
+                    value={state.summary}
+                    onChange={(e) => update({ summary: e.target.value })}
+                    placeholder="A short description for this capa's card"
+                    className="w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
+                  />
+                </Field>
+                <Field label="Server type">
+                  <div className="grid gap-2.5 sm:grid-cols-3">
+                    {SERVER_TYPES.map((type) => {
+                      const Icon = type.icon;
+                      const selected = state.serverType === type.id;
+                      return (
                         <button
+                          key={type.id}
                           type="button"
-                          onClick={() => removeHttpTool(i)}
-                          title="Remove tool"
-                          className="grid h-6 w-6 place-items-center rounded-md text-muted-foreground transition hover:text-destructive"
+                          onClick={() => update({ serverType: type.id })}
+                          className={cn(
+                            "cursor-pointer rounded-xl border-2 p-4 text-left transition",
+                            selected
+                              ? "border-primary bg-primary/5"
+                              : "border-border bg-background/30 hover:border-primary/40",
+                          )}
                         >
-                          <Trash2 className="h-3.5 w-3.5" />
+                          <Icon
+                            className={cn(
+                              "h-5 w-5",
+                              selected ? "text-primary" : "text-muted-foreground",
+                            )}
+                          />
+                          <div className="mt-2 text-sm font-medium">{type.title}</div>
+                          <div className="mt-1 text-[11px] text-muted-foreground">
+                            {type.description}
+                          </div>
                         </button>
-                      </div>
-                      <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_100px]">
+                      );
+                    })}
+                  </div>
+                </Field>
+              </div>
+            )}
+
+            {activeStep.key === "connection" && state.serverType === "stdio" && (
+              <div className="space-y-4">
+                <Field label="Command">
+                  <input
+                    value={state.command}
+                    onChange={(e) => update({ command: e.target.value })}
+                    placeholder="npx -y …"
+                    className="w-full rounded-md border border-border bg-background/40 px-3 py-2 font-mono text-sm outline-none focus:border-primary/50"
+                  />
+                </Field>
+                <Field label="Arguments (space-separated)">
+                  <input
+                    value={state.args}
+                    onChange={(e) => update({ args: e.target.value })}
+                    className="w-full rounded-md border border-border bg-background/40 px-3 py-2 font-mono text-sm outline-none focus:border-primary/50"
+                  />
+                </Field>
+                <EnvRowsEditor
+                  rows={state.envRows}
+                  onAdd={addEnvRow}
+                  onChange={updateEnvRow}
+                  onRemove={removeEnvRow}
+                />
+              </div>
+            )}
+
+            {activeStep.key === "connection" && state.serverType === "remote_mcp" && (
+              <div className="space-y-4">
+                <Field label="Server URL">
+                  <input
+                    value={state.serverUrl}
+                    onChange={(e) => update({ serverUrl: e.target.value })}
+                    placeholder="https://…"
+                    className="w-full rounded-md border border-border bg-background/40 px-3 py-2 font-mono text-sm outline-none focus:border-primary/50"
+                  />
+                </Field>
+                <Field label="Transport">
+                  <div className="grid grid-cols-2 gap-2">
+                    {(["http", "sse"] as const).map((t) => (
+                      <button
+                        key={t}
+                        type="button"
+                        onClick={() => update({ remoteTransport: t })}
+                        className={cn(
+                          "rounded-md border px-3 py-2 text-xs uppercase tracking-wide transition",
+                          state.remoteTransport === t
+                            ? "border-primary bg-primary/10 text-primary"
+                            : "border-border bg-background/30 text-muted-foreground hover:border-primary/40",
+                        )}
+                      >
+                        {t}
+                      </button>
+                    ))}
+                  </div>
+                </Field>
+                <AuthHeaderFields state={state} onChange={update} />
+              </div>
+            )}
+
+            {activeStep.key === "connection" && state.serverType === "manual_http" && (
+              <div className="space-y-4">
+                <Field label="Base URL">
+                  <input
+                    value={state.baseUrl}
+                    onChange={(e) => update({ baseUrl: e.target.value })}
+                    placeholder="https://api.example.com"
+                    className="w-full rounded-md border border-border bg-background/40 px-3 py-2 font-mono text-sm outline-none focus:border-primary/50"
+                  />
+                </Field>
+                <AuthHeaderFields state={state} onChange={update} />
+                <div>
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="text-xs uppercase tracking-wider text-muted-foreground">
+                      Tools
+                    </span>
+                    <button
+                      type="button"
+                      onClick={addHttpTool}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background/40 px-2.5 py-1.5 text-xs font-medium text-foreground transition hover:bg-background/70"
+                    >
+                      <Plus className="h-3.5 w-3.5" /> Add tool
+                    </button>
+                  </div>
+                  {state.httpTools.length === 0 && (
+                    <p className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
+                      No endpoints described yet — add at least one to continue.
+                    </p>
+                  )}
+                  <div className="space-y-3">
+                    {state.httpTools.map((tool, i) => (
+                      <div
+                        key={i}
+                        className="space-y-2 rounded-lg border border-border bg-background/20 p-3"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
+                            Tool {i + 1}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => removeHttpTool(i)}
+                            title="Remove tool"
+                            className="grid h-6 w-6 place-items-center rounded-md text-muted-foreground transition hover:text-destructive"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                        <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_100px]">
+                          <input
+                            value={tool.name}
+                            onChange={(e) => updateHttpTool(i, { name: e.target.value })}
+                            placeholder="Tool name"
+                            className="w-full rounded-md border border-border bg-background/40 px-3 py-1.5 text-sm outline-none focus:border-primary/50"
+                          />
+                          <select
+                            value={tool.method}
+                            onChange={(e) =>
+                              updateHttpTool(i, {
+                                method: e.target.value as HttpToolDraft["method"],
+                              })
+                            }
+                            className="w-full rounded-md border border-border bg-background/40 px-2 py-1.5 text-sm outline-none focus:border-primary/50"
+                          >
+                            {HTTP_METHODS.map((m) => (
+                              <option key={m} value={m}>
+                                {m}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
                         <input
-                          value={tool.name}
-                          onChange={(e) => updateHttpTool(i, { name: e.target.value })}
-                          placeholder="Tool name"
+                          value={tool.description}
+                          onChange={(e) => updateHttpTool(i, { description: e.target.value })}
+                          placeholder="Description"
                           className="w-full rounded-md border border-border bg-background/40 px-3 py-1.5 text-sm outline-none focus:border-primary/50"
                         />
-                        <select
-                          value={tool.method}
-                          onChange={(e) =>
-                            updateHttpTool(i, {
-                              method: e.target.value as HttpToolDraft["method"],
-                            })
-                          }
-                          className="w-full rounded-md border border-border bg-background/40 px-2 py-1.5 text-sm outline-none focus:border-primary/50"
-                        >
-                          {HTTP_METHODS.map((m) => (
-                            <option key={m} value={m}>
-                              {m}
-                            </option>
-                          ))}
-                        </select>
+                        <input
+                          value={tool.urlTemplate}
+                          onChange={(e) => updateHttpTool(i, { urlTemplate: e.target.value })}
+                          placeholder="/orders/{order_id}"
+                          className="w-full rounded-md border border-border bg-background/40 px-3 py-1.5 font-mono text-sm outline-none focus:border-primary/50"
+                        />
+                        <textarea
+                          value={tool.paramSchema}
+                          onChange={(e) => updateHttpTool(i, { paramSchema: e.target.value })}
+                          placeholder='{"type": "object", "properties": {…}}'
+                          rows={3}
+                          className="w-full rounded-md border border-border bg-background/40 px-3 py-1.5 font-mono text-xs outline-none focus:border-primary/50"
+                        />
                       </div>
-                      <input
-                        value={tool.description}
-                        onChange={(e) => updateHttpTool(i, { description: e.target.value })}
-                        placeholder="Description"
-                        className="w-full rounded-md border border-border bg-background/40 px-3 py-1.5 text-sm outline-none focus:border-primary/50"
-                      />
-                      <input
-                        value={tool.urlTemplate}
-                        onChange={(e) => updateHttpTool(i, { urlTemplate: e.target.value })}
-                        placeholder="/orders/{order_id}"
-                        className="w-full rounded-md border border-border bg-background/40 px-3 py-1.5 font-mono text-sm outline-none focus:border-primary/50"
-                      />
-                      <textarea
-                        value={tool.paramSchema}
-                        onChange={(e) => updateHttpTool(i, { paramSchema: e.target.value })}
-                        placeholder='{"type": "object", "properties": {…}}'
-                        rows={3}
-                        className="w-full rounded-md border border-border bg-background/40 px-3 py-1.5 font-mono text-xs outline-none focus:border-primary/50"
-                      />
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
+                {stepError && (
+                  <p className="text-xs text-[color:var(--status-error)]">{stepError}</p>
+                )}
               </div>
-              {stepError && <p className="text-xs text-[color:var(--status-error)]">{stepError}</p>}
-            </div>
-          )}
-
-          {activeStep.key === "test" && (
-            <div className="space-y-4">
-              <p className="text-xs text-muted-foreground">
-                This installs and configures the capa now, then pings the server and asks it which
-                tools it offers -- the same test a "Test connection" button anywhere else in oc8
-                runs.
-              </p>
-              <button
-                type="button"
-                onClick={runTest}
-                disabled={busy}
-                className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background/40 px-3 py-2 text-sm font-medium transition hover:bg-background/70 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <FlaskConical className="h-4 w-4" />
-                {busy ? "Testing…" : "Test connection"}
-              </button>
-              {state.testedToolNames && (
-                <div className="rounded-md border border-border bg-background/20 p-3">
-                  <p className="text-xs font-medium text-[color:var(--status-running)]">
-                    Connected — {state.testedToolNames.length} tool
-                    {state.testedToolNames.length === 1 ? "" : "s"} discovered.
-                  </p>
-                  {state.testedToolNames.length > 0 && (
-                    <div className="mt-2 flex flex-wrap gap-1">
-                      {state.testedToolNames.map((name) => (
-                        <span
-                          key={name}
-                          className="rounded-full border border-border bg-background/30 px-2 py-0.5 text-[10px] text-muted-foreground"
-                        >
-                          {name}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-              {state.testError && (
-                <p className="text-xs text-[color:var(--status-error)]">{state.testError}</p>
-              )}
-            </div>
-          )}
-
-          {activeStep.key === "summary" && <SummaryCard state={state} />}
-        </div>
-
-        <footer className="flex items-center justify-between gap-3 border-t border-border bg-background/30 px-6 py-4">
-          <button
-            onClick={handleBack}
-            className="inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm text-muted-foreground transition hover:text-foreground"
-          >
-            {step === 0 ? (
-              "Cancel"
-            ) : (
-              <>
-                <ChevronLeft className="h-4 w-4" /> Back
-              </>
             )}
-          </button>
-          {!isLastStep ? (
+
+            {activeStep.key === "test" && (
+              <div className="space-y-4">
+                <p className="text-xs text-muted-foreground">
+                  This installs and configures the capa now, then pings the server and asks it which
+                  tools it offers -- the same test a "Test connection" button anywhere else in oc8
+                  runs.
+                </p>
+                <button
+                  type="button"
+                  onClick={runTest}
+                  disabled={busy}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background/40 px-3 py-2 text-sm font-medium transition hover:bg-background/70 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <FlaskConical className="h-4 w-4" />
+                  {busy ? "Testing…" : "Test connection"}
+                </button>
+                {state.testedToolNames && (
+                  <div className="rounded-md border border-border bg-background/20 p-3">
+                    <p className="text-xs font-medium text-[color:var(--status-running)]">
+                      Connected — {state.testedToolNames.length} tool
+                      {state.testedToolNames.length === 1 ? "" : "s"} discovered.
+                    </p>
+                    {state.testedToolNames.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {state.testedToolNames.map((name) => (
+                          <span
+                            key={name}
+                            className="rounded-full border border-border bg-background/30 px-2 py-0.5 text-[10px] text-muted-foreground"
+                          >
+                            {name}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {state.testError && (
+                  <p className="text-xs text-[color:var(--status-error)]">{state.testError}</p>
+                )}
+              </div>
+            )}
+
+            {activeStep.key === "summary" && <SummaryCard state={state} />}
+          </div>
+
+          <footer className="flex items-center justify-between gap-3 border-t border-border bg-background/30 px-6 py-4">
             <button
-              onClick={handleNext}
-              disabled={!canProceed}
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded-md px-4 py-2 text-sm font-medium transition",
-                canProceed
-                  ? "bg-primary text-primary-foreground hover:brightness-110 glow-teal"
-                  : "cursor-not-allowed bg-background/40 text-muted-foreground",
-              )}
+              onClick={handleBack}
+              className="inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm text-muted-foreground transition hover:text-foreground"
             >
-              Next <ChevronRight className="h-4 w-4" />
+              {step === 0 ? (
+                "Cancel"
+              ) : (
+                <>
+                  <ChevronLeft className="h-4 w-4" /> Back
+                </>
+              )}
             </button>
-          ) : (
-            <div className="flex items-center gap-2">
+            {!isLastStep ? (
               <button
-                onClick={() => handleSave(false)}
-                disabled={busy}
-                className="inline-flex items-center gap-1.5 rounded-md border border-border px-4 py-2 text-sm font-medium text-foreground transition hover:bg-background/40 disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={handleNext}
+                disabled={!canProceed}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-md px-4 py-2 text-sm font-medium transition",
+                  canProceed
+                    ? "bg-primary text-primary-foreground hover:brightness-110 glow-teal"
+                    : "cursor-not-allowed bg-background/40 text-muted-foreground",
+                )}
               >
-                Save
+                Next <ChevronRight className="h-4 w-4" />
               </button>
-              <button
-                onClick={() => handleSave(true)}
-                disabled={busy}
-                className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:brightness-110 glow-teal disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <Check className="h-4 w-4" /> Save & export as capa
-              </button>
-            </div>
-          )}
-        </footer>
+            ) : (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => handleSave(false)}
+                  disabled={busy}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border px-4 py-2 text-sm font-medium text-foreground transition hover:bg-background/40 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Save
+                </button>
+                <button
+                  onClick={() => handleSave(true)}
+                  disabled={busy}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:brightness-110 glow-teal disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Check className="h-4 w-4" /> Save & export as capa
+                </button>
+              </div>
+            )}
+          </footer>
+        </div>
       </div>
-    </div>
+    </>
   );
 }
 
