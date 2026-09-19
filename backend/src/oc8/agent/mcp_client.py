@@ -433,3 +433,43 @@ class HttpToolSession:
         except httpx.HTTPError as exc:
             raise RuntimeError(str(exc)) from exc
         return resp.text or "(no output)"
+
+
+def resolve_auth_header(cfg: dict[str, Any], env: dict[str, str]) -> dict[str, str]:
+    """The single optional auth header a remote-MCP or manual-HTTP connection
+    may declare (`cfg["auth_header_name"]`), resolved to its live value out
+    of `env` -- the same place a stdio connection's env vars are resolved,
+    since `resolve_mcp_env` (agent/mcp_env.py) already turned the declared
+    `secret_env` entry into a plain value under that same header name."""
+    header_name = str(cfg.get("auth_header_name", ""))
+    if not header_name or header_name not in env:
+        return {}
+    return {header_name: env[header_name]}
+
+
+async def open_tool_session(
+    *,
+    transport: str,
+    command: str = "",
+    args: list[str] | None = None,
+    server_url: str = "",
+    headers: dict[str, str] | None = None,
+    http_tools: list[dict[str, Any]] | None = None,
+    env: dict[str, str] | None = None,
+    timeout_s: float | None = None,
+) -> McpSession | HttpToolSession:
+    """The single place that knows which session class a connection's
+    transport needs -- every caller that used to construct `McpSession`
+    directly calls this instead, so the branch is not repeated at each of
+    them. Returns an UNENTERED session; callers still write
+    `async with open_tool_session(...) as session:`."""
+    if transport == "manual_http":
+        return HttpToolSession(
+            server_url, list(http_tools or []), headers=headers, timeout_s=timeout_s
+        )
+    if transport == "http":
+        return McpSession(
+            "", [], env, transport="http", server_url=server_url, headers=headers,
+            timeout_s=timeout_s,
+        )
+    return McpSession(command, args or [], env, timeout_s=timeout_s)
