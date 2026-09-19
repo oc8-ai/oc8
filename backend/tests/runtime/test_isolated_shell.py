@@ -9,12 +9,14 @@ where nobody can re-run the call to find out.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
+from pathlib import Path
 
 import httpx
 import pytest
 
-from oc8.isolated_shell import _preview, check_response, main
+from oc8.isolated_shell import _preview, _run_shell_locally, check_response, main
 
 STEP = "http://oc8:8000/api/v1/internal/agent/1234/step"
 
@@ -176,3 +178,82 @@ def test_main_logs_which_step_failed_before_reraising(
         _run_main(monkeypatch, handler)
 
     assert "FAILED at step 1: 402" in capsys.readouterr().err
+
+
+def test_run_shell_locally_runs_a_real_command_and_captures_output(tmp_path: Path) -> None:
+    result = _run_shell_locally("echo hello", cwd=str(tmp_path))
+    assert result["stdout"].strip() == "hello"
+    assert result["exit_code"] == 0
+    assert result["timed_out"] is False
+
+
+def test_run_shell_locally_captures_a_nonzero_exit_code(tmp_path: Path) -> None:
+    result = _run_shell_locally("exit 3", cwd=str(tmp_path))
+    assert result["exit_code"] == 3
+    assert result["timed_out"] is False
+
+
+def test_run_shell_locally_truncates_long_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("oc8.isolated_shell.RUN_SHELL_OUTPUT_CHARS", 10)
+    result = _run_shell_locally("python3 -c \"print('x' * 100)\"", cwd=str(tmp_path))
+    assert len(result["stdout"]) == 10
+
+
+def test_run_shell_locally_reports_a_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("oc8.isolated_shell.RUN_SHELL_TIMEOUT_S", 0.1)
+    result = _run_shell_locally("sleep 2", cwd=str(tmp_path))
+    assert result["timed_out"] is True
+    assert result["exit_code"] is None
+
+
+def test_main_executes_run_shell_locally_and_posts_the_result(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """run_shell is the one tool call this file executes itself -- the /tool
+    POST must carry the already-computed result, not wait for the backend to
+    run anything."""
+    tool_bodies: list[dict[str, object]] = []
+
+    # Monkeypatch _run_shell_locally to use tmp_path as the default cwd
+    original = _run_shell_locally
+    monkeypatch.setattr(
+        "oc8.isolated_shell._run_shell_locally",
+        lambda command, *, cwd=str(tmp_path): original(command, cwd=cwd),
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/step"):
+            if not tool_bodies:
+                return httpx.Response(
+                    200,
+                    json={
+                        "done": False,
+                        "text": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "name": "run_shell",
+                                "arguments": {"command": "echo hi"},
+                            }
+                        ],
+                    },
+                )
+            return httpx.Response(200, json={"done": True, "text": "done", "tool_calls": []})
+        if request.url.path.endswith("/tool"):
+            tool_bodies.append(json.loads(request.content))
+            return httpx.Response(200, json={"status": "ok", "output": "recorded"})
+        if request.url.path.endswith("/finish"):
+            return httpx.Response(200, json={})
+        raise AssertionError(f"unexpected request: {request.url.path}")
+
+    exit_code = _run_main(monkeypatch, handler)
+
+    assert exit_code == 0
+    assert len(tool_bodies) == 1
+    local_result = tool_bodies[0]["local_result"]
+    assert local_result["exit_code"] == 0
+    assert "hi" in local_result["stdout"]
