@@ -14,6 +14,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, cast
 
+import httpx
 import httpx2
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -355,3 +356,80 @@ class McpSession:
         if result.is_error:
             raise RuntimeError(text)
         return text
+
+
+class HttpToolSession:
+    """A drop-in substitute for `McpSession` over a plain REST API with no
+    MCP support at all: tools are declared manually in the connection's
+    config (`transport="manual_http"`) rather than discovered via a
+    handshake, so `__aenter__` performs no network I/O."""
+
+    def __init__(
+        self,
+        base_url: str,
+        http_tools: list[dict[str, Any]],
+        *,
+        headers: dict[str, str] | None = None,
+        timeout_s: float | None = None,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._http_tools = {str(t["name"]): t for t in http_tools}
+        self._headers = dict(headers or {})
+        self._timeout_s = MCP_REQUEST_TIMEOUT_SECONDS if timeout_s is None else timeout_s
+        self._client: httpx.AsyncClient | None = None
+        self.tools: list[NeutralTool] = []
+
+    async def __aenter__(self) -> HttpToolSession:
+        self._client = httpx.AsyncClient(timeout=self._timeout_s)
+        self.tools = [
+            NeutralTool(
+                name=str(t["name"]),
+                description=str(t.get("description", "")),
+                parameters=t.get("param_schema") or {"type": "object", "properties": {}},
+            )
+            for t in self._http_tools.values()
+        ]
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+
+    async def call(self, name: str, arguments: dict[str, Any]) -> str:
+        if self._client is None:
+            raise RuntimeError("HTTP tool session not started")
+        tool = self._http_tools.get(name)
+        if tool is None:
+            raise RuntimeError(f"unknown tool {name!r}")
+        url_template = str(tool.get("url_template", ""))
+        placeholders = set(re.findall(r"\{(\w+)\}", url_template))
+        try:
+            url = self._base_url + url_template.format(
+                **{k: arguments.get(k, "") for k in placeholders}
+            )
+        except KeyError as exc:
+            raise RuntimeError(f"missing required parameter {exc}") from exc
+        # Placeholders already consumed by the URL template are not also sent
+        # as a query param or body field.
+        remaining = {k: v for k, v in arguments.items() if k not in placeholders}
+        method = str(tool.get("method", "GET")).upper()
+        try:
+            if method in ("GET", "DELETE"):
+                resp = await self._client.request(
+                    method, url, headers=self._headers, params=remaining
+                )
+            else:
+                resp = await self._client.request(
+                    method, url, headers=self._headers, json=remaining
+                )
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(f"{exc.response.status_code}: {exc.response.text[:500]}") from exc
+        except httpx.HTTPError as exc:
+            raise RuntimeError(str(exc)) from exc
+        return resp.text or "(no output)"
