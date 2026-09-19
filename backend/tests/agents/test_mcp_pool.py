@@ -29,7 +29,14 @@ class _FakeSession:
     opened = 0
     closed = 0
 
-    def __init__(self, command: str, args: list[str], env: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        command: str,
+        args: list[str],
+        env: dict[str, str] | None = None,
+        *,
+        timeout_s: float | None = None,
+    ) -> None:
         self.command = command
         self.tools = ["a", "b"]
         self.calls: list[tuple[str, dict[str, Any]]] = []
@@ -52,7 +59,7 @@ class _FakeSession:
 
 @pytest.fixture(autouse=True)
 async def _clean(monkeypatch: pytest.MonkeyPatch) -> Any:
-    monkeypatch.setattr(mcp_pool, "McpSession", _FakeSession)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeSession)
     _FakeSession.opened = 0
     _FakeSession.closed = 0
     await mcp_pool.close_all()

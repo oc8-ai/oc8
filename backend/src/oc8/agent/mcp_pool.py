@@ -47,7 +47,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
-from oc8.agent.mcp_client import HttpToolSession, McpSession
+from oc8.agent.mcp_client import HttpToolSession, McpSession, open_tool_session
 
 logger = logging.getLogger(__name__)
 
@@ -108,16 +108,16 @@ async def _own(
     system fails, THIS task is cancelled and the caller sees a plain exception.
     """
     try:
-        session_obj: McpSession | HttpToolSession
-        if transport == "manual_http":
-            session_obj = HttpToolSession(server_url, http_tools or [], headers=headers)
-        elif transport == "http":
-            session_obj = McpSession(
-                "", [], env, transport="http", server_url=server_url, headers=headers
-            )
-        else:
-            session_obj = McpSession(command, args, env=env)
-        async with session_obj as session:
+        session_cm = open_tool_session(
+            transport=transport,
+            command=command,
+            args=args,
+            server_url=server_url,
+            headers=headers,
+            http_tools=http_tools,
+            env=env,
+        )
+        async with await session_cm as session:
             ready.set_result(session)
             await stop.wait()
     except BaseException as exc:  # reported to the caller through `ready`
