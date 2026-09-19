@@ -159,3 +159,63 @@ async def test_patching_a_connection_answers_200_and_persists(
         assert stored is not None
         assert stored.name == "renamed"
         assert stored.config["secret_env"] == {"SERVICE_TOKEN": "vault/token"}
+
+
+async def _make_manual_http_conn(
+    db: AsyncSession, tenant: uuid.UUID, base_url: str, http_tools: list[dict]
+) -> uuid.UUID:
+    conn = m.McpConnection(
+        tenant_id=tenant,
+        name="c-http",
+        server_url=base_url,
+        transport="manual_http",
+        scopes=[],
+        config={"http_tools": http_tools},
+        connected=False,
+    )
+    db.add(conn)
+    await db.flush()
+    return conn.id
+
+
+async def test_manual_http_connection_test_validates_tools_without_network(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    tools = [
+        {
+            "name": "ping",
+            "description": "d",
+            "method": "GET",
+            "url_template": "/ping",
+            "param_schema": {"type": "object", "properties": {}},
+        }
+    ]
+    async with app_session(tenant) as db:
+        conn_id = await _make_manual_http_conn(db, tenant, "http://example.invalid", tools)
+        await db.commit()
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post(f"/api/v1/mcp/connections/{conn_id}/test", headers=_h(tenant))
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert body["connected"] is True
+            assert body["health"]["tools"] == ["ping"]
+
+
+async def test_manual_http_connection_with_no_tools_fails_the_test(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        conn_id = await _make_manual_http_conn(db, tenant, "http://example.invalid", [])
+        await db.commit()
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post(f"/api/v1/mcp/connections/{conn_id}/test", headers=_h(tenant))
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert body["connected"] is False
+            assert body["health"]["status"] == "error"
