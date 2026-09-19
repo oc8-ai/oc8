@@ -249,6 +249,57 @@ def todo_continuation_exhausted_note(open_todos: list[dict[str, str]]) -> str:
     )
 
 
+#: Tool results are appended to the transcript verbatim and replayed on every
+#: subsequent turn -- an unaggregated report page (e.g. a groupby result with
+#: hundreds of nested rows) can alone run into tens of thousands of
+#: characters, and a few such pages compound fast. Capped, not dropped: the
+#: model still gets most of one big result plus an explicit note that it was
+#: cut, so it learns to narrow the query instead of silently losing data with
+#: no visible cause -- see the 2026-09-15 oc8-obs incident, where an uncapped
+#: 1400-row pagination loop left no room for the model's own answer and the
+#: run failed with no error recorded anywhere (the truncated_empty path below
+#: this module's step loop, and internal_agent.py's identical one, produced
+#: an empty output rather than a diagnosable message).
+MAX_TOOL_RESULT_CHARS = 20_000
+
+
+def cap_tool_output(output: str) -> str:
+    """Bound a single tool result before it enters the transcript. Shared
+    verbatim by the in-process engine and the isolated runtime's /tool
+    endpoint, same reasoning as todo_continuation_reminder above."""
+    if len(output) <= MAX_TOOL_RESULT_CHARS:
+        return output
+    omitted = len(output) - MAX_TOOL_RESULT_CHARS
+    return (
+        f"{output[:MAX_TOOL_RESULT_CHARS]}\n\n"
+        f"[... {omitted} more characters omitted -- this result was too large to include "
+        "in full. Narrow the query (a smaller date range, fewer groupby dimensions, or a "
+        "lower limit) instead of paging through it in full.]"
+    )
+
+
+#: Warned once per run when tool results have cumulatively used a large slice
+#: of a typical context window, well before the model actually runs out of
+#: room -- the same incident MAX_TOOL_RESULT_CHARS documents showed that
+#: hitting the wall produces no error at all, just a silently empty answer,
+#: so the model needs the nudge while it can still act on it.
+TOOL_OUTPUT_BUDGET_WARNING_CHARS = 150_000
+
+
+def tool_output_budget_reminder(total_chars: int) -> str:
+    """Reminder injected the first time this run's cumulative tool-result size
+    crosses TOOL_OUTPUT_BUDGET_WARNING_CHARS. Shared verbatim by the in-process
+    engine and the isolated runtime's /tool endpoint, same reasoning as
+    todo_continuation_reminder above."""
+    return (
+        f"[System note: tool results in this run have grown to roughly {total_chars:,} "
+        "characters so far. If you are paging through a report or list, stop and switch "
+        "to a narrower query or a server-side aggregation instead of continuing to page "
+        "-- an oversized transcript can silently exhaust your own response budget later "
+        "in this run, with no error message.]"
+    )
+
+
 def _extract_value(
     arguments: dict[str, Any], value_spec: dict[str, Any] | None = None
 ) -> float | None:
@@ -733,6 +784,24 @@ async def run_agent(
                 nonlocal _repeat_state
                 _repeat_state, reminder = track_repeat_tool_call(_repeat_state, tc)
                 return reminder
+
+            # Per-run, in-memory tool-output budget (cap_tool_output /
+            # tool_output_budget_reminder above) -- same "advisory, per-run
+            # only" tradeoff as _repeat_state above.
+            _tool_output_chars_total = 0
+            _tool_output_budget_warned = False
+
+            def _account_tool_output(raw: str) -> tuple[str, str | None]:
+                nonlocal _tool_output_chars_total, _tool_output_budget_warned
+                capped = cap_tool_output(raw)
+                _tool_output_chars_total += len(capped)
+                if (
+                    _tool_output_budget_warned
+                    or _tool_output_chars_total < TOOL_OUTPUT_BUDGET_WARNING_CHARS
+                ):
+                    return capped, None
+                _tool_output_budget_warned = True
+                return capped, tool_output_budget_reminder(_tool_output_chars_total)
 
             steps = 0
             checkpoint_trace_delta: list[dict[str, Any]] = []
@@ -1366,6 +1435,7 @@ async def run_agent(
                                     task_id=task.id,
                                     target=target,
                                 )
+                        output, tool_output_budget_note = _account_tool_output(output)
                         _tool_call_entry: dict[str, Any] = {
                             "tool": tc.name,
                             "arguments": tc.arguments,
@@ -1387,6 +1457,10 @@ async def run_agent(
                         repeat_reminder = _track_repeat(tc)
                         if repeat_reminder is not None:
                             messages.append(NeutralMessage(role="user", content=repeat_reminder))
+                        if tool_output_budget_note is not None:
+                            messages.append(
+                                NeutralMessage(role="user", content=tool_output_budget_note)
+                            )
                         checkpoint_trace_delta.append(tool_trace[-1])
                         post_event = (
                             "PostToolUseFailure" if output.startswith("ERROR:") else "PostToolUse"
