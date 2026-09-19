@@ -101,9 +101,9 @@ never on a reachable host — use the dev override instead:
 `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build`.
 
 `scripts/quickstart.sh`/`.ps1` wrap all three of the above (Community, Demo,
-Dev) behind one interactive prompt — including the custom-domain question —
-instead of hand-picking `-f` files and editing `.env`; see
-[Quickstart](user/quickstart.md).
+Dev) behind one interactive prompt — including the custom-domain question and
+the reverse-proxy question below — instead of hand-picking `-f` files and
+editing `.env`; see [Quickstart](user/quickstart.md).
 
 ## Giving agents a model
 
@@ -142,10 +142,19 @@ PVC. Agent sandboxes (Docker socket) are off by default on Kubernetes.
 
 ## HTTPS
 
-For a real domain, edit `Caddyfile`: replace `:80` with your hostname (e.g.
-`oc8.example.com`), add `"443:443"` to the `caddy` service's `ports` in
-`docker-compose.yml`, and re-up. Caddy provisions and renews a Let's Encrypt
-certificate automatically. Point the domain's DNS at the host first.
+For a real domain, set `OC8_DOMAIN` in `.env` (the quickstart scripts ask for
+this too) and re-up. Caddy provisions and renews a Let's Encrypt certificate
+automatically. Point the domain's DNS at the host first.
+
+### Behind your own reverse proxy
+
+If another proxy on the host (nginx, Traefik, another Caddy) already owns
+the domain and its TLS certificate, oc8's own Caddy must not also try to
+bind `:80`/`:443` or provision one. Set `OC8_HTTP_PORT=127.0.0.1:<port>` and
+leave `OC8_DOMAIN` empty, then point your proxy's upstream at that
+`127.0.0.1:<port>` over plain HTTP. Set `OC8_FRONTEND_BASE_URL` to the
+externally visible `https://...` URL your proxy serves this under, so
+generated links (e.g. password-reset emails) resolve correctly.
 
 ## Enabling the audit MAC (advanced, off by default)
 
