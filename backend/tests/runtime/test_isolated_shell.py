@@ -210,6 +210,18 @@ def test_run_shell_locally_reports_a_timeout(
     assert result["exit_code"] is None
 
 
+def test_run_shell_locally_preserves_partial_output_on_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("oc8.isolated_shell.RUN_SHELL_TIMEOUT_S", 0.5)
+    result = _run_shell_locally(
+        "python3 -c \"import sys, time; print('partial'); sys.stdout.flush(); time.sleep(2)\"",
+        cwd=str(tmp_path),
+    )
+    assert "partial" in result["stdout"]
+    assert result["timed_out"] is True
+
+
 def test_main_executes_run_shell_locally_and_posts_the_result(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:

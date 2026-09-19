@@ -85,8 +85,14 @@ def _run_shell_locally(command: str, *, cwd: str = "/workspace") -> dict[str, An
             "timed_out": False,
         }
     except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
-        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+
+        def _decode(v: str | bytes | None) -> str:
+            if isinstance(v, bytes):
+                return v.decode(errors="replace")
+            return v if isinstance(v, str) else ""
+
+        stdout = _decode(exc.stdout)
+        stderr = _decode(exc.stderr)
         return {
             "stdout": stdout[:RUN_SHELL_OUTPUT_CHARS],
             "stderr": stderr[:RUN_SHELL_OUTPUT_CHARS],
