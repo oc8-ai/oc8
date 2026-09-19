@@ -410,7 +410,7 @@ class HttpToolSession:
         placeholders = set(re.findall(r"\{(\w+)\}", url_template))
         try:
             url = self._base_url + url_template.format(
-                **{k: arguments.get(k, "") for k in placeholders}
+                **{k: arguments[k] for k in placeholders}
             )
         except KeyError as exc:
             raise RuntimeError(f"missing required parameter {exc}") from exc

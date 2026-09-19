@@ -115,3 +115,9 @@ async def test_post_body_and_5xx_mapping(http_server: str) -> None:
         assert "Ada" in created
         with pytest.raises(RuntimeError, match="500"):
             await session.call("boom", {})
+
+
+async def test_missing_required_url_parameter_raises_error(http_server: str) -> None:
+    async with HttpToolSession(http_server, _TOOLS) as session:
+        with pytest.raises(RuntimeError, match="missing required parameter"):
+            await session.call("get_user", {})
