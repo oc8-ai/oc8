@@ -196,6 +196,8 @@ def test_control_tool_names_matches_the_schemas() -> None:
         "kpi_overview",
         "fetch_url",
         "todo_write",
+        "write_output_file",
+        "read_run_file",
     }
 
 

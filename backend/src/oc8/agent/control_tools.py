@@ -51,6 +51,11 @@ from oc8.modelrouter import NeutralTool, ToolCall
 from oc8.realtime.emit import record_activity
 from oc8.runtime.repository import RunRepository
 from oc8.skills.runtime import LoadedSkill, instruction_block, skill_tool_schemas
+from oc8.storage.attachments import (
+    AttachmentTooLarge,
+    UnsupportedContentType,
+    store_attachment_bytes,
+)
 
 MEMORY_WRITE = NeutralTool(
     name="memory_write",
@@ -313,6 +318,66 @@ READ_INSTRUCTION_FILE = NeutralTool(
         "type": "object",
         "properties": {
             "filename": {"type": "string", "description": "The attached file's exact filename."},
+        },
+        "required": ["filename"],
+    },
+)
+
+#: Text-only, deliberately -- a tool call carries `content` as a JSON string,
+#: so there is no way for this tool to receive raw binary bytes. An agent
+#: that needs to hand back a binary file (a generated image, a real .xlsx)
+#: must run in a containerized runtime and write it under
+#: /workspace/output/ instead; this tool exists only for the one runtime
+#: with no filesystem of its own (see offer_write_output_file below).
+_OUTPUT_FILE_CONTENT_TYPES = frozenset({"text/plain", "text/markdown", "text/csv", "text/html"})
+
+WRITE_OUTPUT_FILE = NeutralTool(
+    name="write_output_file",
+    description=(
+        "Save a file you produced (a report, an export, generated text) so "
+        "it survives after this run ends and shows up in the Files view for "
+        "a human to download. `filename` is the exact name to save it under "
+        "-- writing the same filename again in this run overwrites, newest "
+        "write wins. `content` is the file's full text content. `content_type` "
+        "is optional (default text/plain); use text/markdown, text/csv, or "
+        "text/html when that fits the content better. Only text content is "
+        "supported through this tool."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "filename": {"type": "string", "description": "The exact filename to save."},
+            "content": {"type": "string", "description": "The file's full text content."},
+            "content_type": {
+                "type": "string",
+                "description": "One of text/plain, text/markdown, text/csv, text/html.",
+            },
+        },
+        "required": ["filename", "content"],
+    },
+)
+
+READ_RUN_FILE = NeutralTool(
+    name="read_run_file",
+    description=(
+        "Read the content of a file another agent run produced (via "
+        "write_output_file or by writing under /workspace/output/) -- for "
+        "example a file a colleague you delegated to just finished writing. "
+        "`filename` is that file's exact name. `run_id` is optional: give it "
+        "when you know which run produced the file (e.g. one you just "
+        "delegated to) to disambiguate two runs that used the same "
+        "filename; omitted, the most recently produced file with that name "
+        "in your tenant is returned. Only works for text-extractable files "
+        "-- produced images are not readable through this tool."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "filename": {"type": "string", "description": "The produced file's exact filename."},
+            "run_id": {
+                "type": "string",
+                "description": "Optional: the id of the run that produced the file.",
+            },
         },
         "required": ["filename"],
     },
@@ -636,6 +701,8 @@ CONTROL_TOOL_SCHEMAS: dict[str, NeutralTool] = {
     DECIDE_APPROVAL.name: DECIDE_APPROVAL,
     READ_REFERENCE_FILE.name: READ_REFERENCE_FILE,
     READ_INSTRUCTION_FILE.name: READ_INSTRUCTION_FILE,
+    WRITE_OUTPUT_FILE.name: WRITE_OUTPUT_FILE,
+    READ_RUN_FILE.name: READ_RUN_FILE,
     LIST_PENDING_APPROVALS.name: LIST_PENDING_APPROVALS,
     DEPARTMENT_STATUS.name: DEPARTMENT_STATUS,
     AGENT_STATUS.name: AGENT_STATUS,
@@ -664,6 +731,7 @@ def offered_tools(
     has_knowledge: bool = False,
     has_instruction_files: bool = False,
     copilot_permissions: frozenset[str] = frozenset(),
+    offer_write_output_file: bool = False,
 ) -> list[NeutralTool]:
     """The full tool list to offer the model this step.
 
@@ -674,13 +742,22 @@ def offered_tools(
     granted_kb_ids check): execute_control_tool already degrades a call to it
     gracefully, but a tool that can only ever answer "nothing in the knowledge
     base" is noise in the model's tool list, not a capability.
+
+    `offer_write_output_file` is True only for the in-process engine
+    (engine.py passes it explicitly): every containerized runtime -- now
+    including isolated-shell -- writes a produced file straight to its own
+    `/workspace/output/` mount instead, so offering the tool there would be a
+    second, redundant way to do the same thing. read_run_file has no such
+    gate: reading a file another run produced is useful from every runtime.
     """
     # Skill tools stay offered even once active: a model that invokes an
     # already-active skill again just hits the no-op branch in
     # execute_control_tool. Withdrawing the tool the moment it activates would
     # strand a model that re-checks its own tool list mid-task with an unknown
     # tool name instead of a harmless "already active" response.
-    offered = [MEMORY_WRITE, RENDER_COMPONENT, FETCH_URL, TODO_WRITE]
+    offered = [MEMORY_WRITE, RENDER_COMPONENT, FETCH_URL, TODO_WRITE, READ_RUN_FILE]
+    if offer_write_output_file:
+        offered.append(WRITE_OUTPUT_FILE)
     # ASK_USER parks the run and waits for an answer through the SAME door the
     # question arrived on. That holds for every other agent, whose only doors
     # are the web Chat tab and internal handoffs -- both can answer a park.
@@ -1337,6 +1414,102 @@ async def execute_control_tool(
             agent_id=agent.id,
             status="info",
             message=f"Reading instruction file: {filename}",
+        )
+        return ControlOutcome(output=truncated)
+
+    if tc.name == WRITE_OUTPUT_FILE.name:
+        # Fails closed like _acting_token_role above: with no run behind this
+        # call there is no AgentRun.id to own the attachment, and inventing
+        # one would attribute the file to the wrong run.
+        if run_id is None:
+            return ControlOutcome(output="ERROR: write_output_file requires an active run")
+        filename = str(tc.arguments.get("filename", "")).strip()
+        if not filename:
+            return ControlOutcome(output="ERROR: write_output_file requires `filename`")
+        file_text = tc.arguments.get("content")
+        if not isinstance(file_text, str) or not file_text:
+            return ControlOutcome(output="ERROR: write_output_file requires non-empty `content`")
+        content_type = str(tc.arguments.get("content_type") or "text/plain").strip()
+        if content_type not in _OUTPUT_FILE_CONTENT_TYPES:
+            return ControlOutcome(
+                output=(
+                    f"ERROR: unsupported content_type {content_type!r} -- use one of "
+                    f"{sorted(_OUTPUT_FILE_CONTENT_TYPES)}"
+                )
+            )
+        try:
+            attachment = await store_attachment_bytes(
+                db,
+                tenant_id=tenant_id,
+                owner_type="agent_run",
+                owner_id=run_id,
+                filename=filename,
+                raw=file_text.encode("utf-8"),
+                content_type=content_type,
+            )
+        except AttachmentTooLarge:
+            return ControlOutcome(output=f"ERROR: '{filename}' exceeds the 25 MB file size limit")
+        except UnsupportedContentType as exc:
+            return ControlOutcome(output=f"ERROR: {exc}")
+        await record_activity(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent.id,
+            status="info",
+            message=f"Produced file: {filename}",
+        )
+        return ControlOutcome(output=f"Saved '{filename}' ({attachment.size_bytes} bytes).")
+
+    if tc.name == READ_RUN_FILE.name:
+        filename = str(tc.arguments.get("filename", "")).strip()
+        if not filename:
+            return ControlOutcome(output="ERROR: read_run_file requires `filename`")
+        conditions = [
+            m.FileAttachment.tenant_id == tenant_id,
+            m.FileAttachment.owner_type == "agent_run",
+            m.FileAttachment.filename == filename,
+        ]
+        run_id_arg = str(tc.arguments.get("run_id", "")).strip()
+        if run_id_arg:
+            try:
+                conditions.append(m.FileAttachment.owner_id == uuid.UUID(run_id_arg))
+            except ValueError:
+                return ControlOutcome(output=f"ERROR: '{run_id_arg}' is not a valid run id")
+        # Tenant-scoped, not agent-scoped: unlike read_instruction_file (whose
+        # owner_id IS the agent), owner_id here is the AgentRun.id that
+        # produced the file, so "belongs to this agent" isn't a column to
+        # filter on -- content-level cross-agent access is the whole point
+        # (see the design's Cross-agent read section). Same newest-wins
+        # tiebreak as read_instruction_file for the same reason: nothing
+        # makes filename unique within a tenant either.
+        attachment = (
+            (
+                await db.execute(
+                    select(m.FileAttachment)
+                    .where(*conditions)
+                    .order_by(m.FileAttachment.created_at.desc(), m.FileAttachment.id.desc())
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if attachment is None:
+            return ControlOutcome(output=f"ERROR: no such file: {filename}")
+        if attachment.is_image:
+            return ControlOutcome(
+                output=(
+                    f"ERROR: '{filename}' is an image -- produced files do not "
+                    "support vision through this tool."
+                )
+            )
+        text = attachment.extracted_text or "(could not read this file's content)"
+        truncated = text[:_MAX_REFERENCE_FILE_BYTES]
+        await record_activity(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent.id,
+            status="info",
+            message=f"Reading run file: {filename}",
         )
         return ControlOutcome(output=truncated)
 

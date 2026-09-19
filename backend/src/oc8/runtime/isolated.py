@@ -21,10 +21,12 @@ from oc8.config import get_settings
 from oc8.metering import check_budget, trigger_budget_hard_stop
 from oc8.observability import record_budget_exceeded
 from oc8.realtime.emit import record_activity
+from oc8.runtime.workspace import ensure_workspace_dir, workspace_root
 from oc8.sandbox import get_sandbox_driver
+from oc8.sandbox.mounts import validate_mounts
 from oc8.sandbox.naming import container_name
 from oc8.sandbox.reaper import RUN_LABEL
-from oc8.sandbox.types import SandboxError, SandboxHandle, SandboxSpec
+from oc8.sandbox.types import BindMount, SandboxError, SandboxHandle, SandboxSpec
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +159,14 @@ class DockerIsolatedRuntime:
             kind="agent",
             scopes=[f"run:{run_id}"],
         )
+        # Created BEFORE provision(): Docker auto-creates a missing bind-mount
+        # source as root:root, which the container's unprivileged uid then
+        # cannot write to -- see the three runtime plugins' own workspace_dir
+        # setup (e.g. opencode_runtime/runtime/runtime.py) for the same
+        # reasoning and the same failure this avoids.
+        session_root = settings.runtime_session_root
+        workspace_path = ensure_workspace_dir(workspace_root(run_id))
+
         spec = SandboxSpec(
             image=settings.agent_runtime_image,
             name=container_name(agent.name, "shell", run_id),
@@ -175,6 +185,21 @@ class DockerIsolatedRuntime:
             mem_limit="512m",
             pids_limit=256,
             cpu_limit=1.0,
+            # First mount this runtime has ever had -- see the design's
+            # Runtime Integration section: isolated-shell had no filesystem
+            # sandbox at all before this, so an agent here could only hand
+            # back a produced file through write_output_file. Now it behaves
+            # like the other containerized runtimes: anything written under
+            # /workspace/output/ is synced to FileAttachment when the run
+            # ends (oc8.runtime.workspace.sync_run_output).
+            mounts=validate_mounts(
+                [BindMount(host_path=workspace_path, container_path="/workspace", readonly=False)],
+                allowed_root=session_root,
+            ),
+            # Bind mount carries HOST ownership -- the container has to run as
+            # the uid that created it, same as every other containerized
+            # runtime plugin (see e.g. opencode_runtime's identical `user=`).
+            user=settings.sandbox_user or None,
         )
         driver = get_sandbox_driver()
         handle: SandboxHandle | None = None

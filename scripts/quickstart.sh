@@ -3,11 +3,14 @@
 # It creates only missing local secrets and never resets containers or volumes.
 #
 # Interactive by default: asks which operating mode to run (Community, Demo,
-# or Dev) and, for Community/Demo, an optional custom domain for automatic
-# HTTPS. Both can be preset for scripted/non-interactive runs via
-# OC8_QUICKSTART_MODE (community|demo|dev) and OC8_QUICKSTART_DOMAIN -- when
-# stdin isn't a terminal and neither is set, it falls back to the previous
-# non-interactive default: Community mode, no domain.
+# or Dev) and, for Community/Demo, whether you already run your own reverse
+# proxy (binds oc8 to loopback, OC8_QUICKSTART_OWN_PROXY/_PROXY_PORT/
+# _EXTERNAL_URL) or want oc8's own Caddy to handle it (an optional custom
+# domain for automatic HTTPS, OC8_QUICKSTART_DOMAIN). All can be preset for
+# scripted/non-interactive runs via OC8_QUICKSTART_MODE (community|demo|dev)
+# and the vars above -- when stdin isn't a terminal and none are set, it
+# falls back to the previous non-interactive default: Community mode, no
+# proxy, no domain.
 
 set -euo pipefail
 
@@ -164,32 +167,57 @@ case "$MODE" in
     ;;
 esac
 
-# --- Optional custom domain for automatic HTTPS. Skipped in Dev mode: that
-# mode's login has no password, so it must never be reachable off localhost.
+# --- Own reverse proxy, or built-in Caddy? Skipped in Dev mode: that mode's
+# login has no password, so it must never be reachable off localhost anyway.
 # Always asks interactively, with no default -- a checkout reused for a
-# different host/mode must not silently inherit or suggest an old domain.
+# different host/mode must not silently inherit an old answer.
 if [[ "$MODE" != "dev" ]]; then
-  existing_domain="$(env_value OC8_DOMAIN)"
-  domain="${OC8_QUICKSTART_DOMAIN:-}"
-  if [[ -z "$domain" ]] && is_interactive; then
-    read -r -p 'Custom domain for automatic HTTPS (leave empty for plain HTTP): ' domain
-  elif [[ -z "$domain" ]] && ! is_interactive; then
-    domain="$existing_domain"
+  own_proxy="${OC8_QUICKSTART_OWN_PROXY:-}"
+  if [[ -z "$own_proxy" ]] && is_interactive; then
+    read -r -p 'Already running your own reverse proxy on this host (nginx, Traefik, another Caddy)? [y/N] ' own_proxy
   fi
-  if [[ -n "$domain" ]]; then
-    if [[ "$domain" != "$existing_domain" ]]; then
-      printf 'Point DNS for %s at this host before continuing, or certificate issuance will fail.\n' "$domain"
+  if [[ "$own_proxy" =~ ^[Yy] ]]; then
+    # Your proxy owns the domain and the TLS certificate; oc8's own Caddy
+    # must not also try to grab :80/:443 or provision one. Bind it to
+    # loopback on a plain port instead, and hand back what to point at.
+    proxy_port="${OC8_QUICKSTART_PROXY_PORT:-}"
+    if [[ -z "$proxy_port" ]] && is_interactive; then
+      read -r -p 'Localhost port for your proxy to reach oc8 on (leave empty for 8080): ' proxy_port
     fi
-    set_env_value "OC8_DOMAIN" "$domain"
-    current_base_url="$(env_value OC8_FRONTEND_BASE_URL)"
-    if [[ -z "$current_base_url" || "$current_base_url" == "http://localhost" ]]; then
-      set_env_value "OC8_FRONTEND_BASE_URL" "https://${domain}"
-    else
-      printf 'Note: OC8_FRONTEND_BASE_URL is already set to %s -- leaving it, but it should probably be https://%s.\n' "$current_base_url" "$domain"
-    fi
-  elif [[ -n "$existing_domain" ]]; then
+    proxy_port="${proxy_port:-8080}"
+    set_env_value "OC8_HTTP_PORT" "127.0.0.1:${proxy_port}"
     set_env_value "OC8_DOMAIN" ""
-    printf 'Cleared OC8_DOMAIN -- plain HTTP.\n'
+    external_url="${OC8_QUICKSTART_EXTERNAL_URL:-}"
+    if [[ -z "$external_url" ]] && is_interactive; then
+      read -r -p 'Externally visible URL your proxy serves this under (e.g. https://oc8.example.com): ' external_url
+    fi
+    if [[ -n "$external_url" ]]; then
+      set_env_value "OC8_FRONTEND_BASE_URL" "$external_url"
+    fi
+    printf 'Point your reverse proxy at 127.0.0.1:%s (plain HTTP) -- oc8'"'"'s own Caddy will not attempt to obtain a certificate.\n' "$proxy_port"
+  else
+    existing_domain="$(env_value OC8_DOMAIN)"
+    domain="${OC8_QUICKSTART_DOMAIN:-}"
+    if [[ -z "$domain" ]] && is_interactive; then
+      read -r -p 'Custom domain for automatic HTTPS (leave empty for plain HTTP): ' domain
+    elif [[ -z "$domain" ]] && ! is_interactive; then
+      domain="$existing_domain"
+    fi
+    if [[ -n "$domain" ]]; then
+      if [[ "$domain" != "$existing_domain" ]]; then
+        printf 'Point DNS for %s at this host before continuing, or certificate issuance will fail.\n' "$domain"
+      fi
+      set_env_value "OC8_DOMAIN" "$domain"
+      current_base_url="$(env_value OC8_FRONTEND_BASE_URL)"
+      if [[ -z "$current_base_url" || "$current_base_url" == "http://localhost" ]]; then
+        set_env_value "OC8_FRONTEND_BASE_URL" "https://${domain}"
+      else
+        printf 'Note: OC8_FRONTEND_BASE_URL is already set to %s -- leaving it, but it should probably be https://%s.\n' "$current_base_url" "$domain"
+      fi
+    elif [[ -n "$existing_domain" ]]; then
+      set_env_value "OC8_DOMAIN" ""
+      printf 'Cleared OC8_DOMAIN -- plain HTTP.\n'
+    fi
   fi
 fi
 

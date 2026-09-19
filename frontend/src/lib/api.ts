@@ -278,6 +278,20 @@ export async function fetchCapaIcon(pluginId: string): Promise<Blob | null> {
   return res.blob();
 }
 
+// GET /files/{id} answers `Content-Disposition: attachment` with no filename
+// (see files.py's download_file -- it never trusted the client-declared name
+// for the header), so the caller supplies the filename it already knows from
+// the owning FileAttachmentDTO/WorkspaceFileDTO rather than parsing one back
+// out of the response.
+export async function downloadFileAttachment(attachmentId: string): Promise<Blob> {
+  const token = await getToken();
+  const res = await fetch(`${API_URL}/files/${attachmentId}`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw await toError(res);
+  return res.blob();
+}
+
 export async function previewBackup(file: File): Promise<BackupPreviewDTO> {
   const token = await getToken();
   const body = new FormData();

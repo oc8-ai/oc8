@@ -195,6 +195,7 @@ def main() -> None:
             from oc8.evidence.sweep import sweep_evidence
             from oc8.knowledge.reconcile import sweep_knowledge_deletions
             from oc8.runtime.reconcile import close_abandoned_runs
+            from oc8.runtime.workspace import sync_active_run_outputs
 
             async def _housekeeping() -> None:
                 # BOTH sweeps on the timer, not one at startup and one on a
@@ -218,6 +219,10 @@ def main() -> None:
                 # already wrote, so running it more often than syncs happen
                 # costs two indexed queries per tenant and changes nothing.
                 await sweep_knowledge_deletions()
+                # Fifth sweep, same timer: pick up files a still-RUNNING run has
+                # already written under /workspace/output/, so they show up in
+                # the Files UI before the run finishes, not only after.
+                await sync_active_run_outputs()
 
             await asyncio.gather(
                 run_worker(get_run_queue(), housekeeping=_housekeeping),

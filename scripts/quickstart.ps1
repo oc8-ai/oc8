@@ -2,11 +2,14 @@
 # It creates only missing local secrets and never resets containers or volumes.
 #
 # Interactive by default: asks which operating mode to run (Community, Demo,
-# or Dev) and, for Community/Demo, an optional custom domain for automatic
-# HTTPS. Both can be preset for scripted/non-interactive runs via
-# $env:OC8_QUICKSTART_MODE (community|demo|dev) and $env:OC8_QUICKSTART_DOMAIN
-# -- when stdin isn't a terminal and neither is set, it falls back to the
-# previous non-interactive default: Community mode, no domain.
+# or Dev) and, for Community/Demo, whether you already run your own reverse
+# proxy (binds oc8 to loopback, OC8_QUICKSTART_OWN_PROXY/_PROXY_PORT/
+# _EXTERNAL_URL) or want oc8's own Caddy to handle it (an optional custom
+# domain for automatic HTTPS, OC8_QUICKSTART_DOMAIN). All can be preset for
+# scripted/non-interactive runs via $env:OC8_QUICKSTART_MODE
+# (community|demo|dev) and the vars above -- when stdin isn't a terminal and
+# none are set, it falls back to the previous non-interactive default:
+# Community mode, no proxy, no domain.
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
@@ -151,27 +154,52 @@ switch ($Mode) {
 # Always asks interactively, with no default -- a checkout reused for a
 # different host/mode must not silently inherit or suggest an old domain.
 if ($Mode -ne "dev") {
-  $existingDomain = Get-EnvValue "OC8_DOMAIN"
-  $domain = $env:OC8_QUICKSTART_DOMAIN
-  if ([string]::IsNullOrWhiteSpace($domain) -and (Test-Interactive)) {
-    $domain = Read-Host "Custom domain for automatic HTTPS (leave empty for plain HTTP)"
-  } elseif ([string]::IsNullOrWhiteSpace($domain) -and -not (Test-Interactive)) {
-    $domain = $existingDomain
+  $ownProxy = $env:OC8_QUICKSTART_OWN_PROXY
+  if ([string]::IsNullOrWhiteSpace($ownProxy) -and (Test-Interactive)) {
+    $ownProxy = Read-Host "Already running your own reverse proxy on this host (nginx, Traefik, another Caddy)? [y/N]"
   }
-  if (-not [string]::IsNullOrWhiteSpace($domain)) {
-    if ($domain -ne $existingDomain) {
-      Write-Host "Point DNS for $domain at this host before continuing, or certificate issuance will fail."
+  if ($ownProxy -match "^[Yy]") {
+    # Your proxy owns the domain and the TLS certificate; oc8's own Caddy
+    # must not also try to grab :80/:443 or provision one. Bind it to
+    # loopback on a plain port instead, and hand back what to point at.
+    $proxyPort = $env:OC8_QUICKSTART_PROXY_PORT
+    if ([string]::IsNullOrWhiteSpace($proxyPort) -and (Test-Interactive)) {
+      $proxyPort = Read-Host "Localhost port for your proxy to reach oc8 on (leave empty for 8080)"
     }
-    Set-EnvValue "OC8_DOMAIN" $domain
-    $currentBaseUrl = Get-EnvValue "OC8_FRONTEND_BASE_URL"
-    if ([string]::IsNullOrWhiteSpace($currentBaseUrl) -or $currentBaseUrl -eq "http://localhost") {
-      Set-EnvValue "OC8_FRONTEND_BASE_URL" "https://$domain"
-    } else {
-      Write-Host "Note: OC8_FRONTEND_BASE_URL is already set to $currentBaseUrl -- leaving it, but it should probably be https://$domain."
-    }
-  } elseif (-not [string]::IsNullOrWhiteSpace($existingDomain)) {
+    if ([string]::IsNullOrWhiteSpace($proxyPort)) { $proxyPort = "8080" }
+    Set-EnvValue "OC8_HTTP_PORT" "127.0.0.1:$proxyPort"
     Set-EnvValue "OC8_DOMAIN" ""
-    Write-Host "Cleared OC8_DOMAIN -- plain HTTP."
+    $externalUrl = $env:OC8_QUICKSTART_EXTERNAL_URL
+    if ([string]::IsNullOrWhiteSpace($externalUrl) -and (Test-Interactive)) {
+      $externalUrl = Read-Host "Externally visible URL your proxy serves this under (e.g. https://oc8.example.com)"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($externalUrl)) {
+      Set-EnvValue "OC8_FRONTEND_BASE_URL" $externalUrl
+    }
+    Write-Host "Point your reverse proxy at 127.0.0.1:$proxyPort (plain HTTP) -- oc8's own Caddy will not attempt to obtain a certificate."
+  } else {
+    $existingDomain = Get-EnvValue "OC8_DOMAIN"
+    $domain = $env:OC8_QUICKSTART_DOMAIN
+    if ([string]::IsNullOrWhiteSpace($domain) -and (Test-Interactive)) {
+      $domain = Read-Host "Custom domain for automatic HTTPS (leave empty for plain HTTP)"
+    } elseif ([string]::IsNullOrWhiteSpace($domain) -and -not (Test-Interactive)) {
+      $domain = $existingDomain
+    }
+    if (-not [string]::IsNullOrWhiteSpace($domain)) {
+      if ($domain -ne $existingDomain) {
+        Write-Host "Point DNS for $domain at this host before continuing, or certificate issuance will fail."
+      }
+      Set-EnvValue "OC8_DOMAIN" $domain
+      $currentBaseUrl = Get-EnvValue "OC8_FRONTEND_BASE_URL"
+      if ([string]::IsNullOrWhiteSpace($currentBaseUrl) -or $currentBaseUrl -eq "http://localhost") {
+        Set-EnvValue "OC8_FRONTEND_BASE_URL" "https://$domain"
+      } else {
+        Write-Host "Note: OC8_FRONTEND_BASE_URL is already set to $currentBaseUrl -- leaving it, but it should probably be https://$domain."
+      }
+    } elseif (-not [string]::IsNullOrWhiteSpace($existingDomain)) {
+      Set-EnvValue "OC8_DOMAIN" ""
+      Write-Host "Cleared OC8_DOMAIN -- plain HTTP."
+    }
   }
 }
 

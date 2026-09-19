@@ -10,6 +10,7 @@ import {
   Clock,
   Copy,
   Crown,
+  Download,
   FileText,
   Lock,
   MessageSquare,
@@ -41,8 +42,8 @@ import {
   useAgentSkills,
   useAgentSupervisor,
   useAgentTriggers,
-  useAgentWorkspaceFile,
   useAgentWorkspaceFiles,
+  type WorkspaceFileDTO,
   useAnswerRun,
   useAssignSkill,
   useCancelRun,
@@ -83,6 +84,7 @@ import {
   type RawParamPair,
 } from "@/components/raw-params-editor";
 import { CronBuilder } from "@/components/cron-builder";
+import { downloadFileAttachment } from "@/lib/api";
 import {
   useAgent,
   useUpdateNarrowing,
@@ -2185,11 +2187,11 @@ function ScheduleEditor({
 
 // ---------- Files ----------
 //
-// The agent's sandbox workspace: GET /agents/{id}/workspace/files lists the
-// most recent run's files (only meaningful for the three containerized
-// runtimes -- opencode/codex/claude_code -- that mount a host directory at
-// /workspace; `applicable: false` covers everything else, including the
-// in-process "Standard" runtime).
+// Every file any of this agent's runs has produced (write_output_file, or a
+// synced /workspace/output/ mount -- see runtime/workspace.py), across every
+// runtime. GET /agents/{id}/workspace/files lists them; content is fetched
+// via the shared GET /files/{id} route (downloadFileAttachment), the same
+// route chat/instruction attachments use.
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -2197,11 +2199,65 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+// Text-ish content types get an inline preview; everything else (pdf, docx,
+// xlsx, images) only offers Download.
+const _PREVIEWABLE_CONTENT_TYPES = new Set([
+  "text/plain",
+  "text/markdown",
+  "text/csv",
+  "text/html",
+]);
+
+// Capped client-side so one huge text file can't pin the tab's memory --
+// mirrors the spirit of the old server-side _MAX_WORKSPACE_FILE_BYTES.
+const _MAX_PREVIEW_BYTES = 2_000_000;
+
 function WorkspaceFilesPanel({ agentId }: { agentId: string }) {
   const t = useT();
   const files = useAgentWorkspaceFiles(agentId);
-  const [selected, setSelected] = useState<string | null>(null);
-  const content = useAgentWorkspaceFile(agentId, selected);
+  const [selected, setSelected] = useState<WorkspaceFileDTO | null>(null);
+  const [preview, setPreview] = useState<{ id: string; text: string; truncated: boolean } | null>(
+    null,
+  );
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
+
+  async function handleSelect(f: WorkspaceFileDTO) {
+    setSelected(f);
+    setPreview(null);
+    if (!_PREVIEWABLE_CONTENT_TYPES.has(f.contentType)) return;
+    setPreviewLoading(true);
+    try {
+      const blob = await downloadFileAttachment(f.id);
+      const full = await blob.text();
+      setPreview({
+        id: f.id,
+        text: full.slice(0, _MAX_PREVIEW_BYTES),
+        truncated: full.length > _MAX_PREVIEW_BYTES,
+      });
+    } catch {
+      toast.error(t("Could not load file preview.", "Dateivorschau konnte nicht geladen werden."));
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
+
+  async function handleDownload(f: WorkspaceFileDTO) {
+    setDownloadingId(f.id);
+    try {
+      const blob = await downloadFileAttachment(f.id);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = f.filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error(t("Download failed.", "Download fehlgeschlagen."));
+    } finally {
+      setDownloadingId(null);
+    }
+  }
 
   if (files.isPending) {
     return (
@@ -2214,54 +2270,38 @@ function WorkspaceFilesPanel({ agentId }: { agentId: string }) {
   }
 
   const data = files.data;
-  if (!data || !data.applicable) {
+  if (!data || data.files.length === 0) {
     return (
       <Panel className="p-10 text-center">
         <FileText className="mx-auto mb-3 h-6 w-6 text-muted-foreground/60" />
         <p className="text-sm text-muted-foreground">
-          {data?.message ??
-            t(
-              "The agent file store is not available yet.",
-              "Der Agent-Dateispeicher ist noch nicht verfügbar.",
-            )}
-        </p>
-      </Panel>
-    );
-  }
-
-  if (data.files.length === 0) {
-    return (
-      <Panel className="p-10 text-center">
-        <FileText className="mx-auto mb-3 h-6 w-6 text-muted-foreground/60" />
-        <p className="text-sm text-muted-foreground">
-          {data.message ??
-            t(
-              "This run's workspace has no files yet.",
-              "Der Workspace dieses Laufs enthält noch keine Dateien.",
-            )}
+          {t(
+            "This agent has not produced any files yet.",
+            "Dieser Agent hat noch keine Dateien erzeugt.",
+          )}
         </p>
       </Panel>
     );
   }
 
   return (
-    <div className="grid gap-4 md:grid-cols-[minmax(0,220px)_minmax(0,1fr)]">
+    <div className="grid gap-4 md:grid-cols-[minmax(0,260px)_minmax(0,1fr)]">
       <Panel className="max-h-[480px] overflow-auto p-2">
         <ul className="space-y-0.5">
           {data.files.map((f) => (
-            <li key={f.path}>
+            <li key={f.id}>
               <button
                 type="button"
-                onClick={() => setSelected(f.path)}
+                onClick={() => handleSelect(f)}
                 className={cn(
                   "flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-xs transition hover:bg-muted/60",
-                  selected === f.path && "bg-muted text-foreground",
+                  selected?.id === f.id && "bg-muted text-foreground",
                 )}
-                title={f.path}
+                title={f.filename}
               >
-                <span className="truncate font-mono">{f.path}</span>
+                <span className="truncate font-mono">{f.filename}</span>
                 <span className="shrink-0 text-[10px] text-muted-foreground">
-                  {formatFileSize(f.size)}
+                  {formatFileSize(f.sizeBytes)}
                 </span>
               </button>
             </li>
@@ -2273,20 +2313,45 @@ function WorkspaceFilesPanel({ agentId }: { agentId: string }) {
           <div className="py-10 text-center text-xs text-muted-foreground">
             {t("Select a file to view its contents.", "Datei auswählen, um den Inhalt zu sehen.")}
           </div>
-        ) : content.isPending ? (
-          <div className="py-10 text-center text-xs text-muted-foreground">
-            {t("Loading…", "Wird geladen…")}
-          </div>
         ) : (
           <>
-            {content.data?.truncated && (
-              <div className="mb-2 text-[11px] text-[color:var(--status-warning)]">
-                {t("File truncated for display.", "Datei für die Anzeige gekürzt.")}
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <span className="truncate font-mono text-xs" title={selected.filename}>
+                {selected.filename}
+              </span>
+              <button
+                type="button"
+                onClick={() => handleDownload(selected)}
+                disabled={downloadingId === selected.id}
+                className="flex shrink-0 items-center gap-1 rounded-md border px-2 py-1 text-[11px] hover:bg-muted/60 disabled:opacity-50"
+              >
+                <Download className="h-3 w-3" />
+                {t("Download", "Herunterladen")}
+              </button>
+            </div>
+            {previewLoading ? (
+              <div className="py-10 text-center text-xs text-muted-foreground">
+                {t("Loading…", "Wird geladen…")}
               </div>
+            ) : !_PREVIEWABLE_CONTENT_TYPES.has(selected.contentType) ? (
+              <div className="py-10 text-center text-xs text-muted-foreground">
+                {t(
+                  "No inline preview for this file type -- download it instead.",
+                  "Keine Inline-Vorschau für diesen Dateityp -- bitte herunterladen.",
+                )}
+              </div>
+            ) : (
+              <>
+                {preview?.truncated && (
+                  <div className="mb-2 text-[11px] text-[color:var(--status-warning)]">
+                    {t("File truncated for display.", "Datei für die Anzeige gekürzt.")}
+                  </div>
+                )}
+                <pre className="whitespace-pre-wrap break-words font-mono text-[12px] leading-relaxed">
+                  {preview?.text ?? ""}
+                </pre>
+              </>
             )}
-            <pre className="whitespace-pre-wrap break-words font-mono text-[12px] leading-relaxed">
-              {content.data?.content ?? ""}
-            </pre>
           </>
         )}
       </Panel>

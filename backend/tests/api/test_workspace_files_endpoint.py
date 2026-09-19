@@ -1,25 +1,21 @@
-"""GET /agents/{id}/workspace/files (+ its /files/{path} sibling): the agent
-"Files" tab's backend (§ ad-hoc, see docs/superpowers/plans -- no spec number
-yet, this is a straight frontend-gap fill). Covers the three things that
-matter: an agent whose runtime never writes a workspace answers `applicable:
-false`; one that does gets its most recent run's files listed and read; and a
-path-traversal attempt on the file-content route is rejected rather than
-walking out of the workspace root."""
+"""GET /agents/{id}/workspace/files: the agent "Files" tab's backend. Lists
+every `FileAttachment` (`owner_type="agent_run"`) any of the agent's runs has
+produced, across every runtime -- not just the three containerized ones that
+used to write a host workspace directory. Content is downloaded through the
+shared `GET /files/{attachment_id}` route (see test_files_endpoint.py), not a
+route of its own here."""
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
-from pathlib import Path
 
 import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.auth import get_identity_provider
-from oc8.capas.lifecycle import enable_plugin
-from oc8.capas.service import install_plugin
 from oc8.constants import ACME_TENANT_ID
 from oc8.main import create_app
 from tests.conftest import AppSessionFactory
@@ -35,27 +31,7 @@ def _h(tenant: uuid.UUID) -> dict[str, str]:
     return {"Authorization": f"Bearer {_token(tenant)}"}
 
 
-async def _install_opencode_runtime(db: AsyncSession, tenant: uuid.UUID) -> uuid.UUID:
-    # Unique semver suffix per call -- ACME_TENANT_ID is shared tenant-wide
-    # across the suite (see the identical note in test_agents_runtime.py).
-    version = await install_plugin(
-        db,
-        tenant_id=tenant,
-        manifest_data={
-            "name": "opencode_runtime",
-            "version": f"1.0.0+{uuid.uuid4().hex[:8]}",
-            "type": "runtime_adapter",
-            "trust": "first_party",
-            "capabilities": ["skills"],
-        },
-    )
-    await enable_plugin(db, tenant_id=tenant, capa_id=version.capa_id, granted_permissions=[])
-    return version.capa_id
-
-
-async def test_not_applicable_for_agent_without_a_workspace_runtime(
-    app_session: AppSessionFactory,
-) -> None:
+async def test_empty_for_agent_with_no_produced_files(app_session: AppSessionFactory) -> None:
     tenant = uuid.UUID(str(ACME_TENANT_ID))
     async with app_session(tenant) as db:
         agent = m.Agent(tenant_id=tenant, department_id=uuid.uuid4(), name="A")
@@ -69,47 +45,67 @@ async def test_not_applicable_for_agent_without_a_workspace_runtime(
         async with AsyncClient(transport=transport, base_url="http://t") as client:
             r = await client.get(f"/api/v1/agents/{agent_id}/workspace/files", headers=_h(tenant))
             assert r.status_code == 200, r.text
-            body = r.json()
-            assert body["applicable"] is False
-            assert body["files"] == []
+            assert r.json()["files"] == []
 
 
-async def test_lists_and_reads_the_most_recent_runs_workspace_files(
-    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+async def test_lists_files_across_all_of_the_agents_runs_newest_first(
+    app_session: AppSessionFactory,
 ) -> None:
     tenant = uuid.UUID(str(ACME_TENANT_ID))
     async with app_session(tenant) as db:
-        plugin_id = await _install_opencode_runtime(db, tenant)
-        agent = m.Agent(
-            tenant_id=tenant, department_id=uuid.uuid4(), name="A", runtime_ref=str(plugin_id)
-        )
+        agent = m.Agent(tenant_id=tenant, department_id=uuid.uuid4(), name="A")
         db.add(agent)
         await db.flush()
         agent_id = agent.id
 
-        older_run = m.AgentRun(tenant_id=tenant, agent_id=agent_id, state="done")
-        db.add(older_run)
+        other_agent = m.Agent(tenant_id=tenant, department_id=uuid.uuid4(), name="B")
+        db.add(other_agent)
         await db.flush()
 
+        older_run = m.AgentRun(tenant_id=tenant, agent_id=agent_id, state="done")
         newer_run = m.AgentRun(tenant_id=tenant, agent_id=agent_id, state="done")
-        db.add(newer_run)
+        other_agent_run = m.AgentRun(tenant_id=tenant, agent_id=other_agent.id, state="done")
+        db.add_all([older_run, newer_run, other_agent_run])
+        await db.flush()
+
+        older_file = m.FileAttachment(
+            tenant_id=tenant,
+            owner_type="agent_run",
+            owner_id=older_run.id,
+            bucket_key="workspace-files-k1",
+            filename="older.txt",
+            content_type="text/plain",
+            size_bytes=5,
+            # created_at is a transaction-scoped `now()` default -- both rows
+            # inserted in this one flush would otherwise tie, and the
+            # ordering query's id-desc tiebreak isn't reliable within the
+            # same millisecond. Set explicit, clearly-ordered timestamps.
+            created_at=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
+        )
+        newer_file = m.FileAttachment(
+            tenant_id=tenant,
+            owner_type="agent_run",
+            owner_id=newer_run.id,
+            bucket_key="workspace-files-k2",
+            filename="newer.txt",
+            content_type="text/plain",
+            size_bytes=7,
+            created_at=dt.datetime(2026, 6, 1, tzinfo=dt.UTC),
+        )
+        # Belongs to a different agent -- must never appear in this agent's list.
+        other_file = m.FileAttachment(
+            tenant_id=tenant,
+            owner_type="agent_run",
+            owner_id=other_agent_run.id,
+            bucket_key="workspace-files-k3",
+            filename="not-mine.txt",
+            content_type="text/plain",
+            size_bytes=9,
+        )
+        db.add_all([older_file, newer_file, other_file])
         await db.flush()
         newer_run_id = newer_run.id
-
-    # The older run's directory would prove the "most recent" ordering wrong
-    # if the endpoint picked it by mistake -- created deliberately, never read.
-    (tmp_path / str(older_run.id)).mkdir()
-    (tmp_path / str(older_run.id) / "stale.txt").write_text("should not be listed")
-
-    workspace = tmp_path / str(newer_run_id)
-    (workspace / "nested").mkdir(parents=True)
-    (workspace / "README.md").write_text("hello workspace")
-    (workspace / "nested" / "deep.txt").write_text("deep file content")
-
-    class _FakeSettings:
-        runtime_session_root = str(tmp_path)
-
-    monkeypatch.setattr("oc8.api.v1.run.get_settings", lambda: _FakeSettings())
+        newer_file_id = newer_file.id
 
     app = create_app()
     async with LifespanManager(app):
@@ -117,63 +113,25 @@ async def test_lists_and_reads_the_most_recent_runs_workspace_files(
         async with AsyncClient(transport=transport, base_url="http://t") as client:
             r = await client.get(f"/api/v1/agents/{agent_id}/workspace/files", headers=_h(tenant))
             assert r.status_code == 200, r.text
-            body = r.json()
-            assert body["applicable"] is True
-            assert body["runId"] == str(newer_run_id)
-            paths = {f["path"] for f in body["files"]}
-            assert paths == {"README.md", "nested/deep.txt"}
-            readme = next(f for f in body["files"] if f["path"] == "README.md")
-            assert readme["size"] == len("hello workspace")
-
-            content = await client.get(
-                f"/api/v1/agents/{agent_id}/workspace/files/nested/deep.txt",
-                headers=_h(tenant),
-            )
-            assert content.status_code == 200, content.text
-            assert content.json()["content"] == "deep file content"
-            assert content.json()["truncated"] is False
-
-            missing = await client.get(
-                f"/api/v1/agents/{agent_id}/workspace/files/does-not-exist.txt",
-                headers=_h(tenant),
-            )
-            assert missing.status_code == 404
+            files = r.json()["files"]
+            names = {f["filename"] for f in files}
+            assert names == {"older.txt", "newer.txt"}
+            # Newest first.
+            assert files[0]["filename"] == "newer.txt"
+            newest = files[0]
+            assert newest["id"] == str(newer_file_id)
+            assert newest["runId"] == str(newer_run_id)
+            assert newest["sizeBytes"] == 7
+            assert newest["contentType"] == "text/plain"
 
 
-async def test_path_traversal_is_rejected(
-    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+async def test_404_for_missing_agent(app_session: AppSessionFactory) -> None:
     tenant = uuid.UUID(str(ACME_TENANT_ID))
-    async with app_session(tenant) as db:
-        plugin_id = await _install_opencode_runtime(db, tenant)
-        agent = m.Agent(
-            tenant_id=tenant, department_id=uuid.uuid4(), name="A", runtime_ref=str(plugin_id)
-        )
-        db.add(agent)
-        await db.flush()
-        agent_id = agent.id
-
-        run = m.AgentRun(tenant_id=tenant, agent_id=agent_id, state="done")
-        db.add(run)
-        await db.flush()
-        run_id = run.id
-
-    (tmp_path / str(run_id)).mkdir()
-    # A real secret OUTSIDE the run's workspace directory -- if the traversal
-    # gate has a hole, this is what a "../../secret.txt"-shaped request reads.
-    (tmp_path / "secret.txt").write_text("do not leak me")
-
-    class _FakeSettings:
-        runtime_session_root = str(tmp_path)
-
-    monkeypatch.setattr("oc8.api.v1.run.get_settings", lambda: _FakeSettings())
-
     app = create_app()
     async with LifespanManager(app):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://t") as client:
             r = await client.get(
-                f"/api/v1/agents/{agent_id}/workspace/files/../secret.txt",
-                headers=_h(tenant),
+                f"/api/v1/agents/{uuid.uuid4()}/workspace/files", headers=_h(tenant)
             )
-            assert r.status_code == 404, r.text
+            assert r.status_code == 404

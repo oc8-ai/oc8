@@ -951,25 +951,16 @@ class ReportDTO(CamelModel):
 
 
 class WorkspaceFileDTO(CamelModel):
-    name: str
-    path: str  # posix-style, relative to the run's workspace root
-    size: int
+    id: str
+    filename: str
+    content_type: str
+    size_bytes: int
+    run_id: str
+    created_at: str
 
 
 class WorkspaceFilesDTO(CamelModel):
-    # False for an agent whose runtime never wrote a host workspace directory
-    # (e.g. the in-process "Standard" runtime) -- the frontend shows a
-    # "not applicable" message instead of an empty file list in that case.
-    applicable: bool
-    run_id: str | None = None
     files: list[WorkspaceFileDTO] = []
-    message: str | None = None
-
-
-class WorkspaceFileContentDTO(CamelModel):
-    path: str
-    content: str
-    truncated: bool = False
 
 
 class BudgetDTO(CamelModel):
