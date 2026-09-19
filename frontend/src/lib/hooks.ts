@@ -2129,6 +2129,31 @@ export function useInstallPluginFromDisk() {
   });
 }
 
+export interface InstalledCustomCapa {
+  id: string;
+  pluginId: string;
+  name: string;
+  type: string;
+  semver: string;
+  trustLevel: string;
+}
+
+export function useInstallCustomCapa() {
+  const qc = useQueryClient();
+  return useMutation({
+    // POST /capas already accepts a raw, wizard-built manifest -- no new
+    // backend endpoint. `origin: "custom"` is the only thing that
+    // distinguishes this from a disk-discovered catalog capa anywhere
+    // downstream reads it.
+    mutationFn: (body: { manifest: Record<string, unknown> }) =>
+      api.post<InstalledCustomCapa>("/capas", { manifest: body.manifest, origin: "custom" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["plugins", "available"] });
+      qc.invalidateQueries({ queryKey: ["plugins"] });
+    },
+  });
+}
+
 export function useEnablePlugin() {
   const qc = useQueryClient();
   return useMutation({
