@@ -32,11 +32,14 @@ from oc8.agent.control_tools import (
 )
 from oc8.agent.engine import (
     TODO_CONTINUATION_MAX_ROUNDS,
+    TOOL_OUTPUT_BUDGET_WARNING_CHARS,
     _authorize,
     _call_sig,
     _max_steps,
+    cap_tool_output,
     todo_continuation_exhausted_note,
     todo_continuation_reminder,
+    tool_output_budget_reminder,
     track_repeat_tool_call,
 )
 from oc8.agent.mcp_client import McpSession
@@ -572,6 +575,13 @@ async def step(
         open_todos_final = [t for t in ctx.get("todos", []) if t.get("status") != "completed"]
         if open_todos_final:
             step_text = f"{step_text}\n\n{todo_continuation_exhausted_note(open_todos_final)}"
+    elif truncated_empty:
+        # Otherwise this ends as status_override="failed" with an empty
+        # text, the shell forwards that empty text to /finish verbatim, and
+        # the run closes with no diagnosable reason anywhere -- see
+        # engine.py's identical check, whose RunResult.output already carries
+        # this same message for the in-process path.
+        step_text = "Model exceeded its token budget without producing an answer or tool call."
 
     return StepResult(
         done=not result.tool_calls and int(ctx["steps"]) <= _max_steps(agent),
@@ -897,6 +907,21 @@ async def tool(
     if output.startswith("ERROR:") and ctx.get("pending_cache_key") is not None:
         await cache_flow.invalidate(ctx["pending_cache_key"])
 
+    # Tool-output budget (cap_tool_output / tool_output_budget_reminder), at
+    # parity with the in-process engine's own `_account_tool_output`
+    # (engine.py's loop()) -- same cumulative counter, just persisted on
+    # run.context instead of a local closure variable, same reasoning as
+    # repeat_tracker below.
+    output = cap_tool_output(output)
+    ctx["tool_output_chars"] = int(ctx.get("tool_output_chars", 0)) + len(output)
+    tool_output_budget_note = None
+    if (
+        not ctx.get("tool_output_budget_warned")
+        and ctx["tool_output_chars"] >= TOOL_OUTPUT_BUDGET_WARNING_CHARS
+    ):
+        ctx["tool_output_budget_warned"] = True
+        tool_output_budget_note = tool_output_budget_reminder(ctx["tool_output_chars"])
+
     # Append the tool result to the transcript. This must come directly after the
     # assistant message that requested the call -- anything inserted between the
     # two invalidates the request for a strict provider.
@@ -914,6 +939,10 @@ async def tool(
     )
     if repeat_reminder is not None:
         transcript.append(_from_message(NeutralMessage(role="user", content=repeat_reminder)))
+    if tool_output_budget_note is not None:
+        transcript.append(
+            _from_message(NeutralMessage(role="user", content=tool_output_budget_note))
+        )
     ctx["transcript"] = transcript
     if suspend is not None:
         # The verdict the isolated runtime reads after the container exits, so the
