@@ -47,22 +47,29 @@ The script will:
    - **Community** (default) — empty instance, real password setup — this is
      what the rest of this guide assumes
    - **Demo** — seeded bilingual ACME showcase data behind a real password
-     login; also offers a custom domain for automatic HTTPS (good for a
-     hosted walkthrough, e.g. `demo.yourcompany.com` — point DNS at the host
-     first)
+     login
    - **Dev** — seeded ACME data with an unauthenticated instant login;
      localhost only, never expose this
-4. Generate secrets (`OC8_JWT_SECRET`, `OC8_SECRET_KEK`, `POSTGRES_PASSWORD`,
+4. For Community/Demo, ask whether you already run your own reverse proxy on
+   this host (nginx, Traefik, another Caddy):
+   - **Yes** — oc8's own Caddy binds to `127.0.0.1` on a plain port instead
+     of `:80`/`:443` and never tries to obtain a certificate; you point your
+     proxy at that port and it owns the domain/TLS
+   - **No** (default) — offers a custom domain for automatic HTTPS instead
+     (good for a hosted walkthrough, e.g. `demo.yourcompany.com` — point DNS
+     at the host first)
+5. Generate secrets (`OC8_JWT_SECRET`, `OC8_SECRET_KEK`, `POSTGRES_PASSWORD`,
    and for Demo mode, the demo login password)
-5. Build and start all services (Postgres, Redis, API, workers, frontend, Caddy)
-6. Wait until `/health` responds
-7. Print the URL to open in your browser (usually `http://localhost/`, your
+6. Build and start all services (Postgres, Redis, API, workers, frontend, Caddy)
+7. Wait until `/health` responds
+8. Print the URL to open in your browser (usually `http://localhost/`, your
    custom domain, or a custom port if 80 is taken)
 
 Running from a script or CI (no terminal attached) skips the prompts and
-defaults to Community mode with no domain — set `OC8_QUICKSTART_MODE`
-(`community`/`demo`/`dev`) and `OC8_QUICKSTART_DOMAIN` beforehand to choose
-without being asked.
+defaults to Community mode with no proxy and no domain — set
+`OC8_QUICKSTART_MODE` (`community`/`demo`/`dev`), `OC8_QUICKSTART_OWN_PROXY`
+(`y`/`n`, plus `OC8_QUICKSTART_PROXY_PORT`/`OC8_QUICKSTART_EXTERNAL_URL` when
+`y`), and `OC8_QUICKSTART_DOMAIN` beforehand to choose without being asked.
 
 **Manual alternative** (same result, more control):
 

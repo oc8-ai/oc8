@@ -190,15 +190,21 @@ The scripts check Docker, ask which mode to run (**Community** — empty, real
 password setup; **Demo** — seeded bilingual ACME showcase behind a real
 password login, good for a hosted walkthrough on a custom domain; or **Dev** —
 seeded ACME data with an unauthenticated instant login, localhost only, never
-expose it), create missing `.env` secrets without overwriting existing values,
+expose it). For Community/Demo, they also ask whether you already run your
+own reverse proxy on this host (binds oc8 to `127.0.0.1` on a plain port
+instead of letting Caddy grab `:80`/`:443` or provision a certificate) or
+want oc8's own Caddy to handle HTTPS on a custom domain instead. Then the
+scripts create missing `.env` secrets without overwriting existing values,
 build and start the stack, wait for its health endpoint, and print the URL. A
 fresh Community installation opens the local administrator setup wizard. Then
 configure a model, create an agent, and run a first task.
 
 Non-interactive/scripted runs (no terminal attached) default to Community mode
-with no custom domain, same as before — set `OC8_QUICKSTART_MODE`
-(`community`/`demo`/`dev`) and `OC8_QUICKSTART_DOMAIN` to preset the answers
-instead of being prompted.
+with no proxy and no custom domain, same as before — set
+`OC8_QUICKSTART_MODE` (`community`/`demo`/`dev`), `OC8_QUICKSTART_OWN_PROXY`
+(`y`/`n`, plus `OC8_QUICKSTART_PROXY_PORT`/`OC8_QUICKSTART_EXTERNAL_URL` when
+`y`), and `OC8_QUICKSTART_DOMAIN` to preset the answers instead of being
+prompted.
 
 ## Your first automation
 
