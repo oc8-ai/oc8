@@ -34,6 +34,9 @@ from cli_harness.park import POLL_INTERVAL_S, is_parked
 from cli_harness.session_state import clear_session_id, get_session_id, set_session_id
 from cli_harness.tail import tail_new_lines
 from cli_harness.toolchain import TOOLCHAIN_NOTE
+from sqlalchemy import text as sql_text
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from oc8 import models as m
 from oc8.agent.engine import RunResult, open_run_task
 from oc8.config import get_settings
@@ -43,8 +46,6 @@ from oc8.sandbox.mounts import validate_mounts
 from oc8.sandbox.naming import container_name
 from oc8.sandbox.reaper import RUN_LABEL
 from oc8.sandbox.types import BindMount, SandboxSpec
-from sqlalchemy import text as sql_text
-from sqlalchemy.ext.asyncio import AsyncSession
 
 _PLUGIN_NAME = "claude_code_runtime"
 #: The container's HOME. `node`, not `oc8agent`: the base image is
