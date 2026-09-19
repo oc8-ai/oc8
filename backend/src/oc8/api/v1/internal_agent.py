@@ -32,13 +32,15 @@ from oc8.agent.control_tools import (
 )
 from oc8.agent.engine import (
     TODO_CONTINUATION_MAX_ROUNDS,
-    TOOL_OUTPUT_BUDGET_WARNING_CHARS,
     _authorize,
-    _call_sig,
     _max_steps,
-    cap_tool_output,
     todo_continuation_exhausted_note,
     todo_continuation_reminder,
+)
+from oc8.agent.harness.calls import call_sig as _call_sig
+from oc8.agent.harness.stages.c_reminders import (
+    TOOL_OUTPUT_BUDGET_WARNING_CHARS,
+    cap_tool_output,
     tool_output_budget_reminder,
     track_repeat_tool_call,
 )
