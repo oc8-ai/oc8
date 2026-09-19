@@ -357,6 +357,31 @@ WRITE_OUTPUT_FILE = NeutralTool(
     },
 )
 
+RUN_SHELL = NeutralTool(
+    name="run_shell",
+    description=(
+        "Run a bash command inside your own container. cwd is /workspace. "
+        "Use this to write and run a script for anything no other tool "
+        "covers: render a JavaScript-heavy page, take a screenshot, generate "
+        "a PDF, resize or convert an image, convert a data file. Python 3.12, "
+        "a headless Chromium via Playwright, Pillow, pandas, and a PDF "
+        "library are preinstalled. Write files under /workspace/output/ to "
+        "hand them back -- they are saved automatically when the run ends, "
+        "the same as write_output_file. Output is truncated if very long; "
+        "prefer writing a file over printing large results."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "command": {
+                "type": "string",
+                "description": "The bash command to run, e.g. `python3 script.py`.",
+            },
+        },
+        "required": ["command"],
+    },
+)
+
 READ_RUN_FILE = NeutralTool(
     name="read_run_file",
     description=(
@@ -702,6 +727,7 @@ CONTROL_TOOL_SCHEMAS: dict[str, NeutralTool] = {
     READ_REFERENCE_FILE.name: READ_REFERENCE_FILE,
     READ_INSTRUCTION_FILE.name: READ_INSTRUCTION_FILE,
     WRITE_OUTPUT_FILE.name: WRITE_OUTPUT_FILE,
+    RUN_SHELL.name: RUN_SHELL,
     READ_RUN_FILE.name: READ_RUN_FILE,
     LIST_PENDING_APPROVALS.name: LIST_PENDING_APPROVALS,
     DEPARTMENT_STATUS.name: DEPARTMENT_STATUS,
@@ -732,6 +758,7 @@ def offered_tools(
     has_instruction_files: bool = False,
     copilot_permissions: frozenset[str] = frozenset(),
     offer_write_output_file: bool = False,
+    offer_run_shell: bool = False,
 ) -> list[NeutralTool]:
     """The full tool list to offer the model this step.
 
@@ -758,6 +785,8 @@ def offered_tools(
     offered = [MEMORY_WRITE, RENDER_COMPONENT, FETCH_URL, TODO_WRITE, READ_RUN_FILE]
     if offer_write_output_file:
         offered.append(WRITE_OUTPUT_FILE)
+    if offer_run_shell:
+        offered.append(RUN_SHELL)
     # ASK_USER parks the run and waits for an answer through the SAME door the
     # question arrived on. That holds for every other agent, whose only doors
     # are the web Chat tab and internal handoffs -- both can answer a park.
@@ -1129,6 +1158,17 @@ def _parse_iso(value: object) -> dt.datetime | None:
         return None
 
 
+def _format_run_shell_result(result: dict[str, Any]) -> str:
+    if result.get("timed_out"):
+        return f"ERROR: command timed out\nstdout: {result.get('stdout', '')}"
+    lines = [f"exit_code={result.get('exit_code')}"]
+    if result.get("stdout"):
+        lines.append(f"stdout:\n{result['stdout']}")
+    if result.get("stderr"):
+        lines.append(f"stderr:\n{result['stderr']}")
+    return "\n".join(lines)
+
+
 async def execute_control_tool(
     db: AsyncSession,
     *,
@@ -1142,6 +1182,7 @@ async def execute_control_tool(
     mcp_conn: m.McpConnection | None,
     originating_operator: str | None,
     run_id: uuid.UUID | None = None,
+    local_result: dict[str, Any] | None = None,
 ) -> ControlOutcome | None:
     """Run one core-owned tool call, or return None if it isn't one.
 
@@ -1459,6 +1500,14 @@ async def execute_control_tool(
             message=f"Produced file: {filename}",
         )
         return ControlOutcome(output=f"Saved '{filename}' ({attachment.size_bytes} bytes).")
+
+    if tc.name == RUN_SHELL.name:
+        # isolated_shell.py already ran this locally before the call ever
+        # reached here (see its module docstring) -- there is nothing left
+        # to execute, only the already-computed result to record.
+        if local_result is None:
+            return ControlOutcome(output="ERROR: run_shell was not executed locally by the runtime")
+        return ControlOutcome(output=_format_run_shell_result(local_result))
 
     if tc.name == READ_RUN_FILE.name:
         filename = str(tc.arguments.get("filename", "")).strip()
@@ -1856,8 +1905,7 @@ async def execute_control_tool(
         if not rows:
             return ControlOutcome(output=f"No {status} approvals.")
         lines = [
-            f"- {r.id} | {r.title} | {r.action_type} | department {r.department_id}"
-            for r in rows
+            f"- {r.id} | {r.title} | {r.action_type} | department {r.department_id}" for r in rows
         ]
         return ControlOutcome(output="\n".join(lines))
 
@@ -1889,9 +1937,7 @@ async def execute_control_tool(
             if dept is None:
                 return ControlOutcome(output="ERROR: department not found")
             goal = dept.goal or "(none)"
-            return ControlOutcome(
-                output=f"{dept.name} | id {dept.id} | goal: {goal}"
-            )
+            return ControlOutcome(output=f"{dept.name} | id {dept.id} | goal: {goal}")
         search = tc.arguments.get("search")
         search_str = str(search) if search else None
         rows, _total = await visible_departments(
@@ -1993,20 +2039,14 @@ async def execute_control_tool(
         agent_id_raw = tc.arguments.get("agent_id")
         department_id_raw = tc.arguments.get("department_id")
         if agent_id_raw and department_id_raw:
-            return ControlOutcome(
-                output="ERROR: pass at most one of agent_id/department_id"
-            )
-        agent_actor = await _resolve_agent_actor(
-            db, tenant_id=tenant_id, task=task, run_id=run_id
-        )
+            return ControlOutcome(output="ERROR: pass at most one of agent_id/department_id")
+        agent_actor = await _resolve_agent_actor(db, tenant_id=tenant_id, task=task, run_id=run_id)
         if agent_actor is None:
             return ControlOutcome(output="ERROR: could not resolve who you are acting for")
         authority = await authority_for_member(
             db,
             agent_actor.member,
-            token_role=await _acting_token_role(
-                db, tenant_id=tenant_id, run_id=run_id
-            ),
+            token_role=await _acting_token_role(db, tenant_id=tenant_id, run_id=run_id),
         )
         date_from = _parse_iso(tc.arguments.get("date_from"))
         date_to = _parse_iso(tc.arguments.get("date_to"))
@@ -2015,14 +2055,11 @@ async def execute_control_tool(
         scope_label = "the whole tenant"
         if agent_id_raw:
             view_perm = perm(AGENT, VIEW)
-            admitted = (
-                view_perm in authority.tenant_wide
-                or agent_actor.scope.holds_anywhere(view_perm)
+            admitted = view_perm in authority.tenant_wide or agent_actor.scope.holds_anywhere(
+                view_perm
             )
             if not admitted:
-                return ControlOutcome(
-                    output="ERROR: you don't have permission to view this agent"
-                )
+                return ControlOutcome(output="ERROR: you don't have permission to view this agent")
             try:
                 target_agent_id = uuid.UUID(str(agent_id_raw))
             except ValueError:
@@ -2039,15 +2076,12 @@ async def execute_control_tool(
             scope_label = f"agent {target.name}"
         elif department_id_raw:
             view_perm = perm(DEPARTMENT, VIEW)
-            admitted = (
-                view_perm in authority.tenant_wide
-                or agent_actor.scope.holds_anywhere(view_perm)
+            admitted = view_perm in authority.tenant_wide or agent_actor.scope.holds_anywhere(
+                view_perm
             )
             if not admitted:
                 return ControlOutcome(
-                    output=(
-                        "ERROR: you don't have permission to view this department"
-                    )
+                    output=("ERROR: you don't have permission to view this department")
                 )
             try:
                 target_department_id = uuid.UUID(str(department_id_raw))
@@ -2068,10 +2102,7 @@ async def execute_control_tool(
             # same reasoning as budget_overview -- no seat fallback.
             if perm(STATISTICS, VIEW) not in authority.tenant_wide:
                 return ControlOutcome(
-                    output=(
-                        "ERROR: you don't have permission to view "
-                        "tenant-wide statistics"
-                    )
+                    output=("ERROR: you don't have permission to view tenant-wide statistics")
                 )
         result = await compute_kpis(
             db,

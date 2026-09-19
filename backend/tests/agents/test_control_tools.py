@@ -197,6 +197,7 @@ def test_control_tool_names_matches_the_schemas() -> None:
         "fetch_url",
         "todo_write",
         "write_output_file",
+        "run_shell",
         "read_run_file",
     }
 
