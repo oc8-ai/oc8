@@ -134,7 +134,7 @@ x-backend-env: &backend-env
 services:
   postgres:
     restart: unless-stopped
-    image: pgvector/pgvector:pg15
+    image: docker.io/pgvector/pgvector:pg15
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
@@ -150,7 +150,7 @@ services:
 
   redis:
     restart: unless-stopped
-    image: redis:7-alpine
+    image: docker.io/library/redis:7-alpine
     # Redis defaults to maxmemory 0 / noeviction, which means that once the
     # keyspace fills EVERY write fails -- including run intake and the
     # realtime bus, which share this instance and are not designed to fail
@@ -210,15 +210,19 @@ services:
 
   # One-shot: migrate the schema, then optionally seed. App services wait for
   # this to complete, so migration runs exactly once (not in four processes).
+  #
+  # No depends_on here on purpose: backend/worker already require migrate, and
+  # migrate requiring postgres would give those a two-level dependency chain --
+  # which podman <= 4.x refuses to start ("container ... depends on container
+  # ... not found in input list": its start-time dependency graph is one level
+  # deep). Postgres readiness is waited for in the command below instead,
+  # which also keeps the one-shot semantics self-contained.
   migrate:
     <<: *backend-image
     environment:
       <<: *backend-env
       OC8_SEED_ON_START: ${OC8_SEED_ON_START:-true}
       OC8_DEMO: ${OC8_DEMO:-false}
-    depends_on:
-      postgres:
-        condition: service_healthy
     volumes:
       # Seed installs/enables showcase capas when OC8_DEMO=true; discovery reads
       # this mount the same way backend/worker do.
@@ -228,30 +232,40 @@ services:
       - -c
       - |
         set -e
+        i=0
+        until python -c "import socket; socket.create_connection(('postgres', 5432), 2)" 2>/dev/null; do
+          i=$((i+1))
+          if [ "$i" -ge 60 ]; then echo "postgres not reachable after 60s" >&2; exit 1; fi
+          sleep 1
+        done
         alembic upgrade head
         if [ "$${OC8_SEED_ON_START}" = "true" ] || [ "$${OC8_DEMO}" = "true" ]; then
           echo "seeding…"; oc8 seed || echo "seed skipped/failed (non-fatal)"
         fi
     restart: "no"
 
-  # The sole owner of docker.sock in the whole Community stack. backend/worker
-  # provision sandboxes over HTTP against this process instead of touching
-  # Docker directly (OC8_SANDBOX_DRIVER=provisioner, above) -- so a compromise
-  # of either (both run agent-authored code) never reaches raw Docker: the
-  # attacker gets, at most, the provisioner's own narrow, policy-checked API
-  # (oc8.runtime_provisioner.app / policy.py). See
-  # docs/superpowers/specs/2026-08-08-podman-runtime-support-design.md for why
-  # the historical OC8_CONTAINER_SOCKET override is intentionally NOT offered
-  # here: this is the one privileged mount in the stack, and its host path
-  # must be an unambiguous constant, not something a `.env` value could
-  # redirect elsewhere.
+  # The sole owner of the container-runtime socket in the whole Community
+  # stack. backend/worker provision sandboxes over HTTP against this process
+  # instead of touching Docker (OC8_SANDBOX_DRIVER=provisioner, above) -- so a
+  # compromise of either (both run agent-authored code) never reaches raw
+  # Docker: the attacker gets, at most, the provisioner's own narrow,
+  # policy-checked API (oc8.runtime_provisioner.app / policy.py).
+  #
+  # The HOST socket path defaults to Docker's and can be pointed at Podman's
+  # user API socket via OC8_CONTAINER_SOCKET (scripts/quickstart.sh fills it
+  # in for OC8_CONTAINER_RUNTIME=podman). The container-side path and the
+  # read-only bind are constant either way. This is safe to parameterize for
+  # Podman because DEPLOY.md's root-equivalent-socket warning is about Docker
+  # (and rootful Podman): a rootless Podman socket is scoped to the invoking
+  # user's own containers, so it does not hand the provisioner more power than
+  # that user already has.
   runtime-provisioner:
     restart: unless-stopped
     <<: *backend-image
     environment:
       <<: *backend-env
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${OC8_CONTAINER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock:ro
       # Read-only: the provisioner only needs to validate that a caller-supplied
       # mount falls inside this root (see ProvisionerPolicy._validate_mount);
       # it never itself writes here.
@@ -386,7 +400,7 @@ services:
 
   caddy:
     restart: unless-stopped
-    image: caddy:2
+    image: docker.io/library/caddy:2
     depends_on:
       - frontend
       - backend
@@ -409,7 +423,7 @@ services:
   ollama:
     restart: unless-stopped
     profiles: ["ollama"]
-    image: ollama/ollama:latest
+    image: docker.io/ollama/ollama:latest
     volumes:
       - oc8-ollama:/root/.ollama
     # CPU-only by default. For GPU, add a deploy.resources.reservations.devices

@@ -39,7 +39,10 @@ export async function logoutCommunity(): Promise<void> {
     if (res.ok) {
       const config = (await res.json()) as { ssoLogoutUrl?: string | null };
       if (config.ssoLogoutUrl) {
-        window.location.href = config.ssoLogoutUrl;
+        // Without post_logout_redirect_uri, Keycloak shows its own logout
+        // confirmation page instead of returning here automatically.
+        const separator = config.ssoLogoutUrl.includes("?") ? "&" : "?";
+        window.location.href = `${config.ssoLogoutUrl}${separator}post_logout_redirect_uri=${encodeURIComponent(window.location.origin)}`;
         return;
       }
     }

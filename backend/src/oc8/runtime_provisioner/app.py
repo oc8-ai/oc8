@@ -39,7 +39,7 @@ def _default_policy() -> ProvisionerPolicy:
     nanoclaw_provisioner = os.environ.get(
         "OC8_NANOCLAW_PROVISIONER_IMAGE", "nanoclaw-provisioner:latest"
     )
-    hook_image = os.environ.get("OC8_HOOK_RUNTIME_IMAGE", "python:3.13-alpine")
+    hook_image = os.environ.get("OC8_HOOK_RUNTIME_IMAGE", "docker.io/library/python:3.13-alpine")
     # The headless-CLI runtimes each ship their own image and all three need the
     # agent network: their harness reaches oc8's /llm and /mcp gateways, so a
     # network-disabled sandbox would leave them with no model and no tools.

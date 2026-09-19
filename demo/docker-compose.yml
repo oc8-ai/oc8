@@ -15,7 +15,7 @@
 
 services:
   gitea:
-    image: gitea/gitea:1.22
+    image: docker.io/gitea/gitea:1.22
     container_name: oc8-demo-gitea
     restart: unless-stopped
     environment:
