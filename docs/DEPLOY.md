@@ -25,9 +25,11 @@ limits* at the end.
 
 `scripts/quickstart.sh`/`.ps1` accept `OC8_CONTAINER_RUNTIME=podman` (default
 is `docker`) to orchestrate the stack with `podman compose` instead of
-`docker compose`, and to point the `backend`/`worker` socket mount at Podman's
-API socket instead of Docker's -- everything else about the stack, including
-the sandbox driver code, is unchanged (see the Podman section below).
+`docker compose`, and to point the `runtime-provisioner` service's socket
+mount at Podman's API socket instead of Docker's -- everything else about the
+stack, including the sandbox driver code, is unchanged. (The provisioner is
+the one service that owns the runtime socket; `backend`/`worker` talk to it
+over HTTP.)
 
 Enable Podman's API socket first:
 
@@ -38,6 +40,30 @@ Enable Podman's API socket first:
 Then run `OC8_CONTAINER_RUNTIME=podman ./scripts/quickstart.sh` (or set
 `OC8_CONTAINER_RUNTIME=podman` once in `.env` to make it the default for this
 checkout). The script fills in `OC8_CONTAINER_SOCKET` for you.
+
+Four rootless-on-Linux specifics the quickstart handles or you must set:
+
+- **Ports below 1024** cannot be published by an unprivileged podman
+  (`net.ipv4.ip_unprivileged_port_start`). Set `OC8_HTTP_PORT=8080` (and
+  `OC8_HTTPS_PORT=8443` if 443 matters) in `.env` before starting, and
+  `OC8_FRONTEND_BASE_URL=http://localhost:8080` to match.
+- **The runtime session root** defaults to `/var/lib/oc8/sessions`, which a
+  non-root user cannot create. Set `OC8_RUNTIME_SESSION_ROOT` in `.env` to an
+  absolute path you own (e.g. `~/.local/share/oc8/sessions`); compose mounts
+  it at the identical path inside the containers.
+- **Use a current podman-compose.** `podman compose` delegates to whatever
+  compose provider is installed, and distro packages can be old (Ubuntu
+  24.04 ships 1.0.6). Verified with podman 4.9 and podman-compose 1.6:
+  `python3 -m pip install --user --break-system-packages --upgrade podman-compose`.
+- **Image names are fully qualified** (`docker.io/library/redis:7-alpine`,
+  `docker.io/oven/bun:1`, ...) in every Dockerfile and compose file, because
+  Podman -- unlike Docker -- does not assume Docker Hub for a short name: on a
+  host whose `/etc/containers/registries.conf` lists no
+  `unqualified-search-registries`, `FROM oven/bun:1` fails the build with
+  `short-name "oven/bun:1" did not resolve to an alias`. Keep new image
+  references qualified the same way; the alternative is a per-host
+  `unqualified-search-registries = ["docker.io"]` line, which the stack must
+  not depend on.
 
 One security difference worth knowing: **rootless Podman's socket is scoped
 to the invoking user's own containers**, not root-equivalent the way the

@@ -9,7 +9,7 @@
 # The entrypoint is `bun`, not `node` -- this image genuinely runs on bun, so
 # session.py's SandboxSpec.command names `bun` directly rather than a `node`
 # shim kept around just to match a stale literal.
-FROM oven/bun:1
+FROM docker.io/oven/bun:1
 ARG NANOCLAW_REF
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*

@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Build context: ./backend
-FROM python:3.12-slim AS build
+FROM docker.io/library/python:3.12-slim AS build
 COPY --from=ghcr.io/astral-sh/uv:0.5 /uv /bin/uv
 ENV UV_LINK_MODE=copy
 WORKDIR /app
@@ -11,7 +11,7 @@ COPY pyproject.toml ./
 COPY src ./src
 RUN uv venv /opt/venv && VIRTUAL_ENV=/opt/venv uv pip install .
 
-FROM python:3.12-slim AS runtime
+FROM docker.io/library/python:3.12-slim AS runtime
 # libpq/build tools are not needed: asyncpg and psycopg[binary] ship wheels,
 # cryptography ships manylinux wheels. If a future dep is source-only on this
 # platform, add `RUN apt-get update && apt-get install -y --no-install-recommends gcc`
@@ -28,8 +28,8 @@ RUN ln -s /usr/local/bin/uv /usr/local/bin/uvx
 # pinned to -bookworm-slim explicitly (not the floating `slim` tag) so its
 # glibc matches this image's own Debian base regardless of which release
 # `python:3.12-slim` currently resolves to.
-COPY --from=node:22-bookworm-slim /usr/local/bin/node /usr/local/bin/node
-COPY --from=node:22-bookworm-slim /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=docker.io/library/node:22-bookworm-slim /usr/local/bin/node /usr/local/bin/node
+COPY --from=docker.io/library/node:22-bookworm-slim /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
     ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 # github_mcp's bridge: GitHub's own official binary, vendored the same way --

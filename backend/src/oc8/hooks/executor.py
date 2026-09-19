@@ -62,7 +62,7 @@ class SandboxedExecutor:
     receives a scoped token, never DB creds."""
 
     driver: SandboxDriver | None = None
-    image: str = "python:3.13-alpine"
+    image: str = "docker.io/library/python:3.13-alpine"
     regime: dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_COMMUNITY_REGIME))
     grants: dict[str, list[str]] = field(default_factory=dict)  # plugin_id -> scopes
     _pool: dict[str, SandboxHandle] = field(default_factory=dict)
