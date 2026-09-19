@@ -7,6 +7,12 @@
 <p align="center"><strong>Become an AI-first business today.</strong></p>
 
 <p align="center">
+  oc8 is an open-source, self-hosted AI agent orchestration platform for businesses.
+  It lets AI agents securely work across ERP, CRM, Microsoft 365, Odoo, Slack and other business systems through MCP,
+  with human approvals, guardrails and audit trails.
+</p>
+
+<p align="center">
   <a href="https://oc8.ai">Website</a> &middot;
   <a href="https://docs.oc8.ai">Docs</a> &middot;
   <a href="https://discord.com/invite/vEYpvzXUv">Discord</a>
