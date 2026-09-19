@@ -13,6 +13,7 @@ import {
   GitBranch,
   Info,
   Layers,
+  PlugZap,
   Power,
   Settings,
   ShieldAlert,
@@ -25,6 +26,7 @@ import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
 import { CapaExportWizard } from "@/components/capa-export-wizard";
+import { CustomMcpWizard } from "@/components/custom-mcp-wizard";
 import { DetailSheet } from "@/components/detail-sheet";
 import { ListToolbar, groupItems, type ListQueryState } from "@/components/list-toolbar";
 import {
@@ -213,6 +215,12 @@ export function CapasPage() {
   const [setupPlugin, setSetupPlugin] = useState<DiscoveredCapa | null>(null);
   const [detailPlugin, setDetailPlugin] = useState<DiscoveredCapa | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
+  const [customMcpOpen, setCustomMcpOpen] = useState(false);
+  // Set from CustomMcpWizard's onExported hand-off, so the export wizard
+  // that opens right after can pre-check that one capa instead of landing
+  // on an empty Selection step -- cleared whenever the export dialog closes
+  // so a later, unrelated "Export as Capa" click starts from a clean slate.
+  const [exportTargetCapaId, setExportTargetCapaId] = useState<string | null>(null);
 
   // The Installed/Available tabs are an ADDITIONAL filter layer on top of
   // the toolbar's search/type/group -- they slice whatever page the toolbar
@@ -325,6 +333,11 @@ export function CapasPage() {
     }
   };
 
+  const closeExportWizard = () => {
+    setExportOpen(false);
+    setExportTargetCapaId(null);
+  };
+
   return (
     <div className="space-y-6">
       <Panel className="p-5">
@@ -344,14 +357,24 @@ export function CapasPage() {
             </div>
           </div>
           {mayManage && (
-            <button
-              type="button"
-              onClick={() => setExportOpen(true)}
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-background/30 px-3 py-1.5 text-sm text-foreground transition hover:border-primary/50"
-            >
-              <Archive className="h-3.5 w-3.5" />
-              {t("Export as Capa", "Als Capa exportieren")}
-            </button>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setCustomMcpOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background/30 px-3 py-1.5 text-sm text-foreground transition hover:border-primary/50"
+              >
+                <PlugZap className="h-3.5 w-3.5" />
+                {t("Add custom MCP server", "Eigenen MCP-Server hinzufügen")}
+              </button>
+              <button
+                type="button"
+                onClick={() => setExportOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background/30 px-3 py-1.5 text-sm text-foreground transition hover:border-primary/50"
+              >
+                <Archive className="h-3.5 w-3.5" />
+                {t("Export as Capa", "Als Capa exportieren")}
+              </button>
+            </div>
           )}
         </header>
       </Panel>
@@ -566,10 +589,24 @@ export function CapasPage() {
 
       {setupPlugin && <CapaSetupDialog plugin={setupPlugin} onClose={() => setSetupPlugin(null)} />}
 
+      {customMcpOpen && (
+        <CustomMcpWizard
+          open={customMcpOpen}
+          onOpenChange={setCustomMcpOpen}
+          onExported={(capaId) => {
+            setCustomMcpOpen(false);
+            // Hand off to the existing export flow for this one capa,
+            // pre-checked -- see closeExportWizard for the matching cleanup.
+            setExportTargetCapaId(capaId);
+            setExportOpen(true);
+          }}
+        />
+      )}
+
       {exportOpen && (
         <div
           className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
-          onClick={() => setExportOpen(false)}
+          onClick={closeExportWizard}
         >
           <div
             className="w-full max-w-2xl rounded-xl border border-border bg-panel p-5 shadow-2xl"
@@ -579,13 +616,28 @@ export function CapasPage() {
               <h2 className="font-serif text-lg">{t("Export as Capa", "Als Capa exportieren")}</h2>
               <button
                 type="button"
-                onClick={() => setExportOpen(false)}
+                onClick={closeExportWizard}
+                aria-label={t("Close", "Schließen")}
                 className="rounded-md p-1 text-muted-foreground hover:text-foreground"
               >
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <CapaExportWizard onClose={() => setExportOpen(false)} />
+            <CapaExportWizard
+              onClose={closeExportWizard}
+              initialSelection={
+                exportTargetCapaId
+                  ? {
+                      kind: "tool_pack",
+                      id: exportTargetCapaId,
+                      name:
+                        plugins.find((p) => p.databaseId === exportTargetCapaId)?.label ||
+                        plugins.find((p) => p.databaseId === exportTargetCapaId)?.name ||
+                        exportTargetCapaId,
+                    }
+                  : undefined
+              }
+            />
           </div>
         </div>
       )}
