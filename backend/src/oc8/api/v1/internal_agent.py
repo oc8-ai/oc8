@@ -31,11 +31,8 @@ from oc8.agent.control_tools import (
     offered_tools,
 )
 from oc8.agent.engine import (
-    TODO_CONTINUATION_MAX_ROUNDS,
     _authorize,
     _max_steps,
-    todo_continuation_exhausted_note,
-    todo_continuation_reminder,
 )
 from oc8.agent.harness.calls import call_sig as _call_sig
 from oc8.agent.harness.stages.c_reminders import (
@@ -43,6 +40,11 @@ from oc8.agent.harness.stages.c_reminders import (
     cap_tool_output,
     tool_output_budget_reminder,
     track_repeat_tool_call,
+)
+from oc8.agent.harness.stages.d_todo import (
+    TODO_CONTINUATION_MAX_ROUNDS,
+    todo_continuation_exhausted_note,
+    todo_continuation_reminder,
 )
 from oc8.agent.mcp_client import McpSession
 from oc8.agent.mcp_env import resolve_mcp_env

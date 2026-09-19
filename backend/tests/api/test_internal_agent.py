@@ -1686,7 +1686,7 @@ async def test_step_round_cap_stops_nudging_and_lets_the_run_end(
     """The isolated runtime's round cap must match engine.py's
     TODO_CONTINUATION_MAX_ROUNDS exactly and, once spent, let the run end
     anyway rather than nudging forever."""
-    from oc8.agent.engine import TODO_CONTINUATION_MAX_ROUNDS
+    from oc8.agent.harness.stages.d_todo import TODO_CONTINUATION_MAX_ROUNDS
     from oc8.modelrouter.types import CompletionResult, Usage
 
     calls = {"n": 0}
