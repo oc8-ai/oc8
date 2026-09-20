@@ -9,6 +9,7 @@ import os
 import re
 import tempfile
 import urllib.parse
+from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
@@ -243,6 +244,7 @@ class McpSession:
         server_url: str = "",
         headers: dict[str, str] | None = None,
         timeout_s: float | None = None,
+        on_step: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self._transport = transport
         self._server_url = server_url
@@ -257,9 +259,16 @@ class McpSession:
         self._timeout_s = MCP_REQUEST_TIMEOUT_SECONDS if timeout_s is None else timeout_s
         self.tools: list[NeutralTool] = []
         self._errlog = _StderrTail()
+        # Only "Test connection" passes this -- every other caller (the agent
+        # pool, the isolated runtime's tool gateway) launches sessions by the
+        # dozen and has no per-step UI waiting on them, so it stays optional
+        # and costs them nothing.
+        self._on_step = on_step
 
     async def __aenter__(self) -> McpSession:
         try:
+            if self._on_step is not None:
+                await self._on_step("spawn")
             if self._transport == "http":
                 # Create an HTTP client with configured headers and timeout,
                 # then pass it to the streamable-HTTP transport.
@@ -296,7 +305,11 @@ class McpSession:
                 ClientSession(read, write, read_timeout_seconds=_read_timeout(self._timeout_s))
             )
             await self._session.initialize()
+            if self._on_step is not None:
+                await self._on_step("handshake")
             listed = await self._session.list_tools()
+            if self._on_step is not None:
+                await self._on_step("list_tools")
         except BaseException as exc:
             # A server that never answers `initialize` raises here -- but the
             # subprocess and session are already pushed onto the stack, and
@@ -461,6 +474,7 @@ async def open_tool_session(
     http_tools: list[dict[str, Any]] | None = None,
     env: dict[str, str] | None = None,
     timeout_s: float | None = None,
+    on_step: Callable[[str], Awaitable[None]] | None = None,
 ) -> McpSession | HttpToolSession:
     """The single place that knows which session class a connection's
     transport needs -- every caller that used to construct `McpSession`
@@ -468,16 +482,28 @@ async def open_tool_session(
     them. Returns an UNENTERED session; this is a plain async function, not
     an async context manager, so callers write
     `tool_session = await open_tool_session(...)` then
-    `async with tool_session as session:`."""
+    `async with tool_session as session:`.
+
+    `on_step` is not accepted by `manual_http`: `HttpToolSession.__aenter__`
+    does no network I/O at all (its tools are declared in config, not
+    discovered), so there is no spawn/handshake/list_tools progression for
+    it to report -- "Test connection" still gets a final result line, just
+    not the three that precede it."""
     if transport == "manual_http":
         return HttpToolSession(
             server_url, list(http_tools or []), headers=headers, timeout_s=timeout_s
         )
     if transport == "http":
         return McpSession(
-            "", [], env, transport="http", server_url=server_url, headers=headers,
+            "",
+            [],
+            env,
+            transport="http",
+            server_url=server_url,
+            headers=headers,
             timeout_s=timeout_s,
+            on_step=on_step,
         )
     if transport == "stdio":
-        return McpSession(command, args or [], env, timeout_s=timeout_s)
+        return McpSession(command, args or [], env, timeout_s=timeout_s, on_step=on_step)
     raise ValueError(f"unsupported transport {transport!r}")

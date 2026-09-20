@@ -126,6 +126,100 @@ async def test_timeout_records_error(
             assert r.json()["health"]["status"] == "error"
 
 
+# A minimal real stdio MCP server for the log-event tests below -- spawned
+# fresh per test (test_mcp_client_timeout.py's own pattern), not demo_fs.py,
+# so these tests don't depend on that fixture's presence.
+_MINI_SERVER = """
+try:
+    from mcp.server.mcpserver import MCPServer as FastMCP
+except ImportError:
+    from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("mini")
+
+
+@mcp.tool()
+def ping() -> str:
+    return "pong"
+
+
+mcp.run()
+"""
+
+
+def _mini_server(tmp_path: Path) -> tuple[str, list[str]]:
+    script = tmp_path / "mini_server.py"
+    script.write_text(_MINI_SERVER)
+    return sys.executable, [str(script)]
+
+
+class _SpyBus:
+    """Same shape as test_internal_agent.py's own spy -- collects every
+    published (type, data) pair without touching Redis."""
+
+    def __init__(self) -> None:
+        self.published: list[tuple[str, dict]] = []
+
+    async def publish_event(self, tenant_id: object, type_: str, data: dict, **kw: object) -> None:
+        self.published.append((type_, data))
+
+
+def _patch_bus(monkeypatch: pytest.MonkeyPatch) -> _SpyBus:
+    # emit.py resolves get_event_bus via its own module-level import, which
+    # patching only oc8.realtime.bus leaves unpatched -- see
+    # test_internal_agent.py's identical note.
+    spy = _SpyBus()
+    monkeypatch.setattr("oc8.realtime.bus.get_event_bus", lambda: spy)
+    monkeypatch.setattr("oc8.realtime.emit.get_event_bus", lambda: spy)
+    return spy
+
+
+async def test_a_successful_test_streams_spawn_handshake_list_tools_and_result(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The log drawer needs these four steps, in order, for the connection
+    under test -- not just the final `health` this endpoint already wrote."""
+    spy = _patch_bus(monkeypatch)
+    tenant = uuid.uuid4()
+    command, args = _mini_server(tmp_path)
+    async with app_session(tenant) as db:
+        conn_id = await _make_conn(db, tenant, command, args)
+        await db.commit()
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post(f"/api/v1/mcp/connections/{conn_id}/test", headers=_h(tenant))
+            assert r.status_code == 200, r.text
+
+    log_events = [data for type_, data in spy.published if type_ == "mcp.test.log"]
+    steps = [data["step"] for data in log_events]
+    assert steps == ["spawn", "handshake", "list_tools", "result"]
+    assert all(data["connection_id"] == str(conn_id) for data in log_events)
+    assert "1 tool" in log_events[-1]["message"]
+
+
+async def test_a_failed_test_publishes_the_same_sanitized_error_as_health(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spy = _patch_bus(monkeypatch)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        conn_id = await _make_conn(db, tenant, "/nonexistent/binary/xyz", [])
+        await db.commit()
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post(f"/api/v1/mcp/connections/{conn_id}/test", headers=_h(tenant))
+            assert r.status_code == 200, r.text
+            health_error = r.json()["health"]["error"]
+
+    result_events = [data for _, data in spy.published if data.get("step") == "result"]
+    assert len(result_events) == 1
+    # Same text the operator already sees in `health.error` -- no separate,
+    # unaudited error-formatting path for the log line.
+    assert health_error in result_events[0]["message"]
+
+
 async def test_patching_a_connection_answers_200_and_persists(
     app_session: AppSessionFactory,
 ) -> None:

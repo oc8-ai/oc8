@@ -6,6 +6,7 @@ import { ChevronDown, ChevronRight, Plus, RefreshCw, Server, Trash2, X } from "l
 import { useState } from "react";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
+import { McpTestLogDrawer } from "@/components/mcp-test-log-drawer";
 import { useConfirm } from "@/hooks/use-confirm";
 import {
   useCreateMcpConnection,
@@ -330,6 +331,8 @@ export function McpConnectionBody({ connection }: { connection: McpConnection })
       {status === "error" && error && (
         <p className="mt-3 text-xs text-[color:var(--status-error)]">{error}</p>
       )}
+
+      <McpTestLogDrawer connectionId={connection.id} busy={testConnection.isPending} />
     </div>
   );
 }

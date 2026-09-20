@@ -198,6 +198,7 @@ class _RecordingSession:
         env: dict[str, str] | None = None,
         *,
         timeout_s: float | None = None,
+        on_step: Any = None,
     ) -> None:
         _RecordingSession.env = dict(env or {})
         self.tools: list[Any] = []

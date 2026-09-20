@@ -45,6 +45,25 @@ async def publish_run_output_delta(
     )
 
 
+async def publish_mcp_test_log(
+    tenant_id: uuid.UUID, *, connection_id: uuid.UUID, step: str, message: str
+) -> None:
+    """One line of a "Test connection" run's progress (spawn/handshake/
+    list_tools/result), for the connection's own log drawer. Deliberately
+    carries no DB write of its own, same reasoning as `publish_run_output_delta`
+    above: a fresh page load has nothing to lose by missing these, since the
+    connection's persisted `health` field already carries the final verdict.
+    `message` must already be operator-safe -- no secret values, only what
+    `test_connection` itself would be willing to put in `health.error`.
+    """
+    await get_event_bus().publish_event(
+        tenant_id,
+        "mcp.test.log",
+        {"connection_id": str(connection_id), "step": step, "message": message},
+        source=f"oc8/mcp-connection/{connection_id}",
+    )
+
+
 async def publish_run_token_delta(
     tenant_id: uuid.UUID, *, run_id: uuid.UUID, text: str
 ) -> None:

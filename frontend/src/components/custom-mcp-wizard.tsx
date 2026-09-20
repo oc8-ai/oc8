@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Field } from "@/components/agent-identity-fields";
+import { McpTestLogDrawer } from "@/components/mcp-test-log-drawer";
 import { useConfirm } from "@/hooks/use-confirm";
 import { api } from "@/lib/api";
 import {
@@ -63,6 +64,11 @@ interface WizardState {
   // test step (stdio/remote_mcp only)
   testedToolNames: string[] | null;
   testError: string | null;
+  // the connection a test run is/was against -- known only once
+  // installEnableConfigure resolves, and set BEFORE the test mutation fires
+  // so McpTestLogDrawer is already mounted (with the right cache key) when
+  // the backend starts publishing spawn/handshake/list_tools events for it.
+  testedConnectionId: string | null;
   // the capa id from a successful useInstallCustomCapa call, so step 4's Save
   // does not re-install if step 3 already installed it (e.g. to run a test).
   installedPluginId: string | null;
@@ -82,6 +88,7 @@ const INITIAL_STATE: WizardState = {
   httpTools: [],
   testedToolNames: null,
   testError: null,
+  testedConnectionId: null,
   installedPluginId: null,
 };
 
@@ -418,6 +425,7 @@ export function CustomMcpWizard({
         update({ testError: "No connection was created to test." });
         return;
       }
+      update({ testedConnectionId: connectionId });
       const tested = await testConnection.mutateAsync(connectionId);
       if (tested.connected) {
         const tools = Array.isArray(tested.health?.tools)
@@ -806,6 +814,9 @@ export function CustomMcpWizard({
                 )}
                 {state.testError && (
                   <p className="text-xs text-[color:var(--status-error)]">{state.testError}</p>
+                )}
+                {state.testedConnectionId && (
+                  <McpTestLogDrawer connectionId={state.testedConnectionId} busy={busy} />
                 )}
               </div>
             )}

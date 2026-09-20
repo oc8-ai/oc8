@@ -36,6 +36,7 @@ class _FakeSession:
         env: dict[str, str] | None = None,
         *,
         timeout_s: float | None = None,
+        on_step: Any = None,
     ) -> None:
         self.command = command
         self.tools = ["a", "b"]

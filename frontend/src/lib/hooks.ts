@@ -17,6 +17,7 @@ import {
 } from "@/lib/api";
 import type { RuntimeOption } from "@/components/runtime-picker";
 import type { GuardrailLibraryEntry, GuardrailPreset } from "@/components/guardrail-preset-picker";
+import { mcpTestLogKey, type McpTestLogLine } from "@/lib/live/apply-event";
 import type {
   ActivityItem,
   Agent,
@@ -1380,6 +1381,20 @@ export function useTestMcpConnectionById() {
   return useMutation({
     mutationFn: (id: string) => api.post<McpConnection>(`/mcp/connections/${id}/test`),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.mcp }),
+  });
+}
+
+// The step-by-step "Test connection" log (McpTestLogDrawer): `enabled: false`
+// because, unlike every other useQuery in this file, there is no GET this
+// could fetch from -- the cache entry it reads is written ONLY by the
+// mcp.test.log live patcher (apply-event.ts) as events arrive over the
+// tenant's WebSocket. This hook exists purely to re-render on those writes.
+export function useMcpTestLog(connectionId: string) {
+  return useQuery({
+    queryKey: mcpTestLogKey(connectionId),
+    queryFn: () => [] as McpTestLogLine[],
+    enabled: false,
+    initialData: [] as McpTestLogLine[],
   });
 }
 
