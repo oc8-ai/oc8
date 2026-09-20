@@ -39,6 +39,7 @@ from oc8.agent.harness.stages.b_outward import check_outward, remember_outward
 from oc8.agent.mcp_client import McpSession
 from oc8.agent.mcp_env import resolve_mcp_env
 from oc8.agent.mcp_requirements import wrap_with_requirements
+from oc8.agent.outward import outward_target
 from oc8.agent.preamble import build_run_preamble
 from oc8.agent.tool_notes import apply_tool_notes
 from oc8.agent.tool_semantics import describe_focus, describes_a_record
@@ -237,6 +238,12 @@ class StepResult(BaseModel):
     #: heuristic, which would otherwise read a truncation as "the agent
     #: finished".
     status_override: str | None = None
+    #: True when this agent's resolved caps say the model can cope with
+    #: concurrent tool results in one turn (spec §3.5) -- see each
+    #: `tool_calls` entry's own `"tier"` key for which calls that covers.
+    #: A hint only: the shell decides whether/how to batch, and /tool's own
+    #: authorization below runs unconditionally for every call either way.
+    parallel_tool_calls: bool = False
 
 
 @router.post(
@@ -570,15 +577,72 @@ async def step(
         # this same message for the in-process path.
         step_text = "Model exceeded its token budget without producing an answer or tool call."
 
+    # Spec §3.5: a turn's leading run of ALLOW-decision, read-tier,
+    # non-control, non-outward tool calls may dispatch concurrently instead
+    # of one at a time -- but unlike the in-process engine (engine.py), this
+    # endpoint never dispatches anything itself. It only ANNOTATES which
+    # calls are safe to batch; isolated_shell.py, on the other side of the
+    # HTTP boundary, is the one that actually fires them concurrently.
+    # /tool's own `_authorize`+`required_right` (reading real, current, not
+    # pre-computed state) stays completely unconditional for every call --
+    # this tier is a client-side batching hint, never a bypass.
+    caps = resolve_caps(model_config.params if model_config is not None else None)
+    scopes = _manifest_scopes(conn)
+    skill_tool_names = frozenset(s.tool_name for s in assigned_skills)
+    cfg = _mcp_params(conn) if conn is not None else {}
+    value_spec = cfg.get("value_spec") if isinstance(cfg.get("value_spec"), dict) else None
+    focus_spec = cfg.get("focus_spec") if isinstance(cfg.get("focus_spec"), dict) else None
+    outward_tools = cfg.get("outward_tools") if isinstance(cfg.get("outward_tools"), list) else None
+    tool_tiers: dict[str, str] = {}
+    if caps.parallel_tool_calls:
+        for t in result.tool_calls:
+            if t.name in CONTROL_TOOL_NAMES or t.name in skill_tool_names:
+                break
+            pre_decision = _authorize(
+                agent,
+                t,
+                frame=frame,
+                skill_tool_names=skill_tool_names,
+                delegation_depth=int(ctx.get("delegation_depth", 0)),
+                skill_thresholds=tuple(
+                    g.gt
+                    for s in active_skills
+                    for g in s.definition.guardrails
+                    if g.type == "value_threshold" and g.then == "require_approval"
+                ),
+                tool_policies=effective_tool_policies(frame, agent.narrowing or {}),
+                connection_key=conn.name if conn is not None else None,
+                tool_scopes=scopes,
+                value_spec=value_spec,
+            )
+            if pre_decision.effect is not Effect.ALLOW:
+                break
+            if required_right(t.name, scopes) != "read":
+                break
+            # An outward-declared call (spec B8) breaks the run even though
+            # required_right would call it "read" too -- batching it would
+            # let two concurrent /tool POSTs both read "not yet delivered"
+            # from check_outward before either commits.
+            if outward_target(t.name, t.arguments, focus_spec, outward_tools) is not None:
+                break
+            tool_tiers[t.id] = "read"
+
     return StepResult(
         done=not result.tool_calls and int(ctx["steps"]) <= _max_steps(agent),
         text=step_text,
         tool_calls=[
-            {"id": t.id, "name": t.name, "arguments": t.arguments} for t in result.tool_calls
+            {
+                "id": t.id,
+                "name": t.name,
+                "arguments": t.arguments,
+                "tier": tool_tiers.get(t.id, "modify"),
+            }
+            for t in result.tool_calls
         ],
         # Truncated even after the retry above -- never let the shell read
         # this as "done" (see engine.py's identical check for why).
         status_override="failed" if truncated_empty else None,
+        parallel_tool_calls=caps.parallel_tool_calls,
     )
 
 

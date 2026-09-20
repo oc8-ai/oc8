@@ -10,6 +10,8 @@ where nobody can re-run the call to find out.
 from __future__ import annotations
 
 import json
+import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -269,3 +271,188 @@ def test_main_executes_run_shell_locally_and_posts_the_result(
     local_result = tool_bodies[0]["local_result"]
     assert local_result["exit_code"] == 0
     assert "hi" in local_result["stdout"]
+
+
+# --------------------------------------------------- parallel reads under caps
+
+
+def _overlapping_pairs(windows: list[tuple[str, float, float]]) -> int:
+    count = 0
+    for i, (_, s1, e1) in enumerate(windows):
+        for _, s2, e2 in windows[i + 1 :]:
+            if s1 < e2 and s2 < e1:
+                count += 1
+    return count
+
+
+def _tool_recording_handler(
+    windows: list[tuple[str, float, float]],
+    lock: threading.Lock,
+    step_body: dict[str, object],
+    *,
+    status_by_call_id: dict[str, str] | None = None,
+    delay_s: float = 0.05,
+) -> Callable[[httpx.Request], httpx.Response]:
+    """A `/step` that answers with `step_body` once and "done" after, and a
+    `/tool` that records each call's [start, end) wall-clock window (guarded
+    by `lock`, since `httpx.MockTransport` calls this handler concurrently
+    from every pool thread) around a real `time.sleep` -- long enough to
+    release the GIL so genuinely concurrent threads actually overlap."""
+    served = {"step": False}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/step"):
+            if not served["step"]:
+                served["step"] = True
+                return httpx.Response(200, json=step_body)
+            return httpx.Response(200, json={"done": True, "text": "done", "tool_calls": []})
+        if request.url.path.endswith("/tool"):
+            body = json.loads(request.content)
+            call_id = str(body["id"])
+            start = time.monotonic()
+            time.sleep(delay_s)
+            end = time.monotonic()
+            with lock:
+                windows.append((call_id, start, end))
+            status = (status_by_call_id or {}).get(call_id, "ok")
+            return httpx.Response(200, json={"status": status, "output": f"{call_id} done"})
+        if request.url.path.endswith("/finish"):
+            return httpx.Response(200, json={})
+        raise AssertionError(f"unexpected request: {request.url.path}")
+
+    return handler
+
+
+def test_main_dispatches_a_leading_read_batch_concurrently(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Three tier="read" calls under parallel_tool_calls=True fire as real,
+    overlapping /tool POSTs from a thread pool -- not one at a time."""
+    windows: list[tuple[str, float, float]] = []
+    lock = threading.Lock()
+    step_body = {
+        "done": False,
+        "text": "",
+        "parallel_tool_calls": True,
+        "tool_calls": [
+            {"id": "c1", "name": "read_a", "arguments": {}, "tier": "read"},
+            {"id": "c2", "name": "read_b", "arguments": {}, "tier": "read"},
+            {"id": "c3", "name": "read_c", "arguments": {}, "tier": "read"},
+        ],
+    }
+    handler = _tool_recording_handler(windows, lock, step_body)
+
+    exit_code = _run_main(monkeypatch, handler)
+
+    assert exit_code == 0
+    assert len(windows) == 3
+    assert _overlapping_pairs(windows) > 0, "the leading read batch never actually overlapped"
+
+
+def test_main_dispatches_sequentially_across_a_tier_boundary(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """[read, read, modify, read] only batches the leading two reads -- the
+    modify call and everything after it in the same step dispatch one at a
+    time, and never overlap anything (not each other, not the leading
+    batch)."""
+    windows: list[tuple[str, float, float]] = []
+    lock = threading.Lock()
+    step_body = {
+        "done": False,
+        "text": "",
+        "parallel_tool_calls": True,
+        "tool_calls": [
+            {"id": "c1", "name": "read_a", "arguments": {}, "tier": "read"},
+            {"id": "c2", "name": "read_b", "arguments": {}, "tier": "read"},
+            {"id": "c3", "name": "write_a", "arguments": {}, "tier": "modify"},
+            {"id": "c4", "name": "read_c", "arguments": {}, "tier": "read"},
+        ],
+    }
+    handler = _tool_recording_handler(windows, lock, step_body)
+
+    exit_code = _run_main(monkeypatch, handler)
+
+    assert exit_code == 0
+    assert len(windows) == 4
+    # Only c1/c2 (the leading batch) overlap.
+    assert _overlapping_pairs(windows) == 1
+    by_id = {call_id: (s, e) for call_id, s, e in windows}
+    c1_s, c1_e = by_id["c1"]
+    c2_s, c2_e = by_id["c2"]
+    c3_s, c3_e = by_id["c3"]
+    c4_s, c4_e = by_id["c4"]
+    assert c1_s < c2_e and c2_s < c1_e, "the leading two reads must have overlapped"
+    assert not (c3_s < c1_e and c1_s < c3_e), "the modify call must not overlap the read batch"
+    assert not (c3_s < c2_e and c2_s < c3_e), "the modify call must not overlap the read batch"
+    assert not (c4_s < c3_e and c3_s < c4_e), "a call after the boundary must not overlap it"
+
+
+def test_main_checks_suspend_status_in_order_after_the_batch_completes(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A batch's results are still checked for waiting_for_approval/
+    waiting_for_input in original list order once the (concurrent) batch
+    completes -- and a call after the batch never dispatches once a suspend
+    is found in it, exactly as the pre-parallel sequential loop behaved."""
+    dispatched: list[str] = []
+    lock = threading.Lock()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/step"):
+            return httpx.Response(
+                200,
+                json={
+                    "done": False,
+                    "text": "",
+                    "parallel_tool_calls": True,
+                    "tool_calls": [
+                        {"id": "c1", "name": "read_a", "arguments": {}, "tier": "read"},
+                        {"id": "c2", "name": "read_b", "arguments": {}, "tier": "read"},
+                        {"id": "c3", "name": "write_a", "arguments": {}, "tier": "modify"},
+                    ],
+                },
+            )
+        if request.url.path.endswith("/tool"):
+            body = json.loads(request.content)
+            call_id = str(body["id"])
+            with lock:
+                dispatched.append(call_id)
+            status = "waiting_for_approval" if call_id == "c2" else "ok"
+            return httpx.Response(200, json={"status": status, "output": ""})
+        raise AssertionError(f"unexpected request: {request.url.path}")
+
+    exit_code = _run_main(monkeypatch, handler)
+
+    assert exit_code == 0
+    # c1 and c2 both dispatched (the concurrent batch); c3 never does, since
+    # the run suspends on c2's result before reaching the modify call after it.
+    assert sorted(dispatched) == ["c1", "c2"]
+    assert "run suspended: waiting_for_approval" in capsys.readouterr().err
+
+
+def test_main_leaves_calls_sequential_when_parallel_tool_calls_is_false(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`test_parity.py`'s fixture never sets parallel_tool_calls, so this
+    path must be a true no-op for it: even a "read"-tagged call dispatches
+    alone, never overlapping another, when the step response omits (or sets
+    False) parallel_tool_calls."""
+    windows: list[tuple[str, float, float]] = []
+    lock = threading.Lock()
+    step_body = {
+        "done": False,
+        "text": "",
+        "parallel_tool_calls": False,
+        "tool_calls": [
+            {"id": "c1", "name": "read_a", "arguments": {}, "tier": "read"},
+            {"id": "c2", "name": "read_b", "arguments": {}, "tier": "read"},
+        ],
+    }
+    handler = _tool_recording_handler(windows, lock, step_body)
+
+    exit_code = _run_main(monkeypatch, handler)
+
+    assert exit_code == 0
+    assert len(windows) == 2
+    assert _overlapping_pairs(windows) == 0

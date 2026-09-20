@@ -804,9 +804,17 @@ async def test_a_repeated_write_does_not_reach_the_tool_server_twice(
 # ------------------------------------------------- tool-call timing (KPIs)
 
 
-async def _mcp_backed_run(db: Any, tenant: uuid.UUID, *, modify: bool = True) -> tuple[Any, Any]:
+async def _mcp_backed_run(
+    db: Any, tenant: uuid.UUID, *, modify: bool = True, parallel_tool_calls: bool = False
+) -> tuple[Any, Any]:
     """An agent + RUNNING run with an `odoo` MCP connection bound, the fixture
-    the two timing tests below share. Returns (agent_id, run_id)."""
+    the two timing tests below (and the parallel-reads tier tests further
+    down) share. Returns (agent_id, run_id).
+
+    `parallel_tool_calls=True` binds a `ModelConfig` whose params declare the
+    cap, the same mechanism `tests/agent/test_engine_parallel_reads.py` uses
+    for the in-process engine's equivalent fixture -- so `/step`'s
+    `resolve_caps(model_config.params)` reads it back as True."""
     from oc8 import models as m
 
     dept = m.Department(
@@ -816,6 +824,17 @@ async def _mcp_backed_run(db: Any, tenant: uuid.UUID, *, modify: bool = True) ->
     )
     db.add(dept)
     await db.flush()
+    model_config_id = None
+    if parallel_tool_calls:
+        model_config = m.ModelConfig(
+            tenant_id=tenant,
+            provider="fake",
+            model="fake",
+            params={"parallel_tool_calls": True},
+        )
+        db.add(model_config)
+        await db.flush()
+        model_config_id = model_config.id
     agent = m.Agent(
         tenant_id=tenant,
         department_id=dept.id,
@@ -824,6 +843,7 @@ async def _mcp_backed_run(db: Any, tenant: uuid.UUID, *, modify: bool = True) ->
         narrowing={},
         definition={},
         presentation={},
+        model_config_id=model_config_id,
     )
     db.add(agent)
     await db.flush()
@@ -1668,6 +1688,7 @@ async def test_step_nudges_instead_of_finishing_when_todos_are_still_open(
                     "arguments": {
                         "todos": [{"content": "Resolve ticket B", "status": "completed"}]
                     },
+                    "tier": "modify",
                 }
             ]
     # Both completions happened INSIDE this one /step call -- the shell
@@ -1807,3 +1828,305 @@ async def test_step_withholds_run_shell_from_a_real_runtime_plugin(
 
     offered = {t.name for t in seen["tools"]}
     assert "run_shell" not in offered
+
+
+# --------------------------------------------------- parallel reads under caps
+
+
+class _EmptySchemaSession:
+    """Stand-in for the MCP session `/step` opens on a run's first step to
+    fetch tool schemas -- the tests below don't care what schemas come back,
+    only what the (fully scripted) model turn's tool_calls get tagged."""
+
+    tools: list[Any] = []
+
+    def __init__(self, *a: Any, **kw: Any) -> None:
+        pass
+
+    async def __aenter__(self) -> Any:
+        return self
+
+    async def __aexit__(self, *a: Any) -> None:
+        return None
+
+
+async def _post_step(tenant: uuid.UUID, agent_id: uuid.UUID, run_id: uuid.UUID) -> dict[str, Any]:
+    from asgi_lifespan import LifespanManager
+    from httpx import ASGITransport, AsyncClient
+
+    from oc8.main import create_app
+
+    token = _agent_token(tenant, agent_id, run_id)
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post(
+                f"/api/v1/internal/agent/{run_id}/step",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert r.status_code == 200, r.text
+            return dict(r.json())
+
+
+@pytest.mark.asyncio
+async def test_step_result_annotates_read_tier_calls_when_parallel_caps_allow(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the agent's resolved ModelCaps.parallel_tool_calls is True and the
+    model's turn returns a leading run of read-tier ALLOW calls, /step's
+    response marks them tier="read" and sets parallel_tool_calls=True."""
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    monkeypatch.setattr("oc8.api.v1.internal_agent.McpSession", _EmptySchemaSession)
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        return CompletionResult(
+            text="",
+            tool_calls=[
+                ToolCall(id="c1", name="search_records", arguments={"model": "crm.lead"}),
+                ToolCall(id="c2", name="search_records", arguments={"model": "crm.opportunity"}),
+            ],
+            usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="tool_use",
+            provider="fake",
+            model="fake",
+        )
+
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id = await _mcp_backed_run(db, tenant, parallel_tool_calls=True)
+
+    body = await _post_step(tenant, agent_id, run_id)
+
+    assert body["parallel_tool_calls"] is True
+    assert [tc["tier"] for tc in body["tool_calls"]] == ["read", "read"]
+
+
+@pytest.mark.asyncio
+async def test_step_result_marks_write_calls_modify_tier(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A write-tier tool call is annotated tier="modify" regardless of caps."""
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    monkeypatch.setattr("oc8.api.v1.internal_agent.McpSession", _EmptySchemaSession)
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        return CompletionResult(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="c1",
+                    name="create_record",
+                    arguments={"model": "sale.order", "values": {"partner_id": 7}},
+                ),
+            ],
+            usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="tool_use",
+            provider="fake",
+            model="fake",
+        )
+
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id = await _mcp_backed_run(db, tenant, parallel_tool_calls=True)
+
+    body = await _post_step(tenant, agent_id, run_id)
+
+    assert body["parallel_tool_calls"] is True
+    assert [tc["tier"] for tc in body["tool_calls"]] == ["modify"]
+
+
+@pytest.mark.asyncio
+async def test_step_result_leaves_tier_modify_when_caps_disallow_parallel(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The tier annotation is gated by the agent's own resolved caps -- an
+    agent whose model isn't declared to support parallel tool calls gets
+    tier="modify" even for a plain read, and parallel_tool_calls=False."""
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    monkeypatch.setattr("oc8.api.v1.internal_agent.McpSession", _EmptySchemaSession)
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        return CompletionResult(
+            text="",
+            tool_calls=[ToolCall(id="c1", name="search_records", arguments={"model": "crm.lead"})],
+            usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="tool_use",
+            provider="fake",
+            model="fake",
+        )
+
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        # parallel_tool_calls defaults to False -- no ModelConfig bound.
+        agent_id, run_id = await _mcp_backed_run(db, tenant)
+
+    body = await _post_step(tenant, agent_id, run_id)
+
+    assert body["parallel_tool_calls"] is False
+    assert [tc["tier"] for tc in body["tool_calls"]] == ["modify"]
+
+
+@pytest.mark.asyncio
+async def test_step_result_never_marks_control_tools_read_tier(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A control tool call (e.g. todo_write) is always tier="modify" even if
+    it would otherwise classify as read via required_right -- control tools
+    are excluded from the batch by name, not by scope. Everything after it in
+    the same turn stops being batchable too, same as a write would."""
+    from oc8 import models as m
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    monkeypatch.setattr("oc8.api.v1.internal_agent.McpSession", _EmptySchemaSession)
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        dept = m.Department(
+            tenant_id=tenant, name="Vertrieb",
+            frame={"tools": {"odoo": {"enabled": True, "read": True, "modify": True}}},
+        )
+        db.add(dept)
+        await db.flush()
+        model_config = m.ModelConfig(
+            tenant_id=tenant, provider="fake", model="fake",
+            params={"parallel_tool_calls": True},
+        )
+        db.add(model_config)
+        await db.flush()
+        agent = m.Agent(
+            tenant_id=tenant, department_id=dept.id, name="Nora", status="running",
+            narrowing={}, definition={}, presentation={}, model_config_id=model_config.id,
+        )
+        db.add(agent)
+        await db.flush()
+        conn = m.McpConnection(
+            tenant_id=tenant, department_id=dept.id, name="odoo", transport="stdio",
+            server_url="stdio://odoo", connected=True, config={"command": "x", "args": []},
+            # todo_write is deliberately granted "read" here to prove the
+            # control-tool exclusion runs on the NAME, not on this scope.
+            scopes={"read": ["search_records", "todo_write"], "write": []},
+        )
+        db.add(conn)
+        await db.flush()
+        run = m.AgentRun(
+            tenant_id=tenant, agent_id=agent.id, state="running",
+            context={"task": "x", "mcp_connection_id": str(conn.id)},
+        )
+        db.add(run)
+        await db.flush()
+        agent_id, run_id = agent.id, run.id
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        return CompletionResult(
+            text="",
+            tool_calls=[
+                ToolCall(id="c1", name="search_records", arguments={"model": "crm.lead"}),
+                ToolCall(
+                    id="c2", name="todo_write",
+                    arguments={"todos": [{"content": "look things up", "status": "completed"}]},
+                ),
+                ToolCall(id="c3", name="search_records", arguments={"model": "crm.lead"}),
+            ],
+            usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="tool_use",
+            provider="fake",
+            model="fake",
+        )
+
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+
+    body = await _post_step(tenant, agent_id, run_id)
+
+    assert body["parallel_tool_calls"] is True
+    assert [tc["tier"] for tc in body["tool_calls"]] == ["read", "modify", "modify"]
+
+
+@pytest.mark.asyncio
+async def test_step_result_excludes_outward_calls_from_read_tier(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A call the connection declares outward (spec B8) breaks the leading
+    run even though `required_right` would call it "read" too -- batching an
+    outward call would let two concurrent /tool POSTs both read "not yet
+    delivered" from `check_outward` before either commits, defeating the
+    one-message-per-recipient guarantee."""
+    from oc8 import models as m
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    monkeypatch.setattr("oc8.api.v1.internal_agent.McpSession", _EmptySchemaSession)
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        dept = m.Department(
+            tenant_id=tenant, name="Vertrieb",
+            frame={"tools": {"odoo": {"enabled": True, "read": True, "modify": True}}},
+        )
+        db.add(dept)
+        await db.flush()
+        model_config = m.ModelConfig(
+            tenant_id=tenant, provider="fake", model="fake",
+            params={"parallel_tool_calls": True},
+        )
+        db.add(model_config)
+        await db.flush()
+        agent = m.Agent(
+            tenant_id=tenant, department_id=dept.id, name="Nora", status="running",
+            narrowing={}, definition={}, presentation={}, model_config_id=model_config.id,
+        )
+        db.add(agent)
+        await db.flush()
+        conn = m.McpConnection(
+            tenant_id=tenant, department_id=dept.id, name="odoo", transport="stdio",
+            server_url="stdio://odoo", connected=True,
+            config={"command": "x", "args": [], "outward_tools": ["send_reply"]},
+            scopes={"read": ["search_records", "send_reply"], "write": []},
+        )
+        db.add(conn)
+        await db.flush()
+        run = m.AgentRun(
+            tenant_id=tenant, agent_id=agent.id, state="running",
+            context={"task": "x", "mcp_connection_id": str(conn.id)},
+        )
+        db.add(run)
+        await db.flush()
+        agent_id, run_id = agent.id, run.id
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        return CompletionResult(
+            text="",
+            tool_calls=[
+                ToolCall(id="c1", name="search_records", arguments={"model": "crm.lead"}),
+                ToolCall(id="c2", name="send_reply", arguments={"message": "hi"}),
+                ToolCall(id="c3", name="search_records", arguments={"model": "crm.lead"}),
+            ],
+            usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="tool_use",
+            provider="fake",
+            model="fake",
+        )
+
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+
+    body = await _post_step(tenant, agent_id, run_id)
+
+    assert body["parallel_tool_calls"] is True
+    assert [tc["tier"] for tc in body["tool_calls"]] == ["read", "modify", "modify"]
