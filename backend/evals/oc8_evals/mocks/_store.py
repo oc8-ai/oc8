@@ -12,6 +12,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypeVar
@@ -52,5 +53,35 @@ class Store:
 
     def next_id(self, state: dict[str, Any], prefix: str) -> str:
         counters = state.setdefault("_counters", {})
-        counters[prefix] = int(counters.get(prefix, 0)) + 1
+        if prefix not in counters:
+            # First use of this prefix in this state file. A scenario's
+            # setup() may already have hand-seeded fixture records with
+            # literal ids under this prefix (e.g. "msg-1") before any tool
+            # call reaches here -- start the counter above the highest one
+            # already in use so a freshly created record never collides
+            # with (and silently aliases) a seeded one.
+            counters[prefix] = self._max_seeded_suffix(state, prefix)
+        counters[prefix] = int(counters[prefix]) + 1
         return f"{prefix}-{counters[prefix]}"
+
+    @staticmethod
+    def _max_seeded_suffix(state: dict[str, Any], prefix: str) -> int:
+        pattern = re.compile(rf"^{re.escape(prefix)}-(\d+)$")
+        highest = 0
+
+        def scan(value: Any) -> None:
+            nonlocal highest
+            if isinstance(value, dict):
+                id_value = value.get("id")
+                if isinstance(id_value, str):
+                    match = pattern.match(id_value)
+                    if match:
+                        highest = max(highest, int(match.group(1)))
+                for v in value.values():
+                    scan(v)
+            elif isinstance(value, list):
+                for v in value:
+                    scan(v)
+
+        scan(state)
+        return highest
