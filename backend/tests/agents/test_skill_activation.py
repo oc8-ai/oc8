@@ -6,7 +6,6 @@ import pytest
 from sqlalchemy import select
 
 from oc8 import models as m
-from oc8.agent import engine as eng
 from oc8.agent.engine import run_agent
 from oc8.modelrouter import NeutralTool
 from tests.agents.test_skill_invocation import (
