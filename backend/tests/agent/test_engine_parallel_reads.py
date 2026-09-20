@@ -110,6 +110,7 @@ async def _fixture(
     tool_scopes: dict[str, list[str]],
     approval_actions: list[str] | None = None,
     parallel_tool_calls: bool = True,
+    outward_tools: list[str] | None = None,
 ) -> tuple[m.Agent, m.McpConnection]:
     frame_policy: dict[str, Any] = {"enabled": True, "read": True, "modify": True}
     if approval_actions:
@@ -141,6 +142,9 @@ async def _fixture(
     )
     db.add(agent)
     await db.flush()
+    conn_config: dict[str, Any] = {"command": "x", "args": []}
+    if outward_tools:
+        conn_config["outward_tools"] = outward_tools
     conn = m.McpConnection(
         tenant_id=tenant,
         department_id=dept.id,
@@ -148,7 +152,7 @@ async def _fixture(
         transport="stdio",
         server_url="stdio://things",
         connected=True,
-        config={"command": "x", "args": []},
+        config=conn_config,
         scopes=tool_scopes,
     )
     db.add(conn)
@@ -238,6 +242,56 @@ async def test_write_call_breaks_the_batch(
     # reach the pre-pass at all, so they cannot overlap with anything.
     assert recorder.overlapping_pairs() == 1
     assert [t["tool"] for t in result.tool_calls] == ["read_a", "read_b", "write_a", "read_c"]
+
+
+async def test_outward_call_breaks_the_batch(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A turn of [read, read, outward-declared, read] only batches the
+    leading two reads -- a call the connection declares outward (spec B8)
+    breaks the run even though `required_right` would call it "read" too,
+    same as a write does."""
+    tenant = uuid.uuid4()
+    recorder = _RecordingServer()
+    monkeypatch.setattr(
+        "oc8.agent.engine.McpSession",
+        _session_factory(recorder, ["read_a", "read_b", "send_reply", "read_c"]),
+    )
+    monkeypatch.setattr(
+        "oc8.agent.engine.stream_completion_with_fallback",
+        _ScriptedStream(
+            [
+                _turn(
+                    "",
+                    ToolCall(id="c1", name="read_a", arguments={}),
+                    ToolCall(id="c2", name="read_b", arguments={}),
+                    ToolCall(id="c3", name="send_reply", arguments={}),
+                    ToolCall(id="c4", name="read_c", arguments={}),
+                ),
+                _turn("All done."),
+            ]
+        ),
+    )
+    async with app_session(tenant) as db:
+        agent, conn = await _fixture(
+            db,
+            tenant,
+            tool_scopes={
+                "read": ["read_a", "read_b", "read_c", "send_reply"],
+                "modify": [],
+            },
+            outward_tools=["send_reply"],
+        )
+        result = await run_agent(
+            db, agent=agent, task_text="go", tenant_id=tenant, mcp_conn=conn
+        )
+
+    assert result.status == "done", result
+    # Only read_a/read_b (the leading run) overlap; send_reply is declared
+    # outward on the connection, so it and read_c after it never enter the
+    # batch -- both dispatch sequentially, in order.
+    assert recorder.overlapping_pairs() == 1
+    assert [t["tool"] for t in result.tool_calls] == ["read_a", "read_b", "send_reply", "read_c"]
 
 
 async def test_approval_required_call_breaks_the_batch(
