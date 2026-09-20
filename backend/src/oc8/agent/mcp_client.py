@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import tempfile
+from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
@@ -236,6 +237,7 @@ class McpSession:
         env: dict[str, str] | None = None,
         *,
         timeout_s: float | None = None,
+        on_step: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self._params = StdioServerParameters(
             command=command,
@@ -247,9 +249,16 @@ class McpSession:
         self._timeout_s = MCP_REQUEST_TIMEOUT_SECONDS if timeout_s is None else timeout_s
         self.tools: list[NeutralTool] = []
         self._errlog = _StderrTail()
+        # Only "Test connection" passes this -- every other caller (the agent
+        # pool, the isolated runtime's tool gateway) launches sessions by the
+        # dozen and has no per-step UI waiting on them, so it stays optional
+        # and costs them nothing.
+        self._on_step = on_step
 
     async def __aenter__(self) -> McpSession:
         try:
+            if self._on_step is not None:
+                await self._on_step("spawn")
             read, write = await self._stack.enter_async_context(
                 # Capture the server's stderr instead of letting it default to
                 # ours. When a stdio server dies during start-up the SDK raises
@@ -270,7 +279,11 @@ class McpSession:
                 ClientSession(read, write, read_timeout_seconds=_read_timeout(self._timeout_s))
             )
             await self._session.initialize()
+            if self._on_step is not None:
+                await self._on_step("handshake")
             listed = await self._session.list_tools()
+            if self._on_step is not None:
+                await self._on_step("list_tools")
         except BaseException as exc:
             # A server that never answers `initialize` raises here -- but the
             # subprocess and session are already pushed onto the stack, and

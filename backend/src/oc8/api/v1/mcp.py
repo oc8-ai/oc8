@@ -20,6 +20,7 @@ from oc8.capas.discovery import find_plugin
 from oc8.capas.guardrails import GuardrailLibrary
 from oc8.capas.i18n import translations_for
 from oc8.capas.manifest import ManifestError, ToolPackConnection, parse_manifest
+from oc8.realtime.emit import publish_mcp_test_log
 from oc8.schemas.dto import (
     ConnectionToolNamesDTO,
     GuardrailAdjustableDTO,
@@ -359,11 +360,23 @@ async def test_connection(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "connection not found")
     cfg = conn.config or {}
     now = _utcnow_iso()
+
+    _STEP_MESSAGES = {
+        "spawn": "Starting session…",
+        "handshake": "Handshake complete.",
+        "list_tools": "Tool list received.",
+    }
+
+    async def on_step(step: str) -> None:
+        await publish_mcp_test_log(
+            principal.tenant_id, connection_id=conn_id, step=step, message=_STEP_MESSAGES[step]
+        )
+
     try:
         async with asyncio.timeout(_TEST_TIMEOUT_S):
             env = await _connection_env(db, conn)
             command, args = wrap_with_requirements(cfg.get("command", ""), cfg.get("args", []), cfg)
-            async with McpSession(command, args, env=env) as session:
+            async with McpSession(command, args, env=env, on_step=on_step) as session:
                 names = [t.name for t in session.tools]
         conn.connected = True
         conn.health = {
@@ -372,8 +385,18 @@ async def test_connection(
             "toolCount": len(names),
             "tools": names,
         }
+        await publish_mcp_test_log(
+            principal.tenant_id,
+            connection_id=conn_id,
+            step="result",
+            message=f"Connected — {len(names)} tool(s) discovered.",
+        )
     except Exception as exc:  # any bring-up failure is an operator-visible error health, not a 500
         conn.connected = False
-        conn.health = {"status": "error", "checkedAt": now, "error": str(exc)[:500]}
+        error = str(exc)[:500]
+        conn.health = {"status": "error", "checkedAt": now, "error": error}
+        await publish_mcp_test_log(
+            principal.tenant_id, connection_id=conn_id, step="result", message=f"Error: {error}"
+        )
     await db.commit()
     return _to_dto(conn)

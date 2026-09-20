@@ -1,6 +1,6 @@
 import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
-import { applyEvent } from "@/lib/live/apply-event";
+import { applyEvent, mcpTestLogKey } from "@/lib/live/apply-event";
 import type { RealtimeEvent } from "@/lib/live/types";
 
 function event(type: string, data: Record<string, unknown>): RealtimeEvent {
@@ -185,5 +185,52 @@ describe("run.token_delta", () => {
     const qc = new QueryClient();
     applyEvent(qc, event("run.token_delta", { run_id: "unknown", text: "x" }));
     expect(qc.getQueryData(["run", "unknown"])).toBeUndefined();
+  });
+});
+
+describe("mcp.test.log", () => {
+  it("appends the first line even with no prior cache entry", () => {
+    const qc = new QueryClient();
+
+    applyEvent(
+      qc,
+      event("mcp.test.log", { connection_id: "c1", step: "spawn", message: "Starting session…" }),
+    );
+
+    expect(qc.getQueryData(mcpTestLogKey("c1"))).toEqual([
+      { step: "spawn", message: "Starting session…" },
+    ]);
+  });
+
+  it("appends rather than replaces on a second event", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(mcpTestLogKey("c1"), [{ step: "spawn", message: "Starting session…" }]);
+
+    applyEvent(
+      qc,
+      event("mcp.test.log", {
+        connection_id: "c1",
+        step: "handshake",
+        message: "Handshake complete.",
+      }),
+    );
+
+    expect(qc.getQueryData(mcpTestLogKey("c1"))).toEqual([
+      { step: "spawn", message: "Starting session…" },
+      { step: "handshake", message: "Handshake complete." },
+    ]);
+  });
+
+  it("keeps a second connection's log separate", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(mcpTestLogKey("c1"), [{ step: "spawn", message: "Starting session…" }]);
+
+    applyEvent(
+      qc,
+      event("mcp.test.log", { connection_id: "c2", step: "spawn", message: "Starting session…" }),
+    );
+
+    expect(qc.getQueryData(mcpTestLogKey("c1"))).toHaveLength(1);
+    expect(qc.getQueryData(mcpTestLogKey("c2"))).toHaveLength(1);
   });
 });
