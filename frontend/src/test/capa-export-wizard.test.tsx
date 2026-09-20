@@ -62,11 +62,14 @@ vi.mock("@/lib/api", () => ({
 
 import { CapaExportWizard } from "@/components/capa-export-wizard";
 
-function renderWizard(onClose = vi.fn()) {
+function renderWizard(
+  onClose = vi.fn(),
+  initialSelection?: { kind: "tool_pack"; id: string; name: string },
+) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={qc}>
-      <CapaExportWizard onClose={onClose} />
+      <CapaExportWizard onClose={onClose} initialSelection={initialSelection} />
     </QueryClientProvider>,
   );
   return { onClose };
@@ -173,5 +176,35 @@ describe("CapaExportWizard", () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled());
 
     clickSpy.mockRestore();
+  });
+
+  // Task 12: the Capas route hands off a just-installed custom MCP capa via
+  // `initialSelection` so this wizard opens pre-checked, instead of an empty
+  // Selection step the user would have to hunt the new capa down in (it
+  // isn't even one of the department/agent/skill lists above).
+  it("pre-checks a tool_pack capa passed via initialSelection, enabling Next immediately", () => {
+    renderWizard(vi.fn(), { kind: "tool_pack", id: "capa-1", name: "my_http_api" });
+
+    expect(screen.getByText("my_http_api")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Next" })).not.toBeDisabled();
+  });
+
+  it("includes the pre-selected tool_pack capa in the built export items, alongside any other picks", () => {
+    renderWizard(vi.fn(), { kind: "tool_pack", id: "capa-1", name: "my_http_api" });
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Sales" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+
+    expect(previewMutate).toHaveBeenCalledWith([
+      { kind: "tool_pack", id: "capa-1", name: "my_http_api", version: "1.0.0", summary: "" },
+      { kind: "department", id: "dept-1", name: "sales", version: "1.0.0", summary: "" },
+    ]);
+  });
+
+  it("does not pre-check anything when no initialSelection is given", () => {
+    renderWizard();
+
+    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
   });
 });

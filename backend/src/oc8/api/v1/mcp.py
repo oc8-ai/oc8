@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 
 from oc8 import models as m
-from oc8.agent.mcp_client import McpSession
+from oc8.agent.mcp_client import open_tool_session, resolve_auth_header
 from oc8.agent.mcp_env import resolve_mcp_env
 from oc8.agent.mcp_requirements import wrap_with_requirements
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
@@ -375,8 +375,31 @@ async def test_connection(
     try:
         async with asyncio.timeout(_TEST_TIMEOUT_S):
             env = await _connection_env(db, conn)
-            command, args = wrap_with_requirements(cfg.get("command", ""), cfg.get("args", []), cfg)
-            async with McpSession(command, args, env=env, on_step=on_step) as session:
+            headers = resolve_auth_header(cfg, env)
+            if conn.transport == "manual_http":
+                http_tools = list(cfg.get("http_tools", []))
+                if not http_tools:
+                    raise ValueError("connection has no described HTTP tools")
+                tool_session = await open_tool_session(
+                    transport="manual_http",
+                    server_url=conn.server_url,
+                    http_tools=http_tools,
+                    headers=headers,
+                )
+            else:
+                command, args = wrap_with_requirements(
+                    cfg.get("command", ""), cfg.get("args", []), cfg
+                )
+                tool_session = await open_tool_session(
+                    transport=conn.transport,
+                    command=command,
+                    args=args,
+                    server_url=conn.server_url,
+                    headers=headers,
+                    env=env,
+                    on_step=on_step,
+                )
+            async with tool_session as session:
                 names = [t.name for t in session.tools]
         conn.connected = True
         conn.health = {

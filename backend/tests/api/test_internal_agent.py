@@ -4,9 +4,15 @@ container round-trip is exercised live (needs Docker), not here."""
 from __future__ import annotations
 
 import json
+import socket
+import subprocess
+import sys
+import time
 import uuid
+from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
 from oc8.api.v1.internal_agent import RUN_SCOPE, _from_message, _to_messages
@@ -733,7 +739,7 @@ async def test_a_repeated_write_does_not_reach_the_tool_server_twice(
             calls.append(name)
             return f"created id={len(calls)}"
 
-    monkeypatch.setattr("oc8.api.v1.internal_agent.McpSession", _CountingSession)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _CountingSession)
 
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:  # type: ignore[operator]
@@ -876,7 +882,7 @@ async def test_a_dispatched_call_records_started_at_and_duration(
             await asyncio.sleep(0.02)
             return "created id=1"
 
-    monkeypatch.setattr("oc8.api.v1.internal_agent.McpSession", _SlowSession)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _SlowSession)
 
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:  # type: ignore[operator]
@@ -926,7 +932,7 @@ async def test_a_denied_call_records_no_timing(
         async def call(self, name: str, arguments: dict[str, Any]) -> str:
             raise AssertionError("a denied call must never reach the tool server")
 
-    monkeypatch.setattr("oc8.api.v1.internal_agent.McpSession", _NeverSession)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _NeverSession)
 
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:  # type: ignore[operator]
@@ -951,6 +957,156 @@ async def test_a_denied_call_records_no_timing(
     assert entry["result"].startswith("ERROR:")
     assert "startedAt" not in entry
     assert "durationMs" not in entry
+
+
+# ------------------------------------------------- real remote MCP transport
+
+#: A real FastMCP server bound to a real port, reused verbatim from
+#: test_mcp_client_http_transport.py's fixture -- this codebase duplicates
+#: small fixture helpers per file rather than sharing a conftest for them
+#: (see test_mcp_env.py's own copy for the in-process engine's equivalent).
+_ECHO_SERVER = """
+import asyncio
+import sys
+
+try:
+    from mcp.server.mcpserver import MCPServer
+except ImportError:
+    # Fallback for older mcp versions
+    from mcp.server.fastmcp import FastMCP as MCPServer
+
+port = int(sys.argv[1])
+mcp = MCPServer("echo")
+
+
+@mcp.tool()
+def echo(text: str) -> str:
+    "Returns its input unchanged."
+    return text
+
+
+async def main():
+    await mcp.run_streamable_http_async(host="127.0.0.1", port=port, streamable_http_path="/mcp")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+"""
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _wait_until_up(url: str, timeout_s: float = 10.0) -> None:
+    deadline = time.monotonic() + timeout_s
+    last_exc: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            httpx.get(url, timeout=1.0)
+            return
+        except Exception as exc:  # server not accepting connections yet
+            last_exc = exc
+            time.sleep(0.1)
+    raise TimeoutError(f"server at {url} never came up") from last_exc
+
+
+@pytest.fixture
+def echo_http_server(tmp_path: Path):
+    script = tmp_path / "echo_server.py"
+    script.write_text(_ECHO_SERVER)
+    port = _free_port()
+    proc = subprocess.Popen([sys.executable, str(script), str(port)])
+    try:
+        _wait_until_up(f"http://127.0.0.1:{port}/mcp")
+        yield f"http://127.0.0.1:{port}/mcp"
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_step_and_tool_reach_a_real_remote_mcp_server_over_http(
+    app_session: object, monkeypatch: pytest.MonkeyPatch, echo_http_server: str
+) -> None:
+    """This endpoint's two `McpSession(command, args, env=env)` call sites --
+    preamble tool-schema discovery (`/step`) and tool-call execution
+    (`/tool`) -- must both route through `open_tool_session` so a
+    `transport="http"` connection (a remote MCP server, not a stdio
+    subprocess) actually works here, exactly as Task 5 (api/v1/mcp.py's
+    `test_connection`) and Task 6 (the in-process engine loop) already proved
+    for their own call sites. Driven against a real FastMCP server, not a
+    mock."""
+    from oc8 import models as m
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        dept = m.Department(
+            tenant_id=tenant, name="Ops",
+            frame={"tools": {"echo": {"enabled": True, "read": True, "modify": True}}},
+        )
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(
+            tenant_id=tenant, department_id=dept.id, name="Nora", status="running",
+            narrowing={}, definition={}, presentation={},
+        )
+        db.add(agent)
+        await db.flush()
+        conn = m.McpConnection(
+            tenant_id=tenant, department_id=dept.id, name="echo", transport="http",
+            server_url=echo_http_server, scopes={"read": [], "send": []}, config={},
+            connected=True, health={},
+        )
+        db.add(conn)
+        await db.flush()
+        run = m.AgentRun(
+            tenant_id=tenant, agent_id=agent.id,
+            state="running", context={"task": "say hi", "mcp_connection_id": str(conn.id)},
+        )
+        db.add(run)
+        await db.flush()
+        agent_id, run_id = agent.id, run.id
+
+    seen: dict[str, Any] = {}
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        seen["tools"] = kw["tools"]
+        return CompletionResult(
+            text="done", tool_calls=[], usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="stop", provider="fake", model="fake",
+        )
+
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+
+    from asgi_lifespan import LifespanManager
+    from httpx import ASGITransport, AsyncClient
+
+    from oc8.main import create_app
+
+    token = _agent_token(tenant, agent_id, run_id)
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post(
+                f"/api/v1/internal/agent/{run_id}/step",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert r.status_code == 200, r.text
+
+    assert "echo" in {t.name for t in seen["tools"]}, (
+        "tool-schema discovery did not reach the real remote server"
+    )
+
+    code, body = await _post_tool(tenant, agent_id, run_id, "echo", {"text": "hi"})
+    assert code == 200, body
+    assert body["status"] == "ok", body
+    assert body["output"] == "hi", body
 
 
 # ------------------------------------------------- department prompt caching

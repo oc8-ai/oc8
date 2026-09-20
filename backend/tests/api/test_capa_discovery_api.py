@@ -10,8 +10,11 @@ from httpx import ASGITransport, AsyncClient
 
 from oc8.auth import get_identity_provider
 from oc8.capas.discovery import MANIFEST_FILENAME, invalidate_discovery_cache
+from oc8.capas.lifecycle import enable_plugin
+from oc8.capas.service import install_plugin
 from oc8.config import get_settings
 from oc8.main import create_app
+from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
 
@@ -217,6 +220,95 @@ async def test_invalid_manifest_is_listed_but_not_installable(
                 assert r.status_code == 400
     finally:
         get_settings.cache_clear()
+
+
+async def test_available_lists_a_custom_capa_with_no_disk_folder(
+    app_session: AppSessionFactory,
+) -> None:
+    """A capa installed via the custom-MCP wizard (`origin="custom"`) has no
+    `plugin.toml` on disk at all -- `discover_plugins()` never sees it, so
+    without merging DB-only rows in, an installed-and-enabled custom capa
+    would silently never appear here (live bug found 2026-09-20 walking
+    through the wizard end to end: install/enable succeeded, but the Capas
+    page's Installed tab stayed empty)."""
+    tenant = uuid.uuid4()
+    manifest = {
+        "name": "acme_billing",
+        "version": "1.0.0",
+        "type": "tool_pack",
+        "label": "Acme Billing",
+        "summary": "Acme's billing REST API.",
+        "tool_pack": {
+            "connections": [
+                {
+                    "key": "default",
+                    "name": "acme_billing",
+                    "server_url": "https://api.acme.example/v1",
+                    "transport": "manual_http",
+                    "config": {"auth_header_name": "Authorization"},
+                }
+            ]
+        },
+    }
+    async with app_session(tenant) as db:
+        version = await install_plugin(
+            db, tenant_id=tenant, manifest_data=manifest, origin="custom"
+        )
+        await enable_plugin(db, tenant_id=tenant, capa_id=version.capa_id, granted_permissions=[])
+        await db.commit()
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.get("/api/v1/capas/available", headers=_h(tenant))
+            assert r.status_code == 200, r.text
+            row = next(x for x in r.json()["items"] if x["pluginId"] == "acme_billing")
+            assert row["installed"] is True
+            assert row["installedVersion"] == "1.0.0"
+            assert row["installationStatus"] == "enabled"
+            assert row["label"] == "Acme Billing"
+            assert row["type"] == "tool_pack"
+            assert row["databaseId"] == str(version.capa_id)
+
+
+async def test_a_non_custom_capa_with_no_disk_folder_is_not_merged_in(
+    app_session: AppSessionFactory,
+) -> None:
+    """The DB-only merge above is scoped to `origin="custom"` rows
+    specifically -- a `local`/`store` row whose plugin folder was later
+    removed or renamed must not resurface here as `installed=True`, unlike
+    a genuine custom-MCP-wizard capa. Regression test for a finding from
+    this plan's final review: the merge's original skip condition keyed
+    only on "absent from `discover_plugins()`", which this row also
+    satisfies -- the origin check is what tells them apart."""
+    tenant = uuid.uuid4()
+    manifest = {
+        "name": "decommissioned_widget",
+        "version": "1.0.0",
+        "type": "tool_pack",
+        "summary": "Used to have a plugin.toml folder; it's gone now.",
+        "tool_pack": {
+            "connections": [
+                {
+                    "key": "default",
+                    "name": "decommissioned_widget",
+                    "server_url": "https://api.example/v1",
+                    "transport": "manual_http",
+                    "config": {},
+                }
+            ]
+        },
+    }
+    async with app_session(tenant) as db:
+        await install_plugin(db, tenant_id=tenant, manifest_data=manifest, origin="local")
+        await db.commit()
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.get("/api/v1/capas/available", headers=_h(tenant))
+            assert r.status_code == 200, r.text
+            assert not any(x["pluginId"] == "decommissioned_widget" for x in r.json()["items"])
 
 
 async def test_install_requires_admin(plugins_root: Path) -> None:

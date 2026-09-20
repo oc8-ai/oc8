@@ -47,7 +47,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
-from oc8.agent.mcp_client import McpSession
+from oc8.agent.mcp_client import HttpToolSession, McpSession, open_tool_session
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +66,7 @@ class McpSessionFailed(RuntimeError):
 
 @dataclass
 class _Live:
-    session: McpSession
+    session: McpSession | HttpToolSession
     opened_at: dt.datetime
     #: The task that entered the session and is the only one that may leave it.
     owner: asyncio.Task[None]
@@ -80,8 +80,13 @@ async def _own(
     command: str,
     args: list[str],
     env: dict[str, str],
-    ready: asyncio.Future[McpSession],
+    ready: asyncio.Future[McpSession | HttpToolSession],
     stop: asyncio.Event,
+    *,
+    transport: str = "stdio",
+    server_url: str = "",
+    headers: dict[str, str] | None = None,
+    http_tools: list[dict[str, Any]] | None = None,
 ) -> None:
     """Hold one session open for its whole life, in ONE task.
 
@@ -103,7 +108,16 @@ async def _own(
     system fails, THIS task is cancelled and the caller sees a plain exception.
     """
     try:
-        async with McpSession(command, args, env=env) as session:
+        session_cm = open_tool_session(
+            transport=transport,
+            command=command,
+            args=args,
+            server_url=server_url,
+            headers=headers,
+            http_tools=http_tools,
+            env=env,
+        )
+        async with await session_cm as session:
             ready.set_result(session)
             await stop.wait()
     except BaseException as exc:  # reported to the caller through `ready`
@@ -118,6 +132,10 @@ async def _start(
     args: list[str],
     env: dict[str, str],
     stamp: dt.datetime,
+    transport: str = "stdio",
+    server_url: str = "",
+    headers: dict[str, str] | None = None,
+    http_tools: list[dict[str, Any]] | None = None,
     keep: bool = True,
 ) -> _Live:
     """Open a session and return it, or raise what the far system raised.
@@ -127,9 +145,21 @@ async def _start(
     caller simply closes it when done.
     """
     loop = asyncio.get_running_loop()
-    ready: asyncio.Future[McpSession] = loop.create_future()
+    ready: asyncio.Future[McpSession | HttpToolSession] = loop.create_future()
     stop = asyncio.Event()
-    owner = asyncio.create_task(_own(command, args, env, ready, stop))
+    owner = asyncio.create_task(
+        _own(
+            command,
+            args,
+            env,
+            ready,
+            stop,
+            transport=transport,
+            server_url=server_url,
+            headers=headers,
+            http_tools=http_tools,
+        )
+    )
     try:
         session = await ready
     except asyncio.CancelledError:
@@ -179,7 +209,11 @@ async def _single_use(
     args: list[str],
     env: dict[str, str],
     stamp: dt.datetime,
-) -> AsyncIterator[McpSession]:
+    transport: str = "stdio",
+    server_url: str = "",
+    headers: dict[str, str] | None = None,
+    http_tools: list[dict[str, Any]] | None = None,
+) -> AsyncIterator[McpSession | HttpToolSession]:
     """A session for exactly one use, then closed. Any cached one is dropped
     first: it was started with an environment we have now decided not to trust.
     """
@@ -187,7 +221,16 @@ async def _single_use(
     if stale is not None:
         await _close(stale, connection_id, "environment expires")
     entry = await _start(
-        connection_id, command=command, args=args, env=env, stamp=stamp, keep=False
+        connection_id,
+        command=command,
+        args=args,
+        env=env,
+        stamp=stamp,
+        transport=transport,
+        server_url=server_url,
+        headers=headers,
+        http_tools=http_tools,
+        keep=False,
     )
     try:
         yield entry.session
@@ -203,6 +246,10 @@ async def call(
     env: dict[str, str],
     tool: str,
     arguments: dict[str, Any],
+    transport: str = "stdio",
+    server_url: str = "",
+    headers: dict[str, str] | None = None,
+    http_tools: list[dict[str, Any]] | None = None,
     now: dt.datetime | None = None,
     reusable: bool = True,
 ) -> str:
@@ -226,7 +273,15 @@ async def call(
 
     if not reusable:
         async with _single_use(
-            connection_id, command=command, args=args, env=env, stamp=stamp
+            connection_id,
+            command=command,
+            args=args,
+            env=env,
+            stamp=stamp,
+            transport=transport,
+            server_url=server_url,
+            headers=headers,
+            http_tools=http_tools,
         ) as session:
             return await session.call(tool, arguments)
 
@@ -238,7 +293,17 @@ async def call(
         entry = None
 
     if entry is None:
-        entry = await _start(connection_id, command=command, args=args, env=env, stamp=stamp)
+        entry = await _start(
+            connection_id,
+            command=command,
+            args=args,
+            env=env,
+            stamp=stamp,
+            transport=transport,
+            server_url=server_url,
+            headers=headers,
+            http_tools=http_tools,
+        )
 
     async with entry.lock:
         try:
@@ -259,6 +324,10 @@ async def tools(
     command: str,
     args: list[str],
     env: dict[str, str],
+    transport: str = "stdio",
+    server_url: str = "",
+    headers: dict[str, str] | None = None,
+    http_tools: list[dict[str, Any]] | None = None,
     now: dt.datetime | None = None,
     reusable: bool = True,
 ) -> list[Any]:
@@ -270,7 +339,15 @@ async def tools(
     stamp = now or dt.datetime.now(tz=dt.UTC)
     if not reusable:
         async with _single_use(
-            connection_id, command=command, args=args, env=env, stamp=stamp
+            connection_id,
+            command=command,
+            args=args,
+            env=env,
+            stamp=stamp,
+            transport=transport,
+            server_url=server_url,
+            headers=headers,
+            http_tools=http_tools,
         ) as session:
             return list(session.tools)
 
@@ -280,7 +357,17 @@ async def tools(
         await _close(entry, connection_id, "aged out")
         entry = None
     if entry is None:
-        entry = await _start(connection_id, command=command, args=args, env=env, stamp=stamp)
+        entry = await _start(
+            connection_id,
+            command=command,
+            args=args,
+            env=env,
+            stamp=stamp,
+            transport=transport,
+            server_url=server_url,
+            headers=headers,
+            http_tools=http_tools,
+        )
     return list(entry.session.tools)
 
 
