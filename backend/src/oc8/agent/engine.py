@@ -433,6 +433,7 @@ async def run_agent(
             task_text=task_text,
             frame=frame,
             model_locality=model_locality,
+            caps=resolve_caps(model_config.params if model_config is not None else None),
             task_images=task_images,
             supports_vision=supports_vision,
             task=task,

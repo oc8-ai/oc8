@@ -22,6 +22,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agent.control_tools import _acting_token_role, _resolve_agent_actor
+from oc8.agent.harness.caps import ModelCaps
+from oc8.agent.harness.prompts import TENANT_ASSISTANT_OPENER, render_system_prompt
 from oc8.agent.provenance import RULE as PROVENANCE_RULE
 from oc8.authz.authority import authority_for_member
 from oc8.authz.permissions import (
@@ -40,40 +42,11 @@ from oc8.modelrouter.types import ImagePart, TextPart
 from oc8.skills.runtime import LoadedSkill, catalog_block, load_assigned_skills
 
 
-def system_prompt(agent: m.Agent) -> str:
-    pres = agent.presentation or {}
-    guardrails = pres.get("guardrails", [])
-    parts = [f"You are {agent.name}" + (f", {agent.role_title}." if agent.role_title else ".")]
-    if agent.mission:
-        parts.append(agent.mission)
-    if guardrails:
-        parts.append("Guardrails you must respect:\n" + "\n".join(f"- {g}" for g in guardrails))
-    parts.append(
-        "You have tools available. To use a tool you MUST invoke it through the "
-        "function-calling interface — never write the tool call as text or JSON in "
-        "your reply. Call one tool at a time and wait for its result. When the task "
-        "is fully done, reply with a short plain-text summary and call no further tools."
-    )
-    parts.append(
-        "Before you report completion, actively verify you covered the whole task, "
-        "not just the first sub-part that happened to have work in it: re-read your "
-        "own instructions and check whether anything else they describe still needs "
-        "action right now -- including records or items that were already in "
-        "progress before this run started, not only newly arrived ones. Only report "
-        "'nothing to do' once you have actually checked, not because a first search "
-        "came back empty. If you run out of steps before finishing, say so plainly "
-        "in your summary instead of presenting a partial result as complete."
-    )
+def system_prompt(agent: m.Agent, *, caps: ModelCaps, tenant_name: str) -> str:
+    prompt = render_system_prompt(agent, caps=caps, tenant_name=tenant_name)
     if agent.is_tenant_assistant:
-        parts.append(
-            "At the start of a new conversation, before waiting for the human to "
-            "ask anything, proactively call list_pending_approvals and "
-            "department_status (whichever of these you have been offered) and "
-            "open with a short status summary -- what is waiting for a "
-            "decision, and how the departments you can see are doing. Skip this "
-            "if the conversation already has prior turns."
-        )
-    return "\n\n".join(parts)
+        prompt = f"{prompt}\n\n{TENANT_ASSISTANT_OPENER}"
+    return prompt
 
 
 @dataclass
@@ -229,6 +202,7 @@ async def build_run_preamble(
     task_text: str,
     frame: dict[str, Any],
     model_locality: str,
+    caps: ModelCaps,
     task_images: list[ImagePart] | None = None,
     supports_vision: bool = False,
     task: m.Task | None = None,
@@ -239,8 +213,12 @@ async def build_run_preamble(
     Message order is part of the contract -- the task must be the final turn, so
     the model reads its instructions against context already established.
     """
+    org = await db.get(m.Organization, tenant_id)
+    tenant_name = org.name if org is not None else "the organization"
     messages: list[NeutralMessage] = [
-        NeutralMessage(role="system", content=system_prompt(agent))
+        NeutralMessage(
+            role="system", content=system_prompt(agent, caps=caps, tenant_name=tenant_name)
+        )
     ]
     # Said once, before anything a stranger wrote can arrive. Every answer a
     # connection returns is fenced as <external>, and this is what makes that

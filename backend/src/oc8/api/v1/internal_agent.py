@@ -31,7 +31,7 @@ from oc8.agent.control_tools import (
     offered_tools,
 )
 from oc8.agent.engine import _max_steps
-from oc8.agent.harness import Harness
+from oc8.agent.harness import Harness, resolve_caps
 from oc8.agent.harness.calls import call_sig as _call_sig
 from oc8.agent.harness.stages.b_authorize import authorize as _authorize
 from oc8.agent.harness.stages.b_idempotency import record_for, replay_for
@@ -319,6 +319,7 @@ async def step(
             task_text=str(ctx.get("task", "")),
             frame=frame,
             model_locality=model_locality,
+            caps=resolve_caps(model_config.params if model_config is not None else None),
             task_images=task_images,
             supports_vision=supports_vision,
             task=task_row,

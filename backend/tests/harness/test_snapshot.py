@@ -14,6 +14,7 @@ import pytest
 
 from oc8 import models as m
 from oc8.agent.control_tools import offered_tools
+from oc8.agent.harness.caps import ModelCaps
 from oc8.agent.preamble import build_run_preamble
 from oc8.modelrouter import NeutralMessage, NeutralTool
 from oc8.skills.runtime import load_assigned_skills
@@ -91,6 +92,7 @@ async def test_step_one_context_matches_the_snapshot(app_session: AppSessionFact
             task_text="Look things up and summarise.",
             frame=dept.frame,
             model_locality="eu",
+            caps=ModelCaps(),
             task_images=[],
             supports_vision=False,
             task=None,

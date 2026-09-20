@@ -260,6 +260,7 @@ async def test_step_offers_the_same_tools_as_the_in_process_engine(
 
     from oc8 import models as m
     from oc8.agent.control_tools import offered_tools
+    from oc8.agent.harness.caps import ModelCaps
     from oc8.agent.preamble import build_run_preamble
     from oc8.main import create_app
     from oc8.modelrouter.types import CompletionResult, Usage
@@ -299,7 +300,7 @@ async def test_step_offers_the_same_tools_as_the_in_process_engine(
         assert agent is not None
         pre = await build_run_preamble(
             db, agent=agent, tenant_id=tenant, task_text="Erstelle ein Angebot fuer Kunde X",
-            frame={}, model_locality="eu",
+            frame={}, model_locality="eu", caps=ModelCaps(),
         )
         offered_in_process = sorted(
             t.name for t in offered_tools(

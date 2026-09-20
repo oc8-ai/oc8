@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from oc8 import models as m
+from oc8.agent.harness.caps import ModelCaps
 from oc8.agent.preamble import build_run_preamble, system_prompt
 from oc8.authz.permissions import AGENT, APPROVAL, VIEW, perm
 from oc8.modelrouter.types import ImagePart
@@ -81,6 +82,7 @@ async def test_a_team_lead_preamble_carries_roster_and_skill_catalog(
         pre = await build_run_preamble(
             db, agent=lead, tenant_id=tenant, task_text="Erstelle ein Angebot",
             frame={}, model_locality="eu",
+            caps=ModelCaps(),
         )
 
     joined = "\n".join(msg.content for msg in pre.messages)
@@ -120,6 +122,7 @@ async def test_a_plain_agent_gets_no_roster_and_no_delegation_context(
         pre = await build_run_preamble(
             db, agent=solo, tenant_id=tenant, task_text="mach was",
             frame={}, model_locality="eu",
+            caps=ModelCaps(),
         )
 
     joined = "\n".join(msg.content for msg in pre.messages)
@@ -160,6 +163,7 @@ async def test_the_tenant_assistant_gets_every_departments_agents_not_just_its_o
         pre = await build_run_preamble(
             db, agent=assistant, tenant_id=tenant, task_text="Wie viele Tickets sind offen?",
             frame={}, model_locality="eu",
+            caps=ModelCaps(),
         )
 
     joined = "\n".join(msg.content for msg in pre.messages)
@@ -187,6 +191,7 @@ async def test_the_tenant_assistant_is_excluded_from_its_own_roster(
         pre = await build_run_preamble(
             db, agent=assistant, tenant_id=tenant, task_text="Hallo",
             frame={}, model_locality="eu",
+            caps=ModelCaps(),
         )
 
     joined = "\n".join(msg.content for msg in pre.messages)
@@ -223,6 +228,7 @@ async def test_has_knowledge_is_true_once_a_kb_is_granted_to_the_department(
         pre = await build_run_preamble(
             db, agent=agent, tenant_id=tenant, task_text="Jetzt ausführen",
             frame={}, model_locality="cloud",
+            caps=ModelCaps(),
         )
 
     assert pre.has_knowledge is True
@@ -246,6 +252,7 @@ async def test_has_instruction_files_is_false_with_no_attachment(
         pre = await build_run_preamble(
             db, agent=agent, tenant_id=tenant, task_text="mach was",
             frame={}, model_locality="eu",
+            caps=ModelCaps(),
         )
 
     assert pre.has_instruction_files is False
@@ -290,6 +297,7 @@ async def test_has_instruction_files_is_true_once_one_is_attached(
         pre = await build_run_preamble(
             db, agent=agent, tenant_id=tenant, task_text="mach was",
             frame={}, model_locality="eu",
+            caps=ModelCaps(),
         )
 
     assert pre.has_instruction_files is True
@@ -323,6 +331,7 @@ async def test_the_provenance_rule_precedes_anything_a_stranger_wrote(
         pre = await build_run_preamble(
             db, agent=agent, tenant_id=tenant, task_text="Bearbeite ein Ticket",
             frame={}, model_locality="cloud",
+            caps=ModelCaps(),
         )
     systems = [msg.content for msg in pre.messages if msg.role == "system"]
     assert RULE in systems
@@ -353,6 +362,7 @@ async def test_preamble_appends_image_content_when_supported(
             frame={}, model_locality="cloud",
             task_images=[ImagePart(data=b"fake-png-bytes", content_type="image/png")],
             supports_vision=True,
+            caps=ModelCaps(),
         )
 
     last = pre.messages[-1]
@@ -373,6 +383,7 @@ async def test_preamble_falls_back_to_a_text_note_when_vision_unsupported(
             frame={}, model_locality="cloud",
             task_images=[ImagePart(data=b"fake-png-bytes", content_type="image/png")],
             supports_vision=False,
+            caps=ModelCaps(),
         )
 
     last = pre.messages[-1]
@@ -423,6 +434,7 @@ async def test_build_run_preamble_grants_no_copilot_permissions_without_a_task(
             task_text="hi",
             frame={},
             model_locality="cloud",
+            caps=ModelCaps(),
         )
     assert preamble.copilot_permissions == frozenset()
 
@@ -458,6 +470,7 @@ async def test_build_run_preamble_grants_permissions_the_human_behind_the_chat_h
             task_text="hi",
             frame={},
             model_locality="cloud",
+            caps=ModelCaps(),
             task=task,
         )
     assert perm(APPROVAL, VIEW) in preamble.copilot_permissions
@@ -483,5 +496,9 @@ def test_system_prompt_tells_the_assistant_to_open_with_status() -> None:
         presentation={},
         is_tenant_assistant=False,
     )
-    assert "list_pending_approvals" in system_prompt(assistant)
-    assert "list_pending_approvals" not in system_prompt(ordinary)
+    assert "list_pending_approvals" in system_prompt(
+        assistant, caps=ModelCaps(), tenant_name="Acme"
+    )
+    assert "list_pending_approvals" not in system_prompt(
+        ordinary, caps=ModelCaps(), tenant_name="Acme"
+    )
