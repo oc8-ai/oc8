@@ -182,7 +182,13 @@ async def start_run(tenant_id: uuid.UUID, fixture: Fixture, task: Task) -> uuid.
             tenant_id=tenant_id,
             agent_id=fixture.agent_id,
             context={"task": task.task_text, "mcp_connection_id": str(fixture.connection_id)},
-            source="eval",
+            # agent_run's ck_agent_run_source CHECK constraint only allows
+            # manual/cron/event/webhook/delegation/decision/handoff/chat --
+            # "eval" isn't one of them. An eval attempt is, mechanically, a
+            # manually-triggered run (invoked from the CLI, not a scheduler
+            # or webhook), so "manual" is the correct existing value rather
+            # than a new enum member.
+            source="manual",
         )
         return run.id
 
