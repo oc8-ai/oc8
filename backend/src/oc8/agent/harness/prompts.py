@@ -124,3 +124,35 @@ def format_step_stamp(*, step_no: int, max_steps: int, now: dt.datetime, tz_labe
     already be tz-aware in the target zone -- this function only formats,
     it does not convert."""
     return f"[step {step_no}/{max_steps} · {now.strftime('%H:%M')} {tz_label}]"
+
+
+def run_context_block(
+    *,
+    now: dt.datetime,
+    tz_label: str,
+    acting_for: str,
+    origin: str,
+    department: str,
+    connection_names: Sequence[str],
+    max_steps: int,
+    instruction_file_count: int,
+    task_attachment_count: int,
+) -> str:
+    """A2 (spec §4): injected as a user message, immediately before the task
+    text. Unlike the system prompt this varies every run by design -- it is
+    the one place run-specific facts (who, why, when, what's reachable) are
+    stated once instead of scattered through the task text. `now` must
+    already be tz-aware in the target zone."""
+    systems = ", ".join(connection_names) if connection_names else "(none)"
+    return (
+        "# Run context\n"
+        f"- Now: {now.strftime('%A %Y-%m-%d %H:%M')} ({tz_label}). Treat "
+        "\"today\", \"this week\", deadlines and dates relative to this.\n"
+        f"- Acting for: {acting_for}\n"
+        f"- Origin: {origin}\n"
+        f"- Department: {department}\n"
+        f"- Systems you can reach: {systems}\n"
+        f"- Step budget: {max_steps} steps.\n"
+        f"- Attached: {instruction_file_count} instruction files, "
+        f"{task_attachment_count} task attachments (read on demand)"
+    )

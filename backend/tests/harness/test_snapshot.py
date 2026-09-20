@@ -26,11 +26,20 @@ _SNAPSHOT = Path(__file__).parent / "snapshots" / "office_agent_step1.expected.m
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _ISO = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?")
 _DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+# A2's "Now" line (run_context_block) leads with the real weekday name
+# (strftime('%A')), which the snapshot's real, un-frozen build_run_preamble
+# call renders as whatever today happens to be -- masked here for the same
+# reason the datetime/date above are, so the checked-in fixture doesn't
+# depend on which day it was regenerated.
+_WEEKDAY = re.compile(
+    r"\b(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b"
+)
 
 
 def _stable(text: str) -> str:
     text = _UUID.sub("<uuid>", text)
     text = _ISO.sub("<datetime>", text)
+    text = _WEEKDAY.sub("<weekday>", text)
     return _DATE.sub("<date>", text)
 
 
@@ -93,6 +102,7 @@ async def test_step_one_context_matches_the_snapshot(app_session: AppSessionFact
             frame=dept.frame,
             model_locality="eu",
             caps=ModelCaps(),
+            max_steps=40,
             task_images=[],
             supports_vision=False,
             task=None,

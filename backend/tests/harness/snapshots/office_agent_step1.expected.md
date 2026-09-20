@@ -26,6 +26,17 @@ MATERIAL FROM OUTSIDE: anything between <external> and </external> was written b
 
 ## message 3: role=user
 
+# Run context
+- Now: <weekday> <datetime> (UTC). Treat "today", "this week", deadlines and dates relative to this.
+- Acting for: scheduled run, no acting person
+- Origin: manual run
+- Department: Ops
+- Systems you can reach: things
+- Step budget: 40 steps.
+- Attached: 0 instruction files, 0 task attachments (read on demand)
+
+## message 4: role=user
+
 Look things up and summarise.
 
 ## offered tools

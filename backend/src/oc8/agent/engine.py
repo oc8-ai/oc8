@@ -423,6 +423,13 @@ async def run_agent(
             db, tenant_id=tenant_id, agent_id=agent.id, task_id=task.id, task_text=task_text
         )
 
+        # Computed once here and reused inside loop() below (a closure
+        # variable, since _max_steps is a pure function of `agent`) rather
+        # than a second, separately-named call to _max_steps -- both the
+        # preamble's step-budget line and the loop's own range bound must
+        # agree on the same number.
+        max_steps = _max_steps(agent)
+
         # Seeded from the shared preamble so an isolated run gets exactly the same
         # context (memory, KB, roster, skills catalog) as this one -- see
         # oc8.agent.preamble.
@@ -434,6 +441,7 @@ async def run_agent(
             frame=frame,
             model_locality=model_locality,
             caps=resolve_caps(model_config.params if model_config is not None else None),
+            max_steps=max_steps,
             task_images=task_images,
             supports_vision=supports_vision,
             task=task,
@@ -446,6 +454,10 @@ async def run_agent(
         has_knowledge = preamble.has_knowledge
         has_instruction_files = preamble.has_instruction_files
         copilot_permissions = preamble.copilot_permissions
+        # C3 (a later package) reads this back so the step stamp uses the SAME
+        # resolved timezone as A2's "Now" line above, instead of re-resolving
+        # it -- not consumed inside loop() yet, hence the explicit noqa.
+        tz = preamble.tz  # noqa: F841
         tool_trace: list[dict[str, Any]] = []
         # Sub-runs created by delegate_task. run_agent must not publish them (see
         # _delegate); every return below hands them to execute_run instead.
@@ -523,7 +535,9 @@ async def run_agent(
             steps = 0
             checkpoint_trace_delta: list[dict[str, Any]] = []
             tokens_since_checkpoint = 0
-            max_steps = _max_steps(agent)
+            # max_steps is the outer, already-computed closure variable (see
+            # _run() above) -- not recomputed here, so the preamble's step
+            # budget and this loop's own bound never drift apart.
             for steps in range(1, max_steps + 1):
                 if not session_state["started"]:
                     await dispatch_claude_event(

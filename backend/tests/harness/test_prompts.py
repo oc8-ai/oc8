@@ -3,12 +3,13 @@ office agent harness spec §4."""
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 import zoneinfo
 
 from oc8 import models as m
 from oc8.agent.harness.caps import ModelCaps
-from oc8.agent.harness.prompts import render_system_prompt, resolve_timezone
+from oc8.agent.harness.prompts import render_system_prompt, resolve_timezone, run_context_block
 
 
 def _agent(**overrides) -> m.Agent:
@@ -91,3 +92,39 @@ def test_resolve_timezone_falls_back_to_utc_on_empty():
     label, tz = resolve_timezone("")
     assert label == "UTC"
     assert tz == zoneinfo.ZoneInfo("UTC")
+
+
+def test_run_context_block_shape():
+    now = dt.datetime(2026, 9, 19, 14, 3, tzinfo=zoneinfo.ZoneInfo("Europe/Berlin"))
+    block = run_context_block(
+        now=now,
+        tz_label="Europe/Berlin",
+        acting_for="Jane Doe",
+        origin="chat",
+        department="Sales",
+        connection_names=["odoo", "gmail"],
+        max_steps=40,
+        instruction_file_count=2,
+        task_attachment_count=1,
+    )
+    assert block.startswith("# Run context\n")
+    # 2026-09-19 is a Saturday (the brief's own snippet said "Friday", which
+    # does not match this date -- the point under test is the format, not
+    # this particular day name).
+    assert "- Now: Saturday 2026-09-19 14:03 (Europe/Berlin)." in block
+    assert "- Acting for: Jane Doe" in block
+    assert "- Origin: chat" in block
+    assert "- Department: Sales" in block
+    assert "- Systems you can reach: odoo, gmail" in block
+    assert "- Step budget: 40 steps." in block
+    assert "- Attached: 2 instruction files, 1 task attachments" in block
+
+
+def test_run_context_block_no_systems():
+    now = dt.datetime(2026, 9, 19, 14, 3, tzinfo=zoneinfo.ZoneInfo("UTC"))
+    block = run_context_block(
+        now=now, tz_label="UTC", acting_for="scheduled run, no acting person", origin="schedule",
+        department="unassigned", connection_names=[], max_steps=10,
+        instruction_file_count=0, task_attachment_count=0,
+    )
+    assert "- Systems you can reach: (none)" in block

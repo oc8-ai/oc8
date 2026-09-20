@@ -300,7 +300,7 @@ async def test_step_offers_the_same_tools_as_the_in_process_engine(
         assert agent is not None
         pre = await build_run_preamble(
             db, agent=agent, tenant_id=tenant, task_text="Erstelle ein Angebot fuer Kunde X",
-            frame={}, model_locality="eu", caps=ModelCaps(),
+            frame={}, model_locality="eu", caps=ModelCaps(), max_steps=40,
         )
         offered_in_process = sorted(
             t.name for t in offered_tools(

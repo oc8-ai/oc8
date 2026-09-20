@@ -320,6 +320,7 @@ async def step(
             frame=frame,
             model_locality=model_locality,
             caps=resolve_caps(model_config.params if model_config is not None else None),
+            max_steps=_max_steps(agent),
             task_images=task_images,
             supports_vision=supports_vision,
             task=task_row,
@@ -335,6 +336,10 @@ async def step(
         ctx["has_knowledge"] = preamble.has_knowledge
         ctx["has_instruction_files"] = preamble.has_instruction_files
         ctx["copilot_permissions"] = sorted(preamble.copilot_permissions)
+        # C3 (a later package) reads this back from run.context so the step
+        # stamp uses the SAME resolved timezone as A2's "Now" line, instead of
+        # re-resolving org.timezone a second time on every later step.
+        ctx["tz"] = preamble.tz
         if conn is not None and not tool_schemas_raw:
             cfg = _mcp_params(conn)
             env = await _mcp_env(conn, db, run.tenant_id)

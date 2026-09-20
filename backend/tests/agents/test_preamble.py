@@ -83,6 +83,7 @@ async def test_a_team_lead_preamble_carries_roster_and_skill_catalog(
             db, agent=lead, tenant_id=tenant, task_text="Erstelle ein Angebot",
             frame={}, model_locality="eu",
             caps=ModelCaps(),
+            max_steps=40,
         )
 
     joined = "\n".join(msg.content for msg in pre.messages)
@@ -91,11 +92,15 @@ async def test_a_team_lead_preamble_carries_roster_and_skill_catalog(
     assert "Invoice Review" in joined, "the skills catalog must be seeded"
     assert pre.skill_tool_names, "skill tool names drive the frame bypass in _authorize"
 
-    # The task the agent was given is the LAST message, and the only user turn --
-    # everything before it is context the core supplies.
+    # The task the agent was given is the LAST message; the A2 run-context
+    # block is the one immediately before it (also a user turn, by design --
+    # see run_context_block) -- everything earlier is context the core
+    # supplies as system messages.
     assert pre.messages[-1].role == "user"
     assert pre.messages[-1].content == "Erstelle ein Angebot"
-    assert [msg.role for msg in pre.messages[:-1]] == ["system"] * (len(pre.messages) - 1)
+    assert pre.messages[-2].role == "user"
+    assert pre.messages[-2].content.startswith("# Run context\n")
+    assert [msg.role for msg in pre.messages[:-2]] == ["system"] * (len(pre.messages) - 2)
     assert pre.messages[0].content.startswith("You are Nora")
 
 
@@ -123,6 +128,7 @@ async def test_a_plain_agent_gets_no_roster_and_no_delegation_context(
             db, agent=solo, tenant_id=tenant, task_text="mach was",
             frame={}, model_locality="eu",
             caps=ModelCaps(),
+            max_steps=40,
         )
 
     joined = "\n".join(msg.content for msg in pre.messages)
@@ -164,6 +170,7 @@ async def test_the_tenant_assistant_gets_every_departments_agents_not_just_its_o
             db, agent=assistant, tenant_id=tenant, task_text="Wie viele Tickets sind offen?",
             frame={}, model_locality="eu",
             caps=ModelCaps(),
+            max_steps=40,
         )
 
     joined = "\n".join(msg.content for msg in pre.messages)
@@ -192,6 +199,7 @@ async def test_the_tenant_assistant_is_excluded_from_its_own_roster(
             db, agent=assistant, tenant_id=tenant, task_text="Hallo",
             frame={}, model_locality="eu",
             caps=ModelCaps(),
+            max_steps=40,
         )
 
     joined = "\n".join(msg.content for msg in pre.messages)
@@ -229,6 +237,7 @@ async def test_has_knowledge_is_true_once_a_kb_is_granted_to_the_department(
             db, agent=agent, tenant_id=tenant, task_text="Jetzt ausführen",
             frame={}, model_locality="cloud",
             caps=ModelCaps(),
+            max_steps=40,
         )
 
     assert pre.has_knowledge is True
@@ -253,6 +262,7 @@ async def test_has_instruction_files_is_false_with_no_attachment(
             db, agent=agent, tenant_id=tenant, task_text="mach was",
             frame={}, model_locality="eu",
             caps=ModelCaps(),
+            max_steps=40,
         )
 
     assert pre.has_instruction_files is False
@@ -298,6 +308,7 @@ async def test_has_instruction_files_is_true_once_one_is_attached(
             db, agent=agent, tenant_id=tenant, task_text="mach was",
             frame={}, model_locality="eu",
             caps=ModelCaps(),
+            max_steps=40,
         )
 
     assert pre.has_instruction_files is True
@@ -332,6 +343,7 @@ async def test_the_provenance_rule_precedes_anything_a_stranger_wrote(
             db, agent=agent, tenant_id=tenant, task_text="Bearbeite ein Ticket",
             frame={}, model_locality="cloud",
             caps=ModelCaps(),
+            max_steps=40,
         )
     systems = [msg.content for msg in pre.messages if msg.role == "system"]
     assert RULE in systems
@@ -363,6 +375,7 @@ async def test_preamble_appends_image_content_when_supported(
             task_images=[ImagePart(data=b"fake-png-bytes", content_type="image/png")],
             supports_vision=True,
             caps=ModelCaps(),
+            max_steps=40,
         )
 
     last = pre.messages[-1]
@@ -384,6 +397,7 @@ async def test_preamble_falls_back_to_a_text_note_when_vision_unsupported(
             task_images=[ImagePart(data=b"fake-png-bytes", content_type="image/png")],
             supports_vision=False,
             caps=ModelCaps(),
+            max_steps=40,
         )
 
     last = pre.messages[-1]
@@ -435,6 +449,7 @@ async def test_build_run_preamble_grants_no_copilot_permissions_without_a_task(
             frame={},
             model_locality="cloud",
             caps=ModelCaps(),
+            max_steps=40,
         )
     assert preamble.copilot_permissions == frozenset()
 
@@ -471,10 +486,16 @@ async def test_build_run_preamble_grants_permissions_the_human_behind_the_chat_h
             frame={},
             model_locality="cloud",
             caps=ModelCaps(),
+            max_steps=40,
             task=task,
         )
     assert perm(APPROVAL, VIEW) in preamble.copilot_permissions
     assert perm(AGENT, VIEW) in preamble.copilot_permissions
+    joined = "\n".join(msg.content for msg in preamble.messages if isinstance(msg.content, str))
+    # member has no display_name set, so the run-context "Acting for" line
+    # falls back to subject -- also proves _gated_copilot_permissions reused
+    # this same resolved actor rather than re-resolving it a second time.
+    assert f"- Acting for: {member.subject}" in joined
 
 
 def test_system_prompt_tells_the_assistant_to_open_with_status() -> None:
@@ -502,3 +523,109 @@ def test_system_prompt_tells_the_assistant_to_open_with_status() -> None:
     assert "list_pending_approvals" not in system_prompt(
         ordinary, caps=ModelCaps(), tenant_name="Acme"
     )
+
+
+@pytest.mark.parametrize(
+    "source,expected",
+    [
+        ("chat", "chat"),
+        ("cron", "schedule"),
+        ("decision", "decision follow-up"),
+        ("webhook", "webhook trigger"),
+        ("event", "trigger"),
+        ("manual", "manual run"),
+        ("handoff", "handoff"),
+    ],
+)
+async def test_origin_label_covers_every_non_delegation_run_source(
+    app_session: AppSessionFactory, source: str, expected: str
+) -> None:
+    """A2's "Origin" line, driven end to end through a real AgentRun row for
+    each value the ck_agent_run_source CHECK constraint allows besides
+    "delegation" (covered separately below, since it needs a parent task)."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent = await _solo_agent(db, tenant)
+        run = m.AgentRun(tenant_id=tenant, agent_id=agent.id, state="running", source=source)
+        db.add(run)
+        await db.flush()
+        pre = await build_run_preamble(
+            db, agent=agent, tenant_id=tenant, task_text="hi",
+            frame={}, model_locality="cloud", caps=ModelCaps(), max_steps=40,
+            run_id=run.id,
+        )
+    joined = "\n".join(msg.content for msg in pre.messages if isinstance(msg.content, str))
+    assert f"- Origin: {expected}" in joined
+
+
+async def test_origin_label_names_the_delegating_agent(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        dept = m.Department(tenant_id=tenant, name="Ops", frame={})
+        db.add(dept)
+        await db.flush()
+        parent_agent = m.Agent(
+            tenant_id=tenant, department_id=dept.id, name="Nora", status="idle",
+            definition={}, presentation={},
+        )
+        child_agent = m.Agent(
+            tenant_id=tenant, department_id=dept.id, name="Rico", status="idle",
+            definition={}, presentation={},
+        )
+        db.add_all([parent_agent, child_agent])
+        await db.flush()
+        parent_task = m.Task(
+            tenant_id=tenant, department_id=dept.id, assigned_agent_id=parent_agent.id,
+            title="Parent", state="in_progress",
+        )
+        db.add(parent_task)
+        await db.flush()
+        child_task = m.Task(
+            tenant_id=tenant, department_id=dept.id, assigned_agent_id=child_agent.id,
+            parent_task_id=parent_task.id, title="Child", state="in_progress",
+        )
+        db.add(child_task)
+        await db.flush()
+        run = m.AgentRun(
+            tenant_id=tenant, agent_id=child_agent.id, task_id=child_task.id,
+            state="running", source="delegation",
+        )
+        db.add(run)
+        await db.flush()
+        pre = await build_run_preamble(
+            db, agent=child_agent, tenant_id=tenant, task_text="hi",
+            frame={}, model_locality="cloud", caps=ModelCaps(), max_steps=40,
+            run_id=run.id,
+        )
+    joined = "\n".join(msg.content for msg in pre.messages if isinstance(msg.content, str))
+    assert "- Origin: delegation from Nora" in joined
+
+
+async def test_origin_label_falls_back_when_the_parent_agent_cannot_be_resolved(
+    app_session: AppSessionFactory,
+) -> None:
+    """A delegated run whose task has no parent (or whose parent has no
+    assigned agent) degrades to the flat "delegation" label instead of
+    raising -- best-effort, not a hard requirement."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent = await _solo_agent(db, tenant)
+        task = m.Task(
+            tenant_id=tenant, department_id=agent.department_id, assigned_agent_id=agent.id,
+            title="Child", state="in_progress",
+        )
+        db.add(task)
+        await db.flush()
+        run = m.AgentRun(
+            tenant_id=tenant, agent_id=agent.id, task_id=task.id,
+            state="running", source="delegation",
+        )
+        db.add(run)
+        await db.flush()
+        pre = await build_run_preamble(
+            db, agent=agent, tenant_id=tenant, task_text="hi",
+            frame={}, model_locality="cloud", caps=ModelCaps(), max_steps=40,
+            run_id=run.id,
+        )
+    joined = "\n".join(msg.content for msg in pre.messages if isinstance(msg.content, str))
+    assert "- Origin: delegation\n" in joined
