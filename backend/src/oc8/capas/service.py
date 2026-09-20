@@ -315,6 +315,7 @@ async def instantiate_department(
     mf = version.manifest
     if mf.get("type") != "department_template" or not mf.get("department_template"):
         raise PluginError("only department_template plugins can be instantiated as departments")
+    config = await _load_installation_config(db, capa_id=version.capa_id)
     spec = mf["department_template"]
     agent_defs = list(spec.get("agents", []))
 
@@ -344,15 +345,15 @@ async def instantiate_department(
             tenant_id=tenant_id,
             department_id=dept.id,
             name=a["name"],
-            role_title=a.get("role_title", ""),
-            mission=a.get("mission", ""),
+            role_title=_substitute_template_values(str(a.get("role_title", "")), config),
+            mission=_substitute_template_values(str(a.get("mission", "")), config),
             is_team_lead=bool(a.get("is_team_lead", False)),
             status="stopped",
             narrowing=dict(a.get("narrowing", {})),
             definition={
                 "plugin": mf.get("name", ""),
                 "version": version.semver,
-                "persona": a.get("persona", ""),
+                "persona": _substitute_template_values(str(a.get("persona", "")), config),
                 "reports_to": a.get("reports_to"),
                 "skills": list(a.get("skills", [])),
                 **({"max_steps": int(a["max_steps"])} if a.get("max_steps") else {}),
@@ -365,7 +366,11 @@ async def instantiate_department(
             db, tenant_id=tenant_id, agent_id=agent.id, skill_names=list(a.get("skills") or [])
         )
         await _create_trigger_if_present(
-            db, tenant_id=tenant_id, agent_id=agent.id, trigger=a.get("trigger")
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent.id,
+            trigger=a.get("trigger"),
+            config=config,
         )
         if lead_id is None and agent.is_team_lead:
             lead_id = agent.id
