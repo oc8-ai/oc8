@@ -1,0 +1,36 @@
+# Treg (https://github.com/superdesigndev/treg) over the Model Context
+# Protocol -- a hosted tool registry/proxy that fronts 3000+ catalogued
+# endpoints across 60+ providers (SEO, enrichment, scraping, ads, image/video
+# generation, ...) behind one URL and one token. Connecting this ONE capa
+# gives a tenant's agents everything the tenant has registered on their own
+# treg account, without oc8 building or maintaining a first-party capa per
+# provider.
+#
+# Unlike every other tool-pack capa in this repo, treg's tool surface is not
+# fixed at manifest-authoring time -- it is whatever the tenant has enabled
+# treg-side, and can change without a new oc8 release. tool_pack.toml
+# therefore ships no static `scopes` classification; the live connection
+# test (same mechanism a custom/tenant-authored remote-MCP capa already
+# uses) discovers the real tool list once a token is configured.
+#
+# As with the other tool-pack plugins, every treg specific lives HERE. The
+# core learns nothing about treg's catalog or its providers -- it only knows
+# how to speak MCP over HTTP with one configurable auth header, a path
+# `agent/mcp_client.py` already supports for the wizard-authored custom-MCP
+# capas (design: 2026-09-19-custom-mcp-capa-design.md).
+
+[plugin]
+name = "treg_mcp"
+label = "Treg"
+version = "1.0.0"
+type = "tool_pack"
+# first_party: the manifest, the seams and the classification are ours. The
+# server behind it is treg's own hosted, actively maintained MCP endpoint.
+trust = "first_party"
+summary = "Connect Treg — one token, thousands of catalogued tools across dozens of providers, over the Model Context Protocol"
+permissions = ["mcp:connect", "secrets:use"]
+capabilities = ["integration:treg"]
+# A generic relay/network mark, monochrome via currentColor so it inherits
+# the Capas UI's text color -- not treg's own logo, which this repo has no
+# license to redistribute. Served by GET /plugins/{id}/icon.
+icon = "icon.svg"

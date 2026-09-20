@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+  <!-- Generic hub-and-spoke relay mark -- one connection point fanning out to
+       many, standing in for treg's own logo (no license to redistribute that
+       here). -->
+  <circle cx="8" cy="8" r="2"/>
+  <circle cx="2" cy="2" r="1.5"/>
+  <circle cx="14" cy="2" r="1.5"/>
+  <circle cx="2" cy="14" r="1.5"/>
+  <circle cx="14" cy="14" r="1.5"/>
+  <path d="M6.6 6.6 3 3M9.4 6.6 13 3M6.6 9.4 3 13M9.4 9.4 13 13"
+    stroke="currentColor" stroke-width="1.1" fill="none" stroke-linecap="round"/>
+</svg>
