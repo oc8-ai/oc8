@@ -271,6 +271,46 @@ async def test_available_lists_a_custom_capa_with_no_disk_folder(
             assert row["databaseId"] == str(version.capa_id)
 
 
+async def test_a_non_custom_capa_with_no_disk_folder_is_not_merged_in(
+    app_session: AppSessionFactory,
+) -> None:
+    """The DB-only merge above is scoped to `origin="custom"` rows
+    specifically -- a `local`/`store` row whose plugin folder was later
+    removed or renamed must not resurface here as `installed=True`, unlike
+    a genuine custom-MCP-wizard capa. Regression test for a finding from
+    this plan's final review: the merge's original skip condition keyed
+    only on "absent from `discover_plugins()`", which this row also
+    satisfies -- the origin check is what tells them apart."""
+    tenant = uuid.uuid4()
+    manifest = {
+        "name": "decommissioned_widget",
+        "version": "1.0.0",
+        "type": "tool_pack",
+        "summary": "Used to have a plugin.toml folder; it's gone now.",
+        "tool_pack": {
+            "connections": [
+                {
+                    "key": "default",
+                    "name": "decommissioned_widget",
+                    "server_url": "https://api.example/v1",
+                    "transport": "manual_http",
+                    "config": {},
+                }
+            ]
+        },
+    }
+    async with app_session(tenant) as db:
+        await install_plugin(db, tenant_id=tenant, manifest_data=manifest, origin="local")
+        await db.commit()
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.get("/api/v1/capas/available", headers=_h(tenant))
+            assert r.status_code == 200, r.text
+            assert not any(x["pluginId"] == "decommissioned_widget" for x in r.json()["items"])
+
+
 async def test_install_requires_admin(plugins_root: Path) -> None:
     tenant = uuid.uuid4()
     app = create_app()

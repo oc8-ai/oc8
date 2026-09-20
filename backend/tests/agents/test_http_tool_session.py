@@ -121,3 +121,17 @@ async def test_missing_required_url_parameter_raises_error(http_server: str) -> 
     async with HttpToolSession(http_server, _TOOLS) as session:
         with pytest.raises(RuntimeError, match="missing required parameter"):
             await session.call("get_user", {})
+
+
+async def test_url_template_argument_cannot_escape_its_path_segment(http_server: str) -> None:
+    """A model-supplied argument must not be able to traverse out from under
+    the path segment its placeholder fills. Unescaped, "/users/{id}" with
+    id="42/../secret" builds "/users/42/../secret" -- a path httpx normalizes
+    to "/secret" before the request even leaves this process, a real
+    traversal against a real API. Percent-encoding the "/" keeps the whole
+    value inside the one path segment, so the server sees it literally."""
+    async with HttpToolSession(
+        http_server, _TOOLS, headers={"Authorization": "Bearer secret-token"}
+    ) as session:
+        result = await session.call("get_user", {"id": "42/../secret"})
+        assert '"id": "42%2F..%2Fsecret"' in result

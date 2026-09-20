@@ -41,3 +41,11 @@ async def test_open_tool_session_manual_http_returns_http_tool_session() -> None
         http_tools=[{"name": "t", "description": "", "method": "GET", "url_template": "/"}],
     )
     assert isinstance(session, HttpToolSession)
+
+
+@pytest.mark.asyncio
+async def test_open_tool_session_rejects_an_unrecognized_transport() -> None:
+    """The wizard's now-removed "sse" value (or any other unknown string) must
+    raise, not silently fall through to a stdio McpSession with command=""."""
+    with pytest.raises(ValueError, match="unsupported transport 'sse'"):
+        await open_tool_session(transport="sse", server_url="http://example.invalid")
