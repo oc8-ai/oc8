@@ -100,8 +100,6 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MAX_STEPS = 12  # framework default; overridable via settings or per agent
-
 
 def _max_steps(agent: m.Agent) -> int:
     """Step budget for a run: an agent plugin may raise it per agent for longer,

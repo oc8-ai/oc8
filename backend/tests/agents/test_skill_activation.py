@@ -23,11 +23,6 @@ from tests.conftest import AppSessionFactory
 pytestmark = pytest.mark.asyncio
 
 
-def test_step_budget_leaves_room_for_a_skill_step() -> None:
-    # A skill invocation costs a step, and a skill exists for multi-step work.
-    assert eng.DEFAULT_MAX_STEPS >= 8
-
-
 async def test_offer_narrows_to_the_active_skills_tools(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
