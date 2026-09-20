@@ -22,6 +22,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { AgentAvatar } from "@/components/agent-avatar";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   useAnswerClarification,
@@ -38,7 +39,7 @@ import { cn } from "@/lib/utils";
 
 // --------------------------------------------------------------------- model
 // Kind, Row, DecidedRow, TENANT_WIDE, approvalRow, clarificationRow,
-// relativeAge, avatarColor, mayActOn, ViewOnlyBecause, Pill, the
+// relativeAge, mayActOn, ViewOnlyBecause, Pill, the
 // kind/department filters, and the "Decided by you" list are carried over
 // from the pre-dashboard `workspace.tsx` (git history), which had them
 // inline rather than in a dedicated widget component.
@@ -106,12 +107,6 @@ function relativeAge(iso: string): string {
   const hrs = Math.round(mins / 60);
   if (hrs < 24) return `${hrs}h`;
   return `${Math.round(hrs / 24)}d`;
-}
-
-function avatarColor(agentId: string): string {
-  let h = 0;
-  for (let i = 0; i < agentId.length; i++) h = (h * 31 + agentId.charCodeAt(i)) % 360;
-  return `oklch(0.78 0.12 ${h})`;
 }
 
 /** Whether the caller may act on a row, and the wire now says exactly.
@@ -506,13 +501,7 @@ function QueueRow({
         active ? "bg-primary/5" : "hover:bg-muted/30",
       )}
     >
-      <span
-        className="grid h-9 w-9 shrink-0 place-items-center rounded-md font-serif text-sm text-black"
-        style={{ background: avatarColor(row.agentId) }}
-        aria-hidden
-      >
-        {row.agentName.slice(0, 1).toUpperCase()}
-      </span>
+      <AgentAvatar seed={row.agentId} size={36} background="squircle" ariaHidden />
       <span className="min-w-0 flex-1">
         <span className="flex items-center gap-2">
           {row.kind === "clarification" ? (
@@ -668,13 +657,7 @@ function ApprovalPane({
       <div className="flex-1 space-y-6 overflow-y-auto px-6 py-5">
         <section>
           <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-            <span
-              className="grid h-5 w-5 place-items-center rounded font-serif text-[10px] text-black"
-              style={{ background: avatarColor(approval.agentId) }}
-              aria-hidden
-            >
-              {(approval.agentName || "?").slice(0, 1).toUpperCase()}
-            </span>
+            <AgentAvatar seed={approval.agentId} size={20} ariaHidden />
             <span className="font-medium text-foreground">
               {approval.agentName || approval.agentId}
             </span>
@@ -931,13 +914,7 @@ function ClarificationPane({
       <div className="flex-1 space-y-6 overflow-y-auto px-6 py-5">
         <section>
           <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-            <span
-              className="grid h-5 w-5 place-items-center rounded font-serif text-[10px] text-black"
-              style={{ background: avatarColor(clarification.agentId) }}
-              aria-hidden
-            >
-              {(clarification.agentName || "?").slice(0, 1).toUpperCase()}
-            </span>
+            <AgentAvatar seed={clarification.agentId} size={20} ariaHidden />
             <span className="font-medium text-foreground">
               {clarification.agentName || clarification.agentId}
             </span>

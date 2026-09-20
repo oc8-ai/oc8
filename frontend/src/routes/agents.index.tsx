@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { Crown, Plus } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
+import { AgentAvatar } from "@/components/agent-avatar";
 import { Panel, StatusPill } from "@/components/app-shell";
 import { ListToolbar, groupItems, type ListQueryState } from "@/components/list-toolbar";
 import { NewAgentDialog } from "@/components/new-agent-dialog";
@@ -148,12 +149,12 @@ export function AgentsPage() {
                       const rowBody = (
                         <>
                           <div className="relative shrink-0">
-                            <div
-                              className="grid h-9 w-9 place-items-center rounded-lg font-serif text-base text-black"
-                              style={{ background: a.avatarColor }}
-                            >
-                              {a.name[0]}
-                            </div>
+                            <AgentAvatar
+                              seed={a.id}
+                              size={36}
+                              background="squircle"
+                              title={a.name}
+                            />
                             {isTeamLead(a.id) && (
                               <Crown
                                 className="absolute -top-1.5 -right-1.5 h-3.5 w-3.5 text-[color:var(--status-warning)]"
@@ -163,9 +164,7 @@ export function AgentsPage() {
                           </div>
                           <div>
                             <div className="flex items-center gap-2">
-                              <span className="font-medium group-hover:text-primary">
-                                {a.name}
-                              </span>
+                              <span className="font-medium group-hover:text-primary">{a.name}</span>
                               {archived && (
                                 <span className="rounded-full border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-[color:var(--status-warning)]">
                                   {t("Archived", "Archiviert")}
@@ -252,12 +251,7 @@ export function AgentsPage() {
                   const cardBody = (
                     <div className="flex items-center gap-3">
                       <div className="relative shrink-0">
-                        <div
-                          className="grid h-9 w-9 place-items-center rounded-lg font-serif text-base text-black"
-                          style={{ background: a.avatarColor }}
-                        >
-                          {a.name[0]}
-                        </div>
+                        <AgentAvatar seed={a.id} size={36} background="squircle" title={a.name} />
                         {isTeamLead(a.id) && (
                           <Crown
                             className="absolute -top-1.5 -right-1.5 h-3.5 w-3.5 text-[color:var(--status-warning)]"
