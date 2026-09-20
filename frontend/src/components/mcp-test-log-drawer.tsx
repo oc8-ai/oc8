@@ -41,7 +41,12 @@ export function McpTestLogDrawer({
   const qc = useQueryClient();
   const { data: lines } = useMcpTestLog(connectionId);
   const [open, setOpen] = useState(false);
-  const wasBusy = useRef(busy);
+  // Deliberately NOT initialized to `busy`: custom-mcp-wizard.tsx only learns
+  // its connectionId (and so only mounts this drawer) once
+  // installEnableConfigure resolves, by which point its own `busy` is
+  // already true -- starting the ref at `false` means that first run's
+  // false->true edge still fires below instead of being missed at mount.
+  const wasBusy = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
 
