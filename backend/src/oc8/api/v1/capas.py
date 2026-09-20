@@ -346,8 +346,11 @@ async def list_available(
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> Page[DiscoveredPluginDTO]:
     """Plugin folders found on disk, each annotated with whether THIS tenant has
-    installed it. The Plugin query is tenant-scoped by RLS, exactly as in
-    list_plugins -- another tenant's install must never show up as installed here.
+    installed it, plus any `origin="custom"` capa (the custom-MCP wizard) that
+    has no disk folder at all -- those are synthesized straight from their
+    installed `CapaVersion.manifest` in a second pass below. The Plugin query
+    is tenant-scoped by RLS, exactly as in list_plugins -- another tenant's
+    install must never show up as installed here.
 
     Unlike every other list-query endpoint in the Design System Consistency
     plan, this one cannot use `apply_search`/`apply_group_order`/`paginate`
@@ -412,7 +415,10 @@ async def list_available(
     # disk-discovered `DiscoveredPlugin` would otherwise supply.
     disk_plugin_ids = {d.plugin_id for d in discovered}
     for row in installed.values():
-        if row.name in disk_plugin_ids or row.current_version_id is None:
+        # Scoped to origin="custom" specifically (not just "absent from
+        # disk"): a local/store capa whose folder was later removed or
+        # renamed should not resurface here as if it were still installed.
+        if row.origin != "custom" or row.name in disk_plugin_ids or row.current_version_id is None:
             continue
         pv = await db.get(m.CapaVersion, row.current_version_id)
         if pv is None:

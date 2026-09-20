@@ -42,6 +42,7 @@ describe("useInstallCustomCapa", () => {
     expect(postCapas).toHaveBeenCalledWith({
       manifest: { name: "acme_billing", version: "1.0.0" },
       origin: "custom",
+      trustLevel: "community",
     });
   });
 });

@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import tempfile
+import urllib.parse
 from contextlib import AsyncExitStack
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
@@ -409,8 +410,11 @@ class HttpToolSession:
         url_template = str(tool.get("url_template", ""))
         placeholders = set(re.findall(r"\{(\w+)\}", url_template))
         try:
+            # Quoted so a model-supplied value (e.g. containing `../`, `?` or
+            # `#`) can't escape the path segment it was meant to fill or
+            # rewrite the query/URL structure.
             url = self._base_url + url_template.format(
-                **{k: arguments[k] for k in placeholders}
+                **{k: urllib.parse.quote(str(arguments[k]), safe="") for k in placeholders}
             )
         except KeyError as exc:
             raise RuntimeError(f"missing required parameter {exc}") from exc
@@ -461,8 +465,10 @@ async def open_tool_session(
     """The single place that knows which session class a connection's
     transport needs -- every caller that used to construct `McpSession`
     directly calls this instead, so the branch is not repeated at each of
-    them. Returns an UNENTERED session; callers still write
-    `async with open_tool_session(...) as session:`."""
+    them. Returns an UNENTERED session; this is a plain async function, not
+    an async context manager, so callers write
+    `tool_session = await open_tool_session(...)` then
+    `async with tool_session as session:`."""
     if transport == "manual_http":
         return HttpToolSession(
             server_url, list(http_tools or []), headers=headers, timeout_s=timeout_s
@@ -472,4 +478,6 @@ async def open_tool_session(
             "", [], env, transport="http", server_url=server_url, headers=headers,
             timeout_s=timeout_s,
         )
-    return McpSession(command, args or [], env, timeout_s=timeout_s)
+    if transport == "stdio":
+        return McpSession(command, args or [], env, timeout_s=timeout_s)
+    raise ValueError(f"unsupported transport {transport!r}")

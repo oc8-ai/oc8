@@ -55,7 +55,6 @@ interface WizardState {
   envRows: EnvRow[];
   // remote_mcp
   serverUrl: string;
-  remoteTransport: "http" | "sse";
   authHeaderName: string;
   authHeaderValue: string;
   // manual_http
@@ -77,7 +76,6 @@ const INITIAL_STATE: WizardState = {
   args: "",
   envRows: [],
   serverUrl: "",
-  remoteTransport: "http",
   authHeaderName: "Authorization",
   authHeaderValue: "",
   baseUrl: "",
@@ -102,7 +100,7 @@ const SERVER_TYPES: Array<{
   {
     id: "remote_mcp",
     title: "Remote MCP server",
-    description: "Already running somewhere reachable over HTTP or SSE.",
+    description: "Already running somewhere reachable over HTTP.",
     icon: Globe,
   },
   {
@@ -193,7 +191,7 @@ async function buildManifest(state: WizardState): Promise<Record<string, unknown
     state.serverType === "stdio"
       ? "stdio"
       : state.serverType === "remote_mcp"
-        ? state.remoteTransport
+        ? "http"
         : "manual_http";
 
   return {
@@ -665,25 +663,6 @@ export function CustomMcpWizard({
                     placeholder="https://…"
                     className="w-full rounded-md border border-border bg-background/40 px-3 py-2 font-mono text-sm outline-none focus:border-primary/50"
                   />
-                </Field>
-                <Field label="Transport">
-                  <div className="grid grid-cols-2 gap-2">
-                    {(["http", "sse"] as const).map((t) => (
-                      <button
-                        key={t}
-                        type="button"
-                        onClick={() => update({ remoteTransport: t })}
-                        className={cn(
-                          "rounded-md border px-3 py-2 text-xs uppercase tracking-wide transition",
-                          state.remoteTransport === t
-                            ? "border-primary bg-primary/10 text-primary"
-                            : "border-border bg-background/30 text-muted-foreground hover:border-primary/40",
-                        )}
-                      >
-                        {t}
-                      </button>
-                    ))}
-                  </div>
                 </Field>
                 <AuthHeaderFields state={state} onChange={update} />
               </div>
