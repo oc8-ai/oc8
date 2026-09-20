@@ -12,7 +12,7 @@ import datetime as dt
 import json
 import logging
 import uuid
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -21,8 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.agent import cache_flow
 from oc8.agent.control_tools import (
-    DEPTH_LIMIT_REASON,
-    MAX_DELEGATION_DEPTH,
+    MAX_DELEGATION_DEPTH,  # re-exported for tests/coding/test_engine_delegation.py
     execute_control_tool,
     offered_tools,
 )
@@ -30,34 +29,20 @@ from oc8.agent.harness import Harness, resolve_caps
 from oc8.agent.harness.calls import (
     call_sig as _call_sig,  # re-exported for mcp_gateway.py and older tests
 )
+from oc8.agent.harness.stages.b_authorize import (
+    authorize as _authorize,  # re-exported for mcp_gateway.py and older tests
+)
+from oc8.agent.harness.stages.b_outward import check_outward, remember_outward
 from oc8.agent.harness.stages.c_reminders import track_repeat_tool_call
 from oc8.agent.mcp_client import McpSession
 from oc8.agent.mcp_env import resolve_mcp_env
 from oc8.agent.mcp_requirements import wrap_with_requirements
-from oc8.agent.outward import (
-    REFUSAL,
-    already_delivered,
-    outward_target,
-    remember_delivery,
-)
 from oc8.agent.preamble import build_run_preamble
 from oc8.agent.tool_notes import apply_tool_notes
-from oc8.agent.tool_semantics import (
-    describe_focus,
-    describes_a_record,
-    extract_attributes,
-    extract_value,
-)
+from oc8.agent.tool_semantics import describe_focus, describes_a_record
 from oc8.approvals import raise_approval
 from oc8.audit import append_event
-from oc8.authz.pdp import (
-    Decision,
-    Effect,
-    ToolPolicy,
-    authorize_tool_call,
-    effective_tool_policies,
-    required_right,
-)
+from oc8.authz.pdp import Decision, Effect, effective_tool_policies
 from oc8.capas.claude_hooks import dispatch_claude_event
 from oc8.capas.claude_hooks.context import (
     base_payload,
@@ -75,8 +60,7 @@ from oc8.config import get_settings
 from oc8.hooks.bus import dispatch_filter
 from oc8.hooks.executor import InProcessExecutor
 from oc8.hooks.types import HookCtx
-from oc8.memory.policy import authorize_memory_write
-from oc8.memory.router import MAX_MEMORY_CONTENT_LENGTH, write_memory
+from oc8.memory.router import write_memory
 from oc8.metering import check_budget, record_usage, trigger_budget_hard_stop
 from oc8.modelrouter import (
     NeutralMessage,
@@ -104,6 +88,15 @@ from oc8.skills.runtime import (
     LoadedSkill,
 )
 from oc8.storage import s3
+
+# mypy's no_implicit_reexport (strict mode) otherwise treats these three
+# renamed re-exports as private to this module; mcp_gateway.py and
+# tests/coding/test_engine_delegation.py import them from here directly.
+__all__ = [
+    "MAX_DELEGATION_DEPTH",
+    "_authorize",
+    "_call_sig",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -144,15 +137,6 @@ class RunResult:
     # the LATEST call's list, not a log of every call. Empty means the tool was
     # never called this run, not that every item finished.
     todos: list[dict[str, str]] = field(default_factory=list)
-
-
-def _extract_value(
-    arguments: dict[str, Any], value_spec: dict[str, Any] | None = None
-) -> float | None:
-    """Largest monetary value implied by a tool call — neutral. The connection's
-    optional `value_spec` (declared by its plugin) says where a nested/summed
-    value lives; the core names no software-specific field."""
-    return extract_value(arguments, value_spec)
 
 
 def _json_chunks(text: str) -> list[str]:
@@ -199,114 +183,6 @@ def _salvage_tool_calls(text: str, tools: list[NeutralTool]) -> list[ToolCall]:
                     ToolCall(id=f"salvaged_{len(calls)}", name=item["name"], arguments=args)
                 )
     return calls
-
-
-def _authorize(
-    agent: m.Agent,
-    tc: ToolCall,
-    *,
-    frame: dict[str, Any],
-    delegation_depth: int = 0,
-    tool_policies: Mapping[str, ToolPolicy],
-    connection_key: str | None,
-    tool_scopes: Mapping[str, Any] | None,
-    skill_thresholds: Sequence[float | None] = (),
-    skill_tool_names: frozenset[str] = frozenset(),
-    value_spec: dict[str, Any] | None = None,
-    guardrail_attribute_specs: Sequence[dict[str, Any]] = (),
-) -> Decision:
-    """PEP for a tool call. Every connection tool is decided against the
-    department frame (§5.3): which entry governs it is the connection key, and
-    which right it needs comes from the connection's `scopes` (unclassified ==
-    write, fail-closed). memory_write is gated by the §10 tier policy instead;
-    delegate_task (§7) is ALLOW/DENY only -- a delegation carries no monetary
-    value. Checks needing the DB (does the target exist, is it in this
-    department) live in _delegate, since this function is deliberately pure.
-
-    The frame is bypassed only for tool names that are actually assigned
-    skill-invocation tools (`skill_tool_names`) -- never by a `skill_`
-    name-prefix match, since MCP tool names flow in unsanitized from a remote
-    server and a connection could name a plain tool `skill_anything` to dodge
-    the frame check entirely. A stray `skill_`-prefixed tool that isn't one of
-    this agent's assigned skills falls through to the normal frame check
-    below, exactly like any other tool of that connection."""
-    if tc.name in skill_tool_names:
-        return Decision(Effect.ALLOW)
-    if tc.name == "ask_user":
-        return Decision(Effect.ALLOW)
-    if tc.name == "propose_change":
-        # Like ask_user: it belongs to no connection, so the department frame
-        # has nothing to decide it against -- the Assistant's chat run has no
-        # tool connection bound at all, and falling through would DENY. That
-        # DENY is not enforced (execute_control_tool dispatches control tools
-        # before the deny branch and this one never reads `decision`), it is
-        # only WRITTEN, so every successful call would be audited as a denial.
-        # Deliberate consequence: `is_tenant_assistant`, checked in the
-        # dispatch, is then the only gate on this tool -- which is what it
-        # should be for a tool that can only ever produce a draft a human has
-        # to approve before anything changes.
-        return Decision(Effect.ALLOW)
-    if tc.name == "decide_approval":
-        # Like propose_change and ask_user: it belongs to no connection, so
-        # the department frame has nothing to decide it against. Real
-        # authorisation for a decision happens where it must, inside
-        # `decide_approval` (approvals/service.py) via `_may_apply_the_effect`
-        # and `_resolve_agent_actor`'s scope -- this ALLOW only keeps a
-        # successful call from being audited as a denial for a tool that was
-        # never going to be enforced by this frame in the first place.
-        return Decision(Effect.ALLOW)
-    if tc.name == "run_shell":
-        # Like propose_change and decide_approval, immediately above: it
-        # belongs to no connection, so the department frame has nothing to
-        # decide it against, and execute_control_tool never reads this
-        # decision for run_shell either (see RUN_SHELL's dispatch in
-        # control_tools.py, which only checks for a local_result) -- without
-        # this special case, a run with no MCP connection bound (only the
-        # builtin isolated shell offers run_shell at all -- see
-        # internal_agent.py's offer_run_shell) would have every successful
-        # call audited as a denial.
-        return Decision(Effect.ALLOW)
-    if tc.name == "delegate_task":
-        if not agent.is_team_lead:
-            return Decision(Effect.DENY, "only a team lead can delegate tasks")
-        if not str(tc.arguments.get("task_text", "")).strip():
-            return Decision(Effect.DENY, "task_text must not be empty")
-        raw_target = str(tc.arguments.get("agent_id", ""))
-        try:
-            target_id = uuid.UUID(raw_target)
-        except ValueError:
-            return Decision(Effect.DENY, f"invalid agent_id: {raw_target!r}")
-        if target_id == agent.id:
-            return Decision(Effect.DENY, "an agent cannot delegate to itself")
-        if delegation_depth + 1 > MAX_DELEGATION_DEPTH:
-            return Decision(Effect.DENY, DEPTH_LIMIT_REASON)
-        return Decision(Effect.ALLOW)
-    if tc.name == "memory_write":
-        content = str(tc.arguments.get("content", ""))
-        tier = str(tc.arguments.get("tier", ""))
-        if not content.strip():
-            return Decision(Effect.DENY, "content must not be empty")
-        if len(content) > MAX_MEMORY_CONTENT_LENGTH:
-            return Decision(Effect.DENY, f"content exceeds {MAX_MEMORY_CONTENT_LENGTH} characters")
-        return authorize_memory_write(frame, agent.narrowing or {}, tier)
-    agent_threshold = (agent.presentation or {}).get("approval_value_eur")
-    applicable_attributes = [
-        spec
-        for spec in guardrail_attribute_specs
-        if not spec.get("tools") or tc.name in spec["tools"]
-    ]
-    return authorize_tool_call(
-        policies=tool_policies,
-        connection_key=connection_key,
-        right=required_right(tc.name, tool_scopes),
-        tool=tc.name,
-        value=_extract_value(tc.arguments, value_spec),
-        attributes=extract_attributes(tc.arguments, applicable_attributes),
-        extra_thresholds=(
-            float(agent_threshold) if agent_threshold is not None else None,
-            *skill_thresholds,
-        ),
-    )
 
 
 async def open_run_task(
@@ -1226,16 +1102,19 @@ async def run_agent(
                             output = f"ERROR: {decision.reason or 'no tool server available'}"
                             _tool_call_dispatched = False
                         elif (
-                            target := outward_target(
-                                tc.name, tc.arguments, focus_spec, outward_tools
+                            outward := await check_outward(
+                                db,
+                                tenant_id=tenant_id,
+                                task_id=task.id,
+                                tc=tc,
+                                focus_spec=focus_spec,
+                                outward_tools=outward_tools,
                             )
-                        ) is not None and await already_delivered(
-                            db, tenant_id=tenant_id, task_id=task.id, target=target
-                        ):
+                        ).refusal is not None:
                             # Before the call, not after: the point is that the
                             # recipient is not reached twice, and a check that ran
                             # afterwards could only report it.
-                            output = REFUSAL.format(target=target)
+                            output = outward.refusal
                             _tool_call_dispatched = False
                         else:
                             # Live-log which record the agent is working on, from
@@ -1256,13 +1135,13 @@ async def run_agent(
                                 output = await server.call(tc.name, tc.arguments)
                             except Exception as exc:  # surface tool errors to the model
                                 output = f"ERROR: {exc}"
-                            if target is not None and not output.startswith("ERROR:"):
-                                await remember_delivery(
-                                    db,
-                                    tenant_id=tenant_id,
-                                    task_id=task.id,
-                                    target=target,
-                                )
+                            await remember_outward(
+                                db,
+                                tenant_id=tenant_id,
+                                task_id=task.id,
+                                target=outward.target,
+                                output=output,
+                            )
                         shaped = harness.shape(tc, output)
                         output = shaped.output
                         _tool_call_entry: dict[str, Any] = {
