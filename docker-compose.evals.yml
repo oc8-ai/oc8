@@ -1,0 +1,11 @@
+# Mounts the eval suite into the two containers that need it: `backend`
+# (runs the CLI; launches the mock MCP servers for the isolated runtime's
+# /tool endpoint) and `worker` (launches them for the in-process engine).
+# Usage: docker compose -f docker-compose.yml -f docker-compose.evals.yml up -d
+services:
+  backend:
+    volumes:
+      - ./backend/evals:/app/evals
+  worker:
+    volumes:
+      - ./backend/evals:/app/evals:ro
