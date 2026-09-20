@@ -18,6 +18,7 @@ from oc8.constants import CORE_VERSION
 from oc8.models import (
     Agent,
     Capa,
+    CapaInstallation,
     CapaVersion,
     Department,
     MemoryStore,
@@ -58,6 +59,24 @@ class CoreCompatError(PluginError):
 def _artifact_hash(manifest: Manifest) -> bytes:
     canonical = json.dumps(manifest.model_dump(mode="json"), sort_keys=True).encode()
     return hashlib.sha256(canonical).digest()
+
+
+async def _load_installation_config(
+    db: AsyncSession, *, capa_id: uuid.UUID
+) -> dict[str, str]:
+    """The tenant-submitted, non-secret setup values for this capa, if any
+    setup was ever run -- the same dict `_configure_without_connection`
+    (api/v1/capas.py) writes to. `{}` both when no CapaInstallation row
+    exists yet (every pre-existing hand-built test fixture, and any capa
+    hired before ever being enabled+configured) and when one exists with an
+    empty config -- both mean "no substitution values available", handled
+    identically by `_substitute_template_values` leaving every token as-is."""
+    installation = (
+        await db.execute(
+            select(CapaInstallation).where(CapaInstallation.capa_id == capa_id)
+        )
+    ).scalar_one_or_none()
+    return dict(installation.config) if installation is not None else {}
 
 
 def _check_core_compat(spec: str) -> None:

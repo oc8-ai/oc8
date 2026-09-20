@@ -6,7 +6,14 @@ the pure-function tests -- see that section's own docstrings."""
 
 from __future__ import annotations
 
-from oc8.capas.service import _substitute_template_values
+import uuid
+
+import pytest
+from sqlalchemy import select
+
+from oc8 import models as m
+from oc8.capas.service import _load_installation_config, _substitute_template_values, install_plugin
+from tests.conftest import AppSessionFactory
 
 
 def test_replaces_a_present_token() -> None:
@@ -43,3 +50,49 @@ def test_replaces_a_repeated_token_every_time_it_appears() -> None:
         _substitute_template_values(text, config)
         == "acme/widgets -- clone acme/widgets and work in it."
     )
+
+
+pytestmark = pytest.mark.asyncio
+
+
+async def test_load_installation_config_returns_the_stored_plain_values(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as s:
+        version = await install_plugin(
+            s,
+            tenant_id=tenant,
+            manifest_data={"name": "cfg_probe", "version": "1.0.0", "type": "department_template"},
+        )
+        s.add(
+            m.CapaInstallation(
+                tenant_id=tenant,
+                capa_id=version.capa_id,
+                status="enabled",
+                config={"repo": "acme/widgets"},
+            )
+        )
+        await s.flush()
+
+        config = await _load_installation_config(s, capa_id=version.capa_id)
+        assert config == {"repo": "acme/widgets"}
+
+
+async def test_load_installation_config_returns_empty_dict_when_no_row_exists(
+    app_session: AppSessionFactory,
+) -> None:
+    """The common case: crm_vertrieb_agent, helpdesk_support_agent, and every
+    test in test_instantiate_department.py/test_instantiate_agent.py install
+    a version and instantiate straight away, with no CapaInstallation row
+    ever created (that row is only created lazily by enable_plugin's
+    get-or-create -- capas/lifecycle.py). Must return {}, not raise."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as s:
+        version = await install_plugin(
+            s,
+            tenant_id=tenant,
+            manifest_data={"name": "cfg_probe_2", "version": "1.0.0", "type": "department_template"},
+        )
+        config = await _load_installation_config(s, capa_id=version.capa_id)
+        assert config == {}
