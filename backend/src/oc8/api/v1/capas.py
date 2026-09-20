@@ -360,8 +360,9 @@ async def list_available(
     `{items, totalCount}`.
     """
     installed = {p.name: p for p in (await db.execute(select(m.Capa))).scalars().all()}
+    discovered = list(discover_plugins())
     out: list[DiscoveredPluginDTO] = []
-    for d in discover_plugins():
+    for d in discovered:
         row = installed.get(d.plugin_id)
         installation = (
             (
@@ -402,6 +403,49 @@ async def list_available(
                 ),
                 source_format=str((d.manifest or {}).get("source_format", "oc8")),
                 warnings=list(d.warnings),
+            )
+        )
+    # A capa installed via the custom-MCP wizard (origin="custom") has no disk
+    # folder at all -- `discover_plugins()` never finds it, so without this it
+    # would install and enable successfully yet never appear in this listing.
+    # Its `CapaVersion.manifest` is the only source of truth for the fields a
+    # disk-discovered `DiscoveredPlugin` would otherwise supply.
+    disk_plugin_ids = {d.plugin_id for d in discovered}
+    for row in installed.values():
+        if row.name in disk_plugin_ids or row.current_version_id is None:
+            continue
+        pv = await db.get(m.CapaVersion, row.current_version_id)
+        if pv is None:
+            continue
+        installation = (
+            await db.execute(select(m.CapaInstallation).where(m.CapaInstallation.capa_id == row.id))
+        ).scalar_one_or_none()
+        manifest = pv.manifest or {}
+        out.append(
+            DiscoveredPluginDTO(
+                plugin_id=row.name,
+                name=row.name,
+                label=manifest.get("label"),
+                version=pv.semver,
+                type=row.type,
+                trust=row.trust_level,
+                summary=str(manifest.get("summary", "")),
+                valid=True,
+                installed=True,
+                installed_version=pv.semver,
+                database_id=str(row.id),
+                installation_status=installation.status if installation is not None else None,
+                disabled_reason=(
+                    installation.disabled_reason if installation is not None else None
+                ),
+                permissions=list(pv.permissions),
+                capabilities=list(pv.capabilities),
+                surfaces=_PLUGIN_SURFACES.get(row.type, []),
+                setup=_resolve_setup_translations(manifest.get("setup"), {}),
+                personal_settings=_resolve_personal_settings_translations(
+                    manifest.get("personal_settings"), {}
+                ),
+                source_format=str(manifest.get("source_format", "oc8")),
             )
         )
     if search:
