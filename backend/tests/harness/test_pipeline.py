@@ -1,10 +1,14 @@
-"""The Harness object owns the per-run state and applies C5 (shape) and D1
-(may_finish) exactly as the two runtimes do today, in today's order: the tool
-message first, then the repeat nudge, then the budget note."""
+"""The Harness object owns the per-run state and applies C3 (step stamp), C5
+(shape) and D1 (may_finish) exactly as the two runtimes do today, in today's
+order: the step stamp first, then the tool message, then the repeat nudge,
+then the budget note."""
 
 from __future__ import annotations
 
+import datetime as dt
+
 from oc8.agent.harness import FinishVerdict, Harness, HarnessState, ModelCaps
+from oc8.agent.harness.prompts import format_step_stamp, resolve_timezone
 from oc8.agent.harness.stages.c_reminders import (
     MAX_TOOL_RESULT_CHARS,
     TOOL_OUTPUT_BUDGET_WARNING_CHARS,
@@ -16,29 +20,62 @@ def _call(**arguments: object) -> ToolCall:
     return ToolCall(id="c", name="search_records", arguments=dict(arguments))
 
 
+def _stamp_prefix_len(step_no: int, max_steps: int, tz: str = "UTC") -> int:
+    """The exact character count `shape()` prepends before the raw/capped
+    output, via the real `format_step_stamp` plus the one joining space. The
+    clock reading itself doesn't matter here -- `HH:MM` is always 5 characters
+    regardless of the actual time, so a fixed `now` gives the real length."""
+    tz_label, resolved_tz = resolve_timezone(tz)
+    now = dt.datetime(2020, 1, 1, tzinfo=resolved_tz)
+    stamp = format_step_stamp(step_no=step_no, max_steps=max_steps, now=now, tz_label=tz_label)
+    return len(stamp) + 1
+
+
+def test_shape_prepends_step_stamp() -> None:
+    h = Harness(caps=ModelCaps())
+    h.state.step_no = 3
+    shaped = h.shape(_call(model="a"), "ok", max_steps=40, tz="UTC")
+    assert shaped.output.startswith("[step 3/40 · ")
+    assert shaped.output.endswith("] ok")
+
+
+def test_step_stamp_uses_given_timezone() -> None:
+    h = Harness(caps=ModelCaps())
+    h.state.step_no = 1
+    shaped = h.shape(_call(model="a"), "ok", max_steps=10, tz="Europe/Berlin")
+    assert "Europe/Berlin" in shaped.output
+
+
 def test_a_small_result_passes_through_with_no_reminders() -> None:
     h = Harness()
-    shaped = h.shape(_call(model="a"), "ok")
-    assert shaped.output == "ok"
+    shaped = h.shape(_call(model="a"), "ok", max_steps=40, tz="UTC")
+    assert shaped.output.startswith("[step 0/40 · ")
+    assert shaped.output.endswith("] ok")
     assert shaped.reminders == []
-    assert h.state.tool_output_chars == 2
+    assert h.state.tool_output_chars == _stamp_prefix_len(0, 40) + len("ok")
     assert h.state.repeat == {"sig": 'search_records\n{"model": "a"}', "count": 1}
 
 
 def test_an_oversized_result_is_capped_and_the_capped_size_is_what_counts() -> None:
     h = Harness()
-    shaped = h.shape(_call(), "x" * (MAX_TOOL_RESULT_CHARS + 100))
-    # cap_tool_output adds a note (~200+ chars), so allow for that overhead
-    assert len(shaped.output) < MAX_TOOL_RESULT_CHARS + 250
+    shaped = h.shape(_call(), "x" * (MAX_TOOL_RESULT_CHARS + 100), max_steps=40, tz="UTC")
+    # cap_tool_output adds a note (~200+ chars) and the step stamp adds its own
+    # prefix, so allow for both on top of the cap.
+    assert len(shaped.output) < MAX_TOOL_RESULT_CHARS + 300
     assert h.state.tool_output_chars == len(shaped.output)
 
 
 def test_budget_note_fires_once_when_the_cumulative_size_crosses_the_line() -> None:
     h = Harness()
-    chunk = "x" * MAX_TOOL_RESULT_CHARS
+    # step_no/max_steps/tz never change across the loop below, so the stamp's
+    # length is constant -- size the chunk so each stamped-and-capped result
+    # is exactly MAX_TOOL_RESULT_CHARS, matching the pre-stamp behavior this
+    # test's numbers were chosen for.
+    prefix_len = _stamp_prefix_len(h.state.step_no, 40, "UTC")
+    chunk = "x" * (MAX_TOOL_RESULT_CHARS - prefix_len)
     notes: list[list[str]] = []
     for i in range(10):
-        notes.append(h.shape(_call(i=i), chunk).reminders)
+        notes.append(h.shape(_call(i=i), chunk, max_steps=40, tz="UTC").reminders)
     first_note_at = next(i for i, r in enumerate(notes) if r)
     # 20_000 * 8 = 160_000 >= 150_000 -> the 8th result (index 7) trips it.
     assert first_note_at == 7
@@ -48,19 +85,26 @@ def test_budget_note_fires_once_when_the_cumulative_size_crosses_the_line() -> N
 
 
 def test_repeat_nudge_comes_before_the_budget_note() -> None:
-    h = Harness(state=HarnessState(tool_output_chars=TOOL_OUTPUT_BUDGET_WARNING_CHARS - 1))
-    h.shape(_call(), "a")
-    h.shape(_call(), "a")
+    # Each "a" result adds prefix_len + 1 chars now that shape() stamps it
+    # first; pick starting totals so the crossing points land on the same
+    # calls as before the stamp existed.
+    increment = _stamp_prefix_len(0, 40, "UTC") + 1
+
+    h = Harness(state=HarnessState(tool_output_chars=TOOL_OUTPUT_BUDGET_WARNING_CHARS - increment))
+    h.shape(_call(), "a", max_steps=40, tz="UTC")
+    h.shape(_call(), "a", max_steps=40, tz="UTC")
     # The third identical call crosses the repeat threshold; the budget line was
     # crossed on the first call already, so only the repeat nudge is new here.
-    shaped = h.shape(_call(), "a")
+    shaped = h.shape(_call(), "a", max_steps=40, tz="UTC")
     assert len(shaped.reminders) == 1
     assert shaped.reminders[0].startswith("You are repeating")
 
-    h2 = Harness(state=HarnessState(tool_output_chars=TOOL_OUTPUT_BUDGET_WARNING_CHARS - 3))
-    h2.shape(_call(), "a")
-    h2.shape(_call(), "a")
-    shaped2 = h2.shape(_call(), "a")
+    h2 = Harness(
+        state=HarnessState(tool_output_chars=TOOL_OUTPUT_BUDGET_WARNING_CHARS - 3 * increment)
+    )
+    h2.shape(_call(), "a", max_steps=40, tz="UTC")
+    h2.shape(_call(), "a", max_steps=40, tz="UTC")
+    shaped2 = h2.shape(_call(), "a", max_steps=40, tz="UTC")
     assert [r[:20] for r in shaped2.reminders] == [
         "You are repeating th",
         "[System note: tool r",
@@ -96,9 +140,9 @@ def test_may_finish_does_not_nudge_when_the_caller_cannot_continue() -> None:
 def test_from_run_context_and_store_round_trip() -> None:
     ctx: dict[str, object] = {"task": "x"}
     h = Harness.from_run_context(ctx, caps=ModelCaps(code_mode=True))
-    h.shape(_call(), "abc")
+    h.shape(_call(), "abc", max_steps=40, tz="UTC")
     h.store(ctx)
     again = Harness.from_run_context(ctx)
-    assert again.state.tool_output_chars == 3
+    assert again.state.tool_output_chars == _stamp_prefix_len(0, 40) + len("abc")
     assert h.caps.code_mode is True
     assert again.caps == ModelCaps()

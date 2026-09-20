@@ -33,6 +33,9 @@ class HarnessState:
     repeat: dict[str, Any] = field(default_factory=dict)
     #: Todo-continuation nudges issued so far (bounded independently of steps).
     todo_rounds: int = 0
+    #: The current step number, set by the caller at the top of each turn, for
+    #: C3's step stamp. 0 on a fresh run, before the first turn sets it.
+    step_no: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -47,6 +50,7 @@ class HarnessState:
             tool_output_budget_warned=bool(raw.get("tool_output_budget_warned", False)),
             repeat=dict(raw.get("repeat") or {}),
             todo_rounds=int(raw.get("todo_rounds", 0)),
+            step_no=int(raw.get("step_no", 0)),
         )
 
     @classmethod

@@ -11,10 +11,12 @@ package 1 must not do. Package 5 introduces `gate()` when B1-B5 land.
 
 from __future__ import annotations
 
+import datetime as dt
 from dataclasses import dataclass, field
 from typing import Any
 
 from oc8.agent.harness.caps import ModelCaps
+from oc8.agent.harness.prompts import format_step_stamp, resolve_timezone
 from oc8.agent.harness.stages.c_reminders import (
     TOOL_OUTPUT_BUDGET_WARNING_CHARS,
     cap_tool_output,
@@ -64,11 +66,18 @@ class Harness:
 
     # ----------------------------------------------------------------- phase C
 
-    def shape(self, tc: ToolCall, output: str) -> ShapedResult:
-        """C5: cap the result, count it against the per-run budget, track the
-        consecutive-identical-call state. Order of the reminders matches what
-        both runtimes appended before the move: repeat nudge, then budget note.
+    def shape(self, tc: ToolCall, output: str, *, max_steps: int, tz: str = "UTC") -> ShapedResult:
+        """C3 + C5: prepend the step stamp, then cap the result, count it
+        against the per-run budget, track the consecutive-identical-call
+        state. Order of the reminders matches what both runtimes appended
+        before the move: repeat nudge, then budget note.
         """
+        tz_label, resolved_tz = resolve_timezone(tz)
+        now = dt.datetime.now(resolved_tz)
+        stamp = format_step_stamp(
+            step_no=self.state.step_no, max_steps=max_steps, now=now, tz_label=tz_label
+        )
+        output = f"{stamp} {output}"
         capped = cap_tool_output(output)
         self.state.tool_output_chars += len(capped)
         budget_note: str | None = None

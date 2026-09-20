@@ -892,13 +892,15 @@ async def tool(
     if output.startswith("ERROR:") and ctx.get("pending_cache_key") is not None:
         await cache_flow.invalidate(ctx["pending_cache_key"])
 
-    # C5 through the shared Harness, at parity with the in-process engine's
-    # loop -- same cap, same cumulative counter, same repeat tracker, just
-    # persisted on run.context instead of a local closure variable, since
-    # this runtime drives one tool call per HTTP request with no in-memory state
-    # surviving between them.
+    # C3 + C5 through the shared Harness, at parity with the in-process engine's
+    # loop -- same stamp, same cap, same cumulative counter, same repeat
+    # tracker, just persisted on run.context instead of a local closure
+    # variable, since this runtime drives one tool call per HTTP request with
+    # no in-memory state surviving between them. ctx["steps"] is the same
+    # counter /step increments (see its own ctx["steps"] = ... line above).
     harness = Harness.from_run_context(ctx)
-    shaped = harness.shape(tc, output)
+    harness.state.step_no = int(ctx.get("steps", 0))
+    shaped = harness.shape(tc, output, max_steps=_max_steps(agent), tz=str(ctx.get("tz", "UTC")))
     output = shaped.output
 
     # Append the tool result to the transcript. This must come directly after the

@@ -19,6 +19,7 @@ def test_fresh_state_is_all_zero() -> None:
     assert s.tool_output_budget_warned is False
     assert s.repeat == {}
     assert s.todo_rounds == 0
+    assert s.step_no == 0
 
 
 def test_round_trip_through_real_json() -> None:
@@ -27,6 +28,7 @@ def test_round_trip_through_real_json() -> None:
         tool_output_budget_warned=True,
         repeat={"sig": "search_records\n{}", "count": 2},
         todo_rounds=1,
+        step_no=5,
     )
     raw = json.loads(json.dumps(s.to_dict()))
     assert HarnessState.from_dict(raw) == s

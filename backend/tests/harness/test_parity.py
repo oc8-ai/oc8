@@ -11,6 +11,7 @@ idempotency is isolated-only today and is NOT compared here (spec §1.1).
 
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Any
 
@@ -160,11 +161,23 @@ async def _fixture(db: Any, tenant: uuid.UUID) -> tuple[m.Agent, m.McpConnection
     return agent, conn
 
 
+# C3's step stamp (`[step N/M · HH:MM tz]`, prepended by Harness.shape() to
+# every tool result) carries the real wall clock. The two runtimes here run
+# sequentially (in-process, then the isolated HTTP round trips), so a run
+# straddling a real minute boundary would otherwise make an identical
+# transcript compare unequal on the `HH:MM` alone -- masked the same way
+# test_snapshot.py masks it, rather than freezing time.
+_STEP_STAMP = re.compile(r"\[step \d+/\d+ · \d{2}:\d{2} [^\]]+\]")
+
+
 def _normalise(messages: list[NeutralMessage]) -> list[tuple[str, Any, Any, Any]]:
     out: list[tuple[str, Any, Any, Any]] = []
     for msg in messages:
         calls = [(t.name, t.arguments) for t in msg.tool_calls] if msg.tool_calls else []
-        out.append((msg.role, msg.content, msg.name, calls))
+        content = msg.content
+        if isinstance(content, str):
+            content = _STEP_STAMP.sub("<step-stamp>", content)
+        out.append((msg.role, content, msg.name, calls))
     return out
 
 

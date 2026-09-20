@@ -34,12 +34,21 @@ _DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 _WEEKDAY = re.compile(
     r"\b(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b"
 )
+# C3's step stamp (`[step N/M · HH:MM tz]`, prepended by Harness.shape() to
+# tool-call outputs) carries the same real-wall-clock problem as the weekday
+# above. This snapshot only covers the step-1 preamble, before any tool has
+# run, so no stamp reaches it today -- masked anyway (option (b): no
+# freezegun/time-freezing pattern exists in this suite) so a later addition of
+# tool-output rendering to this fixture doesn't quietly reintroduce the same
+# flakiness this file already works around for the weekday.
+_STEP_STAMP = re.compile(r"\[step \d+/\d+ · \d{2}:\d{2} [^\]]+\]")
 
 
 def _stable(text: str) -> str:
     text = _UUID.sub("<uuid>", text)
     text = _ISO.sub("<datetime>", text)
     text = _WEEKDAY.sub("<weekday>", text)
+    text = _STEP_STAMP.sub("<step-stamp>", text)
     return _DATE.sub("<date>", text)
 
 

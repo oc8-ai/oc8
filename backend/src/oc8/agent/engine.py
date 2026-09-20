@@ -454,10 +454,10 @@ async def run_agent(
         has_knowledge = preamble.has_knowledge
         has_instruction_files = preamble.has_instruction_files
         copilot_permissions = preamble.copilot_permissions
-        # C3 (a later package) reads this back so the step stamp uses the SAME
-        # resolved timezone as A2's "Now" line above, instead of re-resolving
-        # it -- not consumed inside loop() yet, hence the explicit noqa.
-        tz = preamble.tz  # noqa: F841
+        # C3's step stamp uses the SAME resolved timezone as A2's "Now" line
+        # above, instead of re-resolving it -- consumed by the harness.shape()
+        # call inside loop() below.
+        tz = preamble.tz
         tool_trace: list[dict[str, Any]] = []
         # Sub-runs created by delegate_task. run_agent must not publish them (see
         # _delegate); every return below hands them to execute_run instead.
@@ -539,6 +539,8 @@ async def run_agent(
             # _run() above) -- not recomputed here, so the preamble's step
             # budget and this loop's own bound never drift apart.
             for steps in range(1, max_steps + 1):
+                # C3: the step stamp on this turn's shaped tool output reads this.
+                harness.state.step_no = steps
                 if not session_state["started"]:
                     await dispatch_claude_event(
                         tenant_id,
@@ -1159,7 +1161,7 @@ async def run_agent(
                                 target=outward.target,
                                 output=output,
                             )
-                        shaped = harness.shape(tc, output)
+                        shaped = harness.shape(tc, output, max_steps=max_steps, tz=tz)
                         output = shaped.output
                         _tool_call_entry: dict[str, Any] = {
                             "tool": tc.name,
