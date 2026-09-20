@@ -15,8 +15,8 @@ from oc8 import models as m
 from oc8.capas.service import (
     _load_installation_config,
     _substitute_template_values,
-    instantiate_department,
     install_plugin,
+    instantiate_department,
 )
 from tests.conftest import AppSessionFactory
 
@@ -94,11 +94,12 @@ async def test_load_installation_config_returns_empty_dict_when_no_row_exists(
     get-or-create -- capas/lifecycle.py). Must return {}, not raise."""
     tenant = uuid.uuid4()
     async with app_session(tenant) as s:
-        version = await install_plugin(
-            s,
-            tenant_id=tenant,
-            manifest_data={"name": "cfg_probe_2", "version": "1.0.0", "type": "department_template"},
-        )
+        manifest_data = {
+            "name": "cfg_probe_2",
+            "version": "1.0.0",
+            "type": "department_template",
+        }
+        version = await install_plugin(s, tenant_id=tenant, manifest_data=manifest_data)
         config = await _load_installation_config(s, capa_id=version.capa_id)
         assert config == {}
 

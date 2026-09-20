@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import re
 import hashlib
 import json
+import re
 import uuid
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
