@@ -16,7 +16,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 if TYPE_CHECKING:
-    from oc8_evals.scoring import Check  # type: ignore[import-untyped]
+    # `scoring` shipped in Task 2, so this import now resolves and needs no
+    # ignore; `stack` doesn't exist until Task 7, so it still does.
+    from oc8_evals.scoring import Check
     from oc8_evals.stack import ScenarioContext  # type: ignore[import-untyped]
 
 
