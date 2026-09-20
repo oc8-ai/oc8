@@ -25,6 +25,10 @@ from cli_harness.outcome import no_terminal_event
 from cli_harness.park import POLL_INTERVAL_S, is_parked
 from cli_harness.session_state import clear_session_id, get_session_id, set_session_id
 from cli_harness.tail import tail_new_lines
+from cli_harness.toolchain import TOOLCHAIN_NOTE
+from sqlalchemy import text as sql_text
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from oc8 import models as m
 from oc8.agent.engine import RunResult, open_run_task
 from oc8.config import get_settings
@@ -34,8 +38,6 @@ from oc8.sandbox.mounts import validate_mounts
 from oc8.sandbox.naming import container_name
 from oc8.sandbox.reaper import RUN_LABEL
 from oc8.sandbox.types import BindMount, SandboxSpec
-from sqlalchemy import text as sql_text
-from sqlalchemy.ext.asyncio import AsyncSession
 
 _PLUGIN_NAME = "codex_runtime"
 #: An arbitrary, non-empty label -- oc8's /llm gateway resolves the model
@@ -307,7 +309,9 @@ class CodexRuntime:
             name=container_name(agent.name, "codex", run_id),
             # Identity for the startup reaper; the name is only for humans.
             labels={RUN_LABEL: str(run_id)},
-            command=_build_command(task_text=task_text, resume_session_id=resume_session_id),
+            command=_build_command(
+                task_text=f"{task_text}\n\n{TOOLCHAIN_NOTE}", resume_session_id=resume_session_id
+            ),
             env={
                 "OPENAI_BASE_URL": f"{settings.internal_base_url}/llm",
                 "OPENAI_API_KEY": token,

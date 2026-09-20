@@ -4,6 +4,10 @@ trigger -> assemble context -> LLM complete (via Model Router) -> for each tool
 call: PEP authorize -> invoke MCP tool -> feed result back -> repeat until the
 model stops. Every tool call is audited; token usage is metered; a threshold
 breach raises a HITL approval and suspends the run.
+
+Shared stages (authorisation, record guards, result shaping, completion
+gating) live in `oc8.agent.harness`; this module is the in-process driver of
+that pipeline, `api/v1/internal_agent.py` the isolated one.
 """
 
 from __future__ import annotations
@@ -12,7 +16,7 @@ import datetime as dt
 import json
 import logging
 import uuid
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -21,38 +25,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.agent import cache_flow
 from oc8.agent.control_tools import (
-    DEPTH_LIMIT_REASON,
-    MAX_DELEGATION_DEPTH,
+    MAX_DELEGATION_DEPTH,  # re-exported for tests/coding/test_engine_delegation.py
     execute_control_tool,
     offered_tools,
 )
+from oc8.agent.harness import Harness, resolve_caps
+from oc8.agent.harness.calls import (
+    call_sig as _call_sig,  # re-exported for mcp_gateway.py and older tests
+)
+from oc8.agent.harness.stages.b_authorize import (
+    authorize as _authorize,  # re-exported for mcp_gateway.py and older tests
+)
+from oc8.agent.harness.stages.b_outward import check_outward, remember_outward
+from oc8.agent.harness.stages.c_reminders import track_repeat_tool_call
 from oc8.agent.mcp_client import McpSession
 from oc8.agent.mcp_env import resolve_mcp_env
 from oc8.agent.mcp_requirements import wrap_with_requirements
-from oc8.agent.outward import (
-    REFUSAL,
-    already_delivered,
-    outward_target,
-    remember_delivery,
-)
 from oc8.agent.preamble import build_run_preamble
 from oc8.agent.tool_notes import apply_tool_notes
-from oc8.agent.tool_semantics import (
-    describe_focus,
-    describes_a_record,
-    extract_attributes,
-    extract_value,
-)
+from oc8.agent.tool_semantics import describe_focus, describes_a_record
 from oc8.approvals import raise_approval
 from oc8.audit import append_event
-from oc8.authz.pdp import (
-    Decision,
-    Effect,
-    ToolPolicy,
-    authorize_tool_call,
-    effective_tool_policies,
-    required_right,
-)
+from oc8.authz.pdp import Decision, Effect, effective_tool_policies
 from oc8.capas.claude_hooks import dispatch_claude_event
 from oc8.capas.claude_hooks.context import (
     base_payload,
@@ -70,8 +64,7 @@ from oc8.config import get_settings
 from oc8.hooks.bus import dispatch_filter
 from oc8.hooks.executor import InProcessExecutor
 from oc8.hooks.types import HookCtx
-from oc8.memory.policy import authorize_memory_write
-from oc8.memory.router import MAX_MEMORY_CONTENT_LENGTH, write_memory
+from oc8.memory.router import write_memory
 from oc8.metering import check_budget, record_usage, trigger_budget_hard_stop
 from oc8.modelrouter import (
     NeutralMessage,
@@ -100,9 +93,16 @@ from oc8.skills.runtime import (
 )
 from oc8.storage import s3
 
-logger = logging.getLogger(__name__)
+# mypy's no_implicit_reexport (strict mode) otherwise treats these three
+# renamed re-exports as private to this module; mcp_gateway.py and
+# tests/coding/test_engine_delegation.py import them from here directly.
+__all__ = [
+    "MAX_DELEGATION_DEPTH",
+    "_authorize",
+    "_call_sig",
+]
 
-DEFAULT_MAX_STEPS = 12  # framework default; overridable via settings or per agent
+logger = logging.getLogger(__name__)
 
 
 def _max_steps(agent: m.Agent) -> int:
@@ -139,174 +139,6 @@ class RunResult:
     # the LATEST call's list, not a log of every call. Empty means the tool was
     # never called this run, not that every item finished.
     todos: list[dict[str, str]] = field(default_factory=list)
-
-
-def _call_sig(tc: ToolCall) -> str:
-    """Stable signature of a tool call, so an approval decided on a suspended run
-    can be matched to the same call when the run resumes and replays it."""
-    return tc.name + "\n" + json.dumps(tc.arguments, sort_keys=True, default=str)
-
-
-#: Consecutive-identical-call counts that trigger a repeat-call reminder (see
-#: track_repeat_tool_call). The first is a short nudge; the later two spell out
-#: the tool, count and arguments -- by then a short nudge already failed once.
-REPEAT_CALL_THRESHOLDS = (3, 5, 8)
-_REPEAT_ARGS_PREVIEW_CHARS = 500
-
-
-def track_repeat_tool_call(
-    state: dict[str, Any], tc: ToolCall
-) -> tuple[dict[str, Any], str | None]:
-    """Advisory loop-hygiene guard: counts CONSECUTIVE calls to the same tool
-    with canonically-identical arguments (via _call_sig, so this agrees with the
-    approval-resume matcher on what "identical" means) and, once the count
-    crosses a threshold, returns a reminder to inject -- never blocks or
-    rewrites the call itself, only nudges the model to look at what it already
-    has instead of repeating itself.
-
-    Shared VERBATIM by the in-process engine (loop()'s own `_repeat_state`, a
-    plain local dict) and the isolated runtime's /tool endpoint (persisted on
-    run.context so it survives across that runtime's separate HTTP requests) --
-    see "container parity is not automatic": duplicating this logic instead of
-    sharing it is exactly how the two runtimes drift.
-
-    `state` is `{"sig": str | None, "count": int}` (JSON-serializable on
-    purpose, for the isolated runtime's context column) or `{}` for a fresh
-    run. Returns the updated state and the reminder text, or None if no
-    threshold was crossed this call.
-    """
-    sig = _call_sig(tc)
-    prior_count = state.get("count", 0) if state.get("sig") == sig else 0
-    count = prior_count + 1
-    new_state = {"sig": sig, "count": count}
-    if count not in REPEAT_CALL_THRESHOLDS:
-        return new_state, None
-    if count == REPEAT_CALL_THRESHOLDS[0]:
-        return new_state, (
-            "You are repeating the exact same tool call with identical "
-            "arguments. Carefully analyze the previous result before calling "
-            "again -- if it already answered your question, act on it instead "
-            "of repeating the call."
-        )
-    args_preview = json.dumps(tc.arguments, sort_keys=True, default=str)
-    if len(args_preview) > _REPEAT_ARGS_PREVIEW_CHARS:
-        args_preview = args_preview[: _REPEAT_ARGS_PREVIEW_CHARS - 1] + "…"
-    return new_state, (
-        f"You have now called '{tc.name}' {count} times in a row with the "
-        f"exact same arguments ({args_preview}). This strongly suggests you "
-        "are stuck in a loop. Stop and reconsider: either the result you "
-        "already have answers this, or the call cannot succeed and you should "
-        "try a different approach or explain the blocker instead of repeating it."
-    )
-
-
-#: Ported from DeepSeek Harness's goal-round-driver, adapted to oc8's bounded
-#: step loop: there is no separate session-level "goal" object here, no idle
-#: detection, and no multi-session resume -- a run is already one bounded
-#: execution with its own step budget. Reusing the already-model-facing
-#: `todo_write` list as the completion signal (instead of porting a whole
-#: goal domain/service/UI) is the Keep-It-Simple call: an agent that never
-#: calls todo_write gets zero behavior change, and one that does gets the
-#: harness refusing to let it stop while its own declared checklist still has
-#: open items -- directly the Kai bug pattern (a status report written with
-#: tickets still pending). Bounded independently of max_steps so a stubborn
-#: model cannot burn a whole run's budget on reminders alone; each round still
-#: also counts as one ordinary step against max_steps.
-TODO_CONTINUATION_MAX_ROUNDS = 3
-
-
-def todo_continuation_reminder(open_todos: list[dict[str, str]], round_no: int) -> str:
-    """Reminder injected when the model tries to finish a run while its own
-    todo_write list still has open (non-completed) items -- see
-    TODO_CONTINUATION_MAX_ROUNDS. Shared verbatim by the in-process engine and
-    the isolated runtime's /step endpoint, same reasoning as
-    track_repeat_tool_call above."""
-    lines = "\n".join(
-        f"- [{t.get('status', 'pending')}] {t.get('content', '')}" for t in open_todos
-    )
-    return (
-        f"You indicated you are finished, but {len(open_todos)} todo item(s) from your own "
-        f"todo_write list are still open (continuation round {round_no}/"
-        f"{TODO_CONTINUATION_MAX_ROUNDS}):\n{lines}\n"
-        "Continue working through them. If any are genuinely done, no longer applicable, "
-        "or blocked, call todo_write again to update their status and explain why before "
-        "finishing."
-    )
-
-
-def todo_continuation_exhausted_note(open_todos: list[dict[str, str]]) -> str:
-    """Appended to the run's own output when it ends with todo_write items still
-    open despite TODO_CONTINUATION_MAX_ROUNDS worth of nudging -- without this, a
-    run that gave up looks identical to one that genuinely finished everything.
-    Shared verbatim by the in-process engine and the isolated runtime's /step
-    endpoint, same reasoning as todo_continuation_reminder above."""
-    lines = "\n".join(
-        f"- [{t.get('status', 'pending')}] {t.get('content', '')}" for t in open_todos
-    )
-    return (
-        f"[Note: this run ended with {len(open_todos)} todo item(s) still open after "
-        f"{TODO_CONTINUATION_MAX_ROUNDS} continuation attempt(s):\n{lines}]"
-    )
-
-
-#: Tool results are appended to the transcript verbatim and replayed on every
-#: subsequent turn -- an unaggregated report page (e.g. a groupby result with
-#: hundreds of nested rows) can alone run into tens of thousands of
-#: characters, and a few such pages compound fast. Capped, not dropped: the
-#: model still gets most of one big result plus an explicit note that it was
-#: cut, so it learns to narrow the query instead of silently losing data with
-#: no visible cause -- see the 2026-09-15 oc8-obs incident, where an uncapped
-#: 1400-row pagination loop left no room for the model's own answer and the
-#: run failed with no error recorded anywhere (the truncated_empty path below
-#: this module's step loop, and internal_agent.py's identical one, produced
-#: an empty output rather than a diagnosable message).
-MAX_TOOL_RESULT_CHARS = 20_000
-
-
-def cap_tool_output(output: str) -> str:
-    """Bound a single tool result before it enters the transcript. Shared
-    verbatim by the in-process engine and the isolated runtime's /tool
-    endpoint, same reasoning as todo_continuation_reminder above."""
-    if len(output) <= MAX_TOOL_RESULT_CHARS:
-        return output
-    omitted = len(output) - MAX_TOOL_RESULT_CHARS
-    return (
-        f"{output[:MAX_TOOL_RESULT_CHARS]}\n\n"
-        f"[... {omitted} more characters omitted -- this result was too large to include "
-        "in full. Narrow the query (a smaller date range, fewer groupby dimensions, or a "
-        "lower limit) instead of paging through it in full.]"
-    )
-
-
-#: Warned once per run when tool results have cumulatively used a large slice
-#: of a typical context window, well before the model actually runs out of
-#: room -- the same incident MAX_TOOL_RESULT_CHARS documents showed that
-#: hitting the wall produces no error at all, just a silently empty answer,
-#: so the model needs the nudge while it can still act on it.
-TOOL_OUTPUT_BUDGET_WARNING_CHARS = 150_000
-
-
-def tool_output_budget_reminder(total_chars: int) -> str:
-    """Reminder injected the first time this run's cumulative tool-result size
-    crosses TOOL_OUTPUT_BUDGET_WARNING_CHARS. Shared verbatim by the in-process
-    engine and the isolated runtime's /tool endpoint, same reasoning as
-    todo_continuation_reminder above."""
-    return (
-        f"[System note: tool results in this run have grown to roughly {total_chars:,} "
-        "characters so far. If you are paging through a report or list, stop and switch "
-        "to a narrower query or a server-side aggregation instead of continuing to page "
-        "-- an oversized transcript can silently exhaust your own response budget later "
-        "in this run, with no error message.]"
-    )
-
-
-def _extract_value(
-    arguments: dict[str, Any], value_spec: dict[str, Any] | None = None
-) -> float | None:
-    """Largest monetary value implied by a tool call — neutral. The connection's
-    optional `value_spec` (declared by its plugin) says where a nested/summed
-    value lives; the core names no software-specific field."""
-    return extract_value(arguments, value_spec)
 
 
 def _json_chunks(text: str) -> list[str]:
@@ -353,103 +185,6 @@ def _salvage_tool_calls(text: str, tools: list[NeutralTool]) -> list[ToolCall]:
                     ToolCall(id=f"salvaged_{len(calls)}", name=item["name"], arguments=args)
                 )
     return calls
-
-
-def _authorize(
-    agent: m.Agent,
-    tc: ToolCall,
-    *,
-    frame: dict[str, Any],
-    delegation_depth: int = 0,
-    tool_policies: Mapping[str, ToolPolicy],
-    connection_key: str | None,
-    tool_scopes: Mapping[str, Any] | None,
-    skill_thresholds: Sequence[float | None] = (),
-    skill_tool_names: frozenset[str] = frozenset(),
-    value_spec: dict[str, Any] | None = None,
-    guardrail_attribute_specs: Sequence[dict[str, Any]] = (),
-) -> Decision:
-    """PEP for a tool call. Every connection tool is decided against the
-    department frame (§5.3): which entry governs it is the connection key, and
-    which right it needs comes from the connection's `scopes` (unclassified ==
-    write, fail-closed). memory_write is gated by the §10 tier policy instead;
-    delegate_task (§7) is ALLOW/DENY only -- a delegation carries no monetary
-    value. Checks needing the DB (does the target exist, is it in this
-    department) live in _delegate, since this function is deliberately pure.
-
-    The frame is bypassed only for tool names that are actually assigned
-    skill-invocation tools (`skill_tool_names`) -- never by a `skill_`
-    name-prefix match, since MCP tool names flow in unsanitized from a remote
-    server and a connection could name a plain tool `skill_anything` to dodge
-    the frame check entirely. A stray `skill_`-prefixed tool that isn't one of
-    this agent's assigned skills falls through to the normal frame check
-    below, exactly like any other tool of that connection."""
-    if tc.name in skill_tool_names:
-        return Decision(Effect.ALLOW)
-    if tc.name == "ask_user":
-        return Decision(Effect.ALLOW)
-    if tc.name == "propose_change":
-        # Like ask_user: it belongs to no connection, so the department frame
-        # has nothing to decide it against -- the Assistant's chat run has no
-        # tool connection bound at all, and falling through would DENY. That
-        # DENY is not enforced (execute_control_tool dispatches control tools
-        # before the deny branch and this one never reads `decision`), it is
-        # only WRITTEN, so every successful call would be audited as a denial.
-        # Deliberate consequence: `is_tenant_assistant`, checked in the
-        # dispatch, is then the only gate on this tool -- which is what it
-        # should be for a tool that can only ever produce a draft a human has
-        # to approve before anything changes.
-        return Decision(Effect.ALLOW)
-    if tc.name == "decide_approval":
-        # Like propose_change and ask_user: it belongs to no connection, so
-        # the department frame has nothing to decide it against. Real
-        # authorisation for a decision happens where it must, inside
-        # `decide_approval` (approvals/service.py) via `_may_apply_the_effect`
-        # and `_resolve_agent_actor`'s scope -- this ALLOW only keeps a
-        # successful call from being audited as a denial for a tool that was
-        # never going to be enforced by this frame in the first place.
-        return Decision(Effect.ALLOW)
-    if tc.name == "delegate_task":
-        if not agent.is_team_lead:
-            return Decision(Effect.DENY, "only a team lead can delegate tasks")
-        if not str(tc.arguments.get("task_text", "")).strip():
-            return Decision(Effect.DENY, "task_text must not be empty")
-        raw_target = str(tc.arguments.get("agent_id", ""))
-        try:
-            target_id = uuid.UUID(raw_target)
-        except ValueError:
-            return Decision(Effect.DENY, f"invalid agent_id: {raw_target!r}")
-        if target_id == agent.id:
-            return Decision(Effect.DENY, "an agent cannot delegate to itself")
-        if delegation_depth + 1 > MAX_DELEGATION_DEPTH:
-            return Decision(Effect.DENY, DEPTH_LIMIT_REASON)
-        return Decision(Effect.ALLOW)
-    if tc.name == "memory_write":
-        content = str(tc.arguments.get("content", ""))
-        tier = str(tc.arguments.get("tier", ""))
-        if not content.strip():
-            return Decision(Effect.DENY, "content must not be empty")
-        if len(content) > MAX_MEMORY_CONTENT_LENGTH:
-            return Decision(Effect.DENY, f"content exceeds {MAX_MEMORY_CONTENT_LENGTH} characters")
-        return authorize_memory_write(frame, agent.narrowing or {}, tier)
-    agent_threshold = (agent.presentation or {}).get("approval_value_eur")
-    applicable_attributes = [
-        spec
-        for spec in guardrail_attribute_specs
-        if not spec.get("tools") or tc.name in spec["tools"]
-    ]
-    return authorize_tool_call(
-        policies=tool_policies,
-        connection_key=connection_key,
-        right=required_right(tc.name, tool_scopes),
-        tool=tc.name,
-        value=_extract_value(tc.arguments, value_spec),
-        attributes=extract_attributes(tc.arguments, applicable_attributes),
-        extra_thresholds=(
-            float(agent_threshold) if agent_threshold is not None else None,
-            *skill_thresholds,
-        ),
-    )
 
 
 async def open_run_task(
@@ -776,44 +511,18 @@ async def run_agent(
                     offer_write_output_file=True,
                 )
 
-            # Advisory loop-hygiene guard (track_repeat_tool_call, shared with the
-            # isolated runtime's /tool endpoint). Per-run, in-memory only: a
-            # fresh run_agent call (including a resumed/forked run) starts
-            # counting again from zero, an accepted heuristic cost rather than a
-            # durable, cross-run counter.
-            _repeat_state: dict[str, Any] = {}
-
-            def _track_repeat(tc: ToolCall) -> str | None:
-                nonlocal _repeat_state
-                _repeat_state, reminder = track_repeat_tool_call(_repeat_state, tc)
-                return reminder
-
-            # Per-run, in-memory tool-output budget (cap_tool_output /
-            # tool_output_budget_reminder above) -- same "advisory, per-run
-            # only" tradeoff as _repeat_state above.
-            _tool_output_chars_total = 0
-            _tool_output_budget_warned = False
-
-            def _account_tool_output(raw: str) -> tuple[str, str | None]:
-                nonlocal _tool_output_chars_total, _tool_output_budget_warned
-                capped = cap_tool_output(raw)
-                _tool_output_chars_total += len(capped)
-                if (
-                    _tool_output_budget_warned
-                    or _tool_output_chars_total < TOOL_OUTPUT_BUDGET_WARNING_CHARS
-                ):
-                    return capped, None
-                _tool_output_budget_warned = True
-                return capped, tool_output_budget_reminder(_tool_output_chars_total)
+            # Per-run harness state (spec §3.3): the repeat-call tracker and the
+            # tool-output budget, in memory for the lifetime of this loop -- a
+            # fresh run_agent call (including a resumed/forked run) starts from
+            # zero, an accepted heuristic cost rather than a durable counter.
+            harness = Harness(
+                caps=resolve_caps(model_config.params if model_config is not None else None)
+            )
 
             steps = 0
             checkpoint_trace_delta: list[dict[str, Any]] = []
             tokens_since_checkpoint = 0
             max_steps = _max_steps(agent)
-            # See todo_continuation_reminder: counts auto-continuation rounds
-            # separately from `steps` so it can be capped independently of
-            # max_steps, even though each round also consumes one step.
-            todo_continue_rounds = 0
             for steps in range(1, max_steps + 1):
                 if not session_state["started"]:
                     await dispatch_claude_event(
@@ -1042,35 +751,27 @@ async def run_agent(
                         )
 
                     open_todos = [t for t in todos if t.get("status") != "completed"]
-                    if open_todos and todo_continue_rounds < TODO_CONTINUATION_MAX_ROUNDS:
-                        # See todo_continuation_reminder: the model tried to finish
-                        # while its own checklist still has open items. Append its
-                        # (otherwise-dropped) turn plus the reminder and go around
-                        # again instead of returning "done" -- bounded on its own
-                        # cap, but each round still consumes one `steps` iteration.
-                        todo_continue_rounds += 1
+                    finish_verdict = harness.may_finish(open_todos)
+                    if not finish_verdict.ok:
+                        # D1: the model tried to finish while its own checklist
+                        # still has open items. Append its (otherwise-dropped)
+                        # turn plus the reminder and go around again instead of
+                        # returning "done" -- bounded on its own cap, but each
+                        # round still consumes one `steps` iteration.
                         messages.append(
                             NeutralMessage(role="assistant", content=result.text, tool_calls=[])
                         )
                         messages.append(
-                            NeutralMessage(
-                                role="user",
-                                content=todo_continuation_reminder(
-                                    open_todos, todo_continue_rounds
-                                ),
-                            )
+                            NeutralMessage(role="user", content=finish_verdict.reminder or "")
                         )
                         continue
 
-                    # Reaching here with open_todos still set means the round
-                    # cap above was hit, not that everything got done -- say so
-                    # in the output instead of silently looking like a clean
-                    # finish (see todo_continuation_exhausted_note).
+                    # Reaching here with todos still open means the round cap was
+                    # hit, not that everything got done -- say so in the output
+                    # instead of silently looking like a clean finish.
                     output_text = result.text
-                    if open_todos:
-                        output_text = (
-                            f"{output_text}\n\n{todo_continuation_exhausted_note(open_todos)}"
-                        )
+                    if finish_verdict.exhausted_note is not None:
+                        output_text = f"{output_text}\n\n{finish_verdict.exhausted_note}"
 
                     task.state = "done"
                     await record_activity(
@@ -1203,7 +904,9 @@ async def run_agent(
                                     name=tc.name,
                                 )
                             )
-                            repeat_reminder = _track_repeat(tc)
+                            harness.state.repeat, repeat_reminder = track_repeat_tool_call(
+                                harness.state.repeat, tc
+                            )
                             if repeat_reminder is not None:
                                 messages.append(
                                     NeutralMessage(role="user", content=repeat_reminder)
@@ -1401,16 +1104,19 @@ async def run_agent(
                             output = f"ERROR: {decision.reason or 'no tool server available'}"
                             _tool_call_dispatched = False
                         elif (
-                            target := outward_target(
-                                tc.name, tc.arguments, focus_spec, outward_tools
+                            outward := await check_outward(
+                                db,
+                                tenant_id=tenant_id,
+                                task_id=task.id,
+                                tc=tc,
+                                focus_spec=focus_spec,
+                                outward_tools=outward_tools,
                             )
-                        ) is not None and await already_delivered(
-                            db, tenant_id=tenant_id, task_id=task.id, target=target
-                        ):
+                        ).refusal is not None:
                             # Before the call, not after: the point is that the
                             # recipient is not reached twice, and a check that ran
                             # afterwards could only report it.
-                            output = REFUSAL.format(target=target)
+                            output = outward.refusal
                             _tool_call_dispatched = False
                         else:
                             # Live-log which record the agent is working on, from
@@ -1431,14 +1137,15 @@ async def run_agent(
                                 output = await server.call(tc.name, tc.arguments)
                             except Exception as exc:  # surface tool errors to the model
                                 output = f"ERROR: {exc}"
-                            if target is not None and not output.startswith("ERROR:"):
-                                await remember_delivery(
-                                    db,
-                                    tenant_id=tenant_id,
-                                    task_id=task.id,
-                                    target=target,
-                                )
-                        output, tool_output_budget_note = _account_tool_output(output)
+                            await remember_outward(
+                                db,
+                                tenant_id=tenant_id,
+                                task_id=task.id,
+                                target=outward.target,
+                                output=output,
+                            )
+                        shaped = harness.shape(tc, output)
+                        output = shaped.output
                         _tool_call_entry: dict[str, Any] = {
                             "tool": tc.name,
                             "arguments": tc.arguments,
@@ -1457,13 +1164,8 @@ async def run_agent(
                                 role="tool", content=output, tool_call_id=tc.id, name=tc.name
                             )
                         )
-                        repeat_reminder = _track_repeat(tc)
-                        if repeat_reminder is not None:
-                            messages.append(NeutralMessage(role="user", content=repeat_reminder))
-                        if tool_output_budget_note is not None:
-                            messages.append(
-                                NeutralMessage(role="user", content=tool_output_budget_note)
-                            )
+                        for reminder in shaped.reminders:
+                            messages.append(NeutralMessage(role="user", content=reminder))
                         checkpoint_trace_delta.append(tool_trace[-1])
                         post_event = (
                             "PostToolUseFailure" if output.startswith("ERROR:") else "PostToolUse"

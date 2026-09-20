@@ -309,10 +309,23 @@ async def test_step_offers_the_same_tools_as_the_in_process_engine(
                 # back to the builtin isolated shell -- also with no local
                 # filesystem -- and must offer the same tool for parity.
                 offer_write_output_file=True,
+                # Deliberately NOT offer_run_shell=True here: engine.py's
+                # loop()._offered() never passes it either. Only the
+                # isolated runtime's isolated_shell.py can pre-execute a
+                # command locally and hand back a local_result -- the
+                # in-process engine has no equivalent, so real production
+                # in-process runs correctly never offer run_shell. That
+                # asymmetry is asserted explicitly below instead of being
+                # papered over by a synthetic match.
             )
         )
 
-    assert offered_isolated == offered_in_process
+    # run_shell is the one intentional asymmetry between the two runtimes
+    # (see the comment above) -- assert it directly rather than forcing the
+    # two lists to artificially match.
+    assert "run_shell" in offered_isolated
+    assert "run_shell" not in offered_in_process
+    assert [n for n in offered_isolated if n != "run_shell"] == offered_in_process
     assert "memory_write" in offered_isolated
     assert "ask_user" in offered_isolated
     assert "delegate_task" in offered_isolated, "a team lead must be able to delegate"
@@ -417,6 +430,7 @@ async def test_step_seeds_the_roster_so_delegation_can_name_a_real_agent(
 async def _post_tool(
     tenant: uuid.UUID, agent_id: uuid.UUID, run_id: uuid.UUID,
     name: str, arguments: dict[str, Any],
+    local_result: dict[str, Any] | None = None,
 ) -> tuple[int, dict[str, Any]]:
     from asgi_lifespan import LifespanManager
     from httpx import ASGITransport, AsyncClient
@@ -424,12 +438,15 @@ async def _post_tool(
     from oc8.main import create_app
 
     token = _agent_token(tenant, agent_id, run_id)
+    body: dict[str, Any] = {"id": "c1", "name": name, "arguments": arguments}
+    if local_result is not None:
+        body["local_result"] = local_result
     app = create_app()
     async with LifespanManager(app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
             r = await c.post(
                 f"/api/v1/internal/agent/{run_id}/tool",
-                json={"id": "c1", "name": name, "arguments": arguments},
+                json=body,
                 headers={"Authorization": f"Bearer {token}"},
             )
             return r.status_code, (r.json() if r.content else {})
@@ -1669,7 +1686,7 @@ async def test_step_round_cap_stops_nudging_and_lets_the_run_end(
     """The isolated runtime's round cap must match engine.py's
     TODO_CONTINUATION_MAX_ROUNDS exactly and, once spent, let the run end
     anyway rather than nudging forever."""
-    from oc8.agent.engine import TODO_CONTINUATION_MAX_ROUNDS
+    from oc8.agent.harness.stages.d_todo import TODO_CONTINUATION_MAX_ROUNDS
     from oc8.modelrouter.types import CompletionResult, Usage
 
     calls = {"n": 0}
@@ -1715,3 +1732,77 @@ async def test_step_round_cap_stops_nudging_and_lets_the_run_end(
     # A run that gave up must not read like one that finished cleanly.
     assert "Do the thing" in body["text"]
     assert "still open" in body["text"]
+
+
+@pytest.mark.asyncio
+async def test_run_shell_records_the_locally_computed_result(app_session: object) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent, _task, run = await _plain_agent_run(db, tenant)
+        agent_id, run_id = agent.id, run.id
+
+    code, body = await _post_tool(
+        tenant, agent_id, run_id, "run_shell", {"command": "echo hi"},
+        local_result={"stdout": "hi\n", "stderr": "", "exit_code": 0, "timed_out": False},
+    )
+    assert code == 200, body
+    assert body["status"] == "ok"
+    assert "hi" in body["output"]
+
+
+@pytest.mark.asyncio
+async def test_run_shell_without_a_local_result_is_an_error(app_session: object) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent, _task, run = await _plain_agent_run(db, tenant)
+        agent_id, run_id = agent.id, run.id
+
+    code, body = await _post_tool(tenant, agent_id, run_id, "run_shell", {"command": "echo hi"})
+    assert code == 200, body
+    assert body["output"].startswith("ERROR")
+
+
+@pytest.mark.asyncio
+async def test_step_withholds_run_shell_from_a_real_runtime_plugin(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mirrors test_step_withholds_write_output_file_from_a_real_runtime_plugin:
+    a real runtime plugin has its own local shell inside its container --
+    offering run_shell too would be a redundant, differently-shaped door to
+    the same capability."""
+    from asgi_lifespan import LifespanManager
+    from httpx import ASGITransport, AsyncClient
+
+    from oc8.main import create_app
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        lead, _mate, run = await _seed_lead_with_mate_and_skill(db, tenant)
+        lead.runtime_ref = str(uuid.uuid4())
+        lead_id, run_id = lead.id, run.id
+
+    seen: dict[str, Any] = {}
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        seen["tools"] = kw["tools"]
+        return CompletionResult(
+            text="fertig", tool_calls=[], usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="stop", provider="ollama", model="m",
+        )
+
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+    token = _agent_token(tenant, lead_id, run_id)
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post(
+                f"/api/v1/internal/agent/{run_id}/step",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert r.status_code == 200, r.text
+
+    offered = {t.name for t in seen["tools"]}
+    assert "run_shell" not in offered

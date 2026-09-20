@@ -30,29 +30,16 @@ from oc8.agent.control_tools import (
     execute_control_tool,
     offered_tools,
 )
-from oc8.agent.engine import (
-    TODO_CONTINUATION_MAX_ROUNDS,
-    TOOL_OUTPUT_BUDGET_WARNING_CHARS,
-    _authorize,
-    _call_sig,
-    _max_steps,
-    cap_tool_output,
-    todo_continuation_exhausted_note,
-    todo_continuation_reminder,
-    tool_output_budget_reminder,
-    track_repeat_tool_call,
-)
+from oc8.agent.engine import _max_steps
+from oc8.agent.harness import Harness
+from oc8.agent.harness.calls import call_sig as _call_sig
+from oc8.agent.harness.stages.b_authorize import authorize as _authorize
+from oc8.agent.harness.stages.b_idempotency import record_for, replay_for
+from oc8.agent.harness.stages.b_outward import check_outward, remember_outward
 from oc8.agent.mcp_client import McpSession
 from oc8.agent.mcp_env import resolve_mcp_env
 from oc8.agent.mcp_requirements import wrap_with_requirements
-from oc8.agent.outward import (
-    REFUSAL,
-    already_delivered,
-    outward_target,
-    remember_delivery,
-)
 from oc8.agent.preamble import build_run_preamble
-from oc8.agent.tool_idempotency import record_invocation, replayed_result
 from oc8.agent.tool_notes import apply_tool_notes
 from oc8.agent.tool_semantics import describe_focus, describes_a_record
 from oc8.api.deps import CurrentPrincipal, DbSession, unguarded
@@ -380,7 +367,8 @@ async def step(
     # This endpoint only ever runs for a containerized runtime (the in-process
     # engine calls offered_tools directly, never over HTTP). A real runtime
     # plugin (e.g. claude_code_runtime) has its own local file tools, so only
-    # offer write_output_file for the builtin isolated shell, which has none.
+    # offer write_output_file -- and, for the same reason, run_shell -- for
+    # the builtin isolated shell, which has none of its own.
     offer_write_output_file = (
         not agent.runtime_ref or agent.runtime_ref == BUILTIN_ISOLATED_RUNTIME_REF
     )
@@ -393,6 +381,7 @@ async def step(
         has_instruction_files=has_instruction_files,
         copilot_permissions=copilot_permissions,
         offer_write_output_file=offer_write_output_file,
+        offer_run_shell=offer_write_output_file,
     )
 
     resolved_tools = tools
@@ -452,17 +441,16 @@ async def step(
             department_id=agent.department_id,
         )
 
-    # See engine.py's todo_continuation_reminder / todo_continue_rounds: a
-    # continuation round never crosses a /step HTTP call here -- the shell
-    # must never see an intermediate "no tool calls yet" response, since its
-    # own loop protocol (isolated_shell.py) has no "keep going anyway" path
-    # and would just end the run. So the whole nudge-and-retry cycle happens
-    # in this one call via this internal loop, mirroring the length-retry
-    # precedent just below (which already does 2 completions per /step
-    # call) instead of a second completion. A plain local counter is
-    # correct here (never reset mid-cap, never spans calls) precisely
-    # because it never has to survive past this one request.
-    todo_continue_rounds = 0
+    # See stages/d_todo: a continuation round never crosses a /step HTTP call
+    # here -- the shell must never see an intermediate "no tool calls yet"
+    # response, since its own loop protocol (isolated_shell.py) has no "keep
+    # going anyway" path and would just end the run. So the whole nudge-and-
+    # retry cycle happens in this one call via the internal loop below. The
+    # round counter is therefore reset per request on purpose (it never has to
+    # survive past this one call) -- a known asymmetry with the in-process
+    # engine, which counts rounds per run; spec §1.1, package 6.
+    harness = Harness.from_run_context(ctx)
+    harness.state.todo_rounds = 0
     while True:
         resolved_messages = _to_messages(transcript)
         request_id = uuid.uuid4()
@@ -541,27 +529,22 @@ async def step(
         truncated_empty = (
             result.stop_reason == "length" and not result.tool_calls and not result.text.strip()
         )
+        verdict = None
         if not result.tool_calls and not truncated_empty:
-            # See engine.py's identical gate: the model tried to finish while
+            # D1 through the shared Harness: the model tried to finish while
             # its own todo_write checklist still has open items.
             open_todos = [t for t in ctx.get("todos", []) if t.get("status") != "completed"]
-            if (
-                open_todos
-                and todo_continue_rounds < TODO_CONTINUATION_MAX_ROUNDS
-                and int(ctx["steps"]) < _max_steps(agent)
-            ):
-                todo_continue_rounds += 1
+            verdict = harness.may_finish(
+                open_todos, can_continue=int(ctx["steps"]) < _max_steps(agent)
+            )
+            if not verdict.ok:
                 transcript.append(
-                    _from_message(
-                        NeutralMessage(
-                            role="user",
-                            content=todo_continuation_reminder(open_todos, todo_continue_rounds),
-                        )
-                    )
+                    _from_message(NeutralMessage(role="user", content=verdict.reminder or ""))
                 )
                 continue
         break
 
+    harness.store(ctx)
     ctx["transcript"] = transcript
     run.context = ctx
     await db.commit()
@@ -571,10 +554,8 @@ async def step(
     # output instead of silently looking like a clean finish, same as
     # engine.py's identical check (see todo_continuation_exhausted_note).
     step_text = result.text
-    if not result.tool_calls and not truncated_empty:
-        open_todos_final = [t for t in ctx.get("todos", []) if t.get("status") != "completed"]
-        if open_todos_final:
-            step_text = f"{step_text}\n\n{todo_continuation_exhausted_note(open_todos_final)}"
+    if verdict is not None and verdict.exhausted_note is not None:
+        step_text = f"{step_text}\n\n{verdict.exhausted_note}"
     elif truncated_empty:
         # Otherwise this ends as status_override="failed" with an empty
         # text, the shell forwards that empty text to /finish verbatim, and
@@ -602,6 +583,10 @@ class ToolBody(BaseModel):
     id: str
     name: str
     arguments: dict[str, Any] = {}
+    #: Present only for run_shell: isolated_shell.py already executed the
+    #: command locally before this POST (see its module docstring) -- this is
+    #: the already-computed result to record, not to execute.
+    local_result: dict[str, Any] | None = None
 
 
 class ToolResult(BaseModel):
@@ -754,6 +739,7 @@ async def tool(
             mcp_conn=conn,
             originating_operator=run.context.get("originating_operator"),
             run_id=run.id,
+            local_result=body.local_result,
         )
         if task is not None
         else None
@@ -821,18 +807,18 @@ async def tool(
         output = "ERROR: no tool server available"
         dispatched = False
     elif (
-        (
-            target := outward_target(
-                tc.name, tc.arguments, focus_spec, outward_tools
-            )
+        outward := await check_outward(
+            db,
+            tenant_id=run.tenant_id,
+            task_id=run.task_id,
+            tc=tc,
+            focus_spec=focus_spec,
+            outward_tools=outward_tools,
         )
-        is not None
-        and run.task_id is not None
-        and await already_delivered(db, tenant_id=run.tenant_id, task_id=run.task_id, target=target)
-    ):
+    ).refusal is not None:
         # Checked before the call, not after: the point is that the recipient is
         # not reached twice, and a check that ran afterwards could only report it.
-        output = REFUSAL.format(target=target)
+        output = outward.refusal
         dispatched = False
     else:
         focus = describe_focus(tc.name, tc.arguments, focus_spec)
@@ -850,16 +836,8 @@ async def tool(
         # act twice. Reads are exempt on purpose -- deduplicating a search would
         # hide the very changes the agent is meant to observe.
         writes = required_right(tc.name, scopes) != "read"
-        replay = (
-            await replayed_result(
-                db,
-                tenant_id=run.tenant_id,
-                task_id=run.task_id,
-                tool=tc.name,
-                arguments=tc.arguments,
-            )
-            if writes and run.task_id is not None
-            else None
+        replay = await replay_for(
+            db, tenant_id=run.tenant_id, task_id=run.task_id, tc=tc, writes=writes
         )
         if replay is not None:
             output = replay
@@ -878,22 +856,23 @@ async def tool(
                     output = await s.call(tc.name, tc.arguments)
             except Exception as exc:  # surface to the model
                 output = f"ERROR: {exc}"
-            # Only a successful side effect is worth replaying. Recording a failure
+            # Only a successful side effect is worth recording. Recording a failure
             # would answer a legitimate retry with the old error forever.
-            if not output.startswith("ERROR:"):
-                if target is not None and run.task_id is not None:
-                    await remember_delivery(
-                        db, tenant_id=run.tenant_id, task_id=run.task_id, target=target
-                    )
-                if writes and run.task_id is not None:
-                    await record_invocation(
-                        db,
-                        tenant_id=run.tenant_id,
-                        task_id=run.task_id,
-                        tool=tc.name,
-                        arguments=tc.arguments,
-                        result=output,
-                    )
+            await remember_outward(
+                db,
+                tenant_id=run.tenant_id,
+                task_id=run.task_id,
+                target=outward.target,
+                output=output,
+            )
+            await record_for(
+                db,
+                tenant_id=run.tenant_id,
+                task_id=run.task_id,
+                tc=tc,
+                writes=writes,
+                output=output,
+            )
 
     # Stopped HERE, the moment the call itself returned -- not at the append
     # site far below, which is separated from it by the transcript rewrite and
@@ -907,20 +886,14 @@ async def tool(
     if output.startswith("ERROR:") and ctx.get("pending_cache_key") is not None:
         await cache_flow.invalidate(ctx["pending_cache_key"])
 
-    # Tool-output budget (cap_tool_output / tool_output_budget_reminder), at
-    # parity with the in-process engine's own `_account_tool_output`
-    # (engine.py's loop()) -- same cumulative counter, just persisted on
-    # run.context instead of a local closure variable, same reasoning as
-    # repeat_tracker below.
-    output = cap_tool_output(output)
-    ctx["tool_output_chars"] = int(ctx.get("tool_output_chars", 0)) + len(output)
-    tool_output_budget_note = None
-    if (
-        not ctx.get("tool_output_budget_warned")
-        and ctx["tool_output_chars"] >= TOOL_OUTPUT_BUDGET_WARNING_CHARS
-    ):
-        ctx["tool_output_budget_warned"] = True
-        tool_output_budget_note = tool_output_budget_reminder(ctx["tool_output_chars"])
+    # C5 through the shared Harness, at parity with the in-process engine's
+    # loop -- same cap, same cumulative counter, same repeat tracker, just
+    # persisted on run.context instead of a local closure variable, since
+    # this runtime drives one tool call per HTTP request with no in-memory state
+    # surviving between them.
+    harness = Harness.from_run_context(ctx)
+    shaped = harness.shape(tc, output)
+    output = shaped.output
 
     # Append the tool result to the transcript. This must come directly after the
     # assistant message that requested the call -- anything inserted between the
@@ -929,20 +902,9 @@ async def tool(
     transcript.append(
         _from_message(NeutralMessage(role="tool", content=output, tool_call_id=tc.id, name=tc.name))
     )
-    # Loop-hygiene guard, at parity with the in-process engine's own
-    # `_track_repeat` (engine.py's loop()) -- same shared track_repeat_tool_call,
-    # just persisted on run.context instead of a local closure variable, since
-    # this runtime drives one tool call per HTTP request with no in-memory state
-    # surviving between them.
-    ctx["repeat_tracker"], repeat_reminder = track_repeat_tool_call(
-        ctx.get("repeat_tracker", {}), tc
-    )
-    if repeat_reminder is not None:
-        transcript.append(_from_message(NeutralMessage(role="user", content=repeat_reminder)))
-    if tool_output_budget_note is not None:
-        transcript.append(
-            _from_message(NeutralMessage(role="user", content=tool_output_budget_note))
-        )
+    for reminder in shaped.reminders:
+        transcript.append(_from_message(NeutralMessage(role="user", content=reminder)))
+    harness.store(ctx)
     ctx["transcript"] = transcript
     if suspend is not None:
         # The verdict the isolated runtime reads after the container exits, so the

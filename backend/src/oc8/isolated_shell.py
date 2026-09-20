@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
+from typing import Any
 
 import httpx
 
@@ -25,6 +27,14 @@ import httpx
 MAX_ITERS = 2000
 MAX_BODY_CHARS = 1000
 PREVIEW_CHARS = 200
+#: How long a single run_shell command may run before this shell reports a
+#: timeout instead of waiting forever -- there is no outer backstop for a
+#: local subprocess the way there is for a model call (the container-level
+#: `agent_max_steps * 60s` wait only bounds the WHOLE run, not one command).
+RUN_SHELL_TIMEOUT_S = 120.0
+#: Truncation cap for run_shell's stdout/stderr -- larger than MAX_BODY_CHARS
+#: (that one is for a log line; this is real tool output the model reads).
+RUN_SHELL_OUTPUT_CHARS = 4000
 
 
 def _preview(text: str, limit: int = PREVIEW_CHARS) -> str:
@@ -52,6 +62,43 @@ def check_response(resp: httpx.Response) -> None:
     if body:
         message = f"{message}: {body}"
     raise httpx.HTTPStatusError(message, request=resp.request, response=resp)
+
+
+def _run_shell_locally(command: str, *, cwd: str = "/workspace") -> dict[str, Any]:
+    """Runs `command` in THIS process via subprocess -- the one tool call
+    this shell executes itself instead of proxying to the backend (see the
+    module docstring). `cwd` defaults to /workspace, the same directory the
+    existing write_output_file/sync_run_output mechanism already watches."""
+    try:
+        proc = subprocess.run(
+            command,
+            shell=True,
+            cwd=cwd,
+            timeout=RUN_SHELL_TIMEOUT_S,
+            capture_output=True,
+            text=True,
+        )
+        return {
+            "stdout": proc.stdout[:RUN_SHELL_OUTPUT_CHARS],
+            "stderr": proc.stderr[:RUN_SHELL_OUTPUT_CHARS],
+            "exit_code": proc.returncode,
+            "timed_out": False,
+        }
+    except subprocess.TimeoutExpired as exc:
+
+        def _decode(v: str | bytes | None) -> str:
+            if isinstance(v, bytes):
+                return v.decode(errors="replace")
+            return v if isinstance(v, str) else ""
+
+        stdout = _decode(exc.stdout)
+        stderr = _decode(exc.stderr)
+        return {
+            "stdout": stdout[:RUN_SHELL_OUTPUT_CHARS],
+            "stderr": stderr[:RUN_SHELL_OUTPUT_CHARS],
+            "exit_code": None,
+            "timed_out": True,
+        }
 
 
 def main() -> int:
@@ -119,14 +166,15 @@ def main() -> int:
                 for tc in calls:
                     args_preview = _preview(json.dumps(tc.get("arguments", {}), default=str))
                     log(f"step {step_no}: calling tool {tc['name']} args={args_preview}")
-                    tr = c.post(
-                        f"{api}/tool",
-                        json={
-                            "id": tc["id"],
-                            "name": tc["name"],
-                            "arguments": tc.get("arguments", {}),
-                        },
-                    )
+                    body: dict[str, Any] = {
+                        "id": tc["id"],
+                        "name": tc["name"],
+                        "arguments": tc.get("arguments", {}),
+                    }
+                    if tc["name"] == "run_shell":
+                        command = str(tc.get("arguments", {}).get("command", ""))
+                        body["local_result"] = _run_shell_locally(command)
+                    tr = c.post(f"{api}/tool", json=body)
                     check_response(tr)
                     result = tr.json()
                     log(
