@@ -405,7 +405,11 @@ export function deleteFile(fileId: string): Promise<void> {
 // types) stay snake_case on purpose, same as the backup DTOs above.
 
 export interface CapaExportItemInput {
-  kind: "department" | "agent" | "skill";
+  // Mirrors `CapaExportItem.kind`'s `Literal` in `oc8.api.v1.capas` --
+  // "tool_pack" is a custom-MCP-wizard capa's OWN current manifest
+  // (`build_tool_pack_export`), not reconstructed from department/agent/
+  // skill DB rows the way the other three kinds are.
+  kind: "department" | "agent" | "skill" | "tool_pack";
   id: string;
   name: string;
   version: string;

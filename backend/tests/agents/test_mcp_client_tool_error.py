@@ -15,6 +15,16 @@ telling it the request it just cached led to a real failure. Live-observed
 2026-08-26 on the odoo_mcp plugin (Odoo rejecting an invalid `sla_date`
 field), reproduced here with a real stdio MCP server so the fix is proven
 against the SDK's actual behaviour, not an assumption about its shape.
+
+The fixture below raises `ToolError` rather than a bare `ValueError`. As of
+MCP SDK 2.0, a bare exception from a tool body is treated as a crash: the
+server withholds its text from the client on purpose (`Error executing tool
+<name>`, nothing more) and only logs the real message server-side. Only
+`ToolError` -- an "anticipated" failure -- keeps its message on the wire.
+A well-behaved MCP server raises `ToolError` for exactly this kind of
+validation rejection; this fixture models that server, not the client
+change, since `mcp_client.py` has nothing to fix here -- it already raises
+whatever text the server chose to send.
 """
 
 from __future__ import annotations
@@ -31,8 +41,10 @@ pytestmark = pytest.mark.asyncio
 _REJECTS_THE_CALL = """
 try:
     from mcp.server.mcpserver import MCPServer as FastMCP
+    from mcp.server.mcpserver.exceptions import ToolError
 except ImportError:
     from mcp.server.fastmcp import FastMCP
+    from mcp.server.fastmcp.exceptions import ToolError
 
 mcp = FastMCP("rejects")
 
@@ -40,7 +52,7 @@ mcp = FastMCP("rejects")
 @mcp.tool()
 def search_records(model: str) -> str:
     "Mirrors Odoo rejecting an unknown field."
-    raise ValueError("Invalid field 'sla_date' in request")
+    raise ToolError("Invalid field 'sla_date' in request")
 
 
 mcp.run()

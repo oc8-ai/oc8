@@ -2129,6 +2129,41 @@ export function useInstallPluginFromDisk() {
   });
 }
 
+export interface InstalledCustomCapa {
+  id: string;
+  pluginId: string;
+  name: string;
+  type: string;
+  semver: string;
+  trustLevel: string;
+}
+
+export function useInstallCustomCapa() {
+  const qc = useQueryClient();
+  return useMutation({
+    // POST /capas already accepts a raw, wizard-built manifest -- no new
+    // backend endpoint. `origin: "custom"` is the only thing that
+    // distinguishes this from a disk-discovered catalog capa anywhere
+    // downstream reads it.
+    mutationFn: (body: { manifest: Record<string, unknown> }) =>
+      api.post<InstalledCustomCapa>("/capas", {
+        manifest: body.manifest,
+        origin: "custom",
+        // Unlike a disk-discovered capa, nothing here has been through any
+        // review -- it's whatever an admin typed into the wizard. Matches
+        // the same origin->trust mapping seed/__init__.py already uses for
+        // non-local capas, rather than falling back to the manifest's own
+        // (unset) trust, which install_plugin would otherwise default to
+        // "first_party".
+        trustLevel: "community",
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["plugins", "available"] });
+      qc.invalidateQueries({ queryKey: ["plugins"] });
+    },
+  });
+}
+
 export function useEnablePlugin() {
   const qc = useQueryClient();
   return useMutation({
