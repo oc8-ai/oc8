@@ -26,20 +26,11 @@ from oc8.agent.control_tools import (
     execute_control_tool,
     offered_tools,
 )
+from oc8.agent.harness import Harness, resolve_caps
 from oc8.agent.harness.calls import (
     call_sig as _call_sig,  # re-exported for mcp_gateway.py and older tests
 )
-from oc8.agent.harness.stages.c_reminders import (
-    TOOL_OUTPUT_BUDGET_WARNING_CHARS,
-    cap_tool_output,
-    tool_output_budget_reminder,
-    track_repeat_tool_call,
-)
-from oc8.agent.harness.stages.d_todo import (
-    TODO_CONTINUATION_MAX_ROUNDS,
-    todo_continuation_exhausted_note,
-    todo_continuation_reminder,
-)
+from oc8.agent.harness.stages.c_reminders import track_repeat_tool_call
 from oc8.agent.mcp_client import McpSession
 from oc8.agent.mcp_env import resolve_mcp_env
 from oc8.agent.mcp_requirements import wrap_with_requirements
@@ -642,44 +633,18 @@ async def run_agent(
                     offer_write_output_file=True,
                 )
 
-            # Advisory loop-hygiene guard (track_repeat_tool_call, shared with the
-            # isolated runtime's /tool endpoint). Per-run, in-memory only: a
-            # fresh run_agent call (including a resumed/forked run) starts
-            # counting again from zero, an accepted heuristic cost rather than a
-            # durable, cross-run counter.
-            _repeat_state: dict[str, Any] = {}
-
-            def _track_repeat(tc: ToolCall) -> str | None:
-                nonlocal _repeat_state
-                _repeat_state, reminder = track_repeat_tool_call(_repeat_state, tc)
-                return reminder
-
-            # Per-run, in-memory tool-output budget (cap_tool_output /
-            # tool_output_budget_reminder above) -- same "advisory, per-run
-            # only" tradeoff as _repeat_state above.
-            _tool_output_chars_total = 0
-            _tool_output_budget_warned = False
-
-            def _account_tool_output(raw: str) -> tuple[str, str | None]:
-                nonlocal _tool_output_chars_total, _tool_output_budget_warned
-                capped = cap_tool_output(raw)
-                _tool_output_chars_total += len(capped)
-                if (
-                    _tool_output_budget_warned
-                    or _tool_output_chars_total < TOOL_OUTPUT_BUDGET_WARNING_CHARS
-                ):
-                    return capped, None
-                _tool_output_budget_warned = True
-                return capped, tool_output_budget_reminder(_tool_output_chars_total)
+            # Per-run harness state (spec §3.3): the repeat-call tracker and the
+            # tool-output budget, in memory for the lifetime of this loop -- a
+            # fresh run_agent call (including a resumed/forked run) starts from
+            # zero, an accepted heuristic cost rather than a durable counter.
+            harness = Harness(
+                caps=resolve_caps(model_config.params if model_config is not None else None)
+            )
 
             steps = 0
             checkpoint_trace_delta: list[dict[str, Any]] = []
             tokens_since_checkpoint = 0
             max_steps = _max_steps(agent)
-            # See todo_continuation_reminder: counts auto-continuation rounds
-            # separately from `steps` so it can be capped independently of
-            # max_steps, even though each round also consumes one step.
-            todo_continue_rounds = 0
             for steps in range(1, max_steps + 1):
                 if not session_state["started"]:
                     await dispatch_claude_event(
@@ -908,35 +873,27 @@ async def run_agent(
                         )
 
                     open_todos = [t for t in todos if t.get("status") != "completed"]
-                    if open_todos and todo_continue_rounds < TODO_CONTINUATION_MAX_ROUNDS:
-                        # See todo_continuation_reminder: the model tried to finish
-                        # while its own checklist still has open items. Append its
-                        # (otherwise-dropped) turn plus the reminder and go around
-                        # again instead of returning "done" -- bounded on its own
-                        # cap, but each round still consumes one `steps` iteration.
-                        todo_continue_rounds += 1
+                    finish_verdict = harness.may_finish(open_todos)
+                    if not finish_verdict.ok:
+                        # D1: the model tried to finish while its own checklist
+                        # still has open items. Append its (otherwise-dropped)
+                        # turn plus the reminder and go around again instead of
+                        # returning "done" -- bounded on its own cap, but each
+                        # round still consumes one `steps` iteration.
                         messages.append(
                             NeutralMessage(role="assistant", content=result.text, tool_calls=[])
                         )
                         messages.append(
-                            NeutralMessage(
-                                role="user",
-                                content=todo_continuation_reminder(
-                                    open_todos, todo_continue_rounds
-                                ),
-                            )
+                            NeutralMessage(role="user", content=finish_verdict.reminder or "")
                         )
                         continue
 
-                    # Reaching here with open_todos still set means the round
-                    # cap above was hit, not that everything got done -- say so
-                    # in the output instead of silently looking like a clean
-                    # finish (see todo_continuation_exhausted_note).
+                    # Reaching here with todos still open means the round cap was
+                    # hit, not that everything got done -- say so in the output
+                    # instead of silently looking like a clean finish.
                     output_text = result.text
-                    if open_todos:
-                        output_text = (
-                            f"{output_text}\n\n{todo_continuation_exhausted_note(open_todos)}"
-                        )
+                    if finish_verdict.exhausted_note is not None:
+                        output_text = f"{output_text}\n\n{finish_verdict.exhausted_note}"
 
                     task.state = "done"
                     await record_activity(
@@ -1069,7 +1026,9 @@ async def run_agent(
                                     name=tc.name,
                                 )
                             )
-                            repeat_reminder = _track_repeat(tc)
+                            harness.state.repeat, repeat_reminder = track_repeat_tool_call(
+                                harness.state.repeat, tc
+                            )
                             if repeat_reminder is not None:
                                 messages.append(
                                     NeutralMessage(role="user", content=repeat_reminder)
@@ -1304,7 +1263,8 @@ async def run_agent(
                                     task_id=task.id,
                                     target=target,
                                 )
-                        output, tool_output_budget_note = _account_tool_output(output)
+                        shaped = harness.shape(tc, output)
+                        output = shaped.output
                         _tool_call_entry: dict[str, Any] = {
                             "tool": tc.name,
                             "arguments": tc.arguments,
@@ -1323,13 +1283,8 @@ async def run_agent(
                                 role="tool", content=output, tool_call_id=tc.id, name=tc.name
                             )
                         )
-                        repeat_reminder = _track_repeat(tc)
-                        if repeat_reminder is not None:
-                            messages.append(NeutralMessage(role="user", content=repeat_reminder))
-                        if tool_output_budget_note is not None:
-                            messages.append(
-                                NeutralMessage(role="user", content=tool_output_budget_note)
-                            )
+                        for reminder in shaped.reminders:
+                            messages.append(NeutralMessage(role="user", content=reminder))
                         checkpoint_trace_delta.append(tool_trace[-1])
                         post_event = (
                             "PostToolUseFailure" if output.startswith("ERROR:") else "PostToolUse"
