@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import hashlib
 import json
 import uuid
@@ -67,6 +68,18 @@ def _check_core_compat(spec: str) -> None:
             raise CoreCompatError(f"core {CORE_VERSION} does not satisfy core_compat {spec!r}")
     except InvalidSpecifier as exc:
         raise CoreCompatError(f"invalid core_compat {spec!r}: {exc}") from exc
+
+
+def _substitute_template_values(text: str, config: dict[str, str]) -> str:
+    """Replace {{key}} tokens in `text` with config[key]. A token with no
+    matching key is left as-is -- hiring with no setup run yet (every
+    pre-existing template) must keep behaving exactly as it does today."""
+
+    def _sub(match: re.Match[str]) -> str:
+        key = match.group(1)
+        return config.get(key, match.group(0))
+
+    return re.sub(r"\{\{(\w+)\}\}", _sub, text)
 
 
 async def install_plugin(
