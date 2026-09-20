@@ -4,6 +4,10 @@ trigger -> assemble context -> LLM complete (via Model Router) -> for each tool
 call: PEP authorize -> invoke MCP tool -> feed result back -> repeat until the
 model stops. Every tool call is audited; token usage is metered; a threshold
 breach raises a HITL approval and suspends the run.
+
+Shared stages (authorisation, record guards, result shaping, completion
+gating) live in `oc8.agent.harness`; this module is the in-process driver of
+that pipeline, `api/v1/internal_agent.py` the isolated one.
 """
 
 from __future__ import annotations
