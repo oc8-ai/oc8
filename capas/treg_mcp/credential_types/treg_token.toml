@@ -1,0 +1,8 @@
+name = "treg_token"
+display_name = "Treg API token"
+
+[[fields]]
+key = "token"
+label = "Treg API token"
+kind = "password"
+help = "From `treg login` or the token page at treg.to. Sent as the X-Treg-Token header on every call; never reaches the upstream providers treg relays to."
