@@ -12,6 +12,7 @@ that pipeline, `api/v1/internal_agent.py` the isolated one.
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import json
 import logging
@@ -25,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.agent import cache_flow
 from oc8.agent.control_tools import (
+    CONTROL_TOOL_NAMES,
     MAX_DELEGATION_DEPTH,  # re-exported for tests/coding/test_engine_delegation.py
     execute_control_tool,
     offered_tools,
@@ -41,12 +43,13 @@ from oc8.agent.harness.stages.c_reminders import track_repeat_tool_call
 from oc8.agent.mcp_client import McpSession
 from oc8.agent.mcp_env import resolve_mcp_env
 from oc8.agent.mcp_requirements import wrap_with_requirements
+from oc8.agent.outward import outward_target
 from oc8.agent.preamble import build_run_preamble
 from oc8.agent.tool_notes import apply_tool_notes
 from oc8.agent.tool_semantics import describe_focus, describes_a_record
 from oc8.approvals import raise_approval
 from oc8.audit import append_event
-from oc8.authz.pdp import Decision, Effect, effective_tool_policies
+from oc8.authz.pdp import Decision, Effect, effective_tool_policies, required_right
 from oc8.capas.claude_hooks import dispatch_claude_event
 from oc8.capas.claude_hooks.context import (
     base_payload,
@@ -848,6 +851,77 @@ async def run_agent(
                     ]
                     call_value_spec = merged
                 step_trace_start = len(tool_trace)
+                # Spec §3.5: a turn's LEADING run of ALLOW-decision, read-tier,
+                # non-control, non-outward tool calls dispatches concurrently
+                # (bounded) when this connection's caps say the model can
+                # cope with that. Everything from the first call that breaks
+                # the run onward (a write, a control tool, a non-ALLOW
+                # decision, an outward-declared call) still goes through the
+                # per-call loop below unchanged -- gates run per call before
+                # dispatch either way, this only reorders WHEN the read
+                # calls' own dispatch happens, never what decides them.
+                precomputed_outputs: dict[str, tuple[str, dt.datetime, int]] = {}
+                if harness.caps.parallel_tool_calls and server is not None:
+                    read_batch: list[ToolCall] = []
+                    for _pre_tc in result.tool_calls:
+                        if _pre_tc.name in CONTROL_TOOL_NAMES:
+                            break
+                        pre_decision = _authorize(
+                            agent,
+                            _pre_tc,
+                            frame=frame,
+                            delegation_depth=task.delegation_depth,
+                            tool_policies=tool_policies,
+                            connection_key=connection_key,
+                            tool_scopes=tool_scopes,
+                            skill_tool_names=skill_tool_names,
+                            value_spec=call_value_spec,
+                            guardrail_attribute_specs=guardrail_attribute_specs,
+                            skill_thresholds=tuple(
+                                g.gt
+                                for s in active_skills
+                                for g in s.definition.guardrails
+                                if g.type == "value_threshold" and g.then == "require_approval"
+                            ),
+                        )
+                        if pre_decision.effect is Effect.REQUIRE_APPROVAL and pre_decided:
+                            verdict = pre_decided.get(_call_sig(_pre_tc))
+                            if verdict == "approve":
+                                pre_decision = Decision(Effect.ALLOW, "operator approved")
+                        if pre_decision.effect is not Effect.ALLOW:
+                            break
+                        if required_right(_pre_tc.name, tool_scopes) != "read":
+                            break
+                        if (
+                            outward_target(
+                                _pre_tc.name, _pre_tc.arguments, focus_spec, outward_tools
+                            )
+                            is not None
+                        ):
+                            break
+                        read_batch.append(_pre_tc)
+                    if len(read_batch) > 1:
+                        _read_batch_semaphore = asyncio.Semaphore(5)
+
+                        async def _dispatch_precomputed(
+                            call: ToolCall,
+                            _sem: asyncio.Semaphore = _read_batch_semaphore,
+                        ) -> tuple[str, str, dt.datetime, int]:
+                            async with _sem:
+                                started_at = dt.datetime.now(dt.UTC)
+                                try:
+                                    result_text = await server.call(call.name, call.arguments)
+                                except Exception as exc:  # surface tool errors to the model
+                                    result_text = f"ERROR: {exc}"
+                                duration_ms = int(
+                                    (dt.datetime.now(dt.UTC) - started_at).total_seconds() * 1000
+                                )
+                                return call.id, result_text, started_at, duration_ms
+
+                        for call_id, result_text, started_at, duration_ms in await asyncio.gather(
+                            *(_dispatch_precomputed(call) for call in read_batch)
+                        ):
+                            precomputed_outputs[call_id] = (result_text, started_at, duration_ms)
                 for tc in result.tool_calls:
                     decision = _authorize(
                         agent,
@@ -1034,7 +1108,11 @@ async def run_agent(
                                 todos,
                             )
 
-                        _tool_call_started_at = dt.datetime.now(dt.UTC)
+                        _precomputed_duration_ms: int | None = None
+                        if tc.id in precomputed_outputs:
+                            _, _tool_call_started_at, _ = precomputed_outputs[tc.id]
+                        else:
+                            _tool_call_started_at = dt.datetime.now(dt.UTC)
                         # Whether this call is actually dispatched anywhere -- a
                         # control tool, or the tool server. The two branches
                         # below that refuse it before dispatch set this False so
@@ -1150,10 +1228,15 @@ async def run_agent(
                                     specific=describes_a_record(tc.name, tc.arguments, focus_spec),
                                     cache_hit=cached_result is not None,
                                 )
-                            try:
-                                output = await server.call(tc.name, tc.arguments)
-                            except Exception as exc:  # surface tool errors to the model
-                                output = f"ERROR: {exc}"
+                            if tc.id in precomputed_outputs:
+                                output, _, _precomputed_duration_ms = precomputed_outputs.pop(
+                                    tc.id
+                                )
+                            else:
+                                try:
+                                    output = await server.call(tc.name, tc.arguments)
+                                except Exception as exc:  # surface tool errors to the model
+                                    output = f"ERROR: {exc}"
                             await remember_outward(
                                 db,
                                 tenant_id=tenant_id,
@@ -1170,9 +1253,14 @@ async def run_agent(
                         }
                         if _tool_call_dispatched:
                             _tool_call_entry["startedAt"] = _tool_call_started_at.isoformat()
-                            _tool_call_entry["durationMs"] = int(
-                                (dt.datetime.now(dt.UTC) - _tool_call_started_at).total_seconds()
-                                * 1000
+                            _tool_call_entry["durationMs"] = (
+                                _precomputed_duration_ms
+                                if _precomputed_duration_ms is not None
+                                else int(
+                                    (dt.datetime.now(dt.UTC) - _tool_call_started_at)
+                                    .total_seconds()
+                                    * 1000
+                                )
                             )
                         tool_trace.append(_tool_call_entry)
                         await _live_tool_call(tool_trace[-1])
