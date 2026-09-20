@@ -11,12 +11,14 @@ from typing import Any
 class Odoo:
     def __init__(self, *, url: str, db: str, user: str, api_key: str) -> None:
         self.url, self.db, self.user, self.api_key = url.rstrip("/"), db, user, api_key
-        common = xmlrpc.client.ServerProxy(f"{self.url}/xmlrpc/2/common")
+        # allow_none: seed helpers pass optional fields (e.g. res.partner.email)
+        # as None when unset; the stdlib client rejects that unless enabled.
+        common = xmlrpc.client.ServerProxy(f"{self.url}/xmlrpc/2/common", allow_none=True)
         uid = common.authenticate(db, user, api_key, {})
         if not uid:
             raise RuntimeError(f"Odoo authentication failed for {user}@{db}")
         self.uid = int(uid)  # type: ignore[arg-type]
-        self._models = xmlrpc.client.ServerProxy(f"{self.url}/xmlrpc/2/object")
+        self._models = xmlrpc.client.ServerProxy(f"{self.url}/xmlrpc/2/object", allow_none=True)
 
     @classmethod
     def from_env(cls, env: dict[str, str]) -> Odoo:
