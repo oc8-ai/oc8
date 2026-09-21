@@ -205,9 +205,7 @@ async def list_members(
     precedent as `visible_departments`. A caller that passes a `group_by`
     anyway gets `ValueError`.
     """
-    stmt = select(OrgMember).where(
-        OrgMember.tenant_id == tenant_id, OrgMember.deleted_at.is_(None)
-    )
+    stmt = select(OrgMember).where(OrgMember.tenant_id == tenant_id, OrgMember.deleted_at.is_(None))
     stmt = apply_search(stmt, model=OrgMember, columns=[OrgMember.display_name], search=search)
     stmt = apply_group_order(
         stmt,
@@ -221,9 +219,7 @@ async def list_members(
     # that can repeat or skip a row between two requests. Same tiebreaker the
     # unpaginated version always used.
     stmt = stmt.order_by(OrgMember.id)
-    people, total = await paginate(
-        db, stmt, limit=max(1, min(limit, MAX_LIMIT)), offset=offset
-    )
+    people, total = await paginate(db, stmt, limit=max(1, min(limit, MAX_LIMIT)), offset=offset)
 
     by_member = await seats_for_many(db, [p.id for p in people])
     names = await role_names_for(db, tenant_id=tenant_id, role_ids=[p.role_id for p in people])
@@ -531,3 +527,23 @@ async def revoke_seat(
     live.revoked_at = dt.datetime.now(dt.UTC)
     await db.flush()
     return live
+
+
+async def delete_member(
+    db: AsyncSession, *, tenant_id: uuid.UUID, member_id: uuid.UUID
+) -> OrgMember | None:
+    """Soft-delete a person. `None` when they are already gone or were never here.
+
+    Stamps `deleted_at` rather than removing the row: the partial unique indexes
+    on `(tenant_id, subject)` / `(tenant_id, subject_uuid)` are what let the
+    same person be enrolled again as a stranger, and an audit that asked
+    "who was this" would otherwise be answered with silence. Login, scope,
+    and the members list already filter `deleted_at IS NULL` -- this is the
+    write those reads have been waiting for.
+    """
+    member = await get_member(db, tenant_id=tenant_id, member_id=member_id)
+    if member is None:
+        return None
+    member.deleted_at = dt.datetime.now(tz=dt.UTC)
+    await db.flush()
+    return member
