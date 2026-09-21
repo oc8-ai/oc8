@@ -4,9 +4,8 @@ inputs. Same scripted model, same stub tool server, two fresh tenants (so the
 department prompt cache cannot serve one run's answer to the other), and the
 transcript after the preamble must match message for message.
 
-Scope in package 1 = exactly what both runtimes share today: B0 authorize,
-B8 outward (no-target path), C5 cap/budget/repeat, D1 todo continuation. B9
-idempotency is isolated-only today and is NOT compared here (spec §1.1).
+The shared surface includes B0 authorize, B8 outward (no-target path), B9
+write replay, C1/C2/C3/C5/C6 result shaping, and D1 todo continuation.
 """
 
 from __future__ import annotations
@@ -34,6 +33,7 @@ from tests.conftest import AppSessionFactory
 pytestmark = pytest.mark.asyncio
 
 _BIG = "r" * (SPILL_THRESHOLD_CHARS + 50)
+_FENCED_BIG = f'<external source="things:search_records">\n{_BIG}\n</external>'
 
 
 def _turn(text: str, *calls: ToolCall) -> CompletionResult:
@@ -62,12 +62,32 @@ def _failing_read(call_id: str) -> ToolCall:
     )
 
 
+def _write(call_id: str) -> ToolCall:
+    return ToolCall(
+        id=call_id,
+        name="create_record",
+        arguments={"model": "thing", "values": {"name": "same"}},
+    )
+
+
+def _idempotent_write(call_id: str) -> ToolCall:
+    return ToolCall(
+        id=call_id,
+        name="upsert_record",
+        arguments={"model": "thing", "id": 7, "values": {"name": "same"}},
+    )
+
+
 #: One model turn per completion, in order. Each runtime gets its own copy.
 def _script() -> list[CompletionResult]:
     return [
         _turn("", _read("c1", justification="Needed for the summary")),
         _turn("", _read("c2")),
         _turn("", _read("c3")),
+        _turn("", _write("c-write-1")),
+        _turn("", _write("c-write-2")),
+        _turn("", _idempotent_write("c-idempotent-1")),
+        _turn("", _idempotent_write("c-idempotent-2")),
         _turn("", _failing_read("c-error")),
         _turn(
             "",
@@ -118,7 +138,10 @@ class _ScriptedStream:
 
 
 class _StubSession:
-    """The connection's tool server: one read tool with an oversized result."""
+    """The connection's read and write tools, with dispatch counting."""
+
+    write_calls = 0
+    idempotent_write_calls = 0
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         self.tools = [
@@ -126,7 +149,18 @@ class _StubSession:
                 name="search_records",
                 description="search",
                 parameters={"type": "object", "properties": {}},
-            )
+            ),
+            NeutralTool(
+                name="create_record",
+                description="create",
+                parameters={"type": "object", "properties": {}},
+            ),
+            NeutralTool(
+                name="upsert_record",
+                description="upsert",
+                parameters={"type": "object", "properties": {}},
+                annotations={"idempotentHint": True},
+            ),
         ]
 
     async def __aenter__(self) -> _StubSession:
@@ -139,6 +173,12 @@ class _StubSession:
         assert "justification" not in arguments
         if arguments.get("fail"):
             raise ValueError("fixture tool failure")
+        if name == "create_record":
+            type(self).write_calls += 1
+            return "created id=1"
+        if name == "upsert_record":
+            type(self).idempotent_write_calls += 1
+            return "upserted id=7"
         return _BIG
 
 
@@ -146,7 +186,7 @@ async def _fixture(db: Any, tenant: uuid.UUID) -> tuple[m.Agent, m.McpConnection
     dept = m.Department(
         tenant_id=tenant,
         name="Ops",
-        frame={"tools": {"things": {"enabled": True, "read": True, "modify": False}}},
+        frame={"tools": {"things": {"enabled": True, "read": True, "modify": True}}},
     )
     db.add(dept)
     await db.flush()
@@ -169,7 +209,10 @@ async def _fixture(db: Any, tenant: uuid.UUID) -> tuple[m.Agent, m.McpConnection
         server_url="stdio://things",
         connected=True,
         config={"command": "x", "args": []},
-        scopes={"read": ["search_records"], "write": []},
+        scopes={
+            "read": ["search_records"],
+            "modify": ["create_record", "upsert_record"],
+        },
     )
     db.add(conn)
     await db.flush()
@@ -205,6 +248,8 @@ async def _run_in_process(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[list[NeutralMessage], str]:
     tenant = uuid.uuid4()
+    _StubSession.write_calls = 0
+    _StubSession.idempotent_write_calls = 0
     stream = _ScriptedStream(_script())
     monkeypatch.setattr("oc8.agent.engine.stream_completion_with_fallback", stream)
     monkeypatch.setattr("oc8.agent.engine.McpSession", _StubSession)
@@ -218,6 +263,8 @@ async def _run_in_process(
             mcp_conn=conn,
         )
     assert result.status == "done", result
+    assert _StubSession.write_calls == 1, "the second in-process write must replay"
+    assert _StubSession.idempotent_write_calls == 2, "idempotentHint must bypass replay"
     # The last completion saw everything up to (not including) its own answer;
     # append that answer so both sides end on the same final assistant turn.
     final = [
@@ -238,6 +285,8 @@ async def _run_isolated(
     from oc8.runtime.states import RunState
 
     tenant = uuid.uuid4()
+    _StubSession.write_calls = 0
+    _StubSession.idempotent_write_calls = 0
     stream = _ScriptedStream(_script())
     monkeypatch.setattr("oc8.api.v1.internal_agent.stream_completion_with_fallback", stream)
     monkeypatch.setattr("oc8.api.v1.internal_agent.McpSession", _StubSession)
@@ -292,7 +341,7 @@ async def _run_isolated(
                     if call["name"] == "search_records" and not call["arguments"].get("fail"):
                         assert payload["spill"] == {
                             "filename": f"step-{step_no}-search_records.txt",
-                            "content": _BIG,
+                            "content": _FENCED_BIG,
                         }
                     # Same gate as the real shell loop (isolated_shell.py): only
                     # a suspend verdict stops the run early. `todo_write` (and
@@ -310,6 +359,8 @@ async def _run_isolated(
                     ), payload
             else:
                 raise AssertionError("the isolated run never finished")
+    assert _StubSession.write_calls == 1, "the second isolated write must replay"
+    assert _StubSession.idempotent_write_calls == 2, "idempotentHint must bypass replay"
 
     async with app_session(tenant) as db:
         run_row = await db.get(m.AgentRun, run_id)
@@ -337,6 +388,8 @@ async def test_both_runtimes_produce_the_same_transcript(
     assert ("user", "You indicated you are fi") in roles_and_heads, "D1 nudge missing"
     tool_msgs = [c for role, c, _, _ in left if role == "tool"]
     assert any("kept as file" in str(c) for c in tool_msgs), "C1 spill missing"
+    assert any('<external source="things:create_record">' in str(c) for c in tool_msgs)
+    assert any("NO second action was taken" in str(c) for c in tool_msgs), "B9 replay missing"
     errors = [str(c) for c in tool_msgs if "fixture tool failure" in str(c)]
     assert len(errors) == 1
     assert errors[0].startswith("<step-stamp> ERROR from things (search_records):")

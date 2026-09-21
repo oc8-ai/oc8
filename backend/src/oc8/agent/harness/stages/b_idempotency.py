@@ -4,7 +4,8 @@ A restarted task replaying the same write gets the first result rather than
 acting twice. Reads are exempt on purpose: deduplicating a search would hide
 the very changes the agent is meant to observe. Only a successful side effect
 is recorded; recording a failure would answer a legitimate retry with the old
-error forever. Wired into the isolated runtime only in package 1 (spec §1.1).
+error forever. Tools that declare ``idempotentHint`` are exempt because their
+own contract already makes repeated calls safe.
 """
 
 from __future__ import annotations
@@ -24,8 +25,9 @@ async def replay_for(
     task_id: uuid.UUID | None,
     tc: ToolCall,
     writes: bool,
+    idempotent: bool = False,
 ) -> str | None:
-    if not writes or task_id is None:
+    if not writes or idempotent or task_id is None:
         return None
     return await replayed_result(
         db, tenant_id=tenant_id, task_id=task_id, tool=tc.name, arguments=tc.arguments
@@ -40,8 +42,9 @@ async def record_for(
     tc: ToolCall,
     writes: bool,
     output: str,
+    idempotent: bool = False,
 ) -> None:
-    if not writes or task_id is None or output.startswith("ERROR:"):
+    if not writes or idempotent or task_id is None or output.startswith("ERROR:"):
         return
     await record_invocation(
         db,

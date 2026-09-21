@@ -20,6 +20,7 @@ from oc8.agent.harness.prompts import format_step_stamp, resolve_timezone
 from oc8.agent.harness.stages.b_approval import posture, render_preview
 from oc8.agent.harness.stages.b_read_before_write import read_before_write_denial
 from oc8.agent.harness.stages.c_errors import ToolError, render_error
+from oc8.agent.harness.stages.c_provenance import fence_external
 from oc8.agent.harness.stages.c_reminders import (
     TOOL_OUTPUT_BUDGET_WARNING_CHARS,
     tool_output_budget_reminder,
@@ -147,13 +148,15 @@ class Harness:
         source: str = "oc8",
         error: ToolError | None = None,
     ) -> ShapedResult:
-        """C2 + C1 + C3 + C5: shape failures, spill large results, stamp, count it
-        against the per-run budget, track the consecutive-identical-call
-        state. Order of the reminders matches what both runtimes appended
-        before the move: repeat nudge, then budget note.
+        """C2 + C6 + C1 + C3 + C5: shape failures, fence successful external
+        results, spill large results, stamp, count against the per-run budget,
+        and track consecutive identical calls. Reminder order remains repeat
+        nudge, then budget note.
         """
         if error is not None:
             output = render_error(tc.name, source, error)
+        elif source != "oc8":
+            output = fence_external(output, source=f"{source}:{tc.name}")
         tz_label, resolved_tz = resolve_timezone(tz)
         now = dt.datetime.now(resolved_tz)
         stamp = format_step_stamp(

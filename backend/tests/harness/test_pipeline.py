@@ -73,6 +73,22 @@ def test_shape_envelopes_an_error_then_stamps_it() -> None:
     assert shaped.spill is None
 
 
+def test_shape_fences_successful_external_output() -> None:
+    shaped = Harness().shape(
+        _call(),
+        "customer text",
+        max_steps=40,
+        source="things",
+    )
+    assert '<external source="things:search_records">' in shaped.output
+    assert "customer text\n</external>" in shaped.output
+
+
+def test_shape_does_not_fence_oc8_output() -> None:
+    shaped = Harness().shape(_call(), "trusted result", max_steps=40, source="oc8")
+    assert "<external" not in shaped.output
+
+
 def test_an_oversized_result_is_spilled_and_the_preview_size_is_what_counts() -> None:
     h = Harness()
     h.state.step_no = 2
@@ -83,6 +99,16 @@ def test_an_oversized_result_is_spilled_and_the_preview_size_is_what_counts() ->
     assert shaped.output.startswith("[step 2/40 · ")
     assert "… 4300 chars omitted …" in shaped.output
     assert h.state.tool_output_chars == len(shaped.output)
+
+
+def test_external_output_is_fenced_before_spill() -> None:
+    h = Harness()
+    h.state.step_no = 2
+    body = "x" * (SPILL_THRESHOLD_CHARS + 100)
+    shaped = h.shape(_call(), body, max_steps=40, source="things")
+    assert shaped.spill is not None
+    assert shaped.spill.content.startswith('<external source="things:search_records">\n')
+    assert shaped.spill.content.endswith("\n</external>")
 
 
 def test_budget_note_fires_once_when_the_cumulative_size_crosses_the_line() -> None:

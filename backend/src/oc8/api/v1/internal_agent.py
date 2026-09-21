@@ -226,6 +226,28 @@ def _manifest_scopes(conn: m.McpConnection | None) -> dict[str, Any] | None:
     return conn.scopes if isinstance(conn.scopes, dict) else None
 
 
+def _manifest_guardrail_attributes(
+    conn: m.McpConnection | None,
+) -> list[dict[str, Any]]:
+    if conn is None:
+        return []
+    cfg = _mcp_params(conn)
+    manifest_conn = resolve_tool_pack_connection(
+        str(cfg.get("_plugin_name", "")), str(cfg.get("_connection_key", ""))
+    )
+    if manifest_conn is None:
+        return []
+    return [
+        {
+            "key": attribute.key,
+            "datatype": attribute.datatype,
+            "tools": attribute.tools,
+            "extract": attribute.extract,
+        }
+        for attribute in manifest_conn.guardrail_attributes
+    ]
+
+
 async def _mcp_env(conn: m.McpConnection, db: DbSession, tenant_id: uuid.UUID) -> dict[str, str]:
     return await resolve_mcp_env(
         db, tenant_id=tenant_id, cfg=_mcp_params(conn), connection_name=conn.name
@@ -605,6 +627,7 @@ async def step(
     skill_tool_names = frozenset(s.tool_name for s in assigned_skills)
     cfg = _mcp_params(conn) if conn is not None else {}
     value_spec = cfg.get("value_spec") if isinstance(cfg.get("value_spec"), dict) else None
+    guardrail_attribute_specs = _manifest_guardrail_attributes(conn)
     focus_spec = cfg.get("focus_spec") if isinstance(cfg.get("focus_spec"), dict) else None
     outward_tools = cfg.get("outward_tools") if isinstance(cfg.get("outward_tools"), list) else None
     tool_tiers: dict[str, str] = {}
@@ -628,6 +651,7 @@ async def step(
                 connection_key=conn.name if conn is not None else None,
                 tool_scopes=scopes,
                 value_spec=value_spec,
+                guardrail_attribute_specs=guardrail_attribute_specs,
             )
             if pre_decision.effect is not Effect.ALLOW:
                 break
@@ -715,6 +739,7 @@ async def tool(
     frame = dept.frame if dept is not None else {}
     cfg = _mcp_params(conn) if conn is not None else {}
     value_spec = cfg.get("value_spec") if isinstance(cfg.get("value_spec"), dict) else None
+    guardrail_attribute_specs = _manifest_guardrail_attributes(conn)
     focus_spec = cfg.get("focus_spec") if isinstance(cfg.get("focus_spec"), dict) else None
     outward_tools = cfg.get("outward_tools") if isinstance(cfg.get("outward_tools"), list) else None
     scopes = _manifest_scopes(conn)
@@ -745,6 +770,7 @@ async def tool(
         connection_key=conn.name if conn is not None else None,
         tool_scopes=scopes,
         value_spec=value_spec,
+        guardrail_attribute_specs=guardrail_attribute_specs,
     )
     stripped, justification = strip_justification(tc.arguments)
     tc.arguments = stripped
@@ -764,22 +790,26 @@ async def tool(
         elif verdict == "reject":
             decision = Decision(Effect.DENY, "operator rejected this action")
 
+    tool_schema = next(
+        (
+            raw
+            for raw in ctx.get("tool_schemas", [])
+            if isinstance(raw, dict) and raw.get("name") == tc.name
+        ),
+        None,
+    )
+    annotations = tool_schema.get("annotations") if tool_schema is not None else None
+    typed_annotations = annotations if isinstance(annotations, dict) else None
+    idempotent = (
+        typed_annotations is not None and typed_annotations.get("idempotentHint") is True
+    )
     gate_verdict = None
     if decision.effect is Effect.ALLOW:
-        tool_schema = next(
-            (
-                raw
-                for raw in ctx.get("tool_schemas", [])
-                if isinstance(raw, dict) and raw.get("name") == tc.name
-            ),
-            None,
-        )
-        annotations = tool_schema.get("annotations") if tool_schema is not None else None
         tier = classify_tier(
             tc.name,
             scopes=scopes,
             config=cfg,
-            annotations=annotations if isinstance(annotations, dict) else None,
+            annotations=typed_annotations,
         )
         definition = agent.definition if isinstance(agent.definition, dict) else {}
         raw_b5_grants = definition.get("b5_grants")
@@ -1047,7 +1077,12 @@ async def tool(
         # act twice. Reads are exempt on purpose -- deduplicating a search would
         # hide the very changes the agent is meant to observe.
         replay = await replay_for(
-            db, tenant_id=run.tenant_id, task_id=run.task_id, tc=tc, writes=writes
+            db,
+            tenant_id=run.tenant_id,
+            task_id=run.task_id,
+            tc=tc,
+            writes=writes,
+            idempotent=idempotent,
         )
         if replay is not None:
             output = replay
@@ -1086,6 +1121,7 @@ async def tool(
                 tc=tc,
                 writes=writes,
                 output=output,
+                idempotent=idempotent,
             )
 
     # Stopped HERE, the moment the call itself returned -- not at the append

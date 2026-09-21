@@ -1,7 +1,5 @@
-"""B9: a write replayed within the same task returns the first result; reads
-are never replayed; failures are never recorded. Package 1 wires this stage
-into the isolated runtime only (spec §1.1) -- the in-process engine has no
-replay protection today and gets it in package 5."""
+"""B9: a write replayed within the same task returns the first result; reads,
+failures, and tools declaring idempotentHint are never recorded or replayed."""
 
 from __future__ import annotations
 
@@ -68,3 +66,32 @@ async def test_without_a_task_nothing_happens(app_session: AppSessionFactory) ->
     async with app_session(tenant) as db:
         await record_for(db, tenant_id=tenant, task_id=None, tc=tc, writes=True, output="ok")
         assert await replay_for(db, tenant_id=tenant, task_id=None, tc=tc, writes=True) is None
+
+
+async def test_idempotent_writes_are_not_recorded_or_replayed(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    tc = ToolCall(id="1", name="upsert_record", arguments={"id": "x"})
+    async with app_session(tenant) as db:
+        task_id = await _task(db, tenant)
+        await record_for(
+            db,
+            tenant_id=tenant,
+            task_id=task_id,
+            tc=tc,
+            writes=True,
+            output="ok",
+            idempotent=True,
+        )
+        assert (
+            await replay_for(
+                db,
+                tenant_id=tenant,
+                task_id=task_id,
+                tc=tc,
+                writes=True,
+                idempotent=True,
+            )
+            is None
+        )

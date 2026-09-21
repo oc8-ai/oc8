@@ -41,6 +41,7 @@ from oc8.agent.harness.stages.b_authorize import (
 )
 from oc8.agent.harness.stages.b_blast_radius import check_blast_radius
 from oc8.agent.harness.stages.b_claims import claim_write
+from oc8.agent.harness.stages.b_idempotency import record_for, replay_for
 from oc8.agent.harness.stages.b_outward import check_outward, remember_outward
 from oc8.agent.harness.stages.b_risk_tier import classify_tier
 from oc8.agent.harness.stages.c_errors import ToolError, classify_exception
@@ -1233,6 +1234,14 @@ async def run_agent(
                         # would silently drag every denial into that average.
                         _tool_call_dispatched = True
                         writes = required_right(tc.name, tool_scopes) != "read"
+                        offered_tool = next(
+                            (tool for tool in _offered() if tool.name == tc.name), None
+                        )
+                        idempotent = (
+                            offered_tool is not None
+                            and offered_tool.annotations is not None
+                            and offered_tool.annotations.get("idempotentHint") is True
+                        )
                         identity = (
                             record_identity(tc.name, tc.arguments, focus_spec) if writes else None
                         )
@@ -1393,31 +1402,51 @@ async def run_agent(
                                     specific=describes_a_record(tc.name, tc.arguments, focus_spec),
                                     cache_hit=cached_result is not None,
                                 )
-                            if tc.id in precomputed_outputs:
-                                (
-                                    output,
-                                    _,
-                                    _precomputed_duration_ms,
-                                    tool_error,
-                                ) = precomputed_outputs.pop(tc.id)
-                            else:
-                                try:
-                                    output = await server.call(tc.name, tc.arguments)
-                                except Exception as exc:  # surface tool errors to the model
-                                    tool_error = classify_exception(
-                                        exc,
-                                        duration_s=(
-                                            dt.datetime.now(dt.UTC) - _tool_call_started_at
-                                        ).total_seconds(),
-                                    )
-                                    output = f"ERROR: {exc}"
-                            await remember_outward(
+                            replay = await replay_for(
                                 db,
                                 tenant_id=tenant_id,
                                 task_id=task.id,
-                                target=outward.target,
-                                output=output,
+                                tc=tc,
+                                writes=writes,
+                                idempotent=idempotent,
                             )
+                            if replay is not None:
+                                output = replay
+                            else:
+                                if tc.id in precomputed_outputs:
+                                    (
+                                        output,
+                                        _,
+                                        _precomputed_duration_ms,
+                                        tool_error,
+                                    ) = precomputed_outputs.pop(tc.id)
+                                else:
+                                    try:
+                                        output = await server.call(tc.name, tc.arguments)
+                                    except Exception as exc:  # surface tool errors to the model
+                                        tool_error = classify_exception(
+                                            exc,
+                                            duration_s=(
+                                                dt.datetime.now(dt.UTC) - _tool_call_started_at
+                                            ).total_seconds(),
+                                        )
+                                        output = f"ERROR: {exc}"
+                                await remember_outward(
+                                    db,
+                                    tenant_id=tenant_id,
+                                    task_id=task.id,
+                                    target=outward.target,
+                                    output=output,
+                                )
+                                await record_for(
+                                    db,
+                                    tenant_id=tenant_id,
+                                    task_id=task.id,
+                                    tc=tc,
+                                    writes=writes,
+                                    output=output,
+                                    idempotent=idempotent,
+                                )
                         shaped = harness.shape(
                             tc,
                             output,
