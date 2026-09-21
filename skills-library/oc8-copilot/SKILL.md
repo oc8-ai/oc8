@@ -22,9 +22,12 @@ Copilot: same underlying capability set, reached from outside oc8 over MCP.
 
 ## Connecting
 
-1. The user needs an oc8 API key. If they don't have one: it's created in
-   oc8 under **Settings → API keys**, shown once at creation — ask them to
-   generate one there and paste it to you if they haven't already.
+1. The user needs a running oc8 instance and an oc8 API key. If they don't
+   have oc8 running yet, or don't know how to create a key or point you at
+   the gateway, walk them through `references/getting-started.md` instead
+   of assuming either is already in place — it covers self-hosted install,
+   minting a key under **Settings → API keys**, and configuring Claude
+   Desktop / claude.ai / ChatGPT to reach `/mcp/external`.
 2. Add an MCP server pointing at `https://<their-oc8-host>/mcp/external`,
    authenticated with that key as a bearer token
    (`Authorization: Bearer oc8_ak_...`).
@@ -145,6 +148,9 @@ unrelated change.
 
 ## Background reading
 
+- `references/getting-started.md` — how to install oc8 from scratch and
+  connect this skill to it over MCP, for a user who doesn't have either set
+  up yet.
 - `references/operations.md` — every field of all seven operation types,
   with example payloads.
 - `references/chatgpt-instructions.md` — a self-contained version of this
