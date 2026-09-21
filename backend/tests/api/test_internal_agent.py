@@ -801,6 +801,116 @@ async def test_a_repeated_write_does_not_reach_the_tool_server_twice(
     assert calls.count("search_records") == 2, "reads must not be replayed from cache"
 
 
+@pytest.mark.asyncio
+async def test_blast_radius_refuses_a_second_distinct_write(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The isolated runtime claims successful writes before dispatching another."""
+    from oc8 import models as m
+
+    calls: list[dict[str, Any]] = []
+
+    class _CountingSession:
+        tools: list[Any] = []
+
+        def __init__(self, *a: Any, **kw: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> Any:
+            return self
+
+        async def __aexit__(self, *a: Any) -> None:
+            return None
+
+        async def call(self, name: str, arguments: dict[str, Any]) -> str:
+            calls.append(arguments)
+            return "updated"
+
+    monkeypatch.setattr("oc8.api.v1.internal_agent.McpSession", _CountingSession)
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        dept = m.Department(
+            tenant_id=tenant,
+            name="Operations",
+            frame={
+                "tools": {"records": {"enabled": True, "read": True, "modify": True}},
+                "limits": {"records_per_run": 1},
+            },
+        )
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(
+            tenant_id=tenant,
+            department_id=dept.id,
+            name="Alex",
+            status="running",
+            narrowing={},
+            definition={},
+            presentation={},
+        )
+        db.add(agent)
+        await db.flush()
+        conn = m.McpConnection(
+            tenant_id=tenant,
+            department_id=dept.id,
+            name="records",
+            transport="stdio",
+            server_url="stdio://records",
+            connected=True,
+            config={
+                "command": "x",
+                "args": [],
+                "read_before_write": False,
+                "focus_spec": {
+                    "entity_field": "kind",
+                    "id_fields": ["record_id"],
+                    "labels": {"case": "Case"},
+                },
+            },
+            scopes={"read": [], "modify": ["update_record"]},
+        )
+        task = m.Task(
+            tenant_id=tenant,
+            department_id=dept.id,
+            assigned_agent_id=agent.id,
+            title="Update cases",
+            state="in_progress",
+        )
+        db.add_all([conn, task])
+        await db.flush()
+        run = m.AgentRun(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            task_id=task.id,
+            state="running",
+            context={"task": "x", "mcp_connection_id": str(conn.id)},
+        )
+        db.add(run)
+        await db.flush()
+        agent_id, run_id = agent.id, run.id
+
+    first_code, first = await _post_tool(
+        tenant,
+        agent_id,
+        run_id,
+        "update_record",
+        {"kind": "case", "record_id": 1},
+    )
+    second_code, second = await _post_tool(
+        tenant,
+        agent_id,
+        run_id,
+        "update_record",
+        {"kind": "case", "record_id": 2},
+    )
+
+    assert first_code == 200 and second_code == 200, (first, second)
+    assert len(calls) == 1
+    assert "limit of 1" in second["output"]
+    assert "ERROR from oc8" in second["output"]
+
+
 # ------------------------------------------------- tool-call timing (KPIs)
 
 

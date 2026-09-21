@@ -36,6 +36,8 @@ from oc8.agent.harness import Harness, resolve_caps
 from oc8.agent.harness.calls import call_sig as _call_sig
 from oc8.agent.harness.stages.b_approval import autonomy_of, strip_justification
 from oc8.agent.harness.stages.b_authorize import authorize as _authorize
+from oc8.agent.harness.stages.b_blast_radius import check_blast_radius
+from oc8.agent.harness.stages.b_claims import claim_write
 from oc8.agent.harness.stages.b_idempotency import record_for, replay_for
 from oc8.agent.harness.stages.b_outward import check_outward, remember_outward
 from oc8.agent.harness.stages.b_risk_tier import classify_tier
@@ -881,6 +883,12 @@ async def tool(
     dispatched = True
     tool_error: ToolError | None = None
     source = conn.name if conn is not None else "oc8"
+    writes = required_right(tc.name, scopes) != "read"
+    identity = record_identity(tc.name, tc.arguments, focus_spec) if writes else None
+    record_label = (
+        describe_focus(tc.name, tc.arguments, focus_spec)
+        or (f"{identity[0]} {identity[1]}" if identity is not None else "")
+    )
     control = (
         await execute_control_tool(
             db,
@@ -972,6 +980,39 @@ async def tool(
         tool_error = ToolError(kind="deny", message="no tool server available")
         dispatched = False
     elif (
+        blast_refusal := await check_blast_radius(
+            db,
+            tenant_id=run.tenant_id,
+            run_id=run.id,
+            frame=frame,
+            identity=identity,
+        )
+    ) is not None:
+        output = blast_refusal
+        source = "oc8"
+        tool_error = ToolError(
+            kind="deny",
+            message=blast_refusal.removeprefix("ERROR: ").strip(),
+        )
+        dispatched = False
+    elif (
+        claim_refusal := await claim_write(
+            db,
+            tenant_id=run.tenant_id,
+            run_id=run.id,
+            agent_id=agent.id,
+            identity=identity,
+            label=record_label,
+        )
+    ) is not None:
+        output = claim_refusal
+        source = "oc8"
+        tool_error = ToolError(
+            kind="deny",
+            message=claim_refusal.removeprefix("ERROR: ").strip(),
+        )
+        dispatched = False
+    elif (
         outward := await check_outward(
             db,
             tenant_id=run.tenant_id,
@@ -1005,7 +1046,6 @@ async def tool(
         # restarted task replaying a write must get the first result rather than
         # act twice. Reads are exempt on purpose -- deduplicating a search would
         # hide the very changes the agent is meant to observe.
-        writes = required_right(tc.name, scopes) != "read"
         replay = await replay_for(
             db, tenant_id=run.tenant_id, task_id=run.task_id, tc=tc, writes=writes
         )

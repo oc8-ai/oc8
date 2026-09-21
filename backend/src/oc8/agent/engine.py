@@ -39,6 +39,8 @@ from oc8.agent.harness.stages.b_approval import autonomy_of, strip_justification
 from oc8.agent.harness.stages.b_authorize import (
     authorize as _authorize,  # re-exported for mcp_gateway.py and older tests
 )
+from oc8.agent.harness.stages.b_blast_radius import check_blast_radius
+from oc8.agent.harness.stages.b_claims import claim_write
 from oc8.agent.harness.stages.b_outward import check_outward, remember_outward
 from oc8.agent.harness.stages.b_risk_tier import classify_tier
 from oc8.agent.harness.stages.c_errors import ToolError, classify_exception
@@ -53,7 +55,7 @@ from oc8.agent.tool_notes import apply_tool_notes
 from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_identity
 from oc8.approvals import raise_approval
 from oc8.audit import append_event
-from oc8.authz.pdp import Decision, Effect, effective_tool_policies
+from oc8.authz.pdp import Decision, Effect, effective_tool_policies, required_right
 from oc8.capas.claude_hooks import dispatch_claude_event
 from oc8.capas.claude_hooks.context import (
     base_payload,
@@ -1230,6 +1232,14 @@ async def run_agent(
                         # near-zero duration for one that never left the process
                         # would silently drag every denial into that average.
                         _tool_call_dispatched = True
+                        writes = required_right(tc.name, tool_scopes) != "read"
+                        identity = (
+                            record_identity(tc.name, tc.arguments, focus_spec) if writes else None
+                        )
+                        record_label = (
+                            describe_focus(tc.name, tc.arguments, focus_spec)
+                            or (f"{identity[0]} {identity[1]}" if identity is not None else "")
+                        )
                         control = await execute_control_tool(
                             db,
                             tenant_id=tenant_id,
@@ -1314,6 +1324,39 @@ async def run_agent(
                             output = f"ERROR: {reason}"
                             source = "oc8"
                             tool_error = ToolError(kind="deny", message=reason)
+                            _tool_call_dispatched = False
+                        elif (
+                            blast_refusal := await check_blast_radius(
+                                db,
+                                tenant_id=tenant_id,
+                                run_id=run_id,
+                                frame=frame,
+                                identity=identity,
+                            )
+                        ) is not None:
+                            output = blast_refusal
+                            source = "oc8"
+                            tool_error = ToolError(
+                                kind="deny",
+                                message=blast_refusal.removeprefix("ERROR: ").strip(),
+                            )
+                            _tool_call_dispatched = False
+                        elif (
+                            claim_refusal := await claim_write(
+                                db,
+                                tenant_id=tenant_id,
+                                run_id=run_id,
+                                agent_id=agent.id,
+                                identity=identity,
+                                label=record_label,
+                            )
+                        ) is not None:
+                            output = claim_refusal
+                            source = "oc8"
+                            tool_error = ToolError(
+                                kind="deny",
+                                message=claim_refusal.removeprefix("ERROR: ").strip(),
+                            )
                             _tool_call_dispatched = False
                         elif (
                             outward := await check_outward(
