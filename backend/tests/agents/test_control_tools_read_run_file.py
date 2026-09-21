@@ -81,6 +81,12 @@ def test_offered_unconditionally() -> None:
     assert READ_RUN_FILE.name in names
 
 
+def test_schema_advertises_offset_and_limit() -> None:
+    props = READ_RUN_FILE.parameters["properties"]
+    assert "offset" in props and "limit" in props
+    assert READ_RUN_FILE.parameters["required"] == ["filename"]
+
+
 # ------------------------------------------------------------------ execution
 
 
@@ -372,3 +378,109 @@ async def test_survives_two_files_with_the_same_name_newest_wins(app_session: An
         )
     assert outcome is not None
     assert "Final draft." in outcome.output
+
+
+@pytest.mark.asyncio
+async def test_offset_and_limit_slice_the_extracted_text(app_session: Any) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, task, reading_run = await _dept_agent_task_run(db, tenant)
+        db.add(
+            m.FileAttachment(
+                tenant_id=tenant,
+                owner_type="agent_run",
+                owner_id=reading_run.id,
+                bucket_key="run-alphabet",
+                filename="alpha.txt",
+                content_type="text/plain",
+                size_bytes=26,
+                extracted_text="abcdefghijklmnopqrstuvwxyz",
+                is_image=False,
+            )
+        )
+        await db.flush()
+        outcome = await execute_control_tool(
+            db,
+            tenant_id=tenant,
+            agent=agent,
+            task=task,
+            tc=ToolCall(
+                id="1",
+                name="read_run_file",
+                arguments={"filename": "alpha.txt", "offset": 10, "limit": 5},
+            ),
+            decision=Decision(Effect.ALLOW),
+            assigned_skills=[],
+            active_skills=[],
+            mcp_conn=None,
+            originating_operator=None,
+            run_id=reading_run.id,
+        )
+    assert outcome is not None
+    assert outcome.output == "klmno"
+
+
+@pytest.mark.asyncio
+async def test_offset_past_the_end_returns_empty(app_session: Any) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, task, reading_run = await _dept_agent_task_run(db, tenant)
+        db.add(
+            m.FileAttachment(
+                tenant_id=tenant,
+                owner_type="agent_run",
+                owner_id=reading_run.id,
+                bucket_key="run-short",
+                filename="short.txt",
+                content_type="text/plain",
+                size_bytes=4,
+                extracted_text="abcd",
+                is_image=False,
+            )
+        )
+        await db.flush()
+        outcome = await execute_control_tool(
+            db,
+            tenant_id=tenant,
+            agent=agent,
+            task=task,
+            tc=ToolCall(
+                id="1",
+                name="read_run_file",
+                arguments={"filename": "short.txt", "offset": 50},
+            ),
+            decision=Decision(Effect.ALLOW),
+            assigned_skills=[],
+            active_skills=[],
+            mcp_conn=None,
+            originating_operator=None,
+            run_id=reading_run.id,
+        )
+    assert outcome is not None
+    assert outcome.output == ""
+
+
+@pytest.mark.asyncio
+async def test_negative_offset_is_an_error(app_session: Any) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, task, reading_run = await _dept_agent_task_run(db, tenant)
+        outcome = await execute_control_tool(
+            db,
+            tenant_id=tenant,
+            agent=agent,
+            task=task,
+            tc=ToolCall(
+                id="1",
+                name="read_run_file",
+                arguments={"filename": "x.txt", "offset": -1},
+            ),
+            decision=Decision(Effect.ALLOW),
+            assigned_skills=[],
+            active_skills=[],
+            mcp_conn=None,
+            originating_operator=None,
+            run_id=reading_run.id,
+        )
+    assert outcome is not None
+    assert outcome.output.startswith("ERROR:")

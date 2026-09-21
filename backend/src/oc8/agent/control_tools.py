@@ -386,14 +386,13 @@ READ_RUN_FILE = NeutralTool(
     name="read_run_file",
     description=(
         "Read the content of a file another agent run produced (via "
-        "write_output_file or by writing under /workspace/output/) -- for "
-        "example a file a colleague you delegated to just finished writing. "
-        "`filename` is that file's exact name. `run_id` is optional: give it "
-        "when you know which run produced the file (e.g. one you just "
-        "delegated to) to disambiguate two runs that used the same "
-        "filename; omitted, the most recently produced file with that name "
-        "in your tenant is returned. Only works for text-extractable files "
-        "-- produced images are not readable through this tool."
+        "write_output_file, a spilled tool result, or by writing under "
+        "/workspace/output/). `filename` is that file's exact name. `run_id` "
+        "is optional: give it when you know which run produced the file. "
+        "`offset` and `limit` are optional character offsets into the file "
+        "(default: from the start, up to the built-in per-call cap). Only "
+        "works for text-extractable files -- produced images are not readable "
+        "through this tool."
     ),
     parameters={
         "type": "object",
@@ -402,6 +401,14 @@ READ_RUN_FILE = NeutralTool(
             "run_id": {
                 "type": "string",
                 "description": "Optional: the id of the run that produced the file.",
+            },
+            "offset": {
+                "type": "integer",
+                "description": "Optional character offset to start reading from (default 0).",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Optional maximum number of characters to return.",
             },
         },
         "required": ["filename"],
@@ -1552,7 +1559,29 @@ async def execute_control_tool(
                 )
             )
         text = attachment.extracted_text or "(could not read this file's content)"
-        truncated = text[:_MAX_REFERENCE_FILE_BYTES]
+
+        def _as_nonneg_int(raw: object, *, name: str) -> int | None | str:
+            if raw is None or raw == "":
+                return None
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                return f"ERROR: read_run_file `{name}` must be an integer"
+            if value < 0:
+                return f"ERROR: read_run_file `{name}` must be >= 0"
+            return value
+
+        offset_or_err = _as_nonneg_int(tc.arguments.get("offset"), name="offset")
+        if isinstance(offset_or_err, str):
+            return ControlOutcome(output=offset_or_err)
+        limit_or_err = _as_nonneg_int(tc.arguments.get("limit"), name="limit")
+        if isinstance(limit_or_err, str):
+            return ControlOutcome(output=limit_or_err)
+        offset = offset_or_err or 0
+        sliced = text[offset:]
+        if limit_or_err is not None:
+            sliced = sliced[:limit_or_err]
+        truncated = sliced[:_MAX_REFERENCE_FILE_BYTES]
         await record_activity(
             db,
             tenant_id=tenant_id,
