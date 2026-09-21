@@ -31,10 +31,14 @@ Copilot: same underlying capability set, reached from outside oc8 over MCP.
 2. Add an MCP server pointing at `https://<their-oc8-host>/mcp/external`,
    authenticated with that key as a bearer token
    (`Authorization: Bearer oc8_ak_...`).
-3. You'll see five tools: `copilot_propose`, `copilot_list_proposals`,
-   `copilot_review_proposal`, `copilot_apply_proposal`,
-   `copilot_reject_proposal`. That's the whole surface — read on for what
-   they let you build and how to sequence them.
+3. You'll see 13 tools: five for the propose → review → apply loop
+   (`copilot_propose`, `copilot_list_proposals`, `copilot_review_proposal`,
+   `copilot_apply_proposal`, `copilot_reject_proposal`) and eight read-only
+   lookups (`copilot_list_departments`, `copilot_get_department`,
+   `copilot_list_agents`, `copilot_get_agent`, `copilot_list_plugins`,
+   `copilot_get_plugin`, `copilot_list_integrations`,
+   `copilot_list_connection_tools`). That's the whole surface — read on for
+   what they let you build and how to sequence them.
 
 A key is exactly as powerful as the oc8 member who created it — never more.
 If a call 403s with "missing permission", that member's own oc8 role
@@ -42,58 +46,88 @@ doesn't allow it; tell the user rather than retrying.
 
 ## The one rule that matters more than any other
 
-**Never invent a UUID.** This gateway has no tool to list existing
-departments, agents, plugins, integrations, or connections, and applying a
-`department.create` or `agent.create` operation does not hand you back the
-ID of what you just created — oc8 deliberately keeps this surface
-secret-blind and read-free, so the only two places an ID can come from are
-the human's own memory and the oc8 UI itself.
+**Never invent a UUID.** The gateway now has read tools for departments,
+agents, plugins/capas, integrations, and a connection's tool catalog —
+`copilot_list_departments`, `copilot_get_department`, `copilot_list_agents`,
+`copilot_get_agent`, `copilot_list_plugins`, `copilot_get_plugin`,
+`copilot_list_integrations`, `copilot_list_connection_tools` — so most of
+the time you can look an ID up yourself instead of asking the user for it.
+Two gaps remain, and this rule is really about not papering over them:
+
+- Applying `department.create` or `agent.create` still does not hand you
+  back the new entity's ID — oc8 deliberately keeps proposal application
+  read-free even now. Call `copilot_list_departments`/`copilot_list_agents`
+  right after and find the row you just created (filter agents by
+  `departmentId`, match on name); if the result is empty or ambiguous (e.g.
+  two departments share a name), ask the user rather than guessing which
+  row is the new one.
+- `agent.guardrail.set`'s `connectionName`/`function` pair still has no
+  direct existence check beyond `copilot_list_connection_tools` — that tool
+  tells you the real function names one named connection exposes, but
+  there's no call that confirms a `connectionName` itself is one a given
+  agent's department actually has access to. Call
+  `copilot_list_connection_tools` before proposing a guardrail, and if it
+  comes back empty or without the function you expected, ask the user
+  rather than guessing a name.
 
 Concretely, this changes how you work:
 
 - Before any operation that references an existing `agentId`,
-  `departmentId`, `pluginId`, `integrationId`, or `connectionName`, ask the
-  user for it if they haven't given it to you. Point them at the relevant
-  oc8 screen — the ID is visible in the browser URL (e.g.
-  `/departments/<id>`, `/agents/<id>`) or copyable from the entity's detail
-  page. Never guess, never reuse an ID from a previous unrelated
-  conversation, never pattern-match a plausible-looking UUID.
+  `departmentId`, `pluginId`/`capaId`, `integrationId`, or `connectionName`,
+  try the matching `copilot_list_*`/`copilot_get_*` tool first. Only ask the
+  user when the entity is too new to show up yet (created earlier in this
+  same conversation, before you had a chance to re-list) or when the lookup
+  comes back empty or ambiguous. Never guess, never reuse an ID from a
+  previous unrelated conversation, never pattern-match a plausible-looking
+  UUID.
 - When you `department.create` or `agent.create`, the proposal you get back
-  after applying tells you *that it succeeded*, not the new entity's ID. If
-  the very next thing you want to do needs that ID (e.g. hire an agent into
-  the department you just created), tell the user the entity now exists and
-  ask them to open it in the oc8 UI and hand you its ID before you continue
-  — don't stall silently and don't fabricate one to keep going.
+  after applying tells you *that it succeeded*, not the new entity's ID —
+  follow up with the read tools above rather than defaulting to asking the
+  user, but still ask if that lookup doesn't clearly identify the new row.
 - `plugin.enable` and `integration.prepare` need IDs for things that were
-  already installed/added in the oc8 UI beforehand — Copilot can turn them
-  on, not conjure them into existence. If the user wants a plugin that
-  doesn't seem to be installed yet, say so and point them at **Capas** in
-  the oc8 UI (see `docs/user/integrations/index.md` for the catalog of what
-  capas exist, if you have repo access, or just ask the user what's
-  installed).
+  already installed/added in the oc8 UI beforehand, or — for a capa —
+  installed through `capa.install` first; Copilot can turn them on, not
+  conjure them into existence. `copilot_list_plugins`/
+  `copilot_list_integrations` show you what's actually there; if the user
+  wants something that isn't, say so rather than proposing an operation
+  that will fail at apply time.
 - `agent.guardrail.set`'s `connectionName`/`function` must match a tool the
   agent's department actually has access to, spelled exactly as oc8 knows
-  it (e.g. `github`/`merge_pull_request`). Ask the user, or check the
-  agent's tool grants in the oc8 UI, rather than guessing a plausible name.
+  it (e.g. `github`/`merge_pull_request`). Check with
+  `copilot_list_connection_tools` first, or ask the user, rather than
+  guessing a plausible name.
 
 Getting this wrong doesn't fail loudly with a clear error — `copilot_propose`
 just returns `"invalid copilot proposal"` for a bad reference, same as for a
-malformed field. Ask first; it's cheaper than a guessing loop.
+malformed field. Check first; it's cheaper than a guessing loop.
 
 ## Turning what someone asks for into proposals
 
-Most requests decompose into one or more of the seven operation types below
-(full field reference: `references/operations.md`). Read the request for
-its real intent, map it onto this list, and ask only for the IDs/names you
-actually need — don't interrogate the user for things you can infer.
+Requests decompose into one or more of the 22 operation types below (full
+field reference: `references/operations.md`). Read the request for its real
+intent, map it onto this list, and ask only for the IDs/names you actually
+need — try the read tools first (see "the one rule" above), and don't
+interrogate the user for things you can infer or look up.
 
 | The user wants... | Operation(s) |
 |---|---|
 | A new team for something oc8 doesn't have yet | `department.create`, then `agent.create` once you have the new department's id |
+| An existing team's name/goal/icon changed | `department.update` |
+| A team archived, or brought back | `department.delete` / `department.restore` |
 | A new agent doing a specific job | `agent.create` (needs an existing `departmentId`) |
+| An agent renamed | `agent.rename` |
 | An agent's goal/focus changed | `agent.mission.set` (needs the agent's id) |
+| An agent started, paused, or stopped | `agent.lifecycle.set` with `action` = `start` / `pause` / `stop` |
+| An agent archived, or brought back | `agent.delete` / `agent.restore` |
+| An agent's tool access narrowed, or a narrowing removed | `agent.narrowing.set` / `agent.narrowing.reset` |
+| An agent moved to a different runtime | `agent.runtime.assign` |
+| An agent's model switched | `agent.model.switch` |
+| A skill granted to an agent | `agent.skill.assign` |
 | Work to happen on a schedule or in response to an event | `trigger.create` (`kind: "cron"` with `cronExpression`, or `kind: "event"` with `eventSource`/`eventType` — ask which events oc8 already knows about rather than inventing one) |
+| A new capa (plugin) added to the tenant | `capa.install` (needs the on-disk `diskPluginId`, not a database id) |
 | A capability/tool pack turned on for the tenant | `plugin.enable` (needs an already-installed plugin's id) |
+| A capa turned off | `capa.disable` |
+| A capa's non-secret setup fields filled in | `capa.configure` — never for a capa with an MCP connection or any password/credential field; see `references/operations.md`'s scope note |
 | A third-party system wired up | `integration.prepare` — this only references an integration that already exists in oc8; it never carries credentials. Real setup (API keys, OAuth) still happens in oc8's normal integration flow, outside Copilot. |
 | "Let the agent do X automatically", "X always needs my OK first", "X only below €500" | `agent.guardrail.set` with `decision` = `self_sufficient` / `approval_required` / `with_limits` respectively (see below) |
 
@@ -151,8 +185,9 @@ unrelated change.
 - `references/getting-started.md` — how to install oc8 from scratch and
   connect this skill to it over MCP, for a user who doesn't have either set
   up yet.
-- `references/operations.md` — every field of all seven operation types,
-  with example payloads.
+- `references/operations.md` — every field of all 22 operation types, with
+  example payloads, plus the 8 read-only discovery tools' arguments and
+  purpose.
 - `references/chatgpt-instructions.md` — a self-contained version of this
   skill for pasting into a ChatGPT Custom GPT's instructions, for teams
   standardizing on a different assistant.
