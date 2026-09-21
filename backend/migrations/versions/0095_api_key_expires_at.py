@@ -1,8 +1,8 @@
 """api_key.expires_at -- optional per-key expiry, set by the member who
 creates the key (not a tenant-wide policy).
 
-Revision ID: 0094
-Revises: 0093
+Revision ID: 0095
+Revises: 0094
 Create Date: 2026-09-15
 """
 
@@ -13,8 +13,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0094"
-down_revision: str | None = "0093"
+revision: str = "0095"
+down_revision: str | None = "0094"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

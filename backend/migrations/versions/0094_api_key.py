@@ -1,7 +1,7 @@
 """api_key table -- per-member API keys authenticating the outward MCP gateway.
 
-Revision ID: 0093
-Revises: 0092
+Revision ID: 0094
+Revises: 0093
 Create Date: 2026-09-14
 """
 
@@ -13,8 +13,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
-revision: str = "0093"
-down_revision: str | None = "0092"
+revision: str = "0094"
+down_revision: str | None = "0093"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
