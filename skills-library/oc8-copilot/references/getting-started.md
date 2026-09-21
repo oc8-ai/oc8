@@ -29,7 +29,7 @@ https://github.com/oc8/oc8/blob/main/docs/user/quickstart.md if you don't
 have repo access).
 
 For a production deployment (not a local trial), point the user at
-`DEPLOY.md` instead -- it covers the security checklist (rotating
+`docs/DEPLOY.md` instead -- it covers the security checklist (rotating
 `OC8_JWT_SECRET`/`OC8_SECRET_KEK`, setting `OC8_ENV=prod`, never exposing
 dev-login) that `quickstart.sh`'s Community mode does not apply for you.
 `docs/user/install-and-maintain/index.md` is the index for upgrades,
