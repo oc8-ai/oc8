@@ -1,8 +1,26 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { ArrowLeft, KeyRound, Loader2, Save, ShieldCheck, Trash2, UserCog } from "lucide-react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import {
+  ArrowLeft,
+  Check,
+  Copy,
+  KeyRound,
+  Loader2,
+  Mail,
+  Save,
+  ShieldCheck,
+  Trash2,
+  UserCog,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Panel, roleLabel } from "@/components/app-shell";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -11,14 +29,17 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { useAuthConfig, useDepartments } from "@/lib/hooks";
+import { useConfirm } from "@/hooks/use-confirm";
 import { useMay } from "@/lib/governance-hooks";
+import { useAuth, useAuthConfig, useDepartments } from "@/lib/hooks";
 import { useT } from "@/lib/i18n";
 import {
   useAssignees,
   useAssignRole,
   useCreateMember,
+  useDeleteMember,
   useGrantSeat,
+  useMintMemberPasswordReset,
   useRenameMemberSubject,
   useRevokeSeat,
   useRoles,
@@ -91,7 +112,7 @@ function MemberDetail() {
 
 type Member = RoleAssignee;
 
-function MemberDetailForm({ member }: { member: Member }) {
+export function MemberDetailForm({ member }: { member: Member }) {
   const t = useT();
   const { data: roles = [] } = useRoles(true);
   // Department picker for this member's seats, not a paginated list view.
@@ -104,6 +125,13 @@ function MemberDetailForm({ member }: { member: Member }) {
   const assignRole = useAssignRole();
   const grantSeat = useGrantSeat();
   const revokeSeat = useRevokeSeat();
+  const mintReset = useMintMemberPasswordReset();
+  const deleteMember = useDeleteMember();
+  const navigate = useNavigate();
+  const { data: me } = useAuth();
+  const { confirm, ConfirmDialog } = useConfirm();
+  const [pendingResetLink, setPendingResetLink] = useState<string | null>(null);
+  const isSelf = me?.subject === member.subject;
 
   // Only Community's local-password login actually offers a password form to
   // USE a password set here.
@@ -137,7 +165,11 @@ function MemberDetailForm({ member }: { member: Member }) {
       {
         onSuccess: () => toast.success(t("Saved", "Gespeichert")),
         onError: (err) =>
-          toast.error(err instanceof Error ? err.message : t("Could not save.", "Konnte nicht gespeichert werden.")),
+          toast.error(
+            err instanceof Error
+              ? err.message
+              : t("Could not save.", "Konnte nicht gespeichert werden."),
+          ),
       },
     );
   };
@@ -148,11 +180,14 @@ function MemberDetailForm({ member }: { member: Member }) {
     renameSubject.mutate(
       { memberId: member.id, subject: trimmed },
       {
-        onSuccess: () => toast.success(t("Sign-in identity updated", "Anmelde-Identität aktualisiert")),
+        onSuccess: () =>
+          toast.success(t("Sign-in identity updated", "Anmelde-Identität aktualisiert")),
         onError: (err) => {
           setSubject(member.subject);
           toast.error(
-            err instanceof Error ? err.message : t("Could not save.", "Konnte nicht gespeichert werden."),
+            err instanceof Error
+              ? err.message
+              : t("Could not save.", "Konnte nicht gespeichert werden."),
           );
         },
       },
@@ -161,7 +196,12 @@ function MemberDetailForm({ member }: { member: Member }) {
 
   const submitPassword = () => {
     if (newPassword.length < 8) {
-      toast.error(t("Password must be at least 8 characters.", "Das Passwort muss mindestens 8 Zeichen haben."));
+      toast.error(
+        t(
+          "Password must be at least 8 characters.",
+          "Das Passwort muss mindestens 8 Zeichen haben.",
+        ),
+      );
       return;
     }
     setPassword.mutate(
@@ -173,7 +213,9 @@ function MemberDetailForm({ member }: { member: Member }) {
         },
         onError: (err) =>
           toast.error(
-            err instanceof Error ? err.message : t("Could not set password.", "Passwort konnte nicht gesetzt werden."),
+            err instanceof Error
+              ? err.message
+              : t("Could not set password.", "Passwort konnte nicht gesetzt werden."),
           ),
       },
     );
@@ -181,7 +223,12 @@ function MemberDetailForm({ member }: { member: Member }) {
 
   const setAdmin = (admin: boolean) => {
     if (admin && !orgAdminRole?.id) {
-      toast.error(t("The org_admin role is not set up for this tenant.", "Die Rolle org_admin ist für diesen Mandanten nicht angelegt."));
+      toast.error(
+        t(
+          "The org_admin role is not set up for this tenant.",
+          "Die Rolle org_admin ist für diesen Mandanten nicht angelegt.",
+        ),
+      );
       return;
     }
     assignRole.mutate(
@@ -194,7 +241,11 @@ function MemberDetailForm({ member }: { member: Member }) {
               : t("Made a standard user", "Zum Standard-User gemacht"),
           ),
         onError: (err) =>
-          toast.error(err instanceof Error ? err.message : t("Could not assign role.", "Rolle konnte nicht zugewiesen werden.")),
+          toast.error(
+            err instanceof Error
+              ? err.message
+              : t("Could not assign role.", "Rolle konnte nicht zugewiesen werden."),
+          ),
       },
     );
   };
@@ -205,7 +256,11 @@ function MemberDetailForm({ member }: { member: Member }) {
       {
         onSuccess: () => toast.success(t("Role updated", "Rolle aktualisiert")),
         onError: (err) =>
-          toast.error(err instanceof Error ? err.message : t("Could not assign role.", "Rolle konnte nicht zugewiesen werden.")),
+          toast.error(
+            err instanceof Error
+              ? err.message
+              : t("Could not assign role.", "Rolle konnte nicht zugewiesen werden."),
+          ),
       },
     );
   };
@@ -221,7 +276,11 @@ function MemberDetailForm({ member }: { member: Member }) {
               : t("Revoked company-wide access", "Unternehmensweiten Zugriff entzogen"),
           ),
         onError: (err) =>
-          toast.error(err instanceof Error ? err.message : t("Could not save.", "Konnte nicht gespeichert werden.")),
+          toast.error(
+            err instanceof Error
+              ? err.message
+              : t("Could not save.", "Konnte nicht gespeichert werden."),
+          ),
       },
     );
   };
@@ -232,7 +291,11 @@ function MemberDetailForm({ member }: { member: Member }) {
       {
         onSuccess: () => toast.success(t("Seat updated", "Sitz aktualisiert")),
         onError: (err) =>
-          toast.error(err instanceof Error ? err.message : t("Could not update seat.", "Sitz konnte nicht aktualisiert werden.")),
+          toast.error(
+            err instanceof Error
+              ? err.message
+              : t("Could not update seat.", "Sitz konnte nicht aktualisiert werden."),
+          ),
       },
     );
   };
@@ -243,7 +306,11 @@ function MemberDetailForm({ member }: { member: Member }) {
       {
         onSuccess: () => toast.success(t("Seat removed", "Sitz entfernt")),
         onError: (err) =>
-          toast.error(err instanceof Error ? err.message : t("Could not remove seat.", "Sitz konnte nicht entfernt werden.")),
+          toast.error(
+            err instanceof Error
+              ? err.message
+              : t("Could not remove seat.", "Sitz konnte nicht entfernt werden."),
+          ),
       },
     );
   };
@@ -268,9 +335,58 @@ function MemberDetailForm({ member }: { member: Member }) {
           setNewSeatAgentManage(false);
         },
         onError: (err) =>
-          toast.error(err instanceof Error ? err.message : t("Could not add seat.", "Sitz konnte nicht hinzugefügt werden.")),
+          toast.error(
+            err instanceof Error
+              ? err.message
+              : t("Could not add seat.", "Sitz konnte nicht hinzugefügt werden."),
+          ),
       },
     );
+  };
+
+  const sendResetLink = () => {
+    mintReset.mutate(member.id, {
+      onSuccess: (result) => {
+        if (result.resetSent) {
+          toast.success(
+            t("A reset email was sent to them", "Eine Reset-E-Mail wurde an sie verschickt"),
+          );
+        } else {
+          setPendingResetLink(result.resetLink);
+        }
+      },
+      onError: (err) =>
+        toast.error(
+          err instanceof Error
+            ? err.message
+            : t("Could not create a reset link.", "Reset-Link konnte nicht erstellt werden."),
+        ),
+    });
+  };
+
+  const removeMember = async () => {
+    const ok = await confirm({
+      title: t("Delete this user?", "Diesen Benutzer löschen?"),
+      description: t(
+        "They will disappear from the users list and will not be able to sign in. Unused invite and reset links are spent so they cannot come back through an old mail.",
+        "Sie verschwinden aus der Benutzerliste und können sich nicht mehr anmelden. Ungenutzte Einladungs- und Reset-Links werden ungültig, damit sie nicht über eine alte Mail zurückkommen.",
+      ),
+      confirmLabel: t("Delete", "Löschen"),
+      cancelLabel: t("Cancel", "Abbrechen"),
+    });
+    if (!ok) return;
+    deleteMember.mutate(member.id, {
+      onSuccess: () => {
+        toast.success(t("User deleted", "Benutzer gelöscht"));
+        navigate({ to: "/members" });
+      },
+      onError: (err) =>
+        toast.error(
+          err instanceof Error
+            ? err.message
+            : t("Could not delete this user.", "Benutzer konnte nicht gelöscht werden."),
+        ),
+    });
   };
 
   return (
@@ -380,7 +496,10 @@ function MemberDetailForm({ member }: { member: Member }) {
               type="password"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
-              placeholder={t("New password (min. 8 characters)", "Neues Passwort (mind. 8 Zeichen)")}
+              placeholder={t(
+                "New password (min. 8 characters)",
+                "Neues Passwort (mind. 8 Zeichen)",
+              )}
               className="flex-1 rounded-md border border-input bg-background px-3 py-2"
             />
             <button
@@ -389,7 +508,28 @@ function MemberDetailForm({ member }: { member: Member }) {
               disabled={setPassword.isPending || newPassword.length === 0}
               className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground disabled:opacity-50"
             >
-              {setPassword.isPending ? t("Setting…", "Wird gesetzt…") : t("Set password", "Passwort setzen")}
+              {setPassword.isPending
+                ? t("Setting…", "Wird gesetzt…")
+                : t("Set password", "Passwort setzen")}
+            </button>
+          </div>
+          <div className="mt-6 border-t border-border pt-4">
+            <p className="text-sm text-muted-foreground">
+              {t(
+                "Or send them a link to set their own password. The mail is tried first; if no mail server is configured, you get a copyable link instead.",
+                "Oder senden Sie ihnen einen Link, damit sie selbst ein Passwort setzen. Zuerst wird die E-Mail versucht; ist kein Mailserver konfiguriert, erhalten Sie stattdessen einen kopierbaren Link.",
+              )}
+            </p>
+            <button
+              type="button"
+              onClick={sendResetLink}
+              disabled={mintReset.isPending}
+              className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-xs font-medium transition hover:bg-accent disabled:opacity-50"
+            >
+              <Mail className="size-3.5" />
+              {mintReset.isPending
+                ? t("Sending…", "Wird gesendet…")
+                : t("Send reset link", "Reset-Link senden")}
             </button>
           </div>
         </Panel>
@@ -492,8 +632,12 @@ function MemberDetailForm({ member }: { member: Member }) {
                   <SeatRow
                     key={seat.departmentId}
                     seat={seat}
-                    onChangeRole={(role) => changeSeatRole(seat.departmentId, role, seat.agentManage)}
-                    onToggleAgentManage={(value) => changeSeatRole(seat.departmentId, seat.seatRole, value)}
+                    onChangeRole={(role) =>
+                      changeSeatRole(seat.departmentId, role, seat.agentManage)
+                    }
+                    onToggleAgentManage={(value) =>
+                      changeSeatRole(seat.departmentId, seat.seatRole, value)
+                    }
                     onRemove={() => removeSeat(seat.departmentId)}
                     pending={grantSeat.isPending || revokeSeat.isPending}
                     t={t}
@@ -551,7 +695,99 @@ function MemberDetailForm({ member }: { member: Member }) {
           </div>
         )}
       </Panel>
+
+      {!isSelf && (
+        <Panel className="p-6">
+          <h3 className="font-serif text-lg">{t("Remove user", "Benutzer entfernen")}</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {t(
+              "Soft-delete this person. They leave the users list and cannot sign in.",
+              "Diese Person weich löschen. Sie verschwindet aus der Benutzerliste und kann sich nicht anmelden.",
+            )}
+          </p>
+          <button
+            type="button"
+            onClick={removeMember}
+            disabled={deleteMember.isPending}
+            className="mt-4 inline-flex items-center gap-1.5 rounded-md border border-destructive/40 px-3 py-2 text-xs font-medium text-destructive transition hover:bg-destructive/10 disabled:opacity-50"
+          >
+            <Trash2 className="size-3.5" />
+            {deleteMember.isPending
+              ? t("Deleting…", "Wird gelöscht…")
+              : t("Delete user", "Benutzer löschen")}
+          </button>
+        </Panel>
+      )}
+
+      <ResetLinkDialog
+        link={pendingResetLink}
+        onOpenChange={(open) => {
+          if (!open) setPendingResetLink(null);
+        }}
+      />
+      {ConfirmDialog}
     </div>
+  );
+}
+
+/** Shown when `POST /members/{id}/password-reset` minted a link that could
+ *  NOT be emailed -- the same fallback as the create-user invite dialog.
+ *  When the mail WAS sent, the caller toasts instead and this never opens. */
+function ResetLinkDialog({
+  link,
+  onOpenChange,
+}: {
+  link: string | null;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const t = useT();
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    if (!link) return;
+    await navigator.clipboard.writeText(link);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <Dialog open={link !== null} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{t("Share this reset link", "Diesen Reset-Link teilen")}</DialogTitle>
+          <DialogDescription>
+            {t(
+              "No mail server is configured for this instance, so the reset could not be emailed. Copy this link and send it to them yourself — it lets them set a new password.",
+              "Für diese Instanz ist kein Mailserver konfiguriert, daher konnte der Reset nicht per E-Mail versendet werden. Kopieren Sie diesen Link und senden Sie ihn selbst — damit kann ein neues Passwort gesetzt werden.",
+            )}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex items-center gap-2">
+          <input
+            readOnly
+            value={link ?? ""}
+            onFocus={(e) => e.currentTarget.select()}
+            className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-xs"
+          />
+          <button
+            type="button"
+            onClick={copy}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border px-3 py-2 text-xs font-medium transition hover:bg-accent"
+          >
+            {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+            {copied ? t("Copied", "Kopiert") : t("Copy", "Kopieren")}
+          </button>
+        </div>
+        <div className="flex justify-end">
+          <button
+            onClick={() => onOpenChange(false)}
+            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground"
+          >
+            {t("Done", "Fertig")}
+          </button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -588,7 +824,11 @@ function SeatRow({
         </Select>
       </td>
       <td className="py-2">
-        <Switch checked={seat.agentManage} onCheckedChange={onToggleAgentManage} disabled={pending} />
+        <Switch
+          checked={seat.agentManage}
+          onCheckedChange={onToggleAgentManage}
+          disabled={pending}
+        />
       </td>
       <td className="py-2 text-right">
         <button
