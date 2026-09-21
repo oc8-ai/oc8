@@ -33,11 +33,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.api.v1._serializers import agent_to_dto, department_to_dto, integration_to_dto
+from oc8.api.v1.catalog import _agent_slug_to_id
 from oc8.apikeys.service import API_KEY_PREFIX, find_enabled_by_token, touch_last_used
 from oc8.auth import Principal
 from oc8.authz.authority import authority_for_principal
 from oc8.authz.permissions import COPILOT, MANAGE, MEMBER_ROLE, VIEW, perm
-from oc8.copilot.capabilities import InvalidOperation, operation_references
+from oc8.copilot.capabilities import InvalidOperation, _connection_tool_names, operation_references
 from oc8.copilot.models import CopilotOperation, CopilotProposal
 from oc8.copilot.proposals import (
     ProposalNotRejectable,
@@ -243,6 +245,81 @@ _TOOLS: list[dict[str, Any]] = [
             "required": ["proposalId"],
         },
     },
+    {
+        "name": "copilot_list_departments",
+        "description": (
+            "List every department in this tenant (id, name, goal, icon), including archived ones."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "copilot_get_department",
+        "description": "Get one department by id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"departmentId": {"type": "string"}},
+            "required": ["departmentId"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "copilot_list_agents",
+        "description": "List agents in this tenant, optionally filtered by department.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"departmentId": {"type": "string"}},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "copilot_get_agent",
+        "description": "Get one agent by id, including its narrowing and runtime assignment.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"agentId": {"type": "string"}},
+            "required": ["agentId"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "copilot_list_plugins",
+        "description": (
+            "List every installed capa (plugin) in this tenant, with its id, name, type, and "
+            "trust level."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "copilot_get_plugin",
+        "description": "Get one installed capa by id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"pluginId": {"type": "string"}},
+            "required": ["pluginId"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "copilot_list_integrations",
+        "description": (
+            "List every catalog integration available to this tenant (id, name, category, "
+            "connected)."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "copilot_list_connection_tools",
+        "description": (
+            "List the real function names a named MCP connection exposes -- use this before "
+            "agent.guardrail.set to find a valid `function` value for a given `connectionName`."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"connectionName": {"type": "string"}},
+            "required": ["connectionName"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -317,6 +394,126 @@ async def _call_tool(
         except ProposalNotRejectable:
             return _tool_result("copilot proposal cannot be rejected", is_error=True)
         return _tool_result(json.dumps(await _proposal_payload(db, proposal)))
+
+    if name == "copilot_list_departments":
+        await _require(request, db, principal, perm(COPILOT, VIEW))
+        rows = (
+            await db.execute(
+                select(m.Department).where(m.Department.tenant_id == principal.tenant_id)
+            )
+        ).scalars().all()
+        payload = [department_to_dto(d).model_dump(mode="json") for d in rows]
+        return _tool_result(json.dumps(payload))
+
+    if name == "copilot_get_department":
+        await _require(request, db, principal, perm(COPILOT, VIEW))
+        department_id = _parse_uuid(arguments.get("departmentId"))
+        if department_id is None:
+            return _tool_result("departmentId is required", is_error=True)
+        department = await db.get(m.Department, department_id)
+        if department is None or department.tenant_id != principal.tenant_id:
+            return _tool_result("department not found", is_error=True)
+        return _tool_result(json.dumps(department_to_dto(department).model_dump(mode="json")))
+
+    if name == "copilot_list_agents":
+        await _require(request, db, principal, perm(COPILOT, VIEW))
+        statement = select(m.Agent).where(m.Agent.tenant_id == principal.tenant_id)
+        raw_department_id = arguments.get("departmentId")
+        if raw_department_id:
+            department_id = _parse_uuid(raw_department_id)
+            if department_id is None:
+                return _tool_result("departmentId is invalid", is_error=True)
+            statement = statement.where(m.Agent.department_id == department_id)
+        rows = (await db.execute(statement)).scalars().all()
+        return _tool_result(json.dumps([agent_to_dto(a).model_dump(mode="json") for a in rows]))
+
+    if name == "copilot_get_agent":
+        await _require(request, db, principal, perm(COPILOT, VIEW))
+        agent_id = _parse_uuid(arguments.get("agentId"))
+        if agent_id is None:
+            return _tool_result("agentId is required", is_error=True)
+        agent = await db.get(m.Agent, agent_id)
+        if agent is None or agent.tenant_id != principal.tenant_id:
+            return _tool_result("agent not found", is_error=True)
+        return _tool_result(json.dumps(agent_to_dto(agent).model_dump(mode="json")))
+
+    if name == "copilot_list_plugins":
+        await _require(request, db, principal, perm(COPILOT, VIEW))
+        rows = (
+            await db.execute(select(m.Capa).where(m.Capa.tenant_id == principal.tenant_id))
+        ).scalars().all()
+        return _tool_result(
+            json.dumps(
+                [
+                    {
+                        "id": str(p.id),
+                        "name": p.name,
+                        "type": p.type,
+                        "trustLevel": p.trust_level,
+                        "currentVersionId": (
+                            str(p.current_version_id) if p.current_version_id else None
+                        ),
+                    }
+                    for p in rows
+                ]
+            )
+        )
+
+    if name == "copilot_get_plugin":
+        await _require(request, db, principal, perm(COPILOT, VIEW))
+        plugin_id = _parse_uuid(arguments.get("pluginId"))
+        if plugin_id is None:
+            return _tool_result("pluginId is required", is_error=True)
+        plugin = await db.get(m.Capa, plugin_id)
+        if plugin is None or plugin.tenant_id != principal.tenant_id:
+            return _tool_result("plugin not found", is_error=True)
+        return _tool_result(
+            json.dumps(
+                {
+                    "id": str(plugin.id),
+                    "name": plugin.name,
+                    "type": plugin.type,
+                    "trustLevel": plugin.trust_level,
+                    "currentVersionId": (
+                        str(plugin.current_version_id) if plugin.current_version_id else None
+                    ),
+                }
+            )
+        )
+
+    if name == "copilot_list_integrations":
+        await _require(request, db, principal, perm(COPILOT, VIEW))
+        rows = (
+            await db.execute(select(m.Integration).order_by(m.Integration.created_at))
+        ).scalars().all()
+        slug_to_id = await _agent_slug_to_id(db)
+        return _tool_result(
+            json.dumps([integration_to_dto(i, slug_to_id).model_dump(mode="json") for i in rows])
+        )
+
+    if name == "copilot_list_connection_tools":
+        await _require(request, db, principal, perm(COPILOT, VIEW))
+        connection_name = str(arguments.get("connectionName") or "")
+        if not connection_name:
+            return _tool_result("connectionName is required", is_error=True)
+        # `credential_id.is_(None)` picks the manifest row -- same pattern as
+        # `copilot/capabilities.py`'s `_apply_guardrail_set`.
+        conn = (
+            await db.execute(
+                select(m.McpConnection)
+                .where(
+                    m.McpConnection.tenant_id == principal.tenant_id,
+                    m.McpConnection.name == connection_name,
+                    m.McpConnection.credential_id.is_(None),
+                )
+                .order_by(m.McpConnection.created_at)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if conn is None:
+            return _tool_result("connection not found", is_error=True)
+        payload = {"connectionName": connection_name, "tools": sorted(_connection_tool_names(conn))}
+        return _tool_result(json.dumps(payload))
 
     raise HTTPException(status.HTTP_404_NOT_FOUND, f"unknown tool: {name}")
 

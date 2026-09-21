@@ -4,6 +4,8 @@ from __future__ import annotations
 import datetime as dt
 import json
 import uuid
+from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from asgi_lifespan import LifespanManager
@@ -22,6 +24,20 @@ from oc8.main import create_app
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
+
+# tests/api/<this file> -> tests -> backend -> repo root, where capas/ lives.
+_PLUGINS_DIR = Path(__file__).resolve().parents[3] / "capas"
+
+
+@pytest.fixture(autouse=True)
+def _plugins_path(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """`copilot_list_connection_tools` resolves the real odoo_mcp manifest --
+    same setup as `tests/copilot/test_proposals.py`'s `agent.guardrail.set`
+    tests, which read the same manifest through the same code path."""
+    monkeypatch.setenv("OC8_CAPAS_PATH", str(_PLUGINS_DIR))
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 def _client(app: object) -> AsyncClient:
@@ -136,7 +152,9 @@ async def test_ping_returns_an_empty_result(app_session: AppSessionFactory) -> N
     assert r.json() == {"jsonrpc": "2.0", "id": 1, "result": {}}
 
 
-async def test_tools_list_returns_the_five_copilot_tools(app_session: AppSessionFactory) -> None:
+async def test_tools_list_returns_all_thirteen_copilot_tools(
+    app_session: AppSessionFactory,
+) -> None:
     _tenant, token = await _admin_setup(app_session)
     app = create_app()
     async with LifespanManager(app):
@@ -153,7 +171,341 @@ async def test_tools_list_returns_the_five_copilot_tools(app_session: AppSession
         "copilot_review_proposal",
         "copilot_apply_proposal",
         "copilot_reject_proposal",
+        "copilot_list_departments",
+        "copilot_get_department",
+        "copilot_list_agents",
+        "copilot_get_agent",
+        "copilot_list_plugins",
+        "copilot_get_plugin",
+        "copilot_list_integrations",
+        "copilot_list_connection_tools",
     }
+
+
+async def test_copilot_list_departments_returns_tenant_departments(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant, token = await _admin_setup(app_session)
+    async with app_session(tenant) as db:
+        department = m.Department(tenant_id=tenant, name="Ops", goal="Keep the lights on")
+        db.add(department)
+        await db.flush()
+        department_id = department.id
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            r = await c.post(
+                "/mcp/external",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": "copilot_list_departments", "arguments": {}},
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    assert r.status_code == 200, r.text
+    departments = json.loads(r.json()["result"]["content"][0]["text"])
+    assert [d["id"] for d in departments] == [str(department_id)]
+    assert departments[0]["name"] == "Ops"
+    assert departments[0]["goal"] == "Keep the lights on"
+
+
+async def test_copilot_get_department_reads_by_id_and_never_another_tenants_row(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant, token = await _admin_setup(app_session)
+    other_tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        department = m.Department(tenant_id=tenant, name="Ops")
+        db.add(department)
+        await db.flush()
+        department_id = department.id
+    async with app_session(other_tenant) as db:
+        foreign = m.Department(tenant_id=other_tenant, name="Foreign")
+        db.add(foreign)
+        await db.flush()
+        foreign_id = foreign.id
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            found = await c.post(
+                "/mcp/external",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "copilot_get_department",
+                        "arguments": {"departmentId": str(department_id)},
+                    },
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            leaked = await c.post(
+                "/mcp/external",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "copilot_get_department",
+                        "arguments": {"departmentId": str(foreign_id)},
+                    },
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    found_result = found.json()["result"]
+    assert json.loads(found_result["content"][0]["text"])["id"] == str(department_id)
+    leaked_result = leaked.json()["result"]
+    assert leaked_result["isError"] is True
+    assert "not found" in leaked_result["content"][0]["text"]
+
+
+async def test_copilot_list_agents_filters_by_department(app_session: AppSessionFactory) -> None:
+    tenant, token = await _admin_setup(app_session)
+    async with app_session(tenant) as db:
+        dept_a = m.Department(tenant_id=tenant, name="A")
+        dept_b = m.Department(tenant_id=tenant, name="B")
+        db.add_all([dept_a, dept_b])
+        await db.flush()
+        agent_a = m.Agent(tenant_id=tenant, department_id=dept_a.id, name="Ann")
+        agent_b = m.Agent(tenant_id=tenant, department_id=dept_b.id, name="Bo")
+        db.add_all([agent_a, agent_b])
+        await db.flush()
+        dept_a_id, agent_a_id, agent_b_id = dept_a.id, agent_a.id, agent_b.id
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            unfiltered = await c.post(
+                "/mcp/external",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": "copilot_list_agents", "arguments": {}},
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            filtered = await c.post(
+                "/mcp/external",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "copilot_list_agents",
+                        "arguments": {"departmentId": str(dept_a_id)},
+                    },
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    unfiltered_ids = {
+        a["id"] for a in json.loads(unfiltered.json()["result"]["content"][0]["text"])
+    }
+    assert unfiltered_ids == {str(agent_a_id), str(agent_b_id)}
+    filtered_ids = {a["id"] for a in json.loads(filtered.json()["result"]["content"][0]["text"])}
+    assert filtered_ids == {str(agent_a_id)}
+
+
+async def test_copilot_get_agent_returns_the_agent_and_errors_for_an_unknown_id(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant, token = await _admin_setup(app_session)
+    async with app_session(tenant) as db:
+        agent = m.Agent(tenant_id=tenant, department_id=uuid.uuid4(), name="Target")
+        db.add(agent)
+        await db.flush()
+        agent_id = agent.id
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            found = await c.post(
+                "/mcp/external",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "copilot_get_agent",
+                        "arguments": {"agentId": str(agent_id)},
+                    },
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            missing = await c.post(
+                "/mcp/external",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "copilot_get_agent",
+                        "arguments": {"agentId": str(uuid.uuid4())},
+                    },
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    found_result = found.json()["result"]
+    assert json.loads(found_result["content"][0]["text"])["id"] == str(agent_id)
+    missing_result = missing.json()["result"]
+    assert missing_result["isError"] is True
+    assert "not found" in missing_result["content"][0]["text"]
+
+
+async def test_copilot_list_plugins_and_get_plugin(app_session: AppSessionFactory) -> None:
+    tenant, token = await _admin_setup(app_session)
+    async with app_session(tenant) as db:
+        capa = m.Capa(tenant_id=tenant, name="Odoo MCP", type="connector", trust_level="verified")
+        db.add(capa)
+        await db.flush()
+        capa_id = capa.id
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            listed = await c.post(
+                "/mcp/external",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": "copilot_list_plugins", "arguments": {}},
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            got = await c.post(
+                "/mcp/external",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "copilot_get_plugin",
+                        "arguments": {"pluginId": str(capa_id)},
+                    },
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            missing = await c.post(
+                "/mcp/external",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "copilot_get_plugin",
+                        "arguments": {"pluginId": str(uuid.uuid4())},
+                    },
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    listed_plugins = json.loads(listed.json()["result"]["content"][0]["text"])
+    assert [p["id"] for p in listed_plugins] == [str(capa_id)]
+    assert listed_plugins[0]["trustLevel"] == "verified"
+    got_plugin = json.loads(got.json()["result"]["content"][0]["text"])
+    assert got_plugin["id"] == str(capa_id)
+    missing_result = missing.json()["result"]
+    assert missing_result["isError"] is True
+    assert "not found" in missing_result["content"][0]["text"]
+
+
+async def test_copilot_list_integrations_resolves_used_by_to_agent_ids(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant, token = await _admin_setup(app_session)
+    async with app_session(tenant) as db:
+        agent = m.Agent(
+            tenant_id=tenant,
+            department_id=uuid.uuid4(),
+            name="Sina",
+            presentation={"slug": "sina"},
+        )
+        db.add(agent)
+        await db.flush()
+        integration = m.Integration(
+            tenant_id=tenant, key="odoo", name="Odoo", category="erp", used_by=["sina"]
+        )
+        db.add(integration)
+        await db.flush()
+        agent_id, integration_id = agent.id, integration.id
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            r = await c.post(
+                "/mcp/external",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": "copilot_list_integrations", "arguments": {}},
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    integrations = json.loads(r.json()["result"]["content"][0]["text"])
+    assert [i["id"] for i in integrations] == [str(integration_id)]
+    # `.model_dump(mode="json")` here is field-name (snake_case), not the
+    # `by_alias=True` camelCase the frontend-facing REST routes use for the
+    # same DTO -- same choice the other five tools already made.
+    assert integrations[0]["used_by"] == [str(agent_id)]
+
+
+async def test_copilot_list_connection_tools_returns_the_manifest_functions(
+    app_session: AppSessionFactory,
+) -> None:
+    assert _PLUGINS_DIR.is_dir(), _PLUGINS_DIR
+    tenant, token = await _admin_setup(app_session)
+    async with app_session(tenant) as db:
+        conn = m.McpConnection(
+            tenant_id=tenant,
+            name="odoo",
+            server_url="",
+            transport="stdio",
+            config={"_plugin_name": "odoo_mcp", "_connection_key": "primary"},
+        )
+        db.add(conn)
+        await db.flush()
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            found = await c.post(
+                "/mcp/external",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "copilot_list_connection_tools",
+                        "arguments": {"connectionName": "odoo"},
+                    },
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            missing = await c.post(
+                "/mcp/external",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "copilot_list_connection_tools",
+                        "arguments": {"connectionName": "does-not-exist"},
+                    },
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    found_payload = json.loads(found.json()["result"]["content"][0]["text"])
+    assert found_payload["connectionName"] == "odoo"
+    assert "post_message" in found_payload["tools"]
+    missing_result = missing.json()["result"]
+    assert missing_result["isError"] is True
+    assert "not found" in missing_result["content"][0]["text"]
 
 
 async def test_a_notification_without_an_id_gets_a_bare_202(
