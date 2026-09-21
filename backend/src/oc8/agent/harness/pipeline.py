@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from oc8.agent.harness.caps import ModelCaps
 from oc8.agent.harness.prompts import format_step_stamp, resolve_timezone
+from oc8.agent.harness.stages.b_approval import posture, render_preview
+from oc8.agent.harness.stages.b_read_before_write import read_before_write_denial
 from oc8.agent.harness.stages.c_errors import ToolError, render_error
 from oc8.agent.harness.stages.c_reminders import (
     TOOL_OUTPUT_BUDGET_WARNING_CHARS,
@@ -29,7 +31,7 @@ from oc8.agent.harness.stages.d_todo import (
     todo_continuation_exhausted_note,
     todo_continuation_reminder,
 )
-from oc8.agent.harness.state import HarnessState
+from oc8.agent.harness.state import HarnessState, Ledger
 from oc8.modelrouter import ToolCall
 
 
@@ -53,6 +55,16 @@ class FinishVerdict:
     exhausted_note: str | None = None
 
 
+@dataclass(frozen=True)
+class GateVerdict:
+    effect: Literal["allow", "ask", "deny"]
+    reason: str = ""
+    rule: str = ""
+    preview: str = ""
+    justification: str = ""
+    tier: str = "write"
+
+
 class Harness:
     def __init__(self, *, state: HarnessState | None = None, caps: ModelCaps | None = None) -> None:
         self.state = state if state is not None else HarnessState()
@@ -66,6 +78,62 @@ class Harness:
 
     def store(self, ctx: dict[str, Any]) -> None:
         self.state.store(ctx)
+
+    # ----------------------------------------------------------------- phase B
+
+    def gate(
+        self,
+        tc: ToolCall,
+        *,
+        tier: str,
+        ledger: Ledger,
+        connection: str,
+        config: dict[str, Any] | None,
+        autonomy: str,
+        granted: bool,
+        record_label: str,
+        identity: tuple[str, str] | None,
+    ) -> GateVerdict:
+        denial = read_before_write_denial(
+            tool=tc.name,
+            tier=tier,
+            identity=identity,
+            ledger=ledger,
+            connection=connection,
+            config=config,
+            label=record_label,
+        )
+        if denial is not None:
+            suffix = (
+                "This is a policy decision, not a tool error — "
+                "do not retry the same change another way."
+            )
+            if suffix not in denial:
+                denial = f"{denial.rstrip()} {suffix}"
+            return GateVerdict(
+                effect="deny",
+                reason=denial,
+                rule="read_before_write",
+                tier=tier,
+            )
+
+        if posture(tier, autonomy, granted=granted) == "ask":
+            cfg = config or {}
+            templates = cfg.get("approval_templates")
+            template = templates.get(tc.name) if isinstance(templates, dict) else None
+            return GateVerdict(
+                effect="ask",
+                preview=render_preview(
+                    tool=tc.name,
+                    connection=connection,
+                    arguments=tc.arguments,
+                    template=str(template) if template is not None else None,
+                    record=record_label,
+                ),
+                tier=tier,
+            )
+
+        return GateVerdict(effect="allow", tier=tier)
 
     # ----------------------------------------------------------------- phase C
 

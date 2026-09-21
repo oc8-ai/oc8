@@ -7,11 +7,12 @@ here, so the two cannot drift. Nothing in this package imports the engine.
 
 from oc8.agent.harness.calls import call_sig
 from oc8.agent.harness.caps import ModelCaps, resolve_caps
-from oc8.agent.harness.pipeline import FinishVerdict, Harness, ShapedResult
+from oc8.agent.harness.pipeline import FinishVerdict, GateVerdict, Harness, ShapedResult
 from oc8.agent.harness.state import HarnessState
 
 __all__ = [
     "FinishVerdict",
+    "GateVerdict",
     "Harness",
     "HarnessState",
     "ModelCaps",

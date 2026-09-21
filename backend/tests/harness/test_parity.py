@@ -47,8 +47,11 @@ def _turn(text: str, *calls: ToolCall) -> CompletionResult:
     )
 
 
-def _read(call_id: str) -> ToolCall:
-    return ToolCall(id=call_id, name="search_records", arguments={"model": "thing", "limit": 5})
+def _read(call_id: str, *, justification: str = "") -> ToolCall:
+    arguments = {"model": "thing", "limit": 5}
+    if justification:
+        arguments["justification"] = justification
+    return ToolCall(id=call_id, name="search_records", arguments=arguments)
 
 
 def _failing_read(call_id: str) -> ToolCall:
@@ -62,7 +65,7 @@ def _failing_read(call_id: str) -> ToolCall:
 #: One model turn per completion, in order. Each runtime gets its own copy.
 def _script() -> list[CompletionResult]:
     return [
-        _turn("", _read("c1")),
+        _turn("", _read("c1", justification="Needed for the summary")),
         _turn("", _read("c2")),
         _turn("", _read("c3")),
         _turn("", _failing_read("c-error")),
@@ -133,6 +136,7 @@ class _StubSession:
         return False
 
     async def call(self, name: str, arguments: dict[str, Any]) -> str:
+        assert "justification" not in arguments
         if arguments.get("fail"):
             raise ValueError("fixture tool failure")
         return _BIG

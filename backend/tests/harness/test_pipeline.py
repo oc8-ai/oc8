@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import datetime as dt
 
-from oc8.agent.harness import FinishVerdict, Harness, HarnessState, ModelCaps
+from oc8.agent.harness import FinishVerdict, GateVerdict, Harness, HarnessState, ModelCaps
 from oc8.agent.harness.prompts import format_step_stamp, resolve_timezone
+from oc8.agent.harness.stages.b_read_before_write import note_access
 from oc8.agent.harness.stages.c_errors import ToolError
 from oc8.agent.harness.stages.c_reminders import TOOL_OUTPUT_BUDGET_WARNING_CHARS
 from oc8.agent.harness.stages.c_spill import SPILL_THRESHOLD_CHARS, Spill
@@ -161,3 +162,102 @@ def test_from_run_context_and_store_round_trip() -> None:
     assert again.state.tool_output_chars == _stamp_prefix_len(0, 40) + len("abc")
     assert h.caps.code_mode is True
     assert again.caps == ModelCaps()
+
+
+def test_gate_denies_write_without_a_prior_read() -> None:
+    h = Harness()
+    verdict = h.gate(
+        _call(id=7),
+        tier="write",
+        ledger=h.state.ledger,
+        connection="records",
+        config={"entity_lookup_tools": ["find_records"]},
+        autonomy="default",
+        granted=False,
+        record_label="Customer #7",
+        identity=("customer", "7"),
+    )
+    assert verdict.effect == "deny"
+    assert verdict.rule == "read_before_write"
+    assert verdict.tier == "write"
+    assert verdict.reason.endswith(
+        "This is a policy decision, not a tool error — do not retry the same change another way."
+    )
+
+
+def test_gate_asks_for_destructive_default_with_preview() -> None:
+    h = Harness()
+    verdict = h.gate(
+        _call(id=7),
+        tier="destructive",
+        ledger=h.state.ledger,
+        connection="records",
+        config={
+            "read_before_write": False,
+            "approval_templates": {"search_records": "Allow deletion of {record}?"},
+        },
+        autonomy="default",
+        granted=False,
+        record_label="Customer #7",
+        identity=("customer", "7"),
+    )
+    assert verdict == GateVerdict(
+        effect="ask",
+        preview="Allow deletion of Customer #7?",
+        tier="destructive",
+    )
+
+
+def test_gate_allows_read() -> None:
+    h = Harness()
+    assert h.gate(
+        _call(),
+        tier="read",
+        ledger=h.state.ledger,
+        connection="records",
+        config={},
+        autonomy="default",
+        granted=False,
+        record_label="",
+        identity=None,
+    ) == GateVerdict(effect="allow", tier="read")
+
+
+def test_gate_allows_autonomous_destructive_after_read() -> None:
+    h = Harness()
+    note_access(
+        h.state.ledger,
+        connection="records",
+        kind="customer",
+        id="7",
+        label="Customer #7",
+        step_no=1,
+        wrote=False,
+        tool="get_record",
+    )
+    assert h.gate(
+        _call(id=7),
+        tier="destructive",
+        ledger=h.state.ledger,
+        connection="records",
+        config={},
+        autonomy="autonomous",
+        granted=False,
+        record_label="Customer #7",
+        identity=("customer", "7"),
+    ) == GateVerdict(effect="allow", tier="destructive")
+
+
+def test_gate_asks_autonomous_outward_without_grant() -> None:
+    h = Harness()
+    assert h.gate(
+        _call(message="hello"),
+        tier="outward",
+        ledger=h.state.ledger,
+        connection="messages",
+        config={"read_before_write": False},
+        autonomy="autonomous",
+        granted=False,
+        record_label="Channel #1",
+        identity=None,
+    ).effect == "ask"

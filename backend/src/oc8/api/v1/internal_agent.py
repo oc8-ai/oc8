@@ -34,9 +34,11 @@ from oc8.agent.control_tools import (
 from oc8.agent.engine import _max_steps
 from oc8.agent.harness import Harness, resolve_caps
 from oc8.agent.harness.calls import call_sig as _call_sig
+from oc8.agent.harness.stages.b_approval import autonomy_of, strip_justification
 from oc8.agent.harness.stages.b_authorize import authorize as _authorize
 from oc8.agent.harness.stages.b_idempotency import record_for, replay_for
 from oc8.agent.harness.stages.b_outward import check_outward, remember_outward
+from oc8.agent.harness.stages.b_risk_tier import classify_tier
 from oc8.agent.harness.stages.c_errors import ToolError, classify_exception
 from oc8.agent.harness.stages.c_spill import persist_spill
 from oc8.agent.mcp_client import McpSession
@@ -45,7 +47,7 @@ from oc8.agent.mcp_requirements import wrap_with_requirements
 from oc8.agent.outward import outward_target
 from oc8.agent.preamble import build_run_preamble
 from oc8.agent.tool_notes import apply_tool_notes
-from oc8.agent.tool_semantics import describe_focus, describes_a_record
+from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_identity
 from oc8.api.deps import CurrentPrincipal, DbSession, unguarded
 from oc8.approvals import raise_approval
 from oc8.audit import append_event
@@ -357,7 +359,12 @@ async def step(
             command, args = wrap_with_requirements(cfg.get("command", ""), cfg.get("args", []), cfg)
             async with McpSession(command, args, env=env) as s:
                 tool_schemas_raw = [
-                    {"name": t.name, "description": t.description, "parameters": t.parameters}
+                    {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters,
+                        "annotations": t.annotations,
+                    }
                     for t in apply_tool_notes(s.tools, cfg)
                 ]
         ctx["tool_schemas"] = tool_schemas_raw
@@ -367,6 +374,7 @@ async def step(
             name=t["name"],
             description=t.get("description", ""),
             parameters=t.get("parameters", {"type": "object", "properties": {}}),
+            annotations=t.get("annotations"),
         )
         for t in tool_schemas_raw
     ]
@@ -621,7 +629,16 @@ async def step(
             )
             if pre_decision.effect is not Effect.ALLOW:
                 break
-            if required_right(t.name, scopes) != "read":
+            offered = next((tool for tool in tools if tool.name == t.name), None)
+            if (
+                classify_tier(
+                    t.name,
+                    scopes=scopes,
+                    config=cfg,
+                    annotations=offered.annotations if offered is not None else None,
+                )
+                != "read"
+            ):
                 break
             # An outward-declared call (spec B8) breaks the run even though
             # required_right would call it "read" too -- batching it would
@@ -699,6 +716,9 @@ async def tool(
     focus_spec = cfg.get("focus_spec") if isinstance(cfg.get("focus_spec"), dict) else None
     outward_tools = cfg.get("outward_tools") if isinstance(cfg.get("outward_tools"), list) else None
     scopes = _manifest_scopes(conn)
+    ctx = dict(run.context)
+    harness = Harness.from_run_context(ctx)
+    harness.state.step_no = int(ctx.get("steps", 0))
 
     active_ids = {str(s) for s in run.context.get("active_skill_ids", [])}
     active_skills = [s for s in assigned_skills if str(s.skill_version_id) in active_ids]
@@ -724,6 +744,16 @@ async def tool(
         tool_scopes=scopes,
         value_spec=value_spec,
     )
+    stripped, justification = strip_justification(tc.arguments)
+    tc.arguments = stripped
+    transcript = list(ctx.get("transcript", []))
+    for message in reversed(transcript):
+        calls = message.get("tool_calls", [])
+        matched = next((call for call in calls if call.get("id") == tc.id), None)
+        if matched is not None:
+            matched["arguments"] = dict(tc.arguments)
+            break
+    ctx["transcript"] = transcript
     # Honour an operator's earlier decision on this exact call (resume).
     if decision.effect is Effect.REQUIRE_APPROVAL:
         verdict = pre_decided_map(run.context.get("resolved_tool_approvals", [])).get(_call_sig(tc))
@@ -731,6 +761,42 @@ async def tool(
             decision = Decision(Effect.ALLOW, "operator approved")
         elif verdict == "reject":
             decision = Decision(Effect.DENY, "operator rejected this action")
+
+    gate_verdict = None
+    if decision.effect is Effect.ALLOW:
+        tool_schema = next(
+            (
+                raw
+                for raw in ctx.get("tool_schemas", [])
+                if isinstance(raw, dict) and raw.get("name") == tc.name
+            ),
+            None,
+        )
+        annotations = tool_schema.get("annotations") if tool_schema is not None else None
+        tier = classify_tier(
+            tc.name,
+            scopes=scopes,
+            config=cfg,
+            annotations=annotations if isinstance(annotations, dict) else None,
+        )
+        definition = agent.definition if isinstance(agent.definition, dict) else {}
+        raw_b5_grants = definition.get("b5_grants")
+        b5_grants = raw_b5_grants if isinstance(raw_b5_grants, list) else []
+        gate_verdict = harness.gate(
+            tc,
+            tier=tier,
+            ledger=harness.state.ledger,
+            connection=conn.name if conn is not None else "oc8",
+            config=cfg,
+            autonomy=autonomy_of(definition),
+            granted=tier in b5_grants,
+            record_label=describe_focus(tc.name, tc.arguments, focus_spec) or "",
+            identity=record_identity(tc.name, tc.arguments, focus_spec),
+        )
+        if gate_verdict.effect == "ask":
+            decision = Decision(Effect.REQUIRE_APPROVAL, gate_verdict.preview)
+        elif gate_verdict.effect == "deny":
+            decision = Decision(Effect.DENY, gate_verdict.reason)
 
     await append_event(
         db,
@@ -754,12 +820,17 @@ async def tool(
             action_type="tool_send",
             title=f"{agent.name} wants to call {tc.name}",
             detail=decision.reason,
-            payload={"tool": tc.name, "arguments": tc.arguments},
+            payload={
+                "tool": tc.name,
+                "arguments": tc.arguments,
+                "justification": justification,
+                "preview": gate_verdict.preview if gate_verdict is not None else "",
+            },
         )
         # Record the suspend verdict so the isolated runtime maps the run to
         # waiting_for_approval after the container exits.
         run.context = {
-            **run.context,
+            **ctx,
             "isolated_result": {"status": "waiting_for_approval", "output": decision.reason or ""},
         }
         await db.commit()
@@ -782,7 +853,6 @@ async def tool(
         )
         return ToolResult(status="waiting_for_approval", output=decision.reason or "")
 
-    ctx = dict(run.context)
     suspend: str | None = None
 
     # A core-owned tool goes through the SAME dispatcher as the in-process engine
@@ -989,8 +1059,6 @@ async def tool(
     # variable, since this runtime drives one tool call per HTTP request with
     # no in-memory state surviving between them. ctx["steps"] is the same
     # counter /step increments (see its own ctx["steps"] = ... line above).
-    harness = Harness.from_run_context(ctx)
-    harness.state.step_no = int(ctx.get("steps", 0))
     shaped = harness.shape(
         tc,
         output,
@@ -1014,7 +1082,6 @@ async def tool(
     # Append the tool result to the transcript. This must come directly after the
     # assistant message that requested the call -- anything inserted between the
     # two invalidates the request for a strict provider.
-    transcript = list(ctx.get("transcript", []))
     transcript.append(
         _from_message(NeutralMessage(role="tool", content=output, tool_call_id=tc.id, name=tc.name))
     )

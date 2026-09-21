@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from sqlalchemy import select
 from tests.conftest import AppSessionFactory
 
 from oc8 import models as m
@@ -115,6 +116,9 @@ async def _fixture(
     approval_actions: list[str] | None = None,
     parallel_tool_calls: bool = True,
     outward_tools: list[str] | None = None,
+    destructive_tools: list[str] | None = None,
+    approval_templates: dict[str, str] | None = None,
+    agent_definition: dict[str, Any] | None = None,
 ) -> tuple[m.Agent, m.McpConnection]:
     frame_policy: dict[str, Any] = {"enabled": True, "read": True, "modify": True}
     if approval_actions:
@@ -141,7 +145,7 @@ async def _fixture(
         name="Nora",
         status="running",
         narrowing={},
-        definition={},
+        definition=agent_definition or {},
         presentation={},
     )
     db.add(agent)
@@ -149,6 +153,10 @@ async def _fixture(
     conn_config: dict[str, Any] = {"command": "x", "args": []}
     if outward_tools:
         conn_config["outward_tools"] = outward_tools
+    if destructive_tools:
+        conn_config["destructive_tools"] = destructive_tools
+    if approval_templates:
+        conn_config["approval_templates"] = approval_templates
     conn = m.McpConnection(
         tenant_id=tenant,
         department_id=dept.id,
@@ -162,6 +170,58 @@ async def _fixture(
     db.add(conn)
     await db.flush()
     return agent, conn
+
+
+async def test_destructive_gate_parks_with_preview_and_stripped_justification(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant = uuid.uuid4()
+    recorder = _RecordingServer()
+    monkeypatch.setattr(
+        "oc8.agent.engine.McpSession",
+        _session_factory(recorder, ["delete_a"]),
+    )
+    monkeypatch.setattr(
+        "oc8.agent.engine.stream_completion_with_fallback",
+        _ScriptedStream(
+            [
+                _turn(
+                    "",
+                    ToolCall(
+                        id="c1",
+                        name="delete_a",
+                        arguments={"id": 7, "justification": "Duplicate record"},
+                    ),
+                )
+            ]
+        ),
+    )
+
+    async with app_session(tenant) as db:
+        agent, conn = await _fixture(
+            db,
+            tenant,
+            tool_scopes={"read": [], "modify": ["delete_a"]},
+            destructive_tools=["delete_a"],
+            approval_templates={"delete_a": "Allow deleting record {id}?"},
+        )
+        result = await run_agent(
+            db, agent=agent, task_text="go", tenant_id=tenant, mcp_conn=conn
+        )
+        approval = (
+            await db.execute(
+                select(m.ApprovalRequest).where(m.ApprovalRequest.task_id == result.task_id)
+            )
+        ).scalar_one()
+
+    assert result.status == "waiting_for_approval"
+    assert recorder.windows == []
+    assert approval.payload == {
+        "tool": "delete_a",
+        "arguments": {"id": 7},
+        "justification": "Duplicate record",
+        "preview": "Allow deleting record 7?",
+    }
 
 
 async def test_leading_read_batch_dispatches_concurrently(
@@ -346,6 +406,7 @@ async def test_outward_call_breaks_the_batch(
                 "modify": [],
             },
             outward_tools=["send_reply"],
+            agent_definition={"autonomy": "autonomous", "b5_grants": ["outward"]},
         )
         result = await run_agent(
             db, agent=agent, task_text="go", tenant_id=tenant, mcp_conn=conn

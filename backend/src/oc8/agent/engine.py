@@ -31,14 +31,16 @@ from oc8.agent.control_tools import (
     execute_control_tool,
     offered_tools,
 )
-from oc8.agent.harness import Harness, resolve_caps
+from oc8.agent.harness import GateVerdict, Harness, resolve_caps
 from oc8.agent.harness.calls import (
     call_sig as _call_sig,  # re-exported for mcp_gateway.py and older tests
 )
+from oc8.agent.harness.stages.b_approval import autonomy_of, strip_justification
 from oc8.agent.harness.stages.b_authorize import (
     authorize as _authorize,  # re-exported for mcp_gateway.py and older tests
 )
 from oc8.agent.harness.stages.b_outward import check_outward, remember_outward
+from oc8.agent.harness.stages.b_risk_tier import classify_tier
 from oc8.agent.harness.stages.c_errors import ToolError, classify_exception
 from oc8.agent.harness.stages.c_reminders import track_repeat_tool_call
 from oc8.agent.harness.stages.c_spill import persist_spill
@@ -48,10 +50,10 @@ from oc8.agent.mcp_requirements import wrap_with_requirements
 from oc8.agent.outward import outward_target
 from oc8.agent.preamble import build_run_preamble
 from oc8.agent.tool_notes import apply_tool_notes
-from oc8.agent.tool_semantics import describe_focus, describes_a_record
+from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_identity
 from oc8.approvals import raise_approval
 from oc8.audit import append_event
-from oc8.authz.pdp import Decision, Effect, effective_tool_policies, required_right
+from oc8.authz.pdp import Decision, Effect, effective_tool_policies
 from oc8.capas.claude_hooks import dispatch_claude_event
 from oc8.capas.claude_hooks.context import (
     base_payload,
@@ -318,6 +320,7 @@ async def run_agent(
         frame: dict[str, Any] = department.frame if department is not None else {}
         tool_policies = effective_tool_policies(frame, agent.narrowing or {})
         if toolset is not None:
+            connection_config: dict[str, Any] = {}
             connection_key: str | None = CODING_FRAME_KEY
             tool_scopes: dict[str, Any] | None = {
                 right: [n for n, r in CODING_TOOL_RIGHTS.items() if r == right]
@@ -330,6 +333,7 @@ async def run_agent(
         elif mcp_conn is not None:
             connection_key = mcp_conn.name
             _cfg = mcp_conn.config if isinstance(mcp_conn.config, dict) else {}
+            connection_config = _cfg
             # The read/write/send classification `required_right` needs lives
             # on the manifest's own ToolPackConnection, not this row's
             # `scopes` column -- that column is an unrelated, list-shaped
@@ -373,6 +377,7 @@ async def run_agent(
                 else []
             )
         else:
+            connection_config = {}
             connection_key = None
             tool_scopes = None
             value_spec = None
@@ -536,6 +541,31 @@ async def run_agent(
             harness = Harness(
                 caps=resolve_caps(model_config.params if model_config is not None else None)
             )
+            definition = agent.definition if isinstance(agent.definition, dict) else {}
+            autonomy = autonomy_of(definition)
+            raw_b5_grants = definition.get("b5_grants")
+            b5_grants = raw_b5_grants if isinstance(raw_b5_grants, list) else []
+
+            def _gate(tc: ToolCall) -> GateVerdict:
+                offered = next((tool for tool in _offered() if tool.name == tc.name), None)
+                tier = classify_tier(
+                    tc.name,
+                    scopes=tool_scopes,
+                    config=connection_config,
+                    annotations=offered.annotations if offered is not None else None,
+                )
+                identity = record_identity(tc.name, tc.arguments, focus_spec)
+                return harness.gate(
+                    tc,
+                    tier=tier,
+                    ledger=harness.state.ledger,
+                    connection=connection_key or "oc8",
+                    config=connection_config,
+                    autonomy=autonomy,
+                    granted=tier in b5_grants,
+                    record_label=describe_focus(tc.name, tc.arguments, focus_spec) or "",
+                    identity=identity,
+                )
 
             steps = 0
             checkpoint_trace_delta: list[dict[str, Any]] = []
@@ -865,6 +895,7 @@ async def run_agent(
                 precomputed_outputs: dict[
                     str, tuple[str, dt.datetime, int, ToolError | None]
                 ] = {}
+                call_justifications: dict[str, str] = {}
                 if harness.caps.parallel_tool_calls and server is not None:
                     read_batch: list[ToolCall] = []
                     for _pre_tc in result.tool_calls:
@@ -888,13 +919,30 @@ async def run_agent(
                                 if g.type == "value_threshold" and g.then == "require_approval"
                             ),
                         )
+                        stripped, justification = strip_justification(_pre_tc.arguments)
+                        _pre_tc.arguments = stripped
+                        call_justifications[_pre_tc.id] = justification
                         if pre_decision.effect is Effect.REQUIRE_APPROVAL and pre_decided:
                             verdict = pre_decided.get(_call_sig(_pre_tc))
                             if verdict == "approve":
                                 pre_decision = Decision(Effect.ALLOW, "operator approved")
                         if pre_decision.effect is not Effect.ALLOW:
                             break
-                        if required_right(_pre_tc.name, tool_scopes) != "read":
+                        if _gate(_pre_tc).effect != "allow":
+                            break
+                        if classify_tier(
+                            _pre_tc.name,
+                            scopes=tool_scopes,
+                            config=connection_config,
+                            annotations=next(
+                                (
+                                    tool.annotations
+                                    for tool in _offered()
+                                    if tool.name == _pre_tc.name
+                                ),
+                                None,
+                            ),
+                        ) != "read":
                             break
                         if (
                             outward_target(
@@ -963,6 +1011,11 @@ async def run_agent(
                             if g.type == "value_threshold" and g.then == "require_approval"
                         ),
                     )
+                    if tc.id in call_justifications:
+                        justification = call_justifications[tc.id]
+                    else:
+                        stripped, justification = strip_justification(tc.arguments)
+                        tc.arguments = stripped
                     # Resume of a previously-suspended run: an operator already
                     # decided this exact call. Honour that instead of suspending
                     # again -- approve executes it, reject turns it into a DENY
@@ -1037,6 +1090,14 @@ async def run_agent(
                                 tool_name=tc.name,
                             )
                             continue
+                        gate_verdict = None
+                        if decision.effect is Effect.ALLOW:
+                            gate_verdict = _gate(tc)
+                            if gate_verdict.effect == "ask":
+                                decision = Decision(Effect.REQUIRE_APPROVAL, gate_verdict.preview)
+                            elif gate_verdict.effect == "deny":
+                                decision = Decision(Effect.DENY, gate_verdict.reason)
+                            tool_span.set_attribute("decision", decision.effect.value)
                         if decision.effect is Effect.REQUIRE_APPROVAL:
                             task.state = "waiting_for_approval"
                             agent.status = "waiting_for_approval"
@@ -1062,6 +1123,12 @@ async def run_agent(
                                         "memory_record_id": str(record.id),
                                         "tier": str(tc.arguments.get("tier", "")),
                                         "content": str(tc.arguments.get("content", "")),
+                                        "justification": justification,
+                                        "preview": (
+                                            gate_verdict.preview
+                                            if gate_verdict is not None
+                                            else ""
+                                        ),
                                     },
                                     reason_code=decision.reason_code,
                                     reason_context=decision.context,
@@ -1075,7 +1142,16 @@ async def run_agent(
                                     action_type="tool_send",
                                     title=f"{agent.name} wants to call {tc.name}",
                                     detail=decision.reason,
-                                    payload={"tool": tc.name, "arguments": tc.arguments},
+                                    payload={
+                                        "tool": tc.name,
+                                        "arguments": tc.arguments,
+                                        "justification": justification,
+                                        "preview": (
+                                            gate_verdict.preview
+                                            if gate_verdict is not None
+                                            else ""
+                                        ),
+                                    },
                                     reason_code=decision.reason_code,
                                     reason_context=decision.context,
                                 )
