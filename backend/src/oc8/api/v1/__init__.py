@@ -47,6 +47,7 @@ from oc8.api.v1 import (
     secrets,
     settings,
     skills_write,
+    supervision,
     tasks,
     totp,
     triggers,
@@ -93,6 +94,7 @@ api_router.include_router(runtimes.router, tags=["runtimes"])
 api_router.include_router(settings.router, tags=["settings"])
 api_router.include_router(events.router, tags=["events"])
 api_router.include_router(handoffs.router, tags=["handoffs"])
+api_router.include_router(supervision.router, tags=["supervision"])
 api_router.include_router(contracts.router, tags=["contracts"])
 api_router.include_router(copilot.router, tags=["copilot"])
 api_router.include_router(flows.router, tags=["flows"])

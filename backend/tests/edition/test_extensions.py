@@ -94,13 +94,13 @@ async def test_default_app_does_not_mount_edition_routes() -> None:
     assert response.status_code == 404
 
 
-async def test_community_app_does_not_mount_enterprise_supervision_routes() -> None:
+async def test_unauthenticated_supervision_policies_are_rejected() -> None:
     app = create_app()
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/api/v1/supervision/policies")
 
-    assert response.status_code == 404
+    assert response.status_code == 401
 
 
 async def test_extension_route_is_mounted_under_operator_api() -> None:
