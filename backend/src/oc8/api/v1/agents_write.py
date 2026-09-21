@@ -95,7 +95,7 @@ async def _load_agent(db: DbSession, agent_id: uuid.UUID) -> m.Agent:
     return agent
 
 
-async def _enforce_narrowing_logins(
+async def enforce_narrowing_logins(
     db: DbSession,
     *,
     tenant_id: uuid.UUID,
@@ -236,7 +236,7 @@ async def create_agent(
         presentation=body.presentation,
     )
     if body.narrowing:
-        await _enforce_narrowing_logins(
+        await enforce_narrowing_logins(
             db,
             tenant_id=principal.tenant_id,
             agent=agent,
@@ -407,7 +407,7 @@ async def set_narrowing(
             {"error": "value_spec_not_supported", "violations": value_spec_violations},
         )
 
-    await _enforce_narrowing_logins(
+    await enforce_narrowing_logins(
         db,
         tenant_id=principal.tenant_id,
         agent=agent,
@@ -454,7 +454,7 @@ async def reset_agent_narrowing(
     Removing the key from `narrowing_overridden_keys` is required alongside
     removing it from `narrowing["tools"]`, not implied by the latter: a key
     can be recorded as overridden even when the agent's narrowed value
-    happens to equal the frame's (`_enforce_narrowing_logins`'s own
+    happens to equal the frame's (`enforce_narrowing_logins`'s own
     docstring), so leaving it in `narrowing_overridden_keys` after this
     reset would make `set_department_tools`'s cascade skip this agent on the
     very next department-level change to this key.
