@@ -862,7 +862,9 @@ async def run_agent(
                 # per-call loop below unchanged -- gates run per call before
                 # dispatch either way, this only reorders WHEN the read
                 # calls' own dispatch happens, never what decides them.
-                precomputed_outputs: dict[str, tuple[str, dt.datetime, int]] = {}
+                precomputed_outputs: dict[
+                    str, tuple[str, dt.datetime, int, ToolError | None]
+                ] = {}
                 if harness.caps.parallel_tool_calls and server is not None:
                     read_batch: list[ToolCall] = []
                     for _pre_tc in result.tool_calls:
@@ -908,22 +910,40 @@ async def run_agent(
                         async def _dispatch_precomputed(
                             call: ToolCall,
                             _sem: asyncio.Semaphore = _read_batch_semaphore,
-                        ) -> tuple[str, str, dt.datetime, int]:
+                        ) -> tuple[str, str, dt.datetime, int, ToolError | None]:
                             async with _sem:
                                 started_at = dt.datetime.now(dt.UTC)
+                                tool_error: ToolError | None = None
                                 try:
                                     result_text = await server.call(call.name, call.arguments)
                                 except Exception as exc:  # surface tool errors to the model
+                                    tool_error = classify_exception(
+                                        exc,
+                                        duration_s=(
+                                            dt.datetime.now(dt.UTC) - started_at
+                                        ).total_seconds(),
+                                    )
                                     result_text = f"ERROR: {exc}"
                                 duration_ms = int(
                                     (dt.datetime.now(dt.UTC) - started_at).total_seconds() * 1000
                                 )
-                                return call.id, result_text, started_at, duration_ms
+                                return call.id, result_text, started_at, duration_ms, tool_error
 
-                        for call_id, result_text, started_at, duration_ms in await asyncio.gather(
+                        for (
+                            call_id,
+                            result_text,
+                            started_at,
+                            duration_ms,
+                            tool_error,
+                        ) in await asyncio.gather(
                             *(_dispatch_precomputed(call) for call in read_batch)
                         ):
-                            precomputed_outputs[call_id] = (result_text, started_at, duration_ms)
+                            precomputed_outputs[call_id] = (
+                                result_text,
+                                started_at,
+                                duration_ms,
+                                tool_error,
+                            )
                 for tc in result.tool_calls:
                     decision = _authorize(
                         agent,
@@ -1112,7 +1132,7 @@ async def run_agent(
 
                         _precomputed_duration_ms: int | None = None
                         if tc.id in precomputed_outputs:
-                            _, _tool_call_started_at, _ = precomputed_outputs[tc.id]
+                            _, _tool_call_started_at, _, _ = precomputed_outputs[tc.id]
                         else:
                             _tool_call_started_at = dt.datetime.now(dt.UTC)
                         tool_error: ToolError | None = None
@@ -1247,9 +1267,12 @@ async def run_agent(
                                     cache_hit=cached_result is not None,
                                 )
                             if tc.id in precomputed_outputs:
-                                output, _, _precomputed_duration_ms = precomputed_outputs.pop(
-                                    tc.id
-                                )
+                                (
+                                    output,
+                                    _,
+                                    _precomputed_duration_ms,
+                                    tool_error,
+                                ) = precomputed_outputs.pop(tc.id)
                             else:
                                 try:
                                     output = await server.call(tc.name, tc.arguments)

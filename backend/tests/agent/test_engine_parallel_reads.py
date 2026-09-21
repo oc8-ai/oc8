@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -55,8 +56,9 @@ class _RecordingServer:
     """Fake MCP server: records call start/end order and enforces that no
     two calls' [start, end) windows overlap unless dispatched concurrently."""
 
-    def __init__(self, delay_s: float = 0.05) -> None:
+    def __init__(self, delay_s: float = 0.05, *, failures: set[str] | None = None) -> None:
         self.delay_s = delay_s
+        self.failures = failures or set()
         self.windows: list[tuple[str, float, float]] = []
 
     async def call(self, name: str, arguments: dict[str, Any]) -> str:
@@ -64,6 +66,8 @@ class _RecordingServer:
         await asyncio.sleep(self.delay_s)
         end = asyncio.get_event_loop().time()
         self.windows.append((name, start, end))
+        if name in self.failures:
+            raise RuntimeError(f"{name} failed")
         return f"{name} result"
 
     def overlapping_pairs(self) -> int:
@@ -198,6 +202,67 @@ async def test_leading_read_batch_dispatches_concurrently(
     assert result.status == "done", result
     assert recorder.overlapping_pairs() > 0
     assert [t["tool"] for t in result.tool_calls] == ["read_a", "read_b", "read_c"]
+
+
+async def test_precomputed_read_failure_is_shaped_and_invalidates_cache(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure from the concurrent pre-pass keeps its ToolError through the
+    sequential bookkeeping loop, where C2 shaping and failure hooks run."""
+    tenant = uuid.uuid4()
+    recorder = _RecordingServer(failures={"read_a"})
+    events: list[tuple[str, str | None]] = []
+    invalidated: list[str | None] = []
+
+    async def _record_event(
+        _tenant_id: uuid.UUID,
+        event: str,
+        _payload: dict[str, Any],
+        *,
+        tool_name: str | None = None,
+    ) -> SimpleNamespace:
+        events.append((event, tool_name))
+        return SimpleNamespace(blocked=False, reason=None)
+
+    async def _record_invalidation(key: str | None) -> None:
+        invalidated.append(key)
+
+    monkeypatch.setattr(
+        "oc8.agent.engine.McpSession",
+        _session_factory(recorder, ["read_a", "read_b"]),
+    )
+    monkeypatch.setattr("oc8.agent.engine.dispatch_claude_event", _record_event)
+    monkeypatch.setattr("oc8.agent.engine.cache_flow.invalidate", _record_invalidation)
+    monkeypatch.setattr(
+        "oc8.agent.engine.stream_completion_with_fallback",
+        _ScriptedStream(
+            [
+                _turn(
+                    "",
+                    ToolCall(id="c1", name="read_a", arguments={}),
+                    ToolCall(id="c2", name="read_b", arguments={}),
+                ),
+                _turn("All done."),
+            ]
+        ),
+    )
+    async with app_session(tenant) as db:
+        agent, conn = await _fixture(
+            db,
+            tenant,
+            tool_scopes={"read": ["read_a", "read_b"], "modify": []},
+        )
+        result = await run_agent(
+            db, agent=agent, task_text="go", tenant_id=tenant, mcp_conn=conn
+        )
+
+    assert result.status == "done", result
+    assert recorder.overlapping_pairs() == 1
+    failed = next(call for call in result.tool_calls if call["tool"] == "read_a")
+    assert "ERROR from " in failed["result"]
+    assert ("PostToolUseFailure", "read_a") in events
+    assert invalidated
+    assert any("ERROR from " in str(call.get("result", "")) for call in result.tool_calls)
 
 
 async def test_write_call_breaks_the_batch(

@@ -58,7 +58,9 @@ async def test_a_tool_level_rejection_raises_instead_of_returning_as_success(
 ) -> None:
     command, args = _server(tmp_path, _REJECTS_THE_CALL)
     async with McpSession(command, args) as session:
-        with pytest.raises(RuntimeError, match="Invalid field 'sla_date'"):
+        with pytest.raises(Exception, match="Invalid field 'sla_date'") as caught:
             await session.call("search_records", {"model": "helpdesk.ticket"})
-        with pytest.raises(McpToolError, match="Invalid field 'sla_date'"):
-            await session.call("search_records", {"model": "helpdesk.ticket"})
+
+    exc = caught.value
+    assert isinstance(exc, RuntimeError)
+    assert isinstance(exc, McpToolError)
