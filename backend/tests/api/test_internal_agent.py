@@ -805,7 +805,13 @@ async def test_a_repeated_write_does_not_reach_the_tool_server_twice(
 
 
 async def _mcp_backed_run(
-    db: Any, tenant: uuid.UUID, *, modify: bool = True, parallel_tool_calls: bool = False
+    db: Any,
+    tenant: uuid.UUID,
+    *,
+    modify: bool = True,
+    parallel_tool_calls: bool = False,
+    destructive_tools: list[str] | None = None,
+    approval_templates: dict[str, str] | None = None,
 ) -> tuple[Any, Any]:
     """An agent + RUNNING run with an `odoo` MCP connection bound, the fixture
     the two timing tests below (and the parallel-reads tier tests further
@@ -847,6 +853,11 @@ async def _mcp_backed_run(
     )
     db.add(agent)
     await db.flush()
+    conn_config: dict[str, Any] = {"command": "x", "args": []}
+    if destructive_tools:
+        conn_config["destructive_tools"] = destructive_tools
+    if approval_templates:
+        conn_config["approval_templates"] = approval_templates
     conn = m.McpConnection(
         tenant_id=tenant,
         department_id=dept.id,
@@ -854,7 +865,7 @@ async def _mcp_backed_run(
         transport="stdio",
         server_url="stdio://odoo",
         connected=True,
-        config={"command": "x", "args": []},
+        config=conn_config,
         scopes={"read": ["search_records"], "write": ["create_record"]},
     )
     task = m.Task(
@@ -876,6 +887,73 @@ async def _mcp_backed_run(
     db.add(run)
     await db.flush()
     return agent.id, run.id
+
+
+@pytest.mark.parametrize(
+    ("verdict", "expected_status", "expected_calls"),
+    [
+        ("approve", "ok", 1),
+        ("reject", "denied", 0),
+    ],
+)
+@pytest.mark.asyncio
+async def test_resolved_b5_ask_does_not_park_again_on_internal_tool(
+    app_session: object,
+    monkeypatch: pytest.MonkeyPatch,
+    verdict: str,
+    expected_status: str,
+    expected_calls: int,
+) -> None:
+    from oc8 import models as m
+    from oc8.agent.harness.calls import call_sig
+
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class _RecordingSession(_EmptySchemaSession):
+        async def call(self, name: str, arguments: dict[str, Any]) -> str:
+            calls.append((name, arguments))
+            return "deleted"
+
+    monkeypatch.setattr("oc8.api.v1.internal_agent.McpSession", _RecordingSession)
+
+    tenant = uuid.uuid4()
+    resolved_call = ToolCall(id="resolved", name="create_record", arguments={"id": 7})
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id = await _mcp_backed_run(
+            db,
+            tenant,
+            destructive_tools=["create_record"],
+            approval_templates={"create_record": "Allow deleting record {id}?"},
+        )
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {
+            **run.context,
+            "resolved_tool_approvals": [
+                {
+                    "sig": call_sig(resolved_call),
+                    "tool": "create_record",
+                    "arguments": {"id": 7},
+                    "decision": verdict,
+                }
+            ],
+        }
+
+    code, body = await _post_tool(
+        tenant,
+        agent_id,
+        run_id,
+        "create_record",
+        {"id": 7, "justification": "Duplicate record"},
+    )
+
+    assert code == 200, body
+    assert body["status"] == expected_status
+    assert body["status"] != "waiting_for_approval"
+    assert len(calls) == expected_calls
+    if verdict == "reject":
+        assert "ERROR" in body["output"]
+        assert "operator rejected this action" in body["output"]
 
 
 @pytest.mark.asyncio
