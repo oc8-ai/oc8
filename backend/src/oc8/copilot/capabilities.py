@@ -27,8 +27,13 @@ from oc8.capas.discovery import (
     resolve_tool_pack_connection,
 )
 from oc8.capas.lifecycle import disable_plugin, enable_plugin
-from oc8.capas.manifest import GuardrailAttribute
-from oc8.capas.service import PluginError, install_with_dependencies
+from oc8.capas.manifest import GuardrailAttribute, parse_manifest
+from oc8.capas.service import (
+    PluginError,
+    SetupValidationError,
+    install_with_dependencies,
+    validate_setup_values,
+)
 from oc8.copilot.guardrail_interpret import (
     GuardrailNotUnderstood,
     attributes_for_function,
@@ -103,6 +108,20 @@ class CapaDisable(_Operation):
     type: Literal["capa.disable"]
     capaId: uuid.UUID
     reason: str | None = Field(default=None, max_length=1_000)
+
+
+class CapaConfigure(_Operation):
+    """Scoped to capas with no MCP connection (`manifest.setup.mcp is None`)
+    and no password/credential setup field -- see Task 9's scope decision.
+    Any submitted key naming a password/credential field is rejected
+    OUTRIGHT (the whole operation, not just that key) in apply_operation,
+    before `values` is used for anything: this is the hard requirement that
+    no secret material may ever pass through the external Copilot client.
+    """
+
+    type: Literal["capa.configure"]
+    capaId: uuid.UUID
+    values: dict[str, str] = Field(default_factory=dict, max_length=64)
 
 
 class DepartmentCreate(_Operation):
@@ -237,6 +256,7 @@ Operation = (
     | PluginEnable
     | CapaInstall
     | CapaDisable
+    | CapaConfigure
     | IntegrationPrepare
     | DepartmentCreate
     | DepartmentUpdate
@@ -400,6 +420,12 @@ async def target_revision(
         if changed is None:
             raise InvalidOperation()
         return str(changed)
+    if isinstance(operation, CapaConfigure):
+        statement = select(m.Capa.config_revision).where(m.Capa.id == operation.capaId)
+        changed = await db.scalar(statement.with_for_update() if lock_for_apply else statement)
+        if changed is None:
+            raise InvalidOperation()
+        return str(changed)
     statement = select(m.Integration.config_revision).where(
         m.Integration.id == operation.integrationId
     )
@@ -467,6 +493,50 @@ async def apply_operation(db: AsyncSession, *, tenant_id: uuid.UUID, data: dict[
             )
         except PluginError as exc:
             raise InvalidOperation() from exc
+        return
+    if isinstance(operation, CapaConfigure):
+        plugin = await db.get(m.Capa, operation.capaId)
+        if plugin is None or plugin.current_version_id is None:
+            raise InvalidOperation()
+        installation = (
+            await db.execute(
+                select(m.CapaInstallation).where(m.CapaInstallation.capa_id == plugin.id)
+            )
+        ).scalar_one_or_none()
+        if installation is None or installation.status != "enabled":
+            raise InvalidOperation()
+        version = await db.get(m.CapaVersion, plugin.current_version_id)
+        assert version is not None
+        manifest = parse_manifest(version.manifest)
+        setup = manifest.setup
+        if setup is None or setup.mcp is not None:
+            # No setup contract, or an MCP-connected capa -- out of scope,
+            # see Task 9's scope decision. Never falls through to the
+            # secret-handling REST route logic this module deliberately
+            # never imports.
+            raise InvalidOperation()
+        fields = {field.key: field for field in setup.fields}
+        if any(field.kind in ("password", "credential") for field in setup.fields):
+            # Hard requirement: even a capa that also has a plain text field
+            # is refused wholesale if ANY of its declared fields is secret-
+            # shaped -- this operation can never learn to tell "this specific
+            # submission happens not to touch the secret field" from "this
+            # capa has no secret fields at all" without depending on exactly
+            # which keys the caller chose to send, which is not a safe line
+            # to draw for a hard security requirement.
+            raise InvalidOperation()
+        try:
+            validate_setup_values(setup, fields, operation.values)
+        except SetupValidationError as exc:
+            raise InvalidOperation() from exc
+        plain = {
+            key: operation.values[key]
+            for key, field in fields.items()
+            if field.kind not in ("password", "credential") and operation.values.get(key)
+        }
+        if plain:
+            installation.config = {**(installation.config or {}), **plain}
+        await db.flush()
         return
     if isinstance(operation, DepartmentCreate):
         # Same defaults POST /departments uses (departments.py's

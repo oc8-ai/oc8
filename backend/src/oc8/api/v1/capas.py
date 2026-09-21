@@ -37,10 +37,12 @@ from oc8.capas.manifest import (
 from oc8.capas.service import (
     MissingDependencyError,
     PluginError,
+    SetupValidationError,
     install_plugin,
     install_with_dependencies,
     instantiate_agent,
     instantiate_department,
+    validate_setup_values,
 )
 from oc8.credentials.registry import get_credential_type
 from oc8.credentials.service import (
@@ -454,34 +456,10 @@ async def configure_plugin(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "plugin has no setup contract")
 
     fields = {field.key: field for field in setup.fields}
-    unknown = sorted(set(body.values) - set(fields))
-    if unknown:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT,
-            f"unknown setup fields: {', '.join(unknown)}",
-        )
-    for field in setup.fields:
-        if field.required and not body.values.get(field.key, field.default).strip():
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_CONTENT,
-                f"setup field {field.key!r} is required",
-            )
-    for alternative in setup.validation.any_of:
-        unknown_fields = sorted(set(alternative) - set(fields))
-        if unknown_fields:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_CONTENT,
-                f"setup validation references unknown fields: {', '.join(unknown_fields)}",
-            )
-    if setup.validation.any_of and not any(
-        all(body.values.get(key, fields[key].default).strip() for key in alternative)
-        for alternative in setup.validation.any_of
-    ):
-        alternatives = " or ".join(" + ".join(group) for group in setup.validation.any_of)
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT,
-            f"provide one complete credential set: {alternatives}",
-        )
+    try:
+        validate_setup_values(setup, fields, body.values)
+    except SetupValidationError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
 
     values = {key: body.values.get(key, field.default).strip() for key, field in fields.items()}
     # A later failure anywhere in this request -- the 409 below, an unresolved

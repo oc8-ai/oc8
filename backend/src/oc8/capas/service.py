@@ -12,7 +12,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8.capas.discovery import DiscoveredPlugin, find_plugin
-from oc8.capas.manifest import Manifest, ManifestError, parse_manifest
+from oc8.capas.manifest import (
+    Manifest,
+    ManifestError,
+    PluginSetupSpec,
+    SetupFieldSpec,
+    parse_manifest,
+)
 from oc8.capas.registry import enabled_capability_registry
 from oc8.constants import CORE_VERSION
 from oc8.models import (
@@ -34,10 +40,12 @@ __all__ = [
     "ManifestError",
     "MissingDependencyError",
     "PluginError",
+    "SetupValidationError",
     "install_plugin",
     "install_with_dependencies",
     "instantiate_agent",
     "instantiate_department",
+    "validate_setup_values",
 ]
 
 
@@ -59,6 +67,41 @@ class CoreCompatError(PluginError):
 
 class MissingDependencyError(PluginError):
     """A `plugin_depends` entry named a plugin that isn't on disk."""
+
+
+class SetupValidationError(PluginError):
+    """One of `configure_plugin`'s three request-shape checks failed."""
+
+
+def validate_setup_values(
+    setup: PluginSetupSpec, fields: dict[str, SetupFieldSpec], values: dict[str, str]
+) -> None:
+    """The three checks `configure_plugin` (api/v1/capas.py) runs against a
+    submitted setup form before touching anything stateful: every submitted
+    key is declared, every required field has a value, and any declared
+    `any_of` credential-set alternative is satisfied by at least one group.
+    Pulled out so the Copilot gateway's `capa.configure` operation (secret-
+    blind, no MCP connection support) can run the identical validation the
+    REST route does, instead of drifting from it.
+    """
+    unknown = sorted(set(values) - set(fields))
+    if unknown:
+        raise SetupValidationError(f"unknown setup fields: {', '.join(unknown)}")
+    for field in setup.fields:
+        if field.required and not values.get(field.key, field.default).strip():
+            raise SetupValidationError(f"setup field {field.key!r} is required")
+    for alternative in setup.validation.any_of:
+        unknown_fields = sorted(set(alternative) - set(fields))
+        if unknown_fields:
+            raise SetupValidationError(
+                f"setup validation references unknown fields: {', '.join(unknown_fields)}"
+            )
+    if setup.validation.any_of and not any(
+        all(values.get(key, fields[key].default).strip() for key in alternative)
+        for alternative in setup.validation.any_of
+    ):
+        alternatives = " or ".join(" + ".join(group) for group in setup.validation.any_of)
+        raise SetupValidationError(f"provide one complete credential set: {alternatives}")
 
 
 def _artifact_hash(manifest: Manifest) -> bytes:
