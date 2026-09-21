@@ -18,7 +18,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from oc8.isolated_shell import _preview, _run_shell_locally, check_response, main
+from oc8.isolated_shell import _mirror_spill, _preview, _run_shell_locally, check_response, main
 
 STEP = "http://oc8:8000/api/v1/internal/agent/1234/step"
 
@@ -187,6 +187,61 @@ def test_run_shell_locally_runs_a_real_command_and_captures_output(tmp_path: Pat
     assert result["stdout"].strip() == "hello"
     assert result["exit_code"] == 0
     assert result["timed_out"] is False
+
+
+def test_mirror_spill_writes_under_tool_results(tmp_path: Path) -> None:
+    _mirror_spill(
+        {"filename": "step-3-search_records.txt", "content": "FULL BODY"},
+        root=str(tmp_path),
+    )
+    dest = tmp_path / "tool-results" / "step-3-search_records.txt"
+    assert dest.read_text() == "FULL BODY"
+
+
+def test_mirror_spill_skips_when_payload_is_missing(tmp_path: Path) -> None:
+    _mirror_spill(None, root=str(tmp_path))
+    assert not (tmp_path / "tool-results").exists()
+
+
+def test_main_mirrors_a_spill_from_tool(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("OC8_WORKSPACE", str(tmp_path))
+    calls = {"step": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/step"):
+            calls["step"] += 1
+            if calls["step"] == 1:
+                return httpx.Response(
+                    200,
+                    json={
+                        "done": False,
+                        "text": "",
+                        "tool_calls": [
+                            {"id": "c1", "name": "search_records", "arguments": {}}
+                        ],
+                    },
+                )
+            return httpx.Response(200, json={"done": True, "text": "ok", "tool_calls": []})
+        if request.url.path.endswith("/tool"):
+            return httpx.Response(
+                200,
+                json={
+                    "status": "ok",
+                    "output": "preview",
+                    "spill": {
+                        "filename": "step-1-search_records.txt",
+                        "content": "FULL",
+                    },
+                },
+            )
+        if request.url.path.endswith("/finish"):
+            return httpx.Response(200, json={})
+        raise AssertionError(request.url.path)
+
+    assert _run_main(monkeypatch, handler) == 0
+    assert (tmp_path / "tool-results" / "step-1-search_records.txt").read_text() == "FULL"
 
 
 def test_run_shell_locally_captures_a_nonzero_exit_code(tmp_path: Path) -> None:

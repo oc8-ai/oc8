@@ -107,10 +107,23 @@ def _run_shell_locally(command: str, *, cwd: str = "/workspace") -> dict[str, An
         }
 
 
+def _mirror_spill(spill: dict[str, Any] | None, *, root: str) -> None:
+    if not spill:
+        return
+    filename = str(spill.get("filename") or "").strip()
+    if not filename or "/" in filename or filename in {".", ".."}:
+        return
+    dest_dir = os.path.join(root, "tool-results")
+    os.makedirs(dest_dir, exist_ok=True)
+    with open(os.path.join(dest_dir, filename), "w", encoding="utf-8") as fh:
+        fh.write(str(spill.get("content") or ""))
+
+
 def main() -> int:
     base = os.environ["OC8_INTERNAL_URL"].rstrip("/")
     token = os.environ["OC8_AGENT_TOKEN"]
     run_id = os.environ["OC8_RUN_ID"]
+    workspace = os.environ.get("OC8_WORKSPACE", "/workspace")
     headers = {"Authorization": f"Bearer {token}"}
     api = f"{base}/api/v1/internal/agent/{run_id}"
 
@@ -180,7 +193,11 @@ def main() -> int:
                 # scope, so each dispatch logs the step it actually belongs
                 # to even though `_dispatch_one` is invoked from inside a
                 # thread pool rather than called inline right after def.
-                def _dispatch_one(tc: dict[str, Any], step_no: int = step_no) -> dict[str, Any]:
+                def _dispatch_one(
+                    tc: dict[str, Any],
+                    step_no: int = step_no,
+                    workspace: str = workspace,
+                ) -> dict[str, Any]:
                     args_preview = _preview(json.dumps(tc.get("arguments", {}), default=str))
                     log(f"step {step_no}: calling tool {tc['name']} args={args_preview}")
                     body: dict[str, Any] = {
@@ -198,6 +215,7 @@ def main() -> int:
                         f"step {step_no}: tool {tc['name']} -> status={result.get('status')} "
                         f"output={_preview(str(result.get('output', '')))!r}"
                     )
+                    _mirror_spill(result.get("spill"), root=workspace)
                     return result
 
                 i = 0
