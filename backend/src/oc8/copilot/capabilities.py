@@ -27,7 +27,10 @@ from oc8.copilot.guardrail_interpret import (
     attributes_for_function,
     parse_conditions,
 )
-from oc8.modelrouter.subscription_guard import SubscriptionModelNotManualOnly
+from oc8.modelrouter.subscription_guard import (
+    SubscriptionModelNotManualOnly,
+    assert_manual_only_compatible,
+)
 from oc8.triggers.service import create_trigger
 
 
@@ -35,6 +38,9 @@ class _Operation(BaseModel):
     # JSON UUID references arrive as strings. Strict primitive validation still
     # comes from each field's declared type and the closed extra-key policy.
     model_config = ConfigDict(extra="forbid")
+
+
+_LIFECYCLE = {"start": "running", "pause": "paused", "stop": "stopped"}
 
 
 class MissionSet(_Operation):
@@ -100,6 +106,28 @@ class AgentCreate(_Operation):
     mission: str = Field(default="", max_length=10_000)
 
 
+class AgentRename(_Operation):
+    type: Literal["agent.rename"]
+    agentId: uuid.UUID
+    name: str = Field(min_length=1, max_length=200)
+
+
+class AgentLifecycleSet(_Operation):
+    type: Literal["agent.lifecycle.set"]
+    agentId: uuid.UUID
+    action: Literal["start", "pause", "stop"]
+
+
+class AgentDelete(_Operation):
+    type: Literal["agent.delete"]
+    agentId: uuid.UUID
+
+
+class AgentRestore(_Operation):
+    type: Literal["agent.restore"]
+    agentId: uuid.UUID
+
+
 class GuardrailConditionInput(BaseModel):
     """One `payload.conditions[]` entry for `GuardrailSet` -- field-for-field
     the same shape as `authz.pdp.Condition`/`ConditionDTO`, kept a distinct
@@ -145,6 +173,10 @@ Operation = (
     | DepartmentDelete
     | DepartmentRestore
     | AgentCreate
+    | AgentRename
+    | AgentLifecycleSet
+    | AgentDelete
+    | AgentRestore
     | GuardrailSet
 )
 _OPERATIONS = TypeAdapter(list[Operation])
@@ -243,9 +275,28 @@ async def target_revision(
         if changed is None:
             raise InvalidOperation()
         return str(changed)
-    if isinstance(operation, (MissionSet, TriggerCreate, GuardrailSet)):
+    if isinstance(
+        operation,
+        (MissionSet, TriggerCreate, GuardrailSet, AgentRename, AgentLifecycleSet),
+    ):
         statement = select(m.Agent.config_revision).where(
             m.Agent.id == operation.agentId, m.Agent.deleted_at.is_(None)
+        )
+        changed = await db.scalar(statement.with_for_update() if lock_for_apply else statement)
+        if changed is None:
+            raise InvalidOperation()
+        return str(changed)
+    if isinstance(operation, AgentDelete):
+        statement = select(m.Agent.config_revision).where(
+            m.Agent.id == operation.agentId, m.Agent.deleted_at.is_(None)
+        )
+        changed = await db.scalar(statement.with_for_update() if lock_for_apply else statement)
+        if changed is None:
+            raise InvalidOperation()
+        return str(changed)
+    if isinstance(operation, AgentRestore):
+        statement = select(m.Agent.config_revision).where(
+            m.Agent.id == operation.agentId, m.Agent.deleted_at.is_not(None)
         )
         changed = await db.scalar(statement.with_for_update() if lock_for_apply else statement)
         if changed is None:
@@ -405,6 +456,52 @@ async def apply_operation(db: AsyncSession, *, tenant_id: uuid.UUID, data: dict[
         db.add(agent)
         await db.flush()
         db.add(m.MemoryStore(tenant_id=tenant_id, tier="agent", owner_id=agent.id))
+        await db.flush()
+        return
+    if isinstance(operation, AgentRename):
+        agent = await db.get(m.Agent, operation.agentId)
+        if agent is None or agent.deleted_at is not None:
+            raise InvalidOperation()
+        agent.name = operation.name
+        await db.flush()
+        return
+    if isinstance(operation, AgentLifecycleSet):
+        agent = await db.get(m.Agent, operation.agentId)
+        if agent is None or agent.deleted_at is not None:
+            raise InvalidOperation()
+        if agent.status == "pending_approval":
+            raise InvalidOperation()
+        agent.status = _LIFECYCLE[operation.action]
+        await db.flush()
+        return
+    if isinstance(operation, AgentDelete):
+        agent = await db.get(m.Agent, operation.agentId)
+        if agent is None or agent.deleted_at is not None:
+            raise InvalidOperation()
+        dependents = (
+            await db.execute(
+                select(func.count())
+                .select_from(m.AgentRun)
+                .where(m.AgentRun.agent_id == operation.agentId)
+            )
+        ).scalar_one()
+        if dependents == 0:
+            await db.delete(agent)
+        else:
+            agent.deleted_at = dt.datetime.now(tz=dt.UTC)
+        await db.flush()
+        return
+    if isinstance(operation, AgentRestore):
+        agent = await db.get(m.Agent, operation.agentId)
+        if agent is None or agent.deleted_at is None:
+            raise InvalidOperation()
+        try:
+            await assert_manual_only_compatible(
+                db, agent_id=agent.id, model_config_id=agent.model_config_id
+            )
+        except SubscriptionModelNotManualOnly as exc:
+            raise InvalidOperation() from exc
+        agent.deleted_at = None
         await db.flush()
         return
     if isinstance(operation, GuardrailSet):
