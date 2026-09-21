@@ -22,6 +22,23 @@ _LEGACY_KEYS = ("tool_output_chars", "tool_output_budget_warned", "repeat_tracke
 
 
 @dataclass
+class EntityRef:
+    connection: str
+    kind: str
+    id: str
+    label: str = ""
+    first_read_step: int | None = None
+    last_read_step: int | None = None
+    last_write_step: int | None = None
+    write_tools: list[str] = field(default_factory=list)
+
+
+@dataclass
+class Ledger:
+    entities: dict[str, EntityRef] = field(default_factory=dict)
+
+
+@dataclass
 class HarnessState:
     version: int = HARNESS_STATE_VERSION
     #: Cumulative size of tool results entered into the transcript this run
@@ -36,6 +53,7 @@ class HarnessState:
     #: The current step number, set by the caller at the top of each turn, for
     #: C3's step stamp. 0 on a fresh run, before the first turn sets it.
     step_no: int = 0
+    ledger: Ledger = field(default_factory=Ledger)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -44,6 +62,23 @@ class HarnessState:
     def from_dict(cls, raw: dict[str, Any] | None) -> HarnessState:
         if not raw:
             return cls()
+        ledger_raw = raw.get("ledger") or {}
+        entities_raw = ledger_raw.get("entities") or {}
+        ledger = Ledger(
+            entities={
+                key: EntityRef(
+                    connection=str(value["connection"]),
+                    kind=str(value["kind"]),
+                    id=str(value["id"]),
+                    label=str(value.get("label", "")),
+                    first_read_step=value.get("first_read_step"),
+                    last_read_step=value.get("last_read_step"),
+                    last_write_step=value.get("last_write_step"),
+                    write_tools=list(value.get("write_tools") or []),
+                )
+                for key, value in entities_raw.items()
+            }
+        )
         return cls(
             version=int(raw.get("version", HARNESS_STATE_VERSION)),
             tool_output_chars=int(raw.get("tool_output_chars", 0)),
@@ -51,6 +86,7 @@ class HarnessState:
             repeat=dict(raw.get("repeat") or {}),
             todo_rounds=int(raw.get("todo_rounds", 0)),
             step_no=int(raw.get("step_no", 0)),
+            ledger=ledger,
         )
 
     @classmethod

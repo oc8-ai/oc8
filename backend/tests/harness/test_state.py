@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 
 from oc8.agent.harness.calls import call_sig
-from oc8.agent.harness.state import CONTEXT_KEY, HarnessState
+from oc8.agent.harness.state import CONTEXT_KEY, EntityRef, HarnessState, Ledger
 from oc8.modelrouter import ToolCall
 
 
@@ -29,6 +29,20 @@ def test_round_trip_through_real_json() -> None:
         repeat={"sig": "search_records\n{}", "count": 2},
         todo_rounds=1,
         step_no=5,
+        ledger=Ledger(
+            entities={
+                "office/document/42": EntityRef(
+                    connection="office",
+                    kind="document",
+                    id="42",
+                    label="Quarterly plan",
+                    first_read_step=2,
+                    last_read_step=4,
+                    last_write_step=5,
+                    write_tools=["update_document"],
+                )
+            }
+        ),
     )
     raw = json.loads(json.dumps(s.to_dict()))
     assert HarnessState.from_dict(raw) == s
@@ -38,6 +52,10 @@ def test_from_dict_tolerates_missing_and_none() -> None:
     assert HarnessState.from_dict(None) == HarnessState()
     assert HarnessState.from_dict({}) == HarnessState()
     assert HarnessState.from_dict({"version": 1}) == HarnessState()
+
+
+def test_from_dict_ignores_unknown_keys() -> None:
+    assert HarnessState.from_dict({"version": 1, "future_field": "ignored"}) == HarnessState()
 
 
 def test_legacy_context_keys_are_read_once() -> None:
