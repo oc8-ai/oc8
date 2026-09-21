@@ -29,21 +29,60 @@ from oc8.agent.mcp_client import McpSession, McpToolError
 pytestmark = pytest.mark.asyncio
 
 _REJECTS_THE_CALL = """
-try:
-    from mcp.server.mcpserver import MCPServer as FastMCP
-except ImportError:
-    from mcp.server.fastmcp import FastMCP
-
-mcp = FastMCP("rejects")
+import json
+import sys
 
 
-@mcp.tool()
-def search_records(model: str) -> str:
-    "Mirrors Odoo rejecting an unknown field."
-    raise ValueError("Invalid field 'sla_date' in request")
+def send(request_id, result):
+    print(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result}), flush=True)
 
 
-mcp.run()
+for line in sys.stdin:
+    request = json.loads(line)
+    request_id = request.get("id")
+    if request_id is None:
+        continue
+
+    method = request["method"]
+    if method == "initialize":
+        send(
+            request_id,
+            {
+                "protocolVersion": request["params"]["protocolVersion"],
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "rejects", "version": "1.0"},
+            },
+        )
+    elif method == "tools/list":
+        send(
+            request_id,
+            {
+                "tools": [
+                    {
+                        "name": "search_records",
+                        "description": "Mirrors Odoo rejecting an unknown field.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"model": {"type": "string"}},
+                            "required": ["model"],
+                        },
+                    }
+                ]
+            },
+        )
+    elif method == "tools/call":
+        send(
+            request_id,
+            {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Invalid field 'sla_date' in request",
+                    }
+                ],
+                "isError": True,
+            },
+        )
 """
 
 
