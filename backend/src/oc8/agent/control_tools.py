@@ -13,6 +13,7 @@ connection's tools stay entirely the connection's business.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -57,6 +58,8 @@ from oc8.storage.attachments import (
     UnsupportedContentType,
     store_attachment_bytes,
 )
+
+logger = logging.getLogger(__name__)
 
 MEMORY_WRITE = NeutralTool(
     name="memory_write",
@@ -1575,16 +1578,31 @@ async def execute_control_tool(
         limit_or_err = _as_nonneg_int(tc.arguments.get("limit"), name="limit")
         if isinstance(limit_or_err, str):
             return ControlOutcome(output=limit_or_err)
+        offset = offset_or_err or 0
         if attachment.content_type == "text/plain":
             try:
                 text = (await s3.get_object(attachment.bucket_key)).decode(
                     "utf-8", errors="replace"
                 )
             except Exception:
-                text = attachment.extracted_text or "(could not read this file's content)"
+                logger.exception(
+                    "failed to read run file %r from object storage", attachment.bucket_key
+                )
+                text = attachment.extracted_text or ""
+                fallback_unavailable = (
+                    not text
+                    or text == "(could not read this file's content)"
+                    or offset >= len(text)
+                )
+                if fallback_unavailable:
+                    return ControlOutcome(
+                        output=(
+                            f"ERROR: could not read '{filename}' from object storage, "
+                            f"and fallback text does not cover offset {offset}"
+                        )
+                    )
         else:
             text = attachment.extracted_text or "(could not read this file's content)"
-        offset = offset_or_err or 0
         sliced = text[offset:]
         if limit_or_err is not None:
             sliced = sliced[:limit_or_err]

@@ -477,6 +477,53 @@ async def test_persisted_spill_pages_past_extracted_text_cap(
 
 
 @pytest.mark.asyncio
+async def test_storage_failure_past_fallback_is_an_error(
+    app_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fail_get_object(_key: str) -> bytes:
+        raise RuntimeError("MinIO unavailable")
+
+    monkeypatch.setattr("oc8.agent.control_tools.s3.get_object", fail_get_object)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, task, reading_run = await _dept_agent_task_run(db, tenant)
+        db.add(
+            m.FileAttachment(
+                tenant_id=tenant,
+                owner_type="agent_run",
+                owner_id=reading_run.id,
+                bucket_key="run-short-fallback",
+                filename="short-fallback.txt",
+                content_type="text/plain",
+                size_bytes=100,
+                extracted_text="short",
+                is_image=False,
+            )
+        )
+        await db.flush()
+        outcome = await execute_control_tool(
+            db,
+            tenant_id=tenant,
+            agent=agent,
+            task=task,
+            tc=ToolCall(
+                id="1",
+                name="read_run_file",
+                arguments={"filename": "short-fallback.txt", "offset": 50},
+            ),
+            decision=Decision(Effect.ALLOW),
+            assigned_skills=[],
+            active_skills=[],
+            mcp_conn=None,
+            originating_operator=None,
+            run_id=reading_run.id,
+        )
+    assert outcome is not None
+    assert outcome.output.startswith("ERROR:")
+    assert outcome.output != ""
+
+
+@pytest.mark.asyncio
 async def test_offset_and_limit_slice_the_extracted_text(app_session: Any) -> None:
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
@@ -517,7 +564,13 @@ async def test_offset_and_limit_slice_the_extracted_text(app_session: Any) -> No
 
 
 @pytest.mark.asyncio
-async def test_offset_past_the_end_returns_empty(app_session: Any) -> None:
+async def test_offset_past_the_end_returns_empty(
+    app_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def get_short_object(_key: str) -> bytes:
+        return b"abcd"
+
+    monkeypatch.setattr("oc8.agent.control_tools.s3.get_object", get_short_object)
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent, task, reading_run = await _dept_agent_task_run(db, tenant)
