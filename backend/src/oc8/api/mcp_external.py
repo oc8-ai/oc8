@@ -273,7 +273,7 @@ _TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "copilot_get_agent",
-        "description": "Get one agent by id, including its narrowing and runtime assignment.",
+        "description": "Get one agent by id.",
         "inputSchema": {
             "type": "object",
             "properties": {"agentId": {"type": "string"}},

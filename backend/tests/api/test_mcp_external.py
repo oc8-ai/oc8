@@ -961,6 +961,45 @@ async def test_a_bare_member_role_cannot_even_list_proposals(
     assert r.status_code == 403, r.text
 
 
+async def test_a_bare_member_role_cannot_list_or_get_any_of_the_new_read_tools(
+    app_session: AppSessionFactory,
+) -> None:
+    """The same `member`-role token-floor guarantee `copilot_list_proposals`
+    already has (copilot:use, not copilot:view) must hold for all 8 new
+    read-only discovery tools too -- a shared `_require(principal,
+    perm(COPILOT, VIEW))` call is easy to typo per-tool; this closes that
+    gap with one parametrized pass over every new tool name."""
+    tenant = uuid.uuid4()
+    await _sole_organization(app_session, tenant)
+    member_id = await _member_with_role(app_session, tenant, "bare-reader@example.com", "member")
+    token = await _api_key_token(app_session, tenant, member_id)
+    app = create_app()
+    tool_calls = [
+        ("copilot_list_departments", {}),
+        ("copilot_get_department", {"departmentId": str(uuid.uuid4())}),
+        ("copilot_list_agents", {}),
+        ("copilot_get_agent", {"agentId": str(uuid.uuid4())}),
+        ("copilot_list_plugins", {}),
+        ("copilot_get_plugin", {"pluginId": str(uuid.uuid4())}),
+        ("copilot_list_integrations", {}),
+        ("copilot_list_connection_tools", {"connectionName": "whatever"}),
+    ]
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            for name, arguments in tool_calls:
+                r = await c.post(
+                    "/mcp/external",
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {"name": name, "arguments": arguments},
+                    },
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                assert r.status_code == 403, f"{name}: {r.text}"
+
+
 async def test_a_member_with_no_role_id_mints_the_member_role_token_floor(
     app_session: AppSessionFactory,
 ) -> None:
