@@ -17,6 +17,7 @@ from typing import Any
 
 from oc8.agent.harness.caps import ModelCaps
 from oc8.agent.harness.prompts import format_step_stamp, resolve_timezone
+from oc8.agent.harness.stages.c_errors import ToolError, render_error
 from oc8.agent.harness.stages.c_reminders import (
     TOOL_OUTPUT_BUDGET_WARNING_CHARS,
     tool_output_budget_reminder,
@@ -68,12 +69,23 @@ class Harness:
 
     # ----------------------------------------------------------------- phase C
 
-    def shape(self, tc: ToolCall, output: str, *, max_steps: int, tz: str = "UTC") -> ShapedResult:
-        """C1 + C3 + C5: spill large results, prepend the step stamp, count it
+    def shape(
+        self,
+        tc: ToolCall,
+        output: str,
+        *,
+        max_steps: int,
+        tz: str = "UTC",
+        source: str = "oc8",
+        error: ToolError | None = None,
+    ) -> ShapedResult:
+        """C2 + C1 + C3 + C5: shape failures, spill large results, stamp, count it
         against the per-run budget, track the consecutive-identical-call
         state. Order of the reminders matches what both runtimes appended
         before the move: repeat nudge, then budget note.
         """
+        if error is not None:
+            output = render_error(tc.name, source, error)
         tz_label, resolved_tz = resolve_timezone(tz)
         now = dt.datetime.now(resolved_tz)
         stamp = format_step_stamp(

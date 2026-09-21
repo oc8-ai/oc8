@@ -36,6 +36,7 @@ from oc8.agent.harness.calls import call_sig as _call_sig
 from oc8.agent.harness.stages.b_authorize import authorize as _authorize
 from oc8.agent.harness.stages.b_idempotency import record_for, replay_for
 from oc8.agent.harness.stages.b_outward import check_outward, remember_outward
+from oc8.agent.harness.stages.c_errors import ToolError, classify_exception
 from oc8.agent.harness.stages.c_spill import persist_spill
 from oc8.agent.mcp_client import McpSession
 from oc8.agent.mcp_env import resolve_mcp_env
@@ -798,6 +799,8 @@ async def tool(
     #: anywhere; those entries omit both timing keys rather than record a
     #: near-zero duration for a call that never ran.
     dispatched = True
+    tool_error: ToolError | None = None
+    source = conn.name if conn is not None else "oc8"
     control = (
         await execute_control_tool(
             db,
@@ -819,6 +822,12 @@ async def tool(
 
     if control is not None:
         output = control.output
+        source = "oc8"
+        if control.output.startswith("ERROR:"):
+            tool_error = ToolError(
+                kind="control",
+                message=control.output.removeprefix("ERROR: ").strip(),
+            )
         suspend = control.suspend
         if control.pending_run is not None:
             # The executor publishes it after committing -- never this request: the
@@ -873,10 +882,14 @@ async def tool(
                 source=f"oc8/run/{run.id}",
             )
     elif decision.effect is Effect.DENY:
-        output = f"ERROR: {decision.reason or 'denied'}"
+        reason = decision.reason or "denied"
+        output = f"ERROR: {reason}"
+        source = "oc8"
+        tool_error = ToolError(kind="deny", message=reason)
         dispatched = False
     elif conn is None:
         output = "ERROR: no tool server available"
+        tool_error = ToolError(kind="deny", message="no tool server available")
         dispatched = False
     elif (
         outward := await check_outward(
@@ -891,6 +904,11 @@ async def tool(
         # Checked before the call, not after: the point is that the recipient is
         # not reached twice, and a check that ran afterwards could only report it.
         output = outward.refusal
+        source = "oc8"
+        tool_error = ToolError(
+            kind="deny",
+            message=outward.refusal.removeprefix("ERROR: ").strip(),
+        )
         dispatched = False
     else:
         focus = describe_focus(tc.name, tc.arguments, focus_spec)
@@ -927,6 +945,10 @@ async def tool(
                 async with McpSession(command, args, env=env) as s:
                     output = await s.call(tc.name, tc.arguments)
             except Exception as exc:  # surface to the model
+                tool_error = classify_exception(
+                    exc,
+                    duration_s=(dt.datetime.now(dt.UTC) - started_at).total_seconds(),
+                )
                 output = f"ERROR: {exc}"
             # Only a successful side effect is worth recording. Recording a failure
             # would answer a legitimate retry with the old error forever.
@@ -966,7 +988,14 @@ async def tool(
     # counter /step increments (see its own ctx["steps"] = ... line above).
     harness = Harness.from_run_context(ctx)
     harness.state.step_no = int(ctx.get("steps", 0))
-    shaped = harness.shape(tc, output, max_steps=_max_steps(agent), tz=str(ctx.get("tz", "UTC")))
+    shaped = harness.shape(
+        tc,
+        output,
+        max_steps=_max_steps(agent),
+        tz=str(ctx.get("tz", "UTC")),
+        source=source,
+        error=tool_error,
+    )
     output = shaped.output
     if shaped.spill is not None:
         await persist_spill(

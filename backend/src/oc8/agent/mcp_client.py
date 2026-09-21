@@ -119,6 +119,10 @@ class McpServerStartupError(RuntimeError):
     """A stdio MCP server failed to come up, with the reason it printed."""
 
 
+class McpToolError(RuntimeError):
+    """Protocol-level tool failure (`CallToolResult.is_error`)."""
+
+
 #: `package.module.SomeError: message` -- a raised exception with its origin,
 #: as opposed to the bare `Error: ...` a program prints on its way out.
 _QUALIFIED_EXCEPTION = re.compile(r"^[A-Za-z_][\w.]*\.[A-Z]\w*(Error|Exception|Fault):\s+\S")
@@ -328,5 +332,5 @@ class McpSession:
         # and the department cache (oc8.agent.cache_flow) had no signal to
         # avoid replaying the failing request. Live-observed 2026-08-26.
         if result.is_error:
-            raise RuntimeError(text)
+            raise McpToolError(text)
         return text

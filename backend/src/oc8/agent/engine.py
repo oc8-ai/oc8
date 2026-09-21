@@ -39,6 +39,7 @@ from oc8.agent.harness.stages.b_authorize import (
     authorize as _authorize,  # re-exported for mcp_gateway.py and older tests
 )
 from oc8.agent.harness.stages.b_outward import check_outward, remember_outward
+from oc8.agent.harness.stages.c_errors import ToolError, classify_exception
 from oc8.agent.harness.stages.c_reminders import track_repeat_tool_call
 from oc8.agent.harness.stages.c_spill import persist_spill
 from oc8.agent.mcp_client import McpSession
@@ -1114,6 +1115,8 @@ async def run_agent(
                             _, _tool_call_started_at, _ = precomputed_outputs[tc.id]
                         else:
                             _tool_call_started_at = dt.datetime.now(dt.UTC)
+                        tool_error: ToolError | None = None
+                        source = mcp_conn.name if mcp_conn is not None else "oc8"
                         # Whether this call is actually dispatched anywhere -- a
                         # control tool, or the tool server. The two branches
                         # below that refuse it before dispatch set this False so
@@ -1143,6 +1146,12 @@ async def run_agent(
                             # store, because the two runtimes keep this state in
                             # different places. See oc8.agent.control_tools.
                             output = control.output
+                            source = "oc8"
+                            if control.output.startswith("ERROR:"):
+                                tool_error = ToolError(
+                                    kind="control",
+                                    message=control.output.removeprefix("ERROR: ").strip(),
+                                )
                             if control.pending_run is not None:
                                 pending_runs.append(control.pending_run)
                             if control.activated_skill is not None:
@@ -1197,7 +1206,10 @@ async def run_agent(
                                     todos,
                                 )
                         elif decision.effect is Effect.DENY or server is None:
-                            output = f"ERROR: {decision.reason or 'no tool server available'}"
+                            reason = decision.reason or "no tool server available"
+                            output = f"ERROR: {reason}"
+                            source = "oc8"
+                            tool_error = ToolError(kind="deny", message=reason)
                             _tool_call_dispatched = False
                         elif (
                             outward := await check_outward(
@@ -1213,6 +1225,11 @@ async def run_agent(
                             # recipient is not reached twice, and a check that ran
                             # afterwards could only report it.
                             output = outward.refusal
+                            source = "oc8"
+                            tool_error = ToolError(
+                                kind="deny",
+                                message=outward.refusal.removeprefix("ERROR: ").strip(),
+                            )
                             _tool_call_dispatched = False
                         else:
                             # Live-log which record the agent is working on, from
@@ -1237,6 +1254,12 @@ async def run_agent(
                                 try:
                                     output = await server.call(tc.name, tc.arguments)
                                 except Exception as exc:  # surface tool errors to the model
+                                    tool_error = classify_exception(
+                                        exc,
+                                        duration_s=(
+                                            dt.datetime.now(dt.UTC) - _tool_call_started_at
+                                        ).total_seconds(),
+                                    )
                                     output = f"ERROR: {exc}"
                             await remember_outward(
                                 db,
@@ -1245,7 +1268,14 @@ async def run_agent(
                                 target=outward.target,
                                 output=output,
                             )
-                        shaped = harness.shape(tc, output, max_steps=max_steps, tz=tz)
+                        shaped = harness.shape(
+                            tc,
+                            output,
+                            max_steps=max_steps,
+                            tz=tz,
+                            source=source,
+                            error=tool_error,
+                        )
                         output = shaped.output
                         if shaped.spill is not None and run_id is not None:
                             await persist_spill(
@@ -1278,7 +1308,7 @@ async def run_agent(
                             messages.append(NeutralMessage(role="user", content=reminder))
                         checkpoint_trace_delta.append(tool_trace[-1])
                         post_event = (
-                            "PostToolUseFailure" if output.startswith("ERROR:") else "PostToolUse"
+                            "PostToolUseFailure" if "ERROR from " in output else "PostToolUse"
                         )
                         await dispatch_claude_event(
                             tenant_id,
@@ -1307,7 +1337,7 @@ async def run_agent(
                             tokens_since_checkpoint = 0
 
                 if cached_result is None and any(
-                    str(t.get("result", "")).startswith("ERROR:")
+                    "ERROR from " in str(t.get("result", ""))
                     for t in tool_trace[step_trace_start:]
                 ):
                     await cache_flow.invalidate(key)

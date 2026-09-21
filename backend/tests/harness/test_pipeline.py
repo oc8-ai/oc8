@@ -9,6 +9,7 @@ import datetime as dt
 
 from oc8.agent.harness import FinishVerdict, Harness, HarnessState, ModelCaps
 from oc8.agent.harness.prompts import format_step_stamp, resolve_timezone
+from oc8.agent.harness.stages.c_errors import ToolError
 from oc8.agent.harness.stages.c_reminders import TOOL_OUTPUT_BUDGET_WARNING_CHARS
 from oc8.agent.harness.stages.c_spill import SPILL_THRESHOLD_CHARS, Spill
 from oc8.modelrouter import ToolCall
@@ -52,6 +53,23 @@ def test_a_small_result_passes_through_with_no_reminders() -> None:
     assert shaped.reminders == []
     assert h.state.tool_output_chars == _stamp_prefix_len(0, 40) + len("ok")
     assert h.state.repeat == {"sig": 'search_records\n{"model": "a"}', "count": 1}
+
+
+def test_shape_envelopes_an_error_then_stamps_it() -> None:
+    h = Harness()
+    h.state.step_no = 3
+    shaped = h.shape(
+        _call(),
+        "ERROR: Invalid field",
+        max_steps=40,
+        tz="UTC",
+        source="odoo",
+        error=ToolError(kind="mcp", message="Invalid field"),
+    )
+    assert shaped.output.startswith("[step 3/40 · ")
+    assert "ERROR from odoo (search_records): Invalid field" in shaped.output
+    assert "do not repeat the identical call" in shaped.output
+    assert shaped.spill is None
 
 
 def test_an_oversized_result_is_spilled_and_the_preview_size_is_what_counts() -> None:
