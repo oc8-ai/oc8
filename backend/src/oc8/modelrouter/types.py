@@ -44,6 +44,7 @@ class NeutralTool:
     name: str
     description: str
     parameters: dict[str, Any]  # JSON Schema (draft 2020-12)
+    annotations: dict[str, Any] | None = None
 
 
 @dataclass

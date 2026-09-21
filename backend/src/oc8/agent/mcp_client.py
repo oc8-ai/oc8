@@ -220,6 +220,21 @@ class _StderrTail:
         return ""
 
 
+_ANNOTATION_KEYS = ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint")
+
+
+def _annotations_of(tool: Any) -> dict[str, Any] | None:
+    raw = getattr(tool, "annotations", None)
+    if raw is None:
+        return None
+    out: dict[str, Any] = {}
+    for key in _ANNOTATION_KEYS:
+        val = raw.get(key) if isinstance(raw, dict) else getattr(raw, key, None)
+        if val is not None:
+            out[key] = bool(val)
+    return out or None
+
+
 def _schema_of(tool: Any) -> dict[str, Any]:
     """A tool's parameter schema, whichever major of the MCP SDK is installed.
 
@@ -292,6 +307,7 @@ class McpSession:
                 name=t.name,
                 description=t.description or "",
                 parameters=_schema_of(t),
+                annotations=_annotations_of(t),
             )
             for t in listed.tools
         ]
