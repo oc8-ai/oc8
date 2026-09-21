@@ -16,7 +16,29 @@ Each subdirectory is one skill:
   `references/chatgpt-instructions.md` for platforms without native Skill
   support.
 
-Install the Claude version by pointing Claude at this directory (or
-packaging it with `skill-creator`'s `package_skill.py`); for ChatGPT, paste
-the relevant `references/chatgpt-instructions.md` into a Custom GPT's
-instructions.
+## Quick install
+
+- **Claude Code / Claude Desktop (local agent mode, filesystem access):**
+  point it at this skill's directory directly — e.g. symlink or copy
+  `skills-library/oc8-copilot/` into `~/.claude/skills/oc8-copilot/`. Claude
+  picks it up the next time it lists available skills; no packaging step
+  needed.
+
+- **claude.ai (web, no filesystem access):** package the skill into a
+  distributable `.skill` file, then upload it under
+  **Settings → Capabilities → Skills → Upload skill**:
+
+  ```bash
+  python package_skill.py skills-library/oc8-copilot
+  ```
+
+  (`package_skill.py` ships with Anthropic's `skill-creator` skill.)
+
+- **ChatGPT:** there's no skill-upload mechanism — create or edit a Custom
+  GPT instead, and paste `oc8-copilot/references/chatgpt-instructions.md`
+  into its instructions field.
+
+Either way, installing the skill only gets an AI client the *instructions*
+— `oc8-copilot/references/getting-started.md` still walks the user through
+minting an oc8 API key and connecting it to `/mcp/external` before any
+operation in the skill can actually run.

@@ -271,6 +271,7 @@ sandboxed execution for community-trust capas is next.
 | `backend/` | API, workers, data model, agent runtime, migrations, tests |
 | `frontend/` | React/TanStack operator experience |
 | `capas/` | Open connector, skill, channel, and runtime extensions |
+| `skills-library/` | Skills for external AI clients (Claude Desktop, claude.ai, ChatGPT) that operate oc8 over `/mcp/external` |
 | `docs/` | Deployment, operational, security, and getting-started guides |
 | `docker-compose.yml` | Reference deployment |
 
@@ -312,6 +313,7 @@ Reference:
 - [Scope and limitations](docs/SCOPE_AND_LIMITATIONS.md)
 - [Backup and restore](docs/BACKUP_RESTORE.md)
 - [Capa guide](capas/README.md)
+- [External Copilot skill (MCP)](skills-library/README.md)
 - [Security policy](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
 
