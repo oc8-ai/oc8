@@ -40,6 +40,7 @@ from oc8.agent.harness.stages.b_blast_radius import check_blast_radius
 from oc8.agent.harness.stages.b_claims import claim_write
 from oc8.agent.harness.stages.b_idempotency import record_for, replay_for
 from oc8.agent.harness.stages.b_outward import check_outward, remember_outward
+from oc8.agent.harness.stages.b_read_before_write import note_access
 from oc8.agent.harness.stages.b_risk_tier import classify_tier
 from oc8.agent.harness.stages.c_errors import ToolError, classify_exception
 from oc8.agent.harness.stages.c_spill import persist_spill
@@ -914,10 +915,15 @@ async def tool(
     tool_error: ToolError | None = None
     source = conn.name if conn is not None else "oc8"
     writes = required_right(tc.name, scopes) != "read"
-    identity = record_identity(tc.name, tc.arguments, focus_spec) if writes else None
+    access_identity = record_identity(tc.name, tc.arguments, focus_spec)
+    identity = access_identity if writes else None
     record_label = (
         describe_focus(tc.name, tc.arguments, focus_spec)
-        or (f"{identity[0]} {identity[1]}" if identity is not None else "")
+        or (
+            f"{access_identity[0]} {access_identity[1]}"
+            if access_identity is not None
+            else ""
+        )
     )
     control = (
         await execute_control_tool(
@@ -1123,6 +1129,23 @@ async def tool(
                 output=output,
                 idempotent=idempotent,
             )
+
+    if (
+        tool_error is None
+        and not output.startswith("ERROR:")
+        and access_identity is not None
+        and conn is not None
+    ):
+        note_access(
+            harness.state.ledger,
+            connection=conn.name,
+            kind=access_identity[0],
+            id=access_identity[1],
+            label=record_label,
+            step_no=harness.state.step_no,
+            wrote=writes,
+            tool=tc.name,
+        )
 
     # Stopped HERE, the moment the call itself returned -- not at the append
     # site far below, which is separated from it by the transcript rewrite and

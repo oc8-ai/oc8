@@ -134,7 +134,7 @@ async def create_fixture(
             role_title="Office agent",
             status="running",
             narrowing={},
-            definition={"max_steps": task.max_steps},
+            definition={"max_steps": task.max_steps, "autonomy": task.autonomy},
             presentation={},
             runtime_ref=RUNTIME_REFS[runtime],
             model_config_id=model_config_id,

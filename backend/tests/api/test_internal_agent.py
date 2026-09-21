@@ -922,6 +922,7 @@ async def _mcp_backed_run(
     parallel_tool_calls: bool = False,
     destructive_tools: list[str] | None = None,
     approval_templates: dict[str, str] | None = None,
+    focus_spec: dict[str, Any] | None = None,
 ) -> tuple[Any, Any]:
     """An agent + RUNNING run with an `odoo` MCP connection bound, the fixture
     the two timing tests below (and the parallel-reads tier tests further
@@ -968,6 +969,8 @@ async def _mcp_backed_run(
         conn_config["destructive_tools"] = destructive_tools
     if approval_templates:
         conn_config["approval_templates"] = approval_templates
+    if focus_spec:
+        conn_config["focus_spec"] = focus_spec
     conn = m.McpConnection(
         tenant_id=tenant,
         department_id=dept.id,
@@ -997,6 +1000,50 @@ async def _mcp_backed_run(
     db.add(run)
     await db.flush()
     return agent.id, run.id
+
+
+@pytest.mark.asyncio
+async def test_successful_isolated_read_records_ledger_access(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8 import models as m
+
+    class _SuccessfulSession:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> Any:
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+        async def call(self, name: str, arguments: dict[str, Any]) -> str:
+            return '{"id": 42, "name": "Acme"}'
+
+    monkeypatch.setattr("oc8.api.v1.internal_agent.McpSession", _SuccessfulSession)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id = await _mcp_backed_run(
+            db,
+            tenant,
+            focus_spec={
+                "entity_field": "model",
+                "id_fields": ["id"],
+                "labels": {"crm.lead": "Lead"},
+            },
+        )
+
+    code, result = await _post_tool(
+        tenant, agent_id, run_id, "search_records", {"model": "crm.lead", "id": 42}
+    )
+    assert code == 200, result
+
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        entity = run.context["harness"]["ledger"]["entities"]["odoo/crm.lead/42"]
+        assert entity["last_read_step"] == 0
 
 
 @pytest.mark.parametrize(
