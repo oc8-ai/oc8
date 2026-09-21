@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.auth import Principal
+from oc8.copilot.capabilities import InvalidOperation
 from oc8.copilot.proposals import ProposalRejected, apply_proposal, create_proposal
 
 pytestmark = pytest.mark.asyncio
@@ -33,11 +34,10 @@ async def test_capa_install_rejects_a_plugin_id_not_found_on_disk(
 async def test_capa_disable_rejects_an_unknown_capa(app_session, acme_tenant) -> None:
     actor = _actor(acme_tenant)
     async with app_session(acme_tenant) as db:
-        proposal = await create_proposal(
-            db, actor, [{"type": "capa.disable", "capaId": str(uuid.uuid4())}]
-        )
-        with pytest.raises(ProposalRejected):
-            await apply_proposal(db, proposal.id, actor)
+        with pytest.raises(InvalidOperation):
+            await create_proposal(
+                db, actor, [{"type": "capa.disable", "capaId": str(uuid.uuid4())}]
+            )
 
 
 async def test_capa_disable_disables_an_enabled_capa(app_session, acme_tenant) -> None:

@@ -398,7 +398,7 @@ async def target_revision(
         statement = select(m.Capa.config_revision).where(m.Capa.id == operation.capaId)
         changed = await db.scalar(statement.with_for_update() if lock_for_apply else statement)
         if changed is None:
-            return None
+            raise InvalidOperation()
         return str(changed)
     statement = select(m.Integration.config_revision).where(
         m.Integration.id == operation.integrationId
