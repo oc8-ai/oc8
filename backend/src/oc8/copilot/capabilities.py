@@ -7,11 +7,12 @@ existing resources and invoke their established server-side service.
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -73,6 +74,24 @@ class DepartmentCreate(_Operation):
     icon: str = Field(default="building", max_length=100)
 
 
+class DepartmentUpdate(_Operation):
+    type: Literal["department.update"]
+    departmentId: uuid.UUID
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    goal: str | None = Field(default=None, max_length=2_000)
+    icon: str | None = Field(default=None, max_length=100)
+
+
+class DepartmentDelete(_Operation):
+    type: Literal["department.delete"]
+    departmentId: uuid.UUID
+
+
+class DepartmentRestore(_Operation):
+    type: Literal["department.restore"]
+    departmentId: uuid.UUID
+
+
 class AgentCreate(_Operation):
     type: Literal["agent.create"]
     departmentId: uuid.UUID
@@ -122,6 +141,9 @@ Operation = (
     | PluginEnable
     | IntegrationPrepare
     | DepartmentCreate
+    | DepartmentUpdate
+    | DepartmentDelete
+    | DepartmentRestore
     | AgentCreate
     | GuardrailSet
 )
@@ -200,6 +222,27 @@ async def target_revision(
     """
     if isinstance(operation, (DepartmentCreate, AgentCreate)):
         return None
+    if isinstance(operation, (DepartmentUpdate, DepartmentDelete)):
+        statement = select(m.Department.config_revision).where(
+            m.Department.id == operation.departmentId, m.Department.deleted_at.is_(None)
+        )
+        changed = await db.scalar(statement.with_for_update() if lock_for_apply else statement)
+        if changed is None:
+            raise InvalidOperation()
+        return str(changed)
+    if isinstance(operation, DepartmentRestore):
+        # The one target that must exist ARCHIVED, not live -- restoring a
+        # department that is already live is meaningless, and a bare
+        # deleted_at.is_(None) filter (every other department branch's
+        # filter) would make target_revision() raise InvalidOperation for
+        # every legitimate restore.
+        statement = select(m.Department.config_revision).where(
+            m.Department.id == operation.departmentId, m.Department.deleted_at.is_not(None)
+        )
+        changed = await db.scalar(statement.with_for_update() if lock_for_apply else statement)
+        if changed is None:
+            raise InvalidOperation()
+        return str(changed)
     if isinstance(operation, (MissionSet, TriggerCreate, GuardrailSet)):
         statement = select(m.Agent.config_revision).where(
             m.Agent.id == operation.agentId, m.Agent.deleted_at.is_(None)
@@ -282,6 +325,60 @@ async def apply_operation(db: AsyncSession, *, tenant_id: uuid.UUID, data: dict[
             presentation={"icon": operation.icon},
         )
         db.add(dept)
+        await db.flush()
+        return
+    if isinstance(operation, DepartmentUpdate):
+        dept = await db.get(m.Department, operation.departmentId)
+        if dept is None or dept.deleted_at is not None:
+            raise InvalidOperation()
+        if operation.name is not None:
+            dept.name = operation.name
+        if operation.goal is not None:
+            dept.goal = operation.goal
+        if operation.icon is not None:
+            dept.presentation = {**(dept.presentation or {}), "icon": operation.icon}
+        await db.flush()
+        return
+    if isinstance(operation, DepartmentDelete):
+        dept = await db.get(m.Department, operation.departmentId)
+        if dept is None or dept.deleted_at is not None:
+            raise InvalidOperation()
+        live_agents = (
+            (
+                await db.execute(
+                    select(m.Agent).where(
+                        m.Agent.department_id == operation.departmentId,
+                        m.Agent.deleted_at.is_(None),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        now = dt.datetime.now(tz=dt.UTC)
+        if not live_agents:
+            await db.delete(dept)
+        else:
+            dept.deleted_at = now
+            for agent in live_agents:
+                agent_dependents = (
+                    await db.execute(
+                        select(func.count())
+                        .select_from(m.AgentRun)
+                        .where(m.AgentRun.agent_id == agent.id)
+                    )
+                ).scalar_one()
+                if agent_dependents == 0:
+                    await db.delete(agent)
+                else:
+                    agent.deleted_at = now
+        await db.flush()
+        return
+    if isinstance(operation, DepartmentRestore):
+        dept = await db.get(m.Department, operation.departmentId)
+        if dept is None or dept.deleted_at is None:
+            raise InvalidOperation()
+        dept.deleted_at = None
         await db.flush()
         return
     if isinstance(operation, AgentCreate):
