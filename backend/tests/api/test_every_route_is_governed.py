@@ -182,6 +182,8 @@ _WORKSPACE_ROUTES: dict[tuple[str, str], str] = {
     ("POST", "/api/v1/members"): "member:manage",
     ("PUT", "/api/v1/members/{}/departments/{}"): "member:manage",
     ("DELETE", "/api/v1/members/{}/departments/{}"): "member:manage",
+    ("DELETE", "/api/v1/members/{}"): "member:manage",
+    ("POST", "/api/v1/members/{}/password-reset"): "member:manage",
 }
 
 

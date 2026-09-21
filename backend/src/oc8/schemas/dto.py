@@ -273,6 +273,18 @@ class MemberDTO(CamelModel):
     invite_sent: bool = False
 
 
+class MemberPasswordResetDTO(CamelModel):
+    """What `POST /members/{id}/password-reset` hands back.
+
+    Always carries `reset_link` so an administrator can copy it even when
+    mail is configured -- a send that lands in spam is not a failed mint.
+    `reset_sent` is whether `deliver` actually handed it to the relay.
+    """
+
+    reset_link: str
+    reset_sent: bool = False
+
+
 class MeDTO(CamelModel):
     """The caller, and where they stand.
 
