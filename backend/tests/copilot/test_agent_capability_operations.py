@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.auth import Principal
@@ -99,6 +100,57 @@ async def test_model_switch_applies_a_known_model_config(app_session, acme_tenan
         assert result.status == "applied"
         await db.refresh(agent)
         assert agent.model_config_id == mc.id
+
+
+async def test_skill_assign_is_a_no_op_when_the_agent_already_has_the_skill_enabled(
+    app_session, acme_tenant
+) -> None:
+    actor = _actor(acme_tenant)
+    async with app_session(acme_tenant) as db:
+        agent = await _agent(db, acme_tenant)
+        skill = m.Skill(tenant_id=acme_tenant, name="S", origin="local", trust_level="first_party")
+        db.add(skill)
+        await db.flush()
+        version = m.SkillVersion(
+            tenant_id=acme_tenant,
+            skill_id=skill.id,
+            semver="1.0.0",
+            definition={"requires": {"tools": [], "kbs": []}},
+            artifact_hash=b"x" * 32,
+        )
+        db.add(version)
+        await db.flush()
+        db.add(
+            m.SkillAssignment(
+                tenant_id=acme_tenant, agent_id=agent.id, skill_version_id=version.id, enabled=True
+            )
+        )
+        await db.flush()
+
+        proposal = await create_proposal(
+            db,
+            actor,
+            [
+                {
+                    "type": "agent.skill.assign",
+                    "agentId": str(agent.id),
+                    "skillVersionId": str(version.id),
+                }
+            ],
+        )
+        result = await apply_proposal(db, proposal.id, actor)
+        assert result.status == "applied"
+
+        rows = (
+            (
+                await db.execute(
+                    select(m.SkillAssignment).where(m.SkillAssignment.agent_id == agent.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1, "must not have inserted a duplicate row"
 
 
 async def test_skill_assign_rejects_an_unknown_skill_version(app_session, acme_tenant) -> None:

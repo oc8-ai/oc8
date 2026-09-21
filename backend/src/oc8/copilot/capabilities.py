@@ -702,6 +702,28 @@ async def apply_operation(db: AsyncSession, *, tenant_id: uuid.UUID, data: dict[
                 runtime_capabilities=list(runtime_version.capabilities),
             ):
                 raise InvalidOperation()
+        # Already assigned is not an error worth surfacing as a raised
+        # exception -- same reasoning as `assign_skill`'s own comment
+        # (`api/v1/agents_write.py:1061-1085`): the unique index would report
+        # the duplicate faithfully, but an uncaught IntegrityError tells an
+        # operator that oc8 broke rather than that nothing needed doing.
+        # Unlike the REST route this function has no response body to
+        # distinguish "assigned" from "already_assigned" -- every path here
+        # converges on the same successful `flush(); return`.
+        existing = (
+            await db.execute(
+                select(m.SkillAssignment).where(
+                    m.SkillAssignment.tenant_id == tenant_id,
+                    m.SkillAssignment.agent_id == agent.id,
+                    m.SkillAssignment.skill_version_id == version.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            if not existing.enabled:
+                existing.enabled = True
+                await db.flush()
+            return
         # Same row shape `assign_skill` (`api/v1/agents_write.py`, the
         # `db.add(m.SkillAssignment(...))` call around line 1087) inserts on
         # the fresh-assignment path: tenant_id/agent_id/skill_version_id plus
