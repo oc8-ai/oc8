@@ -13,8 +13,8 @@ that convention silently never fired for a real protocol-level tool error:
 PostToolUseFailure never dispatched, and the department cache had no signal
 telling it the request it just cached led to a real failure. Live-observed
 2026-08-26 on the odoo_mcp plugin (Odoo rejecting an invalid `sla_date`
-field), reproduced here with a real stdio MCP server so the fix is proven
-against the SDK's actual behaviour, not an assumption about its shape.
+field). This test drives a protocol-level JSON-RPC `isError` payload through
+the real stdio transport and verifies the client preserves it as a failure.
 """
 
 from __future__ import annotations
@@ -97,7 +97,7 @@ async def test_a_tool_level_rejection_raises_instead_of_returning_as_success(
 ) -> None:
     command, args = _server(tmp_path, _REJECTS_THE_CALL)
     async with McpSession(command, args) as session:
-        with pytest.raises(Exception, match="Invalid field 'sla_date'") as caught:
+        with pytest.raises(McpToolError, match="Invalid field 'sla_date'") as caught:
             await session.call("search_records", {"model": "helpdesk.ticket"})
 
     exc = caught.value

@@ -17,9 +17,24 @@ def test_timeout_adds_duration_and_the_partial_execution_warning() -> None:
         "odoo",
         ToolError(kind="timeout", message="timed out", duration_s=180.0),
     )
-    assert "ERROR from odoo (search_records): timed out" in text
-    assert "180" in text
-    assert "may have partially executed" in text
+    assert text == (
+        "ERROR from odoo (search_records): timed out\n"
+        "timed out after 180s — the call may have partially executed — "
+        "read the record before retrying"
+    )
+
+
+def test_timeout_without_duration_omits_after() -> None:
+    text = render_error(
+        "search_records",
+        "odoo",
+        ToolError(kind="timeout", message="deadline exceeded"),
+    )
+    assert text == (
+        "ERROR from odoo (search_records): deadline exceeded\n"
+        "timed out — the call may have partially executed — "
+        "read the record before retrying"
+    )
 
 
 def test_deny_and_control_use_the_oc8_source() -> None:

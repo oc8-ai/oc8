@@ -6,6 +6,7 @@ Pure text helpers live here. Persistence is `persist_spill` (Task 2) using
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from dataclasses import dataclass
@@ -13,12 +14,13 @@ from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.storage.attachments import store_attachment_bytes
+from oc8.storage.attachments import AttachmentRejected, store_attachment_bytes
 
 SPILL_THRESHOLD_CHARS = 8_000
 SPILL_HEAD_CHARS = 3_000
 SPILL_TAIL_CHARS = 800
 _TOOL_FILENAME = re.compile(r"[^A-Za-z0-9_.-]+")
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -58,13 +60,19 @@ def maybe_spill(tool: str, body: str, *, step_no: int) -> tuple[str, Spill | Non
 
 async def persist_spill(
     db: AsyncSession, *, tenant_id: uuid.UUID, run_id: uuid.UUID, spill: Spill
-) -> m.FileAttachment:
-    return await store_attachment_bytes(
-        db,
-        tenant_id=tenant_id,
-        owner_type="agent_run",
-        owner_id=run_id,
-        filename=spill.filename,
-        raw=spill.content.encode("utf-8"),
-        content_type="text/plain",
-    )
+) -> m.FileAttachment | None:
+    try:
+        return await store_attachment_bytes(
+            db,
+            tenant_id=tenant_id,
+            owner_type="agent_run",
+            owner_id=run_id,
+            filename=spill.filename,
+            raw=spill.content.encode("utf-8"),
+            content_type="text/plain",
+        )
+    except AttachmentRejected as exc:
+        logger.warning("run %s: skipped spill %r: %s", run_id, spill.filename, exc)
+    except Exception:
+        logger.exception("run %s: failed to persist spill %r", run_id, spill.filename)
+    return None

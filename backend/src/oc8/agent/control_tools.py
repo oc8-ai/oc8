@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -51,6 +51,7 @@ from oc8.modelrouter import NeutralTool, ToolCall
 from oc8.realtime.emit import record_activity
 from oc8.runtime.repository import RunRepository
 from oc8.skills.runtime import LoadedSkill, instruction_block, skill_tool_schemas
+from oc8.storage import s3
 from oc8.storage.attachments import (
     AttachmentTooLarge,
     UnsupportedContentType,
@@ -1535,17 +1536,15 @@ async def execute_control_tool(
         # owner_id IS the agent), owner_id here is the AgentRun.id that
         # produced the file, so "belongs to this agent" isn't a column to
         # filter on -- content-level cross-agent access is the whole point
-        # (see the design's Cross-agent read section). Same newest-wins
-        # tiebreak as read_instruction_file for the same reason: nothing
-        # makes filename unique within a tenant either.
+        # (see the design's Cross-agent read section). With no explicit
+        # producer, prefer the active run's own file before the tenant-wide
+        # newest-wins fallback; filenames are not unique within a tenant.
+        ordering: list[Any] = []
+        if not run_id_arg and run_id is not None:
+            ordering.append(case((m.FileAttachment.owner_id == run_id, 0), else_=1))
+        ordering.extend([m.FileAttachment.created_at.desc(), m.FileAttachment.id.desc()])
         attachment = (
-            (
-                await db.execute(
-                    select(m.FileAttachment)
-                    .where(*conditions)
-                    .order_by(m.FileAttachment.created_at.desc(), m.FileAttachment.id.desc())
-                )
-            )
+            (await db.execute(select(m.FileAttachment).where(*conditions).order_by(*ordering)))
             .scalars()
             .first()
         )
@@ -1558,9 +1557,8 @@ async def execute_control_tool(
                     "support vision through this tool."
                 )
             )
-        text = attachment.extracted_text or "(could not read this file's content)"
 
-        def _as_nonneg_int(raw: object, *, name: str) -> int | None | str:
+        def _as_nonneg_int(raw: Any, *, name: str) -> int | str | None:
             if raw is None or raw == "":
                 return None
             try:
@@ -1577,6 +1575,15 @@ async def execute_control_tool(
         limit_or_err = _as_nonneg_int(tc.arguments.get("limit"), name="limit")
         if isinstance(limit_or_err, str):
             return ControlOutcome(output=limit_or_err)
+        if attachment.content_type == "text/plain":
+            try:
+                text = (await s3.get_object(attachment.bucket_key)).decode(
+                    "utf-8", errors="replace"
+                )
+            except Exception:
+                text = attachment.extracted_text or "(could not read this file's content)"
+        else:
+            text = attachment.extracted_text or "(could not read this file's content)"
         offset = offset_or_err or 0
         sliced = text[offset:]
         if limit_or_err is not None:

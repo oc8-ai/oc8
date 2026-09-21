@@ -852,7 +852,7 @@ async def run_agent(
                         *skill_metric_keys,
                     ]
                     call_value_spec = merged
-                step_trace_start = len(tool_trace)
+                step_had_tool_error = False
                 # Spec §3.5: a turn's LEADING run of ALLOW-decision, read-tier,
                 # non-control, non-outward tool calls dispatches concurrently
                 # (bounded) when this connection's caps say the model can
@@ -934,7 +934,7 @@ async def run_agent(
                             result_text,
                             started_at,
                             duration_ms,
-                            tool_error,
+                            precomputed_error,
                         ) in await asyncio.gather(
                             *(_dispatch_precomputed(call) for call in read_batch)
                         ):
@@ -942,7 +942,7 @@ async def run_agent(
                                 result_text,
                                 started_at,
                                 duration_ms,
-                                tool_error,
+                                precomputed_error,
                             )
                 for tc in result.tool_calls:
                     decision = _authorize(
@@ -1301,9 +1301,17 @@ async def run_agent(
                         )
                         output = shaped.output
                         if shaped.spill is not None and run_id is not None:
-                            await persist_spill(
-                                db, tenant_id=tenant_id, run_id=run_id, spill=shaped.spill
-                            )
+                            try:
+                                await persist_spill(
+                                    db,
+                                    tenant_id=tenant_id,
+                                    run_id=run_id,
+                                    spill=shaped.spill,
+                                )
+                            except Exception:
+                                logger.exception(
+                                    "run %s: spill persistence escaped safe boundary", run_id
+                                )
                         _tool_call_entry: dict[str, Any] = {
                             "tool": tc.name,
                             "arguments": tc.arguments,
@@ -1330,8 +1338,9 @@ async def run_agent(
                         for reminder in shaped.reminders:
                             messages.append(NeutralMessage(role="user", content=reminder))
                         checkpoint_trace_delta.append(tool_trace[-1])
+                        step_had_tool_error = step_had_tool_error or tool_error is not None
                         post_event = (
-                            "PostToolUseFailure" if "ERROR from " in output else "PostToolUse"
+                            "PostToolUseFailure" if tool_error is not None else "PostToolUse"
                         )
                         await dispatch_claude_event(
                             tenant_id,
@@ -1359,10 +1368,7 @@ async def run_agent(
                             checkpoint_trace_delta = []
                             tokens_since_checkpoint = 0
 
-                if cached_result is None and any(
-                    "ERROR from " in str(t.get("result", ""))
-                    for t in tool_trace[step_trace_start:]
-                ):
+                if cached_result is None and step_had_tool_error:
                     await cache_flow.invalidate(key)
 
             task.state = "done"

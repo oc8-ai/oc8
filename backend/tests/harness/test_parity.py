@@ -51,12 +51,21 @@ def _read(call_id: str) -> ToolCall:
     return ToolCall(id=call_id, name="search_records", arguments={"model": "thing", "limit": 5})
 
 
+def _failing_read(call_id: str) -> ToolCall:
+    return ToolCall(
+        id=call_id,
+        name="search_records",
+        arguments={"model": "thing", "fail": True},
+    )
+
+
 #: One model turn per completion, in order. Each runtime gets its own copy.
 def _script() -> list[CompletionResult]:
     return [
         _turn("", _read("c1")),
         _turn("", _read("c2")),
         _turn("", _read("c3")),
+        _turn("", _failing_read("c-error")),
         _turn(
             "",
             ToolCall(
@@ -124,6 +133,8 @@ class _StubSession:
         return False
 
     async def call(self, name: str, arguments: dict[str, Any]) -> str:
+        if arguments.get("fail"):
+            raise ValueError("fixture tool failure")
         return _BIG
 
 
@@ -261,7 +272,7 @@ async def _run_isolated(
     async with LifespanManager(app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
             # The shell's loop protocol (isolated_shell.py), inline.
-            for _ in range(20):
+            for step_no in range(1, 21):
                 r = await c.post(f"/api/v1/internal/agent/{run_id}/step", headers=headers)
                 assert r.status_code == 200, r.text
                 step = r.json()
@@ -273,6 +284,12 @@ async def _run_isolated(
                         f"/api/v1/internal/agent/{run_id}/tool", json=call, headers=headers
                     )
                     assert r.status_code == 200, r.text
+                    payload = r.json()
+                    if call["name"] == "search_records" and not call["arguments"].get("fail"):
+                        assert payload["spill"] == {
+                            "filename": f"step-{step_no}-search_records.txt",
+                            "content": _BIG,
+                        }
                     # Same gate as the real shell loop (isolated_shell.py): only
                     # a suspend verdict stops the run early. `todo_write` (and
                     # any other control tool the frame's own policy would deny
@@ -283,10 +300,10 @@ async def _run_isolated(
                     # string is this endpoint's own bookkeeping, not something
                     # either runtime's transcript reflects, so it is not part
                     # of the parity being tested here.
-                    assert r.json()["status"] not in (
+                    assert payload["status"] not in (
                         "waiting_for_approval",
                         "waiting_for_input",
-                    ), r.json()
+                    ), payload
             else:
                 raise AssertionError("the isolated run never finished")
 
@@ -316,5 +333,8 @@ async def test_both_runtimes_produce_the_same_transcript(
     assert ("user", "You indicated you are fi") in roles_and_heads, "D1 nudge missing"
     tool_msgs = [c for role, c, _, _ in left if role == "tool"]
     assert any("kept as file" in str(c) for c in tool_msgs), "C1 spill missing"
+    errors = [str(c) for c in tool_msgs if "fixture tool failure" in str(c)]
+    assert len(errors) == 1
+    assert errors[0].startswith("<step-stamp> ERROR from things (search_records):")
 
     assert in_process_text == isolated_text == "Summary written."

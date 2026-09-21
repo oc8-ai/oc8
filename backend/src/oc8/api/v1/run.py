@@ -4,6 +4,7 @@ and return its queued status. Poll GET /runs/{id} for progress."""
 from __future__ import annotations
 
 import datetime as dt
+import re
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -21,6 +22,7 @@ from oc8.schemas.dto import RunDTO, WorkspaceFileDTO, WorkspaceFilesDTO
 from oc8.schemas.requests import RunAgentRequest
 
 router = APIRouter()
+_SPILL_BASENAME = re.compile(r"^step-\d+-.*\.txt$")
 
 
 class AnswerRequest(BaseModel):
@@ -131,6 +133,7 @@ async def list_workspace_files(
                 created_at=row.created_at.isoformat(),
             )
             for row in rows
+            if _SPILL_BASENAME.fullmatch(row.filename) is None
         ]
     )
 

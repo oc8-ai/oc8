@@ -13,6 +13,7 @@ from oc8.agent.harness.stages.c_spill import (
     persist_spill,
     spill_filename,
 )
+from oc8.storage.attachments import AttachmentTooLarge
 
 
 def test_threshold_and_window_constants() -> None:
@@ -83,3 +84,22 @@ async def test_persist_spill_writes_an_agent_run_attachment(app_session, minio_u
             )
         ).scalar_one()
         assert found.id == row.id
+
+
+@pytest.mark.asyncio
+async def test_persist_spill_logs_and_skips_storage_failures(
+    app_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def reject(*args, **kwargs):
+        raise AttachmentTooLarge("too large")
+
+    monkeypatch.setattr("oc8.agent.harness.stages.c_spill.store_attachment_bytes", reject)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        row = await persist_spill(
+            db,
+            tenant_id=tenant,
+            run_id=uuid.uuid4(),
+            spill=Spill(filename="step-1-search_records.txt", content="body"),
+        )
+    assert row is None

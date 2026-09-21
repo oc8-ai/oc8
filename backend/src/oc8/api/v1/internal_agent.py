@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import datetime as dt
+import logging
 import uuid
 from typing import Any
 
@@ -77,6 +78,7 @@ from oc8.skills.runtime import load_assigned_skills
 from oc8.storage import s3
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 RUN_SCOPE = "run:"
 
@@ -980,9 +982,10 @@ async def tool(
     if output.startswith("ERROR:") and ctx.get("pending_cache_key") is not None:
         await cache_flow.invalidate(ctx["pending_cache_key"])
 
-    # C3 + C5 through the shared Harness, at parity with the in-process engine's
-    # loop -- same stamp, same cap, same cumulative counter, same repeat
-    # tracker, just persisted on run.context instead of a local closure
+    # C2 + C1 + C3 + C5 through the shared Harness, at parity with the
+    # in-process engine's loop -- same error envelope, spill preview, stamp,
+    # cumulative counter, and repeat tracker, just persisted on run.context
+    # instead of a local closure
     # variable, since this runtime drives one tool call per HTTP request with
     # no in-memory state surviving between them. ctx["steps"] is the same
     # counter /step increments (see its own ctx["steps"] = ... line above).
@@ -998,9 +1001,10 @@ async def tool(
     )
     output = shaped.output
     if shaped.spill is not None:
-        await persist_spill(
-            db, tenant_id=run.tenant_id, run_id=run.id, spill=shaped.spill
-        )
+        try:
+            await persist_spill(db, tenant_id=run.tenant_id, run_id=run.id, spill=shaped.spill)
+        except Exception:
+            logger.exception("run %s: spill persistence escaped safe boundary", run.id)
     spill_payload = (
         {"filename": shaped.spill.filename, "content": shaped.spill.content}
         if shaped.spill is not None
