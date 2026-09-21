@@ -11,6 +11,7 @@ import datetime as dt
 import uuid
 from typing import Any, Literal
 
+from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,7 +20,7 @@ from oc8 import models as m
 from oc8.agents.hire import require_hire_approval
 from oc8.authz import pdp
 from oc8.automation.catalogue import list_installed_automation_events
-from oc8.capas.discovery import resolve_tool_pack_connection
+from oc8.capas.discovery import connection_supports_value_spec, resolve_tool_pack_connection
 from oc8.capas.lifecycle import enable_plugin
 from oc8.capas.manifest import GuardrailAttribute
 from oc8.copilot.guardrail_interpret import (
@@ -128,6 +129,18 @@ class AgentRestore(_Operation):
     agentId: uuid.UUID
 
 
+class AgentNarrowingSet(_Operation):
+    type: Literal["agent.narrowing.set"]
+    agentId: uuid.UUID
+    narrowing: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentNarrowingReset(_Operation):
+    type: Literal["agent.narrowing.reset"]
+    agentId: uuid.UUID
+    connectionName: str = Field(min_length=1, max_length=200)
+
+
 class GuardrailConditionInput(BaseModel):
     """One `payload.conditions[]` entry for `GuardrailSet` -- field-for-field
     the same shape as `authz.pdp.Condition`/`ConditionDTO`, kept a distinct
@@ -177,6 +190,8 @@ Operation = (
     | AgentLifecycleSet
     | AgentDelete
     | AgentRestore
+    | AgentNarrowingSet
+    | AgentNarrowingReset
     | GuardrailSet
 )
 _OPERATIONS = TypeAdapter(list[Operation])
@@ -277,7 +292,15 @@ async def target_revision(
         return str(changed)
     if isinstance(
         operation,
-        (MissionSet, TriggerCreate, GuardrailSet, AgentRename, AgentLifecycleSet),
+        (
+            MissionSet,
+            TriggerCreate,
+            GuardrailSet,
+            AgentRename,
+            AgentLifecycleSet,
+            AgentNarrowingSet,
+            AgentNarrowingReset,
+        ),
     ):
         statement = select(m.Agent.config_revision).where(
             m.Agent.id == operation.agentId, m.Agent.deleted_at.is_(None)
@@ -502,6 +525,80 @@ async def apply_operation(db: AsyncSession, *, tenant_id: uuid.UUID, data: dict[
         except SubscriptionModelNotManualOnly as exc:
             raise InvalidOperation() from exc
         agent.deleted_at = None
+        await db.flush()
+        return
+    if isinstance(operation, AgentNarrowingSet):
+        agent = await db.get(m.Agent, operation.agentId)
+        if agent is None or agent.deleted_at is not None:
+            raise InvalidOperation()
+        dept = await db.get(m.Department, agent.department_id)
+        frame = dept.frame if dept else {}
+        if pdp.narrowing_within_frame(frame, operation.narrowing):
+            raise InvalidOperation()
+        raw_tools = (
+            operation.narrowing.get("tools", {}) if isinstance(operation.narrowing, dict) else {}
+        )
+        if isinstance(raw_tools, dict):
+            for key, raw in raw_tools.items():
+                if not isinstance(raw, dict) or raw.get("approval_eur") is None:
+                    continue
+                mcp_conn = (
+                    await db.execute(
+                        select(m.McpConnection)
+                        .where(
+                            m.McpConnection.tenant_id == tenant_id,
+                            m.McpConnection.name == key,
+                            m.McpConnection.credential_id.is_(None),
+                        )
+                        .order_by(m.McpConnection.created_at)
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                cfg = (
+                    mcp_conn.config
+                    if mcp_conn is not None and isinstance(mcp_conn.config, dict)
+                    else {}
+                )
+                manifest_conn = resolve_tool_pack_connection(
+                    str(cfg.get("_plugin_name", "")), str(cfg.get("_connection_key", ""))
+                )
+                if not connection_supports_value_spec(manifest_conn):
+                    raise InvalidOperation()
+        # Deferred import: `oc8.api.v1`'s package __init__ eagerly aggregates
+        # every route module for the router, including `copilot.py`, which
+        # imports back from this module -- a top-level import here would make
+        # `capabilities.py` (whenever it is the first thing to touch
+        # `oc8.api.v1`, e.g. a test importing `oc8.copilot.*` directly)
+        # trip over its own partially-initialised module. Importing at call
+        # time, after this module has finished loading, sidesteps that
+        # without weakening the layering exception -- this remains the one
+        # and only place `capabilities.py` depends on `api/v1/*`.
+        from oc8.api.v1.agents_write import enforce_narrowing_logins
+
+        try:
+            await enforce_narrowing_logins(
+                db, tenant_id=tenant_id, agent=agent, narrowing=operation.narrowing, frame=frame
+            )
+        except HTTPException as exc:
+            raise InvalidOperation() from exc
+        agent.narrowing = operation.narrowing
+        await db.flush()
+        return
+    if isinstance(operation, AgentNarrowingReset):
+        agent = await db.get(m.Agent, operation.agentId)
+        if agent is None or agent.deleted_at is not None:
+            raise InvalidOperation()
+        raw_tools = dict((agent.narrowing or {}).get("tools", {}))
+        if operation.connectionName not in raw_tools:
+            raise InvalidOperation()
+        new_tools = dict(raw_tools)
+        del new_tools[operation.connectionName]
+        narrowing = dict(agent.narrowing or {})
+        narrowing["tools"] = new_tools
+        agent.narrowing = narrowing
+        overridden = set(agent.narrowing_overridden_keys or [])
+        overridden.discard(operation.connectionName)
+        agent.narrowing_overridden_keys = sorted(overridden)
         await db.flush()
         return
     if isinstance(operation, GuardrailSet):
