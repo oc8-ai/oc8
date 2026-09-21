@@ -21,9 +21,14 @@ from oc8.agents.hire import require_hire_approval
 from oc8.auth import Principal
 from oc8.authz import pdp
 from oc8.automation.catalogue import list_installed_automation_events
-from oc8.capas.discovery import connection_supports_value_spec, resolve_tool_pack_connection
-from oc8.capas.lifecycle import enable_plugin
+from oc8.capas.discovery import (
+    connection_supports_value_spec,
+    find_plugin,
+    resolve_tool_pack_connection,
+)
+from oc8.capas.lifecycle import disable_plugin, enable_plugin
 from oc8.capas.manifest import GuardrailAttribute
+from oc8.capas.service import PluginError, install_with_dependencies
 from oc8.copilot.guardrail_interpret import (
     GuardrailNotUnderstood,
     attributes_for_function,
@@ -81,6 +86,23 @@ class IntegrationPrepare(_Operation):
     # A reference is intentionally all this operation can carry. Credential
     # material belongs to the integration's normal setup flow, outside Copilot.
     configurationRef: uuid.UUID | None = None
+
+
+class CapaInstall(_Operation):
+    """`diskPluginId` names a plugin FOLDER on disk (`find_plugin`'s id
+    space, e.g. "github_mcp") -- a different kind of identifier from every
+    other capa operation's `capaId`, which is an installed `Capa` row's
+    database id. Named distinctly on purpose: nothing here has been
+    installed yet, so there is no database id to reference."""
+
+    type: Literal["capa.install"]
+    diskPluginId: str = Field(min_length=1, max_length=200)
+
+
+class CapaDisable(_Operation):
+    type: Literal["capa.disable"]
+    capaId: uuid.UUID
+    reason: str | None = Field(default=None, max_length=1_000)
 
 
 class DepartmentCreate(_Operation):
@@ -213,6 +235,8 @@ Operation = (
     MissionSet
     | TriggerCreate
     | PluginEnable
+    | CapaInstall
+    | CapaDisable
     | IntegrationPrepare
     | DepartmentCreate
     | DepartmentUpdate
@@ -297,13 +321,13 @@ async def target_revision(
     between the stale check and the capability applier. Proposal creation only
     snapshots and therefore never takes a lock.
 
-    `DepartmentCreate`/`AgentCreate` have no existing row to go stale --
+    `DepartmentCreate`/`AgentCreate`/`CapaInstall` have no existing row to go stale --
     `None` here always compares equal to itself in `_is_stale`, so a create
     proposal is never rejected as stale. `apply_operation` still validates
     `AgentCreate.departmentId` exists at apply time, which is the one thing
     that actually could have changed underneath it.
     """
-    if isinstance(operation, (DepartmentCreate, AgentCreate)):
+    if isinstance(operation, (DepartmentCreate, AgentCreate, CapaInstall)):
         return None
     if isinstance(operation, (DepartmentUpdate, DepartmentDelete)):
         statement = select(m.Department.config_revision).where(
@@ -370,6 +394,12 @@ async def target_revision(
         if changed is None:
             raise InvalidOperation()
         return str(changed)
+    if isinstance(operation, CapaDisable):
+        statement = select(m.Capa.config_revision).where(m.Capa.id == operation.capaId)
+        changed = await db.scalar(statement.with_for_update() if lock_for_apply else statement)
+        if changed is None:
+            return None
+        return str(changed)
     statement = select(m.Integration.config_revision).where(
         m.Integration.id == operation.integrationId
     )
@@ -420,6 +450,23 @@ async def apply_operation(db: AsyncSession, *, tenant_id: uuid.UUID, data: dict[
             capa_id=operation.pluginId,
             granted_permissions=operation.grantedPermissions,
         )
+        return
+    if isinstance(operation, CapaInstall):
+        found = find_plugin(operation.diskPluginId)
+        if found is None:
+            raise InvalidOperation()
+        try:
+            await install_with_dependencies(db, tenant_id=tenant_id, found=found, origin="local")
+        except PluginError as exc:
+            raise InvalidOperation() from exc
+        return
+    if isinstance(operation, CapaDisable):
+        try:
+            await disable_plugin(
+                db, tenant_id=tenant_id, capa_id=operation.capaId, reason=operation.reason
+            )
+        except PluginError as exc:
+            raise InvalidOperation() from exc
         return
     if isinstance(operation, DepartmentCreate):
         # Same defaults POST /departments uses (departments.py's
