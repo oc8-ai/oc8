@@ -17,6 +17,7 @@ from tests.conftest import AppSessionFactory
 
 from oc8 import models as m
 from oc8.agent.engine import run_agent
+from oc8.agent.harness.calls import call_sig
 from oc8.modelrouter import (
     CompletionResult,
     NeutralTool,
@@ -222,6 +223,67 @@ async def test_destructive_gate_parks_with_preview_and_stripped_justification(
         "justification": "Duplicate record",
         "preview": "Allow deleting record 7?",
     }
+
+
+@pytest.mark.parametrize(
+    ("verdict", "expected_calls", "expected_error"),
+    [
+        ("approve", 1, None),
+        ("reject", 0, "operator rejected this action"),
+    ],
+)
+async def test_resolved_b5_ask_does_not_park_again(
+    app_session: AppSessionFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    verdict: str,
+    expected_calls: int,
+    expected_error: str | None,
+) -> None:
+    tenant = uuid.uuid4()
+    recorder = _RecordingServer()
+    monkeypatch.setattr(
+        "oc8.agent.engine.McpSession",
+        _session_factory(recorder, ["delete_a"]),
+    )
+    monkeypatch.setattr(
+        "oc8.agent.engine.stream_completion_with_fallback",
+        _ScriptedStream(
+            [
+                _turn(
+                    "",
+                    ToolCall(
+                        id="c1",
+                        name="delete_a",
+                        arguments={"id": 7, "justification": "Duplicate record"},
+                    ),
+                ),
+                _turn("All done."),
+            ]
+        ),
+    )
+
+    async with app_session(tenant) as db:
+        agent, conn = await _fixture(
+            db,
+            tenant,
+            tool_scopes={"read": [], "modify": ["delete_a"]},
+            destructive_tools=["delete_a"],
+            approval_templates={"delete_a": "Allow deleting record {id}?"},
+        )
+        resolved_call = ToolCall(id="resolved", name="delete_a", arguments={"id": 7})
+        result = await run_agent(
+            db,
+            agent=agent,
+            task_text="go",
+            tenant_id=tenant,
+            mcp_conn=conn,
+            pre_decided={call_sig(resolved_call): verdict},
+        )
+
+    assert result.status == "done", result
+    assert len(recorder.windows) == expected_calls
+    if expected_error is not None:
+        assert expected_error in result.tool_calls[0]["result"]
 
 
 async def test_leading_read_batch_dispatches_concurrently(

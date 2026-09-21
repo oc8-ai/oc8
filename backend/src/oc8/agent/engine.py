@@ -889,9 +889,9 @@ async def run_agent(
                 # cope with that. Everything from the first call that breaks
                 # the run onward (a write, a control tool, a non-ALLOW
                 # decision, an outward-declared call) still goes through the
-                # per-call loop below unchanged -- gates run per call before
-                # dispatch either way, this only reorders WHEN the read
-                # calls' own dispatch happens, never what decides them.
+                # per-call loop below unchanged. Batch eligibility uses B0,
+                # tier, and outward classification; the read-tier gate runs
+                # later in the normal per-call ordering after hooks.
                 precomputed_outputs: dict[
                     str, tuple[str, dt.datetime, int, ToolError | None]
                 ] = {}
@@ -927,8 +927,6 @@ async def run_agent(
                             if verdict == "approve":
                                 pre_decision = Decision(Effect.ALLOW, "operator approved")
                         if pre_decision.effect is not Effect.ALLOW:
-                            break
-                        if _gate(_pre_tc).effect != "allow":
                             break
                         if classify_tier(
                             _pre_tc.name,
@@ -1094,7 +1092,17 @@ async def run_agent(
                         if decision.effect is Effect.ALLOW:
                             gate_verdict = _gate(tc)
                             if gate_verdict.effect == "ask":
-                                decision = Decision(Effect.REQUIRE_APPROVAL, gate_verdict.preview)
+                                verdict = pre_decided.get(_call_sig(tc)) if pre_decided else None
+                                if verdict == "approve":
+                                    decision = Decision(Effect.ALLOW, "operator approved")
+                                elif verdict == "reject":
+                                    decision = Decision(
+                                        Effect.DENY, "operator rejected this action"
+                                    )
+                                else:
+                                    decision = Decision(
+                                        Effect.REQUIRE_APPROVAL, gate_verdict.preview
+                                    )
                             elif gate_verdict.effect == "deny":
                                 decision = Decision(Effect.DENY, gate_verdict.reason)
                             tool_span.set_attribute("decision", decision.effect.value)

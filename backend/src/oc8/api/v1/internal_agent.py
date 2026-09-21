@@ -794,7 +794,15 @@ async def tool(
             identity=record_identity(tc.name, tc.arguments, focus_spec),
         )
         if gate_verdict.effect == "ask":
-            decision = Decision(Effect.REQUIRE_APPROVAL, gate_verdict.preview)
+            verdict = pre_decided_map(run.context.get("resolved_tool_approvals", [])).get(
+                _call_sig(tc)
+            )
+            if verdict == "approve":
+                decision = Decision(Effect.ALLOW, "operator approved")
+            elif verdict == "reject":
+                decision = Decision(Effect.DENY, "operator rejected this action")
+            else:
+                decision = Decision(Effect.REQUIRE_APPROVAL, gate_verdict.preview)
         elif gate_verdict.effect == "deny":
             decision = Decision(Effect.DENY, gate_verdict.reason)
 
