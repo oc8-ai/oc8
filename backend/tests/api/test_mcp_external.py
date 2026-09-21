@@ -449,10 +449,9 @@ async def test_copilot_list_integrations_resolves_used_by_to_agent_ids(
             )
     integrations = json.loads(r.json()["result"]["content"][0]["text"])
     assert [i["id"] for i in integrations] == [str(integration_id)]
-    # `.model_dump(mode="json")` here is field-name (snake_case), not the
-    # `by_alias=True` camelCase the frontend-facing REST routes use for the
-    # same DTO -- same choice the other five tools already made.
-    assert integrations[0]["used_by"] == [str(agent_id)]
+    # `by_alias=True` -- same camelCase `IntegrationDTO` shape the
+    # frontend-facing REST route (`GET /integrations`) serializes.
+    assert integrations[0]["usedBy"] == [str(agent_id)]
 
 
 async def test_copilot_list_connection_tools_returns_the_manifest_functions(

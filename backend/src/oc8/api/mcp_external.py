@@ -402,7 +402,7 @@ async def _call_tool(
                 select(m.Department).where(m.Department.tenant_id == principal.tenant_id)
             )
         ).scalars().all()
-        payload = [department_to_dto(d).model_dump(mode="json") for d in rows]
+        payload = [department_to_dto(d).model_dump(mode="json", by_alias=True) for d in rows]
         return _tool_result(json.dumps(payload))
 
     if name == "copilot_get_department":
@@ -413,7 +413,8 @@ async def _call_tool(
         department = await db.get(m.Department, department_id)
         if department is None or department.tenant_id != principal.tenant_id:
             return _tool_result("department not found", is_error=True)
-        return _tool_result(json.dumps(department_to_dto(department).model_dump(mode="json")))
+        payload = department_to_dto(department).model_dump(mode="json", by_alias=True)
+        return _tool_result(json.dumps(payload))
 
     if name == "copilot_list_agents":
         await _require(request, db, principal, perm(COPILOT, VIEW))
@@ -425,7 +426,8 @@ async def _call_tool(
                 return _tool_result("departmentId is invalid", is_error=True)
             statement = statement.where(m.Agent.department_id == department_id)
         rows = (await db.execute(statement)).scalars().all()
-        return _tool_result(json.dumps([agent_to_dto(a).model_dump(mode="json") for a in rows]))
+        payload = [agent_to_dto(a).model_dump(mode="json", by_alias=True) for a in rows]
+        return _tool_result(json.dumps(payload))
 
     if name == "copilot_get_agent":
         await _require(request, db, principal, perm(COPILOT, VIEW))
@@ -435,7 +437,8 @@ async def _call_tool(
         agent = await db.get(m.Agent, agent_id)
         if agent is None or agent.tenant_id != principal.tenant_id:
             return _tool_result("agent not found", is_error=True)
-        return _tool_result(json.dumps(agent_to_dto(agent).model_dump(mode="json")))
+        payload = agent_to_dto(agent).model_dump(mode="json", by_alias=True)
+        return _tool_result(json.dumps(payload))
 
     if name == "copilot_list_plugins":
         await _require(request, db, principal, perm(COPILOT, VIEW))
@@ -487,9 +490,10 @@ async def _call_tool(
             await db.execute(select(m.Integration).order_by(m.Integration.created_at))
         ).scalars().all()
         slug_to_id = await _agent_slug_to_id(db)
-        return _tool_result(
-            json.dumps([integration_to_dto(i, slug_to_id).model_dump(mode="json") for i in rows])
-        )
+        payload = [
+            integration_to_dto(i, slug_to_id).model_dump(mode="json", by_alias=True) for i in rows
+        ]
+        return _tool_result(json.dumps(payload))
 
     if name == "copilot_list_connection_tools":
         await _require(request, db, principal, perm(COPILOT, VIEW))
