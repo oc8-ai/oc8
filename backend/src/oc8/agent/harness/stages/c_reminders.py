@@ -2,9 +2,9 @@
 
 Every function here is shared verbatim by the in-process engine and the
 isolated runtime's /tool endpoint; they were moved out of engine.py without a
-change of behaviour. The per-result cap, the one-time cumulative budget note
-and the consecutive-identical-call nudge never block or rewrite a call, only
-what the model reads next.
+change of behaviour. The one-time cumulative budget note and the
+consecutive-identical-call nudge never block or rewrite a call, only what the
+model reads next.
 """
 
 from __future__ import annotations
@@ -68,40 +68,10 @@ def track_repeat_tool_call(
     )
 
 
-#: Tool results are appended to the transcript verbatim and replayed on every
-#: subsequent turn -- an unaggregated report page (e.g. a groupby result with
-#: hundreds of nested rows) can alone run into tens of thousands of
-#: characters, and a few such pages compound fast. Capped, not dropped: the
-#: model still gets most of one big result plus an explicit note that it was
-#: cut, so it learns to narrow the query instead of silently losing data with
-#: no visible cause -- see the 2026-09-15 oc8-obs incident, where an uncapped
-#: 1400-row pagination loop left no room for the model's own answer and the
-#: run failed with no error recorded anywhere (the truncated_empty path below
-#: this module's step loop, and internal_agent.py's identical one, produced
-#: an empty output rather than a diagnosable message).
-MAX_TOOL_RESULT_CHARS = 20_000
-
-
-def cap_tool_output(output: str) -> str:
-    """Bound a single tool result before it enters the transcript. Shared
-    verbatim by the in-process engine and the isolated runtime's /tool
-    endpoint, same reasoning as todo_continuation_reminder above."""
-    if len(output) <= MAX_TOOL_RESULT_CHARS:
-        return output
-    omitted = len(output) - MAX_TOOL_RESULT_CHARS
-    return (
-        f"{output[:MAX_TOOL_RESULT_CHARS]}\n\n"
-        f"[... {omitted} more characters omitted -- this result was too large to include "
-        "in full. Narrow the query (a smaller date range, fewer groupby dimensions, or a "
-        "lower limit) instead of paging through it in full.]"
-    )
-
-
 #: Warned once per run when tool results have cumulatively used a large slice
 #: of a typical context window, well before the model actually runs out of
-#: room -- the same incident MAX_TOOL_RESULT_CHARS documents showed that
-#: hitting the wall produces no error at all, just a silently empty answer,
-#: so the model needs the nudge while it can still act on it.
+#: room. Hitting the wall produces no error at all, just a silently empty
+#: answer, so the model needs the nudge while it can still act on it.
 TOOL_OUTPUT_BUDGET_WARNING_CHARS = 150_000
 
 
@@ -112,8 +82,7 @@ def tool_output_budget_reminder(total_chars: int) -> str:
     todo_continuation_reminder above."""
     return (
         f"[System note: tool results in this run have grown to roughly {total_chars:,} "
-        "characters so far. If you are paging through a report or list, stop and switch "
-        "to a narrower query or a server-side aggregation instead of continuing to page "
-        "-- an oversized transcript can silently exhaust your own response budget later "
-        "in this run, with no error message.]"
+        "characters so far. The files are kept; query narrower or process them with "
+        "run_program instead of paging further -- an oversized transcript can silently "
+        "exhaust your own response budget later in this run, with no error message.]"
     )

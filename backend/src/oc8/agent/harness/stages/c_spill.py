@@ -7,7 +7,13 @@ Pure text helpers live here. Persistence is `persist_spill` (Task 2) using
 from __future__ import annotations
 
 import re
+import uuid
 from dataclasses import dataclass
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from oc8 import models as m
+from oc8.storage.attachments import store_attachment_bytes
 
 SPILL_THRESHOLD_CHARS = 8_000
 SPILL_HEAD_CHARS = 3_000
@@ -48,3 +54,17 @@ def maybe_spill(tool: str, body: str, *, step_no: int) -> tuple[str, Spill | Non
         return body, None
     filename = spill_filename(step_no, tool)
     return spill_preview(tool, body, filename), Spill(filename=filename, content=body)
+
+
+async def persist_spill(
+    db: AsyncSession, *, tenant_id: uuid.UUID, run_id: uuid.UUID, spill: Spill
+) -> m.FileAttachment:
+    return await store_attachment_bytes(
+        db,
+        tenant_id=tenant_id,
+        owner_type="agent_run",
+        owner_id=run_id,
+        filename=spill.filename,
+        raw=spill.content.encode("utf-8"),
+        content_type="text/plain",
+    )

@@ -5,10 +5,8 @@ a later package with an eval delta, not here."""
 from __future__ import annotations
 
 from oc8.agent.harness.stages.c_reminders import (
-    MAX_TOOL_RESULT_CHARS,
     REPEAT_CALL_THRESHOLDS,
     TOOL_OUTPUT_BUDGET_WARNING_CHARS,
-    cap_tool_output,
     tool_output_budget_reminder,
     track_repeat_tool_call,
 )
@@ -16,27 +14,18 @@ from oc8.modelrouter import ToolCall
 
 
 def test_constants_are_unchanged() -> None:
-    assert MAX_TOOL_RESULT_CHARS == 20_000
     assert TOOL_OUTPUT_BUDGET_WARNING_CHARS == 150_000
     assert REPEAT_CALL_THRESHOLDS == (3, 5, 8)
 
 
-def test_a_result_at_the_cap_is_untouched() -> None:
-    text = "x" * MAX_TOOL_RESULT_CHARS
-    assert cap_tool_output(text) is text
-
-
-def test_an_oversized_result_is_cut_with_the_omitted_count() -> None:
-    text = "x" * (MAX_TOOL_RESULT_CHARS + 7)
-    capped = cap_tool_output(text)
-    assert capped.startswith("x" * MAX_TOOL_RESULT_CHARS + "\n\n[... 7 more characters omitted")
-    assert capped.endswith("instead of paging through it in full.]")
-
-
 def test_budget_reminder_names_the_size_with_thousands_separator() -> None:
     note = tool_output_budget_reminder(150_123)
-    assert note.startswith("[System note: tool results in this run have grown to roughly 150,123 ")
-    assert note.endswith("with no error message.]")
+    assert note == (
+        "[System note: tool results in this run have grown to roughly 150,123 "
+        "characters so far. The files are kept; query narrower or process them with "
+        "run_program instead of paging further -- an oversized transcript can silently "
+        "exhaust your own response budget later in this run, with no error message.]"
+    )
 
 
 def _call(name: str = "search_records", **arguments: object) -> ToolCall:

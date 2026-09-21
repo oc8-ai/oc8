@@ -40,6 +40,7 @@ from oc8.agent.harness.stages.b_authorize import (
 )
 from oc8.agent.harness.stages.b_outward import check_outward, remember_outward
 from oc8.agent.harness.stages.c_reminders import track_repeat_tool_call
+from oc8.agent.harness.stages.c_spill import persist_spill
 from oc8.agent.mcp_client import McpSession
 from oc8.agent.mcp_env import resolve_mcp_env
 from oc8.agent.mcp_requirements import wrap_with_requirements
@@ -1246,6 +1247,10 @@ async def run_agent(
                             )
                         shaped = harness.shape(tc, output, max_steps=max_steps, tz=tz)
                         output = shaped.output
+                        if shaped.spill is not None and run_id is not None:
+                            await persist_spill(
+                                db, tenant_id=tenant_id, run_id=run_id, spill=shaped.spill
+                            )
                         _tool_call_entry: dict[str, Any] = {
                             "tool": tc.name,
                             "arguments": tc.arguments,

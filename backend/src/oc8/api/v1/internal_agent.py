@@ -36,6 +36,7 @@ from oc8.agent.harness.calls import call_sig as _call_sig
 from oc8.agent.harness.stages.b_authorize import authorize as _authorize
 from oc8.agent.harness.stages.b_idempotency import record_for, replay_for
 from oc8.agent.harness.stages.b_outward import check_outward, remember_outward
+from oc8.agent.harness.stages.c_spill import persist_spill
 from oc8.agent.mcp_client import McpSession
 from oc8.agent.mcp_env import resolve_mcp_env
 from oc8.agent.mcp_requirements import wrap_with_requirements
@@ -662,6 +663,7 @@ class ToolBody(BaseModel):
 class ToolResult(BaseModel):
     status: str  # ok | denied | waiting_for_approval | waiting_for_input
     output: str = ""
+    spill: dict[str, str] | None = None  # {filename, content} for the shell mirror
 
 
 @router.post(
@@ -966,6 +968,15 @@ async def tool(
     harness.state.step_no = int(ctx.get("steps", 0))
     shaped = harness.shape(tc, output, max_steps=_max_steps(agent), tz=str(ctx.get("tz", "UTC")))
     output = shaped.output
+    if shaped.spill is not None:
+        await persist_spill(
+            db, tenant_id=run.tenant_id, run_id=run.id, spill=shaped.spill
+        )
+    spill_payload = (
+        {"filename": shaped.spill.filename, "content": shaped.spill.content}
+        if shaped.spill is not None
+        else None
+    )
 
     # Append the tool result to the transcript. This must come directly after the
     # assistant message that requested the call -- anything inserted between the
@@ -1016,8 +1027,12 @@ async def tool(
     await publish_run_tool_call(run.tenant_id, run_id=run.id, call=live_call)
 
     if suspend is not None:
-        return ToolResult(status=suspend, output=output)
-    return ToolResult(status="denied" if decision.effect is Effect.DENY else "ok", output=output)
+        return ToolResult(status=suspend, output=output, spill=spill_payload)
+    return ToolResult(
+        status="denied" if decision.effect is Effect.DENY else "ok",
+        output=output,
+        spill=spill_payload,
+    )
 
 
 # --------------------------------------------------------------------- finish

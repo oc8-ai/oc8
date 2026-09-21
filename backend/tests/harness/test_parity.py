@@ -19,7 +19,7 @@ import pytest
 
 from oc8 import models as m
 from oc8.agent.engine import run_agent
-from oc8.agent.harness.stages.c_reminders import MAX_TOOL_RESULT_CHARS
+from oc8.agent.harness.stages.c_spill import SPILL_THRESHOLD_CHARS
 from oc8.api.v1.internal_agent import _to_messages
 from oc8.modelrouter import (
     CompletionResult,
@@ -33,7 +33,7 @@ from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
 
-_BIG = "r" * (MAX_TOOL_RESULT_CHARS + 50)
+_BIG = "r" * (SPILL_THRESHOLD_CHARS + 50)
 
 
 def _turn(text: str, *calls: ToolCall) -> CompletionResult:
@@ -301,7 +301,7 @@ async def _run_isolated(
 
 
 async def test_both_runtimes_produce_the_same_transcript(
-    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch, minio_url: str
 ) -> None:
     in_process, in_process_text = await _run_in_process(app_session, monkeypatch)
     isolated, isolated_text = await _run_isolated(app_session, monkeypatch)
@@ -315,6 +315,6 @@ async def test_both_runtimes_produce_the_same_transcript(
     assert ("user", "You are repeating the ex") in roles_and_heads, "C5 repeat nudge missing"
     assert ("user", "You indicated you are fi") in roles_and_heads, "D1 nudge missing"
     tool_msgs = [c for role, c, _, _ in left if role == "tool"]
-    assert any("more characters omitted" in str(c) for c in tool_msgs), "C5 cap missing"
+    assert any("kept as file" in str(c) for c in tool_msgs), "C1 spill missing"
 
     assert in_process_text == isolated_text == "Summary written."

@@ -1,8 +1,16 @@
+import uuid
+
+import pytest
+from sqlalchemy import select
+
+from oc8 import models as m
 from oc8.agent.harness.stages.c_spill import (
     SPILL_HEAD_CHARS,
     SPILL_TAIL_CHARS,
     SPILL_THRESHOLD_CHARS,
+    Spill,
     maybe_spill,
+    persist_spill,
     spill_filename,
 )
 
@@ -47,3 +55,31 @@ def test_an_oversized_body_becomes_a_preview_and_a_spill() -> None:
     omitted = len(body) - SPILL_HEAD_CHARS - SPILL_TAIL_CHARS
     assert f"… {omitted} chars omitted …" in text
     assert "M" * middle not in text
+
+
+@pytest.mark.asyncio
+async def test_persist_spill_writes_an_agent_run_attachment(app_session, minio_url: str) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        run = m.AgentRun(tenant_id=tenant, agent_id=uuid.uuid4(), state="running")
+        db.add(run)
+        await db.flush()
+        row = await persist_spill(
+            db,
+            tenant_id=tenant,
+            run_id=run.id,
+            spill=Spill(filename="step-1-search_records.txt", content="hello-spill"),
+        )
+        assert row.owner_type == "agent_run"
+        assert row.owner_id == run.id
+        assert row.filename == "step-1-search_records.txt"
+        assert row.content_type == "text/plain"
+        assert row.extracted_text == "hello-spill"
+        found = (
+            await db.execute(
+                select(m.FileAttachment).where(
+                    m.FileAttachment.filename == "step-1-search_records.txt"
+                )
+            )
+        ).scalar_one()
+        assert found.id == row.id

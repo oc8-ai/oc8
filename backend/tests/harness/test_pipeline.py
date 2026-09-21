@@ -9,10 +9,8 @@ import datetime as dt
 
 from oc8.agent.harness import FinishVerdict, Harness, HarnessState, ModelCaps
 from oc8.agent.harness.prompts import format_step_stamp, resolve_timezone
-from oc8.agent.harness.stages.c_reminders import (
-    MAX_TOOL_RESULT_CHARS,
-    TOOL_OUTPUT_BUDGET_WARNING_CHARS,
-)
+from oc8.agent.harness.stages.c_reminders import TOOL_OUTPUT_BUDGET_WARNING_CHARS
+from oc8.agent.harness.stages.c_spill import SPILL_THRESHOLD_CHARS, Spill
 from oc8.modelrouter import ToolCall
 
 
@@ -56,32 +54,31 @@ def test_a_small_result_passes_through_with_no_reminders() -> None:
     assert h.state.repeat == {"sig": 'search_records\n{"model": "a"}', "count": 1}
 
 
-def test_an_oversized_result_is_capped_and_the_capped_size_is_what_counts() -> None:
+def test_an_oversized_result_is_spilled_and_the_preview_size_is_what_counts() -> None:
     h = Harness()
-    shaped = h.shape(_call(), "x" * (MAX_TOOL_RESULT_CHARS + 100), max_steps=40, tz="UTC")
-    # cap_tool_output adds a note (~200+ chars) and the step stamp adds its own
-    # prefix, so allow for both on top of the cap.
-    assert len(shaped.output) < MAX_TOOL_RESULT_CHARS + 300
+    h.state.step_no = 2
+    body = "x" * (SPILL_THRESHOLD_CHARS + 100)
+    shaped = h.shape(_call(), body, max_steps=40, tz="UTC")
+    assert shaped.spill == Spill(filename="step-2-search_records.txt", content=body)
+    assert 'kept as file "step-2-search_records.txt"' in shaped.output
+    assert shaped.output.startswith("[step 2/40 · ")
+    assert "… 4300 chars omitted …" in shaped.output
     assert h.state.tool_output_chars == len(shaped.output)
 
 
 def test_budget_note_fires_once_when_the_cumulative_size_crosses_the_line() -> None:
-    h = Harness()
-    # step_no/max_steps/tz never change across the loop below, so the stamp's
-    # length is constant -- size the chunk so each stamped-and-capped result
-    # is exactly MAX_TOOL_RESULT_CHARS, matching the pre-stamp behavior this
-    # test's numbers were chosen for.
-    prefix_len = _stamp_prefix_len(h.state.step_no, 40, "UTC")
-    chunk = "x" * (MAX_TOOL_RESULT_CHARS - prefix_len)
+    chunk = "x"
+    increment = _stamp_prefix_len(0, 40, "UTC") + len(chunk)
+    h = Harness(
+        state=HarnessState(tool_output_chars=TOOL_OUTPUT_BUDGET_WARNING_CHARS - increment)
+    )
     notes: list[list[str]] = []
     for i in range(10):
         notes.append(h.shape(_call(i=i), chunk, max_steps=40, tz="UTC").reminders)
     first_note_at = next(i for i, r in enumerate(notes) if r)
-    # 20_000 * 8 = 160_000 >= 150_000 -> the 8th result (index 7) trips it.
-    assert first_note_at == 7
+    assert first_note_at == 0
     assert h.state.tool_output_budget_warned is True
-    assert TOOL_OUTPUT_BUDGET_WARNING_CHARS <= 8 * MAX_TOOL_RESULT_CHARS
-    assert all(not r for r in notes[8:]), "the budget note is issued once per run"
+    assert all(not r for r in notes[1:]), "the budget note is issued once per run"
 
 
 def test_repeat_nudge_comes_before_the_budget_note() -> None:

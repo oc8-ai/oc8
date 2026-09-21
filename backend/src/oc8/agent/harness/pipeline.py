@@ -19,10 +19,10 @@ from oc8.agent.harness.caps import ModelCaps
 from oc8.agent.harness.prompts import format_step_stamp, resolve_timezone
 from oc8.agent.harness.stages.c_reminders import (
     TOOL_OUTPUT_BUDGET_WARNING_CHARS,
-    cap_tool_output,
     tool_output_budget_reminder,
     track_repeat_tool_call,
 )
+from oc8.agent.harness.stages.c_spill import Spill, maybe_spill
 from oc8.agent.harness.stages.d_todo import (
     TODO_CONTINUATION_MAX_ROUNDS,
     todo_continuation_exhausted_note,
@@ -34,10 +34,12 @@ from oc8.modelrouter import ToolCall
 
 @dataclass
 class ShapedResult:
-    #: What goes into the tool message (capped).
+    #: What goes into the tool message.
     output: str
     #: User-role messages to append after the tool message, in this order.
     reminders: list[str] = field(default_factory=list)
+    #: Full tool result to persist when the output is represented by a preview.
+    spill: Spill | None = None
 
 
 @dataclass(frozen=True)
@@ -67,7 +69,7 @@ class Harness:
     # ----------------------------------------------------------------- phase C
 
     def shape(self, tc: ToolCall, output: str, *, max_steps: int, tz: str = "UTC") -> ShapedResult:
-        """C3 + C5: prepend the step stamp, then cap the result, count it
+        """C1 + C3 + C5: spill large results, prepend the step stamp, count it
         against the per-run budget, track the consecutive-identical-call
         state. Order of the reminders matches what both runtimes appended
         before the move: repeat nudge, then budget note.
@@ -77,9 +79,9 @@ class Harness:
         stamp = format_step_stamp(
             step_no=self.state.step_no, max_steps=max_steps, now=now, tz_label=tz_label
         )
-        output = f"{stamp} {output}"
-        capped = cap_tool_output(output)
-        self.state.tool_output_chars += len(capped)
+        preview, spill = maybe_spill(tc.name, output, step_no=self.state.step_no)
+        stamped = f"{stamp} {preview}"
+        self.state.tool_output_chars += len(stamped)
         budget_note: str | None = None
         if (
             not self.state.tool_output_budget_warned
@@ -89,7 +91,7 @@ class Harness:
             budget_note = tool_output_budget_reminder(self.state.tool_output_chars)
         self.state.repeat, repeat_reminder = track_repeat_tool_call(self.state.repeat, tc)
         reminders = [r for r in (repeat_reminder, budget_note) if r is not None]
-        return ShapedResult(output=capped, reminders=reminders)
+        return ShapedResult(output=stamped, reminders=reminders, spill=spill)
 
     # ----------------------------------------------------------------- phase D
 
