@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agents.hire import require_hire_approval
+from oc8.auth import Principal
 from oc8.authz import pdp
 from oc8.automation.catalogue import list_installed_automation_events
 from oc8.capas.discovery import connection_supports_value_spec, resolve_tool_pack_connection
@@ -31,6 +32,14 @@ from oc8.copilot.guardrail_interpret import (
 from oc8.modelrouter.subscription_guard import (
     SubscriptionModelNotManualOnly,
     assert_manual_only_compatible,
+)
+from oc8.runtime.registry import (
+    RuntimeCapabilityError,
+    RuntimeNotExecutableError,
+    RuntimeNotFoundError,
+    assign_runtime,
+    check_runtime_capabilities,
+    resolve_runtime_plugin,
 )
 from oc8.triggers.service import create_trigger
 
@@ -141,6 +150,30 @@ class AgentNarrowingReset(_Operation):
     connectionName: str = Field(min_length=1, max_length=200)
 
 
+class AgentRuntimeAssign(_Operation):
+    """`runtimePluginId` has no default -- the key must always be present in
+    the payload, and null explicitly clears the runtime. Same strictness
+    `RuntimeAssignRequest` enforces on the REST route, for the same reason:
+    an absent key silently means something different from an explicit null,
+    and only the latter is what "clear the runtime" should ever mean."""
+
+    type: Literal["agent.runtime.assign"]
+    agentId: uuid.UUID
+    runtimePluginId: str | None
+
+
+class AgentModelSwitch(_Operation):
+    type: Literal["agent.model.switch"]
+    agentId: uuid.UUID
+    modelConfigId: uuid.UUID
+
+
+class AgentSkillAssign(_Operation):
+    type: Literal["agent.skill.assign"]
+    agentId: uuid.UUID
+    skillVersionId: uuid.UUID
+
+
 class GuardrailConditionInput(BaseModel):
     """One `payload.conditions[]` entry for `GuardrailSet` -- field-for-field
     the same shape as `authz.pdp.Condition`/`ConditionDTO`, kept a distinct
@@ -192,6 +225,9 @@ Operation = (
     | AgentRestore
     | AgentNarrowingSet
     | AgentNarrowingReset
+    | AgentRuntimeAssign
+    | AgentModelSwitch
+    | AgentSkillAssign
     | GuardrailSet
 )
 _OPERATIONS = TypeAdapter(list[Operation])
@@ -300,6 +336,9 @@ async def target_revision(
             AgentLifecycleSet,
             AgentNarrowingSet,
             AgentNarrowingReset,
+            AgentRuntimeAssign,
+            AgentModelSwitch,
+            AgentSkillAssign,
         ),
     ):
         statement = select(m.Agent.config_revision).where(
@@ -599,6 +638,84 @@ async def apply_operation(db: AsyncSession, *, tenant_id: uuid.UUID, data: dict[
         overridden = set(agent.narrowing_overridden_keys or [])
         overridden.discard(operation.connectionName)
         agent.narrowing_overridden_keys = sorted(overridden)
+        await db.flush()
+        return
+    if isinstance(operation, AgentRuntimeAssign):
+        agent = await db.get(m.Agent, operation.agentId)
+        if agent is None or agent.deleted_at is not None:
+            raise InvalidOperation()
+        principal = Principal(subject="copilot", tenant_id=tenant_id, role="org_admin")
+        try:
+            await assign_runtime(
+                db,
+                tenant_id=tenant_id,
+                agent=agent,
+                runtime_ref=operation.runtimePluginId,
+                principal=principal,
+            )
+        except (RuntimeNotFoundError, RuntimeNotExecutableError, RuntimeCapabilityError) as exc:
+            raise InvalidOperation() from exc
+        await db.flush()
+        return
+    if isinstance(operation, AgentModelSwitch):
+        agent = await db.get(m.Agent, operation.agentId)
+        if agent is None or agent.deleted_at is not None:
+            raise InvalidOperation()
+        mc = await db.get(m.ModelConfig, operation.modelConfigId)
+        if mc is None:
+            raise InvalidOperation()
+        try:
+            await assert_manual_only_compatible(db, agent_id=agent.id, model_config_id=mc.id)
+        except SubscriptionModelNotManualOnly as exc:
+            raise InvalidOperation() from exc
+        agent.model_config_id = mc.id
+        presentation = dict(agent.presentation or {})
+        presentation["llm"] = mc.display_name or mc.model
+        presentation["provider"] = mc.provider
+        agent.presentation = presentation
+        await db.flush()
+        return
+    if isinstance(operation, AgentSkillAssign):
+        agent = await db.get(m.Agent, operation.agentId)
+        if agent is None or agent.deleted_at is not None:
+            raise InvalidOperation()
+        version = await db.get(m.SkillVersion, operation.skillVersionId)
+        if version is None:
+            raise InvalidOperation()
+        dept = await db.get(m.Department, agent.department_id)
+        frame = dept.frame if dept else {}
+        requires = version.definition.get("requires", {})
+        granted = await db.execute(
+            select(m.KnowledgeGrant.kb_id).where(
+                m.KnowledgeGrant.grantee_id.in_([agent.id, agent.department_id])
+            )
+        )
+        granted_kb_ids = {str(k) for k in granted.scalars().all()}
+        if pdp.missing_skill_requirements(frame, agent.narrowing, requires, granted_kb_ids):
+            raise InvalidOperation()
+        resolved = await resolve_runtime_plugin(db, tenant_id=tenant_id, agent=agent)
+        if resolved is not None:
+            _, runtime_version = resolved
+            if check_runtime_capabilities(
+                has_supervision=False,
+                has_enabled_skills=True,
+                runtime_capabilities=list(runtime_version.capabilities),
+            ):
+                raise InvalidOperation()
+        # Same row shape `assign_skill` (`api/v1/agents_write.py`, the
+        # `db.add(m.SkillAssignment(...))` call around line 1087) inserts on
+        # the fresh-assignment path: tenant_id/agent_id/skill_version_id plus
+        # an explicit enabled=True. `SkillAssignment` has no `granted_by`/
+        # `source` column (see `oc8.models.skills.SkillAssignment`) -- that
+        # was only ever a possibility to rule out, not a real field.
+        db.add(
+            m.SkillAssignment(
+                tenant_id=tenant_id,
+                agent_id=agent.id,
+                skill_version_id=version.id,
+                enabled=True,
+            )
+        )
         await db.flush()
         return
     if isinstance(operation, GuardrailSet):
