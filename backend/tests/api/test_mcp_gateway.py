@@ -274,7 +274,7 @@ async def test_a_notification_gets_no_body(app_session: AppSessionFactory) -> No
 async def test_tools_list_advertises_the_connections_tools(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent_id, run_id, _t = await _seed(db, tenant)
@@ -294,7 +294,7 @@ async def test_tools_list_hides_what_the_frame_forbids(
     """Advertising a tool every call of which would be denied only invites the
     model to waste turns on it -- the same reasoning as withholding delegate_task
     from a non-lead."""
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tenant = uuid.uuid4()
     read_only = {"tools": {"odoo": {"enabled": True, "read": True, "modify": False}}}
     async with app_session(tenant) as db:
@@ -376,7 +376,7 @@ async def test_an_oauth_backed_connection_is_not_left_pooled(
     from oc8.agent import mcp_pool
 
     _FakeMcp.calls = []
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         oauth_id = await _oauth_connection(db, tenant)
@@ -411,7 +411,7 @@ async def test_a_connection_whose_token_cannot_be_minted_does_not_blank_tools_li
     unreachable server. An Azure blip must cost the agent Microsoft 365 and
     nothing else.
     """
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         # An oauth: ref and no oauth_connection_id: the setup form was never
@@ -435,7 +435,7 @@ async def test_a_call_on_a_connection_whose_token_cannot_be_minted_is_a_tool_err
 ) -> None:
     """Same placement question on the call path: the model gets a readable
     error, not a 500 out of the gateway."""
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent_id, run_id, _t = await _seed(
@@ -461,7 +461,7 @@ async def test_an_allowed_call_is_forwarded(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _FakeMcp.calls = []
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent_id, run_id, _t = await _seed(db, tenant)
@@ -484,7 +484,7 @@ async def test_a_denied_call_is_a_readable_tool_error_not_a_transport_error(
     reason and adapts. A JSON-RPC error would look like a broken server and the
     harness would retry or abort instead."""
     _FakeMcp.calls = []
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tenant = uuid.uuid4()
     read_only = {"tools": {"odoo": {"enabled": True, "read": True, "modify": False}}}
     async with app_session(tenant) as db:
@@ -505,7 +505,7 @@ async def test_a_repeated_write_is_idempotent(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _FakeMcp.calls = []
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent_id, run_id, _t = await _seed(db, tenant)
@@ -528,7 +528,7 @@ async def test_a_second_message_to_the_same_record_never_reaches_the_server(
     because the agent IS allowed to send. What makes the second one wrong is the
     recipient, so that is what the guard keys on."""
     _FakeMcp.calls = []
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tenant = uuid.uuid4()
     may_send = {"tools": {"odoo": {"enabled": True, "read": True, "modify": True}}}
     async with app_session(tenant) as db:
@@ -574,7 +574,7 @@ async def test_a_message_to_a_different_record_is_still_allowed(
     """One message per RECIPIENT, not one per run: a run that legitimately works
     two records must be able to answer both."""
     _FakeMcp.calls = []
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tenant = uuid.uuid4()
     may_send = {"tools": {"odoo": {"enabled": True, "read": True, "modify": True}}}
     async with app_session(tenant) as db:
@@ -614,7 +614,7 @@ async def test_a_connection_that_declares_no_outward_tool_is_unguarded(
 ) -> None:
     """Nothing changes for a connection that has not thought about this."""
     _FakeMcp.calls = []
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tenant = uuid.uuid4()
     may_send = {"tools": {"odoo": {"enabled": True, "read": True, "modify": True}}}
     async with app_session(tenant) as db:
@@ -670,7 +670,7 @@ async def test_both_systems_tools_are_offered(
     the department's oldest connected system with a literal .limit(1). An agent
     set up with two systems saw one of them, silently."""
     _FakeMcp.by_command = {}
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tenant = uuid.uuid4()
     frame = {
         "tools": {
@@ -708,7 +708,7 @@ async def test_a_call_reaches_the_system_that_owns_the_tool(
     software."""
     _FakeMcp.by_command = {}
     _FakeMcp.routed = []
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tenant = uuid.uuid4()
     frame = {
         "tools": {
@@ -750,7 +750,7 @@ async def test_a_name_both_systems_offer_is_only_callable_qualified(
     it cannot silently write to the wrong system."""
     _FakeMcp.by_command = {}
     _FakeMcp.routed = []
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tenant = uuid.uuid4()
     frame = {
         "tools": {
@@ -792,7 +792,7 @@ async def test_the_frame_can_grant_one_system_and_withhold_the_other(
 ) -> None:
     """The ceiling is per connection. Two systems must not mean all-or-nothing."""
     _FakeMcp.by_command = {}
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tenant = uuid.uuid4()
     frame = {
         "tools": {
@@ -831,7 +831,7 @@ async def test_a_call_over_the_threshold_suspends_for_approval(
     from sqlalchemy import select
 
     _FakeMcp.calls = []
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
 
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
@@ -901,7 +901,7 @@ async def test_a_held_call_returns_its_readable_error_immediately_without_waitin
     from sqlalchemy import select
 
     _FakeMcp.calls = []
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
 
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
@@ -987,7 +987,7 @@ async def test_an_assigned_skill_is_offered_as_a_tool(
     async with app_session(tenant) as db:
         agent_id, run_id, _t = await _seed(db, tenant)
         await _assign_skill(db, tenant, agent_id)
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
 
     code, body = await _rpc(_token(tenant, agent_id, run_id), "tools/list")
     assert code == 200, body
@@ -1005,7 +1005,7 @@ async def test_calling_a_skill_tool_returns_its_procedure_and_records_it(
     async with app_session(tenant) as db:
         agent_id, run_id, _t = await _seed(db, tenant)
         version_id = await _assign_skill(db, tenant, agent_id)
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
 
     _FakeMcp.calls = []
     tok = _token(tenant, agent_id, run_id)
@@ -1039,7 +1039,7 @@ async def test_request_decision_is_offered_and_works_through_the_gateway(
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent_id, run_id, task_id = await _seed(db, tenant)
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tok = _token(tenant, agent_id, run_id)
 
     _c, listed = await _rpc(tok, "tools/list")
@@ -1080,7 +1080,7 @@ async def test_ask_user_is_offered_through_the_gateway(
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent_id, run_id, _t = await _seed(db, tenant)
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tok = _token(tenant, agent_id, run_id)
 
     _c, listed = await _rpc(tok, "tools/list")
@@ -1104,7 +1104,7 @@ async def test_ask_user_is_withheld_from_the_tenant_assistant_through_the_gatewa
         agent.is_tenant_assistant = True
         agent.is_team_lead = True
         await db.flush()
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tok = _token(tenant, agent_id, run_id)
 
     _c, listed = await _rpc(tok, "tools/list")
@@ -1122,7 +1122,7 @@ async def test_search_knowledge_is_offered_through_the_gateway(
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent_id, run_id, _t = await _seed(db, tenant)
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
 
     _c, listed = await _rpc(_token(tenant, agent_id, run_id), "tools/list")
     assert "search_knowledge" in [t["name"] for t in listed["result"]["tools"]]
@@ -1136,7 +1136,7 @@ async def test_a_knowledge_lookup_with_no_grants_says_so_rather_than_failing(
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent_id, run_id, _t = await _seed(db, tenant)
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
 
     code, body = await _rpc(
         _token(tenant, agent_id, run_id),
@@ -1154,7 +1154,7 @@ async def test_render_component_is_offered_through_the_gateway(
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent_id, run_id, _t = await _seed(db, tenant)
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
 
     _c, listed = await _rpc(_token(tenant, agent_id, run_id), "tools/list")
     assert "render_component" in [t["name"] for t in listed["result"]["tools"]]
@@ -1171,7 +1171,7 @@ async def test_rendering_a_granted_component_publishes_a_realtime_event(
         ) -> None:
             published.append((type_, data))
 
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     monkeypatch.setattr("oc8.realtime.bus.get_event_bus", lambda: _SpyBus())
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
@@ -1217,7 +1217,7 @@ async def test_rendering_a_granted_component_publishes_a_realtime_event(
 async def test_rendering_an_ungranted_component_is_an_error_not_a_silent_no_op(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent_id, run_id, _t = await _seed(db, tenant)
@@ -1245,7 +1245,7 @@ async def test_the_memory_tools_are_offered_and_the_tier_policy_still_applies(
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent_id, run_id, _t = await _seed(db, tenant)
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tok = _token(tenant, agent_id, run_id)
 
     _c, listed = await _rpc(tok, "tools/list")
@@ -1280,7 +1280,7 @@ async def test_a_frame_can_name_which_tools_a_system_offers(
     should see."""
     _FakeMcp.by_command = {}
     _FakeMcp.routed = []
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tenant = uuid.uuid4()
     frame = {
         "tools": {
@@ -1310,7 +1310,7 @@ async def test_a_withheld_tool_is_refused_even_when_called_anyway(
     earlier run, or in its mission -- will call it regardless."""
     _FakeMcp.by_command = {}
     _FakeMcp.routed = []
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tenant = uuid.uuid4()
     frame = {
         "tools": {
@@ -1384,7 +1384,7 @@ async def test_the_second_agent_is_turned_away_from_a_record_being_worked(
     in the same second, so a mission rule ("claim it before you write") cannot
     close the race -- by the time either writes, both have decided to."""
     _FakeMcp.calls = []
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         first_agent, first_run, _t = await _seed(
@@ -1416,7 +1416,7 @@ async def test_the_holder_may_keep_working_its_own_record(
     """Claiming a record must not lock the agent out of it: a run answers, then
     moves the ticket on."""
     _FakeMcp.calls = []
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent_id, run_id, _t = await _seed(
@@ -1443,7 +1443,7 @@ async def test_reading_a_record_someone_else_holds_is_fine(
     """Two agents looking at the same queue is not a conflict; it is how a queue
     works. Only a CHANGE takes the record."""
     _FakeMcp.calls = []
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         first_agent, first_run, _t = await _seed(
@@ -1491,7 +1491,7 @@ async def test_a_run_is_stopped_when_it_reaches_past_its_limit(
     "a handful mishandled, then a stop and a human who has been told".
     """
     _FakeMcp.calls = []
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tenant = uuid.uuid4()
     frame = {**MAY_WRITE, "limits": {"records_per_run": 3}}
     async with app_session(tenant) as db:
@@ -1549,7 +1549,7 @@ async def test_working_one_record_many_times_never_hits_the_limit(
     """The radius is how FAR a run reaches, not how much it does. An agent that
     answers, labels and closes one ticket must not be stopped halfway."""
     _FakeMcp.calls = []
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tenant = uuid.uuid4()
     frame = {**MAY_WRITE, "limits": {"records_per_run": 1}}
     async with app_session(tenant) as db:
@@ -1578,7 +1578,7 @@ async def test_a_department_can_lift_the_limit(
     Zero means no ceiling -- deliberately explicit, so nobody removes the
     protection by forgetting to configure it."""
     _FakeMcp.calls = []
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tenant = uuid.uuid4()
     frame = {**MAY_WRITE, "limits": {"records_per_run": 0}}
     async with app_session(tenant) as db:
@@ -1606,7 +1606,7 @@ async def test_the_limit_holds_without_a_department_saying_anything(
     """Enforced by DEFAULT, not opt-in. A limit nobody switched on protects
     nobody, and the agent that gets attacked will be the one nobody configured."""
     _FakeMcp.calls = []
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent_id, run_id, _t = await _seed(
@@ -1666,7 +1666,7 @@ async def test_a_team_lead_can_delegate_through_the_gateway(
         db.add(mate)
         await db.flush()
         mate_id = mate.id
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     tok = _token(tenant, agent_id, run_id)
 
     _c, listed = await _rpc(tok, "tools/list")
@@ -1710,7 +1710,7 @@ async def test_delegate_task_is_not_offered_to_an_agent_that_leads_nobody(
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent_id, run_id, _t = await _seed(db, tenant)
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _FakeMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
 
     _c, listed = await _rpc(_token(tenant, agent_id, run_id), "tools/list")
     assert "delegate_task" not in [t["name"] for t in listed["result"]["tools"]]
@@ -2016,7 +2016,7 @@ async def test_a_connections_requirements_wrap_both_gateway_launch_sites(
             super().__init__(command, *a, **kw)
 
     _FakeMcp.calls = []
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _RecordingMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _RecordingMcp)
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent_id, run_id, _t = await _seed(
@@ -2062,7 +2062,7 @@ async def test_a_connection_without_requirements_is_launched_verbatim(
             launched.append((command, list(args or [])))
             super().__init__(command, *a, **kw)
 
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _RecordingMcp)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _RecordingMcp)
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent_id, run_id, _t = await _seed(

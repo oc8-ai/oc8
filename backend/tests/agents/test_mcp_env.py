@@ -11,7 +11,10 @@ other plugin uses must keep behaving exactly as they did.
 from __future__ import annotations
 
 import base64
+import socket
+import subprocess
 import sys
+import time
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
@@ -23,7 +26,7 @@ import pytest
 from oc8 import models as m
 from oc8.agent.engine import run_agent
 from oc8.agent.mcp_env import has_oauth_ref, resolve_mcp_env
-from oc8.modelrouter import CompletionResult, Usage, chunk_from_result
+from oc8.modelrouter import CompletionResult, ToolCall, Usage, chunk_from_result
 from oc8.oauth import http as oauth_http
 from oc8.oauth.provisioning import provision_oauth_connection
 from oc8.secrets.service import store_secret
@@ -188,7 +191,14 @@ class _RecordingSession:
 
     env: dict[str, str] = {}
 
-    def __init__(self, command: str, args: list[str], env: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        command: str,
+        args: list[str],
+        env: dict[str, str] | None = None,
+        *,
+        timeout_s: float | None = None,
+    ) -> None:
         _RecordingSession.env = dict(env or {})
         self.tools: list[Any] = []
 
@@ -206,7 +216,10 @@ async def test_the_engine_launches_the_bridge_with_a_freshly_minted_token(
     nobody launches from would leave the bridge exactly as broken as before."""
     tenant = uuid.uuid4()
     monkeypatch.setattr("oc8.agent.engine.get_model_router", lambda: _FinalAnswerRouter())
-    monkeypatch.setattr("oc8.agent.engine.McpSession", _RecordingSession)
+    # engine.py no longer constructs McpSession itself -- it goes through
+    # open_tool_session (agent/mcp_client.py), which is the module that
+    # actually binds the name `McpSession` used to build a stdio session.
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _RecordingSession)
 
     async with app_session(tenant) as db:
         oauth_conn = await _oauth_connection(db, tenant, "engine-client-id")
@@ -248,6 +261,158 @@ async def test_the_engine_launches_the_bridge_with_a_freshly_minted_token(
     assert _RecordingSession.env["GRAPH_ACCESS_TOKEN"] == "fresh-token"
     # The manifest's own environment reaches the bridge untouched alongside it.
     assert _RecordingSession.env["PYTHONPATH"] == "/app/capas/microsoft365"
+
+
+#: A real FastMCP server bound to a real port, reused verbatim from
+#: test_mcp_client_http_transport.py's fixture -- this codebase duplicates
+#: small fixture helpers per file rather than sharing a conftest for them
+#: (see test_mcp_client_tool_error.py's own `_server()`).
+_ECHO_SERVER = """
+import asyncio
+import sys
+
+try:
+    from mcp.server.mcpserver import MCPServer
+except ImportError:
+    # Fallback for older mcp versions
+    from mcp.server.fastmcp import FastMCP as MCPServer
+
+port = int(sys.argv[1])
+mcp = MCPServer("echo")
+
+
+@mcp.tool()
+def echo(text: str) -> str:
+    "Returns its input unchanged."
+    return text
+
+
+async def main():
+    await mcp.run_streamable_http_async(host="127.0.0.1", port=port, streamable_http_path="/mcp")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+"""
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _wait_until_up(url: str, timeout_s: float = 10.0) -> None:
+    deadline = time.monotonic() + timeout_s
+    last_exc: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            httpx.get(url, timeout=1.0)
+            return
+        except Exception as exc:  # server not accepting connections yet
+            last_exc = exc
+            time.sleep(0.1)
+    raise TimeoutError(f"server at {url} never came up") from last_exc
+
+
+@pytest.fixture
+def echo_http_server(tmp_path: Path):
+    script = tmp_path / "echo_server.py"
+    script.write_text(_ECHO_SERVER)
+    port = _free_port()
+    proc = subprocess.Popen([sys.executable, str(script), str(port)])
+    try:
+        _wait_until_up(f"http://127.0.0.1:{port}/mcp")
+        yield f"http://127.0.0.1:{port}/mcp"
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+
+
+class _CallsEchoThenStops:
+    """Records which tools the loop offered the model, then drives one real
+    tool call so a genuine remote MCP round trip happens inside the run --
+    not merely tool discovery."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.seen_tool_names: list[str] = []
+
+    async def complete(self, req: Any) -> CompletionResult:
+        self.calls += 1
+        self.seen_tool_names = [t.name for t in req.tools]
+        if self.calls == 1:
+            return CompletionResult(
+                text="",
+                tool_calls=[ToolCall(id="c1", name="echo", arguments={"text": "hi"})],
+                usage=Usage(1, 1),
+                stop_reason="tool_use",
+                provider="fake",
+                model="fake",
+            )
+        return CompletionResult(
+            text="done",
+            tool_calls=[],
+            usage=Usage(1, 1),
+            stop_reason="stop",
+            provider="fake",
+            model="fake",
+        )
+
+    async def stream(self, req: Any) -> Any:
+        yield chunk_from_result(await self.complete(req))
+
+
+async def test_the_engine_reaches_a_real_remote_mcp_server_over_http(
+    app_session: AppSessionFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    echo_http_server: str,
+) -> None:
+    """A `transport="http"` connection must route the in-process agent loop
+    through `open_tool_session`'s remote branch -- not just at "test
+    connection" time (api/v1/mcp.py's `test_connection`, Task 5) -- so the
+    model sees the real remote tool and the loop can actually call it."""
+    tenant = uuid.uuid4()
+    router = _CallsEchoThenStops()
+    monkeypatch.setattr("oc8.agent.engine.get_model_router", lambda: router)
+
+    async with app_session(tenant) as db:
+        dept = m.Department(
+            tenant_id=tenant,
+            name="Ops",
+            frame={"tools": {"echo": {"enabled": True, "read": True, "modify": True}}},
+        )
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(tenant_id=tenant, department_id=dept.id, name="Nora")
+        db.add(agent)
+        await db.flush()
+        mcp_conn = m.McpConnection(
+            tenant_id=tenant,
+            department_id=dept.id,
+            name="echo",
+            transport="http",
+            server_url=echo_http_server,
+            scopes={"read": [], "send": []},
+            config={},
+            connected=True,
+            health={},
+        )
+        db.add(mcp_conn)
+        await db.flush()
+
+        result = await run_agent(
+            db,
+            agent=agent,
+            task_text="say hi",
+            tenant_id=tenant,
+            mcp_conn=mcp_conn,
+        )
+
+    assert result.status == "done"
+    assert "echo" in router.seen_tool_names
+    assert result.tool_calls[0]["tool"] == "echo"
+    assert result.tool_calls[0]["result"] == "hi"
 
 
 async def test_a_delegated_ref_mints_a_token_for_the_named_mailbox(

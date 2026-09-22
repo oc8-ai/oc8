@@ -13,6 +13,7 @@ import {
   Users,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { AgentAvatar } from "@/components/agent-avatar";
 import { Panel } from "@/components/app-shell";
 import type { Agent, Department } from "@/lib/mock-data";
 import { cn } from "@/lib/utils";
@@ -437,12 +438,12 @@ function AgentTile({ agent, isLead }: { agent: Agent; isLead: boolean }) {
       className="relative flex flex-col items-center pt-7"
     >
       <div className="relative">
-        <div
-          className="grid h-9 w-9 place-items-center rounded-full font-serif text-sm text-black shadow-[inset_0_0_0_1px_oklch(1_0_0/25%)] transition group-hover:brightness-100 hover:brightness-110"
-          style={{ background: agent.avatarColor }}
-        >
-          {agent.name[0]}
-        </div>
+        <AgentAvatar
+          seed={agent.id}
+          size={36}
+          title={agent.name}
+          className="shadow-[inset_0_0_0_1px_oklch(1_0_0/25%)] transition group-hover:brightness-100 hover:brightness-110"
+        />
         {isLead && (
           <Crown
             className="absolute -top-2 -right-1.5 h-3.5 w-3.5 text-[color:var(--status-warning)]"

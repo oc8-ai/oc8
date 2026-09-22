@@ -91,6 +91,7 @@ import {
   type AgentDetail as AgentDetailData,
 } from "@/lib/hooks-agent-detail";
 import { setViewedAgent } from "@/lib/live/toast-for-event";
+import { AgentAvatar } from "@/components/agent-avatar";
 import { Panel, StatusPill } from "@/components/app-shell";
 import {
   type Agent,
@@ -278,12 +279,7 @@ function AgentDetail() {
         <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-4 sm:flex sm:items-center sm:justify-between">
           <div className="flex min-w-0 items-center gap-4">
             <div className="relative shrink-0">
-              <div
-                className="grid h-14 w-14 place-items-center rounded-xl font-serif text-2xl text-black"
-                style={{ background: agent.avatarColor }}
-              >
-                {agent.name[0]}
-              </div>
+              <AgentAvatar seed={agent.id} size={56} background="squircle" title={agent.name} />
               {agent.isLead && (
                 <Crown
                   className="absolute -top-2 -right-2 h-5 w-5 text-[color:var(--status-warning)]"
@@ -1670,12 +1666,7 @@ function SupervisorPanel({ agent }: { agent: AgentDetailData }) {
               {t("supervises →", "beaufsichtigt →")}
             </span>
             <div className="flex items-center gap-2 rounded-md border border-border bg-background/60 px-2 py-1.5 text-xs">
-              <div
-                className="grid h-5 w-5 place-items-center rounded-full font-serif text-[10px] text-black"
-                style={{ background: agent.avatarColor }}
-              >
-                {agent.name[0]}
-              </div>
+              <AgentAvatar seed={agent.id} size={20} title={agent.name} />
               <span className="font-medium text-foreground">{agent.name}</span>
               <span className="text-muted-foreground">· {agent.role}</span>
             </div>
@@ -1794,12 +1785,7 @@ function SupervisorChip({ supervisor }: { supervisor: Supervisor }) {
   const a = supervisor.agent;
   return (
     <div className="inline-flex items-center gap-2 rounded-md border border-primary/40 bg-primary/[0.06] px-2 py-1.5 text-xs">
-      <div
-        className="grid h-5 w-5 place-items-center rounded-full font-serif text-[10px] text-black"
-        style={{ background: a.avatarColor }}
-      >
-        {a.name[0]}
-      </div>
+      <AgentAvatar seed={a.id} size={20} title={a.name} />
       <span className="font-medium text-foreground">{a.name}</span>
       <span className="text-muted-foreground">· {a.role}</span>
       {a.isLead && (

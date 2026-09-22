@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { AgentAvatar } from "@/components/agent-avatar";
 import { Panel, StatusPill } from "@/components/app-shell";
 import { InlineRename } from "@/components/inline-rename";
 import { NewAgentDialog } from "@/components/new-agent-dialog";
@@ -266,12 +267,7 @@ function DepartmentDetail() {
           {lead && (
             <div className="flex items-center gap-3 rounded-lg border border-border bg-background/40 px-3 py-2">
               <div className="relative">
-                <div
-                  className="grid h-10 w-10 place-items-center rounded-full font-serif text-lg text-black"
-                  style={{ background: lead.avatarColor }}
-                >
-                  {lead.name[0]}
-                </div>
+                <AgentAvatar seed={lead.id} size={40} title={lead.name} />
                 <Crown
                   className="absolute -top-2 -right-1 h-4 w-4 text-[color:var(--status-warning)]"
                   fill="currentColor"
@@ -365,12 +361,7 @@ function DepartmentDetail() {
                   <Panel className="p-4 transition hover:border-primary/40">
                     <div className="flex items-center gap-3">
                       <div className="relative">
-                        <div
-                          className="grid h-10 w-10 place-items-center rounded-full font-serif text-lg text-black"
-                          style={{ background: m.avatarColor }}
-                        >
-                          {m.name[0]}
-                        </div>
+                        <AgentAvatar seed={m.id} size={40} title={m.name} />
                         {lead?.id === m.id && (
                           <Crown
                             className="absolute -top-2 -right-1 h-3.5 w-3.5 text-[color:var(--status-warning)]"
@@ -981,10 +972,9 @@ function AgentBadge({ agentId, members }: { agentId: string | null; members: Age
       params={{ id: agent.id }}
       title={`Open ${agent.name}`}
       onClick={(e) => e.stopPropagation()}
-      className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-[10px] font-bold text-black ring-2 ring-panel transition hover:ring-primary"
-      style={{ background: agent.avatarColor }}
+      className="grid h-6 w-6 shrink-0 place-items-center rounded-full ring-2 ring-panel transition hover:ring-primary"
     >
-      {agent.name[0]}
+      <AgentAvatar seed={agent.id} size={24} title={agent.name} />
     </Link>
   );
 }
@@ -1184,12 +1174,7 @@ function TaskDistribution({ lead, members }: { lead: Agent; members: Agent[] }) 
                 key={m.id}
                 className="flex items-center gap-2 rounded-md border border-border bg-background/30 px-2.5 py-1.5 text-xs"
               >
-                <div
-                  className="grid h-5 w-5 shrink-0 place-items-center rounded-full font-serif text-[10px] text-black"
-                  style={{ background: m.avatarColor }}
-                >
-                  {m.name[0]}
-                </div>
+                <AgentAvatar seed={m.id} size={20} title={m.name} />
                 <span className="min-w-0 flex-1 truncate">
                   <span className="text-foreground">{m.name}</span>
                   <span className="text-muted-foreground"> · {m.role}</span>
@@ -1197,12 +1182,7 @@ function TaskDistribution({ lead, members }: { lead: Agent; members: Agent[] }) 
                 <span className="text-muted-foreground">→</span>
                 {sup.kind === "agent" ? (
                   <span className="inline-flex items-center gap-1.5 rounded-md border border-primary/40 bg-primary/[0.06] px-1.5 py-0.5">
-                    <span
-                      className="grid h-4 w-4 place-items-center rounded-full font-serif text-[9px] text-black"
-                      style={{ background: sup.agent.avatarColor }}
-                    >
-                      {sup.agent.name[0]}
-                    </span>
+                    <AgentAvatar seed={sup.agent.id} size={16} title={sup.agent.name} />
                     <span className="text-foreground">{sup.agent.name}</span>
                     {sup.agent.isLead && (
                       <span className="rounded-full border border-primary/40 bg-primary/10 px-1 py-0 text-[9px] uppercase tracking-widest text-primary">
