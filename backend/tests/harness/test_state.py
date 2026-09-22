@@ -32,6 +32,8 @@ def test_fresh_state_is_all_zero() -> None:
     assert s.compactions == 0
     assert s.last_prompt_tokens == 0
     assert s.last_compacted_step == -999
+    assert s.pinned_tools == []
+    assert s.tool_catalog == []
 
 
 def test_round_trip_through_real_json() -> None:
@@ -45,6 +47,15 @@ def test_round_trip_through_real_json() -> None:
         compactions=2,
         last_prompt_tokens=81_000,
         last_compacted_step=5,
+        pinned_tools=["create_invoice"],
+        tool_catalog=[
+            {
+                "name": "create_invoice",
+                "description": "Create a new invoice.",
+                "connection": "billing",
+                "notes": "",
+            }
+        ],
         ledger=Ledger(
             entities={
                 "office/document/42": EntityRef(
@@ -88,6 +99,8 @@ def test_from_dict_tolerates_missing_and_none() -> None:
     assert HarnessState.from_dict({}) == HarnessState()
     assert HarnessState.from_dict({"version": 1}) == HarnessState()
     assert HarnessState.from_dict({"ledger": {"entities": {}}}).ledger.writes_unverified == []
+    assert HarnessState.from_dict({"version": 1}).pinned_tools == []
+    assert HarnessState.from_dict({"version": 1}).tool_catalog == []
 
 
 def test_from_dict_missing_new_ledger_keys_loads_empty_lists() -> None:

@@ -88,6 +88,11 @@ class HarnessState:
     compactions: int = 0
     last_prompt_tokens: int = 0
     last_compacted_step: int = -999
+    #: Tool names pinned by find_tools for later steps' inline core set.
+    pinned_tools: list[str] = field(default_factory=list)
+    #: Full tool catalog for this step as JSON-safe card dicts (name,
+    #: description, connection, notes). find_tools ranks against this.
+    tool_catalog: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -145,6 +150,8 @@ class HarnessState:
             compactions=int(raw.get("compactions", 0)),
             last_prompt_tokens=int(raw.get("last_prompt_tokens", 0)),
             last_compacted_step=int(raw.get("last_compacted_step", -999)),
+            pinned_tools=list(raw.get("pinned_tools") or []),
+            tool_catalog=[dict(card) for card in (raw.get("tool_catalog") or [])],
             masked={
                 key: MaskRef(
                     step=int(value["step"]),

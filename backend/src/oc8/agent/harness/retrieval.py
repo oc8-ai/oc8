@@ -118,7 +118,9 @@ def rank_tools(
         zip(scores, catalog, strict=True),
         key=lambda pair: (-pair[0], pair[1].name),
     )
-    return [card for _, card in ranked[:limit]]
+    # Drop zero-score cards so a specific query does not pad the list with
+    # unrelated deferred tools (and so find_tools only pins real matches).
+    return [card for score, card in ranked if score > 0][:limit]
 
 
 def _corpus(card: ToolCard) -> str:

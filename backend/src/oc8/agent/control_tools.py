@@ -26,6 +26,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agent.components import COMPONENT_CATALOG
+from oc8.agent.harness.retrieval import ToolCard, rank_tools
+from oc8.agent.harness.state import HarnessState
 from oc8.agents.repo import visible_agent, visible_agents
 from oc8.approvals import (
     AlreadyDecided,
@@ -116,6 +118,33 @@ TODO_WRITE = NeutralTool(
             },
         },
         "required": ["todos"],
+    },
+)
+
+FIND_TOOLS = NeutralTool(
+    name="find_tools",
+    description=(
+        "Search tools that are not in your current list. "
+        "Returns up to 10 matches; they are available on the next step."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": (
+                    "What you are looking for. Empty returns the first "
+                    "deferred tools sorted by name."
+                ),
+            },
+            "connection": {
+                "type": "string",
+                "description": (
+                    "Optional: only search tools belonging to this connection."
+                ),
+            },
+        },
+        "required": ["query"],
     },
 )
 
@@ -726,6 +755,7 @@ KPI_OVERVIEW = NeutralTool(
 CONTROL_TOOL_SCHEMAS: dict[str, NeutralTool] = {
     MEMORY_WRITE.name: MEMORY_WRITE,
     TODO_WRITE.name: TODO_WRITE,
+    FIND_TOOLS.name: FIND_TOOLS,
     ASK_USER.name: ASK_USER,
     DELEGATE_TASK.name: DELEGATE_TASK,
     REQUEST_DECISION.name: REQUEST_DECISION,
@@ -1180,6 +1210,50 @@ def _format_run_shell_result(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+_MISSING_DEFERRED = "No deferred tools. Every tool is already in your list."
+
+
+def _execute_find_tools(
+    tc: ToolCall, harness_state: HarnessState | None
+) -> ControlOutcome:
+    """Rank the deferred catalog and pin matches for the next step."""
+    if harness_state is None or not harness_state.tool_catalog:
+        return ControlOutcome(output=_MISSING_DEFERRED)
+
+    cards: list[ToolCard] = []
+    for raw in harness_state.tool_catalog:
+        if not isinstance(raw, dict):
+            continue
+        cards.append(
+            ToolCard(
+                name=str(raw.get("name", "")),
+                description=str(raw.get("description", "")),
+                connection=str(raw.get("connection", "")),
+                notes=str(raw.get("notes", "")),
+            )
+        )
+    if not cards:
+        return ControlOutcome(output=_MISSING_DEFERRED)
+
+    raw_connection = tc.arguments.get("connection")
+    connection: str | None = None
+    if raw_connection is not None:
+        connection = str(raw_connection).strip() or None
+
+    ranked = rank_tools(
+        cards,
+        str(tc.arguments.get("query", "")),
+        connection=connection,
+    )
+    lines: list[str] = []
+    for card in ranked:
+        first_line = card.description.split("\n", 1)[0]
+        lines.append(f"{card.name} — {first_line} ({card.connection})")
+        if card.name not in harness_state.pinned_tools:
+            harness_state.pinned_tools.append(card.name)
+    return ControlOutcome(output="\n".join(lines))
+
+
 async def execute_control_tool(
     db: AsyncSession,
     *,
@@ -1194,6 +1268,7 @@ async def execute_control_tool(
     originating_operator: str | None,
     run_id: uuid.UUID | None = None,
     local_result: dict[str, Any] | None = None,
+    harness_state: HarnessState | None = None,
 ) -> ControlOutcome | None:
     """Run one core-owned tool call, or return None if it isn't one.
 
@@ -1207,8 +1282,15 @@ async def execute_control_tool(
     run, and several runs share one task, so it cannot be re-derived from the
     task afterwards. It defaults to None only so a direct call with no run
     behind it (tests) stays valid -- and None fails closed, dropping the claim.
+
+    `harness_state` is optional until both runtimes thread it (Package 8 A4).
+    find_tools needs it to read the deferred catalog and write pins; other
+    control tools ignore it.
     """
     skill_by_tool = {s.tool_name: s for s in assigned_skills}
+
+    if tc.name == FIND_TOOLS.name:
+        return _execute_find_tools(tc, harness_state)
 
     if tc.name == SEARCH_MEMORY.name:
         query = str(tc.arguments.get("query", "")).strip()
