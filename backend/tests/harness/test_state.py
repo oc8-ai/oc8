@@ -14,6 +14,7 @@ from oc8.agent.harness.state import (
     EntityRef,
     HarnessState,
     Ledger,
+    MaskRef,
     OutwardRef,
 )
 from oc8.modelrouter import ToolCall
@@ -63,6 +64,14 @@ def test_round_trip_through_real_json() -> None:
             files=["step-4-send_note.txt"],
             decisions=[DecisionRef(tool="ask_user", question="Which one?", step=2)],
         ),
+        masked={
+            "call-1": MaskRef(
+                step=1,
+                tool="lookup",
+                chars=2_500,
+                filename=None,
+            )
+        },
     )
     raw = json.loads(json.dumps(s.to_dict()))
     assert HarnessState.from_dict(raw) == s

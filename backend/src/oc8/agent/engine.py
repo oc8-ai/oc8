@@ -35,6 +35,7 @@ from oc8.agent.harness import GateVerdict, Harness, resolve_caps
 from oc8.agent.harness.calls import (
     call_sig as _call_sig,  # re-exported for mcp_gateway.py and older tests
 )
+from oc8.agent.harness.stages.a_masking import mask_observations
 from oc8.agent.harness.stages.b_approval import autonomy_of, strip_justification
 from oc8.agent.harness.stages.b_authorize import (
     authorize as _authorize,  # re-exported for mcp_gateway.py and older tests
@@ -657,7 +658,11 @@ async def run_agent(
                 )
 
                 request_id = uuid.uuid4()
-                resolved_messages = messages
+                resolved_messages, harness.state.masked = mask_observations(
+                    messages,
+                    step_no=harness.state.step_no,
+                    ledger=harness.state.ledger,
+                )
                 resolved_tools = _offered()
                 resolved_params = resolve_params(model_config, agent=agent)
                 # Must match what fallback.py's own base_url resolution will

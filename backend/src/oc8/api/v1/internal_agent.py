@@ -34,6 +34,7 @@ from oc8.agent.control_tools import (
 from oc8.agent.engine import _max_steps
 from oc8.agent.harness import Harness, resolve_caps
 from oc8.agent.harness.calls import call_sig as _call_sig
+from oc8.agent.harness.stages.a_masking import mask_observations
 from oc8.agent.harness.stages.b_approval import autonomy_of, strip_justification
 from oc8.agent.harness.stages.b_authorize import authorize as _authorize
 from oc8.agent.harness.stages.b_blast_radius import check_blast_radius
@@ -521,7 +522,11 @@ async def step(
             )
             harness.state.ledger_sent_hash = ledger_hash
 
-        resolved_messages = _to_messages(transcript)
+        resolved_messages, harness.state.masked = mask_observations(
+            _to_messages(transcript),
+            step_no=harness.state.step_no,
+            ledger=harness.state.ledger,
+        )
         request_id = uuid.uuid4()
         # Department prompt caching, through the SAME helper the in-process engine
         # uses (oc8.agent.cache_flow) -- an isolated deployment must not silently

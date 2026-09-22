@@ -405,10 +405,13 @@ async def _run_isolated(
         assert "harness" in run_row.context, "HarnessState must be persisted on run.context"
         assert "repeat_tracker" not in run_row.context
         assert "tool_output_chars" not in run_row.context
-    # As above, compare the delivered final output. /step returns the exhausted
-    # note separately from the persisted raw model turn.
+        assert not any(
+            "older result chars masked" in str(message.content) for message in transcript
+        ), "the persisted transcript must remain unmasked"
+    # Compare the model-bound transcript from the final completion. /step
+    # returns the exhausted note separately from the persisted raw model turn.
     transcript = [
-        *transcript[:-1],
+        *stream.seen[-1],
         NeutralMessage(role="assistant", content=final_text, tool_calls=[]),
     ]
     return transcript, final_text

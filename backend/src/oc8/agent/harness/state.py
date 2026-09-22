@@ -58,6 +58,14 @@ class Ledger:
 
 
 @dataclass
+class MaskRef:
+    step: int
+    tool: str
+    chars: int
+    filename: str | None = None
+
+
+@dataclass
 class HarnessState:
     version: int = HARNESS_STATE_VERSION
     #: Cumulative size of tool results entered into the transcript this run
@@ -76,6 +84,7 @@ class HarnessState:
     step_no: int = 0
     ledger: Ledger = field(default_factory=Ledger)
     ledger_sent_hash: str = ""
+    masked: dict[str, MaskRef] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -130,6 +139,17 @@ class HarnessState:
             step_no=int(raw.get("step_no", 0)),
             ledger=ledger,
             ledger_sent_hash=str(raw.get("ledger_sent_hash", "")),
+            masked={
+                key: MaskRef(
+                    step=int(value["step"]),
+                    tool=str(value["tool"]),
+                    chars=int(value["chars"]),
+                    filename=(
+                        str(value["filename"]) if value.get("filename") is not None else None
+                    ),
+                )
+                for key, value in (raw.get("masked") or {}).items()
+            },
         )
 
     @classmethod
