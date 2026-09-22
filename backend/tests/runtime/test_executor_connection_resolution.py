@@ -72,9 +72,7 @@ def _legacy_connection(
 async def _agent(
     db: Any, tenant: uuid.UUID, *, dept_id: uuid.UUID, narrowing: dict[str, Any] | None = None
 ) -> m.Agent:
-    agent = m.Agent(
-        tenant_id=tenant, department_id=dept_id, name="Nora", narrowing=narrowing or {}
-    )
+    agent = m.Agent(tenant_id=tenant, department_id=dept_id, name="Nora", narrowing=narrowing or {})
     db.add(agent)
     await db.flush()
     return agent
@@ -103,18 +101,18 @@ async def test_resolves_the_agents_pinned_connection(app_session: AppSessionFact
             narrowing={"tools": {"Odoo": {"enabled": True, "connection_id": str(conn.id)}}},
         )
 
-        resolved, error, _ = await _resolve_mcp_connection(db, agent=agent, run_context={})
+        resolved, error, *_ = await _resolve_mcp_connection(db, agent=agent, run_context={})
         assert error is None
         assert resolved is not None
         assert resolved.id == conn.id
         assert resolved.name == "Odoo"
 
 
-async def test_pin_is_chosen_deterministically_when_two_logins_are_pinned(
+async def test_both_pinned_logins_are_resolved(
     app_session: AppSessionFactory,
 ) -> None:
-    """The runtime carries one connection per run; two pins must still resolve
-    the same way every time (first tool key alphabetically)."""
+    """An agent assigned two logins must reach both. Returning only the first
+    key alphabetically left the other system unreachable for the whole run."""
     tenant = uuid.uuid4()
     dept_id = uuid.uuid4()
     async with app_session(tenant) as db:
@@ -129,10 +127,15 @@ async def test_pin_is_chosen_deterministically_when_two_logins_are_pinned(
             narrowing_tools[name] = {"enabled": True, "connection_id": str(conn.id)}
         agent = await _agent(db, tenant, dept_id=dept_id, narrowing={"tools": narrowing_tools})
 
-        resolved, error, _ = await _resolve_mcp_connection(db, agent=agent, run_context={})
-        assert error is None
-        assert resolved is not None
-        assert resolved.name == "Aardvark"
+        choice = await _resolve_mcp_connection(db, agent=agent, run_context={})
+        assert choice.error is None
+        assert {c.name for c in choice.connections} == {"Aardvark", "Zulip"}
+        # The single-connection slot stays the first key alphabetically so
+        # callers that still read `.connection` (control tools, inheritance)
+        # keep a stable primary.
+        assert choice.connection is not None
+        assert choice.connection.name == "Aardvark"
+        assert choice.pinned is True
 
 
 async def test_pinned_connection_that_no_longer_exists_is_a_hard_error(
@@ -151,7 +154,7 @@ async def test_pinned_connection_that_no_longer_exists_is_a_hard_error(
             narrowing={"tools": {"Odoo": {"enabled": True, "connection_id": str(gone)}}},
         )
 
-        resolved, error, _ = await _resolve_mcp_connection(db, agent=agent, run_context={})
+        resolved, error, *_ = await _resolve_mcp_connection(db, agent=agent, run_context={})
         assert resolved is None
         assert error is not None
         assert "Odoo" in error
@@ -172,7 +175,7 @@ async def test_an_unreadable_pin_fails_the_run_instead_of_raising(
             narrowing={"tools": {"Odoo": {"enabled": True, "connection_id": "not-a-uuid"}}},
         )
 
-        resolved, error, _ = await _resolve_mcp_connection(db, agent=agent, run_context={})
+        resolved, error, *_ = await _resolve_mcp_connection(db, agent=agent, run_context={})
         assert resolved is None
         assert error is not None
         assert "Odoo" in error
@@ -201,7 +204,7 @@ async def test_login_backed_tool_enabled_with_no_pin_is_a_hard_error(
             db, tenant, dept_id=dept_id, narrowing={"tools": {"Odoo": {"enabled": True}}}
         )
 
-        resolved, error, _ = await _resolve_mcp_connection(db, agent=agent, run_context={})
+        resolved, error, *_ = await _resolve_mcp_connection(db, agent=agent, run_context={})
         assert resolved is None, "must not borrow the department's connection"
         assert error is not None
         assert "Odoo" in error
@@ -272,7 +275,7 @@ async def test_disabled_login_tool_does_not_block_the_legacy_path(
             narrowing={"tools": {"Odoo": {"enabled": False, "connection_id": str(conn.id)}}},
         )
 
-        resolved, error, _ = await _resolve_mcp_connection(db, agent=agent, run_context={})
+        resolved, error, *_ = await _resolve_mcp_connection(db, agent=agent, run_context={})
         assert error is None
         assert resolved is not None
         assert resolved.name == "LegacyOAuth"
@@ -304,7 +307,7 @@ async def test_legacy_department_lookup_still_takes_the_oldest_connected(
             narrowing={"tools": {"Newer": {"enabled": True, "read": True}}},
         )
 
-        resolved, error, _ = await _resolve_mcp_connection(db, agent=agent, run_context={})
+        resolved, error, *_ = await _resolve_mcp_connection(db, agent=agent, run_context={})
         assert error is None
         assert resolved is not None
         assert resolved.name == "Older"
@@ -331,7 +334,7 @@ async def test_legacy_lookup_never_substitutes_a_credential_backed_connection(
         # Nothing enabled at all: the agent asks for no tool by name.
         agent = await _agent(db, tenant, dept_id=dept_id, narrowing={})
 
-        resolved, error, _ = await _resolve_mcp_connection(db, agent=agent, run_context={})
+        resolved, error, *_ = await _resolve_mcp_connection(db, agent=agent, run_context={})
         assert error is None
         assert resolved is not None
         assert resolved.name == "LegacyOAuth"
@@ -343,7 +346,7 @@ async def test_no_connection_anywhere_is_not_an_error(app_session: AppSessionFac
     async with app_session(tenant) as db:
         agent = await _agent(db, tenant, dept_id=uuid.uuid4(), narrowing={})
 
-        resolved, error, _ = await _resolve_mcp_connection(db, agent=agent, run_context={})
+        resolved, error, *_ = await _resolve_mcp_connection(db, agent=agent, run_context={})
         assert resolved is None
         assert error is None
 
@@ -374,7 +377,7 @@ async def test_explicit_run_context_override_still_wins(app_session: AppSessionF
             narrowing={"tools": {"Odoo": {"enabled": True}}},
         )
 
-        resolved, error, _ = await _resolve_mcp_connection(
+        resolved, error, *_ = await _resolve_mcp_connection(
             db, agent=agent, run_context={"mcp_connection_id": str(pinned.id)}
         )
         assert error is None
@@ -390,7 +393,7 @@ async def test_unknown_run_context_override_keeps_its_own_error(
     async with app_session(tenant) as db:
         agent = await _agent(db, tenant, dept_id=uuid.uuid4(), narrowing={})
 
-        resolved, error, _ = await _resolve_mcp_connection(
+        resolved, error, *_ = await _resolve_mcp_connection(
             db, agent=agent, run_context={"mcp_connection_id": str(unknown)}
         )
         assert resolved is None
@@ -466,7 +469,7 @@ async def test_delegation_does_not_hand_a_lead_login_to_the_sub_agent(
         assert "mcp_connection_id" not in sub_run.context, "a login must never be inherited"
 
         # ...and the sub-agent then resolves its OWN login, not the lead's.
-        resolved, error, _ = await _resolve_mcp_connection(
+        resolved, error, *_ = await _resolve_mcp_connection(
             db, agent=sub, run_context=sub_run.context
         )
         assert error is None
@@ -522,7 +525,7 @@ async def test_delegation_to_an_unpinned_sub_agent_fails_loudly_not_silently(
         assert sub_run is not None
         assert "mcp_connection_id" not in sub_run.context
 
-        resolved, error, _ = await _resolve_mcp_connection(
+        resolved, error, *_ = await _resolve_mcp_connection(
             db, agent=sub, run_context=sub_run.context
         )
         assert resolved is None, "must not fall back to the lead's login"
@@ -743,7 +746,7 @@ async def test_delegation_withholds_a_department_connection_from_a_login_owed_su
         assert "mcp_connection_id" not in sub_run.context
 
         # ...so the sub-agent's own resolution still fails loudly, as designed.
-        resolved, error, _ = await _resolve_mcp_connection(
+        resolved, error, *_ = await _resolve_mcp_connection(
             db, agent=sub, run_context=sub_run.context
         )
         assert resolved is None, "must not silently borrow the department connection"
@@ -849,7 +852,9 @@ async def test_wakeup_withholds_a_department_connection_from_a_lead_with_its_own
         assert "mcp_connection_id" not in wake.context
 
         # ...and the lead's wake-up run then resolves to its OWN pinned login.
-        resolved, error, _ = await _resolve_mcp_connection(db, agent=lead, run_context=wake.context)
+        resolved, error, *_ = await _resolve_mcp_connection(
+            db, agent=lead, run_context=wake.context
+        )
         assert error is None
         assert resolved is not None
         assert resolved.id == lead_conn.id
@@ -905,6 +910,54 @@ async def test_a_resolved_pin_is_stamped_onto_the_run_context(
         assert [c.id for c in conns] == [conn_id]
 
 
+async def test_two_resolved_pins_are_both_stamped_onto_the_run_context(
+    app_session: AppSessionFactory,
+) -> None:
+    """A single mcp_connection_id would collapse the gateway back to one
+    system. Two pins have to travel as a list so both logins stay reachable
+    under isolation."""
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    dept_id = uuid.uuid4()
+    async with app_session(tenant) as db:
+        narrowing_tools: dict[str, Any] = {}
+        pinned_ids: dict[str, uuid.UUID] = {}
+        for name in ("Zulip", "Aardvark"):
+            conn = await _pin(db, tenant, name)
+            narrowing_tools[name] = {"enabled": True, "connection_id": str(conn.id)}
+            pinned_ids[name] = conn.id
+        db.add(_legacy_connection(tenant, dept_id, "LegacyOAuth"))
+        agent = await _agent(db, tenant, dept_id=dept_id, narrowing={"tools": narrowing_tools})
+        run_id = (
+            await RunRepository(db).create(
+                tenant_id=tenant, agent_id=agent.id, context={"task": "do it"}
+            )
+        ).id
+
+    async def ok(db: Any, **kw: Any) -> RunResult:
+        return RunResult(uuid.uuid4(), kw["agent"].id, "done", "ok", [], 1)
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=_FnRuntime(ok),
+    )
+
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        stamped = {uuid.UUID(str(i)) for i in run.context["mcp_connection_ids"]}
+        assert stamped == set(pinned_ids.values())
+        # Primary slot stays first-key-alphabetically for callers that still
+        # read a single id (control tools). It must not be the only signal.
+        assert run.context["mcp_connection_id"] == str(pinned_ids["Aardvark"])
+
+        from oc8.api.mcp_gateway import _connections
+
+        dept = m.Department(tenant_id=tenant, name="Sales", frame={"tools": {}})
+        dept.id = dept_id
+        conns = await _connections(db, run, dept)
+        assert {c.id for c in conns} == set(pinned_ids.values())
+
+
 async def test_the_department_fallback_is_not_stamped(app_session: AppSessionFactory) -> None:
     """Only a pin is stamped. Stamping a department connection would collapse
     the gateway's multi-connection list back to one."""
@@ -931,6 +984,7 @@ async def test_the_department_fallback_is_not_stamped(app_session: AppSessionFac
         run = await db.get(m.AgentRun, run_id)
         assert run is not None
         assert "mcp_connection_id" not in run.context
+        assert "mcp_connection_ids" not in run.context
 
 
 # ------------- Fix 3: one correct pin must not mask another tool's missing pin
@@ -957,7 +1011,7 @@ async def test_a_correct_pin_does_not_mask_a_missing_pin_on_another_tool(
             },
         )
 
-        resolved, error, _ = await _resolve_mcp_connection(db, agent=agent, run_context={})
+        resolved, error, *_ = await _resolve_mcp_connection(db, agent=agent, run_context={})
         assert resolved is None, "Aardvark's correct pin must not stand in for Odoo's missing one"
         assert error is not None
         assert "Odoo" in error
@@ -981,7 +1035,7 @@ async def test_a_pin_to_a_different_tools_connection_is_a_hard_error(
             narrowing={"tools": {"Odoo": {"enabled": True, "connection_id": str(other.id)}}},
         )
 
-        resolved, error, _ = await _resolve_mcp_connection(db, agent=agent, run_context={})
+        resolved, error, *_ = await _resolve_mcp_connection(db, agent=agent, run_context={})
         assert resolved is None
         assert error is not None
         assert "Odoo" in error
@@ -1007,7 +1061,7 @@ async def test_a_login_tool_pinned_to_a_shared_connection_is_a_hard_error(
             narrowing={"tools": {"Odoo": {"enabled": True, "connection_id": str(shared.id)}}},
         )
 
-        resolved, error, _ = await _resolve_mcp_connection(db, agent=agent, run_context={})
+        resolved, error, *_ = await _resolve_mcp_connection(db, agent=agent, run_context={})
         assert resolved is None
         assert error is not None
         assert "Odoo" in error
@@ -1043,7 +1097,7 @@ async def test_department_default_satisfies_a_login_needing_tool_with_no_pin(
             db, tenant, dept_id=dept_id, narrowing={"tools": {"Odoo": {"enabled": True}}}
         )
 
-        resolved, error, pinned = await _resolve_mcp_connection(db, agent=agent, run_context={})
+        resolved, error, pinned, *_ = await _resolve_mcp_connection(db, agent=agent, run_context={})
         assert error is None
         assert resolved is not None
         assert resolved.id == default_conn.id
@@ -1068,7 +1122,7 @@ async def test_agents_own_pin_still_wins_over_the_department_default(
             narrowing={"tools": {"Odoo": {"enabled": True, "connection_id": str(agent_pin.id)}}},
         )
 
-        resolved, error, _ = await _resolve_mcp_connection(db, agent=agent, run_context={})
+        resolved, error, *_ = await _resolve_mcp_connection(db, agent=agent, run_context={})
         assert error is None
         assert resolved is not None
         assert resolved.id == agent_pin.id
@@ -1088,7 +1142,7 @@ async def test_no_department_default_still_hard_errors_as_before(
             db, tenant, dept_id=dept_id, narrowing={"tools": {"Odoo": {"enabled": True}}}
         )
 
-        resolved, error, _ = await _resolve_mcp_connection(db, agent=agent, run_context={})
+        resolved, error, *_ = await _resolve_mcp_connection(db, agent=agent, run_context={})
         assert resolved is None
         assert error is not None
         assert "Odoo" in error
@@ -1115,7 +1169,7 @@ async def test_department_default_overrides_the_untargeted_legacy_lookup(
             db, tenant, dept_id=dept_id, narrowing={"tools": {"Odoo": {"enabled": True}}}
         )
 
-        resolved, error, pinned = await _resolve_mcp_connection(db, agent=agent, run_context={})
+        resolved, error, pinned, *_ = await _resolve_mcp_connection(db, agent=agent, run_context={})
         assert error is None
         assert resolved is not None
         assert resolved.id == other.id, "the explicit default beats this department's own lookup"
@@ -1138,7 +1192,7 @@ async def test_department_default_pointing_at_the_wrong_tool_name_is_a_hard_erro
             db, tenant, dept_id=dept_id, narrowing={"tools": {"Odoo": {"enabled": True}}}
         )
 
-        resolved, error, _ = await _resolve_mcp_connection(db, agent=agent, run_context={})
+        resolved, error, *_ = await _resolve_mcp_connection(db, agent=agent, run_context={})
         assert resolved is None
         assert error is not None
         assert "Odoo" in error
@@ -1156,7 +1210,7 @@ async def test_department_default_that_no_longer_exists_is_a_hard_error(
             db, tenant, dept_id=dept_id, narrowing={"tools": {"Odoo": {"enabled": True}}}
         )
 
-        resolved, error, _ = await _resolve_mcp_connection(db, agent=agent, run_context={})
+        resolved, error, *_ = await _resolve_mcp_connection(db, agent=agent, run_context={})
         assert resolved is None
         assert error is not None
         assert "Odoo" in error
