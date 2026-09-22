@@ -41,7 +41,8 @@ def test_round_trip_through_real_json() -> None:
                     last_write_step=5,
                     write_tools=["update_document"],
                 )
-            }
+            },
+            writes_unverified=["office/document/42"],
         ),
     )
     raw = json.loads(json.dumps(s.to_dict()))
@@ -52,6 +53,7 @@ def test_from_dict_tolerates_missing_and_none() -> None:
     assert HarnessState.from_dict(None) == HarnessState()
     assert HarnessState.from_dict({}) == HarnessState()
     assert HarnessState.from_dict({"version": 1}) == HarnessState()
+    assert HarnessState.from_dict({"ledger": {"entities": {}}}).ledger.writes_unverified == []
 
 
 def test_from_dict_ignores_unknown_keys() -> None:

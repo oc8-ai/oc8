@@ -1145,6 +1145,7 @@ async def tool(
             step_no=harness.state.step_no,
             wrote=writes,
             tool=tc.name,
+            exempt_unverified=(tier == "outward"),
         )
 
     # Stopped HERE, the moment the call itself returned -- not at the append

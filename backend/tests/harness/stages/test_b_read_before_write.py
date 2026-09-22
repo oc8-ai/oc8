@@ -137,3 +137,75 @@ def test_note_access_tracks_writes_without_marking_a_read() -> None:
     assert entity.last_read_step is None
     assert entity.last_write_step == 4
     assert entity.write_tools == ["update_document"]
+
+
+def test_a_write_is_unverified_until_a_later_read() -> None:
+    ledger = Ledger()
+    note_access(
+        ledger,
+        connection="c",
+        kind="order",
+        id="9",
+        label="Order",
+        step_no=2,
+        wrote=True,
+        tool="update_record",
+    )
+    assert ledger.writes_unverified == ["c/order/9"]
+    note_access(
+        ledger,
+        connection="c",
+        kind="order",
+        id="9",
+        label="Order",
+        step_no=3,
+        wrote=False,
+        tool="get_record",
+    )
+    assert ledger.writes_unverified == []
+
+
+def test_outward_writes_are_not_tracked() -> None:
+    ledger = Ledger()
+    note_access(
+        ledger,
+        connection="c",
+        kind="ticket",
+        id="1",
+        label="T",
+        step_no=1,
+        wrote=True,
+        tool="post_message",
+        exempt_unverified=True,
+    )
+    assert ledger.writes_unverified == []
+    assert ledger.entities["c/ticket/1"].last_write_step == 1
+
+
+def test_a_failed_path_is_the_callers_job() -> None:
+    # note_access itself does not look at ERROR text; callers skip it.
+    # A second write of the same key does not duplicate the list entry.
+    ledger = Ledger()
+    note_access(
+        ledger,
+        connection="c",
+        kind="k",
+        id="1",
+        label="",
+        step_no=1,
+        wrote=True,
+        tool="a",
+    )
+    note_access(
+        ledger,
+        connection="c",
+        kind="k",
+        id="1",
+        label="",
+        step_no=4,
+        wrote=True,
+        tool="b",
+    )
+    assert ledger.writes_unverified == ["c/k/1"]
+    assert ledger.entities["c/k/1"].write_tools == ["a", "b"]
+    assert ledger.entities["c/k/1"].last_write_step == 4

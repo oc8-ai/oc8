@@ -36,6 +36,7 @@ class EntityRef:
 @dataclass
 class Ledger:
     entities: dict[str, EntityRef] = field(default_factory=dict)
+    writes_unverified: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -77,7 +78,8 @@ class HarnessState:
                     write_tools=list(value.get("write_tools") or []),
                 )
                 for key, value in entities_raw.items()
-            }
+            },
+            writes_unverified=list(ledger_raw.get("writes_unverified") or []),
         )
         return cls(
             version=int(raw.get("version", HARNESS_STATE_VERSION)),

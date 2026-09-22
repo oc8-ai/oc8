@@ -1466,6 +1466,7 @@ async def run_agent(
                                 step_no=harness.state.step_no,
                                 wrote=writes,
                                 tool=tc.name,
+                                exempt_unverified=(gate_verdict.tier == "outward"),
                             )
                         shaped = harness.shape(
                             tc,

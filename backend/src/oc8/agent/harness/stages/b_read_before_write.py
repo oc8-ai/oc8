@@ -21,6 +21,7 @@ def note_access(
     step_no: int,
     wrote: bool,
     tool: str,
+    exempt_unverified: bool = False,
 ) -> None:
     key = entity_key(connection, kind, id)
     entity = ledger.entities.setdefault(
@@ -34,8 +35,12 @@ def note_access(
         entity.last_write_step = step_no
         if tool not in entity.write_tools:
             entity.write_tools.append(tool)
+        if not exempt_unverified and key not in ledger.writes_unverified:
+            ledger.writes_unverified.append(key)
         return
 
+    if key in ledger.writes_unverified:
+        ledger.writes_unverified.remove(key)
     if entity.first_read_step is None:
         entity.first_read_step = step_no
     entity.last_read_step = step_no
