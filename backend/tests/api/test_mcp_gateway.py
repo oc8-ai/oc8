@@ -701,6 +701,70 @@ async def test_both_systems_tools_are_offered(
     assert {"list_issues", "create_issue"} <= names, "and so is the second"
 
 
+async def test_two_pinned_logins_are_both_offered(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Logins are tenant-global (no department_id), so they never appear in
+    the department fallback list. Pins have to travel as `mcp_connection_ids`;
+    a single `mcp_connection_id` hid the second login for the whole run."""
+    _FakeMcp.by_command = {}
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    tenant = uuid.uuid4()
+    frame = {
+        "tools": {
+            "odoo": {"enabled": True, "read": True, "modify": True},
+            "gitea": {"enabled": True, "read": True, "modify": True},
+        }
+    }
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant, frame=frame)
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        # Drop the department-scoped seed connection: a login is not one.
+        seeded = (
+            (await db.execute(select(m.McpConnection).where(m.McpConnection.tenant_id == tenant)))
+            .scalars()
+            .all()
+        )
+        for row in seeded:
+            await db.delete(row)
+        ids: list[str] = []
+        for name, command, tools in (
+            ("odoo", "odoo-login", ["search_records", "create_record"]),
+            ("gitea", "gitea-login", ["list_issues", "create_issue"]),
+        ):
+            cred = m.Credential(
+                tenant_id=tenant, name=f"{name}-login", credential_type="odoo_login"
+            )
+            db.add(cred)
+            await db.flush()
+            conn = m.McpConnection(
+                tenant_id=tenant,
+                name=name,
+                transport="stdio",
+                server_url=f"stdio://{name}",
+                connected=True,
+                credential_id=cred.id,
+                config={"command": command, "args": []},
+                scopes={"read": [tools[0]], "write": tools[1:]},
+            )
+            db.add(conn)
+            await db.flush()
+            ids.append(str(conn.id))
+            _FakeMcp.by_command[command] = tools
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        ctx = {k: v for k, v in run.context.items() if k != "mcp_connection_id"}
+        ctx["mcp_connection_ids"] = ids
+        run.context = ctx
+        await db.commit()
+
+    _, body = await _rpc(_token(tenant, agent_id, run_id), "tools/list")
+    names = {t["name"] for t in body["result"]["tools"]}
+    assert {"search_records", "create_record"} <= names
+    assert {"list_issues", "create_issue"} <= names
+
+
 async def test_a_call_reaches_the_system_that_owns_the_tool(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

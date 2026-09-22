@@ -7,6 +7,8 @@ the bare name would reach whichever the core looked at first.
 
 from __future__ import annotations
 
+import pytest
+
 from oc8.agent.tool_routing import Route, build_routes, qualified, resolve
 
 
@@ -66,3 +68,55 @@ def test_a_qualified_name_for_the_wrong_connection_does_not_resolve() -> None:
 def test_qualified_is_what_build_routes_advertises() -> None:
     routes = build_routes({"a": ["t"], "b": ["t"]})
     assert qualified("a", "t") in routes
+
+
+class _FakeSession:
+    def __init__(self, command: str) -> None:
+        self.command = command
+        self.called: list[tuple[str, dict[str, object]]] = []
+
+    async def call(self, name: str, arguments: dict[str, object]) -> str:
+        self.called.append((name, arguments))
+        return f"{self.command}:{name}"
+
+
+@pytest.mark.asyncio
+async def test_routed_toolset_dispatches_each_name_to_its_owner() -> None:
+    from oc8.agent.tool_routing import RoutedToolset
+    from oc8.modelrouter.types import NeutralTool
+
+    odoo = _FakeSession("odoo")
+    gitea = _FakeSession("gitea")
+    routed = RoutedToolset(
+        {"odoo": odoo, "gitea": gitea},
+        {
+            "odoo": [NeutralTool(name="search_records", description="", parameters={})],
+            "gitea": [NeutralTool(name="create_issue", description="", parameters={})],
+        },
+    )
+    names = {t.name for t in routed.tools}
+    assert names == {"search_records", "create_issue"}
+    assert await routed.call("create_issue", {"title": "x"}) == "gitea:create_issue"
+    assert await routed.call("search_records", {}) == "odoo:search_records"
+    assert odoo.called == [("search_records", {})]
+    assert gitea.called == [("create_issue", {"title": "x"})]
+
+
+@pytest.mark.asyncio
+async def test_routed_toolset_qualifies_a_collision() -> None:
+    from oc8.agent.tool_routing import RoutedToolset
+    from oc8.modelrouter.types import NeutralTool
+
+    odoo = _FakeSession("odoo")
+    gitea = _FakeSession("gitea")
+    tool = NeutralTool(name="create_issue", description="", parameters={})
+    routed = RoutedToolset(
+        {"odoo": odoo, "gitea": gitea},
+        {"odoo": [tool], "gitea": [tool]},
+    )
+    names = {t.name for t in routed.tools}
+    assert "create_issue" not in names
+    assert names == {"odoo.create_issue", "gitea.create_issue"}
+    assert await routed.call("gitea.create_issue", {}) == "gitea:create_issue"
+    assert odoo.called == []
+    assert gitea.called == [("create_issue", {})]
