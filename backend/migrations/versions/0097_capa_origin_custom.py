@@ -11,8 +11,11 @@ schema change", which is wrong -- `ck_capa_origin` (renamed from
 `install_plugin(..., origin="custom")` 500s on `CheckViolationError` without
 this widening.
 
-Revision ID: 0094
-Revises: 0093
+Originally landed as revision 0094 alongside the api_key 0094; retargeted
+onto 0096 so the chain has a single head.
+
+Revision ID: 0097
+Revises: 0096
 """
 
 from __future__ import annotations
@@ -21,8 +24,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0094"
-down_revision: str | None = "0093"
+revision: str = "0097"
+down_revision: str | None = "0096"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
