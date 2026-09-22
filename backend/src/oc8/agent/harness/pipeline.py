@@ -32,6 +32,11 @@ from oc8.agent.harness.stages.d_todo import (
     todo_continuation_exhausted_note,
     todo_continuation_reminder,
 )
+from oc8.agent.harness.stages.d_verify import (
+    VERIFY_MAX_ROUNDS,
+    verify_exhausted_note,
+    verify_reminder,
+)
 from oc8.agent.harness.state import HarnessState, Ledger
 from oc8.modelrouter import ToolCall
 
@@ -181,18 +186,33 @@ class Harness:
     def may_finish(
         self, open_todos: list[dict[str, str]], *, can_continue: bool = True
     ) -> FinishVerdict:
-        """D1: refuse to let the model finish while its own todo_write list has
-        open items, up to TODO_CONTINUATION_MAX_ROUNDS times. `can_continue` is
-        the caller's own step budget (the isolated runtime checks it explicitly;
-        the in-process loop bound handles it)."""
+        """Run D1 todo continuation, then D3 verification before finishing.
+
+        `can_continue` is the caller's own step budget (the isolated runtime
+        checks it explicitly; the in-process loop bound handles it).
+        """
         if open_todos and can_continue and self.state.todo_rounds < TODO_CONTINUATION_MAX_ROUNDS:
             self.state.todo_rounds += 1
             return FinishVerdict(
                 ok=False,
                 reminder=todo_continuation_reminder(open_todos, self.state.todo_rounds),
             )
-        if open_todos:
-            return FinishVerdict(
-                ok=True, exhausted_note=todo_continuation_exhausted_note(open_todos)
-            )
-        return FinishVerdict(ok=True)
+        d1_note = todo_continuation_exhausted_note(open_todos) if open_todos else None
+        pending = [
+            self.state.ledger.entities[key]
+            for key in self.state.ledger.writes_unverified
+            if key in self.state.ledger.entities
+        ]
+        self.state.ledger.writes_unverified = [
+            key
+            for key in self.state.ledger.writes_unverified
+            if key in self.state.ledger.entities
+        ]
+        d3_note = None
+        if pending and can_continue and self.state.verify_rounds < VERIFY_MAX_ROUNDS:
+            self.state.verify_rounds += 1
+            return FinishVerdict(ok=False, reminder=verify_reminder(pending))
+        if pending:
+            d3_note = verify_exhausted_note(pending)
+        notes = [note for note in (d1_note, d3_note) if note]
+        return FinishVerdict(ok=True, exhausted_note="\n\n".join(notes) or None)

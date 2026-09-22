@@ -179,6 +179,68 @@ def test_may_finish_does_not_nudge_when_the_caller_cannot_continue() -> None:
     assert h.state.todo_rounds == 0
 
 
+def test_may_finish_asks_twice_then_notes_unverified_writes() -> None:
+    h = Harness()
+    note_access(
+        h.state.ledger,
+        connection="c",
+        kind="order",
+        id="9",
+        label="Order",
+        step_no=2,
+        wrote=True,
+        tool="update_record",
+    )
+    first = h.may_finish([])
+    second = h.may_finish([])
+    third = h.may_finish([])
+    assert first.ok is False and "Re-read these" in (first.reminder or "")
+    assert "Order (order 9)" in (first.reminder or "")
+    assert second.ok is False
+    assert third.ok is True
+    assert third.exhausted_note is not None
+    assert third.exhausted_note.startswith("[Note: 1 change(s) were not re-verified:")
+
+
+def test_an_open_todo_wins_over_an_unverified_write() -> None:
+    h = Harness()
+    note_access(
+        h.state.ledger,
+        connection="c",
+        kind="order",
+        id="9",
+        label="Order",
+        step_no=1,
+        wrote=True,
+        tool="update_record",
+    )
+    verdict = h.may_finish([{"content": "still open", "status": "pending"}])
+    assert verdict.ok is False
+    assert "todo item" in (verdict.reminder or "")
+    assert h.state.verify_rounds == 0
+
+
+def test_both_exhausted_notes_are_joined() -> None:
+    h = Harness()
+    h.state.todo_rounds = 3
+    note_access(
+        h.state.ledger,
+        connection="c",
+        kind="order",
+        id="9",
+        label="Order",
+        step_no=1,
+        wrote=True,
+        tool="update_record",
+    )
+    h.state.verify_rounds = 2
+    verdict = h.may_finish([{"content": "open", "status": "pending"}])
+    assert verdict.ok is True
+    assert verdict.exhausted_note is not None
+    assert "todo item(s) still open" in verdict.exhausted_note
+    assert "\n\n[Note: 1 change(s) were not re-verified:" in verdict.exhausted_note
+
+
 def test_from_run_context_and_store_round_trip() -> None:
     ctx: dict[str, object] = {"task": "x"}
     h = Harness.from_run_context(ctx, caps=ModelCaps(code_mode=True))
