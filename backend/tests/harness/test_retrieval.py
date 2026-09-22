@@ -135,3 +135,81 @@ def test_connection_filter_drops_non_matching_cards() -> None:
     other = _card("create_ticket", connection="helpdesk")
     ranked = rank_tools([mail, other], "list", connection="mail")
     assert [c.name for c in ranked] == ["list_inbox"]
+
+
+def test_select_completion_tools_stores_deferred_only() -> None:
+    from oc8.modelrouter import NeutralTool
+
+    from oc8.agent.harness.retrieval import select_completion_tools
+
+    find_tools = NeutralTool(
+        name="find_tools",
+        description=_FIND_TOOLS_DESC,
+        parameters={"type": "object", "properties": {}},
+    )
+    control = NeutralTool(
+        name="ask_human",
+        description="Ask",
+        parameters={"type": "object", "properties": {}},
+    )
+    fillers = [
+        NeutralTool(
+            name=f"filler_{i:02d}",
+            description=f"Filler {i}",
+            parameters={"type": "object", "properties": {}},
+        )
+        for i in range(30)
+    ]
+    offered = [control, *fillers]
+    assert len(offered) == 31
+
+    completion, catalog = select_completion_tools(
+        offered,
+        control_names=frozenset({"ask_human"}),
+        skill_names=frozenset(),
+        mission="",
+        skill_texts=[],
+        pinned=[],
+        tool_list_may_change=True,
+        mcp_connection=None,
+        tool_notes=None,
+        find_tools=find_tools,
+    )
+    assert [t.name for t in completion] == ["ask_human", "find_tools"]
+    assert [c["name"] for c in catalog] == [f"filler_{i:02d}" for i in range(30)]
+    assert all(c["name"] != "ask_human" for c in catalog)
+    assert all(c["name"] != "find_tools" for c in catalog)
+
+
+def test_select_completion_tools_empty_catalog_when_not_deferring() -> None:
+    from oc8.modelrouter import NeutralTool
+
+    from oc8.agent.harness.retrieval import select_completion_tools
+
+    find_tools = NeutralTool(
+        name="find_tools",
+        description=_FIND_TOOLS_DESC,
+        parameters={"type": "object", "properties": {}},
+    )
+    offered = [
+        NeutralTool(
+            name=f"tool_{i:02d}",
+            description=f"Tool {i}",
+            parameters={"type": "object", "properties": {}},
+        )
+        for i in range(10)
+    ]
+    completion, catalog = select_completion_tools(
+        offered,
+        control_names=frozenset(),
+        skill_names=frozenset(),
+        mission="",
+        skill_texts=[],
+        pinned=[],
+        tool_list_may_change=True,
+        mcp_connection=None,
+        tool_notes=None,
+        find_tools=find_tools,
+    )
+    assert [t.name for t in completion] == [t.name for t in offered]
+    assert catalog == []

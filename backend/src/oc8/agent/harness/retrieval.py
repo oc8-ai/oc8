@@ -167,7 +167,11 @@ def select_completion_tools(
     tool_notes: Mapping[str, Any] | None,
     find_tools: NeutralTool,
 ) -> tuple[list[NeutralTool], list[dict[str, Any]]]:
-    """A4 step: catalog + select_inline → completion tools and JSON-safe catalog."""
+    """A4 step: catalog + select_inline → completion tools and deferred catalog.
+
+    ``tool_catalog`` is the deferred subset only (empty when not deferring) so
+    ``find_tools`` ranks tools that are not already inline.
+    """
     catalog = cards_from_offered(
         offered,
         control_names=control_names,
@@ -175,7 +179,7 @@ def select_completion_tools(
         mcp_connection=mcp_connection,
         tool_notes=tool_notes,
     )
-    inline, _deferred = select_inline(
+    inline, deferred = select_inline(
         catalog,
         control_names=control_names,
         skill_names=skill_names,
@@ -186,7 +190,9 @@ def select_completion_tools(
         tool_list_may_change=tool_list_may_change,
     )
     completion = completion_tools_from_inline(offered, inline, find_tools=find_tools)
-    return completion, [asdict(card) for card in catalog]
+    # find_tools ranks the deferred set only (ruling 3 / empty query → first
+    # 10 deferred by name). When not deferring, deferred is empty.
+    return completion, [asdict(card) for card in deferred]
 
 
 def rank_tools(
