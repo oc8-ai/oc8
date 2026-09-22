@@ -1810,6 +1810,62 @@ async def test_step_retries_an_empty_length_truncation_with_a_bigger_budget(
 
 
 @pytest.mark.asyncio
+async def test_step_compacts_and_retries_when_the_length_retry_overflows(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    request_ids: list[uuid.UUID] = []
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        request_ids.append(kw["request_id"])  # type: ignore[arg-type]
+        if len(request_ids) == 1:
+            return CompletionResult(
+                text="", tool_calls=[], usage=Usage(tokens_in=6832, tokens_out=1536),
+                stop_reason="length", provider="openrouter", model="z-ai/glm-5.3-flash",
+            )
+        if len(request_ids) == 2:
+            raise RuntimeError("max_tokens must be at least 1, got -7075")
+        if len(request_ids) == 3:
+            return CompletionResult(
+                text="Task remains; retry the completion.", tool_calls=[],
+                usage=Usage(tokens_in=5000, tokens_out=30), stop_reason="stop",
+                provider="openrouter", model="z-ai/glm-5.3-flash",
+            )
+        return CompletionResult(
+            text="Ticket resolved after compaction.", tool_calls=[],
+            usage=Usage(tokens_in=5100, tokens_out=20), stop_reason="stop",
+            provider="openrouter", model="z-ai/glm-5.3-flash",
+        )
+
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent, _task, run = await _plain_agent_run(db, tenant)
+        agent_id, run_id = agent.id, run.id
+
+    from asgi_lifespan import LifespanManager
+    from httpx import ASGITransport, AsyncClient
+
+    from oc8.main import create_app
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post(
+                f"/api/v1/internal/agent/{run_id}/step",
+                headers={"Authorization": f"Bearer {_agent_token(tenant, agent_id, run_id)}"},
+            )
+            assert r.status_code == 200, r.text
+            assert r.json()["text"] == "Ticket resolved after compaction."
+    assert len(request_ids) == 4
+    assert len(set(request_ids)) == 4
+
+
+@pytest.mark.asyncio
 async def test_step_reports_status_override_failed_when_still_truncated_after_retry(
     app_session: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:

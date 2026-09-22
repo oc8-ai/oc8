@@ -591,6 +591,37 @@ async def step(
             )
 
         key, cached_result = await _cache_lookup(resolved_messages)
+
+        async def _complete_with_overflow_retry(
+            sampling_params: ModelParams,
+            req_id: uuid.UUID,
+        ) -> tuple[Any, uuid.UUID]:
+            nonlocal key, resolved_messages
+            try:
+                return (
+                    await _complete(resolved_messages, sampling_params, req_id),
+                    req_id,
+                )
+            except Exception as exc:
+                if overflow_tokens(str(exc)) is None:
+                    raise
+                await _compact()
+                resolved_messages, harness.state.masked = mask_observations(
+                    _to_messages(transcript),
+                    step_no=harness.state.step_no,
+                    ledger=harness.state.ledger,
+                )
+                key, _ = await _cache_lookup(resolved_messages)
+                retry_request_id = uuid.uuid4()
+                return (
+                    await _complete(
+                        resolved_messages,
+                        sampling_params,
+                        retry_request_id,
+                    ),
+                    retry_request_id,
+                )
+
         # Every model turn is metered HERE, because this is where an isolated run's
         # turns happen -- the container holds no keys and never calls a provider. Same
         # record the in-process engine writes after its own turn (§15.3): without it a
@@ -617,20 +648,10 @@ async def step(
                 saved_tokens_out=result.usage.tokens_out,
             )
         else:
-            try:
-                result = await _complete(resolved_messages, resolved_params, request_id)
-            except Exception as exc:
-                if overflow_tokens(str(exc)) is None:
-                    raise
-                await _compact()
-                resolved_messages, harness.state.masked = mask_observations(
-                    _to_messages(transcript),
-                    step_no=harness.state.step_no,
-                    ledger=harness.state.ledger,
-                )
-                key, _ = await _cache_lookup(resolved_messages)
-                request_id = uuid.uuid4()
-                result = await _complete(resolved_messages, resolved_params, request_id)
+            result, request_id = await _complete_with_overflow_retry(
+                resolved_params,
+                request_id,
+            )
             await _record(result, request_id)
             if result.stop_reason == "length" and not result.tool_calls and not result.text.strip():
                 # See engine.py's identical check: a reasoning-capable model can
@@ -639,8 +660,9 @@ async def step(
                 # double the budget, before this silently reads as the run being
                 # finished with nothing actually done.
                 retry_request_id = uuid.uuid4()
-                result = await _complete(
-                    resolved_messages, bumped_for_length_retry(resolved_params), retry_request_id
+                result, retry_request_id = await _complete_with_overflow_retry(
+                    bumped_for_length_retry(resolved_params),
+                    retry_request_id,
                 )
                 await _record(result, retry_request_id)
             await cache_flow.store_if_matching(key, result, provider=provider, model=model)

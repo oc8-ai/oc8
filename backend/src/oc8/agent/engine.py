@@ -786,6 +786,36 @@ async def run_agent(
 
                 key, cached_result = await _cache_lookup(resolved_messages)
 
+                async def _complete_with_overflow_retry(
+                    sampling_params: ModelParams,
+                    req_id: uuid.UUID,
+                ) -> tuple[Any, uuid.UUID]:
+                    nonlocal key, resolved_messages
+                    try:
+                        return (
+                            await _complete(sampling_params, req_id, resolved_messages),
+                            req_id,
+                        )
+                    except Exception as exc:
+                        if overflow_tokens(str(exc)) is None:
+                            raise
+                        await _compact()
+                        resolved_messages, harness.state.masked = mask_observations(
+                            messages,
+                            step_no=harness.state.step_no,
+                            ledger=harness.state.ledger,
+                        )
+                        key, _ = await _cache_lookup(resolved_messages)
+                        retry_request_id = uuid.uuid4()
+                        return (
+                            await _complete(
+                                sampling_params,
+                                retry_request_id,
+                                resolved_messages,
+                            ),
+                            retry_request_id,
+                        )
+
                 if cached_result is not None:
                     result = cached_result
                     await record_usage(
@@ -808,28 +838,10 @@ async def run_agent(
                         saved_tokens_out=result.usage.tokens_out,
                     )
                 else:
-                    try:
-                        result = await _complete(
-                            resolved_params,
-                            request_id,
-                            resolved_messages,
-                        )
-                    except Exception as exc:
-                        if overflow_tokens(str(exc)) is None:
-                            raise
-                        await _compact()
-                        resolved_messages, harness.state.masked = mask_observations(
-                            messages,
-                            step_no=harness.state.step_no,
-                            ledger=harness.state.ledger,
-                        )
-                        key, _ = await _cache_lookup(resolved_messages)
-                        request_id = uuid.uuid4()
-                        result = await _complete(
-                            resolved_params,
-                            request_id,
-                            resolved_messages,
-                        )
+                    result, request_id = await _complete_with_overflow_retry(
+                        resolved_params,
+                        request_id,
+                    )
                     await _record(result, request_id)
                     if not result.tool_calls:
                         result.tool_calls = _salvage_tool_calls(result.text, _offered())
@@ -845,10 +857,9 @@ async def run_agent(
                         # double the budget, before this silently reads as "the
                         # agent finished" with nothing actually done.
                         retry_request_id = uuid.uuid4()
-                        result = await _complete(
+                        result, retry_request_id = await _complete_with_overflow_retry(
                             bumped_for_length_retry(resolved_params),
                             retry_request_id,
-                            resolved_messages,
                         )
                         await _record(result, retry_request_id)
                         if not result.tool_calls:
