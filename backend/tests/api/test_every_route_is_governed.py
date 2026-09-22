@@ -186,6 +186,17 @@ _WORKSPACE_ROUTES: dict[tuple[str, str], str] = {
     ("POST", "/api/v1/members/{}/password-reset"): "member:manage",
 }
 
+_SUPERVISION_ROUTES: dict[tuple[str, str], str] = {
+    ("GET", "/api/v1/supervision/policies"): "supervision:view",
+    ("POST", "/api/v1/supervision/policies"): "supervision:manage",
+    ("PATCH", "/api/v1/supervision/policies/{}"): "supervision:manage",
+    ("POST", "/api/v1/supervision/assignments"): "supervision:manage",
+    ("POST", "/api/v1/task-anchors"): "supervision:manage",
+    ("GET", "/api/v1/supervision/interventions"): "supervision:view",
+    ("GET", "/api/v1/agents/{}/supervisor"): "supervision:view",
+    ("PUT", "/api/v1/agents/{}/supervisor"): "supervision:manage",
+}
+
 
 def _normalised(path: str) -> str:
     out: list[str] = []
@@ -231,6 +242,30 @@ def test_the_new_routes_declare_a_permission() -> None:
     assert not wrong, (
         "these routes do not declare the permission the design gives them "
         f"(expected -> found): { {k: (_WORKSPACE_ROUTES[k], v) for k, v in wrong.items()} }"
+    )
+
+
+def test_the_supervision_routes_declare_a_permission() -> None:
+    declared: dict[tuple[str, str], set[str]] = {}
+    for row in _api_routes():
+        key_path = _normalised(row["path"])
+        for method in row["methods"]:
+            if (method, key_path) in _SUPERVISION_ROUTES:
+                declared[(method, key_path)] = {
+                    detail for kind, detail in row["guards"] if kind == "permission"
+                }
+
+    missing = sorted(set(_SUPERVISION_ROUTES) - set(declared))
+    assert not missing, f"the supervision routes are not mounted: {missing}"
+
+    wrong = {
+        key: sorted(found)
+        for key, found in declared.items()
+        if _SUPERVISION_ROUTES[key] not in found
+    }
+    assert not wrong, (
+        "these routes do not declare the permission the design gives them "
+        f"(expected -> found): { {k: (_SUPERVISION_ROUTES[k], v) for k, v in wrong.items()} }"
     )
 
 
