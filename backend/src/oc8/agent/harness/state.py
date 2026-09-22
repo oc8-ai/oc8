@@ -85,6 +85,9 @@ class HarnessState:
     ledger: Ledger = field(default_factory=Ledger)
     ledger_sent_hash: str = ""
     masked: dict[str, MaskRef] = field(default_factory=dict)
+    compactions: int = 0
+    last_prompt_tokens: int = 0
+    last_compacted_step: int = -999
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -139,6 +142,9 @@ class HarnessState:
             step_no=int(raw.get("step_no", 0)),
             ledger=ledger,
             ledger_sent_hash=str(raw.get("ledger_sent_hash", "")),
+            compactions=int(raw.get("compactions", 0)),
+            last_prompt_tokens=int(raw.get("last_prompt_tokens", 0)),
+            last_compacted_step=int(raw.get("last_compacted_step", -999)),
             masked={
                 key: MaskRef(
                     step=int(value["step"]),

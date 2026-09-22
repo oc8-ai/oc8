@@ -29,6 +29,25 @@ _PARALLEL_RULE_PARALLEL = (
     "data is one call at a time."
 )
 
+
+def compaction_instruction() -> str:
+    """The fixed summary request used when a run outgrows its transcript."""
+    return (
+        "Summarise this run so a later pass can continue it. Never drop a section;\n"
+        'write "(none)" when a section is empty. Preserve exact identifiers, amounts,\n'
+        "dates, and error strings. If a prior summary exists, merge it into one.\n"
+        "\n"
+        "Task and intent\n"
+        "Records and identifiers touched (copy exact IDs)\n"
+        "Decisions and approvals (requested/answered)\n"
+        "Done (with evidence)\n"
+        "Remaining\n"
+        "Errors and what fixed them\n"
+        "Files produced\n"
+        "Critical context"
+    )
+
+
 #: Appended after the standing system prompt for tenant-assistant agents
 #: only (agent.is_tenant_assistant). Unchanged text, moved here from
 #: preamble.py so every model-facing string lives in one module.

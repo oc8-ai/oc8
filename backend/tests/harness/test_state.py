@@ -29,6 +29,9 @@ def test_fresh_state_is_all_zero() -> None:
     assert s.todo_rounds == 0
     assert s.verify_rounds == 0
     assert s.step_no == 0
+    assert s.compactions == 0
+    assert s.last_prompt_tokens == 0
+    assert s.last_compacted_step == -999
 
 
 def test_round_trip_through_real_json() -> None:
@@ -39,6 +42,9 @@ def test_round_trip_through_real_json() -> None:
         todo_rounds=1,
         verify_rounds=2,
         step_no=5,
+        compactions=2,
+        last_prompt_tokens=81_000,
+        last_compacted_step=5,
         ledger=Ledger(
             entities={
                 "office/document/42": EntityRef(

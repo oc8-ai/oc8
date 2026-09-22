@@ -35,6 +35,12 @@ from oc8.agent.harness import GateVerdict, Harness, resolve_caps
 from oc8.agent.harness.calls import (
     call_sig as _call_sig,  # re-exported for mcp_gateway.py and older tests
 )
+from oc8.agent.harness.prompts import compaction_instruction
+from oc8.agent.harness.stages.a_compaction import (
+    prompt_token_fallback,
+    rebuild_transcript,
+    should_compact,
+)
 from oc8.agent.harness.stages.a_masking import mask_observations
 from oc8.agent.harness.stages.b_approval import autonomy_of, strip_justification
 from oc8.agent.harness.stages.b_authorize import (
@@ -96,6 +102,7 @@ from oc8.modelrouter import (
 from oc8.modelrouter.accumulate import accumulate_stream
 from oc8.modelrouter.keys import resolve_model_base_url
 from oc8.modelrouter.sampling import bumped_for_length_retry, resolve_params
+from oc8.modelrouter.trim import overflow_tokens
 from oc8.modelrouter.types import ImagePart, ModelParams
 from oc8.observability import get_tracer, record_budget_exceeded, record_tool_call
 from oc8.realtime.emit import (
@@ -109,6 +116,7 @@ from oc8.runtime.run_context import append_tool_call
 from oc8.runtime.supervision_hook import maybe_checkpoint, maybe_create_anchor
 from oc8.skills.runtime import (
     LoadedSkill,
+    instruction_block,
 )
 from oc8.storage import s3
 
@@ -657,12 +665,6 @@ async def run_agent(
                     user_prompt_submit(prompt=task_text, **_hook_ctx()),
                 )
 
-                request_id = uuid.uuid4()
-                resolved_messages, harness.state.masked = mask_observations(
-                    messages,
-                    step_no=harness.state.step_no,
-                    ledger=harness.state.ledger,
-                )
                 resolved_tools = _offered()
                 resolved_params = resolve_params(model_config, agent=agent)
                 # Must match what fallback.py's own base_url resolution will
@@ -680,18 +682,109 @@ async def run_agent(
                     provider=provider,
                     credential_id=model_config.credential_id if model_config is not None else None,
                 )
-                key, cached_result = await cache_flow.lookup(
-                    department=department,
-                    tenant_id=tenant_id,
-                    department_id=agent.department_id,
-                    provider=provider,
-                    model=model,
-                    base_url=resolved_base_url,
-                    messages=resolved_messages,
-                    tools=resolved_tools,
-                    params=resolved_params,
-                    contains_restricted=contains_restricted,
+
+                async def _complete(
+                    sampling_params: ModelParams,
+                    req_id: uuid.UUID,
+                    msgs: list[NeutralMessage],
+                    *,
+                    tls: list[NeutralTool] = resolved_tools,
+                    publish: bool = True,
+                ) -> Any:
+                    return await accumulate_stream(
+                        stream_completion_with_fallback(
+                            db,
+                            router,
+                            tenant_id=tenant_id,
+                            agent_id=agent.id,
+                            primary=model_config,
+                            no_config_provider=provider,
+                            no_config_model=model,
+                            messages=msgs,
+                            tools=tls,
+                            params=sampling_params,
+                            request_id=req_id,
+                            contains_restricted=contains_restricted,
+                        ),
+                        on_text=_live_token_delta if publish else None,
+                    )
+
+                async def _record(res: Any, req_id: uuid.UUID) -> None:
+                    await record_usage(
+                        db,
+                        tenant_id=tenant_id,
+                        request_id=req_id,
+                        model=res.model,
+                        provider=res.provider,
+                        tokens_in=res.usage.tokens_in,
+                        tokens_out=res.usage.tokens_out,
+                        agent_id=agent.id,
+                        department_id=agent.department_id,
+                        skill_id=active_skills[-1].skill_id if active_skills else None,
+                        skill_version_id=(
+                            active_skills[-1].skill_version_id if active_skills else None
+                        ),
+                        creator_id=active_skills[-1].creator_id if active_skills else None,
+                    )
+
+                async def _compact(sampling_params: ModelParams = resolved_params) -> None:
+                    nonlocal tokens_since_checkpoint
+                    summary_request_id = uuid.uuid4()
+                    summary_messages = [
+                        *messages,
+                        NeutralMessage(role="user", content=compaction_instruction()),
+                    ]
+                    summary_result = await _complete(
+                        sampling_params,
+                        summary_request_id,
+                        summary_messages,
+                        publish=False,
+                    )
+                    await _record(summary_result, summary_request_id)
+                    tokens_since_checkpoint += (
+                        summary_result.usage.tokens_in + summary_result.usage.tokens_out
+                    )
+                    messages[:] = rebuild_transcript(
+                        messages,
+                        summary=summary_result.text,
+                        ledger_block=render_ledger_block(harness.state.ledger),
+                        skill_blocks=[instruction_block(skill) for skill in active_skills],
+                    )
+                    harness.state.compactions += 1
+                    harness.state.last_compacted_step = harness.state.step_no
+                    harness.state.ledger_sent_hash = ledger_fingerprint(harness.state.ledger)
+
+                if should_compact(harness.state, harness.caps):
+                    await _compact()
+
+                request_id = uuid.uuid4()
+                resolved_messages, harness.state.masked = mask_observations(
+                    messages,
+                    step_no=harness.state.step_no,
+                    ledger=harness.state.ledger,
                 )
+
+                async def _cache_lookup(
+                    msgs: list[NeutralMessage],
+                    *,
+                    base_url: str | None = resolved_base_url,
+                    tls: list[NeutralTool] = resolved_tools,
+                    sampling_params: ModelParams = resolved_params,
+                ) -> tuple[str | None, Any]:
+                    return await cache_flow.lookup(
+                        department=department,
+                        tenant_id=tenant_id,
+                        department_id=agent.department_id,
+                        provider=provider,
+                        model=model,
+                        base_url=base_url,
+                        messages=msgs,
+                        tools=tls,
+                        params=sampling_params,
+                        contains_restricted=contains_restricted,
+                    )
+
+                key, cached_result = await _cache_lookup(resolved_messages)
 
                 if cached_result is not None:
                     result = cached_result
@@ -715,50 +808,28 @@ async def run_agent(
                         saved_tokens_out=result.usage.tokens_out,
                     )
                 else:
-
-                    async def _complete(
-                        sampling_params: ModelParams,
-                        req_id: uuid.UUID,
-                        msgs: list[NeutralMessage] = resolved_messages,
-                        tls: list[NeutralTool] = resolved_tools,
-                    ) -> Any:
-                        return await accumulate_stream(
-                            stream_completion_with_fallback(
-                                db,
-                                router,
-                                tenant_id=tenant_id,
-                                agent_id=agent.id,
-                                primary=model_config,
-                                no_config_provider=provider,
-                                no_config_model=model,
-                                messages=msgs,
-                                tools=tls,
-                                params=sampling_params,
-                                request_id=req_id,
-                                contains_restricted=contains_restricted,
-                            ),
-                            on_text=_live_token_delta,
+                    try:
+                        result = await _complete(
+                            resolved_params,
+                            request_id,
+                            resolved_messages,
                         )
-
-                    async def _record(res: Any, req_id: uuid.UUID) -> None:
-                        await record_usage(
-                            db,
-                            tenant_id=tenant_id,
-                            request_id=req_id,
-                            model=res.model,
-                            provider=res.provider,
-                            tokens_in=res.usage.tokens_in,
-                            tokens_out=res.usage.tokens_out,
-                            agent_id=agent.id,
-                            department_id=agent.department_id,
-                            skill_id=active_skills[-1].skill_id if active_skills else None,
-                            skill_version_id=(
-                                active_skills[-1].skill_version_id if active_skills else None
-                            ),
-                            creator_id=active_skills[-1].creator_id if active_skills else None,
+                    except Exception as exc:
+                        if overflow_tokens(str(exc)) is None:
+                            raise
+                        await _compact()
+                        resolved_messages, harness.state.masked = mask_observations(
+                            messages,
+                            step_no=harness.state.step_no,
+                            ledger=harness.state.ledger,
                         )
-
-                    result = await _complete(resolved_params, request_id)
+                        key, _ = await _cache_lookup(resolved_messages)
+                        request_id = uuid.uuid4()
+                        result = await _complete(
+                            resolved_params,
+                            request_id,
+                            resolved_messages,
+                        )
                     await _record(result, request_id)
                     if not result.tool_calls:
                         result.tool_calls = _salvage_tool_calls(result.text, _offered())
@@ -775,12 +846,19 @@ async def run_agent(
                         # agent finished" with nothing actually done.
                         retry_request_id = uuid.uuid4()
                         result = await _complete(
-                            bumped_for_length_retry(resolved_params), retry_request_id
+                            bumped_for_length_retry(resolved_params),
+                            retry_request_id,
+                            resolved_messages,
                         )
                         await _record(result, retry_request_id)
                         if not result.tool_calls:
                             result.tool_calls = _salvage_tool_calls(result.text, _offered())
                     await cache_flow.store_if_matching(key, result, provider=provider, model=model)
+                harness.state.last_prompt_tokens = (
+                    result.usage.tokens_in
+                    if result.usage.tokens_in > 0
+                    else prompt_token_fallback(resolved_messages)
+                )
                 tokens_since_checkpoint += result.usage.tokens_in + result.usage.tokens_out
 
                 if not result.tool_calls:

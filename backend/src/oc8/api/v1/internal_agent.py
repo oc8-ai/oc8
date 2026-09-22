@@ -34,6 +34,12 @@ from oc8.agent.control_tools import (
 from oc8.agent.engine import _max_steps
 from oc8.agent.harness import Harness, resolve_caps
 from oc8.agent.harness.calls import call_sig as _call_sig
+from oc8.agent.harness.prompts import compaction_instruction
+from oc8.agent.harness.stages.a_compaction import (
+    prompt_token_fallback,
+    rebuild_transcript,
+    should_compact,
+)
 from oc8.agent.harness.stages.a_masking import mask_observations
 from oc8.agent.harness.stages.b_approval import autonomy_of, strip_justification
 from oc8.agent.harness.stages.b_authorize import authorize as _authorize
@@ -82,12 +88,13 @@ from oc8.modelrouter import (
 from oc8.modelrouter.accumulate import accumulate_stream
 from oc8.modelrouter.keys import resolve_model_base_url
 from oc8.modelrouter.sampling import bumped_for_length_retry, resolve_params
+from oc8.modelrouter.trim import overflow_tokens
 from oc8.modelrouter.types import ImagePart, ModelParams, TextPart
 from oc8.realtime.emit import note_focus, publish_run_token_delta, publish_run_tool_call
 from oc8.runtime.approval_resume import pre_decided_map
 from oc8.runtime.registry import BUILTIN_ISOLATED_RUNTIME_REF
 from oc8.runtime.run_context import append_tool_call
-from oc8.skills.runtime import load_assigned_skills
+from oc8.skills.runtime import instruction_block, load_assigned_skills
 from oc8.storage import s3
 
 router = APIRouter()
@@ -466,7 +473,11 @@ async def step(
         await publish_run_token_delta(run.tenant_id, run_id=run.id, text=text)
 
     async def _complete(
-        msgs: list[NeutralMessage], sampling_params: ModelParams, req_id: uuid.UUID
+        msgs: list[NeutralMessage],
+        sampling_params: ModelParams,
+        req_id: uuid.UUID,
+        *,
+        publish: bool = True,
     ) -> Any:
         return await accumulate_stream(
             stream_completion_with_fallback(
@@ -483,7 +494,7 @@ async def step(
                 request_id=req_id,
                 contains_restricted=contains_restricted,
             ),
-            on_text=_live_token_delta,
+            on_text=_live_token_delta if publish else None,
         )
 
     async def _record(res: Any, req_id: uuid.UUID) -> None:
@@ -507,8 +518,36 @@ async def step(
     # round counter is therefore reset per request on purpose (it never has to
     # survive past this one call) -- a known asymmetry with the in-process
     # engine, which counts rounds per run; spec §1.1, package 6.
-    harness = Harness.from_run_context(ctx)
+    harness = Harness.from_run_context(
+        ctx,
+        caps=resolve_caps(model_config.params if model_config is not None else None),
+    )
     harness.state.todo_rounds = 0
+
+    async def _compact() -> None:
+        summary_request_id = uuid.uuid4()
+        current_messages = _to_messages(transcript)
+        summary_result = await _complete(
+            [
+                *current_messages,
+                NeutralMessage(role="user", content=compaction_instruction()),
+            ],
+            resolved_params,
+            summary_request_id,
+            publish=False,
+        )
+        await _record(summary_result, summary_request_id)
+        rebuilt = rebuild_transcript(
+            current_messages,
+            summary=summary_result.text,
+            ledger_block=render_ledger_block(harness.state.ledger),
+            skill_blocks=[instruction_block(skill) for skill in active_skills],
+        )
+        transcript[:] = [_from_message(message) for message in rebuilt]
+        harness.state.compactions += 1
+        harness.state.last_compacted_step = harness.state.step_no
+        harness.state.ledger_sent_hash = ledger_fingerprint(harness.state.ledger)
+
     while True:
         ledger_hash = ledger_fingerprint(harness.state.ledger)
         if ledger_hash != harness.state.ledger_sent_hash:
@@ -526,6 +565,8 @@ async def step(
         # take step ctx["steps"]+1, which is what ctx["steps"] becomes after
         # the completion below.
         harness.state.step_no = int(ctx.get("steps", 0)) + 1
+        if should_compact(harness.state, harness.caps):
+            await _compact()
         resolved_messages, harness.state.masked = mask_observations(
             _to_messages(transcript),
             step_no=harness.state.step_no,
@@ -535,18 +576,21 @@ async def step(
         # Department prompt caching, through the SAME helper the in-process engine
         # uses (oc8.agent.cache_flow) -- an isolated deployment must not silently
         # render a settings toggle and a savings figure that do nothing.
-        key, cached_result = await cache_flow.lookup(
-            department=dept,
-            tenant_id=run.tenant_id,
-            department_id=agent.department_id,
-            provider=provider,
-            model=model,
-            base_url=resolved_base_url,
-            messages=resolved_messages,
-            tools=resolved_tools,
-            params=resolved_params,
-            contains_restricted=contains_restricted,
-        )
+        async def _cache_lookup(msgs: list[NeutralMessage]) -> tuple[str | None, Any]:
+            return await cache_flow.lookup(
+                department=dept,
+                tenant_id=run.tenant_id,
+                department_id=agent.department_id,
+                provider=provider,
+                model=model,
+                base_url=resolved_base_url,
+                messages=msgs,
+                tools=resolved_tools,
+                params=resolved_params,
+                contains_restricted=contains_restricted,
+            )
+
+        key, cached_result = await _cache_lookup(resolved_messages)
         # Every model turn is metered HERE, because this is where an isolated run's
         # turns happen -- the container holds no keys and never calls a provider. Same
         # record the in-process engine writes after its own turn (§15.3): without it a
@@ -573,7 +617,20 @@ async def step(
                 saved_tokens_out=result.usage.tokens_out,
             )
         else:
-            result = await _complete(resolved_messages, resolved_params, request_id)
+            try:
+                result = await _complete(resolved_messages, resolved_params, request_id)
+            except Exception as exc:
+                if overflow_tokens(str(exc)) is None:
+                    raise
+                await _compact()
+                resolved_messages, harness.state.masked = mask_observations(
+                    _to_messages(transcript),
+                    step_no=harness.state.step_no,
+                    ledger=harness.state.ledger,
+                )
+                key, _ = await _cache_lookup(resolved_messages)
+                request_id = uuid.uuid4()
+                result = await _complete(resolved_messages, resolved_params, request_id)
             await _record(result, request_id)
             if result.stop_reason == "length" and not result.tool_calls and not result.text.strip():
                 # See engine.py's identical check: a reasoning-capable model can
@@ -597,6 +654,11 @@ async def step(
             # it travels on the run's own context instead.
             ctx["pending_cache_key"] = key
 
+        harness.state.last_prompt_tokens = (
+            result.usage.tokens_in
+            if result.usage.tokens_in > 0
+            else prompt_token_fallback(resolved_messages)
+        )
         transcript.append(
             _from_message(
                 NeutralMessage(role="assistant", content=result.text, tool_calls=result.tool_calls)
