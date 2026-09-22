@@ -805,6 +805,7 @@ async def tool(
         typed_annotations is not None and typed_annotations.get("idempotentHint") is True
     )
     gate_verdict = None
+    tier = None
     if decision.effect is Effect.ALLOW:
         tier = classify_tier(
             tc.name,

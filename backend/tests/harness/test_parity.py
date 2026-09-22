@@ -20,6 +20,7 @@ from sqlalchemy import select
 from oc8 import models as m
 from oc8.agent.engine import run_agent
 from oc8.agent.harness.stages.c_spill import SPILL_THRESHOLD_CHARS
+from oc8.agent.tool_semantics import record_identity as _real_record_identity
 from oc8.api.v1.internal_agent import _to_messages
 from oc8.modelrouter import (
     CompletionResult,
@@ -77,6 +78,17 @@ def _idempotent_write(call_id: str) -> ToolCall:
         name="upsert_record",
         arguments={"model": "thing", "id": 7, "values": {"name": "same"}},
     )
+
+
+def _record_identity(
+    tool: str, arguments: dict[str, Any], focus_spec: dict[str, Any] | None
+) -> tuple[str, str] | None:
+    # `todo_write` is a successful control-tool call whose frame decision is
+    # not ALLOW, so no gate verdict/tier exists. Giving it an identity ensures
+    # both runtimes exercise the guarded note_access call site.
+    if tool == "todo_write":
+        return ("todo", "synthetic")
+    return _real_record_identity(tool, arguments, focus_spec)
 
 
 #: One model turn per completion, in order. Each runtime gets its own copy.
@@ -265,6 +277,7 @@ async def _run_in_process(
     stream = _ScriptedStream(_script())
     monkeypatch.setattr("oc8.agent.engine.stream_completion_with_fallback", stream)
     monkeypatch.setattr("oc8.agent.engine.McpSession", _StubSession)
+    monkeypatch.setattr("oc8.agent.engine.record_identity", _record_identity)
     async with app_session(tenant) as db:
         agent, conn = await _fixture(db, tenant)
         result = await run_agent(
@@ -312,6 +325,7 @@ async def _run_isolated(
     stream = _ScriptedStream(_script())
     monkeypatch.setattr("oc8.api.v1.internal_agent.stream_completion_with_fallback", stream)
     monkeypatch.setattr("oc8.api.v1.internal_agent.McpSession", _StubSession)
+    monkeypatch.setattr("oc8.api.v1.internal_agent.record_identity", _record_identity)
     async with app_session(tenant) as db:
         agent, conn = await _fixture(db, tenant)
         task = m.Task(
