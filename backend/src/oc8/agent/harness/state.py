@@ -75,6 +75,7 @@ class HarnessState:
     #: C3's step stamp. 0 on a fresh run, before the first turn sets it.
     step_no: int = 0
     ledger: Ledger = field(default_factory=Ledger)
+    ledger_sent_hash: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -128,6 +129,7 @@ class HarnessState:
             verify_rounds=int(raw.get("verify_rounds", 0)),
             step_no=int(raw.get("step_no", 0)),
             ledger=ledger,
+            ledger_sent_hash=str(raw.get("ledger_sent_hash", "")),
         )
 
     @classmethod

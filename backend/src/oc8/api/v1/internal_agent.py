@@ -44,9 +44,11 @@ from oc8.agent.harness.stages.b_read_before_write import note_access
 from oc8.agent.harness.stages.b_risk_tier import classify_tier
 from oc8.agent.harness.stages.c_errors import ToolError, classify_exception
 from oc8.agent.harness.stages.c_ledger import (
+    ledger_fingerprint,
     record_decision,
     record_file,
     record_outward,
+    render_ledger_block,
 )
 from oc8.agent.harness.stages.c_spill import persist_spill
 from oc8.agent.mcp_client import McpSession
@@ -507,6 +509,18 @@ async def step(
     harness = Harness.from_run_context(ctx)
     harness.state.todo_rounds = 0
     while True:
+        ledger_hash = ledger_fingerprint(harness.state.ledger)
+        if ledger_hash != harness.state.ledger_sent_hash:
+            transcript.append(
+                _from_message(
+                    NeutralMessage(
+                        role="user",
+                        content=render_ledger_block(harness.state.ledger),
+                    )
+                )
+            )
+            harness.state.ledger_sent_hash = ledger_hash
+
         resolved_messages = _to_messages(transcript)
         request_id = uuid.uuid4()
         # Department prompt caching, through the SAME helper the in-process engine

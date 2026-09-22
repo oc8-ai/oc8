@@ -47,9 +47,11 @@ from oc8.agent.harness.stages.b_read_before_write import note_access
 from oc8.agent.harness.stages.b_risk_tier import classify_tier
 from oc8.agent.harness.stages.c_errors import ToolError, classify_exception
 from oc8.agent.harness.stages.c_ledger import (
+    ledger_fingerprint,
     record_decision,
     record_file,
     record_outward,
+    render_ledger_block,
 )
 from oc8.agent.harness.stages.c_reminders import track_repeat_tool_call
 from oc8.agent.harness.stages.c_spill import persist_spill
@@ -637,6 +639,16 @@ async def run_agent(
                             status="info",
                             message=f"💬 Operator: {operator_msg}",
                         )
+
+                ledger_hash = ledger_fingerprint(harness.state.ledger)
+                if ledger_hash != harness.state.ledger_sent_hash:
+                    messages.append(
+                        NeutralMessage(
+                            role="user",
+                            content=render_ledger_block(harness.state.ledger),
+                        )
+                    )
+                    harness.state.ledger_sent_hash = ledger_hash
 
                 await dispatch_claude_event(
                     tenant_id,
