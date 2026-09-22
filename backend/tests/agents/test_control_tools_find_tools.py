@@ -127,6 +127,34 @@ async def test_missing_catalog_says_everything_is_inline(app_session: Any) -> No
     assert outcome.output == "No deferred tools. Every tool is already in your list."
 
 
+@pytest.mark.asyncio
+async def test_no_match_returns_clear_message(app_session: Any) -> None:
+    tenant = uuid.uuid4()
+    harness = HarnessState(tool_catalog=list(_CATALOG))
+    async with app_session(tenant) as db:
+        agent, task = await _agent_and_task(db, tenant)
+        outcome = await execute_control_tool(
+            db,
+            tenant_id=tenant,
+            agent=agent,
+            task=task,
+            tc=ToolCall(
+                id="c1",
+                name=FIND_TOOLS.name,
+                arguments={"query": "zzzznotatoken"},
+            ),
+            decision=Decision(Effect.ALLOW),
+            assigned_skills=[],
+            active_skills=[],
+            mcp_conn=None,
+            originating_operator=None,
+            harness_state=harness,
+        )
+    assert outcome is not None
+    assert outcome.output == "No matching tools."
+    assert harness.pinned_tools == []
+
+
 def test_schema_registered_but_not_appended_by_offered_tools() -> None:
     assert FIND_TOOLS.name in CONTROL_TOOL_NAMES
     agent = m.Agent(

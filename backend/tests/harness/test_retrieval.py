@@ -111,6 +111,23 @@ def test_bm25_ranks_unique_notes_token_first() -> None:
     ]
     ranked = rank_tools([*distractors, unique], "raretoken", connection=None)
     assert ranked[0].name == "alpha"
+    # Default keeps top-N even when later cards score zero.
+    assert len(ranked) == 3
+
+
+def test_require_match_drops_zero_score_cards() -> None:
+    unique = _card("alpha", notes="contains the raretoken once")
+    distractors = [
+        _card("beta", description="ordinary helper"),
+        _card("gamma", description="another ordinary helper"),
+    ]
+    ranked = rank_tools(
+        [*distractors, unique],
+        "raretoken",
+        connection=None,
+        require_match=True,
+    )
+    assert [c.name for c in ranked] == ["alpha"]
 
 
 def test_connection_filter_drops_non_matching_cards() -> None:

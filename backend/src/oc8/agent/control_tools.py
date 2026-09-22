@@ -1211,6 +1211,7 @@ def _format_run_shell_result(result: dict[str, Any]) -> str:
 
 
 _MISSING_DEFERRED = "No deferred tools. Every tool is already in your list."
+_NO_MATCHES = "No matching tools."
 
 
 def _execute_find_tools(
@@ -1240,11 +1241,16 @@ def _execute_find_tools(
     if raw_connection is not None:
         connection = str(raw_connection).strip() or None
 
+    query = str(tc.arguments.get("query", ""))
     ranked = rank_tools(
         cards,
-        str(tc.arguments.get("query", "")),
+        query,
         connection=connection,
+        require_match=bool(query.strip()),
     )
+    if not ranked:
+        return ControlOutcome(output=_NO_MATCHES)
+
     lines: list[str] = []
     for card in ranked:
         first_line = card.description.split("\n", 1)[0]

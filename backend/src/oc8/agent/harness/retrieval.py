@@ -101,8 +101,13 @@ def rank_tools(
     *,
     connection: str | None,
     limit: int = 10,
+    require_match: bool = False,
 ) -> list[ToolCard]:
-    """BM25-rank cards; optionally filter by connection first."""
+    """BM25-rank cards; optionally filter by connection first.
+
+    When ``require_match`` is true (find_tools), drop zero-score cards so a
+    specific query does not pad results. Default keeps Task 1 top-N-even-at-0.
+    """
     if connection is not None:
         catalog = [c for c in catalog if c.connection == connection]
     if not catalog:
@@ -118,9 +123,9 @@ def rank_tools(
         zip(scores, catalog, strict=True),
         key=lambda pair: (-pair[0], pair[1].name),
     )
-    # Drop zero-score cards so a specific query does not pad the list with
-    # unrelated deferred tools (and so find_tools only pins real matches).
-    return [card for score, card in ranked if score > 0][:limit]
+    if require_match:
+        return [card for score, card in ranked if score > 0][:limit]
+    return [card for _score, card in ranked][:limit]
 
 
 def _corpus(card: ToolCard) -> str:
