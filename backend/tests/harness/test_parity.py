@@ -15,6 +15,7 @@ import uuid
 from typing import Any
 
 import pytest
+from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.agent.engine import run_agent
@@ -66,7 +67,7 @@ def _write(call_id: str) -> ToolCall:
     return ToolCall(
         id=call_id,
         name="create_record",
-        arguments={"model": "thing", "values": {"name": "same"}},
+        arguments={"model": "thing", "record_id": 1, "values": {"name": "same"}},
     )
 
 
@@ -117,6 +118,8 @@ def _script() -> list[CompletionResult]:
             ),
         ),
         _turn("Summary written."),
+        _turn("No re-read needed."),
+        _turn("Finished anyway."),
     ]
 
 
@@ -208,7 +211,16 @@ async def _fixture(db: Any, tenant: uuid.UUID) -> tuple[m.Agent, m.McpConnection
         transport="stdio",
         server_url="stdio://things",
         connected=True,
-        config={"command": "x", "args": []},
+        config={
+            "command": "x",
+            "args": [],
+            "read_before_write": False,
+            "focus_spec": {
+                "entity_field": "model",
+                "id_fields": ["record_id"],
+                "labels": {"thing": "Thing"},
+            },
+        },
         scopes={
             "read": ["search_records"],
             "modify": ["create_record", "upsert_record"],
@@ -262,7 +274,17 @@ async def _run_in_process(
             tenant_id=tenant,
             mcp_conn=conn,
         )
+        completion_status = await db.scalar(
+            select(m.ActivityEvent.status)
+            .where(
+                m.ActivityEvent.agent_id == agent.id,
+                m.ActivityEvent.message.like("% completed:%"),
+            )
+            .order_by(m.ActivityEvent.ts.desc())
+            .limit(1)
+        )
     assert result.status == "done", result
+    assert completion_status == "warning"
     assert _StubSession.write_calls == 1, "the second in-process write must replay"
     assert _StubSession.idempotent_write_calls == 2, "idempotentHint must bypass replay"
     # The last completion saw everything up to (not including) its own answer;
@@ -369,6 +391,12 @@ async def _run_isolated(
         assert "harness" in run_row.context, "HarnessState must be persisted on run.context"
         assert "repeat_tracker" not in run_row.context
         assert "tool_output_chars" not in run_row.context
+    # As above, compare the delivered final output. /step returns the exhausted
+    # note separately from the persisted raw model turn.
+    transcript = [
+        *transcript[:-1],
+        NeutralMessage(role="assistant", content=final_text, tool_calls=[]),
+    ]
     return transcript, final_text
 
 
@@ -394,4 +422,18 @@ async def test_both_runtimes_produce_the_same_transcript(
     assert len(errors) == 1
     assert errors[0].startswith("<step-stamp> ERROR from things (search_records):")
 
-    assert in_process_text == isolated_text == "Summary written."
+    for transcript in (left, right):
+        reminder_indexes = [
+            index
+            for index, (role, content, _, _) in enumerate(transcript)
+            if role == "user" and "Re-read these" in str(content)
+        ]
+        assert len(reminder_indexes) == 2
+        assert all(
+            transcript[index - 1][0] == "assistant" for index in reminder_indexes
+        ), "verify nudge must follow, rather than accept, the attempted finish"
+        assert transcript[-1][0] == "assistant"
+
+    assert in_process_text == isolated_text
+    assert in_process_text.startswith("Finished anyway.")
+    assert "were not re-verified" in in_process_text

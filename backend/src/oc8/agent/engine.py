@@ -834,7 +834,11 @@ async def run_agent(
                         db,
                         tenant_id=tenant_id,
                         agent_id=agent.id,
-                        status="warning" if open_todos else "success",
+                        status=(
+                            "warning"
+                            if finish_verdict.exhausted_note is not None
+                            else "success"
+                        ),
                         message=f"{agent.name} completed: {task_text[:80]}",
                         detail=output_text[:500] or None,
                         cache_hit=cached_result is not None,
