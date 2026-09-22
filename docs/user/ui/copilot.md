@@ -39,6 +39,14 @@ for tool calls.
 | Needs tools | [Capas](capas.md) |
 | First run | Watch [My work](my-work.md) |
 
+## Driving Copilot from outside oc8
+
+Everything above also works from an external AI client — Claude Desktop,
+claude.ai, ChatGPT, or your own tool — over oc8's external Copilot MCP
+gateway, authenticated with your own API key (Settings → API keys). See
+`skills-library/oc8-copilot/` in the repository for the skill that teaches
+a client how to use it well.
+
 ## Related
 
 - [Key concepts — Copilot](../key-concepts.mdx#copilot-configuration-assistant)

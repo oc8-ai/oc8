@@ -11,7 +11,14 @@ from packaging.version import Version
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oc8.capas.manifest import Manifest, ManifestError, parse_manifest
+from oc8.capas.discovery import DiscoveredPlugin, find_plugin
+from oc8.capas.manifest import (
+    Manifest,
+    ManifestError,
+    PluginSetupSpec,
+    SetupFieldSpec,
+    parse_manifest,
+)
 from oc8.capas.registry import enabled_capability_registry
 from oc8.constants import CORE_VERSION
 from oc8.models import (
@@ -31,10 +38,14 @@ __all__ = [
     "DependencyError",
     "DuplicateVersionError",
     "ManifestError",
+    "MissingDependencyError",
     "PluginError",
+    "SetupValidationError",
     "install_plugin",
+    "install_with_dependencies",
     "instantiate_agent",
     "instantiate_department",
+    "validate_setup_values",
 ]
 
 
@@ -52,6 +63,45 @@ class DuplicateVersionError(PluginError):
 
 class CoreCompatError(PluginError):
     pass
+
+
+class MissingDependencyError(PluginError):
+    """A `plugin_depends` entry named a plugin that isn't on disk."""
+
+
+class SetupValidationError(PluginError):
+    """One of `configure_plugin`'s three request-shape checks failed."""
+
+
+def validate_setup_values(
+    setup: PluginSetupSpec, fields: dict[str, SetupFieldSpec], values: dict[str, str]
+) -> None:
+    """The three checks `configure_plugin` (api/v1/capas.py) runs against a
+    submitted setup form before touching anything stateful: every submitted
+    key is declared, every required field has a value, and any declared
+    `any_of` credential-set alternative is satisfied by at least one group.
+    Pulled out so the Copilot gateway's `capa.configure` operation (secret-
+    blind, no MCP connection support) can run the identical validation the
+    REST route does, instead of drifting from it.
+    """
+    unknown = sorted(set(values) - set(fields))
+    if unknown:
+        raise SetupValidationError(f"unknown setup fields: {', '.join(unknown)}")
+    for field in setup.fields:
+        if field.required and not values.get(field.key, field.default).strip():
+            raise SetupValidationError(f"setup field {field.key!r} is required")
+    for alternative in setup.validation.any_of:
+        unknown_fields = sorted(set(alternative) - set(fields))
+        if unknown_fields:
+            raise SetupValidationError(
+                f"setup validation references unknown fields: {', '.join(unknown_fields)}"
+            )
+    if setup.validation.any_of and not any(
+        all(values.get(key, fields[key].default).strip() for key in alternative)
+        for alternative in setup.validation.any_of
+    ):
+        alternatives = " or ".join(" + ".join(group) for group in setup.validation.any_of)
+        raise SetupValidationError(f"provide one complete credential set: {alternatives}")
 
 
 def _artifact_hash(manifest: Manifest) -> bytes:
@@ -131,6 +181,57 @@ async def install_plugin(
     plugin.current_version_id = version.id
     await db.flush()
     return version
+
+
+async def install_with_dependencies(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    found: DiscoveredPlugin,
+    origin: str,
+    _seen: set[str] | None = None,
+) -> CapaVersion | None:
+    """Install `found` for `tenant_id`, first recursively installing any
+    not-yet-installed `plugin_depends` entries (design §9). Never enables a
+    dependency -- only `install_plugin` runs for it, exactly as if an
+    operator had installed it manually and not yet clicked Enable.
+
+    Moved here from `api/v1/capas.py` (was `_install_with_dependencies`) so
+    both the REST route and the Copilot gateway's `capa.install` operation
+    can call it without a service module importing a route module. Domain
+    exceptions (`PluginError`/`MissingDependencyError`) replace the two
+    `HTTPException` raises the route-local version used -- callers map them
+    to their own transport's error shape (`HTTPException` for the REST
+    route, `InvalidOperation` for the Copilot gateway).
+    """
+    plugin_id = found.plugin_id
+    seen = _seen if _seen is not None else set()
+    if plugin_id in seen:
+        return None
+    seen.add(plugin_id)
+
+    if not found.valid or found.manifest is None:
+        raise PluginError(found.error or "invalid manifest")
+
+    for dep_name in found.manifest.get("plugin_depends") or []:
+        already_installed = (
+            await db.execute(select(Capa).where(Capa.tenant_id == tenant_id, Capa.name == dep_name))
+        ).scalar_one_or_none()
+        if already_installed is None:
+            dep = find_plugin(dep_name)
+            if dep is None:
+                msg = f"{plugin_id} depends on a plugin not found on disk: {dep_name}"
+                raise MissingDependencyError(msg)
+            await install_with_dependencies(
+                db, tenant_id=tenant_id, found=dep, origin=origin, _seen=seen
+            )
+
+    try:
+        return await install_plugin(
+            db, tenant_id=tenant_id, manifest_data=found.manifest, origin=origin
+        )
+    except DuplicateVersionError:
+        raise
 
 
 async def _assign_named_skills(

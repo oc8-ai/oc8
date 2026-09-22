@@ -3,6 +3,7 @@ import { Check, Copy, Link2, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
+import { ApiKeysPanel } from "@/components/api-keys-panel";
 import { BackupCodesReveal } from "@/components/totp-backup-codes";
 import { TotpEnroll } from "@/components/totp-enroll";
 import { useT } from "@/lib/i18n";
@@ -473,6 +474,7 @@ export function ProfilePage() {
           </div>
         )}
       </Panel>
+      <ApiKeysPanel />
       <ApprovalChannelsPanel />
     </div>
   );

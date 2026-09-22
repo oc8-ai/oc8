@@ -112,13 +112,13 @@ def test_null_round_trips_as_null_for_every_nullable_column() -> None:
 
 def test_every_exported_table_round_trips_a_fully_populated_row() -> None:
     tables = exported_tables()
-    # guards against a silently-shrunk table list (56 since migration 0086's
-    # file_attachment, migration 0088's member_dashboard_layout, and
-    # migration 0089's dashboard_preset joined the export -- see
-    # test_tables.py's own comment on why a chat/instruction attachment's
-    # row and a member's saved widget-grid arrangements are all portable
-    # company data, not instance-bound)
-    assert len(tables) == 56
+    # guards against a silently-shrunk table list (57 since migration 0086's
+    # file_attachment, migration 0088's member_dashboard_layout, migration
+    # 0089's dashboard_preset, and migration 0093's api_key joined the export
+    # -- see test_tables.py's own comment on why a chat/instruction
+    # attachment's row, a member's saved widget-grid arrangements, and a
+    # self-issued API key are all portable company data, not instance-bound)
+    assert len(tables) == 57
     for name in sorted(tables):
         table = table_by_name(name)
         row = {col.name: _sample_value(col.type, i) for i, col in enumerate(table.columns)}

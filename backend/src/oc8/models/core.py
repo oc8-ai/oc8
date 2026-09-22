@@ -83,6 +83,13 @@ class Department(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     # Display-only fields backing the office view (icon, okr, kpi, accent, ...).
     presentation: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     prompt_caching_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Bumped by the database for every update (migration 0096, same trigger
+    # migration 0054 already wired up for agent/plugin/integration); Copilot
+    # uses it as an optimistic concurrency token for department.update/
+    # delete/restore.
+    config_revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
     # The department the tenant's oc8 Assistant lives in -- auto-provisioned by
     # `agent.assistant.get_or_create_assistant`, never configured by anyone.
     # Mirrors `Agent.is_tenant_assistant`, and for the same reason: the two

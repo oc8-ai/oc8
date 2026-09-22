@@ -17,7 +17,7 @@ from oc8.api.deps import CurrentPrincipal, DbSession, require_permission, requir
 from oc8.api.v1._serializers import department_to_dto
 from oc8.auth import Principal
 from oc8.authz.permissions import MANAGE, PLUGIN, VIEW, perm
-from oc8.capas.discovery import DiscoveredPlugin, discover_plugins, find_plugin
+from oc8.capas.discovery import discover_plugins, find_plugin
 from oc8.capas.i18n import translations_for
 from oc8.capas.lifecycle import (
     ConsentError,
@@ -35,11 +35,14 @@ from oc8.capas.manifest import (
     parse_manifest,
 )
 from oc8.capas.service import (
-    DuplicateVersionError,
+    MissingDependencyError,
     PluginError,
+    SetupValidationError,
     install_plugin,
+    install_with_dependencies,
     instantiate_agent,
     instantiate_department,
+    validate_setup_values,
 )
 from oc8.credentials.registry import get_credential_type
 from oc8.credentials.service import (
@@ -503,34 +506,10 @@ async def configure_plugin(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "plugin has no setup contract")
 
     fields = {field.key: field for field in setup.fields}
-    unknown = sorted(set(body.values) - set(fields))
-    if unknown:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT,
-            f"unknown setup fields: {', '.join(unknown)}",
-        )
-    for field in setup.fields:
-        if field.required and not body.values.get(field.key, field.default).strip():
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_CONTENT,
-                f"setup field {field.key!r} is required",
-            )
-    for alternative in setup.validation.any_of:
-        unknown_fields = sorted(set(alternative) - set(fields))
-        if unknown_fields:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_CONTENT,
-                f"setup validation references unknown fields: {', '.join(unknown_fields)}",
-            )
-    if setup.validation.any_of and not any(
-        all(body.values.get(key, fields[key].default).strip() for key in alternative)
-        for alternative in setup.validation.any_of
-    ):
-        alternatives = " or ".join(" + ".join(group) for group in setup.validation.any_of)
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT,
-            f"provide one complete credential set: {alternatives}",
-        )
+    try:
+        validate_setup_values(setup, fields, body.values)
+    except SetupValidationError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
 
     values = {key: body.values.get(key, field.default).strip() for key, field in fields.items()}
     # A later failure anywhere in this request -- the 409 below, an unresolved
@@ -1031,73 +1010,6 @@ async def _configure_without_connection(
     await db.commit()
     return PluginSetupResult(connection_id=None)
 
-
-async def _install_with_dependencies(
-    db: DbSession,
-    *,
-    tenant_id: uuid.UUID,
-    found: DiscoveredPlugin,
-    origin: str,
-    _seen: set[str] | None = None,
-) -> m.CapaVersion | None:
-    """Install `found` for `tenant_id`, first recursively installing any
-    not-yet-installed `plugin_depends` entries (design §9). Never enables a
-    dependency -- only `install_plugin` runs for it, exactly as if an
-    operator had installed it manually and not yet clicked Enable. Raises
-    `HTTPException` naming the missing plugin if a `plugin_depends` entry
-    does not exist on disk at all.
-
-    Takes an ALREADY-RESOLVED `DiscoveredPlugin` rather than an id: the caller
-    (`install_from_disk`) has already called `find_plugin(body.plugin_id)`, and
-    `find_plugin` runs a full `discover_plugins()` -- every root, every folder,
-    every TOML parse, plus the cycle DFS. Re-resolving the same id here would
-    repeat that entire scan for a result the caller is holding. A dependency
-    still costs one `find_plugin` (its `DiscoveredPlugin` genuinely is not in
-    hand yet); the point is that no plugin is resolved twice.
-    """
-    plugin_id = found.plugin_id
-    seen = _seen if _seen is not None else set()
-    if plugin_id in seen:
-        # Already installed earlier in THIS call chain. Cycle detection ran at
-        # discovery time (Step 3) and marks every member of a real cycle
-        # invalid long before this function is reached, so re-entry here is a
-        # genuine no-op -- and it must BE one. Installing again would raise
-        # DuplicateVersionError and 400 the whole request.
-        return None
-    seen.add(plugin_id)
-
-    if not found.valid or found.manifest is None:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, found.error or "invalid manifest")
-
-    for dep_name in found.manifest.get("plugin_depends") or []:
-        already_installed = (
-            await db.execute(
-                select(m.Capa).where(m.Capa.tenant_id == tenant_id, m.Capa.name == dep_name)
-            )
-        ).scalar_one_or_none()
-        if already_installed is None:
-            dep = find_plugin(dep_name)
-            if dep is None:
-                raise HTTPException(
-                    status.HTTP_404_NOT_FOUND,
-                    f"{plugin_id} depends on a plugin not found on disk: {dep_name}",
-                )
-            await _install_with_dependencies(
-                db, tenant_id=tenant_id, found=dep, origin=origin, _seen=seen
-            )
-
-    try:
-        return await install_plugin(
-            db, tenant_id=tenant_id, manifest_data=found.manifest, origin=origin
-        )
-    except DuplicateVersionError:
-        # This plugin (not a dependency -- the one the operator actually asked
-        # for) is already installed at this exact version; that is the normal
-        # "install-from-disk twice" case the endpoint already tolerates via
-        # its own PluginError -> 400 mapping below. Re-raise unchanged.
-        raise
-
-
 @router.post(
     "/capas/install-from-disk",
     response_model=PluginVersionDTO,
@@ -1142,9 +1054,11 @@ async def install_from_disk(
         # plugin read off this installation's filesystem IS local (as opposed to
         # fetched from a store). Provenance is anyway derivable -- /capas/available
         # cross-references installed rows against what discovery finds on disk.
-        version = await _install_with_dependencies(
+        version = await install_with_dependencies(
             db, tenant_id=principal.tenant_id, found=found, origin="local"
         )
+    except MissingDependencyError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     except PluginError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     assert version is not None  # the requested plugin is never in `_seen` on entry

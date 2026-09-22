@@ -8,7 +8,7 @@
 const API_URL =
   (import.meta.env.VITE_API_URL as string | undefined) ?? "http://localhost:8099/api/v1";
 const TOKEN_KEY = "oc8-dev-token";
-const COMMUNITY_TOKEN_KEY = "oc8-community-token";
+export const COMMUNITY_TOKEN_KEY = "oc8-community-token";
 
 async function getToken(): Promise<string> {
   // Check for community token first (single-instance auth)
@@ -219,6 +219,74 @@ export async function publicPost<T>(path: string, body: unknown): Promise<T> {
   if (!res.ok) throw await toError(res);
   if (res.status === 204 || res.status === 202) return undefined as T;
   return (await res.json()) as T;
+}
+
+/** `/auth/sso/exchange` is a service_routers() route with NO `/api/v1`
+ *  prefix (see oc8-enterprise's SAML SSO design spec §1) -- the one-time
+ *  code IS the credential, same category as `publicPost`'s routes, but the
+ *  URL needs `/api/v1` stripped back off `API_URL` first. */
+const ROOT_API_URL = API_URL.replace(/\/api\/v1\/?$/, "");
+
+export interface SsoExchangeResponse {
+  token: string;
+  /** True when `token` is a NARROW totp:challenge-scoped token rather than a
+   *  session: the SSO callback must render the TOTP challenge instead of
+   *  storing it. Same field the password login's own response carries for
+   *  the same decision -- both screens branch on it identically. */
+  requiresTotpCode?: boolean;
+  /** True when `token` is a NARROW totp:enroll-scoped token: the member owes
+   *  us an enrollment before any session exists. */
+  requiresTotpEnrollment?: boolean;
+}
+
+export async function exchangeSsoCode(code: string): Promise<SsoExchangeResponse> {
+  const res = await fetch(`${ROOT_API_URL}/auth/sso/exchange`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code }),
+  });
+  if (!res.ok) throw await toError(res);
+  return (await res.json()) as SsoExchangeResponse;
+}
+
+export interface SsoSamlConfig {
+  enabled: boolean;
+  idpEntityId: string;
+  idpSsoUrl: string;
+  defaultRoleId: string;
+  emailAttribute: string;
+  displayNameAttribute: string;
+  spEntityId: string;
+  acsUrl: string;
+}
+
+export interface SsoSamlConfigInput {
+  metadataXml: string;
+  defaultRoleId: string;
+  emailAttribute?: string;
+  displayNameAttribute?: string;
+  enabled?: boolean;
+}
+
+export async function getSsoSamlConfig(): Promise<SsoSamlConfig | null> {
+  const res = await fetch(`${API_URL}/sso/saml`, {
+    headers: { authorization: `Bearer ${await getToken()}` },
+  });
+  if (!res.ok) throw await toError(res);
+  return (await res.json()) as SsoSamlConfig | null;
+}
+
+export async function putSsoSamlConfig(input: SsoSamlConfigInput): Promise<SsoSamlConfig> {
+  const res = await fetch(`${API_URL}/sso/saml`, {
+    method: "PUT",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${await getToken()}`,
+    },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw await toError(res);
+  return (await res.json()) as SsoSamlConfig;
 }
 
 // ---- Company backup / restore -----------------------------------------------
@@ -456,4 +524,4 @@ export async function downloadCapaExport(
   return { blob: await res.blob(), filename: match?.[1] ?? "capa-export.zip" };
 }
 
-export { API_URL, getToken, COMMUNITY_TOKEN_KEY };
+export { API_URL, getToken };

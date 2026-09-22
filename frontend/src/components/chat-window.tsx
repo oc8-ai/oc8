@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useConfirm } from "@/hooks/use-confirm";
 import { MAX_ATTACHMENT_BYTES } from "@/lib/api";
+import { useAnswerClarification, useClarifications } from "@/lib/hooks";
 import {
   useChatSessions,
   useCreateChatSession,
@@ -106,6 +107,29 @@ export function ChatWindow({ agentId, agentName }: { agentId: string; agentName:
   // see useChatMessages's poll-or-stop doc comment. No separate flag needed.
   const waitingOnAgent =
     !!messages && messages.length > 0 && messages[messages.length - 1].role === "user";
+
+  // A run parked on `waiting_for_input` never produces an assistant
+  // ChatMessage (executor.py deliberately skips record_assistant_reply for
+  // that state -- the question lives on the Clarification instead), so
+  // without this the box above just says "{agent} is thinking…" forever with
+  // no way out: the send box is already disabled while waitingOnAgent, and
+  // typing the answer there would only queue a second, competing run rather
+  // than resume this one. Matched on agentId, not a tracked run id, so a
+  // page reload while parked still finds it (an agent runs at most one
+  // thing at a time).
+  const [clarificationAnswer, setClarificationAnswer] = useState("");
+  const { data: clarifications } = useClarifications(waitingOnAgent ? 3000 : false);
+  const openClarification = clarifications?.find((c) => c.agentId === agentId);
+  const answerClarification = useAnswerClarification();
+
+  function submitClarificationAnswer() {
+    const trimmed = clarificationAnswer.trim();
+    if (!trimmed || !openClarification) return;
+    answerClarification.mutate(
+      { clarificationId: openClarification.id, answer: trimmed },
+      { onSuccess: () => setClarificationAnswer("") },
+    );
+  }
 
   return (
     <Panel className="flex h-[560px] flex-col overflow-hidden">
@@ -221,7 +245,43 @@ export function ChatWindow({ agentId, agentName }: { agentId: string; agentName:
             </div>
           ))
         )}
-        {waitingOnAgent && (
+        {waitingOnAgent && openClarification && (
+          <div className="flex justify-start">
+            <div className="max-w-[80%] space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">
+              <p className="font-medium text-foreground">
+                {t(
+                  `${agentName} needs more information to continue:`,
+                  `${agentName} braucht mehr Informationen, um weiterzumachen:`,
+                )}
+              </p>
+              <p className="whitespace-pre-wrap text-foreground/90">{openClarification.question}</p>
+              <div className="flex items-end gap-1.5 pt-1">
+                <textarea
+                  rows={1}
+                  value={clarificationAnswer}
+                  onChange={(e) => setClarificationAnswer(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      submitClarificationAnswer();
+                    }
+                  }}
+                  placeholder={t("Your answer…", "Deine Antwort…")}
+                  className="max-h-24 flex-1 resize-none rounded-md border border-border bg-background px-2 py-1.5 text-xs outline-none focus:border-primary/50"
+                />
+                <button
+                  type="button"
+                  onClick={submitClarificationAnswer}
+                  disabled={answerClarification.isPending || !clarificationAnswer.trim()}
+                  className="inline-flex items-center rounded-md bg-primary px-2.5 py-1.5 text-xs font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+                >
+                  {t("Answer", "Antworten")}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {waitingOnAgent && !openClarification && (
           <div className="flex justify-start">
             <div className="max-w-[80%] rounded-lg border border-border bg-background/60 px-3 py-2 text-xs text-muted-foreground">
               {t(`${agentName} is thinking…`, `${agentName} überlegt…`)}

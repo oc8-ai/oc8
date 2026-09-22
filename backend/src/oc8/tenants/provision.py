@@ -20,6 +20,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,6 +31,36 @@ from oc8.seed import BUILTIN_ROLES, det
 from oc8.seed.department_templates import seed_department_templates
 
 VALID_TIERS = ("standard", "enterprise", "onprem")
+
+
+async def get_singleton_organization(db: AsyncSession) -> m.Organization:
+    """Resolve the singleton Organization for Community single-instance.
+
+    Per spec §3.2, Community has exactly one active Organization (root).
+    Shared by password auth (`api/v1/auth.py`) and the outward MCP gateway's
+    API-key auth (`api/mcp_external.py`), both of which have to resolve a
+    tenant from a credential that carries no tenant hint of its own.
+
+    Raises:
+        HTTPException(404): if no Organization exists (setup not complete)
+        HTTPException(409): if multiple Organizations exist (data corruption)
+    """
+    result = await db.execute(select(m.Organization))
+    orgs = result.scalars().all()
+
+    if len(orgs) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Instance not initialized. No Organization found.",
+        )
+
+    if len(orgs) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Multi-organization configuration detected. Setup is ambiguous.",
+        )
+
+    return orgs[0]
 
 # The built-in template ships `memory: {}`, which DENIES department-tier memory
 # writes (memory/policy.py). A tenant created with that frame would get agents
