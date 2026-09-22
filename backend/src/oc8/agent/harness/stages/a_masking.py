@@ -50,7 +50,10 @@ def mask_observations(
             if len(body) > SPILL_THRESHOLD_CHARS
             else None
         )
-        notice = f"\n[… {len(body) - MASK_HEAD_CHARS} older result chars masked.]"
+        notice = (
+            f"\n[… {len(body) - MASK_HEAD_CHARS} older result chars "
+            "masked to save context.]"
+        )
         if filename is not None:
             notice += f'\nUse read_run_file("{filename}") to retrieve the full result.'
         content = f"{match.group(1)} {body[:MASK_HEAD_CHARS]}{notice}"

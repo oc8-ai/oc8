@@ -18,7 +18,12 @@ import pytest
 from sqlalchemy import select
 
 from oc8 import models as m
+from oc8.agent.control_tools import (
+    ControlOutcome,
+    execute_control_tool as _real_execute_control_tool,
+)
 from oc8.agent.engine import run_agent
+from oc8.agent.harness.stages.a_masking import mask_observations as _real_mask_observations
 from oc8.agent.harness.stages.c_spill import SPILL_THRESHOLD_CHARS
 from oc8.agent.tool_semantics import record_identity as _real_record_identity
 from oc8.api.v1.internal_agent import _to_messages
@@ -80,6 +85,14 @@ def _idempotent_write(call_id: str) -> ToolCall:
     )
 
 
+def _output_file(call_id: str) -> ToolCall:
+    return ToolCall(
+        id=call_id,
+        name="write_output_file",
+        arguments={"filename": "summary.md", "content": "# Summary\nSame result."},
+    )
+
+
 def _record_identity(
     tool: str, arguments: dict[str, Any], focus_spec: dict[str, Any] | None
 ) -> tuple[str, str] | None:
@@ -89,6 +102,31 @@ def _record_identity(
     if tool == "todo_write":
         return ("todo", "synthetic")
     return _real_record_identity(tool, arguments, focus_spec)
+
+
+async def _execute_control_tool(*args: Any, **kwargs: Any) -> Any:
+    """Avoid object storage in this parity fixture while exercising file ledgering."""
+    tc = kwargs["tc"]
+    if tc.name == "write_output_file":
+        return ControlOutcome(output="Saved 'summary.md' (22 bytes).")
+    return await _real_execute_control_tool(*args, **kwargs)
+
+
+def _capture_mask_calls(
+    calls: list[tuple[list[NeutralMessage], list[NeutralMessage]]],
+) -> Any:
+    def _capture(
+        messages: list[NeutralMessage], *, step_no: int, ledger: Any
+    ) -> tuple[list[NeutralMessage], Any]:
+        outgoing, masked = _real_mask_observations(
+            messages,
+            step_no=step_no,
+            ledger=ledger,
+        )
+        calls.append((list(messages), outgoing))
+        return outgoing, masked
+
+    return _capture
 
 
 #: One model turn per completion, in order. Each runtime gets its own copy.
@@ -101,6 +139,7 @@ def _script() -> list[CompletionResult]:
         _turn("", _write("c-write-2")),
         _turn("", _idempotent_write("c-idempotent-1")),
         _turn("", _idempotent_write("c-idempotent-2")),
+        _turn("", _output_file("c-output-file")),
         _turn("", _failing_read("c-error")),
         _turn(
             "",
@@ -270,14 +309,20 @@ def _after_preamble(messages: list[NeutralMessage]) -> list[NeutralMessage]:
 
 async def _run_in_process(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
-) -> tuple[list[NeutralMessage], str]:
+) -> tuple[list[NeutralMessage], list[NeutralMessage], str]:
     tenant = uuid.uuid4()
     _StubSession.write_calls = 0
     _StubSession.idempotent_write_calls = 0
     stream = _ScriptedStream(_script())
+    mask_calls: list[tuple[list[NeutralMessage], list[NeutralMessage]]] = []
     monkeypatch.setattr("oc8.agent.engine.stream_completion_with_fallback", stream)
     monkeypatch.setattr("oc8.agent.engine.McpSession", _StubSession)
     monkeypatch.setattr("oc8.agent.engine.record_identity", _record_identity)
+    monkeypatch.setattr("oc8.agent.engine.execute_control_tool", _execute_control_tool)
+    monkeypatch.setattr(
+        "oc8.agent.engine.mask_observations",
+        _capture_mask_calls(mask_calls),
+    )
     async with app_session(tenant) as db:
         agent, conn = await _fixture(db, tenant)
         result = await run_agent(
@@ -306,12 +351,14 @@ async def _run_in_process(
         *stream.seen[-1],
         NeutralMessage(role="assistant", content=result.output, tool_calls=[]),
     ]
-    return final, result.output
+    assert mask_calls
+    stored = mask_calls[-1][0]
+    return final, stored, result.output
 
 
 async def _run_isolated(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
-) -> tuple[list[NeutralMessage], str]:
+) -> tuple[list[NeutralMessage], list[NeutralMessage], str]:
     from asgi_lifespan import LifespanManager
     from httpx import ASGITransport, AsyncClient
 
@@ -323,9 +370,18 @@ async def _run_isolated(
     _StubSession.write_calls = 0
     _StubSession.idempotent_write_calls = 0
     stream = _ScriptedStream(_script())
+    mask_calls: list[tuple[list[NeutralMessage], list[NeutralMessage]]] = []
     monkeypatch.setattr("oc8.api.v1.internal_agent.stream_completion_with_fallback", stream)
     monkeypatch.setattr("oc8.api.v1.internal_agent.McpSession", _StubSession)
     monkeypatch.setattr("oc8.api.v1.internal_agent.record_identity", _record_identity)
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.execute_control_tool",
+        _execute_control_tool,
+    )
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.mask_observations",
+        _capture_mask_calls(mask_calls),
+    )
     async with app_session(tenant) as db:
         agent, conn = await _fixture(db, tenant)
         task = m.Task(
@@ -406,7 +462,7 @@ async def _run_isolated(
         assert "repeat_tracker" not in run_row.context
         assert "tool_output_chars" not in run_row.context
         assert not any(
-            "older result chars masked" in str(message.content) for message in transcript
+            "masked to save context" in str(message.content) for message in transcript
         ), "the persisted transcript must remain unmasked"
     # Compare the model-bound transcript from the final completion. /step
     # returns the exhausted note separately from the persisted raw model turn.
@@ -414,20 +470,65 @@ async def _run_isolated(
         *stream.seen[-1],
         NeutralMessage(role="assistant", content=final_text, tool_calls=[]),
     ]
-    return transcript, final_text
+    assert mask_calls
+    stored = mask_calls[-1][0]
+    return transcript, stored, final_text
+
+
+def _latest_working_state(messages: list[NeutralMessage]) -> str:
+    blocks = [
+        str(message.content)
+        for message in messages
+        if message.role == "user"
+        and str(message.content).startswith("# Working state")
+    ]
+    assert blocks
+    return blocks[-1]
+
+
+def _files_lines(block: str) -> list[str]:
+    return block.split("Files produced:\n", 1)[1].splitlines()
 
 
 async def test_both_runtimes_produce_the_same_transcript(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch, minio_url: str
 ) -> None:
-    in_process, in_process_text = await _run_in_process(app_session, monkeypatch)
-    isolated, isolated_text = await _run_isolated(app_session, monkeypatch)
+    in_process, in_process_stored, in_process_text = await _run_in_process(
+        app_session, monkeypatch
+    )
+    isolated, isolated_stored, isolated_text = await _run_isolated(
+        app_session, monkeypatch
+    )
 
     left = _normalise(_after_preamble(in_process))
     right = _normalise(_after_preamble(isolated))
     assert left == right
 
-    # And the script really exercised what package 1 moved.
+    # And the script really exercised what packages 1 and 7 moved.
+    in_process_state = _latest_working_state(in_process)
+    isolated_state = _latest_working_state(isolated)
+    assert _files_lines(in_process_state) == _files_lines(isolated_state)
+    assert "- summary.md" in _files_lines(in_process_state)
+
+    for outgoing, stored in (
+        (in_process, in_process_stored),
+        (isolated, isolated_stored),
+    ):
+        masked_outgoing = [
+            message
+            for message in outgoing
+            if "masked to save context" in str(message.content)
+        ]
+        assert masked_outgoing
+        stored_by_call = {message.tool_call_id: message for message in stored}
+        for masked_message in masked_outgoing:
+            original = stored_by_call[masked_message.tool_call_id]
+            assert len(str(original.content)) > len(str(masked_message.content))
+            assert len(str(original.content)) > 2_000
+        assert not any(
+            "masked to save context" in str(message.content) for message in stored
+        )
+
     roles_and_heads = [(role, str(content)[:24]) for role, content, _, _ in left]
     assert ("user", "You are repeating the ex") in roles_and_heads, "C5 repeat nudge missing"
     assert ("user", "You indicated you are fi") in roles_and_heads, "D1 nudge missing"
