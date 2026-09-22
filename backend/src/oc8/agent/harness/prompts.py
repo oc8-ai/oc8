@@ -156,13 +156,31 @@ def run_context_block(
     max_steps: int,
     instruction_file_count: int,
     task_attachment_count: int,
+    connection_details: dict[str, str] | None = None,
 ) -> str:
     """A2 (spec §4): injected as a user message, immediately before the task
     text. Unlike the system prompt this varies every run by design -- it is
     the one place run-specific facts (who, why, when, what's reachable) are
     stated once instead of scattered through the task text. `now` must
-    already be tz-aware in the target zone."""
-    systems = ", ".join(connection_names) if connection_names else "(none)"
+    already be tz-aware in the target zone.
+
+    When ``connection_details`` maps a connection name to an instruction
+    string (e.g. MCP ``server_instructions``), that entry is rendered as
+    ``name — {truncated to 300 chars}``. Callers without details behave as
+    before.
+    """
+    details = connection_details or {}
+    if connection_names:
+        parts: list[str] = []
+        for name in connection_names:
+            instruction = details.get(name)
+            if isinstance(instruction, str) and instruction:
+                parts.append(f"{name} — {instruction[:300]}")
+            else:
+                parts.append(name)
+        systems = ", ".join(parts)
+    else:
+        systems = "(none)"
     return (
         "# Run context\n"
         f"- Now: {now.strftime('%A %Y-%m-%d %H:%M')} ({tz_label}). Treat "

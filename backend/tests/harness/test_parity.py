@@ -20,6 +20,8 @@ from sqlalchemy import select
 from oc8 import models as m
 from oc8.agent.control_tools import (
     ControlOutcome,
+)
+from oc8.agent.control_tools import (
     execute_control_tool as _real_execute_control_tool,
 )
 from oc8.agent.engine import run_agent
@@ -181,9 +183,12 @@ class _ScriptedStream:
     def __init__(self, script: list[CompletionResult]) -> None:
         self.script = script
         self.seen: list[list[NeutralMessage]] = []
+        self.seen_tool_names: list[list[str]] = []
 
     def __call__(self, *args: Any, **kw: Any) -> Any:
         self.seen.append(list(kw["messages"]))
+        tools = kw.get("tools") or []
+        self.seen_tool_names.append([t.name for t in tools])
 
         async def _gen() -> Any:
             yield chunk_from_result(self.script.pop(0))
@@ -309,7 +314,7 @@ def _after_preamble(messages: list[NeutralMessage]) -> list[NeutralMessage]:
 
 async def _run_in_process(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
-) -> tuple[list[NeutralMessage], list[NeutralMessage], str]:
+) -> tuple[list[NeutralMessage], list[NeutralMessage], str, list[list[str]]]:
     tenant = uuid.uuid4()
     _StubSession.write_calls = 0
     _StubSession.idempotent_write_calls = 0
@@ -353,12 +358,12 @@ async def _run_in_process(
     ]
     assert mask_calls
     stored = mask_calls[-1][0]
-    return final, stored, result.output
+    return final, stored, result.output, list(stream.seen_tool_names)
 
 
 async def _run_isolated(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
-) -> tuple[list[NeutralMessage], list[NeutralMessage], str]:
+) -> tuple[list[NeutralMessage], list[NeutralMessage], str, list[list[str]]]:
     from asgi_lifespan import LifespanManager
     from httpx import ASGITransport, AsyncClient
 
@@ -472,7 +477,7 @@ async def _run_isolated(
     ]
     assert mask_calls
     stored = mask_calls[-1][0]
-    return transcript, stored, final_text
+    return transcript, stored, final_text, list(stream.seen_tool_names)
 
 
 def _latest_working_state(messages: list[NeutralMessage]) -> str:
@@ -493,16 +498,27 @@ def _files_lines(block: str) -> list[str]:
 async def test_both_runtimes_produce_the_same_transcript(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch, minio_url: str
 ) -> None:
-    in_process, in_process_stored, in_process_text = await _run_in_process(
+    in_process, in_process_stored, in_process_text, in_process_tools = await _run_in_process(
         app_session, monkeypatch
     )
-    isolated, isolated_stored, isolated_text = await _run_isolated(
+    isolated, isolated_stored, isolated_text, isolated_tools = await _run_isolated(
         app_session, monkeypatch
     )
 
     left = _normalise(_after_preamble(in_process))
     right = _normalise(_after_preamble(isolated))
     assert left == right
+    # A4: both runtimes apply the same selector to their offered list. The
+    # isolated builtin additionally offers run_shell (local_result path);
+    # in-process does not — that pre-existing delta is outside A4. Strip it
+    # so this assertion checks the shared completion surface.
+    assert in_process_tools == [
+        [name for name in names if name != "run_shell"] for names in isolated_tools
+    ]
+    assert in_process_tools, "the script must have driven at least one completion"
+    assert all("find_tools" not in names for names in in_process_tools), (
+        "office fixture stays under the 30-tool threshold; find_tools must not appear"
+    )
 
     # And the script really exercised what packages 1 and 7 moved.
     in_process_state = _latest_working_state(in_process)

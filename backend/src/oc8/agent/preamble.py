@@ -294,6 +294,26 @@ async def build_run_preamble(
     department_name = department.name if department is not None else "unassigned"
 
     connection_names = sorted(frame.get("tools", {}).keys())
+    connection_details: dict[str, str] = {}
+    if connection_names:
+        rows = (
+            (
+                await db.execute(
+                    select(m.McpConnection).where(
+                        m.McpConnection.tenant_id == tenant_id,
+                        m.McpConnection.department_id == agent.department_id,
+                        m.McpConnection.name.in_(connection_names),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in rows:
+            cfg = row.config if isinstance(row.config, dict) else {}
+            instruction = cfg.get("server_instructions")
+            if isinstance(instruction, str) and instruction:
+                connection_details[row.name] = instruction
 
     messages: list[NeutralMessage] = [
         NeutralMessage(
@@ -379,6 +399,7 @@ async def build_run_preamble(
                 max_steps=max_steps,
                 instruction_file_count=instruction_file_count,
                 task_attachment_count=len(task_images) if task_images else 0,
+                connection_details=connection_details or None,
             ),
         )
     )

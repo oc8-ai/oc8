@@ -28,6 +28,7 @@ from oc8 import models as m
 from oc8.agent import cache_flow
 from oc8.agent.control_tools import (
     CONTROL_TOOL_NAMES,
+    FIND_TOOLS,
     execute_control_tool,
     offered_tools,
 )
@@ -35,6 +36,7 @@ from oc8.agent.engine import _max_steps
 from oc8.agent.harness import Harness, resolve_caps
 from oc8.agent.harness.calls import call_sig as _call_sig
 from oc8.agent.harness.prompts import compaction_instruction
+from oc8.agent.harness.retrieval import select_completion_tools
 from oc8.agent.harness.stages.a_compaction import (
     prompt_token_fallback,
     rebuild_transcript,
@@ -449,7 +451,36 @@ async def step(
         offer_run_shell=offer_write_output_file,
     )
 
-    resolved_tools = tools
+    # See stages/d_todo: a continuation round never crosses a /step HTTP call
+    # here -- the shell must never see an intermediate "no tool calls yet"
+    # response, since its own loop protocol (isolated_shell.py) has no "keep
+    # going anyway" path and would just end the run. So the whole nudge-and-
+    # retry cycle happens in this one call via the internal loop below. The
+    # round counter is therefore reset per request on purpose (it never has to
+    # survive past this one call) -- a known asymmetry with the in-process
+    # engine, which counts rounds per run; spec §1.1, package 6.
+    harness = Harness.from_run_context(
+        ctx,
+        caps=resolve_caps(model_config.params if model_config is not None else None),
+    )
+    harness.state.todo_rounds = 0
+
+    skill_tool_names = frozenset(s.tool_name for s in assigned_skills)
+    raw_notes = (_mcp_params(conn).get("tool_notes") if conn is not None else None)
+    tool_notes = raw_notes if isinstance(raw_notes, dict) else None
+    resolved_tools, catalog = select_completion_tools(
+        tools,
+        control_names=CONTROL_TOOL_NAMES,
+        skill_names=skill_tool_names,
+        mission=str(ctx.get("task", "")),
+        skill_texts=[s.definition.instruction for s in active_skills],
+        pinned=list(harness.state.pinned_tools),
+        tool_list_may_change=harness.caps.tool_list_may_change,
+        mcp_connection=conn.name if conn is not None else None,
+        tool_notes=tool_notes,
+        find_tools=FIND_TOOLS,
+    )
+    harness.state.tool_catalog = catalog
     # Shared with the in-process engine so sampling cannot drift between the
     # two runtimes -- see oc8.modelrouter.sampling.
     resolved_params = resolve_params(model_config, agent=agent)
@@ -509,20 +540,6 @@ async def step(
             agent_id=agent.id,
             department_id=agent.department_id,
         )
-
-    # See stages/d_todo: a continuation round never crosses a /step HTTP call
-    # here -- the shell must never see an intermediate "no tool calls yet"
-    # response, since its own loop protocol (isolated_shell.py) has no "keep
-    # going anyway" path and would just end the run. So the whole nudge-and-
-    # retry cycle happens in this one call via the internal loop below. The
-    # round counter is therefore reset per request on purpose (it never has to
-    # survive past this one call) -- a known asymmetry with the in-process
-    # engine, which counts rounds per run; spec §1.1, package 6.
-    harness = Harness.from_run_context(
-        ctx,
-        caps=resolve_caps(model_config.params if model_config is not None else None),
-    )
-    harness.state.todo_rounds = 0
 
     async def _compact() -> None:
         summary_request_id = uuid.uuid4()
@@ -1057,6 +1074,7 @@ async def tool(
             originating_operator=run.context.get("originating_operator"),
             run_id=run.id,
             local_result=body.local_result,
+            harness_state=harness.state,
         )
         if task is not None
         else None

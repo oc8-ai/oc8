@@ -128,3 +128,29 @@ def test_run_context_block_no_systems():
         instruction_file_count=0, task_attachment_count=0,
     )
     assert "- Systems you can reach: (none)" in block
+
+
+def test_run_context_block_connection_details_truncated():
+    now = dt.datetime(2026, 9, 19, 14, 3, tzinfo=zoneinfo.ZoneInfo("UTC"))
+    long = "x" * 400
+    block = run_context_block(
+        now=now,
+        tz_label="UTC",
+        acting_for="Jane",
+        origin="chat",
+        department="Sales",
+        connection_names=["mail", "crm"],
+        max_steps=40,
+        instruction_file_count=0,
+        task_attachment_count=0,
+        connection_details={"mail": long},
+    )
+    systems_line = next(
+        line for line in block.splitlines() if line.startswith("- Systems you can reach:")
+    )
+    assert "mail — " in systems_line
+    assert "crm" in systems_line
+    # Truncate the instruction to 300 chars; do not emit the full 400.
+    assert "mail — " + ("x" * 300) in systems_line
+    assert "x" * 301 not in systems_line
+    assert "crm — " not in systems_line

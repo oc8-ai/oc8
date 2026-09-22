@@ -12,7 +12,12 @@ import logging
 import math
 import re
 from collections import Counter
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict, dataclass
+from typing import Any
+
+from oc8.agent.tool_routing import SEPARATOR
+from oc8.modelrouter import NeutralTool
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +98,95 @@ def select_inline(
     inline.append(_FIND_TOOLS_CARD)
     deferred = [card for card in catalog if card.name not in core_names]
     return inline, deferred
+
+
+def cards_from_offered(
+    tools: Sequence[NeutralTool],
+    *,
+    control_names: frozenset[str],
+    skill_names: frozenset[str],
+    mcp_connection: str | None,
+    tool_notes: Mapping[str, Any] | None = None,
+) -> list[ToolCard]:
+    """Build ToolCards from the full ``offered_tools`` list (ruling 4)."""
+    notes_map = tool_notes if isinstance(tool_notes, Mapping) else {}
+    cards: list[ToolCard] = []
+    for tool in tools:
+        if tool.name in control_names or tool.name in skill_names:
+            connection = "oc8"
+            notes = ""
+        else:
+            connection = mcp_connection or "oc8"
+            raw_note = notes_map.get(tool.name)
+            if isinstance(raw_note, str):
+                notes = raw_note
+            elif SEPARATOR in tool.name:
+                bare = tool.name.partition(SEPARATOR)[2]
+                bare_note = notes_map.get(bare)
+                notes = bare_note if isinstance(bare_note, str) else ""
+            else:
+                notes = ""
+        cards.append(
+            ToolCard(
+                name=tool.name,
+                description=tool.description or "",
+                connection=connection,
+                notes=notes,
+            )
+        )
+    return cards
+
+
+def completion_tools_from_inline(
+    offered: Sequence[NeutralTool],
+    inline: Sequence[ToolCard],
+    *,
+    find_tools: NeutralTool,
+) -> list[NeutralTool]:
+    """Filter original NeutralTools by inline order; append find_tools when selected."""
+    by_name = {tool.name: tool for tool in offered}
+    out: list[NeutralTool] = []
+    for card in inline:
+        if card.name == find_tools.name:
+            out.append(find_tools)
+        elif card.name in by_name:
+            out.append(by_name[card.name])
+    return out
+
+
+def select_completion_tools(
+    offered: Sequence[NeutralTool],
+    *,
+    control_names: frozenset[str],
+    skill_names: frozenset[str],
+    mission: str,
+    skill_texts: list[str],
+    pinned: list[str],
+    tool_list_may_change: bool,
+    mcp_connection: str | None,
+    tool_notes: Mapping[str, Any] | None,
+    find_tools: NeutralTool,
+) -> tuple[list[NeutralTool], list[dict[str, Any]]]:
+    """A4 step: catalog + select_inline → completion tools and JSON-safe catalog."""
+    catalog = cards_from_offered(
+        offered,
+        control_names=control_names,
+        skill_names=skill_names,
+        mcp_connection=mcp_connection,
+        tool_notes=tool_notes,
+    )
+    inline, _deferred = select_inline(
+        catalog,
+        control_names=control_names,
+        skill_names=skill_names,
+        mission=mission,
+        skill_texts=skill_texts,
+        procedure_texts=[],
+        pinned=pinned,
+        tool_list_may_change=tool_list_may_change,
+    )
+    completion = completion_tools_from_inline(offered, inline, find_tools=find_tools)
+    return completion, [asdict(card) for card in catalog]
 
 
 def rank_tools(

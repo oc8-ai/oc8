@@ -27,6 +27,7 @@ from oc8 import models as m
 from oc8.agent import cache_flow
 from oc8.agent.control_tools import (
     CONTROL_TOOL_NAMES,
+    FIND_TOOLS,
     MAX_DELEGATION_DEPTH,  # re-exported for tests/coding/test_engine_delegation.py
     execute_control_tool,
     offered_tools,
@@ -36,6 +37,7 @@ from oc8.agent.harness.calls import (
     call_sig as _call_sig,  # re-exported for mcp_gateway.py and older tests
 )
 from oc8.agent.harness.prompts import compaction_instruction
+from oc8.agent.harness.retrieval import select_completion_tools
 from oc8.agent.harness.stages.a_compaction import (
     prompt_token_fallback,
     rebuild_transcript,
@@ -666,6 +668,21 @@ async def run_agent(
                 )
 
                 resolved_tools = _offered()
+                raw_notes = connection_config.get("tool_notes")
+                tool_notes = raw_notes if isinstance(raw_notes, dict) else None
+                resolved_tools, catalog = select_completion_tools(
+                    resolved_tools,
+                    control_names=CONTROL_TOOL_NAMES,
+                    skill_names=skill_tool_names,
+                    mission=task_text,
+                    skill_texts=[s.definition.instruction for s in active_skills],
+                    pinned=list(harness.state.pinned_tools),
+                    tool_list_may_change=harness.caps.tool_list_may_change,
+                    mcp_connection=connection_key,
+                    tool_notes=tool_notes,
+                    find_tools=FIND_TOOLS,
+                )
+                harness.state.tool_catalog = catalog
                 resolved_params = resolve_params(model_config, agent=agent)
                 # Must match what fallback.py's own base_url resolution will
                 # actually send for this provider (params override, else the
@@ -1385,6 +1402,7 @@ async def run_agent(
                             mcp_conn=mcp_conn,
                             originating_operator=originating_operator,
                             run_id=run_id,
+                            harness_state=harness.state,
                         )
                         if control is not None:
                             # A core-owned tool (memory/ask/delegate/skill). The
