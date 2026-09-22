@@ -522,6 +522,10 @@ async def step(
             )
             harness.state.ledger_sent_hash = ledger_hash
 
+        # Mirror engine.py's per-iteration step stamp: this /step is about to
+        # take step ctx["steps"]+1, which is what ctx["steps"] becomes after
+        # the completion below.
+        harness.state.step_no = int(ctx.get("steps", 0)) + 1
         resolved_messages, harness.state.masked = mask_observations(
             _to_messages(transcript),
             step_no=harness.state.step_no,

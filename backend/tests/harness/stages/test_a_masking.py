@@ -37,6 +37,25 @@ def test_recent_long_result_is_kept() -> None:
     assert masked == {}
 
 
+def test_age_exactly_six_masks() -> None:
+    original = _tool_result("x" * 2_500)
+
+    outgoing, masked = mask_observations([original], step_no=7, ledger=Ledger())
+
+    assert outgoing != [original]
+    assert masked["call-1"].step == 1
+    assert len(outgoing[0].content) < len(original.content)
+
+
+def test_exactly_8000_chars_has_no_spill_pointer() -> None:
+    outgoing, masked = mask_observations(
+        [_tool_result("x" * 8_000)], step_no=10, ledger=Ledger()
+    )
+
+    assert "read_run_file" not in outgoing[0].content
+    assert masked["call-1"].filename is None
+
+
 def test_old_short_result_is_kept() -> None:
     original = _tool_result("x" * 1_500)
 
