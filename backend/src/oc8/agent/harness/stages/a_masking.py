@@ -37,33 +37,40 @@ def mask_observations(
             continue
         observed_step = int(match.group("step"))
         body = match.group("body")
+        # Ruling 4: older than 6 steps → observed_step < step_no - MASK_AGE_STEPS.
+        # Spec: longer than 2000 chars → mask when len(body) > MASK_MIN_CHARS.
         if (
-            step_no - observed_step < MASK_AGE_STEPS
-            or len(body) < MASK_MIN_CHARS
+            observed_step >= step_no - MASK_AGE_STEPS
+            or len(body) <= MASK_MIN_CHARS
             or observed_step in protected_steps
         ):
             continue
 
         tool = message.name or "tool"
-        filename = (
-            spill_filename(observed_step, tool)
-            if len(body) > SPILL_THRESHOLD_CHARS
-            else None
-        )
-        notice = (
-            f"\n[… {len(body) - MASK_HEAD_CHARS} older result chars "
-            "masked to save context.]"
-        )
-        if filename is not None:
-            notice += f'\nUse read_run_file("{filename}") to retrieve the full result.'
-        content = f"{match.group(1)} {body[:MASK_HEAD_CHARS]}{notice}"
+        n = len(body)
+        head = body[:MASK_HEAD_CHARS]
+        if n > SPILL_THRESHOLD_CHARS:
+            filename = spill_filename(observed_step, tool)
+            content = (
+                f"[Result of {tool} at step {observed_step}, {n} chars, "
+                f"masked to save context. First {MASK_HEAD_CHARS} chars:\n"
+                f"{head}\n"
+                f'… Full result: read_run_file("{filename}") — it was kept as a file.]'
+            )
+        else:
+            filename = None
+            content = (
+                f"[Result of {tool} at step {observed_step}, {n} chars, "
+                f"masked to save context. First {MASK_HEAD_CHARS} chars:\n"
+                f"{head}"
+            )
         outgoing[index] = replace(message, content=content)
 
         key = message.tool_call_id or f"step-{observed_step}-{tool}"
         masked[key] = MaskRef(
             step=observed_step,
             tool=tool,
-            chars=len(body),
+            chars=n,
             filename=filename,
         )
 

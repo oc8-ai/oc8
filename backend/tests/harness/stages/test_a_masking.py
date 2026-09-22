@@ -37,14 +37,26 @@ def test_recent_long_result_is_kept() -> None:
     assert masked == {}
 
 
-def test_age_exactly_six_masks() -> None:
+def test_age_exactly_six_is_kept() -> None:
     original = _tool_result("x" * 2_500)
 
     outgoing, masked = mask_observations([original], step_no=7, ledger=Ledger())
 
+    assert outgoing == [original]
+    assert masked == {}
+
+
+def test_age_seven_masks() -> None:
+    original = _tool_result("x" * 2_500)
+
+    outgoing, masked = mask_observations([original], step_no=8, ledger=Ledger())
+
     assert outgoing != [original]
     assert masked["call-1"].step == 1
-    assert len(outgoing[0].content) < len(original.content)
+    assert outgoing[0].content.startswith(
+        "[Result of lookup at step 1, 2500 chars, masked to save context."
+    )
+    assert "[step " not in outgoing[0].content
 
 
 def test_exactly_8000_chars_has_no_spill_pointer() -> None:

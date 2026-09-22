@@ -592,11 +592,13 @@ async def step(
 
         key, cached_result = await _cache_lookup(resolved_messages)
 
+        overflow_retried = False
+
         async def _complete_with_overflow_retry(
             sampling_params: ModelParams,
             req_id: uuid.UUID,
         ) -> tuple[Any, uuid.UUID]:
-            nonlocal key, resolved_messages
+            nonlocal key, resolved_messages, overflow_retried
             try:
                 return (
                     await _complete(resolved_messages, sampling_params, req_id),
@@ -605,6 +607,9 @@ async def step(
             except Exception as exc:
                 if overflow_tokens(str(exc)) is None:
                     raise
+                if overflow_retried:
+                    raise
+                overflow_retried = True
                 await _compact()
                 resolved_messages, harness.state.masked = mask_observations(
                     _to_messages(transcript),
