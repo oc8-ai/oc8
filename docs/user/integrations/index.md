@@ -94,7 +94,7 @@ build):
 | Business tools | `microsoft365`, `google_workspace`, `odoo_mcp`, `hubspot_mcp`, `github_mcp`, `jira_mcp`, `gitea_mcp` |
 | Multi-provider tool router | `treg_mcp` — one token, thousands of catalogued tools across dozens of providers via [Treg](https://github.com/superdesigndev/treg), without a dedicated capa per provider |
 | Knowledge | `gdrive_source`, `s3_source` |
-| Ready-made teams | `helpdesk_support_agent`, `crm_vertrieb_agent`, `vertrieb_bundle` |
+| Ready-made teams | `helpdesk_support_agent`, `crm_vertrieb_agent`, `vertrieb_bundle`, `engineering_dev_agent` |
 | Skills | `helpdesk_first_response_skill`, `standard_skills`, `human_decision_skill` |
 | Runtimes | `nanoclaw_runtime`, `claude_code_runtime`, `opencode_runtime`, `codex_runtime` |
 | Approvals | `telegram_approvals`, `whatsapp_approvals` |
