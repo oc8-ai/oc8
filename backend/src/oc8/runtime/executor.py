@@ -340,11 +340,18 @@ class _ConnectionChoice(NamedTuple):
     would otherwise resolve differently (its own, independent department_id
     lookup would not know a department chose a DIFFERENT connection than
     the one that lookup would guess).
+
+    `connections` is every pin that resolved (one or several). `.connection`
+    is the first of those (alphabetically by tool key) so callers that still
+    read a single row -- control tools, the in-process `mcp_conn` argument --
+    keep a stable primary. A second pin used to be dropped here; it is now
+    carried through and stamped as `mcp_connection_ids`.
     """
 
     connection: m.McpConnection | None
     error: str | None
     pinned: bool = False
+    connections: tuple[m.McpConnection, ...] = ()
 
 
 async def _resolve_mcp_connection(
@@ -354,9 +361,11 @@ async def _resolve_mcp_connection(
 
     Exactly one of `connection`/`error` is ever set, except for the legitimate
     both-None: an agent that reaches no system at all, which has always been
-    allowed and still runs. A non-None `error` is a HARD failure -- the caller
-    fails the run with it rather than starting a runtime that would act through
-    the wrong login.
+    allowed and still runs. `connections` may hold several pins when the agent
+    was assigned more than one login; `.connection` is still the first of
+    those. A non-None `error` is a HARD failure -- the caller fails the run
+    with it rather than starting a runtime that would act through the wrong
+    login.
 
     Priority:
 
@@ -465,17 +474,13 @@ async def _resolve_mcp_connection(
                 "set connection_id on the agent's narrowing for this tool",
             )
 
+    pinned_conns: list[m.McpConnection] = []
     for key in enabled:
         # The agent's own pin always wins over the department's default --
         # that is the whole point of letting an agent override it.
         pinned_id = tools[key].get("connection_id") or _dept_default(key)
         if not pinned_id:
             continue
-        # Today's runtime carries exactly ONE McpConnection per run, so a second
-        # simultaneously-pinned login is unreachable regardless of which is
-        # chosen here -- a pre-existing limit of the single-mcp_conn dispatch
-        # design, not one this task introduces. First-key-alphabetically is a
-        # deterministic placeholder until multi-connection dispatch exists.
         try:
             pinned_uuid = uuid.UUID(str(pinned_id))
         except ValueError:
@@ -509,7 +514,11 @@ async def _resolve_mcp_connection(
                 f"tool {key!r} needs a login, but its pinned connection {pinned_id} "
                 "is not one: re-assign this agent's login for this tool",
             )
-        return _ConnectionChoice(conn, None, pinned=True)
+        pinned_conns.append(conn)
+    if pinned_conns:
+        return _ConnectionChoice(
+            pinned_conns[0], None, pinned=True, connections=tuple(pinned_conns)
+        )
 
     # Department-scoped integrations are the normal plugin path: an operator
     # configures a tool pack once, then every agent in that department can use
@@ -683,7 +692,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 record_run_outcome(RunState.FAILED.value)
                 return
 
-            if choice.pinned and mcp_conn is not None:
+            if choice.pinned:
                 # Container parity. The isolated runtime never reads `mcp_conn`;
                 # its container resolves connections for itself, through
                 # mcp_gateway._connections and internal_agent._load -- and the
@@ -698,7 +707,18 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 # ONLY for a pin. Stamping a department connection would collapse
                 # _connections()'s deliberate multi-connection list back to one,
                 # undoing the fix its own docstring records.
-                await merge_context(db, run, {"mcp_connection_id": str(mcp_conn.id)})
+                #
+                # Two pins cannot share a single mcp_connection_id -- that is
+                # exactly how the second login used to vanish. The list is what
+                # `_connections` reads; the single id stays as the stable
+                # primary for control tools that still load one row.
+                pinned_rows = choice.connections or ((mcp_conn,) if mcp_conn is not None else ())
+                if pinned_rows:
+                    stamp: dict[str, Any] = {
+                        "mcp_connection_id": str(pinned_rows[0].id),
+                        "mcp_connection_ids": [str(c.id) for c in pinned_rows],
+                    }
+                    await merge_context(db, run, stamp)
 
             task_text = str(run.context.get("task", ""))
             # Raw {bucket_key, content_type} pointers only (Task 6) -- the actual

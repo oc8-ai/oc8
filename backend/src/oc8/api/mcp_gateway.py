@@ -149,11 +149,31 @@ async def _connections(
 ) -> list[m.McpConnection]:
     """Every system this run may reach, not merely the first one.
 
-    A pinned `mcp_connection_id` still wins: a delegation or an explicit
-    "run against THIS connection" means exactly that. Everything else gets the
-    department's connected systems -- all of them. The old `.limit(1)` here is
-    why an agent set up with two systems silently saw one.
+    A list of pinned `mcp_connection_ids` wins: two (or more) logins the
+    agent was assigned, none of which appear in the department fallback
+    because a login is tenant-global. A single `mcp_connection_id` still
+    wins over the department list: a delegation or an explicit "run against
+    THIS connection" means exactly that. Everything else gets the
+    department's connected systems -- all of them. The old `.limit(1)` here
+    is why an agent set up with two systems silently saw one.
     """
+    raw_ids = run.context.get("mcp_connection_ids")
+    if isinstance(raw_ids, list) and raw_ids:
+        pinned_found: list[m.McpConnection] = []
+        pinned_seen: set[uuid.UUID] = set()
+        for raw in raw_ids:
+            try:
+                conn_id = uuid.UUID(str(raw))
+            except ValueError:
+                continue
+            if conn_id in pinned_seen:
+                continue
+            pinned = await db.get(m.McpConnection, conn_id)
+            if pinned is None:
+                continue
+            pinned_found.append(pinned)
+            pinned_seen.add(conn_id)
+        return pinned_found
     mcp_id = run.context.get("mcp_connection_id")
     if mcp_id:
         pinned = await db.get(m.McpConnection, uuid.UUID(str(mcp_id)))
