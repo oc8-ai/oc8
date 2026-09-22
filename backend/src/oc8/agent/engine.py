@@ -46,6 +46,11 @@ from oc8.agent.harness.stages.b_outward import check_outward, remember_outward
 from oc8.agent.harness.stages.b_read_before_write import note_access
 from oc8.agent.harness.stages.b_risk_tier import classify_tier
 from oc8.agent.harness.stages.c_errors import ToolError, classify_exception
+from oc8.agent.harness.stages.c_ledger import (
+    record_decision,
+    record_file,
+    record_outward,
+)
 from oc8.agent.harness.stages.c_reminders import track_repeat_tool_call
 from oc8.agent.harness.stages.c_spill import persist_spill
 from oc8.agent.mcp_client import McpSession
@@ -1323,6 +1328,17 @@ async def run_agent(
                                         {"run_id": str(run_id), "todos": control.todos},
                                         source=f"oc8/run/{run_id}",
                                     )
+                            if (
+                                tool_error is None
+                                and not output.startswith("ERROR:")
+                                and tc.name in {"request_decision", "ask_user"}
+                            ):
+                                record_decision(
+                                    harness.state.ledger,
+                                    tool=tc.name,
+                                    question=str(tc.arguments.get("question", "")),
+                                    step=harness.state.step_no,
+                                )
                             if control.suspend == "waiting_for_input":
                                 task.state = "waiting_for_input"
                                 return RunResult(
@@ -1455,25 +1471,40 @@ async def run_agent(
                                     output=output,
                                     idempotent=idempotent,
                                 )
-                        if (
-                            tool_error is None
-                            and not output.startswith("ERROR:")
-                            and access_identity is not None
-                            and mcp_conn is not None
-                        ):
-                            note_access(
-                                harness.state.ledger,
-                                connection=mcp_conn.name,
-                                kind=access_identity[0],
-                                id=access_identity[1],
-                                label=record_label,
-                                step_no=harness.state.step_no,
-                                wrote=writes,
-                                tool=tc.name,
-                                exempt_unverified=(
-                                    gate_verdict is not None and gate_verdict.tier == "outward"
-                                ),
-                            )
+                        succeeded = tool_error is None and not output.startswith("ERROR:")
+                        if succeeded:
+                            if access_identity is not None and mcp_conn is not None:
+                                note_access(
+                                    harness.state.ledger,
+                                    connection=mcp_conn.name,
+                                    kind=access_identity[0],
+                                    id=access_identity[1],
+                                    label=record_label,
+                                    step_no=harness.state.step_no,
+                                    wrote=writes,
+                                    tool=tc.name,
+                                    exempt_unverified=(
+                                        gate_verdict is not None
+                                        and gate_verdict.tier == "outward"
+                                    ),
+                                )
+                            if gate_verdict is not None and gate_verdict.tier == "outward":
+                                record_outward(
+                                    harness.state.ledger,
+                                    connection=connection_key or "oc8",
+                                    tool=tc.name,
+                                    target=str(
+                                        tc.arguments.get("target")
+                                        or tc.arguments.get("to")
+                                        or ""
+                                    ),
+                                    step=harness.state.step_no,
+                                )
+                            if tc.name == "write_output_file":
+                                record_file(
+                                    harness.state.ledger,
+                                    str(tc.arguments.get("filename", "")),
+                                )
                         shaped = harness.shape(
                             tc,
                             output,
@@ -1483,6 +1514,8 @@ async def run_agent(
                             error=tool_error,
                         )
                         output = shaped.output
+                        if succeeded and shaped.spill is not None:
+                            record_file(harness.state.ledger, shaped.spill.filename)
                         if shaped.spill is not None and run_id is not None:
                             try:
                                 await persist_spill(

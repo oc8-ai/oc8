@@ -34,9 +34,27 @@ class EntityRef:
 
 
 @dataclass
+class OutwardRef:
+    connection: str
+    tool: str
+    target: str
+    step: int
+
+
+@dataclass
+class DecisionRef:
+    tool: str
+    question: str
+    step: int
+
+
+@dataclass
 class Ledger:
     entities: dict[str, EntityRef] = field(default_factory=dict)
     writes_unverified: list[str] = field(default_factory=list)
+    outward: list[OutwardRef] = field(default_factory=list)
+    files: list[str] = field(default_factory=list)
+    decisions: list[DecisionRef] = field(default_factory=list)
 
 
 @dataclass
@@ -82,6 +100,24 @@ class HarnessState:
                 for key, value in entities_raw.items()
             },
             writes_unverified=list(ledger_raw.get("writes_unverified") or []),
+            outward=[
+                OutwardRef(
+                    connection=str(value["connection"]),
+                    tool=str(value["tool"]),
+                    target=str(value["target"]),
+                    step=int(value["step"]),
+                )
+                for value in ledger_raw.get("outward") or []
+            ],
+            files=list(ledger_raw.get("files") or []),
+            decisions=[
+                DecisionRef(
+                    tool=str(value["tool"]),
+                    question=str(value["question"]),
+                    step=int(value["step"]),
+                )
+                for value in ledger_raw.get("decisions") or []
+            ],
         )
         return cls(
             version=int(raw.get("version", HARNESS_STATE_VERSION)),

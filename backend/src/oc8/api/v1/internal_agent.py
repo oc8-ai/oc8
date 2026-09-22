@@ -43,6 +43,11 @@ from oc8.agent.harness.stages.b_outward import check_outward, remember_outward
 from oc8.agent.harness.stages.b_read_before_write import note_access
 from oc8.agent.harness.stages.b_risk_tier import classify_tier
 from oc8.agent.harness.stages.c_errors import ToolError, classify_exception
+from oc8.agent.harness.stages.c_ledger import (
+    record_decision,
+    record_file,
+    record_outward,
+)
 from oc8.agent.harness.stages.c_spill import persist_spill
 from oc8.agent.mcp_client import McpSession
 from oc8.agent.mcp_env import resolve_mcp_env
@@ -1131,23 +1136,37 @@ async def tool(
                 idempotent=idempotent,
             )
 
-    if (
-        tool_error is None
-        and not output.startswith("ERROR:")
-        and access_identity is not None
-        and conn is not None
-    ):
-        note_access(
-            harness.state.ledger,
-            connection=conn.name,
-            kind=access_identity[0],
-            id=access_identity[1],
-            label=record_label,
-            step_no=harness.state.step_no,
-            wrote=writes,
-            tool=tc.name,
-            exempt_unverified=(tier == "outward"),
-        )
+    succeeded = tool_error is None and not output.startswith("ERROR:")
+    if succeeded:
+        if access_identity is not None and conn is not None:
+            note_access(
+                harness.state.ledger,
+                connection=conn.name,
+                kind=access_identity[0],
+                id=access_identity[1],
+                label=record_label,
+                step_no=harness.state.step_no,
+                wrote=writes,
+                tool=tc.name,
+                exempt_unverified=(tier == "outward"),
+            )
+        if tier == "outward":
+            record_outward(
+                harness.state.ledger,
+                connection=conn.name if conn is not None else "oc8",
+                tool=tc.name,
+                target=str(tc.arguments.get("target") or tc.arguments.get("to") or ""),
+                step=harness.state.step_no,
+            )
+        if tc.name == "write_output_file":
+            record_file(harness.state.ledger, str(tc.arguments.get("filename", "")))
+        if tc.name in {"request_decision", "ask_user"}:
+            record_decision(
+                harness.state.ledger,
+                tool=tc.name,
+                question=str(tc.arguments.get("question", "")),
+                step=harness.state.step_no,
+            )
 
     # Stopped HERE, the moment the call itself returned -- not at the append
     # site far below, which is separated from it by the transcript rewrite and
@@ -1177,6 +1196,8 @@ async def tool(
         error=tool_error,
     )
     output = shaped.output
+    if succeeded and shaped.spill is not None:
+        record_file(harness.state.ledger, shaped.spill.filename)
     if shaped.spill is not None:
         try:
             await persist_spill(db, tenant_id=run.tenant_id, run_id=run.id, spill=shaped.spill)

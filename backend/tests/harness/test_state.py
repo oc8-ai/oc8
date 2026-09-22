@@ -8,7 +8,14 @@ from __future__ import annotations
 import json
 
 from oc8.agent.harness.calls import call_sig
-from oc8.agent.harness.state import CONTEXT_KEY, EntityRef, HarnessState, Ledger
+from oc8.agent.harness.state import (
+    CONTEXT_KEY,
+    DecisionRef,
+    EntityRef,
+    HarnessState,
+    Ledger,
+    OutwardRef,
+)
 from oc8.modelrouter import ToolCall
 
 
@@ -45,6 +52,16 @@ def test_round_trip_through_real_json() -> None:
                 )
             },
             writes_unverified=["office/document/42"],
+            outward=[
+                OutwardRef(
+                    connection="mail",
+                    tool="send_note",
+                    target="ada@example.com",
+                    step=4,
+                )
+            ],
+            files=["step-4-send_note.txt"],
+            decisions=[DecisionRef(tool="ask_user", question="Which one?", step=2)],
         ),
     )
     raw = json.loads(json.dumps(s.to_dict()))
@@ -56,6 +73,25 @@ def test_from_dict_tolerates_missing_and_none() -> None:
     assert HarnessState.from_dict({}) == HarnessState()
     assert HarnessState.from_dict({"version": 1}) == HarnessState()
     assert HarnessState.from_dict({"ledger": {"entities": {}}}).ledger.writes_unverified == []
+
+
+def test_from_dict_missing_new_ledger_keys_loads_empty_lists() -> None:
+    raw = json.loads(
+        json.dumps(
+            {
+                "version": 1,
+                "ledger": {
+                    "entities": {},
+                    "writes_unverified": [],
+                },
+            }
+        )
+    )
+
+    ledger = HarnessState.from_dict(raw).ledger
+    assert ledger.outward == []
+    assert ledger.files == []
+    assert ledger.decisions == []
 
 
 def test_from_dict_ignores_unknown_keys() -> None:
