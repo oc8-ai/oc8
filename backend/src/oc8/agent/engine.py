@@ -38,6 +38,11 @@ from oc8.agent.harness.calls import (
 )
 from oc8.agent.harness.prompts import compaction_instruction
 from oc8.agent.harness.retrieval import select_completion_tools
+from oc8.agent.harness.procedures import (
+    newly_satisfied_lines,
+    procedure_haystack,
+    satisfied_ids,
+)
 from oc8.agent.harness.stages.a_compaction import (
     prompt_token_fallback,
     rebuild_transcript,
@@ -60,6 +65,7 @@ from oc8.agent.harness.stages.c_ledger import (
     record_decision,
     record_file,
     record_outward,
+    record_tool,
     render_ledger_block,
 )
 from oc8.agent.harness.stages.c_reminders import track_repeat_tool_call
@@ -132,6 +138,42 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+
+def _active_procedures(
+    skills: list[LoadedSkill],
+) -> list[tuple[str, str, tuple]]:
+    return [
+        (s.definition.slug or s.tool_name, s.name, s.definition.steps)
+        for s in skills
+        if s.definition.steps
+    ]
+
+
+def _procedure_texts(skills: list[LoadedSkill]) -> list[str]:
+    return [procedure_haystack(s.definition.steps) for s in skills if s.definition.steps]
+
+
+def _satisfied_map(
+    procedures: list[tuple[str, str, tuple]],
+    harness: Harness,
+) -> dict[str, frozenset[str]]:
+    return {
+        slug: satisfied_ids(steps, harness.state.ledger, harness.state.procedure.get(slug))
+        for slug, _name, steps in procedures
+    }
+
+
+def _instruction_for(skill: LoadedSkill, harness: Harness) -> str:
+    if not skill.definition.steps:
+        return instruction_block(skill)
+    slug = skill.definition.slug or skill.tool_name
+    done = satisfied_ids(
+        skill.definition.steps,
+        harness.state.ledger,
+        harness.state.procedure.get(slug),
+    )
+    return instruction_block(skill, done)
 
 
 def _max_steps(agent: m.Agent) -> int:
@@ -587,6 +629,7 @@ async def run_agent(
                     granted=tier in b5_grants,
                     record_label=describe_focus(tc.name, tc.arguments, focus_spec) or "",
                     identity=identity,
+                    procedures=_active_procedures(active_skills),
                 )
 
             steps = 0
@@ -681,6 +724,7 @@ async def run_agent(
                     mcp_connection=connection_key,
                     tool_notes=tool_notes,
                     find_tools=FIND_TOOLS,
+                    procedure_texts=_procedure_texts(active_skills),
                 )
                 harness.state.tool_catalog = catalog
                 resolved_params = resolve_params(model_config, agent=agent)
@@ -765,7 +809,9 @@ async def run_agent(
                         messages,
                         summary=summary_result.text,
                         ledger_block=render_ledger_block(harness.state.ledger),
-                        skill_blocks=[instruction_block(skill) for skill in active_skills],
+                        skill_blocks=[
+                            _instruction_for(skill, harness) for skill in active_skills
+                        ],
                     )
                     harness.state.compactions += 1
                     harness.state.last_compacted_step = harness.state.step_no
@@ -940,7 +986,9 @@ async def run_agent(
                         )
 
                     open_todos = [t for t in todos if t.get("status") != "completed"]
-                    finish_verdict = harness.may_finish(open_todos)
+                    finish_verdict = harness.may_finish(
+                        open_todos, procedures=_active_procedures(active_skills)
+                    )
                     if not finish_verdict.ok:
                         # D1: the model tried to finish while its own checklist
                         # still has open items. Append its (otherwise-dropped)
@@ -1403,6 +1451,9 @@ async def run_agent(
                             originating_operator=originating_operator,
                             run_id=run_id,
                             harness_state=harness.state,
+                            active_procedure_skills=[
+                                s for s in active_skills if s.definition.steps
+                            ],
                         )
                         if control is not None:
                             # A core-owned tool (memory/ask/delegate/skill). The
@@ -1601,7 +1652,10 @@ async def run_agent(
                                     idempotent=idempotent,
                                 )
                         succeeded = tool_error is None and not output.startswith("ERROR:")
+                        procs = _active_procedures(active_skills)
+                        before_sat = _satisfied_map(procs, harness)
                         if succeeded:
+                            record_tool(harness.state.ledger, tc.name)
                             if access_identity is not None and mcp_conn is not None:
                                 note_access(
                                     harness.state.ledger,
@@ -1634,6 +1688,10 @@ async def run_agent(
                                     harness.state.ledger,
                                     str(tc.arguments.get("filename", "")),
                                 )
+                        after_sat = _satisfied_map(procs, harness)
+                        flip_lines = newly_satisfied_lines(
+                            skills=procs, before=before_sat, after=after_sat
+                        )
                         shaped = harness.shape(
                             tc,
                             output,
@@ -1643,6 +1701,7 @@ async def run_agent(
                             error=tool_error,
                         )
                         output = shaped.output
+                        shaped.reminders.extend(flip_lines)
                         if succeeded and shaped.spill is not None:
                             record_file(harness.state.ledger, shaped.spill.filename)
                         if shaped.spill is not None and run_id is not None:

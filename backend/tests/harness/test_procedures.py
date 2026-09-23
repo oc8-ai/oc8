@@ -256,3 +256,54 @@ def test_gate_procedure_denial_before_read_before_write() -> None:
     )
     assert "do not retry the same change another way" not in verdict.reason
     assert 'Procedure "Quote", step 1' in verdict.reason
+
+
+def test_may_finish_procedure_continuation_then_exhausted() -> None:
+    from oc8.agent.harness import Harness
+    from oc8.skills.schema import Step
+
+    steps = (
+        Step(
+            id="identify",
+            title="Identify the customer record",
+            requires_kind="read_of",
+            requires_value="partner",
+            required=True,
+            gates=(),
+        ),
+    )
+    h = Harness()
+    procs = [("quote", "Quote", steps)]
+    v1 = h.may_finish([], can_continue=True, procedures=procs)
+    assert v1.ok is False
+    assert v1.reminder is not None
+    assert "continuation round 1/3" in v1.reminder
+    assert h.state.procedure_rounds == 1
+    h.may_finish([], can_continue=True, procedures=procs)
+    h.may_finish([], can_continue=True, procedures=procs)
+    v4 = h.may_finish([], can_continue=True, procedures=procs)
+    assert v4.ok is True
+    assert v4.exhausted_note is not None
+    assert "required procedure steps still open" in v4.exhausted_note
+    assert h.state.procedure_rounds == 3
+
+
+def test_procedure_haystack_omits_tier_gates() -> None:
+    from oc8.agent.harness.procedures import procedure_haystack
+    from oc8.skills.schema import Step
+
+    steps = (
+        Step(
+            id="quote",
+            title="Create the quotation",
+            requires_kind="tool_called",
+            requires_value="create_quotation",
+            required=True,
+            gates=("create_quotation", "tier:outward"),
+        ),
+    )
+    text = procedure_haystack(steps)
+    assert "Create the quotation" in text
+    assert "create_quotation" in text
+    assert "tier:outward" not in text
+    assert "outward" not in text or "create_quotation" in text.split("\n")

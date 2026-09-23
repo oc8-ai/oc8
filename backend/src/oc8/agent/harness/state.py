@@ -104,8 +104,7 @@ class HarnessState:
     last_compacted_step: int = -999
     #: Tool names pinned by find_tools for later steps' inline core set.
     pinned_tools: list[str] = field(default_factory=list)
-    #: Full tool catalog for this step as JSON-safe card dicts (name,
-    #: description, connection, notes). find_tools ranks against this.
+    #: Deferred tool catalog for find_tools (empty when not deferring).
     tool_catalog: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:

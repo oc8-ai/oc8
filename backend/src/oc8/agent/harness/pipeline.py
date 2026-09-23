@@ -17,7 +17,13 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from oc8.agent.harness.caps import ModelCaps
-from oc8.agent.harness.procedures import procedure_denial
+from oc8.agent.harness.procedures import (
+    PROCEDURE_CONTINUATION_MAX_ROUNDS,
+    open_required_procedures,
+    procedure_continuation_reminder,
+    procedure_denial,
+    procedure_exhausted_note,
+)
 from oc8.agent.harness.prompts import format_step_stamp, resolve_timezone
 from oc8.agent.harness.stages.b_approval import posture, render_preview
 from oc8.agent.harness.stages.b_read_before_write import read_before_write_denial
@@ -205,9 +211,13 @@ class Harness:
     # ----------------------------------------------------------------- phase D
 
     def may_finish(
-        self, open_todos: list[dict[str, str]], *, can_continue: bool = True
+        self,
+        open_todos: list[dict[str, str]],
+        *,
+        can_continue: bool = True,
+        procedures: Sequence[tuple[str, str, tuple[Step, ...]]] | None = None,
     ) -> FinishVerdict:
-        """Run D1 todo continuation, then D3 verification before finishing.
+        """Run D1 todo continuation, then D2 procedure, then D3 verification.
 
         `can_continue` is the caller's own step budget (the isolated runtime
         checks it explicitly; the in-process loop bound handles it).
@@ -219,6 +229,28 @@ class Harness:
                 reminder=todo_continuation_reminder(open_todos, self.state.todo_rounds),
             )
         d1_note = todo_continuation_exhausted_note(open_todos) if open_todos else None
+
+        open_proc: list[tuple[str, str, str]] = []
+        if procedures:
+            open_proc = open_required_procedures(
+                procedures,
+                ledger=self.state.ledger,
+                procedure=self.state.procedure,
+            )
+        if (
+            open_proc
+            and can_continue
+            and self.state.procedure_rounds < PROCEDURE_CONTINUATION_MAX_ROUNDS
+        ):
+            self.state.procedure_rounds += 1
+            return FinishVerdict(
+                ok=False,
+                reminder=procedure_continuation_reminder(
+                    open_proc, self.state.procedure_rounds
+                ),
+            )
+        d2_note = procedure_exhausted_note(open_proc) if open_proc else None
+
         pending = [
             self.state.ledger.entities[key]
             for key in self.state.ledger.writes_unverified
@@ -235,5 +267,5 @@ class Harness:
             return FinishVerdict(ok=False, reminder=verify_reminder(pending))
         if pending:
             d3_note = verify_exhausted_note(pending)
-        notes = [note for note in (d1_note, d3_note) if note]
+        notes = [note for note in (d1_note, d2_note, d3_note) if note]
         return FinishVerdict(ok=True, exhausted_note="\n\n".join(notes) or None)

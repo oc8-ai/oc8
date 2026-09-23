@@ -213,3 +213,52 @@ def test_select_completion_tools_empty_catalog_when_not_deferring() -> None:
     )
     assert [t.name for t in completion] == [t.name for t in offered]
     assert catalog == []
+
+
+def test_select_completion_tools_procedure_texts_pull_named_tool_inline() -> None:
+    from oc8.modelrouter import NeutralTool
+
+    from oc8.agent.harness.retrieval import select_completion_tools
+
+    find_tools = NeutralTool(
+        name="find_tools",
+        description=_FIND_TOOLS_DESC,
+        parameters={"type": "object", "properties": {}},
+    )
+    control = NeutralTool(
+        name="ask_human",
+        description="Ask",
+        parameters={"type": "object", "properties": {}},
+    )
+    quote = NeutralTool(
+        name="create_quotation",
+        description="Make a quote",
+        parameters={"type": "object", "properties": {}},
+    )
+    fillers = [
+        NeutralTool(
+            name=f"filler_{i:02d}",
+            description=f"Filler {i}",
+            parameters={"type": "object", "properties": {}},
+        )
+        for i in range(29)
+    ]
+    offered = [control, quote, *fillers]
+    assert len(offered) == 31
+    completion, catalog = select_completion_tools(
+        offered,
+        control_names=frozenset({"ask_human"}),
+        skill_names=frozenset(),
+        mission="",
+        skill_texts=[],
+        pinned=[],
+        tool_list_may_change=True,
+        mcp_connection=None,
+        tool_notes=None,
+        find_tools=find_tools,
+        procedure_texts=["create_quotation"],
+    )
+    names = [t.name for t in completion]
+    assert "create_quotation" in names
+    assert "find_tools" in names
+    assert all(c["name"] != "create_quotation" for c in catalog)

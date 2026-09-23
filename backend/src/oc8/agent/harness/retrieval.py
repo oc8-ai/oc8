@@ -166,6 +166,7 @@ def select_completion_tools(
     mcp_connection: str | None,
     tool_notes: Mapping[str, Any] | None,
     find_tools: NeutralTool,
+    procedure_texts: list[str] | None = None,
 ) -> tuple[list[NeutralTool], list[dict[str, Any]]]:
     """A4 step: catalog + select_inline → completion tools and deferred catalog.
 
@@ -185,7 +186,7 @@ def select_completion_tools(
         skill_names=skill_names,
         mission=mission,
         skill_texts=skill_texts,
-        procedure_texts=[],
+        procedure_texts=list(procedure_texts or []),
         pinned=pinned,
         tool_list_may_change=tool_list_may_change,
     )

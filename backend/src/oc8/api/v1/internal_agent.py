@@ -57,9 +57,15 @@ from oc8.agent.harness.stages.c_ledger import (
     record_decision,
     record_file,
     record_outward,
+    record_tool,
     render_ledger_block,
 )
 from oc8.agent.harness.stages.c_spill import persist_spill
+from oc8.agent.harness.procedures import (
+    newly_satisfied_lines,
+    procedure_haystack,
+    satisfied_ids,
+)
 from oc8.agent.mcp_client import McpSession
 from oc8.agent.mcp_env import resolve_mcp_env
 from oc8.agent.mcp_requirements import wrap_with_requirements
@@ -96,13 +102,49 @@ from oc8.realtime.emit import note_focus, publish_run_token_delta, publish_run_t
 from oc8.runtime.approval_resume import pre_decided_map
 from oc8.runtime.registry import BUILTIN_ISOLATED_RUNTIME_REF
 from oc8.runtime.run_context import append_tool_call
-from oc8.skills.runtime import instruction_block, load_assigned_skills
+from oc8.skills.runtime import LoadedSkill, instruction_block, load_assigned_skills
 from oc8.storage import s3
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 RUN_SCOPE = "run:"
+
+
+def _active_procedures(
+    skills: list[LoadedSkill],
+) -> list[tuple[str, str, tuple]]:
+    return [
+        (s.definition.slug or s.tool_name, s.name, s.definition.steps)
+        for s in skills
+        if s.definition.steps
+    ]
+
+
+def _procedure_texts(skills: list[LoadedSkill]) -> list[str]:
+    return [procedure_haystack(s.definition.steps) for s in skills if s.definition.steps]
+
+
+def _satisfied_map(
+    procedures: list[tuple[str, str, tuple]],
+    harness: Harness,
+) -> dict[str, frozenset[str]]:
+    return {
+        slug: satisfied_ids(steps, harness.state.ledger, harness.state.procedure.get(slug))
+        for slug, _name, steps in procedures
+    }
+
+
+def _instruction_for(skill: LoadedSkill, harness: Harness) -> str:
+    if not skill.definition.steps:
+        return instruction_block(skill)
+    slug = skill.definition.slug or skill.tool_name
+    done = satisfied_ids(
+        skill.definition.steps,
+        harness.state.ledger,
+        harness.state.procedure.get(slug),
+    )
+    return instruction_block(skill, done)
 
 
 async def _run_for_token(
@@ -479,6 +521,7 @@ async def step(
         mcp_connection=conn.name if conn is not None else None,
         tool_notes=tool_notes,
         find_tools=FIND_TOOLS,
+        procedure_texts=_procedure_texts(active_skills),
     )
     harness.state.tool_catalog = catalog
     # Shared with the in-process engine so sampling cannot drift between the
@@ -558,7 +601,7 @@ async def step(
             current_messages,
             summary=summary_result.text,
             ledger_block=render_ledger_block(harness.state.ledger),
-            skill_blocks=[instruction_block(skill) for skill in active_skills],
+            skill_blocks=[_instruction_for(skill, harness) for skill in active_skills],
         )
         transcript[:] = [_from_message(message) for message in rebuilt]
         harness.state.compactions += 1
@@ -719,7 +762,9 @@ async def step(
             # its own todo_write checklist still has open items.
             open_todos = [t for t in ctx.get("todos", []) if t.get("status") != "completed"]
             verdict = harness.may_finish(
-                open_todos, can_continue=int(ctx["steps"]) < _max_steps(agent)
+                open_todos,
+                can_continue=int(ctx["steps"]) < _max_steps(agent),
+                procedures=_active_procedures(active_skills),
             )
             if not verdict.ok:
                 transcript.append(
@@ -960,6 +1005,7 @@ async def tool(
             granted=tier in b5_grants,
             record_label=describe_focus(tc.name, tc.arguments, focus_spec) or "",
             identity=record_identity(tc.name, tc.arguments, focus_spec),
+            procedures=_active_procedures(active_skills),
         )
         if gate_verdict.effect == "ask":
             verdict = pre_decided_map(run.context.get("resolved_tool_approvals", [])).get(
@@ -1075,6 +1121,7 @@ async def tool(
             run_id=run.id,
             local_result=body.local_result,
             harness_state=harness.state,
+            active_procedure_skills=[s for s in active_skills if s.definition.steps],
         )
         if task is not None
         else None
@@ -1267,7 +1314,10 @@ async def tool(
             )
 
     succeeded = tool_error is None and not output.startswith("ERROR:")
+    procs = _active_procedures(active_skills)
+    before_sat = _satisfied_map(procs, harness)
     if succeeded:
+        record_tool(harness.state.ledger, tc.name)
         if access_identity is not None and conn is not None:
             note_access(
                 harness.state.ledger,
@@ -1297,6 +1347,10 @@ async def tool(
                 question=str(tc.arguments.get("question", "")),
                 step=harness.state.step_no,
             )
+    after_sat = _satisfied_map(procs, harness)
+    flip_lines = newly_satisfied_lines(
+        skills=procs, before=before_sat, after=after_sat
+    )
 
     # Stopped HERE, the moment the call itself returned -- not at the append
     # site far below, which is separated from it by the transcript rewrite and
@@ -1326,6 +1380,7 @@ async def tool(
         error=tool_error,
     )
     output = shaped.output
+    shaped.reminders.extend(flip_lines)
     if succeeded and shaped.spill is not None:
         record_file(harness.state.ledger, shaped.spill.filename)
     if shaped.spill is not None:

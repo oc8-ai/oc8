@@ -102,6 +102,82 @@ def newly_satisfied_lines(
     return lines
 
 
+PROCEDURE_CONTINUATION_MAX_ROUNDS = 3
+
+
+def procedure_haystack(steps: tuple[Step, ...]) -> str:
+    """A4 procedure text: step titles plus non-tier gate entries, one per line."""
+    parts: list[str] = []
+    for step in steps:
+        parts.append(step.title)
+        for gate in step.gates:
+            if not gate.startswith("tier:"):
+                parts.append(gate)
+    return "\n".join(parts)
+
+
+def _open_required_steps(
+    procedures: Sequence[tuple[str, str, tuple[Step, ...]]],
+    *,
+    ledger: Ledger,
+    procedure: dict[str, ProcedureMark],
+) -> list[tuple[str, str, str]]:
+    """Return (display_name, step_id, title) for every open required step."""
+    open_steps: list[tuple[str, str, str]] = []
+    for slug, name, steps in procedures:
+        mark = procedure.get(slug)
+        done = satisfied_ids(steps, ledger, mark)
+        for step in steps:
+            if step.required and step.id not in done:
+                open_steps.append((name, step.id, step.title))
+    return open_steps
+
+
+def open_required_procedures(
+    procedures: Sequence[tuple[str, str, tuple[Step, ...]]],
+    *,
+    ledger: Ledger,
+    procedure: dict[str, ProcedureMark],
+) -> list[tuple[str, str, str]]:
+    """Public wrapper used by may_finish."""
+    return _open_required_steps(procedures, ledger=ledger, procedure=procedure)
+
+
+def procedure_continuation_reminder(
+    open_steps: Sequence[tuple[str, str, str]],
+    round_no: int,
+) -> str:
+    """D2 nudge when the model finishes with required procedure steps open."""
+    names = list(dict.fromkeys(name for name, _sid, _title in open_steps))
+    if len(names) == 1:
+        header = (
+            f'You indicated you are finished, but procedure "{names[0]}" still has '
+            f"required steps open (continuation round {round_no}/"
+            f"{PROCEDURE_CONTINUATION_MAX_ROUNDS}):"
+        )
+        lines = "\n".join(f"- {sid}: {title}" for _name, sid, title in open_steps)
+    else:
+        header = (
+            "You indicated you are finished, but required procedure steps are still "
+            f"open (continuation round {round_no}/{PROCEDURE_CONTINUATION_MAX_ROUNDS}):"
+        )
+        lines = "\n".join(
+            f"- {name} / {sid}: {title}" for name, sid, title in open_steps
+        )
+    return f"{header}\n{lines}\nContinue until they are satisfied."
+
+
+def procedure_exhausted_note(open_steps: Sequence[tuple[str, str, str]]) -> str:
+    """Appended when D2 gives up after PROCEDURE_CONTINUATION_MAX_ROUNDS."""
+    lines = "\n".join(
+        f"- {name} / {sid}: {title}" for name, sid, title in open_steps
+    )
+    return (
+        "[Note: this run ended with required procedure steps still open after "
+        f"{PROCEDURE_CONTINUATION_MAX_ROUNDS} continuation attempt(s):\n{lines}]"
+    )
+
+
 def _gate_label(token: str) -> str:
     if token.startswith("tier:"):
         name = token.removeprefix("tier:")
