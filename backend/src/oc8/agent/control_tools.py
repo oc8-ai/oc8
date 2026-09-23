@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.agent.components import COMPONENT_CATALOG
 from oc8.agent.harness.retrieval import ToolCard, rank_tools
-from oc8.agent.harness.state import HarnessState
+from oc8.agent.harness.state import HarnessState, ProcedureMark
 from oc8.agents.repo import visible_agent, visible_agents
 from oc8.approvals import (
     AlreadyDecided,
@@ -145,6 +145,36 @@ FIND_TOOLS = NeutralTool(
             },
         },
         "required": ["query"],
+    },
+)
+
+PROCEDURE_STEP_DONE = NeutralTool(
+    name="procedure_step_done",
+    description=(
+        "Mark a manual procedure step done and record evidence. "
+        "Only for steps whose requirement is manual; the system tracks "
+        "read_of, tool_called, and confirmation steps itself."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "step_id": {
+                "type": "string",
+                "description": "The id of the manual step to mark done.",
+            },
+            "evidence": {
+                "type": "string",
+                "description": "Short note of what was completed (max 500 chars).",
+            },
+            "skill": {
+                "type": "string",
+                "description": (
+                    "Optional: skill slug when more than one active procedure "
+                    "has this step id."
+                ),
+            },
+        },
+        "required": ["step_id", "evidence"],
     },
 )
 
@@ -756,6 +786,7 @@ CONTROL_TOOL_SCHEMAS: dict[str, NeutralTool] = {
     MEMORY_WRITE.name: MEMORY_WRITE,
     TODO_WRITE.name: TODO_WRITE,
     FIND_TOOLS.name: FIND_TOOLS,
+    PROCEDURE_STEP_DONE.name: PROCEDURE_STEP_DONE,
     ASK_USER.name: ASK_USER,
     DELEGATE_TASK.name: DELEGATE_TASK,
     REQUEST_DECISION.name: REQUEST_DECISION,
@@ -823,7 +854,14 @@ def offered_tools(
     # execute_control_tool. Withdrawing the tool the moment it activates would
     # strand a model that re-checks its own tool list mid-task with an unknown
     # tool name instead of a harmless "already active" response.
-    offered = [MEMORY_WRITE, RENDER_COMPONENT, FETCH_URL, TODO_WRITE, READ_RUN_FILE]
+    offered = [
+        MEMORY_WRITE,
+        RENDER_COMPONENT,
+        FETCH_URL,
+        TODO_WRITE,
+        PROCEDURE_STEP_DONE,
+        READ_RUN_FILE,
+    ]
     if offer_write_output_file:
         offered.append(WRITE_OUTPUT_FILE)
     if offer_run_shell:
@@ -1260,6 +1298,63 @@ def _execute_find_tools(
     return ControlOutcome(output="\n".join(lines))
 
 
+_PROCEDURE_AMBIGUOUS = (
+    "ERROR: procedure_step_done needs one matching active procedure."
+)
+_EVIDENCE_CAP = 500
+
+
+def _execute_procedure_step_done(
+    tc: ToolCall,
+    harness_state: HarnessState | None,
+    active_procedure_skills: Sequence[LoadedSkill] | None,
+) -> ControlOutcome:
+    """Mark a manual procedure step done (Package 9 ruling 8)."""
+    step_id = str(tc.arguments.get("step_id", "")).strip()
+    evidence = str(tc.arguments.get("evidence", "")).strip()[:_EVIDENCE_CAP]
+    skill_arg = tc.arguments.get("skill")
+    skill_slug = (
+        str(skill_arg).strip() if skill_arg is not None and str(skill_arg).strip() else None
+    )
+
+    if not step_id:
+        return ControlOutcome(output="ERROR: procedure_step_done requires a step_id")
+    if harness_state is None:
+        return ControlOutcome(output=_PROCEDURE_AMBIGUOUS)
+
+    candidates = list(active_procedure_skills or ())
+    if skill_slug is not None:
+        matches = [s for s in candidates if s.definition.slug == skill_slug]
+    else:
+        matches = [
+            s
+            for s in candidates
+            if any(step.id == step_id for step in s.definition.steps)
+        ]
+
+    if len(matches) != 1:
+        return ControlOutcome(output=_PROCEDURE_AMBIGUOUS)
+
+    skill = matches[0]
+    step = next((s for s in skill.definition.steps if s.id == step_id), None)
+    if step is None:
+        return ControlOutcome(output=_PROCEDURE_AMBIGUOUS)
+    if step.requires_kind != "manual":
+        return ControlOutcome(
+            output=(
+                f"ERROR: step {step_id} is tracked by the system; "
+                "do not mark it manually."
+            )
+        )
+
+    mark = harness_state.procedure.get(skill.definition.slug)
+    if mark is None:
+        mark = ProcedureMark()
+        harness_state.procedure[skill.definition.slug] = mark
+    mark.evidence[step_id] = evidence
+    return ControlOutcome(output=f"Procedure step {step_id} marked done.")
+
+
 async def execute_control_tool(
     db: AsyncSession,
     *,
@@ -1275,6 +1370,7 @@ async def execute_control_tool(
     run_id: uuid.UUID | None = None,
     local_result: dict[str, Any] | None = None,
     harness_state: HarnessState | None = None,
+    active_procedure_skills: Sequence[LoadedSkill] | None = None,
 ) -> ControlOutcome | None:
     """Run one core-owned tool call, or return None if it isn't one.
 
@@ -1290,13 +1386,23 @@ async def execute_control_tool(
     behind it (tests) stays valid -- and None fails closed, dropping the claim.
 
     `harness_state` is optional until both runtimes thread it (Package 8 A4).
-    find_tools needs it to read the deferred catalog and write pins; other
-    control tools ignore it.
+    find_tools needs it to read the deferred catalog and write pins;
+    procedure_step_done needs it to store manual evidence. Other control tools
+    ignore it.
+
+    `active_procedure_skills` is the caller's active skills that carry
+    procedure steps (Package 9). Task 5 threads the real list; until then
+    callers (and unit tests) may pass fakes or leave it None.
     """
     skill_by_tool = {s.tool_name: s for s in assigned_skills}
 
     if tc.name == FIND_TOOLS.name:
         return _execute_find_tools(tc, harness_state)
+
+    if tc.name == PROCEDURE_STEP_DONE.name:
+        return _execute_procedure_step_done(
+            tc, harness_state, active_procedure_skills
+        )
 
     if tc.name == SEARCH_MEMORY.name:
         query = str(tc.arguments.get("query", "")).strip()

@@ -36,6 +36,7 @@ _CONTROL_READ: frozenset[str] = frozenset(
         "ask_user",
         "todo_write",
         "find_tools",
+        "procedure_step_done",
         "search_knowledge",
         "fetch_url",
         "search_memory",

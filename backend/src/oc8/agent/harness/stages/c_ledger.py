@@ -91,3 +91,17 @@ def record_decision(
     ref = DecisionRef(tool=tool, question=question[:200], step=step)
     if ref not in ledger.decisions:
         ledger.decisions.append(ref)
+
+
+def record_tool(ledger: Ledger, name: str) -> None:
+    """Append a successfully-run tool name once (ruling 5)."""
+    if name and name not in ledger.tools_called:
+        ledger.tools_called.append(name)
+
+
+def mark_decision_answered(ledger: Ledger) -> None:
+    """Set answered=True on the last decision that is still unanswered (ruling 6)."""
+    for ref in reversed(ledger.decisions):
+        if not ref.answered:
+            ref.answered = True
+            return

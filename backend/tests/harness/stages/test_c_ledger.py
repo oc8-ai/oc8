@@ -1,11 +1,13 @@
 from oc8.agent.harness.stages.c_ledger import (
     ledger_fingerprint,
+    mark_decision_answered,
     record_decision,
     record_file,
     record_outward,
+    record_tool,
     render_ledger_block,
 )
-from oc8.agent.harness.state import EntityRef, Ledger
+from oc8.agent.harness.state import DecisionRef, EntityRef, Ledger
 
 
 def test_outward_file_and_decision_append_once() -> None:
@@ -30,6 +32,26 @@ def test_outward_file_and_decision_append_once() -> None:
     assert len(ledger.outward) == 1
     assert ledger.files == ["step-4-send_note.txt"]
     assert ledger.decisions[0].question == "Which one?"
+    assert ledger.decisions[0].answered is False
+
+
+def test_record_tool_appends_once() -> None:
+    ledger = Ledger()
+    record_tool(ledger, "create_quotation")
+    record_tool(ledger, "create_quotation")
+    assert ledger.tools_called == ["create_quotation"]
+
+
+def test_mark_decision_answered_flips_last_unanswered() -> None:
+    ledger = Ledger(
+        decisions=[
+            DecisionRef(tool="ask_user", question="a?", step=1, answered=True),
+            DecisionRef(tool="ask_user", question="b?", step=2, answered=False),
+            DecisionRef(tool="ask_user", question="c?", step=3, answered=False),
+        ]
+    )
+    mark_decision_answered(ledger)
+    assert [d.answered for d in ledger.decisions] == [True, False, True]
 
 
 def test_recorders_truncate_text_and_skip_empty_filenames() -> None:
