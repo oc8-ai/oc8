@@ -2446,10 +2446,22 @@ async def execute_control_tool(
         # role 'tool'", verified against a hosted vLLM behind LiteLLM), which
         # killed the run on the next step. This way the ordering hazard cannot
         # exist: there is no extra message to place.
+        if skill.definition.steps and harness_state is not None:
+            from oc8.agent.harness.procedures import satisfied_ids
+
+            slug = skill.definition.slug or skill.tool_name
+            done = satisfied_ids(
+                skill.definition.steps,
+                harness_state.ledger,
+                harness_state.procedure.get(slug),
+            )
+            block = instruction_block(skill, done)
+        else:
+            block = instruction_block(skill)
         return ControlOutcome(
             output=(
                 f"Skill '{skill.name}' activated. Follow this procedure:\n\n"
-                f"{instruction_block(skill)}"
+                f"{block}"
             ),
             activated_skill=skill,
         )
