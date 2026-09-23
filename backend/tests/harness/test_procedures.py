@@ -1,11 +1,20 @@
-"""Procedure satisfaction and checklist rendering (Package 9 Task 2)."""
+"""Procedure satisfaction, B3 denial, and C5 flip lines (Package 9)."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
-from oc8.agent.harness.procedures import checklist, missing_text, satisfied_ids
+from oc8.agent.harness import GateVerdict, Harness
+from oc8.agent.harness.procedures import (
+    checklist,
+    missing_text,
+    newly_satisfied_lines,
+    procedure_denial,
+    satisfied_ids,
+)
 from oc8.agent.harness.state import DecisionRef, EntityRef, Ledger, ProcedureMark
+from oc8.modelrouter import ToolCall
 from oc8.skills.schema import Step, parse_definition
 
 SPEC_STEPS_RAW: list[dict[str, Any]] = [
@@ -130,3 +139,120 @@ def test_missing_text_for_each_kind() -> None:
         gates=(),
     )
     assert missing_text(manual) == "this step has not been marked done"
+
+
+def _quote_skill(
+    steps: tuple[Step, ...] | None = None,
+) -> tuple[str, str, tuple[Step, ...]]:
+    return ("quote", "Quote", steps if steps is not None else _spec_steps())
+
+
+def test_procedure_denial_blocks_create_quotation_until_identify() -> None:
+    steps = _spec_steps()
+    ledger = Ledger()
+    hit = procedure_denial(
+        tool="create_quotation",
+        tier="write",
+        skills=[_quote_skill(steps)],
+        ledger=ledger,
+        procedure={},
+    )
+    assert hit is not None
+    reason, slug = hit
+    assert slug == "quote"
+    assert 'Procedure "Quote", step 1 "Identify the customer record"' in reason
+    assert "no partner record has been read in this run" in reason
+    assert "policy decision" in reason
+
+
+def test_procedure_denial_allows_create_quotation_after_identify() -> None:
+    # confirm_scope required=False so only identify blocks the quote gate.
+    base = _spec_steps()
+    steps = (base[0], replace(base[1], required=False), base[2], base[3])
+    ledger = Ledger(
+        entities={
+            "office/partner/1": EntityRef(
+                connection="office",
+                kind="partner",
+                id="1",
+                last_read_step=2,
+            )
+        }
+    )
+    assert (
+        procedure_denial(
+            tool="create_quotation",
+            tier="write",
+            skills=[_quote_skill(steps)],
+            ledger=ledger,
+            procedure={},
+        )
+        is None
+    )
+
+
+def test_procedure_denial_tier_outward_gates_unrelated_tool_name() -> None:
+    steps = _spec_steps()
+    hit = procedure_denial(
+        tool="post_message",
+        tier="outward",
+        skills=[_quote_skill(steps)],
+        ledger=Ledger(),
+        procedure={},
+    )
+    assert hit is not None
+    reason, _ = hit
+    assert 'Procedure "Quote", step 1 "Identify the customer record"' in reason
+
+
+def test_procedure_denial_none_when_tool_not_gated() -> None:
+    assert (
+        procedure_denial(
+            tool="search_records",
+            tier="read",
+            skills=[_quote_skill()],
+            ledger=Ledger(),
+            procedure={},
+        )
+        is None
+    )
+
+
+def test_newly_satisfied_lines_flip_format() -> None:
+    steps = _spec_steps()
+    lines = newly_satisfied_lines(
+        skills=[_quote_skill(steps)],
+        before={"quote": frozenset()},
+        after={"quote": frozenset({"identify"})},
+    )
+    assert lines == [
+        "Procedure 'Quote': step 1 'Identify the customer record' satisfied; "
+        "next: 2 'Confirm the discount with the requester'"
+    ]
+
+
+def test_gate_procedure_denial_before_read_before_write() -> None:
+    h = Harness()
+    steps = _spec_steps()
+    verdict = h.gate(
+        ToolCall(id="c", name="create_quotation", arguments={}),
+        tier="write",
+        ledger=h.state.ledger,
+        connection="office",
+        config={"read_before_write": False},
+        autonomy="default",
+        granted=False,
+        record_label="",
+        identity=None,
+        procedures=[_quote_skill(steps)],
+    )
+    assert verdict.effect == "deny"
+    assert verdict.rule == "procedure"
+    assert verdict == GateVerdict(
+        effect="deny",
+        reason=verdict.reason,
+        rule="procedure",
+        tier="write",
+    )
+    assert "do not retry the same change another way" not in verdict.reason
+    assert 'Procedure "Quote", step 1' in verdict.reason

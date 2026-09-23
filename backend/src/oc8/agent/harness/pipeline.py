@@ -12,10 +12,12 @@ package 1 must not do. Package 5 introduces `gate()` when B1-B5 land.
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from oc8.agent.harness.caps import ModelCaps
+from oc8.agent.harness.procedures import procedure_denial
 from oc8.agent.harness.prompts import format_step_stamp, resolve_timezone
 from oc8.agent.harness.stages.b_approval import posture, render_preview
 from oc8.agent.harness.stages.b_read_before_write import read_before_write_denial
@@ -39,6 +41,7 @@ from oc8.agent.harness.stages.d_verify import (
 )
 from oc8.agent.harness.state import HarnessState, Ledger
 from oc8.modelrouter import ToolCall
+from oc8.skills.schema import Step
 
 
 @dataclass
@@ -99,7 +102,25 @@ class Harness:
         granted: bool,
         record_label: str,
         identity: tuple[str, str] | None,
+        procedures: Sequence[tuple[str, str, tuple[Step, ...]]] | None = None,
     ) -> GateVerdict:
+        if procedures is not None:
+            hit = procedure_denial(
+                tool=tc.name,
+                tier=tier,
+                skills=procedures,
+                ledger=ledger,
+                procedure=self.state.procedure,
+            )
+            if hit is not None:
+                reason, _slug = hit
+                return GateVerdict(
+                    effect="deny",
+                    reason=reason,
+                    rule="procedure",
+                    tier=tier,
+                )
+
         denial = read_before_write_denial(
             tool=tc.name,
             tier=tier,
