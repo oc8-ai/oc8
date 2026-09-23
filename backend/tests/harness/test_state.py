@@ -28,12 +28,15 @@ def test_fresh_state_is_all_zero() -> None:
     assert s.repeat == {}
     assert s.todo_rounds == 0
     assert s.verify_rounds == 0
+    assert s.procedure_rounds == 0
+    assert s.procedure == {}
     assert s.step_no == 0
     assert s.compactions == 0
     assert s.last_prompt_tokens == 0
     assert s.last_compacted_step == -999
     assert s.pinned_tools == []
     assert s.tool_catalog == []
+    assert s.ledger.tools_called == []
 
 
 def test_round_trip_through_real_json() -> None:
@@ -101,6 +104,25 @@ def test_from_dict_tolerates_missing_and_none() -> None:
     assert HarnessState.from_dict({"ledger": {"entities": {}}}).ledger.writes_unverified == []
     assert HarnessState.from_dict({"version": 1}).pinned_tools == []
     assert HarnessState.from_dict({"version": 1}).tool_catalog == []
+
+
+def test_from_dict_procedure_defaults_and_answered_false() -> None:
+    state = HarnessState.from_dict({"version": 1})
+    assert state.procedure == {}
+    assert state.procedure_rounds == 0
+    assert state.ledger.tools_called == []
+
+    loaded = HarnessState.from_dict(
+        {
+            "version": 1,
+            "ledger": {
+                "decisions": [
+                    {"tool": "ask_user", "question": "Which one?", "step": 2},
+                ],
+            },
+        }
+    )
+    assert loaded.ledger.decisions[0].answered is False
 
 
 def test_from_dict_missing_new_ledger_keys_loads_empty_lists() -> None:

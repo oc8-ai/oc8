@@ -46,6 +46,8 @@ class DecisionRef:
     tool: str
     question: str
     step: int
+    #: True once the human has answered; False when only the ask was recorded.
+    answered: bool = False
 
 
 @dataclass
@@ -55,6 +57,14 @@ class Ledger:
     outward: list[OutwardRef] = field(default_factory=list)
     files: list[str] = field(default_factory=list)
     decisions: list[DecisionRef] = field(default_factory=list)
+    #: Tool names that returned a successful result this run (once each).
+    tools_called: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ProcedureMark:
+    #: Manual step_id -> evidence text (capped at 500 chars by the writer).
+    evidence: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -79,12 +89,16 @@ class HarnessState:
     todo_rounds: int = 0
     #: Re-verification nudges issued so far (bounded independently of steps).
     verify_rounds: int = 0
+    #: Procedure-continuation nudges issued so far (bounded independently of steps).
+    procedure_rounds: int = 0
     #: The current step number, set by the caller at the top of each turn, for
     #: C3's step stamp. 0 on a fresh run, before the first turn sets it.
     step_no: int = 0
     ledger: Ledger = field(default_factory=Ledger)
     ledger_sent_hash: str = ""
     masked: dict[str, MaskRef] = field(default_factory=dict)
+    #: Manual procedure evidence keyed by skill slug (satisfaction is recomputed).
+    procedure: dict[str, ProcedureMark] = field(default_factory=dict)
     compactions: int = 0
     last_prompt_tokens: int = 0
     last_compacted_step: int = -999
@@ -133,10 +147,23 @@ class HarnessState:
                     tool=str(value["tool"]),
                     question=str(value["question"]),
                     step=int(value["step"]),
+                    answered=bool(value.get("answered", False)),
                 )
                 for value in ledger_raw.get("decisions") or []
             ],
+            tools_called=list(ledger_raw.get("tools_called") or []),
         )
+        procedure_raw = raw.get("procedure") or {}
+        procedure = {
+            str(slug): ProcedureMark(
+                evidence={
+                    str(step_id): str(text)
+                    for step_id, text in (mark.get("evidence") or {}).items()
+                }
+            )
+            for slug, mark in procedure_raw.items()
+            if isinstance(mark, dict)
+        }
         return cls(
             version=int(raw.get("version", HARNESS_STATE_VERSION)),
             tool_output_chars=int(raw.get("tool_output_chars", 0)),
@@ -144,9 +171,11 @@ class HarnessState:
             repeat=dict(raw.get("repeat") or {}),
             todo_rounds=int(raw.get("todo_rounds", 0)),
             verify_rounds=int(raw.get("verify_rounds", 0)),
+            procedure_rounds=int(raw.get("procedure_rounds", 0)),
             step_no=int(raw.get("step_no", 0)),
             ledger=ledger,
             ledger_sent_hash=str(raw.get("ledger_sent_hash", "")),
+            procedure=procedure,
             compactions=int(raw.get("compactions", 0)),
             last_prompt_tokens=int(raw.get("last_prompt_tokens", 0)),
             last_compacted_step=int(raw.get("last_compacted_step", -999)),
