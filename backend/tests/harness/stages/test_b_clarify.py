@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from oc8.agent.harness.stages.b_clarify import (
+    apply_clarification,
     clarification_prompt,
     parse_clarification,
     should_clarify,
@@ -166,3 +167,22 @@ def test_clarification_prompt_message_order_and_body() -> None:
 def test_harness_state_clarification_done_defaults_false() -> None:
     assert HarnessState().clarification_done is False
     assert HarnessState.from_dict({"version": 1}).clarification_done is False
+
+
+def test_apply_clarification_sets_flag_on_none_and_keeps_call() -> None:
+    tc = ToolCall(id="1", name="delete_record", arguments={"id": 7})
+    state = HarnessState()
+    out = apply_clarification(tc, "NONE", chat=False, state=state)
+    assert state.clarification_done is True
+    assert out is tc
+    assert out.name == "delete_record"
+
+
+def test_apply_clarification_substitutes_on_facts() -> None:
+    tc = ToolCall(id="1", name="delete_record", arguments={"id": 7})
+    state = HarnessState()
+    out = apply_clarification(tc, "Which record id?", chat=True, state=state)
+    assert state.clarification_done is True
+    assert out.name == "ask_user"
+    assert out.arguments == {"question": "Which record id?"}
+    assert out.id == "1"

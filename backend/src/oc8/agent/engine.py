@@ -18,7 +18,7 @@ import json
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,6 +55,12 @@ from oc8.agent.harness.stages.b_authorize import (
 )
 from oc8.agent.harness.stages.b_blast_radius import check_blast_radius
 from oc8.agent.harness.stages.b_claims import claim_write
+from oc8.agent.harness.stages.b_clarify import (
+    apply_clarification,
+    clarification_prompt,
+    parse_clarification,
+    should_clarify,
+)
 from oc8.agent.harness.stages.b_idempotency import record_for, replay_for
 from oc8.agent.harness.stages.b_outward import check_outward, remember_outward
 from oc8.agent.harness.stages.b_read_before_write import note_access
@@ -1401,6 +1407,73 @@ async def run_agent(
                                 pending_runs,
                                 rendered_components,
                                 todos,
+                            )
+
+                        if (
+                            decision.effect is Effect.ALLOW
+                            and gate_verdict is not None
+                            and should_clarify(
+                                tier=gate_verdict.tier,
+                                autonomy=autonomy,
+                                granted=gate_verdict.tier in b5_grants,
+                                clarify_enabled=definition.get("clarify_before_irreversible")
+                                is not False,
+                                already_done=harness.state.clarification_done,
+                            )
+                        ):
+                            clarify_tier = gate_verdict.tier
+                            clarify_tool = tc.name
+                            run_context = next(
+                                (
+                                    msg.content
+                                    for msg in messages
+                                    if msg.role == "user"
+                                    and isinstance(msg.content, str)
+                                    and msg.content.startswith("# Run context")
+                                ),
+                                "",
+                            )
+                            call_json = json.dumps(
+                                {
+                                    "name": tc.name,
+                                    "arguments": strip_justification(tc.arguments)[0],
+                                },
+                                sort_keys=True,
+                            )
+                            clarify_msgs = clarification_prompt(
+                                task_text=task_text,
+                                run_context=run_context,
+                                ledger_block=render_ledger_block(harness.state.ledger),
+                                call_json=call_json,
+                            )
+                            reply_text = "NONE"
+                            try:
+                                clarify_req_id = uuid.uuid4()
+                                clarify_result = await _complete(
+                                    replace(resolved_params, temperature=0.0),
+                                    clarify_req_id,
+                                    clarify_msgs,
+                                    tls=[],
+                                    publish=False,
+                                )
+                                await _record(clarify_result, clarify_req_id)
+                                reply_text = clarify_result.text or ""
+                            except Exception:
+                                logger.warning(
+                                    "clarification checkpoint failed for tool=%s",
+                                    clarify_tool,
+                                    exc_info=True,
+                                )
+                            chat = run_row is not None and run_row.source == "chat"
+                            tc = apply_clarification(
+                                tc, reply_text, chat=chat, state=harness.state
+                            )
+                            facts = parse_clarification(reply_text)
+                            logger.info(
+                                "clarification checkpoint tool=%s tier=%s %s",
+                                clarify_tool,
+                                clarify_tier,
+                                facts if facts is not None else "NONE",
                             )
 
                         _precomputed_duration_ms: int | None = None

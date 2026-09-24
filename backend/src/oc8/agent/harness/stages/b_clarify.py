@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from oc8.agent.harness.stages.b_approval import posture
+from oc8.agent.harness.state import HarnessState
 from oc8.modelrouter import NeutralMessage, ToolCall
 
 _CLARIFICATION_BODY = """\
@@ -70,3 +71,14 @@ def substitute_call(tc: ToolCall, facts: str, *, chat: bool) -> ToolCall:
             "options": [],
         },
     )
+
+
+def apply_clarification(
+    tc: ToolCall, reply: str, *, chat: bool, state: HarnessState
+) -> ToolCall:
+    """Always sets state.clarification_done=True. Returns original tc on NONE/empty; substitute otherwise."""
+    state.clarification_done = True
+    facts = parse_clarification(reply)
+    if facts is None:
+        return tc
+    return substitute_call(tc, facts, chat=chat)

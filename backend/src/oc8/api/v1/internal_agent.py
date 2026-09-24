@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import base64
 import datetime as dt
+import json
 import logging
 import uuid
+from dataclasses import replace
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -47,6 +49,12 @@ from oc8.agent.harness.stages.b_approval import autonomy_of, strip_justification
 from oc8.agent.harness.stages.b_authorize import authorize as _authorize
 from oc8.agent.harness.stages.b_blast_radius import check_blast_radius
 from oc8.agent.harness.stages.b_claims import claim_write
+from oc8.agent.harness.stages.b_clarify import (
+    apply_clarification,
+    clarification_prompt,
+    parse_clarification,
+    should_clarify,
+)
 from oc8.agent.harness.stages.b_idempotency import record_for, replay_for
 from oc8.agent.harness.stages.b_outward import check_outward, remember_outward
 from oc8.agent.harness.stages.b_read_before_write import note_access
@@ -1074,6 +1082,116 @@ async def tool(
             source=f"oc8/approval/{ar.id}",
         )
         return ToolResult(status="waiting_for_approval", output=decision.reason or "")
+
+    definition = agent.definition if isinstance(agent.definition, dict) else {}
+    raw_b5_grants = definition.get("b5_grants")
+    b5_grants = raw_b5_grants if isinstance(raw_b5_grants, list) else []
+    if (
+        decision.effect is Effect.ALLOW
+        and gate_verdict is not None
+        and should_clarify(
+            tier=gate_verdict.tier,
+            autonomy=autonomy_of(definition),
+            granted=gate_verdict.tier in b5_grants,
+            clarify_enabled=definition.get("clarify_before_irreversible") is not False,
+            already_done=harness.state.clarification_done,
+        )
+    ):
+        clarify_tier = gate_verdict.tier
+        clarify_tool = tc.name
+        transcript_for_ctx = list(ctx.get("transcript", []))
+        run_context = next(
+            (
+                entry.get("content", "")
+                for entry in transcript_for_ctx
+                if entry.get("role") == "user"
+                and isinstance(entry.get("content"), str)
+                and entry["content"].startswith("# Run context")
+            ),
+            "",
+        )
+        call_json = json.dumps(
+            {"name": tc.name, "arguments": strip_justification(tc.arguments)[0]},
+            sort_keys=True,
+        )
+        clarify_msgs = clarification_prompt(
+            task_text=str(ctx.get("task", "")),
+            run_context=run_context,
+            ledger_block=render_ledger_block(harness.state.ledger),
+            call_json=call_json,
+        )
+        settings = get_settings()
+        model_config = (
+            await db.get(m.ModelConfig, agent.model_config_id) if agent.model_config_id else None
+        )
+        if model_config is not None:
+            provider, model = model_config.provider, model_config.model
+        else:
+            provider = (agent.presentation or {}).get("provider", settings.default_model_provider)
+            model = settings.default_model
+        contains_restricted = bool(ctx.get("contains_restricted", False))
+        resolved_params = resolve_params(model_config, agent=agent)
+
+        async def _complete(
+            msgs: list[NeutralMessage],
+            sampling_params: ModelParams,
+            req_id: uuid.UUID,
+        ) -> Any:
+            return await accumulate_stream(
+                stream_completion_with_fallback(
+                    db,
+                    get_model_router(),
+                    tenant_id=run.tenant_id,
+                    agent_id=agent.id,
+                    primary=model_config,
+                    no_config_provider=provider,
+                    no_config_model=model,
+                    messages=msgs,
+                    tools=[],
+                    params=sampling_params,
+                    request_id=req_id,
+                    contains_restricted=contains_restricted,
+                ),
+                on_text=None,
+            )
+
+        reply_text = "NONE"
+        try:
+            clarify_req_id = uuid.uuid4()
+            clarify_result = await _complete(
+                clarify_msgs,
+                replace(resolved_params, temperature=0.0),
+                clarify_req_id,
+            )
+            await record_usage(
+                db,
+                tenant_id=run.tenant_id,
+                request_id=clarify_req_id,
+                model=clarify_result.model,
+                provider=clarify_result.provider,
+                tokens_in=clarify_result.usage.tokens_in,
+                tokens_out=clarify_result.usage.tokens_out,
+                agent_id=agent.id,
+                department_id=agent.department_id,
+            )
+            reply_text = clarify_result.text or ""
+        except Exception:
+            logger.warning(
+                "clarification checkpoint failed for tool=%s",
+                clarify_tool,
+                exc_info=True,
+            )
+        tc = apply_clarification(
+            tc, reply_text, chat=run.source == "chat", state=harness.state
+        )
+        facts = parse_clarification(reply_text)
+        logger.info(
+            "clarification checkpoint tool=%s tier=%s %s",
+            clarify_tool,
+            clarify_tier,
+            facts if facts is not None else "NONE",
+        )
+        harness.store(ctx)
 
     suspend: str | None = None
 
