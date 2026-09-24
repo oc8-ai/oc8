@@ -174,8 +174,11 @@ services:
   # (AWS S3, R2, etc.) in production instead of running this container.
   minio:
     restart: unless-stopped
-    # Docker Hub's minio/minio is gone too; MinIO only publishes to quay.io now.
-    image: quay.io/minio/minio:latest
+    # MinIO stopped publishing pullable images: Docker Hub 404s, and
+    # quay.io/minio/{minio,mc} now return 401 for anonymous pulls, which is
+    # what broke `./scripts/quickstart.sh`. Chainguard rebuilds both from
+    # source and still serves them without a login.
+    image: cgr.dev/chainguard/minio:latest
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${OC8_S3_ACCESS_KEY:-oc8-minio}
@@ -183,7 +186,8 @@ services:
     volumes:
       - oc8-miniodata:/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      # Distroless: no curl. bash /dev/tcp is enough to know the API is up.
+      test: ["CMD", "/usr/bin/bash", "-c", "echo >/dev/tcp/127.0.0.1/9000"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -192,8 +196,9 @@ services:
   # `|| true`) so a re-run against an already-provisioned bucket doesn't fail
   # the compose run.
   minio-init:
-    # Docker Hub's minio/mc is gone; MinIO now only publishes mc to quay.io.
-    image: quay.io/minio/mc:latest
+    # `:latest-dev` because the slim client has no shell, and this one-shot
+    # still needs `sh -c` to set the alias then make the bucket.
+    image: cgr.dev/chainguard/minio-client:latest-dev
     depends_on:
       minio:
         condition: service_healthy
@@ -201,7 +206,7 @@ services:
       OC8_S3_ACCESS_KEY: ${OC8_S3_ACCESS_KEY:-oc8-minio}
       OC8_S3_SECRET_KEY: ${OC8_S3_SECRET_KEY:?set OC8_S3_SECRET_KEY in .env}
       OC8_S3_BUCKET: ${OC8_S3_BUCKET:-oc8-uploads}
-    entrypoint: ["sh", "-c"]
+    entrypoint: ["/usr/bin/sh", "-c"]
     command:
       - |
         mc alias set local http://minio:9000 "$$OC8_S3_ACCESS_KEY" "$$OC8_S3_SECRET_KEY" && \
@@ -234,8 +239,8 @@ services:
         set -e
         i=0
         until python -c "import socket; socket.create_connection(('postgres', 5432), 2)" 2>/dev/null; do
-          i=$((i+1))
-          if [ "$i" -ge 60 ]; then echo "postgres not reachable after 60s" >&2; exit 1; fi
+          i=$$((i+1))
+          if [ "$$i" -ge 60 ]; then echo "postgres not reachable after 60s" >&2; exit 1; fi
           sleep 1
         done
         alembic upgrade head
