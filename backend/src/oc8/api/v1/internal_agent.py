@@ -1086,6 +1086,9 @@ async def tool(
     definition = agent.definition if isinstance(agent.definition, dict) else {}
     raw_b5_grants = definition.get("b5_grants")
     b5_grants = raw_b5_grants if isinstance(raw_b5_grants, list) else []
+    # Ledger outward attribution must follow the tool that actually ran.
+    # B4 may replace tc with ask_user / request_decision; keep the gated name.
+    gated_tool_name = tc.name
     if (
         decision.effect is Effect.ALLOW
         and gate_verdict is not None
@@ -1446,9 +1449,9 @@ async def tool(
                 step_no=harness.state.step_no,
                 wrote=writes,
                 tool=tc.name,
-                exempt_unverified=(tier == "outward"),
+                exempt_unverified=(tier == "outward" and tc.name == gated_tool_name),
             )
-        if tier == "outward":
+        if tier == "outward" and tc.name == gated_tool_name:
             record_outward(
                 harness.state.ledger,
                 connection=conn.name if conn is not None else "oc8",

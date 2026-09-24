@@ -186,3 +186,22 @@ def test_apply_clarification_substitutes_on_facts() -> None:
     assert out.name == "ask_user"
     assert out.arguments == {"question": "Which record id?"}
     assert out.id == "1"
+
+
+def test_outward_ledger_guard_follows_live_tool_after_substitute() -> None:
+    """After B4 substitutes, live tool must not inherit the gated outward tier."""
+    gated_tool_name = "send_email"
+    tier = "outward"
+    tc = ToolCall(id="1", name=gated_tool_name, arguments={"to": "a@b.c"})
+    state = HarnessState()
+    live = apply_clarification(tc, "What is the recipient?", chat=True, state=state)
+    assert live.name != gated_tool_name
+    assert not (tier == "outward" and live.name == gated_tool_name)
+
+    kept = apply_clarification(
+        ToolCall(id="2", name=gated_tool_name, arguments={"to": "a@b.c"}),
+        "NONE",
+        chat=False,
+        state=HarnessState(),
+    )
+    assert tier == "outward" and kept.name == gated_tool_name

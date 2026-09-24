@@ -1409,6 +1409,9 @@ async def run_agent(
                                 todos,
                             )
 
+                        # Ledger outward attribution must follow the tool that
+                        # actually ran. B4 may replace tc; keep the gated name.
+                        gated_tool_name = tc.name
                         if (
                             decision.effect is Effect.ALLOW
                             and gate_verdict is not None
@@ -1742,9 +1745,14 @@ async def run_agent(
                                     exempt_unverified=(
                                         gate_verdict is not None
                                         and gate_verdict.tier == "outward"
+                                        and tc.name == gated_tool_name
                                     ),
                                 )
-                            if gate_verdict is not None and gate_verdict.tier == "outward":
+                            if (
+                                gate_verdict is not None
+                                and gate_verdict.tier == "outward"
+                                and tc.name == gated_tool_name
+                            ):
                                 record_outward(
                                     harness.state.ledger,
                                     connection=connection_key or "oc8",
