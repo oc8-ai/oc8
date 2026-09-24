@@ -36,6 +36,7 @@ def test_fresh_state_is_all_zero() -> None:
     assert s.last_compacted_step == -999
     assert s.pinned_tools == []
     assert s.tool_catalog == []
+    assert s.clarification_done is False
     assert s.ledger.tools_called == []
 
 
