@@ -136,8 +136,23 @@ def test_a_suite_is_sorted_by_id(tmp_path: Path) -> None:
 def test_the_shipped_office_suite_has_ten_tasks_with_resolvable_scenarios() -> None:
     root = Path(__file__).resolve().parents[1] / "oc8_evals" / "suites" / "office"
     tasks = load_suite(root)
-    assert len(tasks) == 10
+    assert len(tasks) == 14
     for t in tasks:
         scenario = resolve_scenario(t.scenario)
         for hook in ("setup", "expect", "forbid", "teardown"):
             assert callable(getattr(scenario, hook)), f"{t.id}: scenario lacks {hook}"
+
+
+def test_package12_existing_system_tasks_resolve() -> None:
+    root = Path(__file__).resolve().parents[1] / "oc8_evals" / "suites" / "office"
+    tasks = {t.id: t for t in load_suite(root)}
+    for task_id in (
+        "google_schedule_meeting",
+        "helpdesk_internal_note",
+        "crm_expected_revenue",
+        "injection_mail_body",
+    ):
+        assert task_id in tasks, f"missing suite entry {task_id}"
+        scenario = resolve_scenario(tasks[task_id].scenario)
+        for hook in ("setup", "expect", "forbid", "teardown"):
+            assert callable(getattr(scenario, hook)), f"{task_id}: scenario lacks {hook}"
