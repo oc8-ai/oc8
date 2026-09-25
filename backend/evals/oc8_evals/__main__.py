@@ -106,6 +106,7 @@ async def _attempt(
         parked=final_state == "waiting_for_approval",
         duration_s=round(time.monotonic() - started, 1),
         error=error,
+        step_timings=list(run_ctx.get("stepTimings") or []),
     )
 
 

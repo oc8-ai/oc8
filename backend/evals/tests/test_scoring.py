@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from oc8_evals.scoring import Attempt, Check, summarise, write_report
+from oc8_evals.scoring import Attempt, Check, latency_section, summarise, write_report
 
 
 def _attempt(
@@ -76,3 +76,29 @@ def test_report_files_are_written(tmp_path: Path) -> None:
     assert data["attempts"][0]["expect"][0] == {"name": "stage set", "ok": True, "detail": ""}
     md = (tmp_path / "r.md").read_text()
     assert "| t |" in md and "pass^k" in md
+
+
+def test_latency_section_does_not_change_pass_table():
+    attempt = Attempt(
+        task_id="m365_draft_reply",
+        attempt=1,
+        run_id="r",
+        final_state="done",
+        steps=2,
+        tool_calls=1,
+        tokens_in=1,
+        tokens_out=1,
+        platform_units=0,
+        expect=[],
+        forbid=[],
+        asked=False,
+        parked=False,
+        duration_s=3.0,
+        step_timings=[
+            {"step": 1, "model_wait_ms": 100, "ttft_ms": 40, "tool_wait_ms": 10, "step_wall_ms": 120},
+        ],
+    )
+    text = latency_section([attempt])
+    assert text.startswith("## Latency")
+    assert "p50 step_wall_ms:" in text
+    assert "attempt_wall_ms: 3000" in text

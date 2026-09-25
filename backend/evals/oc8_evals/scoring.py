@@ -9,6 +9,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from oc8.agent.harness.step_timing import latency_lines
+
 
 @dataclass(frozen=True)
 class Check:
@@ -34,6 +36,7 @@ class Attempt:
     parked: bool
     duration_s: float
     error: str | None = None
+    step_timings: list[dict] = field(default_factory=list)
 
     @property
     def passed(self) -> bool:
@@ -126,6 +129,19 @@ def _markdown(meta: dict[str, Any], summaries: list[TaskSummary]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def latency_section(attempts: list[Attempt]) -> str:
+    """Markdown section pooling step timings across attempts. Does not affect pass^k."""
+    records = [r for a in attempts for r in a.step_timings]
+    attempt_wall_ms = int(round(sum(a.duration_s for a in attempts) * 1000))
+    sum_step_wall_ms = sum(int(r["step_wall_ms"]) for r in records)
+    lines = ["## Latency", ""] + latency_lines(records)
+    lines += [
+        f"attempt_wall_ms: {attempt_wall_ms}",
+        f"sum_step_wall_ms: {sum_step_wall_ms}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def write_report(
     path_json: Path,
     path_md: Path,
@@ -141,4 +157,4 @@ def write_report(
     }
     path_json.parent.mkdir(parents=True, exist_ok=True)
     path_json.write_text(json.dumps(payload, indent=2, sort_keys=True))
-    path_md.write_text(_markdown(meta, summaries))
+    path_md.write_text(_markdown(meta, summaries) + "\n" + latency_section(attempts))
