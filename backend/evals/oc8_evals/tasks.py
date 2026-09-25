@@ -35,6 +35,8 @@ class Task:
     expects_approval: bool
     max_steps: int
     max_tokens: int
+    code_mode: bool
+    context_window_tokens: int | None
 
 
 class Scenario(Protocol):
@@ -54,6 +56,10 @@ def load_task(path: Path) -> Task:
     # sales_quotation_over_threshold) is an int; bool(3000) would silently
     # become True and the eval would never park for approval.
     frame_tools = {str(k): dict(v.items()) for k, v in raw.get("frame_tools", {}).items()}
+    window = raw.get("context_window_tokens")
+    context_window_tokens = (
+        int(window) if isinstance(window, int) and not isinstance(window, bool) and window > 0 else None
+    )
     return Task(
         id=str(raw["id"]),
         systems=tuple(str(s) for s in raw["systems"]),
@@ -66,6 +72,8 @@ def load_task(path: Path) -> Task:
         expects_approval=bool(raw.get("expects_approval", False)),
         max_steps=int(budget.get("max_steps", 40)),
         max_tokens=int(budget.get("max_tokens", 300_000)),
+        code_mode=bool(raw.get("code_mode", False)),
+        context_window_tokens=context_window_tokens,
     )
 
 

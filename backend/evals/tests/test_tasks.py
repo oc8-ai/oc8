@@ -42,7 +42,30 @@ def test_a_task_file_loads(tmp_path: Path) -> None:
         expects_approval=False,
         max_steps=30,
         max_tokens=200000,
+        code_mode=False,
+        context_window_tokens=None,
     )
+
+
+def test_optional_caps_load_from_toml(tmp_path: Path) -> None:
+    p = tmp_path / "with_caps.toml"
+    p.write_text(
+        _TOML.replace("crm_qualify_lead", "with_caps").replace(
+            "expects_approval = false\n",
+            "expects_approval = false\ncode_mode = true\ncontext_window_tokens = 2000\n",
+        )
+    )
+    task = load_task(p)
+    assert task.code_mode is True
+    assert task.context_window_tokens == 2000
+
+
+def test_caps_default_off(tmp_path: Path) -> None:
+    p = tmp_path / "crm_qualify_lead.toml"
+    p.write_text(_TOML)
+    task = load_task(p)
+    assert task.code_mode is False
+    assert task.context_window_tokens is None
 
 
 def test_frame_tools_preserves_a_monetary_threshold_instead_of_coercing_to_bool(
