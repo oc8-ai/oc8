@@ -43,6 +43,22 @@ RUN_SHELL_OUTPUT_CHARS = 4000
 MAX_PARALLEL_TOOL_CALLS = 5
 
 
+def program_timeout_s(raw: str | None) -> float:
+    """How long a single run_program may run. Default 120; clamp 1..600.
+
+    Callers pass `os.environ.get("OC8_RUN_PROGRAM_TIMEOUT_S")` the same way
+    `_run_shell_locally` reads the `RUN_SHELL_TIMEOUT_S` module constant at
+    the subprocess call site.
+    """
+    if raw is None:
+        return 120.0
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 120.0
+    return max(1.0, min(600.0, value))
+
+
 def _preview(text: str, limit: int = PREVIEW_CHARS) -> str:
     """One log-line-safe rendering of a possibly long, multi-line value."""
     flat = " ".join(text.split())
@@ -70,6 +86,12 @@ def check_response(resp: httpx.Response) -> None:
     raise httpx.HTTPStatusError(message, request=resp.request, response=resp)
 
 
+def _decode_captured(v: str | bytes | None) -> str:
+    if isinstance(v, bytes):
+        return v.decode(errors="replace")
+    return v if isinstance(v, str) else ""
+
+
 def _run_shell_locally(command: str, *, cwd: str = "/workspace") -> dict[str, Any]:
     """Runs `command` in THIS process via subprocess -- the one tool call
     this shell executes itself instead of proxying to the backend (see the
@@ -91,14 +113,55 @@ def _run_shell_locally(command: str, *, cwd: str = "/workspace") -> dict[str, An
             "timed_out": False,
         }
     except subprocess.TimeoutExpired as exc:
+        stdout = _decode_captured(exc.stdout)
+        stderr = _decode_captured(exc.stderr)
+        return {
+            "stdout": stdout[:RUN_SHELL_OUTPUT_CHARS],
+            "stderr": stderr[:RUN_SHELL_OUTPUT_CHARS],
+            "exit_code": None,
+            "timed_out": True,
+        }
 
-        def _decode(v: str | bytes | None) -> str:
-            if isinstance(v, bytes):
-                return v.decode(errors="replace")
-            return v if isinstance(v, str) else ""
 
-        stdout = _decode(exc.stdout)
-        stderr = _decode(exc.stderr)
+def _run_program_locally(
+    code: str,
+    *,
+    step_no: int,
+    cwd: str = "/workspace",
+    timeout_s: float | None = None,
+) -> dict[str, Any]:
+    """Writes `code` to programs/step-{n}.py and runs it with python3.
+
+    Same local_result shape as `_run_shell_locally`. Timeout comes from
+    `OC8_RUN_PROGRAM_TIMEOUT_S` (via `program_timeout_s`) unless overridden.
+    """
+    programs_dir = os.path.join(cwd, "programs")
+    os.makedirs(programs_dir, exist_ok=True)
+    path = os.path.join(programs_dir, f"step-{step_no}.py")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(code)
+    timeout = (
+        timeout_s
+        if timeout_s is not None
+        else program_timeout_s(os.environ.get("OC8_RUN_PROGRAM_TIMEOUT_S"))
+    )
+    try:
+        proc = subprocess.run(
+            ["python3", path],
+            cwd=cwd,
+            timeout=timeout,
+            capture_output=True,
+            text=True,
+        )
+        return {
+            "stdout": proc.stdout[:RUN_SHELL_OUTPUT_CHARS],
+            "stderr": proc.stderr[:RUN_SHELL_OUTPUT_CHARS],
+            "exit_code": proc.returncode,
+            "timed_out": False,
+        }
+    except subprocess.TimeoutExpired as exc:
+        stdout = _decode_captured(exc.stdout)
+        stderr = _decode_captured(exc.stderr)
         return {
             "stdout": stdout[:RUN_SHELL_OUTPUT_CHARS],
             "stderr": stderr[:RUN_SHELL_OUTPUT_CHARS],
@@ -157,6 +220,14 @@ def main() -> int:
                 step = r.json()
                 output = step.get("text") or output
                 calls = step.get("tool_calls") or []
+                # Code-mode SDK: write once from /step's sdk_py when the file
+                # is not already on disk. Programs import oc8_tools from cwd.
+                sdk_py = step.get("sdk_py") or ""
+                if sdk_py:
+                    sdk_path = os.path.join(workspace, "oc8_tools.py")
+                    if not os.path.exists(sdk_path):
+                        with open(sdk_path, "w", encoding="utf-8") as fh:
+                            fh.write(sdk_py)
                 # A hint from /step's own pre-pass (spec §3.5), never a
                 # bypass -- /tool's own authorization below still runs,
                 # unconditionally, for every one of these calls either way.
@@ -208,6 +279,11 @@ def main() -> int:
                     if tc["name"] == "run_shell":
                         command = str(tc.get("arguments", {}).get("command", ""))
                         body["local_result"] = _run_shell_locally(command)
+                    elif tc["name"] == "run_program":
+                        code = str(tc.get("arguments", {}).get("code", ""))
+                        body["local_result"] = _run_program_locally(
+                            code, step_no=step_no, cwd=workspace
+                        )
                     tr = c.post(f"{api}/tool", json=body)
                     check_response(tr)
                     result: dict[str, Any] = tr.json()

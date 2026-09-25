@@ -39,6 +39,7 @@ from oc8.agent.harness import Harness, resolve_caps
 from oc8.agent.harness.calls import call_sig as _call_sig
 from oc8.agent.harness.prompts import compaction_instruction
 from oc8.agent.harness.retrieval import select_completion_tools
+from oc8.agent.harness.sdk import render_oc8_tools
 from oc8.agent.harness.step_timing import finish_step, note_model, note_tools, start_step
 from oc8.agent.harness.stages.a_compaction import (
     prompt_token_fallback,
@@ -343,6 +344,10 @@ class StepResult(BaseModel):
     #: A hint only: the shell decides whether/how to batch, and /tool's own
     #: authorization below runs unconditionally for every call either way.
     parallel_tool_calls: bool = False
+    #: Generated `oc8_tools.py` source for code-mode runs (ruling 6). Empty
+    #: when code_mode is off or the seed has not stored it. The shell writes
+    #: the file once when present and missing on disk.
+    sdk_py: str = ""
 
 
 @router.post(
@@ -512,6 +517,10 @@ async def step(
         offer_run_shell=offer_write_output_file,
         offer_run_program=caps.code_mode,
     )
+    # Code mode (ruling 6): seed the generated SDK once tools are known so
+    # every later /step can return it as sdk_py for the shell to write.
+    if caps.code_mode and not ctx.get("oc8_tools_py"):
+        ctx["oc8_tools_py"] = render_oc8_tools(tools)
 
     # See stages/d_todo: a continuation round never crosses a /step HTTP call
     # here -- the shell must never see an intermediate "no tool calls yet"
@@ -916,6 +925,7 @@ async def step(
         # this as "done" (see engine.py's identical check for why).
         status_override="failed" if truncated_empty else None,
         parallel_tool_calls=caps.parallel_tool_calls,
+        sdk_py=str(ctx.get("oc8_tools_py") or ""),
     )
 
 

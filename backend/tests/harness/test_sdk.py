@@ -1,5 +1,6 @@
 from oc8.modelrouter.types import NeutralTool
 from oc8.agent.harness.sdk import render_oc8_tools
+from oc8.isolated_shell import program_timeout_s
 
 
 def test_render_is_deterministic_and_posts_tool():
@@ -27,3 +28,10 @@ def test_render_is_deterministic_and_posts_tool():
 def test_render_skips_invalid_python_names():
     tool = NeutralTool(name="not-a-name", description="x", parameters={"type": "object", "properties": {}})
     assert "def not-a-name" not in render_oc8_tools([tool])
+
+
+def test_program_timeout_s_defaults_and_clamps():
+    assert program_timeout_s(None) == 120
+    assert program_timeout_s("600") == 600
+    assert program_timeout_s("9999") == 600
+    assert program_timeout_s("0") == 1
