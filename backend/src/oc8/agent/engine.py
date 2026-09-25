@@ -118,7 +118,7 @@ from oc8.modelrouter.accumulate import StreamTiming, accumulate_stream
 from oc8.modelrouter.keys import resolve_model_base_url
 from oc8.modelrouter.sampling import bumped_for_length_retry, resolve_params
 from oc8.modelrouter.trim import overflow_tokens
-from oc8.modelrouter.types import ImagePart, ModelParams
+from oc8.modelrouter.types import ImagePart, ModelParams, with_prompt_cache_key
 from oc8.observability import get_tracer, record_budget_exceeded, record_tool_call
 from oc8.realtime.emit import (
     note_focus,
@@ -874,10 +874,13 @@ async def run_agent(
                     req_id: uuid.UUID,
                 ) -> tuple[Any, uuid.UUID]:
                     nonlocal key, resolved_messages, overflow_retried
+                    stamped = with_prompt_cache_key(
+                        sampling_params, str(run_id) if run_id is not None else None
+                    )
                     try:
                         return (
                             await _complete(
-                                sampling_params,
+                                stamped,
                                 req_id,
                                 resolved_messages,
                                 timing=step_probe,
@@ -900,7 +903,7 @@ async def run_agent(
                         retry_request_id = uuid.uuid4()
                         return (
                             await _complete(
-                                sampling_params,
+                                stamped,
                                 retry_request_id,
                                 resolved_messages,
                                 timing=step_probe,

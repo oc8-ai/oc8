@@ -106,7 +106,7 @@ from oc8.modelrouter.accumulate import StreamTiming, accumulate_stream
 from oc8.modelrouter.keys import resolve_model_base_url
 from oc8.modelrouter.sampling import bumped_for_length_retry, resolve_params
 from oc8.modelrouter.trim import overflow_tokens
-from oc8.modelrouter.types import ImagePart, ModelParams, TextPart
+from oc8.modelrouter.types import ImagePart, ModelParams, TextPart, with_prompt_cache_key
 from oc8.realtime.emit import note_focus, publish_run_token_delta, publish_run_tool_call
 from oc8.runtime.approval_resume import pre_decided_map
 from oc8.runtime.registry import BUILTIN_ISOLATED_RUNTIME_REF
@@ -687,10 +687,11 @@ async def step(
             req_id: uuid.UUID,
         ) -> tuple[Any, uuid.UUID]:
             nonlocal key, resolved_messages, overflow_retried
+            stamped = with_prompt_cache_key(sampling_params, str(run.id))
             try:
                 return (
                     await _complete(
-                        resolved_messages, sampling_params, req_id, timing=step_probe
+                        resolved_messages, stamped, req_id, timing=step_probe
                     ),
                     req_id,
                 )
@@ -711,7 +712,7 @@ async def step(
                 return (
                     await _complete(
                         resolved_messages,
-                        sampling_params,
+                        stamped,
                         retry_request_id,
                         timing=step_probe,
                     ),
