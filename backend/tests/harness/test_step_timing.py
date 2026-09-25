@@ -26,6 +26,8 @@ def test_latency_lines_pool_and_small_sample():
     assert "p95 step_wall_ms: n/a (n<8)" in text
     assert "p50 ttft_ms: 40" in text
     assert "ttft samples: 1" in text
+    assert "p50 ttft_ms step 1: 40" in text
+    assert "p50 ttft_ms step>1: n/a" in text
     assert latency_lines([]) == ["No step timings."]
 
 

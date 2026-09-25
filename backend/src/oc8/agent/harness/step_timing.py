@@ -21,6 +21,17 @@ def _fmt(values: list[int], p: float) -> str:
     return "n/a" if got is None else str(got)
 
 
+def _bucket(records: list[dict], *, first: bool) -> list[int]:
+    out = []
+    for r in records:
+        if r.get("ttft_ms") is None:
+            continue
+        is_first = int(r["step"]) == 1
+        if is_first == first:
+            out.append(int(r["ttft_ms"]))
+    return out
+
+
 def latency_lines(records: list[dict]) -> list[str]:
     """Markdown lines for one runtime's pooled steps. Empty records → ['No step timings.']"""
     if not records:
@@ -29,6 +40,8 @@ def latency_lines(records: list[dict]) -> list[str]:
     models = [int(r["model_wait_ms"]) for r in records]
     tools = [int(r["tool_wait_ms"]) for r in records]
     ttfts = [int(r["ttft_ms"]) for r in records if r.get("ttft_ms") is not None]
+    step1_ttfts = _bucket(records, first=True)
+    step_gt1_ttfts = _bucket(records, first=False)
     return [
         f"steps: {len(records)}",
         f"p50 step_wall_ms: {_fmt(walls, 50)}",
@@ -37,6 +50,8 @@ def latency_lines(records: list[dict]) -> list[str]:
         f"p50 tool_wait_ms: {_fmt(tools, 50)}",
         f"p50 ttft_ms: {_fmt(ttfts, 50)}",
         f"ttft samples: {len(ttfts)}",
+        f"p50 ttft_ms step 1: {'n/a' if not step1_ttfts else str(percentile(step1_ttfts, 50))}",
+        f"p50 ttft_ms step>1: {'n/a' if not step_gt1_ttfts else str(percentile(step_gt1_ttfts, 50))}",
     ]
 
 
