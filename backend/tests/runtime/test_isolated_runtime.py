@@ -505,6 +505,46 @@ async def test_a_rendered_component_reaches_the_run_result(
     assert result.rendered_components == [rendered]
 
 
+async def test_step_timings_reach_the_run_result(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """/step and /tool under isolation write stepTimings onto run.context.
+    Regression test for a bug where RunResult's step_timings defaulted to []
+    here, so the executor's merge_context() silently overwrote the already-
+    durable list at the run's terminal commit -- same wipe class as
+    rendered_components / todos above."""
+    tenant = uuid.uuid4()
+    agent_id, run_id = await _agent_and_run(app_session, tenant)
+    timing = {
+        "step": 1,
+        "model_wait_ms": 40,
+        "ttft_ms": 12,
+        "tool_wait_ms": 5,
+        "step_wall_ms": 45,
+    }
+
+    async def times() -> None:
+        async with app_session(tenant) as db:
+            run = await db.get(m.AgentRun, run_id)
+            assert run is not None
+            run.context = {
+                **run.context,
+                "stepTimings": [timing],
+                "isolated_result": {"status": "done", "output": "timed out cleanly"},
+            }
+
+    monkeypatch.setattr("oc8.runtime.isolated.get_sandbox_driver", lambda: _FakeDriver(times))
+    async with app_session(tenant) as db:
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        result = await DockerIsolatedRuntime().execute(
+            db, agent=agent, task_text="Finish the step", tenant_id=tenant, run_id=run_id
+        )
+
+    assert result.status == "done"
+    assert result.step_timings == [timing]
+
+
 async def test_a_container_that_never_exits_is_torn_down_and_the_run_fails(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

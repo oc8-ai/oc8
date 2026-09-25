@@ -369,6 +369,14 @@ async def step(
     # stops a run. No model call, no cost, on this path -- ctx["steps"] isn't
     # incremented here, so a resumed/retried request stays idempotent.
     if int(ctx.get("steps", 0)) >= _max_steps(agent):
+        # Close any open step timing left by the previous /step→/tool cycle.
+        # Without this, `_t0` + step_wall_ms: 0 survive through /finish; the
+        # common next-/step finish never runs on this early exit.
+        step_timings = ctx.get("stepTimings") or []
+        if step_timings and "_t0" in step_timings[-1]:
+            finish_step(step_timings[-1])
+            run.context = ctx
+            await db.commit()
         return StepResult(done=True, text="Reached step limit.", status_override="done")
 
     transcript: list[dict[str, Any]] = list(ctx.get("transcript", []))
