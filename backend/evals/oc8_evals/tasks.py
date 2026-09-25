@@ -37,6 +37,7 @@ class Task:
     max_tokens: int
     code_mode: bool
     context_window_tokens: int | None
+    skill_definition: dict[str, Any] | None = None
 
 
 class Scenario(Protocol):
@@ -60,6 +61,8 @@ def load_task(path: Path) -> Task:
     context_window_tokens = (
         int(window) if isinstance(window, int) and not isinstance(window, bool) and window > 0 else None
     )
+    skill_raw = raw.get("skill")
+    skill_definition = dict(skill_raw) if isinstance(skill_raw, dict) else None
     return Task(
         id=str(raw["id"]),
         systems=tuple(str(s) for s in raw["systems"]),
@@ -74,6 +77,7 @@ def load_task(path: Path) -> Task:
         max_tokens=int(budget.get("max_tokens", 300_000)),
         code_mode=bool(raw.get("code_mode", False)),
         context_window_tokens=context_window_tokens,
+        skill_definition=skill_definition,
     )
 
 

@@ -3,7 +3,43 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from oc8_evals.stack import caps_params, should_pin_connection
 from oc8_evals.tasks import Task, load_suite, load_task, resolve_scenario
+
+
+def _task(**overrides) -> Task:
+    base = dict(
+        id="t",
+        systems=("odoo",),
+        task_text="t",
+        origin="manual",
+        scenario="t",
+        autonomy="autonomous",
+        frame_tools={},
+        expects_question=False,
+        expects_approval=False,
+        max_steps=8,
+        max_tokens=1000,
+        code_mode=False,
+        context_window_tokens=None,
+        skill_definition=None,
+    )
+    base.update(overrides)
+    return Task(**base)
+
+
+def test_a_single_system_run_is_pinned() -> None:
+    assert should_pin_connection(("odoo",)) is True
+
+
+def test_two_systems_stay_unpinned() -> None:
+    assert should_pin_connection(("odoo", "jira")) is False
+
+
+def test_caps_params_only_when_set() -> None:
+    assert caps_params(_task()) == {}
+    assert caps_params(_task(code_mode=True)) == {"code_mode": True}
+    assert caps_params(_task(context_window_tokens=2000)) == {"context_window_tokens": 2000}
 
 _TOML = """
 id = "crm_qualify_lead"
@@ -44,6 +80,7 @@ def test_a_task_file_loads(tmp_path: Path) -> None:
         max_tokens=200000,
         code_mode=False,
         context_window_tokens=None,
+        skill_definition=None,
     )
 
 

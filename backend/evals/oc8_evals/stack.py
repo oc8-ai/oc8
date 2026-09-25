@@ -49,7 +49,57 @@ class Fixture:
     department_id: uuid.UUID
     agent_id: uuid.UUID
     connection_id: uuid.UUID
+    connection_ids: tuple[uuid.UUID, ...] = ()
     task_ids: list[uuid.UUID] = field(default_factory=list)
+
+
+def should_pin_connection(systems: tuple[str, ...]) -> bool:
+    return len(systems) <= 1
+
+
+def caps_params(task: Task) -> dict:
+    params: dict = {}
+    if task.code_mode:
+        params["code_mode"] = True
+    if task.context_window_tokens is not None:
+        params["context_window_tokens"] = task.context_window_tokens
+    return params
+
+
+async def assign_skill(db, *, tenant_id, agent_id, definition: dict) -> None:
+    import hashlib
+    import json
+
+    raw = json.dumps(definition, sort_keys=True).encode()
+    skill = m.Skill(
+        tenant_id=tenant_id,
+        name=definition["slug"],
+        description=definition["instruction"],
+        author="eval",
+        origin="local",
+        trust_level="first_party",
+    )
+    db.add(skill)
+    await db.flush()
+    version = m.SkillVersion(
+        tenant_id=tenant_id,
+        skill_id=skill.id,
+        semver="1.0.0",
+        definition=definition,
+        artifact_hash=hashlib.sha256(raw).digest(),
+    )
+    db.add(version)
+    await db.flush()
+    skill.current_version_id = version.id
+    db.add(
+        m.SkillAssignment(
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            skill_version_id=version.id,
+            enabled=True,
+            overrides={},
+        )
+    )
 
 
 @dataclass
@@ -120,8 +170,30 @@ async def create_fixture(
     mock_state_file: Path | None,
     model_config_id: uuid.UUID | None,
 ) -> Fixture:
-    system = task.systems[0]
     async with tenant_session(tenant_id) as db:
+        agent_model_config_id = model_config_id
+        caps = caps_params(task)
+        if caps and model_config_id is not None:
+            source = await db.get(m.ModelConfig, model_config_id)
+            if source is None:
+                raise RuntimeError(f"model config {model_config_id} not found")
+            clone = m.ModelConfig(
+                tenant_id=tenant_id,
+                provider=source.provider,
+                model=source.model,
+                locality=source.locality,
+                credential_id=source.credential_id,
+                fallbacks=list(source.fallbacks or []),
+                cost_meta=dict(source.cost_meta or {}),
+                display_name=f"{source.display_name or source.model} eval",
+                health=dict(source.health or {}),
+                used_by_copilot=False,
+                params={**dict(source.params or {}), **caps},
+            )
+            db.add(clone)
+            await db.flush()
+            agent_model_config_id = clone.id
+
         dept = m.Department(
             tenant_id=tenant_id, name=f"EVAL {run_tag} {task.id}", frame={"tools": task.frame_tools}
         )
@@ -137,34 +209,53 @@ async def create_fixture(
             definition={"max_steps": task.max_steps, "autonomy": task.autonomy},
             presentation={},
             runtime_ref=RUNTIME_REFS[runtime],
-            model_config_id=model_config_id,
+            model_config_id=agent_model_config_id,
         )
         db.add(agent)
         await db.flush()
-        if system == "odoo":
-            if source_conn is None:
-                raise RuntimeError("odoo task without a source connection")
-            config, scopes = dict(source_conn.config or {}), source_conn.scopes
-            server_url, transport = source_conn.server_url, source_conn.transport
-        else:
-            if mock_state_file is None:
-                raise RuntimeError("mock task without a state file")
-            config, scopes = _mock_connection_config(system, mock_state_file)
-            server_url, transport = "", "stdio"
-        conn = m.McpConnection(
-            tenant_id=tenant_id,
+
+        connection_ids: list[uuid.UUID] = []
+        for system in task.systems:
+            if system == "odoo":
+                if source_conn is None:
+                    raise RuntimeError("odoo task without a source connection")
+                config, scopes = dict(source_conn.config or {}), source_conn.scopes
+                server_url, transport = source_conn.server_url, source_conn.transport
+            else:
+                if mock_state_file is None:
+                    raise RuntimeError("mock task without a state file")
+                config, scopes = _mock_connection_config(system, mock_state_file)
+                server_url, transport = "", "stdio"
+            conn = m.McpConnection(
+                tenant_id=tenant_id,
+                department_id=dept.id,
+                name=system,
+                transport=transport,
+                server_url=server_url,
+                scopes=scopes,
+                config=config,
+                connected=True,
+                health={},
+            )
+            db.add(conn)
+            await db.flush()
+            connection_ids.append(conn.id)
+
+        if task.skill_definition:
+            await assign_skill(
+                db,
+                tenant_id=tenant_id,
+                agent_id=agent.id,
+                definition=task.skill_definition,
+            )
+
+        ids = tuple(connection_ids)
+        return Fixture(
             department_id=dept.id,
-            name=system,
-            transport=transport,
-            server_url=server_url,
-            scopes=scopes,
-            config=config,
-            connected=True,
-            health={},
+            agent_id=agent.id,
+            connection_id=ids[0],
+            connection_ids=ids,
         )
-        db.add(conn)
-        await db.flush()
-        return Fixture(department_id=dept.id, agent_id=agent.id, connection_id=conn.id)
 
 
 async def odoo_for(tenant_id: uuid.UUID, conn: m.McpConnection) -> Odoo:
@@ -176,12 +267,15 @@ async def odoo_for(tenant_id: uuid.UUID, conn: m.McpConnection) -> Odoo:
 
 
 async def start_run(tenant_id: uuid.UUID, fixture: Fixture, task: Task) -> uuid.UUID:
+    context: dict[str, Any] = {"task": task.task_text}
+    if should_pin_connection(task.systems):
+        context["mcp_connection_id"] = str(fixture.connection_id)
     async with tenant_session(tenant_id) as db:
         run, _published = await enqueue_run(
             db,
             tenant_id=tenant_id,
             agent_id=fixture.agent_id,
-            context={"task": task.task_text, "mcp_connection_id": str(fixture.connection_id)},
+            context=context,
             # agent_run's ck_agent_run_source CHECK constraint only allows
             # manual/cron/event/webhook/delegation/decision/handoff/chat --
             # "eval" isn't one of them. An eval attempt is, mechanically, a
@@ -229,9 +323,10 @@ async def teardown_fixture(tenant_id: uuid.UUID, fixture: Fixture) -> None:
     tables reference (runs, usage, audit) are left in place -- they carry the
     evidence of the run and are tenant-local to the dev stack."""
     async with tenant_session(tenant_id) as db:
-        conn = await db.get(m.McpConnection, fixture.connection_id)
-        if conn is not None:
-            conn.connected = False
+        for cid in fixture.connection_ids or (fixture.connection_id,):
+            conn = await db.get(m.McpConnection, cid)
+            if conn is not None:
+                conn.connected = False
         agent = await db.get(m.Agent, fixture.agent_id)
         if agent is not None:
             agent.status = "stopped"
