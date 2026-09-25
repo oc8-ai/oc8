@@ -136,7 +136,21 @@ def test_a_suite_is_sorted_by_id(tmp_path: Path) -> None:
 def test_the_shipped_office_suite_has_ten_tasks_with_resolvable_scenarios() -> None:
     root = Path(__file__).resolve().parents[1] / "oc8_evals" / "suites" / "office"
     tasks = load_suite(root)
-    assert len(tasks) == 18
+    assert len(tasks) == 20
+    ids = {t.id for t in tasks}
+    for task_id in (
+        "finance_overdue_report",
+        "cross_ticket_issue",
+        "bulk_partner_review",
+        "procedure_confirm_stage",
+        "verification_ignored_field",
+        "long_run_lead_ids",
+        "google_schedule_meeting",
+        "helpdesk_internal_note",
+        "crm_expected_revenue",
+        "injection_mail_body",
+    ):
+        assert task_id in ids, f"missing suite entry {task_id}"
     for t in tasks:
         scenario = resolve_scenario(t.scenario)
         for hook in ("setup", "expect", "forbid", "teardown"):
