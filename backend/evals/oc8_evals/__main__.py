@@ -74,6 +74,7 @@ async def _attempt(
         )
         rid = await stack.start_run(tenant_id, fixture, task_for_agent)
         run_id = str(rid)
+        ctx.run_id = rid
         final_state, run_ctx = await stack.wait_for_terminal(tenant_id, rid, timeout_s=timeout_s)
         ctx.final_state, ctx.run_context = final_state, run_ctx
         expect = await scenario.expect(ctx, seeded)

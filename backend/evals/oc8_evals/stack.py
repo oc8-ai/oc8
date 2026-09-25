@@ -113,6 +113,7 @@ class ScenarioContext:
     task: Task
     run_context: dict[str, Any] = field(default_factory=dict)
     final_state: str = ""
+    run_id: uuid.UUID | None = None
 
 
 async def find_tenant(slug: str | None) -> uuid.UUID:
