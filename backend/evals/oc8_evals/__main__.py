@@ -34,12 +34,16 @@ async def _attempt(
     model_config_id: uuid.UUID | None,
     timeout_s: int,
 ) -> Attempt:
-    system = task.systems[0]
     state_root = Path(get_settings().runtime_session_root) / "evals" / run_tag
+    # Multi-system tasks (e.g. odoo+jira) list odoo first; still need a mock
+    # state file whenever any non-odoo system is present.
+    needs_mock = any(system != "odoo" for system in task.systems)
     source_conn = (
-        await stack.find_source_connection(tenant_id, "odoo") if system == "odoo" else None
+        await stack.find_source_connection(tenant_id, "odoo")
+        if "odoo" in task.systems
+        else None
     )
-    state_file = None if system == "odoo" else state_root / f"{task.id}-{n}.json"
+    state_file = state_root / f"{task.id}-{n}.json" if needs_mock else None
     ctx = stack.ScenarioContext(
         tenant_id=tenant_id,
         run_tag=f"{run_tag}-{n}",
