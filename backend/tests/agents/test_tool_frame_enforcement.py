@@ -162,3 +162,12 @@ def test_run_shell_is_allowed_on_a_connection_less_run() -> None:
     decision for run_shell and dispatches it regardless."""
     d = _authz(_call("run_shell", command="echo hi"), key=None)
     assert d.effect is Effect.ALLOW
+
+
+def test_run_program_is_allowed_on_a_connection_less_run() -> None:
+    """Twin of run_shell: run_program is only offered on the isolated shell
+    (offer_run_shell + code_mode), has no MCP connection, and
+    execute_control_tool only formats local_result -- without this ALLOW
+    every successful call would audit and return status=denied."""
+    d = _authz(_call("run_program", code="print(1)", purpose="bulk"), key=None)
+    assert d.effect is Effect.ALLOW

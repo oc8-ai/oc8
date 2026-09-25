@@ -85,6 +85,13 @@ def authorize(
         # internal_agent.py's offer_run_shell) would have every successful
         # call audited as a denial.
         return Decision(Effect.ALLOW)
+    if tc.name == "run_program":
+        # Same as run_shell: only the isolated shell offers it (shell gate +
+        # code_mode), there is no MCP connection, and execute_control_tool
+        # only formats local_result. Without this ALLOW every successful call
+        # would audit and return status=denied (which the SDK treats as
+        # ToolDenied).
+        return Decision(Effect.ALLOW)
     if tc.name == "delegate_task":
         if not agent.is_team_lead:
             return Decision(Effect.DENY, "only a team lead can delegate tasks")
