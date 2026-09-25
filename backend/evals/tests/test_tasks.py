@@ -136,7 +136,7 @@ def test_a_suite_is_sorted_by_id(tmp_path: Path) -> None:
 def test_the_shipped_office_suite_has_ten_tasks_with_resolvable_scenarios() -> None:
     root = Path(__file__).resolve().parents[1] / "oc8_evals" / "suites" / "office"
     tasks = load_suite(root)
-    assert len(tasks) == 16
+    assert len(tasks) == 18
     for t in tasks:
         scenario = resolve_scenario(t.scenario)
         for hook in ("setup", "expect", "forbid", "teardown"):
@@ -155,6 +155,23 @@ def test_package12_existing_system_tasks_resolve() -> None:
         "injection_mail_body",
     ):
         assert task_id in tasks, f"missing suite entry {task_id}"
+        scenario = resolve_scenario(tasks[task_id].scenario)
+        for hook in ("setup", "expect", "forbid", "teardown"):
+            assert callable(getattr(scenario, hook)), f"{task_id}: scenario lacks {hook}"
+
+
+def test_bulk_and_procedure_tasks_load() -> None:
+    root = Path(__file__).resolve().parents[1] / "oc8_evals" / "suites" / "office"
+    tasks = {t.id: t for t in load_suite(root)}
+    bulk = tasks["bulk_partner_review"]
+    assert bulk.code_mode is True
+    assert bulk.max_steps == 8
+    procedure = tasks["procedure_confirm_stage"]
+    assert procedure.skill_definition is not None
+    assert procedure.skill_definition["slug"] == "confirm-before-stage"
+    assert isinstance(procedure.skill_definition.get("steps"), list)
+    assert len(procedure.skill_definition["steps"]) == 2
+    for task_id in ("bulk_partner_review", "procedure_confirm_stage"):
         scenario = resolve_scenario(tasks[task_id].scenario)
         for hook in ("setup", "expect", "forbid", "teardown"):
             assert callable(getattr(scenario, hook)), f"{task_id}: scenario lacks {hook}"
