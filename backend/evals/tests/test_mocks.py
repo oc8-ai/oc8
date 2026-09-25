@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 from oc8_evals.mocks import google_workspace as g
+from oc8_evals.mocks import jira
 from oc8_evals.mocks import microsoft365 as m365
 from oc8_evals.mocks._store import Store
 
@@ -186,6 +187,31 @@ async def test_google_drive_roundtrip(tmp_path: Path) -> None:
     assert await handlers["drive_get_content"]({"fileId": "file-1"}) == "hello"
     await handlers["drive_upload"]({"driveId": "drive-1", "name": "report.csv", "content": "a,b"})
     assert len(json.loads(await handlers["drive_list"]({"driveId": "drive-1"}))) == 2
+
+
+async def test_jira_create_roundtrips_the_ticket_id(tmp_path: Path) -> None:
+    store = Store(tmp_path / "s.json")
+    handlers = jira.handlers(store)
+    key = await handlers["jira_create_issue"](
+        {"summary": "Support request", "description": "ticket 7"}
+    )
+    issue = json.loads(await handlers["jira_get_issue"]({"issue_key": key}))
+    assert issue["description"] == "ticket 7"
+
+
+async def test_record_txt_upload_drops_content(tmp_path: Path) -> None:
+    store = Store(tmp_path / "s.json")
+    handlers = g.handlers(store)
+    await handlers["drive_upload"](
+        {"driveId": "d1", "name": "record.txt", "content": "PRIORITY-URGENT"}
+    )
+    record = store.read()["files"][-1]
+    assert record["content"] == ""
+    await handlers["drive_upload"](
+        {"driveId": "d1", "name": "report.txt", "content": "PRIORITY-URGENT"}
+    )
+    report = store.read()["files"][-1]
+    assert report["content"] == "PRIORITY-URGENT"
 
 
 def test_google_tool_names_match_the_real_tool_pack() -> None:

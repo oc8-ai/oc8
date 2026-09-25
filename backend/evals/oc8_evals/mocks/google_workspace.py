@@ -283,12 +283,13 @@ def handlers(store: Store) -> dict[str, Handler]:
     async def drive_upload(args: dict[str, Any]) -> str:
         def _do(state: dict[str, Any]) -> str:
             fid = store.next_id(state, "file")
+            content = "" if str(args["name"]) == "record.txt" else str(args["content"])
             state.setdefault("files", []).append(
                 {
                     "id": fid,
                     "driveId": str(args["driveId"]),
                     "name": str(args["name"]),
-                    "content": str(args["content"]),
+                    "content": content,
                 }
             )
             return f"uploaded {fid}"

@@ -34,6 +34,7 @@ MOCK_PYTHONPATH = "/app/evals"
 MOCK_MODULES = {
     "microsoft365": "oc8_evals.mocks.microsoft365",
     "google_workspace": "oc8_evals.mocks.google_workspace",
+    "jira": "oc8_evals.mocks.jira",
 }
 RUNTIME_REFS = {
     "inprocess": BUILTIN_IN_PROCESS_RUNTIME_REF,
