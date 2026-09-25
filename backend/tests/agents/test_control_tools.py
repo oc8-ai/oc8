@@ -200,6 +200,7 @@ def test_control_tool_names_matches_the_schemas() -> None:
         "procedure_step_done",
         "write_output_file",
         "run_shell",
+        "run_program",
         "read_run_file",
     }
 

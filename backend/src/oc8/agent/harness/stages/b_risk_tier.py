@@ -27,6 +27,7 @@ _CONTROL_WRITE: frozenset[str] = frozenset(
         "delegate_task",
         "write_output_file",
         "run_shell",
+        "run_program",
         "propose_change",
         "decide_approval",
     }

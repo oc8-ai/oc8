@@ -445,6 +445,32 @@ RUN_SHELL = NeutralTool(
     },
 )
 
+RUN_PROGRAM = NeutralTool(
+    name="run_program",
+    description=(
+        "Run a Python program in this container for bulk work (more than about five\n"
+        "records, or a join across tools). One function per tool lives in oc8_tools;\n"
+        "call those, do not invent HTTP. Only what the program prints comes back\n"
+        "into context. A denial or an approval request aborts the program — issue\n"
+        "that one call as a normal tool call afterwards. Do not use this for a\n"
+        "single record."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "code": {
+                "type": "string",
+                "description": "The Python program to run. Import tools from oc8_tools.",
+            },
+            "purpose": {
+                "type": "string",
+                "description": "Why this program is needed (short).",
+            },
+        },
+        "required": ["code", "purpose"],
+    },
+)
+
 READ_RUN_FILE = NeutralTool(
     name="read_run_file",
     description=(
@@ -800,6 +826,7 @@ CONTROL_TOOL_SCHEMAS: dict[str, NeutralTool] = {
     READ_INSTRUCTION_FILE.name: READ_INSTRUCTION_FILE,
     WRITE_OUTPUT_FILE.name: WRITE_OUTPUT_FILE,
     RUN_SHELL.name: RUN_SHELL,
+    RUN_PROGRAM.name: RUN_PROGRAM,
     READ_RUN_FILE.name: READ_RUN_FILE,
     LIST_PENDING_APPROVALS.name: LIST_PENDING_APPROVALS,
     DEPARTMENT_STATUS.name: DEPARTMENT_STATUS,
@@ -831,6 +858,7 @@ def offered_tools(
     copilot_permissions: frozenset[str] = frozenset(),
     offer_write_output_file: bool = False,
     offer_run_shell: bool = False,
+    offer_run_program: bool = False,
 ) -> list[NeutralTool]:
     """The full tool list to offer the model this step.
 
@@ -848,6 +876,9 @@ def offered_tools(
     `/workspace/output/` mount instead, so offering the tool there would be a
     second, redundant way to do the same thing. read_run_file has no such
     gate: reading a file another run produced is useful from every runtime.
+
+    `offer_run_program` is only meaningful together with `offer_run_shell`
+    (isolated shell): code mode still goes through the same local_result path.
     """
     # Skill tools stay offered even once active: a model that invokes an
     # already-active skill again just hits the no-op branch in
@@ -866,6 +897,8 @@ def offered_tools(
         offered.append(WRITE_OUTPUT_FILE)
     if offer_run_shell:
         offered.append(RUN_SHELL)
+        if offer_run_program:
+            offered.append(RUN_PROGRAM)
     # ASK_USER parks the run and waits for an answer through the SAME door the
     # question arrived on. That holds for every other agent, whose only doors
     # are the web Chat tab and internal handoffs -- both can answer a park.
@@ -1712,6 +1745,16 @@ async def execute_control_tool(
         # to execute, only the already-computed result to record.
         if local_result is None:
             return ControlOutcome(output="ERROR: run_shell was not executed locally by the runtime")
+        return ControlOutcome(output=_format_run_shell_result(local_result))
+
+    if tc.name == RUN_PROGRAM.name:
+        # Same local_result contract as run_shell: the isolated shell runs the
+        # program before POSTing /tool. Missing local_result means this call
+        # never came from that path.
+        if local_result is None:
+            return ControlOutcome(
+                output="ERROR: run_program was not executed locally by the runtime"
+            )
         return ControlOutcome(output=_format_run_shell_result(local_result))
 
     if tc.name == READ_RUN_FILE.name:

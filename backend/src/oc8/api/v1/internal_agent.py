@@ -494,10 +494,12 @@ async def step(
     # engine calls offered_tools directly, never over HTTP). A real runtime
     # plugin (e.g. claude_code_runtime) has its own local file tools, so only
     # offer write_output_file -- and, for the same reason, run_shell -- for
-    # the builtin isolated shell, which has none of its own.
+    # the builtin isolated shell, which has none of its own. run_program rides
+    # the same shell gate and additionally requires caps.code_mode.
     offer_write_output_file = (
         not agent.runtime_ref or agent.runtime_ref == BUILTIN_ISOLATED_RUNTIME_REF
     )
+    caps = resolve_caps(model_config.params if model_config is not None else None)
     tools = offered_tools(
         agent,
         assigned_skills=assigned_skills,
@@ -508,6 +510,7 @@ async def step(
         copilot_permissions=copilot_permissions,
         offer_write_output_file=offer_write_output_file,
         offer_run_shell=offer_write_output_file,
+        offer_run_program=caps.code_mode,
     )
 
     # See stages/d_todo: a continuation round never crosses a /step HTTP call
@@ -520,7 +523,7 @@ async def step(
     # engine, which counts rounds per run; spec §1.1, package 6.
     harness = Harness.from_run_context(
         ctx,
-        caps=resolve_caps(model_config.params if model_config is not None else None),
+        caps=caps,
     )
     harness.state.todo_rounds = 0
 
