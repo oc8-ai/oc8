@@ -39,6 +39,7 @@ from oc8.agent.harness import Harness, resolve_caps
 from oc8.agent.harness.calls import call_sig as _call_sig
 from oc8.agent.harness.prompts import compaction_instruction
 from oc8.agent.harness.retrieval import select_completion_tools
+from oc8.agent.harness.step_timing import finish_step, note_model, note_tools, start_step
 from oc8.agent.harness.stages.a_compaction import (
     prompt_token_fallback,
     rebuild_transcript,
@@ -101,7 +102,7 @@ from oc8.modelrouter import (
     locality_for_provider,
     stream_completion_with_fallback,
 )
-from oc8.modelrouter.accumulate import accumulate_stream
+from oc8.modelrouter.accumulate import StreamTiming, accumulate_stream
 from oc8.modelrouter.keys import resolve_model_base_url
 from oc8.modelrouter.sampling import bumped_for_length_retry, resolve_params
 from oc8.modelrouter.trim import overflow_tokens
@@ -560,6 +561,7 @@ async def step(
         req_id: uuid.UUID,
         *,
         publish: bool = True,
+        timing: StreamTiming | None = None,
     ) -> Any:
         return await accumulate_stream(
             stream_completion_with_fallback(
@@ -577,6 +579,7 @@ async def step(
                 contains_restricted=contains_restricted,
             ),
             on_text=_live_token_delta if publish else None,
+            timing=timing,
         )
 
     async def _record(res: Any, req_id: uuid.UUID) -> None:
@@ -641,6 +644,15 @@ async def step(
             ledger=harness.state.ledger,
         )
         request_id = uuid.uuid4()
+        # Close any prior open step (tool waits from /tool) before opening the
+        # next model-step record. Same key the in-process engine merges via
+        # executor.py.
+        step_timings = ctx.setdefault("stepTimings", [])
+        if step_timings and "_t0" in step_timings[-1]:
+            finish_step(step_timings[-1])
+        step_rec = start_step(harness.state.step_no)
+        step_timings.append(step_rec)
+        step_probe = StreamTiming()
         # Department prompt caching, through the SAME helper the in-process engine
         # uses (oc8.agent.cache_flow) -- an isolated deployment must not silently
         # render a settings toggle and a savings figure that do nothing.
@@ -669,7 +681,9 @@ async def step(
             nonlocal key, resolved_messages, overflow_retried
             try:
                 return (
-                    await _complete(resolved_messages, sampling_params, req_id),
+                    await _complete(
+                        resolved_messages, sampling_params, req_id, timing=step_probe
+                    ),
                     req_id,
                 )
             except Exception as exc:
@@ -691,6 +705,7 @@ async def step(
                         resolved_messages,
                         sampling_params,
                         retry_request_id,
+                        timing=step_probe,
                     ),
                     retry_request_id,
                 )
@@ -702,6 +717,7 @@ async def step(
         # fill, so the runtime's budget gate could never fire.
         if cached_result is not None:
             result = cached_result
+            note_model(step_rec, model_wait_ms=0, ttft_ms=None)
             # Nothing new was stored this step -- a leftover key from an earlier
             # step must not be invalidated by a LATER step's tool failure (see
             # the pop below).
@@ -739,6 +755,11 @@ async def step(
                 )
                 await _record(result, retry_request_id)
             await cache_flow.store_if_matching(key, result, provider=provider, model=model)
+            note_model(
+                step_rec,
+                model_wait_ms=step_probe.model_wait_ms,
+                ttft_ms=step_probe.ttft_ms,
+            )
             # Read by /tool below, once this step's requested tool calls come back
             # and any of them turns out to have failed for real (see that
             # endpoint's own invalidate call) -- store_if_matching can't know that
@@ -775,10 +796,15 @@ async def step(
                 procedures=_active_procedures(active_skills),
             )
             if not verdict.ok:
+                note_tools(step_rec, 0)
+                finish_step(step_rec)
                 transcript.append(
                     _from_message(NeutralMessage(role="user", content=verdict.reminder or ""))
                 )
                 continue
+        if not result.tool_calls:
+            note_tools(step_rec, 0)
+            finish_step(step_rec)
         break
 
     harness.store(ctx)
@@ -1042,6 +1068,9 @@ async def tool(
     )
 
     if decision.effect is Effect.REQUIRE_APPROVAL:
+        step_timings = ctx.setdefault("stepTimings", [])
+        if step_timings and "_t0" in step_timings[-1]:
+            finish_step(step_timings[-1])
         ar = await raise_approval(
             db,
             tenant_id=run.tenant_id,
@@ -1477,6 +1506,16 @@ async def tool(
     # site far below, which is separated from it by the transcript rewrite and
     # a `db.flush()` whose time is this request's, not the tool's.
     duration_ms = int((dt.datetime.now(dt.UTC) - started_at).total_seconds() * 1000)
+
+    # Accumulate onto the open step record from /step; that record stays open
+    # until the next /step finishes it (tool wait = sum of /tool calls before
+    # the next model step). A suspend ends the step without another /step.
+    step_timings = ctx.setdefault("stepTimings", [])
+    if dispatched and step_timings and "_t0" in step_timings[-1]:
+        open_rec = step_timings[-1]
+        note_tools(open_rec, int(open_rec.get("tool_wait_ms", 0)) + duration_ms)
+        if suspend is not None:
+            finish_step(open_rec)
 
     # This tool call belongs to the completion /step just cached (see its own
     # ctx["pending_cache_key"] comment) -- a real failure here means that

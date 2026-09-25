@@ -38,6 +38,7 @@ from oc8.agent.harness.calls import (
 )
 from oc8.agent.harness.prompts import compaction_instruction
 from oc8.agent.harness.retrieval import select_completion_tools
+from oc8.agent.harness.step_timing import finish_step, note_model, note_tools, start_step
 from oc8.agent.harness.procedures import (
     newly_satisfied_lines,
     procedure_haystack,
@@ -113,7 +114,7 @@ from oc8.modelrouter import (
     locality_for_provider,
     stream_completion_with_fallback,
 )
-from oc8.modelrouter.accumulate import accumulate_stream
+from oc8.modelrouter.accumulate import StreamTiming, accumulate_stream
 from oc8.modelrouter.keys import resolve_model_base_url
 from oc8.modelrouter.sampling import bumped_for_length_retry, resolve_params
 from oc8.modelrouter.trim import overflow_tokens
@@ -216,6 +217,9 @@ class RunResult:
     # the LATEST call's list, not a log of every call. Empty means the tool was
     # never called this run, not that every item finished.
     todos: list[dict[str, str]] = field(default_factory=list)
+    # One latency record per model step (see harness.step_timing). Empty on
+    # runs that never entered the step loop (e.g. budget gate).
+    step_timings: list[dict] = field(default_factory=list)
 
 
 def _json_chunks(text: str) -> list[str]:
@@ -639,6 +643,7 @@ async def run_agent(
                 )
 
             steps = 0
+            step_timings: list[dict] = []
             checkpoint_trace_delta: list[dict[str, Any]] = []
             tokens_since_checkpoint = 0
             # max_steps is the outer, already-computed closure variable (see
@@ -683,6 +688,7 @@ async def run_agent(
                         pending_runs,
                         rendered_components,
                         todos,
+                        step_timings,
                     )
                 # Operator chat (§ live steering): drain any messages an operator
                 # sent to this running agent and inject them as user turns, so the
@@ -757,6 +763,7 @@ async def run_agent(
                     *,
                     tls: list[NeutralTool] = resolved_tools,
                     publish: bool = True,
+                    timing: StreamTiming | None = None,
                 ) -> Any:
                     return await accumulate_stream(
                         stream_completion_with_fallback(
@@ -774,6 +781,7 @@ async def run_agent(
                             contains_restricted=contains_restricted,
                         ),
                         on_text=_live_token_delta if publish else None,
+                        timing=timing,
                     )
 
                 async def _record(res: Any, req_id: uuid.UUID) -> None:
@@ -833,6 +841,10 @@ async def run_agent(
                     ledger=harness.state.ledger,
                 )
 
+                step_rec = start_step(steps)
+                step_timings.append(step_rec)
+                step_probe = StreamTiming()
+
                 async def _cache_lookup(
                     msgs: list[NeutralMessage],
                     *,
@@ -864,7 +876,12 @@ async def run_agent(
                     nonlocal key, resolved_messages, overflow_retried
                     try:
                         return (
-                            await _complete(sampling_params, req_id, resolved_messages),
+                            await _complete(
+                                sampling_params,
+                                req_id,
+                                resolved_messages,
+                                timing=step_probe,
+                            ),
                             req_id,
                         )
                     except Exception as exc:
@@ -886,12 +903,14 @@ async def run_agent(
                                 sampling_params,
                                 retry_request_id,
                                 resolved_messages,
+                                timing=step_probe,
                             ),
                             retry_request_id,
                         )
 
                 if cached_result is not None:
                     result = cached_result
+                    note_model(step_rec, model_wait_ms=0, ttft_ms=None)
                     await record_usage(
                         db,
                         tenant_id=tenant_id,
@@ -939,6 +958,11 @@ async def run_agent(
                         if not result.tool_calls:
                             result.tool_calls = _salvage_tool_calls(result.text, _offered())
                     await cache_flow.store_if_matching(key, result, provider=provider, model=model)
+                    note_model(
+                        step_rec,
+                        model_wait_ms=step_probe.model_wait_ms,
+                        ttft_ms=step_probe.ttft_ms,
+                    )
                 harness.state.last_prompt_tokens = (
                     result.usage.tokens_in
                     if result.usage.tokens_in > 0
@@ -950,6 +974,8 @@ async def run_agent(
                     result.tool_calls = _salvage_tool_calls(result.text, _offered())
 
                 if not result.tool_calls:
+                    note_tools(step_rec, 0)
+                    finish_step(step_rec)
                     if result.stop_reason == "length" and not result.text.strip():
                         # Truncated even after the retry above -- the model
                         # never produced an answer or a tool call, so this must
@@ -989,6 +1015,7 @@ async def run_agent(
                             pending_runs,
                             rendered_components,
                             todos,
+                            step_timings,
                         )
 
                     open_todos = [t for t in todos if t.get("status") != "completed"]
@@ -1052,6 +1079,7 @@ async def run_agent(
                         pending_runs,
                         rendered_components,
                         todos,
+                        step_timings,
                     )
 
                 messages.append(
@@ -1078,6 +1106,7 @@ async def run_agent(
                     ]
                     call_value_spec = merged
                 step_had_tool_error = False
+                step_tool_wait_ms = 0
                 # Spec §3.5: a turn's LEADING run of ALLOW-decision, read-tier,
                 # non-control, non-outward tool calls dispatches concurrently
                 # (bounded) when this connection's caps say the model can
@@ -1397,6 +1426,8 @@ async def run_agent(
                                 force=True,
                                 contains_restricted=contains_restricted,
                             )
+                            note_tools(step_rec, step_tool_wait_ms)
+                            finish_step(step_rec)
                             return RunResult(
                                 task.id,
                                 agent.id,
@@ -1407,6 +1438,7 @@ async def run_agent(
                                 pending_runs,
                                 rendered_components,
                                 todos,
+                                step_timings,
                             )
 
                         # Ledger outward attribution must follow the tool that
@@ -1597,6 +1629,13 @@ async def run_agent(
                                 )
                             if control.suspend == "waiting_for_input":
                                 task.state = "waiting_for_input"
+                                step_tool_wait_ms += int(
+                                    (dt.datetime.now(dt.UTC) - _tool_call_started_at)
+                                    .total_seconds()
+                                    * 1000
+                                )
+                                note_tools(step_rec, step_tool_wait_ms)
+                                finish_step(step_rec)
                                 return RunResult(
                                     task.id,
                                     agent.id,
@@ -1607,6 +1646,7 @@ async def run_agent(
                                     pending_runs,
                                     rendered_components,
                                     todos,
+                                    step_timings,
                                 )
                         elif decision.effect is Effect.DENY or server is None:
                             reason = decision.reason or "no tool server available"
@@ -1813,6 +1853,7 @@ async def run_agent(
                                     * 1000
                                 )
                             )
+                            step_tool_wait_ms += int(_tool_call_entry["durationMs"])
                         tool_trace.append(_tool_call_entry)
                         await _live_tool_call(tool_trace[-1])
                         messages.append(
@@ -1856,6 +1897,9 @@ async def run_agent(
                 if cached_result is None and step_had_tool_error:
                     await cache_flow.invalidate(key)
 
+                note_tools(step_rec, step_tool_wait_ms)
+                finish_step(step_rec)
+
             task.state = "done"
             await maybe_checkpoint(
                 db,
@@ -1879,6 +1923,7 @@ async def run_agent(
                 pending_runs,
                 rendered_components,
                 todos,
+                step_timings,
             )
 
         async def _run_with_session_end() -> RunResult:
