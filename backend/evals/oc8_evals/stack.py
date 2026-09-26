@@ -36,6 +36,11 @@ MOCK_MODULES = {
     "google_workspace": "oc8_evals.mocks.google_workspace",
     "jira": "oc8_evals.mocks.jira",
 }
+#: Suite system ids that are not the capa folder name. The connection row
+#: still uses the suite id (`name=system`) so tools route as "jira".
+_PACK_FOR_SYSTEM = {
+    "jira": "jira_mcp",
+}
 RUNTIME_REFS = {
     "inprocess": BUILTIN_IN_PROCESS_RUNTIME_REF,
     "isolated": BUILTIN_ISOLATED_RUNTIME_REF,
@@ -149,11 +154,14 @@ async def find_source_connection(tenant_id: uuid.UUID, name: str) -> m.McpConnec
 
 
 def _mock_connection_config(system: str, state_file: Path) -> tuple[dict[str, Any], Any]:
-    manifest = resolve_tool_pack_connection(system, "primary")
+    pack = _PACK_FOR_SYSTEM.get(system, system)
+    manifest = resolve_tool_pack_connection(pack, "primary")
     if manifest is None:
         raise RuntimeError(f"tool pack {system!r} has no 'primary' connection in the manifest")
+    if system not in MOCK_MODULES:
+        raise RuntimeError(f"no eval mock module registered for system {system!r}")
     config = dict(manifest.config)
-    config["_plugin_name"] = system
+    config["_plugin_name"] = pack
     config["_connection_key"] = manifest.key
     config["command"] = "python"
     config["args"] = ["-m", MOCK_MODULES[system]]
