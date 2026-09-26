@@ -173,6 +173,7 @@ const S3_CREDENTIAL_TYPE = {
 const EXISTING_CREDENTIAL = { id: "cred-1", name: "Prod S3", credentialType: "s3_api" };
 
 const knowledgeConnectorsMock = vi.fn();
+const knowledgeVectorIndexesMock = vi.fn();
 
 vi.mock("@/lib/knowledge-connector-hooks", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/knowledge-connector-hooks")>();
@@ -183,6 +184,7 @@ vi.mock("@/lib/knowledge-connector-hooks", async (importOriginal) => {
     useDeleteSource: () => ({ mutate: deleteSourceMock, isPending: false }),
     useCreateSource: () => ({ mutate: createSourceMock, isPending: false }),
     useKnowledgeConnectors: () => knowledgeConnectorsMock(),
+    useKnowledgeVectorIndexes: () => knowledgeVectorIndexesMock(),
     useOAuthConnections: () => EMPTY_OAUTH_RESPONSE,
   };
 });
@@ -205,6 +207,8 @@ beforeEach(() => {
   createCredentialMock.mockResolvedValue({ id: "new-cred-id" });
   knowledgeConnectorsMock.mockReset();
   knowledgeConnectorsMock.mockReturnValue(STUB_CONNECTORS_RESPONSE);
+  knowledgeVectorIndexesMock.mockReset();
+  knowledgeVectorIndexesMock.mockReturnValue({ data: [], isLoading: false });
 });
 
 describe("SourceEditDrawer", () => {
@@ -859,5 +863,94 @@ describe("SourceWizard persistent error banner", () => {
     });
 
     expect(screen.queryByText(rejection)).not.toBeInTheDocument();
+  });
+});
+
+const QDRANT_INDEX = {
+  typeId: "qdrant",
+  label: "Qdrant",
+  description: "Search an existing Qdrant collection",
+  credentialType: "qdrant_api",
+  configSchema: {
+    properties: {
+      collection: { type: "string", title: "Collection" },
+    },
+    required: ["collection"],
+  },
+};
+
+const QDRANT_CREDENTIAL_TYPE = {
+  name: "qdrant_api",
+  displayName: "Qdrant",
+  fields: [
+    {
+      key: "url",
+      label: "URL",
+      kind: "url",
+      required: true,
+      default: "",
+      placeholder: "",
+      help: "",
+    },
+    {
+      key: "api_key",
+      label: "API key",
+      kind: "password",
+      required: false,
+      default: "",
+      placeholder: "",
+      help: "",
+    },
+  ],
+};
+
+const QDRANT_CREDENTIAL = { id: "qdrant-cred-1", name: "Prod Qdrant", credentialType: "qdrant_api" };
+
+describe("BaseWizard connect existing vector index", () => {
+  beforeEach(() => {
+    createKnowledgeBaseMock.mockReset();
+    knowledgeVectorIndexesMock.mockReturnValue({ data: [QDRANT_INDEX], isLoading: false });
+    credentialsMock.mockImplementation((credentialType?: string) => ({
+      data:
+        !credentialType || credentialType === "qdrant_api" ? [QDRANT_CREDENTIAL] : [EXISTING_CREDENTIAL],
+    }));
+    credentialTypesMock.mockReturnValue({ data: [QDRANT_CREDENTIAL_TYPE, S3_CREDENTIAL_TYPE] });
+  });
+
+  it("renders CredentialPicker for the index credential, not a raw password input", () => {
+    renderWithClient(<BaseWizard onClose={vi.fn()} onCreate={vi.fn()} />);
+    fireEvent.change(screen.getByPlaceholderText(/sales kb/i), { target: { value: "HR Index" } });
+    fireEvent.click(screen.getByLabelText(/connect existing vector index/i));
+    fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /qdrant/i }));
+
+    expect(screen.getByText("Prod Qdrant", { selector: "option" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /create new/i })).toBeInTheDocument();
+    expect(screen.queryByLabelText(/^api key$/i)).not.toBeInTheDocument();
+  });
+
+  it("submits indexType, indexConfig, and credentialId — no secrets in the body", async () => {
+    renderWithClient(<BaseWizard onClose={vi.fn()} onCreate={vi.fn()} />);
+    fireEvent.change(screen.getByPlaceholderText(/sales kb/i), { target: { value: "HR Index" } });
+    fireEvent.click(screen.getByLabelText(/connect existing vector index/i));
+    fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /qdrant/i }));
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "qdrant-cred-1" } });
+    fireEvent.change(screen.getByLabelText(/collection/i), { target: { value: "hr_docs" } });
+    fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^connect index$/i }));
+
+    await vi.waitFor(() => expect(createKnowledgeBaseMock).toHaveBeenCalled());
+    const [body] = createKnowledgeBaseMock.mock.calls[0];
+    expect(body).toEqual(
+      expect.objectContaining({
+        name: "HR Index",
+        indexType: "qdrant",
+        credentialId: "qdrant-cred-1",
+        indexConfig: expect.objectContaining({ collection: "hr_docs" }),
+      }),
+    );
+    expect(JSON.stringify(body)).not.toMatch(/api[_-]?key/i);
+    expect(JSON.stringify(body)).not.toMatch(/password/i);
   });
 });

@@ -1251,6 +1251,11 @@ export interface KnowledgeBase {
   deletedAt?: string | null;
   nameTranslations?: Record<string, string>;
   descriptionTranslations?: Record<string, string>;
+  /** ``internal`` (default) or a capa vector-index type id. */
+  indexType?: string;
+  /** Non-secret mapping for an external index. Never secrets. */
+  indexConfig?: Record<string, unknown>;
+  credentialId?: string | null;
 }
 
 export interface KnowledgeDocument {

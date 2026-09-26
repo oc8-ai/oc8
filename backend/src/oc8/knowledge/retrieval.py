@@ -1,16 +1,18 @@
 # backend/src/oc8/knowledge/retrieval.py
-"""Access-scoped KB retrieval (§11.4-11.5, minimal real loop): cosine-only
-vector search over KnowledgeGrant-scoped chunks, filtered by classification
-clearance (§5.3/§11.5/§12.4 — see docs/superpowers/specs/
-2026-07-16-classification-enforcement-design.md). No hybrid/BM25, no
-reranking."""
+"""Access-scoped KB retrieval (§11.4-11.5): cosine search over granted KBs.
+
+Internal bases query ``kb_chunk``. External bases (``index_type`` ≠
+``internal``) dispatch to a capa ``VectorIndex``. Both paths share grants,
+classification clearance, and the token budget.
+"""
 
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import math
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import select
@@ -19,11 +21,29 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.authz import Effect, classification_rule, effective_cleared_classes
 from oc8.knowledge.chunks import live_chunks
+from oc8.knowledge.connectors.context import SourceAuthContext
+from oc8.knowledge.vector_indexes.base import VectorIndexError
+from oc8.knowledge.vector_indexes.registry import INTERNAL_INDEX_TYPE, resolve_vector_index
 from oc8.modelrouter import EmbeddingUnavailable, get_model_router
+
+logger = logging.getLogger(__name__)
 
 KB_TOKEN_BUDGET = 1200
 _CANDIDATE_LIMIT = 50
 SIMILAR_CHUNKS_LIMIT = 5
+
+
+@dataclass
+class _Hit:
+    """Unified candidate for budget trim + render (internal or remote)."""
+
+    kb_id: uuid.UUID
+    content: str
+    source_uri: str
+    classification: str
+    score: float
+    local_only: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 async def granted_kb_ids(db: AsyncSession, *, agent: m.Agent) -> set[uuid.UUID]:
@@ -48,24 +68,111 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
-def _trim_to_budget(
-    chunks: list[m.KbChunk], query_embedding: list[float] | None, token_budget: int
-) -> list[m.KbChunk]:
-    def score(chunk: m.KbChunk) -> float:
-        if query_embedding is None or chunk.embedding is None:
-            return 0.0
-        return _cosine_similarity(chunk.embedding, query_embedding)
-
-    scored = sorted(chunks, key=score, reverse=True)
-    out: list[m.KbChunk] = []
+def _trim_hits_to_budget(hits: list[_Hit], token_budget: int) -> list[_Hit]:
+    scored = sorted(hits, key=lambda h: h.score, reverse=True)
+    out: list[_Hit] = []
     used = 0
-    for c in scored:
-        cost = _estimate_tokens(c.content)
+    for h in scored:
+        cost = _estimate_tokens(h.content)
         if used + cost > token_budget:
             continue
-        out.append(c)
+        out.append(h)
         used += cost
     return out
+
+
+async def _embed_for_kb(kb: m.KnowledgeBase, query_text: str) -> list[float] | None:
+    """Query embedding with the KB's own model. Skip this KB on failure."""
+    try:
+        return await get_model_router().embed(query_text, model=kb.embedding_model)
+    except EmbeddingUnavailable:
+        logger.info(
+            "embedding unavailable for kb %s model %s — skipping",
+            kb.id,
+            kb.embedding_model,
+        )
+        return None
+    except Exception:
+        logger.exception("embed failed for kb %s — skipping", kb.id)
+        return None
+
+
+async def _search_internal(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    kb: m.KnowledgeBase,
+    query_embedding: list[float],
+) -> list[_Hit]:
+    stmt = (
+        live_chunks()
+        .where(m.KbChunk.tenant_id == tenant_id, m.KbChunk.kb_id == kb.id)
+        .order_by(m.KbChunk.embedding.cosine_distance(query_embedding))
+        .limit(_CANDIDATE_LIMIT)
+    )
+    chunks = list((await db.execute(stmt)).scalars().all())
+    hits: list[_Hit] = []
+    for c in chunks:
+        score = 0.0
+        if c.embedding is not None:
+            score = _cosine_similarity(c.embedding, query_embedding)
+        hits.append(
+            _Hit(
+                kb_id=kb.id,
+                content=c.content,
+                source_uri=c.source_uri,
+                classification=c.classification,
+                score=score,
+                local_only=kb.local_only,
+            )
+        )
+    return hits
+
+
+async def _search_external(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    kb: m.KnowledgeBase,
+    query_embedding: list[float],
+    query_text: str,
+) -> list[_Hit]:
+    if kb.credential_id is None:
+        logger.info("external kb %s has no credential_id — skipping", kb.id)
+        return []
+    try:
+        index = await resolve_vector_index(db, tenant_id=tenant_id, type_id=kb.index_type)
+        auth = SourceAuthContext(db, tenant_id=tenant_id)
+        remote = await index.search(
+            kb.index_config or {},
+            auth,
+            credential_id=str(kb.credential_id),
+            query_embedding=query_embedding,
+            query_text=query_text,
+            limit=_CANDIDATE_LIMIT,
+        )
+    except VectorIndexError:
+        logger.info("vector index search failed for kb %s — skipping", kb.id, exc_info=True)
+        return []
+    except Exception:
+        logger.exception("vector index search errored for kb %s — skipping", kb.id)
+        return []
+
+    hits: list[_Hit] = []
+    for r in remote:
+        classification = r.classification or kb.classification
+        hits.append(
+            _Hit(
+                kb_id=kb.id,
+                content=r.content,
+                source_uri=r.source_uri or f"index://{kb.id}",
+                classification=classification,
+                score=r.score,
+                local_only=kb.local_only,
+                metadata=dict(r.metadata),
+            )
+        )
+    return hits
 
 
 async def retrieve_kb_context(
@@ -87,53 +194,72 @@ async def retrieve_kb_context(
     if not kb_ids:
         return "", False
 
-    try:
-        query_embedding = await get_model_router().embed(query_text)
-    except EmbeddingUnavailable:
+    bases = list(
+        (
+            await db.execute(
+                select(m.KnowledgeBase).where(
+                    m.KnowledgeBase.tenant_id == tenant_id,
+                    m.KnowledgeBase.id.in_(kb_ids),
+                    m.KnowledgeBase.deleted_at.is_(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not bases:
         return "", False
 
-    # `live_chunks()` and not `select(m.KbChunk)`: the `deleted_at IS NULL`
-    # predicate has to be in the WHERE rather than in the Python filters below.
-    # A tombstoned chunk keeps its embedding (that is what makes restore cheap),
-    # so it competes for the fifty candidate slots this LIMIT materialises before
-    # any Python runs -- enough deleted chunks and the base goes silent. And a
-    # reduced chunk has no content but keeps its `source_uri`, which line 124
-    # renders verbatim: `upload://<id>/john-doe-contract.pdf` in the preamble is
-    # a disclosure, not a cosmetic bug.
-    stmt = (
-        live_chunks()
-        .where(m.KbChunk.tenant_id == tenant_id, m.KbChunk.kb_id.in_(kb_ids))
-        .order_by(m.KbChunk.embedding.cosine_distance(query_embedding))
-        .limit(_CANDIDATE_LIMIT)
-    )
-    candidates = list((await db.execute(stmt)).scalars().all())
-    if not candidates:
+    all_hits: list[_Hit] = []
+    for kb in bases:
+        query_embedding = await _embed_for_kb(kb, query_text)
+        if query_embedding is None:
+            continue
+        index_type = kb.index_type or INTERNAL_INDEX_TYPE
+        if index_type == INTERNAL_INDEX_TYPE:
+            all_hits.extend(
+                await _search_internal(
+                    db, tenant_id=tenant_id, kb=kb, query_embedding=query_embedding
+                )
+            )
+        else:
+            all_hits.extend(
+                await _search_external(
+                    db,
+                    tenant_id=tenant_id,
+                    kb=kb,
+                    query_embedding=query_embedding,
+                    query_text=query_text,
+                )
+            )
+
+    if not all_hits:
         return "", False
 
     cleared = effective_cleared_classes(frame or {})
-    cleared_candidates = [
-        c
-        for c in candidates
-        if classification_rule(c.classification, cleared, model_locality).effect is Effect.ALLOW
+    cleared_hits = [
+        h
+        for h in all_hits
+        if classification_rule(h.classification, cleared, model_locality).effect is Effect.ALLOW
     ]
-    if not cleared_candidates:
+    if not cleared_hits:
         return "", False
 
-    selected = _trim_to_budget(cleared_candidates, query_embedding, token_budget)
+    selected = _trim_hits_to_budget(cleared_hits, token_budget)
     if not selected:
         return "", False
 
-    contains_restricted = any(c.classification == "restricted" for c in selected)
+    contains_restricted = any(h.classification == "restricted" for h in selected)
 
-    by_kb: dict[uuid.UUID, list[m.KbChunk]] = {}
-    for c in selected:
-        by_kb.setdefault(c.kb_id, []).append(c)
+    by_kb: dict[uuid.UUID, list[_Hit]] = {}
+    for h in selected:
+        by_kb.setdefault(h.kb_id, []).append(h)
 
     sections: list[str] = []
-    for kb_id, kb_chunks in by_kb.items():
-        kb = await db.get(m.KnowledgeBase, kb_id)
+    for kb_id, kb_hits in by_kb.items():
+        kb = next((b for b in bases if b.id == kb_id), None)
         kb_name = kb.name if kb is not None else str(kb_id)
-        body = "\n".join(f"- {c.content} (source: {c.source_uri})" for c in kb_chunks)
+        body = "\n".join(f"- {h.content} (source: {h.source_uri})" for h in kb_hits)
         sections.append(f"[Knowledge: {kb_name}]\n{body}")
 
     return "\n\n".join(sections), contains_restricted

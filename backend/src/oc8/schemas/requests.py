@@ -167,6 +167,13 @@ class CreateKnowledgeBaseRequest(CamelModel):
     name: str
     description: str = ""
     embedding_model: str = "nomic-embed-text"
+    #: ``internal`` (default) or a capa vector-index ``type_id``.
+    index_type: str = "internal"
+    #: Non-secret mapping (collection, table, field keys). Never secrets.
+    index_config: dict[str, Any] = {}
+    #: Required when ``index_type`` is not ``internal``.
+    credential_id: uuid.UUID | None = None
+    classification: str = "internal"
 
 
 class UpdateKnowledgeBaseRequest(CamelModel):
