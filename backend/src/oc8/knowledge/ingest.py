@@ -334,6 +334,19 @@ async def run_source_sync(
         job.status = "running"
         await db.flush()
 
+    kb = await db.get(m.KnowledgeBase, kb_id)
+    if kb is not None and (kb.index_type or "internal") != "internal":
+        job.status = "failed"
+        job.stats = {
+            **(job.stats or {}),
+            "error": (
+                "this knowledge base is connected to an external vector index — "
+                "sync is not supported"
+            ),
+        }
+        await db.flush()
+        return job
+
     stats: dict[str, Any] = {
         "fetched": 0,
         "ingested": 0,
@@ -542,6 +555,11 @@ async def ingest_document(
         # see the base at all. The only removal path left was raw SQL against
         # `kb_chunk` -- the thing this slice exists to end.
         raise KnowledgeBaseNotFoundError("knowledge base not found")
+    if (kb.index_type or "internal") != "internal":
+        raise IngestionError(
+            "this knowledge base is connected to an external vector index — "
+            "ingest and sync are not supported; search the remote collection instead"
+        )
 
     data_source = m.DataSource(
         tenant_id=tenant_id, connector_type="upload", name=filename, connected=True

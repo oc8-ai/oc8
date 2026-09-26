@@ -516,4 +516,7 @@ def kb_to_dto(
         deleted_at=kb.deleted_at.isoformat() if kb.deleted_at else None,
         name_translations=_i18n_str(i18n, "name"),
         description_translations=_i18n_str(i18n, "description"),
+        index_type=kb.index_type or "internal",
+        index_config=dict(kb.index_config or {}),
+        credential_id=str(kb.credential_id) if kb.credential_id else None,
     )

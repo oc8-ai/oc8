@@ -565,6 +565,9 @@ class KnowledgeBaseDTO(CamelModel):
     deleted_at: str | None = None
     name_translations: dict[str, str] = {}
     description_translations: dict[str, str] = {}
+    index_type: str = "internal"
+    index_config: dict[str, Any] = {}
+    credential_id: str | None = None
 
 
 class GrantDTO(CamelModel):

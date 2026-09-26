@@ -12,11 +12,14 @@ you organise, chunks agents can retrieve during a run.
 - Ground agents in your policies, product docs, SOPs
 - Keep sensitive material scoped (may force a local model)
 - Separate “where files come from” from “what agents may search”
+- Connect an **existing** Qdrant or Postgres/pgvector collection (query-only —
+  no copy into oc8) via a vector-index capa and the Credentials page
 
 ## Where you are in the flow
 
 ```text
 Connector capa → ★ Knowledge (sources → bases) → link to dept/agent → used in runs
+Vector-index capa → ★ Knowledge (connect existing index) → same grants / retrieval
 ```
 
 ## Tabs
@@ -24,14 +27,19 @@ Connector capa → ★ Knowledge (sources → bases) → link to dept/agent → 
 | Tab | Purpose |
 |-----|---------|
 | **Data Sources** | Ingest pipelines (connectors) |
-| **Knowledge Bases** | Searchable collections agents attach to |
+| **Knowledge Bases** | Searchable collections agents attach to (ingested or remote index) |
 
 ## What you do here
 
-1. Add or open a data source; wait for ingest.
-2. Create or open a knowledge base; attach content.
+1. Add or open a data source; wait for ingest — **or** create a base with
+   “Connect existing vector index”, pick the capa, choose a Credential, and
+   map collection/table fields.
+2. Create or open a knowledge base; attach content (ingest path only).
 3. On [Agents](agents.md) / department settings, grant KB access.
 4. Test with a question that should retrieve a known chunk.
+
+Secrets for remote indexes live under [Credentials](credentials.md) — never
+paste API keys or database passwords into the knowledge base config.
 
 ## Where work goes next
 

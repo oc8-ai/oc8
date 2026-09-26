@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
     from oc8.channels.base import ChannelFactory
     from oc8.knowledge.connectors.base import Connector
+    from oc8.knowledge.vector_indexes.base import VectorIndex
     from oc8.modelrouter.registry import ProviderEntry
     from oc8.runtime.adapter import RuntimeAdapter
 
@@ -43,6 +44,7 @@ class PluginContributions:
     def __init__(self, plugin_id: str) -> None:
         self.plugin_id = plugin_id
         self.connectors: dict[str, Connector] = {}
+        self.vector_indexes: dict[str, VectorIndex] = {}
         self.channels: dict[str, ChannelFactory] = {}
         self.runtime: type[RuntimeAdapter] | None = None
         self.providers: dict[str, ProviderEntry] = {}
@@ -55,6 +57,13 @@ class PluginContributions:
         if not type_id:
             raise ValueError("a contributed connector must have a non-empty type_id")
         self.connectors[type_id] = connector
+
+    def add_vector_index(self, index: VectorIndex) -> None:
+        """A query-only retrieval backend for an existing remote collection."""
+        type_id = getattr(index, "type_id", "")
+        if not type_id:
+            raise ValueError("a contributed vector index must have a non-empty type_id")
+        self.vector_indexes[type_id] = index
 
     def add_channel(self, channel_id: str, factory: ChannelFactory) -> None:
         """An approval channel: somewhere a human can be asked and can answer.
@@ -127,6 +136,13 @@ def connectors_for(plugin_id: str) -> dict[str, Connector]:
     established that the tenant is entitled to this plugin."""
     entry = _catalogue.get(plugin_id)
     return dict(entry.connectors) if entry is not None else {}
+
+
+def vector_indexes_for(plugin_id: str) -> dict[str, VectorIndex]:
+    """Vector indexes contributed by ONE plugin. Entitlement is the caller's
+    job, same as ``connectors_for``."""
+    entry = _catalogue.get(plugin_id)
+    return dict(entry.vector_indexes) if entry is not None else {}
 
 
 def runtime_for(plugin_id: str) -> type[RuntimeAdapter] | None:

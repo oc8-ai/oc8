@@ -1,0 +1,37 @@
+name = "pgvector_db"
+display_name = "Postgres / pgvector"
+validate_entry_point = "credential:validate_pgvector"
+
+[[fields]]
+key = "host"
+label = "Host"
+kind = "text"
+
+[[fields]]
+key = "port"
+label = "Port"
+kind = "text"
+default = "5432"
+
+[[fields]]
+key = "database"
+label = "Database"
+kind = "text"
+
+[[fields]]
+key = "user"
+label = "User"
+kind = "text"
+
+[[fields]]
+key = "password"
+label = "Password"
+kind = "password"
+
+[[fields]]
+key = "sslmode"
+label = "SSL mode"
+kind = "text"
+required = false
+default = "prefer"
+help = "libpq sslmode (disable, prefer, require, …)."

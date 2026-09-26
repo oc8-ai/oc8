@@ -1,0 +1,16 @@
+name = "qdrant_api"
+display_name = "Qdrant"
+validate_entry_point = "credential:validate_qdrant"
+
+[[fields]]
+key = "url"
+label = "URL"
+kind = "url"
+help = "Qdrant HTTP API base, e.g. https://qdrant.example.com:6333"
+
+[[fields]]
+key = "api_key"
+label = "API key"
+kind = "password"
+required = false
+help = "Leave empty if the cluster does not require authentication."

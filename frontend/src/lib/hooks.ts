@@ -752,8 +752,15 @@ export const useKnowledgeBases = (params: ListQueryParams = {}) => {
 export function useCreateKnowledgeBase() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { name: string; description?: string; embeddingModel?: string }) =>
-      api.post<KnowledgeBase>("/knowledge/bases", body),
+    mutationFn: (body: {
+      name: string;
+      description?: string;
+      embeddingModel?: string;
+      indexType?: string;
+      indexConfig?: Record<string, unknown>;
+      credentialId?: string;
+      classification?: string;
+    }) => api.post<KnowledgeBase>("/knowledge/bases", body),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.bases }),
   });
 }
