@@ -2,8 +2,9 @@
 
 It holds no secrets and no data — only a run-scoped token and the control-plane
 internal URL, both from the environment. It drives the run by alternating
-`step` (a model turn) and `tool` (execute a tool) over the internal API, then
-reports the terminal result. All privileged work happens control-plane-side.
+`step` (a model turn) and `tools` (batch-execute tool calls) over the internal
+API, then reports the terminal result. All privileged work happens
+control-plane-side.
 
 Deliberately depends only on the standard library + httpx, never on oc8 core, so
 the container is a genuinely thin execution shell.
@@ -11,7 +12,6 @@ the container is a genuinely thin execution shell.
 
 from __future__ import annotations
 
-import concurrent.futures
 import json
 import os
 import subprocess
@@ -36,11 +36,6 @@ RUN_SHELL_TIMEOUT_S = 120.0
 #: Truncation cap for run_shell's stdout/stderr -- larger than MAX_BODY_CHARS
 #: (that one is for a log line; this is real tool output the model reads).
 RUN_SHELL_OUTPUT_CHARS = 4000
-#: Bound on one concurrently-dispatched read batch (spec §3.5) -- same cap
-#: agent/engine.py's in-process pre-pass uses for the equivalent batch, so
-#: the two runtimes impose the same limit even though they enforce it with
-#: different primitives (a semaphore there, a thread pool here).
-MAX_PARALLEL_TOOL_CALLS = 5
 
 
 def program_timeout_s(raw: str | None) -> float:
@@ -228,12 +223,9 @@ def main() -> int:
                     if not os.path.exists(sdk_path):
                         with open(sdk_path, "w", encoding="utf-8") as fh:
                             fh.write(sdk_py)
-                # A hint from /step's own pre-pass (spec §3.5), never a
-                # bypass -- /tool's own authorization below still runs,
-                # unconditionally, for every one of these calls either way.
-                # This only decides whether a leading run of tier="read"
-                # calls fires as concurrent POSTs instead of one at a time.
-                parallel_tool_calls = bool(step.get("parallel_tool_calls", False))
+                # parallel_tool_calls may still appear on StepResult (spec §3.5 /
+                # control-plane pre-pass); the shell no longer reads it — batch
+                # dispatch is sequential server-side via POST /tools.
                 log(
                     f"step {step_no}: model responded, tool_calls={len(calls)} "
                     f"text={_preview(step.get('text') or '')!r}"
@@ -260,15 +252,8 @@ def main() -> int:
                     status = "done"
                     break
 
-                # Bound as a default argument, not read from the enclosing
-                # scope, so each dispatch logs the step it actually belongs
-                # to even though `_dispatch_one` is invoked from inside a
-                # thread pool rather than called inline right after def.
-                def _dispatch_one(
-                    tc: dict[str, Any],
-                    step_no: int = step_no,
-                    workspace: str = workspace,
-                ) -> dict[str, Any]:
+                prepared: list[dict[str, Any]] = []
+                for tc in calls:
                     args_preview = _preview(json.dumps(tc.get("arguments", {}), default=str))
                     log(f"step {step_no}: calling tool {tc['name']} args={args_preview}")
                     body: dict[str, Any] = {
@@ -277,54 +262,29 @@ def main() -> int:
                         "arguments": tc.get("arguments", {}),
                     }
                     if tc["name"] == "run_shell":
-                        command = str(tc.get("arguments", {}).get("command", ""))
-                        body["local_result"] = _run_shell_locally(command)
-                    elif tc["name"] == "run_program":
-                        code = str(tc.get("arguments", {}).get("code", ""))
-                        body["local_result"] = _run_program_locally(
-                            code, step_no=step_no, cwd=workspace
+                        body["local_result"] = _run_shell_locally(
+                            str(tc.get("arguments", {}).get("command", ""))
                         )
-                    tr = c.post(f"{api}/tool", json=body)
-                    check_response(tr)
-                    result: dict[str, Any] = tr.json()
-                    log(
-                        f"step {step_no}: tool {tc['name']} -> status={result.get('status')} "
-                        f"output={_preview(str(result.get('output', '')))!r}"
-                    )
-                    _mirror_spill(result.get("spill"), root=workspace)
-                    return result
+                    elif tc["name"] == "run_program":
+                        body["local_result"] = _run_program_locally(
+                            str(tc.get("arguments", {}).get("code", "")),
+                            step_no=step_no,
+                            cwd=workspace,
+                        )
+                    prepared.append(body)
 
-                i = 0
-                while i < len(calls):
-                    # The leading run of tier="read" calls starting at i --
-                    # everything from the first non-"read" entry onward (a
-                    # write, a control tool, an outward call: /step's
-                    # pre-pass already excluded all of those from "read")
-                    # stays out of this batch and dispatches on its own,
-                    # sequentially, same as before this change existed.
-                    batch = [calls[i]]
-                    if parallel_tool_calls and calls[i].get("tier") == "read":
-                        while (
-                            i + len(batch) < len(calls)
-                            and calls[i + len(batch)].get("tier") == "read"
-                            and len(batch) < MAX_PARALLEL_TOOL_CALLS
-                        ):
-                            batch.append(calls[i + len(batch)])
-                    if len(batch) > 1:
-                        with concurrent.futures.ThreadPoolExecutor(
-                            max_workers=len(batch)
-                        ) as pool:
-                            results = list(pool.map(_dispatch_one, batch))
-                    else:
-                        results = [_dispatch_one(batch[0])]
-                    i += len(batch)
-                    # Checked in original list order, same as the fully
-                    # sequential loop this replaces -- a batch dispatching
-                    # concurrently must never change WHICH suspend wins,
-                    # only WHEN the underlying I/O happened.
-                    for result in results:
+                if prepared:
+                    tr = c.post(f"{api}/tools", json={"calls": prepared})
+                    check_response(tr)
+                    results = list(tr.json().get("results") or [])
+                    for i, result in enumerate(results):
+                        name = prepared[i]["name"] if i < len(prepared) else "?"
+                        log(
+                            f"step {step_no}: tool {name} -> status={result.get('status')} "
+                            f"output={_preview(str(result.get('output', '')))!r}"
+                        )
+                        _mirror_spill(result.get("spill"), root=workspace)
                         if result.get("status") in ("waiting_for_approval", "waiting_for_input"):
-                            # The control plane suspended the run; the shell's job is done.
                             log(f"run suspended: {result.get('status')}")
                             return 0
             else:

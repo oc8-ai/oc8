@@ -10,8 +10,6 @@ where nobody can re-run the call to find out.
 from __future__ import annotations
 
 import json
-import threading
-import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -71,6 +69,68 @@ def _run_main(
     return main()
 
 
+def _is_single_tool_path(path: str) -> bool:
+    return path.endswith("/tool") and not path.endswith("/tools")
+
+
+def test_main_posts_a_single_tools_batch_for_multiple_calls(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Two tool_calls from /step must become one POST /tools — never N /tool."""
+    posted_paths: list[str] = []
+    tools_bodies: list[dict[str, object]] = []
+    steps = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        posted_paths.append(request.url.path)
+        if request.url.path.endswith("/step"):
+            steps["n"] += 1
+            if steps["n"] == 1:
+                return httpx.Response(
+                    200,
+                    json={
+                        "done": False,
+                        "text": "looking up both",
+                        "tool_calls": [
+                            {"id": "c1", "name": "get_ticket", "arguments": {}},
+                            {"id": "c2", "name": "get_user", "arguments": {"id": "u1"}},
+                        ],
+                    },
+                )
+            return httpx.Response(200, json={"done": True, "text": "All done", "tool_calls": []})
+        if request.url.path.endswith("/tools"):
+            tools_bodies.append(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {"status": "ok", "output": "ticket #30"},
+                        {"status": "ok", "output": "user u1"},
+                    ]
+                },
+            )
+        if _is_single_tool_path(request.url.path):
+            raise AssertionError("shell must not POST /tool when batching")
+        if request.url.path.endswith("/finish"):
+            return httpx.Response(200, json={})
+        raise AssertionError(f"unexpected request: {request.url.path}")
+
+    exit_code = _run_main(monkeypatch, handler)
+
+    assert exit_code == 0
+    tools_posts = [p for p in posted_paths if p.endswith("/tools")]
+    tool_posts = [p for p in posted_paths if _is_single_tool_path(p)]
+    assert len(tools_posts) == 1
+    assert tool_posts == []
+    assert len(tools_bodies) == 1
+    assert [c["name"] for c in tools_bodies[0]["calls"]] == ["get_ticket", "get_user"]
+    err = capsys.readouterr().err
+    assert "step 1: calling tool get_ticket" in err
+    assert "step 1: calling tool get_user" in err
+    assert "step 1: tool get_ticket -> status=ok" in err
+    assert "step 1: tool get_user -> status=ok" in err
+
+
 def test_main_logs_every_step_and_tool_call_before_finishing(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -92,8 +152,10 @@ def test_main_logs_every_step_and_tool_call_before_finishing(
                     },
                 )
             return httpx.Response(200, json={"done": True, "text": "All done", "tool_calls": []})
-        if request.url.path.endswith("/tool"):
-            return httpx.Response(200, json={"status": "ok", "output": "ticket #30"})
+        if request.url.path.endswith("/tools"):
+            return httpx.Response(
+                200, json={"results": [{"status": "ok", "output": "ticket #30"}]}
+            )
         if request.url.path.endswith("/finish"):
             return httpx.Response(200, json={})
         raise AssertionError(f"unexpected request: {request.url.path}")
@@ -122,8 +184,11 @@ def test_main_stops_and_reports_suspension_without_finishing(
                     "tool_calls": [{"id": "call_1", "name": "send_email", "arguments": {}}],
                 },
             )
-        if request.url.path.endswith("/tool"):
-            return httpx.Response(200, json={"status": "waiting_for_approval", "output": ""})
+        if request.url.path.endswith("/tools"):
+            return httpx.Response(
+                200,
+                json={"results": [{"status": "waiting_for_approval", "output": ""}]},
+            )
         raise AssertionError(f"unexpected request: {request.url.path}")
 
     exit_code = _run_main(monkeypatch, handler)
@@ -224,16 +289,20 @@ def test_main_mirrors_a_spill_from_tool(
                     },
                 )
             return httpx.Response(200, json={"done": True, "text": "ok", "tool_calls": []})
-        if request.url.path.endswith("/tool"):
+        if request.url.path.endswith("/tools"):
             return httpx.Response(
                 200,
                 json={
-                    "status": "ok",
-                    "output": "preview",
-                    "spill": {
-                        "filename": "step-1-search_records.txt",
-                        "content": "FULL",
-                    },
+                    "results": [
+                        {
+                            "status": "ok",
+                            "output": "preview",
+                            "spill": {
+                                "filename": "step-1-search_records.txt",
+                                "content": "FULL",
+                            },
+                        }
+                    ]
                 },
             )
         if request.url.path.endswith("/finish"):
@@ -282,10 +351,10 @@ def test_run_shell_locally_preserves_partial_output_on_timeout(
 def test_main_executes_run_shell_locally_and_posts_the_result(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
-    """run_shell is the one tool call this file executes itself -- the /tool
+    """run_shell is the one tool call this file executes itself -- the /tools
     POST must carry the already-computed result, not wait for the backend to
     run anything."""
-    tool_bodies: list[dict[str, object]] = []
+    tools_bodies: list[dict[str, object]] = []
 
     # Monkeypatch _run_shell_locally to use tmp_path as the default cwd
     original = _run_shell_locally
@@ -296,7 +365,7 @@ def test_main_executes_run_shell_locally_and_posts_the_result(
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/step"):
-            if not tool_bodies:
+            if not tools_bodies:
                 return httpx.Response(
                     200,
                     json={
@@ -312,9 +381,11 @@ def test_main_executes_run_shell_locally_and_posts_the_result(
                     },
                 )
             return httpx.Response(200, json={"done": True, "text": "done", "tool_calls": []})
-        if request.url.path.endswith("/tool"):
-            tool_bodies.append(json.loads(request.content))
-            return httpx.Response(200, json={"status": "ok", "output": "recorded"})
+        if request.url.path.endswith("/tools"):
+            tools_bodies.append(json.loads(request.content))
+            return httpx.Response(
+                200, json={"results": [{"status": "ok", "output": "recorded"}]}
+            )
         if request.url.path.endswith("/finish"):
             return httpx.Response(200, json={})
         raise AssertionError(f"unexpected request: {request.url.path}")
@@ -322,136 +393,71 @@ def test_main_executes_run_shell_locally_and_posts_the_result(
     exit_code = _run_main(monkeypatch, handler)
 
     assert exit_code == 0
-    assert len(tool_bodies) == 1
-    local_result = tool_bodies[0]["local_result"]
+    assert len(tools_bodies) == 1
+    local_result = tools_bodies[0]["calls"][0]["local_result"]
     assert local_result["exit_code"] == 0
     assert "hi" in local_result["stdout"]
 
 
-# --------------------------------------------------- parallel reads under caps
+# --------------------------------------------------- batched /tools posting
 
 
-def _overlapping_pairs(windows: list[tuple[str, float, float]]) -> int:
-    count = 0
-    for i, (_, s1, e1) in enumerate(windows):
-        for _, s2, e2 in windows[i + 1 :]:
-            if s1 < e2 and s2 < e1:
-                count += 1
-    return count
-
-
-def _tool_recording_handler(
-    windows: list[tuple[str, float, float]],
-    lock: threading.Lock,
-    step_body: dict[str, object],
-    *,
-    status_by_call_id: dict[str, str] | None = None,
-    delay_s: float = 0.05,
-) -> Callable[[httpx.Request], httpx.Response]:
-    """A `/step` that answers with `step_body` once and "done" after, and a
-    `/tool` that records each call's [start, end) wall-clock window (guarded
-    by `lock`, since `httpx.MockTransport` calls this handler concurrently
-    from every pool thread) around a real `time.sleep` -- long enough to
-    release the GIL so genuinely concurrent threads actually overlap."""
-    served = {"step": False}
+def test_main_posts_all_calls_in_one_tools_body_including_mixed_tiers(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Client-side parallel /tool is gone — mixed tiers still go in one /tools POST."""
+    tools_bodies: list[dict[str, object]] = []
+    posted_paths: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        posted_paths.append(request.url.path)
         if request.url.path.endswith("/step"):
-            if not served["step"]:
-                served["step"] = True
-                return httpx.Response(200, json=step_body)
+            if not tools_bodies:
+                return httpx.Response(
+                    200,
+                    json={
+                        "done": False,
+                        "text": "",
+                        "parallel_tool_calls": True,
+                        "tool_calls": [
+                            {"id": "c1", "name": "read_a", "arguments": {}, "tier": "read"},
+                            {"id": "c2", "name": "read_b", "arguments": {}, "tier": "read"},
+                            {"id": "c3", "name": "write_a", "arguments": {}, "tier": "modify"},
+                            {"id": "c4", "name": "read_c", "arguments": {}, "tier": "read"},
+                        ],
+                    },
+                )
             return httpx.Response(200, json={"done": True, "text": "done", "tool_calls": []})
-        if request.url.path.endswith("/tool"):
+        if request.url.path.endswith("/tools"):
             body = json.loads(request.content)
-            call_id = str(body["id"])
-            start = time.monotonic()
-            time.sleep(delay_s)
-            end = time.monotonic()
-            with lock:
-                windows.append((call_id, start, end))
-            status = (status_by_call_id or {}).get(call_id, "ok")
-            return httpx.Response(200, json={"status": status, "output": f"{call_id} done"})
+            tools_bodies.append(body)
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {"status": "ok", "output": f"{c['id']} done"} for c in body["calls"]
+                    ]
+                },
+            )
+        if _is_single_tool_path(request.url.path):
+            raise AssertionError("shell must not POST /tool")
         if request.url.path.endswith("/finish"):
             return httpx.Response(200, json={})
         raise AssertionError(f"unexpected request: {request.url.path}")
 
-    return handler
-
-
-def test_main_dispatches_a_leading_read_batch_concurrently(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """Three tier="read" calls under parallel_tool_calls=True fire as real,
-    overlapping /tool POSTs from a thread pool -- not one at a time."""
-    windows: list[tuple[str, float, float]] = []
-    lock = threading.Lock()
-    step_body = {
-        "done": False,
-        "text": "",
-        "parallel_tool_calls": True,
-        "tool_calls": [
-            {"id": "c1", "name": "read_a", "arguments": {}, "tier": "read"},
-            {"id": "c2", "name": "read_b", "arguments": {}, "tier": "read"},
-            {"id": "c3", "name": "read_c", "arguments": {}, "tier": "read"},
-        ],
-    }
-    handler = _tool_recording_handler(windows, lock, step_body)
-
     exit_code = _run_main(monkeypatch, handler)
 
     assert exit_code == 0
-    assert len(windows) == 3
-    assert _overlapping_pairs(windows) > 0, "the leading read batch never actually overlapped"
-
-
-def test_main_dispatches_sequentially_across_a_tier_boundary(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """[read, read, modify, read] only batches the leading two reads -- the
-    modify call and everything after it in the same step dispatch one at a
-    time, and never overlap anything (not each other, not the leading
-    batch)."""
-    windows: list[tuple[str, float, float]] = []
-    lock = threading.Lock()
-    step_body = {
-        "done": False,
-        "text": "",
-        "parallel_tool_calls": True,
-        "tool_calls": [
-            {"id": "c1", "name": "read_a", "arguments": {}, "tier": "read"},
-            {"id": "c2", "name": "read_b", "arguments": {}, "tier": "read"},
-            {"id": "c3", "name": "write_a", "arguments": {}, "tier": "modify"},
-            {"id": "c4", "name": "read_c", "arguments": {}, "tier": "read"},
-        ],
-    }
-    handler = _tool_recording_handler(windows, lock, step_body)
-
-    exit_code = _run_main(monkeypatch, handler)
-
-    assert exit_code == 0
-    assert len(windows) == 4
-    # Only c1/c2 (the leading batch) overlap.
-    assert _overlapping_pairs(windows) == 1
-    by_id = {call_id: (s, e) for call_id, s, e in windows}
-    c1_s, c1_e = by_id["c1"]
-    c2_s, c2_e = by_id["c2"]
-    c3_s, c3_e = by_id["c3"]
-    c4_s, c4_e = by_id["c4"]
-    assert c1_s < c2_e and c2_s < c1_e, "the leading two reads must have overlapped"
-    assert not (c3_s < c1_e and c1_s < c3_e), "the modify call must not overlap the read batch"
-    assert not (c3_s < c2_e and c2_s < c3_e), "the modify call must not overlap the read batch"
-    assert not (c4_s < c3_e and c3_s < c4_e), "a call after the boundary must not overlap it"
+    assert len([p for p in posted_paths if p.endswith("/tools")]) == 1
+    assert [c["id"] for c in tools_bodies[0]["calls"]] == ["c1", "c2", "c3", "c4"]
 
 
 def test_main_checks_suspend_status_in_order_after_the_batch_completes(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A batch's results are still checked for waiting_for_approval/
-    waiting_for_input in original list order once the (concurrent) batch
-    completes -- and a call after the batch never dispatches once a suspend
-    is found in it, exactly as the pre-parallel sequential loop behaved."""
-    dispatched: list[str] = []
-    lock = threading.Lock()
+    """Results from /tools are checked for waiting_for_approval /
+    waiting_for_input in original list order — first suspend wins."""
+    tools_bodies: list[dict[str, object]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/step"):
@@ -468,46 +474,72 @@ def test_main_checks_suspend_status_in_order_after_the_batch_completes(
                     ],
                 },
             )
-        if request.url.path.endswith("/tool"):
+        if request.url.path.endswith("/tools"):
             body = json.loads(request.content)
-            call_id = str(body["id"])
-            with lock:
-                dispatched.append(call_id)
-            status = "waiting_for_approval" if call_id == "c2" else "ok"
-            return httpx.Response(200, json={"status": status, "output": ""})
+            tools_bodies.append(body)
+            # Control plane returns results up through the first suspend
+            # (same early-stop shape as POST /tools on the server).
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {"status": "ok", "output": ""},
+                        {"status": "waiting_for_approval", "output": ""},
+                    ]
+                },
+            )
         raise AssertionError(f"unexpected request: {request.url.path}")
 
     exit_code = _run_main(monkeypatch, handler)
 
     assert exit_code == 0
-    # c1 and c2 both dispatched (the concurrent batch); c3 never does, since
-    # the run suspends on c2's result before reaching the modify call after it.
-    assert sorted(dispatched) == ["c1", "c2"]
+    assert len(tools_bodies) == 1
+    assert [c["id"] for c in tools_bodies[0]["calls"]] == ["c1", "c2", "c3"]
     assert "run suspended: waiting_for_approval" in capsys.readouterr().err
 
 
-def test_main_leaves_calls_sequential_when_parallel_tool_calls_is_false(
+def test_main_ignores_parallel_tool_calls_flag_on_step(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """`test_parity.py`'s fixture never sets parallel_tool_calls, so this
-    path must be a true no-op for it: even a "read"-tagged call dispatches
-    alone, never overlapping another, when the step response omits (or sets
-    False) parallel_tool_calls."""
-    windows: list[tuple[str, float, float]] = []
-    lock = threading.Lock()
-    step_body = {
-        "done": False,
-        "text": "",
-        "parallel_tool_calls": False,
-        "tool_calls": [
-            {"id": "c1", "name": "read_a", "arguments": {}, "tier": "read"},
-            {"id": "c2", "name": "read_b", "arguments": {}, "tier": "read"},
-        ],
-    }
-    handler = _tool_recording_handler(windows, lock, step_body)
+    """parallel_tool_calls on StepResult is unused by the shell; batching
+    is always one /tools POST regardless of the flag."""
+    posted_paths: list[str] = []
+    steps = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        posted_paths.append(request.url.path)
+        if request.url.path.endswith("/step"):
+            steps["n"] += 1
+            if steps["n"] == 1:
+                return httpx.Response(
+                    200,
+                    json={
+                        "done": False,
+                        "text": "",
+                        "parallel_tool_calls": False,
+                        "tool_calls": [
+                            {"id": "c1", "name": "read_a", "arguments": {}, "tier": "read"},
+                            {"id": "c2", "name": "read_b", "arguments": {}, "tier": "read"},
+                        ],
+                    },
+                )
+            return httpx.Response(200, json={"done": True, "text": "done", "tool_calls": []})
+        if request.url.path.endswith("/tools"):
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {"status": "ok", "output": "c1 done"},
+                        {"status": "ok", "output": "c2 done"},
+                    ]
+                },
+            )
+        if request.url.path.endswith("/finish"):
+            return httpx.Response(200, json={})
+        raise AssertionError(f"unexpected request: {request.url.path}")
 
     exit_code = _run_main(monkeypatch, handler)
 
     assert exit_code == 0
-    assert len(windows) == 2
-    assert _overlapping_pairs(windows) == 0
+    assert len([p for p in posted_paths if p.endswith("/tools")]) == 1
+    assert [p for p in posted_paths if _is_single_tool_path(p)] == []
