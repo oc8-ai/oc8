@@ -377,7 +377,7 @@ async def _run_isolated(
     stream = _ScriptedStream(_script())
     mask_calls: list[tuple[list[NeutralMessage], list[NeutralMessage]]] = []
     monkeypatch.setattr("oc8.api.v1.internal_agent.stream_completion_with_fallback", stream)
-    monkeypatch.setattr("oc8.api.v1.internal_agent.McpSession", _StubSession)
+    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _StubSession)
     monkeypatch.setattr("oc8.api.v1.internal_agent.record_identity", _record_identity)
     monkeypatch.setattr(
         "oc8.api.v1.internal_agent.execute_control_tool",

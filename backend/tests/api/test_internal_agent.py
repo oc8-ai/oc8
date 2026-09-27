@@ -751,7 +751,7 @@ async def test_a_repeated_write_does_not_reach_the_tool_server_twice(
             calls.append(name)
             return f"created id={len(calls)}"
 
-    monkeypatch.setattr("oc8.api.v1.internal_agent.McpSession", _CountingSession)
+    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _CountingSession)
 
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:  # type: ignore[operator]
@@ -826,7 +826,7 @@ async def test_blast_radius_refuses_a_second_distinct_write(
             calls.append(arguments)
             return "updated"
 
-    monkeypatch.setattr("oc8.api.v1.internal_agent.McpSession", _CountingSession)
+    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _CountingSession)
 
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:  # type: ignore[operator]
@@ -1021,7 +1021,7 @@ async def test_successful_isolated_read_records_ledger_access(
         async def call(self, name: str, arguments: dict[str, Any]) -> str:
             return '{"id": 42, "name": "Acme"}'
 
-    monkeypatch.setattr("oc8.api.v1.internal_agent.McpSession", _SuccessfulSession)
+    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _SuccessfulSession)
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:  # type: ignore[operator]
         agent_id, run_id = await _mcp_backed_run(
@@ -1071,7 +1071,7 @@ async def test_resolved_b5_ask_does_not_park_again_on_internal_tool(
             calls.append((name, arguments))
             return "deleted"
 
-    monkeypatch.setattr("oc8.api.v1.internal_agent.McpSession", _RecordingSession)
+    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _RecordingSession)
 
     tenant = uuid.uuid4()
     resolved_call = ToolCall(id="resolved", name="create_record", arguments={"id": 7})
@@ -1149,7 +1149,7 @@ async def test_a_dispatched_call_records_started_at_and_duration(
             await asyncio.sleep(0.02)
             return "created id=1"
 
-    monkeypatch.setattr("oc8.api.v1.internal_agent.McpSession", _SlowSession)
+    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _SlowSession)
 
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:  # type: ignore[operator]
@@ -1199,7 +1199,7 @@ async def test_a_denied_call_records_no_timing(
         async def call(self, name: str, arguments: dict[str, Any]) -> str:
             raise AssertionError("a denied call must never reach the tool server")
 
-    monkeypatch.setattr("oc8.api.v1.internal_agent.McpSession", _NeverSession)
+    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _NeverSession)
 
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:  # type: ignore[operator]
@@ -2168,7 +2168,7 @@ async def test_step_result_annotates_read_tier_calls_when_parallel_caps_allow(
     response marks them tier="read" and sets parallel_tool_calls=True."""
     from oc8.modelrouter.types import CompletionResult, Usage
 
-    monkeypatch.setattr("oc8.api.v1.internal_agent.McpSession", _EmptySchemaSession)
+    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _EmptySchemaSession)
 
     async def fake_complete(*args: object, **kw: object) -> CompletionResult:
         return CompletionResult(
@@ -2204,7 +2204,7 @@ async def test_step_result_marks_write_calls_modify_tier(
     """A write-tier tool call is annotated tier="modify" regardless of caps."""
     from oc8.modelrouter.types import CompletionResult, Usage
 
-    monkeypatch.setattr("oc8.api.v1.internal_agent.McpSession", _EmptySchemaSession)
+    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _EmptySchemaSession)
 
     async def fake_complete(*args: object, **kw: object) -> CompletionResult:
         return CompletionResult(
@@ -2245,7 +2245,7 @@ async def test_step_result_leaves_tier_modify_when_caps_disallow_parallel(
     tier="modify" even for a plain read, and parallel_tool_calls=False."""
     from oc8.modelrouter.types import CompletionResult, Usage
 
-    monkeypatch.setattr("oc8.api.v1.internal_agent.McpSession", _EmptySchemaSession)
+    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _EmptySchemaSession)
 
     async def fake_complete(*args: object, **kw: object) -> CompletionResult:
         return CompletionResult(
@@ -2283,7 +2283,7 @@ async def test_step_result_never_marks_control_tools_read_tier(
     from oc8 import models as m
     from oc8.modelrouter.types import CompletionResult, Usage
 
-    monkeypatch.setattr("oc8.api.v1.internal_agent.McpSession", _EmptySchemaSession)
+    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _EmptySchemaSession)
 
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:  # type: ignore[operator]
@@ -2361,7 +2361,7 @@ async def test_step_result_excludes_outward_calls_from_read_tier(
     from oc8 import models as m
     from oc8.modelrouter.types import CompletionResult, Usage
 
-    monkeypatch.setattr("oc8.api.v1.internal_agent.McpSession", _EmptySchemaSession)
+    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _EmptySchemaSession)
 
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:  # type: ignore[operator]
