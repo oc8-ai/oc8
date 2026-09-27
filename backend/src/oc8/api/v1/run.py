@@ -47,6 +47,7 @@ def run_to_dto(run: m.AgentRun) -> RunDTO:
         question=ctx.get("pending_question"),
         rendered_components=ctx.get("rendered_components", []),
         todos=ctx.get("todos", []),
+        updated_at=run.updated_at.isoformat(),
     )
 
 

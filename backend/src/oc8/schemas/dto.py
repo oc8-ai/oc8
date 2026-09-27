@@ -898,6 +898,10 @@ class RunDTO(CamelModel):
     tool_calls: list[dict[str, object]] = []
     task_id: str | None = None
     question: str | None = None
+    # AgentRun.updated_at, i.e. the run's heartbeat (see runtime/reconcile.py's
+    # HEARTBEAT_SECONDS/ABANDONED_AFTER) -- lets the frontend tell a run that's
+    # genuinely wedged from one that's just doing a slow step.
+    updated_at: str
     # Durable copy of every render_component call this run made (agent/engine.py's
     # RunResult.rendered_components / internal_agent.py's ctx["rendered_components"]).
     # Unlike the live-only `run.component_rendered` WS event, this survives a page
