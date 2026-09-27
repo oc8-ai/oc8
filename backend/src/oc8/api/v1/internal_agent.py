@@ -25,6 +25,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
+from sqlalchemy import text
 
 from oc8 import models as m
 from oc8.agent import cache_flow
@@ -954,6 +955,14 @@ class ToolResult(BaseModel):
     spill: dict[str, str] | None = None  # {filename, content} for the shell mirror
 
 
+class ToolsBody(BaseModel):
+    calls: list[ToolBody]
+
+
+class ToolsResult(BaseModel):
+    results: list[ToolResult]
+
+
 @router.post(
     "/internal/agent/{run_id}/tool",
     response_model=ToolResult,
@@ -967,6 +976,57 @@ async def tool(
 ) -> ToolResult:
     run = await _run_for_token(run_id, db, principal)
     agent, dept, conn = await _load(db, run)
+    return await _dispatch_one_tool(
+        run=run, agent=agent, dept=dept, conn=conn, body=body, db=db, principal=principal
+    )
+
+
+@router.post(
+    "/internal/agent/{run_id}/tools",
+    response_model=ToolsResult,
+    dependencies=[Depends(unguarded("run-scoped agent token, verified by the route itself"))],
+)
+async def tools(
+    run_id: uuid.UUID,
+    body: ToolsBody,
+    db: DbSession,
+    principal: CurrentPrincipal,
+) -> ToolsResult:
+    if not body.calls:
+        return ToolsResult(results=[])
+    run = await _run_for_token(run_id, db, principal)
+    agent, dept, conn = await _load(db, run)
+    results: list[ToolResult] = []
+    for call in body.calls:
+        # Reload run/context after each dispatch so ledger/transcript commits
+        # from the previous tool are visible (matches N sequential /tool POSTs).
+        # _dispatch_one_tool commits, which drops the SET LOCAL tenant GUC — rebind
+        # before refresh or RLS casts the empty setting and aborts on uuid "".
+        await db.execute(
+            text("SELECT set_config('app.tenant_id', :tid, true)"),
+            {"tid": str(run.tenant_id)},
+        )
+        await db.refresh(run)
+        agent, dept, conn = await _load(db, run)
+        result = await _dispatch_one_tool(
+            run=run, agent=agent, dept=dept, conn=conn, body=call, db=db, principal=principal
+        )
+        results.append(result)
+        if result.status in ("waiting_for_approval", "waiting_for_input"):
+            break
+    return ToolsResult(results=results)
+
+
+async def _dispatch_one_tool(
+    *,
+    run: m.AgentRun,
+    agent: m.Agent,
+    dept: m.Department | None,
+    conn: m.McpConnection | None,
+    body: ToolBody,
+    db: DbSession,
+    principal: CurrentPrincipal,
+) -> ToolResult:
     tc = ToolCall(id=body.id, name=body.name, arguments=body.arguments)
 
     assigned_skills = await load_assigned_skills(db, agent=agent, tenant_id=run.tenant_id)
