@@ -289,3 +289,15 @@ async def close_all() -> None:
     for connection_id, entry in list(_LIVE.items()):
         _LIVE.pop(connection_id, None)
         await _close(entry, connection_id, "closing")
+
+
+async def close(connection_id: uuid.UUID) -> None:
+    """Drop one cached session. No-op when this process is not holding it.
+
+    Isolated `/finish` calls this so a per-run eval connection does not leave
+    a stdio child until MAX_AGE. The gateway does not have to call it.
+    """
+    entry = _LIVE.pop(connection_id, None)
+    if entry is None:
+        return
+    await _close(entry, connection_id, "closed")
