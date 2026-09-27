@@ -252,33 +252,19 @@ def main() -> int:
                     status = "done"
                     break
 
-                prepared: list[dict[str, Any]] = []
-                for tc in calls:
-                    args_preview = _preview(json.dumps(tc.get("arguments", {}), default=str))
-                    log(f"step {step_no}: calling tool {tc['name']} args={args_preview}")
-                    body: dict[str, Any] = {
-                        "id": tc["id"],
-                        "name": tc["name"],
-                        "arguments": tc.get("arguments", {}),
-                    }
-                    if tc["name"] == "run_shell":
-                        body["local_result"] = _run_shell_locally(
-                            str(tc.get("arguments", {}).get("command", ""))
-                        )
-                    elif tc["name"] == "run_program":
-                        body["local_result"] = _run_program_locally(
-                            str(tc.get("arguments", {}).get("code", "")),
-                            step_no=step_no,
-                            cwd=workspace,
-                        )
-                    prepared.append(body)
+                # Flush remotes before any local so a suspend does not leave a
+                # later run_shell / run_program mutating /workspace unused.
+                batch: list[dict[str, Any]] = []
 
-                if prepared:
-                    tr = c.post(f"{api}/tools", json={"calls": prepared})
+                def _flush_batch() -> bool:
+                    """POST the pending batch. True when the run suspended."""
+                    if not batch:
+                        return False
+                    tr = c.post(f"{api}/tools", json={"calls": batch})
                     check_response(tr)
                     results = list(tr.json().get("results") or [])
                     for i, result in enumerate(results):
-                        name = prepared[i]["name"] if i < len(prepared) else "?"
+                        name = batch[i]["name"] if i < len(batch) else "?"
                         log(
                             f"step {step_no}: tool {name} -> status={result.get('status')} "
                             f"output={_preview(str(result.get('output', '')))!r}"
@@ -286,7 +272,46 @@ def main() -> int:
                         _mirror_spill(result.get("spill"), root=workspace)
                         if result.get("status") in ("waiting_for_approval", "waiting_for_input"):
                             log(f"run suspended: {result.get('status')}")
+                            batch.clear()
+                            return True
+                    batch.clear()
+                    return False
+
+                for tc in calls:
+                    args_preview = _preview(json.dumps(tc.get("arguments", {}), default=str))
+                    log(f"step {step_no}: calling tool {tc['name']} args={args_preview}")
+                    name = tc["name"]
+                    if name in ("run_shell", "run_program"):
+                        if _flush_batch():
                             return 0
+                        body: dict[str, Any] = {
+                            "id": tc["id"],
+                            "name": name,
+                            "arguments": tc.get("arguments", {}),
+                        }
+                        if name == "run_shell":
+                            body["local_result"] = _run_shell_locally(
+                                str(tc.get("arguments", {}).get("command", ""))
+                            )
+                        else:
+                            body["local_result"] = _run_program_locally(
+                                str(tc.get("arguments", {}).get("code", "")),
+                                step_no=step_no,
+                                cwd=workspace,
+                            )
+                        batch.append(body)
+                        if _flush_batch():
+                            return 0
+                    else:
+                        batch.append(
+                            {
+                                "id": tc["id"],
+                                "name": name,
+                                "arguments": tc.get("arguments", {}),
+                            }
+                        )
+                if _flush_batch():
+                    return 0
             else:
                 log(f"reached the hard backstop of {MAX_ITERS} iterations, ending run as done")
                 status = "done"

@@ -498,6 +498,55 @@ def test_main_checks_suspend_status_in_order_after_the_batch_completes(
     assert "run suspended: waiting_for_approval" in capsys.readouterr().err
 
 
+def test_main_does_not_run_a_later_local_after_an_earlier_suspend(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """If an earlier /tools result suspends, a later run_shell must not execute."""
+    tools_bodies: list[dict[str, object]] = []
+    shell_runs = {"n": 0}
+
+    def counting_shell(command: str, *, cwd: str = "/workspace") -> dict[str, object]:
+        shell_runs["n"] += 1
+        return {"stdout": "nope", "stderr": "", "exit_code": 0, "timed_out": False}
+
+    monkeypatch.setattr("oc8.isolated_shell._run_shell_locally", counting_shell)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/step"):
+            return httpx.Response(
+                200,
+                json={
+                    "done": False,
+                    "text": "",
+                    "tool_calls": [
+                        {"id": "c1", "name": "ask_user", "arguments": {"question": "?"}},
+                        {
+                            "id": "c2",
+                            "name": "run_shell",
+                            "arguments": {"command": "echo should-not-run"},
+                        },
+                    ],
+                },
+            )
+        if request.url.path.endswith("/tools"):
+            body = json.loads(request.content)
+            tools_bodies.append(body)
+            # Only the remote call was posted — shell must flush before the local.
+            assert [c["id"] for c in body["calls"]] == ["c1"]
+            return httpx.Response(
+                200,
+                json={"results": [{"status": "waiting_for_input", "output": "?"}]},
+            )
+        raise AssertionError(f"unexpected request: {request.url.path}")
+
+    exit_code = _run_main(monkeypatch, handler)
+
+    assert exit_code == 0
+    assert shell_runs["n"] == 0
+    assert len(tools_bodies) == 1
+    assert "run suspended: waiting_for_input" in capsys.readouterr().err
+
+
 def test_main_ignores_parallel_tool_calls_flag_on_step(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
