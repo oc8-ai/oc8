@@ -51,6 +51,8 @@ async def _overdue_csv_body(ctx: ScenarioContext) -> str | None:
     if ctx.run_id is None:
         return None
     async with tenant_session(ctx.tenant_id) as db:
+        # Newest upload wins: agents sometimes attach overdue.csv more than
+        # once. scalar_one_or_none() would raise MultipleResultsFound.
         row = (
             await db.execute(
                 select(m.FileAttachment)
@@ -61,8 +63,9 @@ async def _overdue_csv_body(ctx: ScenarioContext) -> str | None:
                     m.FileAttachment.filename == "overdue.csv",
                 )
                 .order_by(m.FileAttachment.created_at.desc(), m.FileAttachment.id.desc())
+                .limit(1)
             )
-        ).scalar_one_or_none()
+        ).scalars().first()
     if row is None:
         return None
     return row.extracted_text or ""
