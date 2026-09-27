@@ -76,8 +76,8 @@ from oc8.agent.harness.procedures import (
     procedure_haystack,
     satisfied_ids,
 )
-from oc8.agent.mcp_client import McpSession
-from oc8.agent.mcp_env import resolve_mcp_env
+from oc8.agent import mcp_pool
+from oc8.agent.mcp_env import has_oauth_ref, resolve_mcp_env
 from oc8.agent.mcp_requirements import wrap_with_requirements
 from oc8.agent.outward import outward_target
 from oc8.agent.preamble import build_run_preamble
@@ -463,16 +463,22 @@ async def step(
             cfg = _mcp_params(conn)
             env = await _mcp_env(conn, db, run.tenant_id)
             command, args = wrap_with_requirements(cfg.get("command", ""), cfg.get("args", []), cfg)
-            async with McpSession(command, args, env=env) as s:
-                tool_schemas_raw = [
-                    {
-                        "name": t.name,
-                        "description": t.description,
-                        "parameters": t.parameters,
-                        "annotations": t.annotations,
-                    }
-                    for t in apply_tool_notes(s.tools, cfg)
-                ]
+            listed = await mcp_pool.tools(
+                conn.id,
+                command=command,
+                args=args,
+                env=env,
+                reusable=not has_oauth_ref(cfg),
+            )
+            tool_schemas_raw = [
+                {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.parameters,
+                    "annotations": t.annotations,
+                }
+                for t in apply_tool_notes(listed, cfg)
+            ]
         ctx["tool_schemas"] = tool_schemas_raw
 
     mcp_tools = [
@@ -1458,8 +1464,15 @@ async def tool(
                 command, args = wrap_with_requirements(
                     cfg.get("command", ""), cfg.get("args", []), cfg
                 )
-                async with McpSession(command, args, env=env) as s:
-                    output = await s.call(tc.name, tc.arguments)
+                output = await mcp_pool.call(
+                    conn.id,
+                    command=command,
+                    args=args,
+                    env=env,
+                    tool=tc.name,
+                    arguments=tc.arguments,
+                    reusable=not has_oauth_ref(cfg),
+                )
             except Exception as exc:  # surface to the model
                 tool_error = classify_exception(
                     exc,
@@ -1654,5 +1667,8 @@ async def finish(
     # The executor (which is driving the container) applies the state transition
     # from the RunResult it builds; here we only record the shell's verdict.
     run.context = {**run.context, "isolated_result": {"status": body.status, "output": body.output}}
+    _agent, _dept, conn = await _load(db, run)
+    if conn is not None:
+        await mcp_pool.close(conn.id)
     await db.commit()
     return {"status": "recorded"}
