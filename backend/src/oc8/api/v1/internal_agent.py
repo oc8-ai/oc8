@@ -28,6 +28,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import text
+from sqlalchemy.orm.attributes import flag_modified
 
 from oc8 import models as m
 from oc8.agent import cache_flow, mcp_pool
@@ -590,21 +591,6 @@ class StepResult(BaseModel):
     sdk_py: str = ""
 
 
-async def _finish_step_timing(run: m.AgentRun, rec: dict[str, Any]) -> None:
-    """Close a step's timing and tell an already-open tab about it.
-
-    `finish_step` (oc8.agent.harness.step_timing, unchanged here) already
-    computes the final five-key entry; this only adds the live-publish side
-    that capture never had. No DB write of its own: `ctx["stepTimings"]`
-    (holding `rec`) rides along on whichever context write the caller makes
-    right after this, exactly the arrangement `publish_run_tool_call`
-    documents at its own call site -- this only spares an already-open tab
-    the wait for that reload.
-    """
-    finish_step(rec)
-    await publish_run_step_timing(run.tenant_id, run_id=run.id, timing=rec)
-
-
 @router.post(
     "/internal/agent/{run_id}/step",
     response_model=StepResult,
@@ -635,9 +621,26 @@ async def step(
         # common next-/step finish never runs on this early exit.
         step_timings = ctx.get("stepTimings") or []
         if step_timings and "_t0" in step_timings[-1]:
-            await _finish_step_timing(run, step_timings[-1])
+            closed_step_timing = finish_step(step_timings[-1])
             run.context = ctx
+            # `finish_step` mutates `step_timings[-1]` in place, and that's
+            # the SAME dict `run.context` (pre-assignment) already holds --
+            # so by the time SQLAlchemy compares old vs. new to decide
+            # whether this attribute actually changed, both sides already
+            # reflect the closed timing and look equal, and the column is
+            # silently dropped from the UPDATE. This is the one branch where
+            # nothing else in `ctx` changes alongside the close (every other
+            # call site also touches the transcript or another key, which
+            # saves it from this), so it needs an explicit nudge here.
+            flag_modified(run, "context")
             await db.commit()
+            # Only now, after the commit that actually persists this entry in
+            # `ctx["stepTimings"]`, tell an open tab about it -- publishing
+            # any earlier (right when finish_step ran, above) could hand out
+            # a live event for a step this request then failed to commit at
+            # all, the same ordering `publish_run_tool_call`'s own call site
+            # already gets right.
+            await publish_run_step_timing(run.tenant_id, run_id=run.id, timing=closed_step_timing)
         return StepResult(done=True, text="Reached step limit.", status_override="done")
 
     transcript: list[dict[str, Any]] = list(ctx.get("transcript", []))

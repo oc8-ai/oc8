@@ -29,6 +29,7 @@ from tests.api.test_internal_agent import (
     _agent_token,
     _mcp_backed_run,
     _plain_agent_run,
+    _post_step,
     _post_tool,
 )
 from tests.conftest import AppSessionFactory
@@ -147,6 +148,48 @@ async def test_the_suspend_path_publishes_only_after_its_commit(
     )
     assert code == 200, body
     assert body["status"] == "waiting_for_input"
+
+    assert published, "the closed step timing was never published"
+    assert "commit" in order
+    assert order.index("commit") < order.index("publish"), order
+
+    async with app_session(tenant) as db:
+        stored = await db.get(m.AgentRun, run_id)
+        assert stored is not None
+        assert stored.context["stepTimings"][-1] == published[-1]
+
+
+async def test_the_max_steps_early_exit_publishes_only_after_its_commit(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`step()`'s max-steps early-exit branch: review round 2 found this was
+    the one site exempted from round 1 as "already correct" -- it turned out
+    to share the same defect, just with a two-line window instead of a loop
+    or an intervening DB write. `_finish_step_timing` (now removed, it had
+    exactly one caller) did `finish_step` then `publish_run_step_timing`
+    BEFORE `run.context = ctx; await db.commit()`. Fixed the same way as the
+    other four sites: publish only after that commit lands.
+    """
+    from oc8.config import get_settings
+
+    published: list[dict[str, Any]] = []
+    order = await _order_spies(monkeypatch, published)
+
+    tenant = uuid.uuid4()
+    max_steps = get_settings().agent_max_steps
+    async with app_session(tenant) as db:
+        agent, _task, run = await _plain_agent_run(
+            db, tenant, steps=max_steps, stepTimings=[start_step(1)]
+        )
+        agent_id, run_id = agent.id, run.id
+
+    # Fixture setup above commits its own row -- only the request itself
+    # should count towards the order asserted below.
+    order.clear()
+
+    body = await _post_step(tenant, agent_id, run_id)
+    assert body["done"] is True
+    assert body["text"] == "Reached step limit."
 
     assert published, "the closed step timing was never published"
     assert "commit" in order
