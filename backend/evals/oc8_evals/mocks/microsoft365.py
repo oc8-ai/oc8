@@ -117,7 +117,13 @@ TOOLS: list[types.Tool] = [
 ]
 
 
+def _ts(value: str) -> str:
+    return value.rstrip("Zz")
+
+
 def _overlaps(a_start: str, a_end: str, b_start: str, b_end: str) -> bool:
+    a_start, a_end = _ts(a_start), _ts(a_end)
+    b_start, b_end = _ts(b_start), _ts(b_end)
     return a_start < b_end and b_start < a_end
 
 
@@ -183,13 +189,26 @@ def handlers(store: Store) -> dict[str, Handler]:
     async def mail_create_draft(args: dict[str, Any]) -> str:
         def _do(state: dict[str, Any]) -> str:
             did = store.next_id(state, "draft")
+            # A reply draft that names the message but omits `to` is still
+            # addressed to that message's sender. mail_send already does this;
+            # leaving it off the draft made "draft addressed to the customer"
+            # fail whenever the model set inReplyTo and not to.
+            recipients = list(args.get("to") or [])
+            reply_to = args.get("inReplyTo")
+            if not recipients and reply_to:
+                original = next(
+                    (m for m in state.get("messages", []) if m.get("id") == reply_to),
+                    None,
+                )
+                if original and original.get("from"):
+                    recipients = [original["from"]]
             state.setdefault("drafts", []).append(
                 {
                     "id": did,
-                    "to": list(args.get("to", [])),
+                    "to": recipients,
                     "subject": str(args["subject"]),
                     "body": str(args["body"]),
-                    "inReplyTo": args.get("inReplyTo"),
+                    "inReplyTo": reply_to,
                 }
             )
             return f"draft {did} created (not sent)"

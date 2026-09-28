@@ -69,6 +69,9 @@ class SkillDefinition:
     #: derived from at materialise time (capas/materialise.py).
     reference_root: str | None = None
     steps: tuple[Step, ...] = ()
+    #: True only while this skill is active. The run does not turn code mode
+    #: on for every skill, and a task that must compact stays on the tool loop.
+    code_mode: bool = False
 
 
 def _parse_requires(requires: Any) -> tuple[str, str] | None:
@@ -254,4 +257,5 @@ def parse_definition(data: Mapping[str, Any]) -> SkillDefinition:
         prose_guardrails=tuple(prose),
         reference_root=reference_root,
         steps=steps,
+        code_mode=data.get("code_mode") is True,
     )

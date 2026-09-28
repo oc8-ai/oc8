@@ -146,7 +146,13 @@ TOOLS: list[types.Tool] = [
 ]
 
 
+def _ts(value: str) -> str:
+    return value.rstrip("Zz")
+
+
 def _overlaps(a_start: str, a_end: str, b_start: str, b_end: str) -> bool:
+    a_start, a_end = _ts(a_start), _ts(a_end)
+    b_start, b_end = _ts(b_start), _ts(b_end)
     return a_start < b_end and b_start < a_end
 
 

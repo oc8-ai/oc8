@@ -107,6 +107,7 @@ def cards_from_offered(
     skill_names: frozenset[str],
     mcp_connection: str | None,
     tool_notes: Mapping[str, Any] | None = None,
+    connection_by_tool: Mapping[str, str] | None = None,
 ) -> list[ToolCard]:
     """Build ToolCards from the full ``offered_tools`` list (ruling 4)."""
     notes_map = tool_notes if isinstance(tool_notes, Mapping) else {}
@@ -116,7 +117,8 @@ def cards_from_offered(
             connection = "oc8"
             notes = ""
         else:
-            connection = mcp_connection or "oc8"
+            routed = (connection_by_tool or {}).get(tool.name)
+            connection = routed or mcp_connection or "oc8"
             raw_note = notes_map.get(tool.name)
             if isinstance(raw_note, str):
                 notes = raw_note
@@ -167,6 +169,8 @@ def select_completion_tools(
     tool_notes: Mapping[str, Any] | None,
     find_tools: NeutralTool,
     procedure_texts: list[str] | None = None,
+    connection_by_tool: Mapping[str, str] | None = None,
+    allowed_connections: set[str] | None = None,
 ) -> tuple[list[NeutralTool], list[dict[str, Any]]]:
     """A4 step: catalog + select_inline → completion tools and deferred catalog.
 
@@ -179,7 +183,22 @@ def select_completion_tools(
         skill_names=skill_names,
         mcp_connection=mcp_connection,
         tool_notes=tool_notes,
+        connection_by_tool=connection_by_tool,
     )
+    held_back: list[ToolCard] = []
+    if allowed_connections is not None:
+        kept: list[ToolCard] = []
+        for card in catalog:
+            if (
+                card.name in control_names
+                or card.name in skill_names
+                or card.name in pinned
+                or card.connection in allowed_connections
+            ):
+                kept.append(card)
+            else:
+                held_back.append(card)
+        catalog = kept
     inline, deferred = select_inline(
         catalog,
         control_names=control_names,
@@ -190,6 +209,10 @@ def select_completion_tools(
         pinned=pinned,
         tool_list_may_change=tool_list_may_change,
     )
+    if held_back:
+        deferred = [*deferred, *held_back]
+        if not any(card.name == find_tools.name for card in inline):
+            inline = [*inline, _FIND_TOOLS_CARD]
     completion = completion_tools_from_inline(offered, inline, find_tools=find_tools)
     # find_tools ranks the deferred set only (ruling 3 / empty query → first
     # 10 deferred by name). When not deferring, deferred is empty.

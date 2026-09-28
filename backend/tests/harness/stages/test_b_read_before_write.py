@@ -40,6 +40,26 @@ def test_create_without_an_entity_identity_is_exempt() -> None:
     )
 
 
+def test_create_tools_are_exempt_even_with_a_provisional_identity() -> None:
+    """calendar_create_event keys outward on start; that must not trip B2."""
+    assert (
+        read_before_write_denial(
+            tool="calendar_create_event",
+            tier="outward",
+            identity=("calendar_event", "2026-09-28T15:00:00Z"),
+            ledger=Ledger(),
+            connection="google_workspace",
+            config={
+                "read_before_write": True,
+                "create_tools": ["calendar_create_event", "calendar_create_meet_link"],
+                "entity_lookup_tools": ["calendar_list_events"],
+            },
+            label="",
+        )
+        is None
+    )
+
+
 def test_read_tool_is_exempt() -> None:
     assert (
         read_before_write_denial(

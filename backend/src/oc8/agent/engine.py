@@ -45,6 +45,7 @@ from oc8.agent.harness.procedures import (
     satisfied_ids,
 )
 from oc8.agent.harness.stages.a_compaction import (
+    already_compacted_this_step,
     prompt_token_fallback,
     rebuild_transcript,
     should_compact,
@@ -77,7 +78,13 @@ from oc8.agent.harness.stages.c_ledger import (
 )
 from oc8.agent.harness.stages.c_reminders import track_repeat_tool_call
 from oc8.agent.harness.stages.c_spill import persist_spill
-from oc8.agent.mcp_client import McpSession
+from oc8.agent.elicitation import ElicitationNeeded, arguments_with_answer
+from oc8.agent.mcp_client import McpServerStartupError, McpSession
+from oc8.agent.offering import (
+    allowed_connections_for_skills,
+    connection_by_tool,
+    unavailable_sentence,
+)
 from oc8.agent.mcp_env import resolve_mcp_env
 from oc8.agent.mcp_requirements import wrap_with_requirements
 from oc8.agent.outward import outward_target
@@ -458,6 +465,23 @@ async def run_agent(
             focus_spec = None
             outward_tools = None
             guardrail_attribute_specs = []
+
+        async def _record_url(name: str, arguments: dict[str, Any]) -> str | None:
+            # Same address the isolated loop stores: an Odoo form URL or a Jira
+            # browse page, built from the connection's own base URL.
+            if mcp_conn is None or mcp_conn.name not in ("odoo", "jira"):
+                return None
+            ident = record_identity(name, arguments, focus_spec)
+            if ident is None:
+                return None
+            cfg = mcp_conn.config if isinstance(mcp_conn.config, dict) else {}
+            env = await resolve_mcp_env(
+                db, tenant_id=tenant_id, cfg=cfg, connection_name=mcp_conn.name
+            )
+            from oc8.agent.record_link import record_url_from_env
+
+            return record_url_from_env(mcp_conn.name, env, ident)
+
         # A resume leg continues the task its suspended leg opened; see
         # open_run_task. The run is the only place that link is recorded, so a
         # runtime that gets no run_id (a direct run_agent call in a test) simply
@@ -627,6 +651,7 @@ async def run_agent(
                     scopes=tool_scopes,
                     config=connection_config,
                     annotations=offered.annotations if offered is not None else None,
+                    arguments=tc.arguments,
                 )
                 identity = record_identity(tc.name, tc.arguments, focus_spec)
                 return harness.gate(
@@ -652,6 +677,73 @@ async def run_agent(
             for steps in range(1, max_steps + 1):
                 # C3: the step stamp on this turn's shaped tool output reads this.
                 harness.state.step_no = steps
+                if steps == 1 and server is not None and run_id is not None:
+                    parked = await db.get(m.AgentRun, run_id)
+                    pending = (
+                        (parked.context or {}).get("pending_elicitation")
+                        if parked is not None and isinstance(parked.context, dict)
+                        else None
+                    )
+                    answers = [
+                        item
+                        for item in (parked.context or {}).get("clarifications", [])
+                        if isinstance(item, dict) and item.get("answer")
+                    ] if parked is not None and isinstance(parked.context, dict) else []
+                    if (
+                        isinstance(pending, dict)
+                        and answers
+                        and str(pending.get("connection") or "") == (connection_key or "")
+                    ):
+                        tool_name = str(pending.get("tool") or "")
+                        arguments = arguments_with_answer(
+                            dict(pending.get("arguments") or {}), str(answers[-1]["answer"])
+                        )
+                        parked_ctx = dict(parked.context or {})
+                        try:
+                            finished = await server.call(tool_name, arguments)
+                        except ElicitationNeeded as exc:
+                            parked_ctx["pending_elicitation"] = {
+                                "connection": connection_key or "",
+                                "tool": tool_name,
+                                "arguments": arguments,
+                                "question": exc.message,
+                            }
+                            parked.context = parked_ctx
+                            messages.append(
+                                NeutralMessage(
+                                    role="user",
+                                    content=(
+                                        f"The same call {tool_name} still needs an answer:\n"
+                                        f"{exc.message}"
+                                    ),
+                                )
+                            )
+                            task.state = "waiting_for_input"
+                            return RunResult(
+                                task.id,
+                                agent.id,
+                                "waiting_for_input",
+                                exc.message,
+                                tool_trace,
+                                0,
+                                pending_runs,
+                                rendered_components,
+                                todos,
+                                step_timings,
+                            )
+                        except Exception as exc:
+                            finished = f"ERROR: {exc}"
+                        messages.append(
+                            NeutralMessage(
+                                role="user",
+                                content=(
+                                    f"The same call {tool_name} finished with the "
+                                    f"operator's answer:\n{finished}"
+                                ),
+                            )
+                        )
+                        parked_ctx.pop("pending_elicitation", None)
+                        parked.context = parked_ctx
                 if not session_state["started"]:
                     await dispatch_claude_event(
                         tenant_id,
@@ -725,6 +817,16 @@ async def run_agent(
                 resolved_tools = _offered()
                 raw_notes = connection_config.get("tool_notes")
                 tool_notes = raw_notes if isinstance(raw_notes, dict) else None
+                single_routes = (
+                    {tool.name: [connection_key, tool.name] for tool in tools}
+                    if connection_key
+                    else {}
+                )
+                required = [
+                    req.tool
+                    for skill in active_skills
+                    for req in skill.definition.requires_tools
+                ]
                 resolved_tools, catalog = select_completion_tools(
                     resolved_tools,
                     control_names=CONTROL_TOOL_NAMES,
@@ -737,6 +839,8 @@ async def run_agent(
                     tool_notes=tool_notes,
                     find_tools=FIND_TOOLS,
                     procedure_texts=_procedure_texts(active_skills),
+                    connection_by_tool=connection_by_tool(single_routes),
+                    allowed_connections=allowed_connections_for_skills(single_routes, required),
                 )
                 harness.state.tool_catalog = catalog
                 resolved_params = resolve_params(model_config, agent=agent)
@@ -890,7 +994,7 @@ async def run_agent(
                     except Exception as exc:
                         if overflow_tokens(str(exc)) is None:
                             raise
-                        if overflow_retried:
+                        if overflow_retried or already_compacted_this_step(harness.state):
                             raise
                         overflow_retried = True
                         await _compact()
@@ -1167,11 +1271,20 @@ async def run_agent(
                                 ),
                                 None,
                             ),
+                            arguments=_pre_tc.arguments,
                         ) != "read":
                             break
                         if (
                             outward_target(
-                                _pre_tc.name, _pre_tc.arguments, focus_spec, outward_tools
+                                _pre_tc.name,
+                                _pre_tc.arguments,
+                                focus_spec,
+                                outward_tools,
+                                skip_spec=(
+                                    connection_config.get("outward_skip_spec")
+                                    if isinstance(connection_config, dict)
+                                    else None
+                                ),
                             )
                             is not None
                         ):
@@ -1369,6 +1482,7 @@ async def run_agent(
                                     reason_context=decision.context,
                                 )
                             else:
+                                link = await _record_url(tc.name, tc.arguments)
                                 ar = await raise_approval(
                                     db,
                                     tenant_id=tenant_id,
@@ -1386,6 +1500,7 @@ async def run_agent(
                                             if gate_verdict is not None
                                             else ""
                                         ),
+                                        **({"record_url": link} if link else {}),
                                     },
                                     reason_code=decision.reason_code,
                                     reason_context=decision.context,
@@ -1698,6 +1813,11 @@ async def run_agent(
                                 tc=tc,
                                 focus_spec=focus_spec,
                                 outward_tools=outward_tools,
+                                skip_spec=(
+                                    connection_config.get("outward_skip_spec")
+                                    if isinstance(connection_config, dict)
+                                    else None
+                                ),
                             )
                         ).refusal is not None:
                             # Before the call, not after: the point is that the
@@ -1724,6 +1844,7 @@ async def run_agent(
                                     focus=focus,
                                     specific=describes_a_record(tc.name, tc.arguments, focus_spec),
                                     cache_hit=cached_result is not None,
+                                    record_url=await _record_url(tc.name, tc.arguments),
                                 )
                             replay = await replay_for(
                                 db,
@@ -1746,6 +1867,33 @@ async def run_agent(
                                 else:
                                     try:
                                         output = await server.call(tc.name, tc.arguments)
+                                    except ElicitationNeeded as exc:
+                                        if run_id is not None:
+                                            parked = await db.get(m.AgentRun, run_id)
+                                            if parked is not None:
+                                                parked_ctx = dict(parked.context or {})
+                                                parked_ctx["pending_elicitation"] = {
+                                                    "connection": connection_key or "",
+                                                    "tool": tc.name,
+                                                    "arguments": dict(tc.arguments),
+                                                    "question": exc.message,
+                                                }
+                                                parked.context = parked_ctx
+                                        task.state = "waiting_for_input"
+                                        note_tools(step_rec, step_tool_wait_ms)
+                                        finish_step(step_rec)
+                                        return RunResult(
+                                            task.id,
+                                            agent.id,
+                                            "waiting_for_input",
+                                            exc.message,
+                                            tool_trace,
+                                            steps,
+                                            pending_runs,
+                                            rendered_components,
+                                            todos,
+                                            step_timings,
+                                        )
                                     except Exception as exc:  # surface tool errors to the model
                                         tool_error = classify_exception(
                                             exc,
@@ -1941,8 +2089,21 @@ async def run_agent(
                     command, args = wrap_with_requirements(
                         cfg.get("command", ""), cfg.get("args", []), cfg
                     )
-                    async with McpSession(command, args, env=env) as server:
-                        return await loop(apply_tool_notes(server.tools, cfg), server)
+                    try:
+                        async with McpSession(command, args, env=env) as server:
+                            return await loop(apply_tool_notes(server.tools, cfg), server)
+                    except McpServerStartupError as exc:
+                        reason = " ".join(str(exc).split())[:200]
+                        harness.state.unavailable_connections = [
+                            {"name": mcp_conn.name, "reason": reason}
+                        ]
+                        messages.append(
+                            NeutralMessage(
+                                role="user",
+                                content=unavailable_sentence(mcp_conn.name, reason),
+                            )
+                        )
+                        return await loop([], None)
                 return await loop([], None)
             finally:
                 if session_state["started"]:

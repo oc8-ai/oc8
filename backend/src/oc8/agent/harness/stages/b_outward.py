@@ -35,8 +35,11 @@ async def check_outward(
     tc: ToolCall,
     focus_spec: dict[str, Any] | None,
     outward_tools: list[str] | None,
+    skip_spec: dict[str, Any] | None = None,
 ) -> OutwardCheck:
-    target = outward_target(tc.name, tc.arguments, focus_spec, outward_tools)
+    target = outward_target(
+        tc.name, tc.arguments, focus_spec, outward_tools, skip_spec=skip_spec
+    )
     if target is None or task_id is None:
         return OutwardCheck(target=target, refusal=None)
     if await already_delivered(db, tenant_id=tenant_id, task_id=task_id, target=target):

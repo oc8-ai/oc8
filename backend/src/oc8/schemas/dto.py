@@ -61,6 +61,8 @@ class TaskDTO(CamelModel):
     agent_id: str | None = None
     column: str  # backlog | in_progress | waiting | done
     meta: str | None = None
+    #: Form URL of the record this task is on, when the connection can name one.
+    record_url: str | None = None
     title_translations: dict[str, str] = {}
     meta_translations: dict[str, str] = {}
 
@@ -162,6 +164,8 @@ class ApprovalDTO(CamelModel):
     #: `None` for every approval not raised that way -- `detail` remains the
     #: only "why" for those.
     reason_context: dict[str, Any] | None = None
+    #: The record in the source system, when the held call names one.
+    record_url: str | None = None
 
 
 class ClarificationDTO(CamelModel):

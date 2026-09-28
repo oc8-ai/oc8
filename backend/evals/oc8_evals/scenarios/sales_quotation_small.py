@@ -10,8 +10,12 @@ from oc8_evals.stack import ScenarioContext
 
 def _orders(ctx: ScenarioContext, partner: int) -> list[dict[str, Any]]:
     assert ctx.odoo is not None
+    # amount_untaxed, not amount_total: the task asks for list-price sum, and
+    # Odoo adds tax into amount_total (P12 false-success: 2500 list → 2875 total).
     return ctx.odoo.search_read(
-        "sale.order", [("partner_id", "=", partner)], ["id", "state", "amount_total", "order_line"]
+        "sale.order",
+        [("partner_id", "=", partner)],
+        ["id", "state", "amount_untaxed", "order_line"],
     )
 
 
@@ -31,8 +35,8 @@ async def expect(ctx: ScenarioContext, seeded: dict[str, Any]) -> list[Check]:
         Check("two order lines", one is not None and len(one["order_line"]) == 2),
         Check(
             "total matches list prices",
-            one is not None and abs(one["amount_total"] - seeded["expected_total"]) < 0.01,
-            f"total={one['amount_total'] if one else None}",
+            one is not None and abs(one["amount_untaxed"] - seeded["expected_total"]) < 0.01,
+            f"untaxed={one['amount_untaxed'] if one else None}",
         ),
     ]
 

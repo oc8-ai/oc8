@@ -56,3 +56,18 @@ def resolve_caps(params: Mapping[str, Any] | None) -> ModelCaps:
         caps = replace(caps, compaction_summary_model=summary_model)
 
     return caps
+
+
+def caps_for_active_skills(caps: ModelCaps, skills: Any) -> ModelCaps:
+    """code_mode stays off unless the model asked for it or an active skill does.
+
+    Assigned-but-idle skills do not count. `long_run_lead_ids` keeps the small
+    window and the compaction check because its skill does not set this.
+    """
+    if caps.code_mode:
+        return caps
+    for skill in skills:
+        definition = getattr(skill, "definition", None)
+        if definition is not None and getattr(definition, "code_mode", False):
+            return replace(caps, code_mode=True)
+    return caps

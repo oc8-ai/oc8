@@ -53,6 +53,23 @@ def authorize(
         return Decision(Effect.ALLOW)
     if tc.name == "ask_user":
         return Decision(Effect.ALLOW)
+    if tc.name == "read_resource":
+        # Same read right as a read tool on the connection the call names.
+        # The body is fetched afterwards; this only decides whether it may be.
+        key = str(tc.arguments.get("connection", "")).strip() or connection_key
+        if not str(tc.arguments.get("uri", "")).strip():
+            return Decision(Effect.DENY, "read_resource requires a uri")
+        if not key:
+            return Decision(Effect.DENY, "read_resource requires a connection")
+        return authorize_tool_call(
+            policies=tool_policies,
+            connection_key=key,
+            right="read",
+            tool=tc.name,
+            value=None,
+            attributes={},
+            extra_thresholds=(),
+        )
     if tc.name == "propose_change":
         # Like ask_user: it belongs to no connection, so the department frame
         # has nothing to decide it against -- the Assistant's chat run has no

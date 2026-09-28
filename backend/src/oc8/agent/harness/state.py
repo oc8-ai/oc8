@@ -106,6 +106,8 @@ class HarnessState:
     pinned_tools: list[str] = field(default_factory=list)
     #: Deferred tool catalog for find_tools (empty when not deferring).
     tool_catalog: list[dict[str, Any]] = field(default_factory=list)
+    #: Connections whose tools/list failed. find_tools repeats the sentence.
+    unavailable_connections: list[dict[str, Any]] = field(default_factory=list)
     #: True after the once-per-run B4 missing-fact check has fired.
     clarification_done: bool = False
 
@@ -182,6 +184,9 @@ class HarnessState:
             last_compacted_step=int(raw.get("last_compacted_step", -999)),
             pinned_tools=list(raw.get("pinned_tools") or []),
             tool_catalog=[dict(card) for card in (raw.get("tool_catalog") or [])],
+            unavailable_connections=[
+                dict(item) for item in (raw.get("unavailable_connections") or []) if isinstance(item, dict)
+            ],
             clarification_done=bool(raw.get("clarification_done", False)),
             masked={
                 key: MaskRef(

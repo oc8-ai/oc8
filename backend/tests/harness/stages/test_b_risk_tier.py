@@ -57,3 +57,32 @@ def test_read_only_hint_does_not_raise_a_write_scope() -> None:
 def test_control_tool_static_tier() -> None:
     assert classify_tier("ask_user", scopes=None, config=None, annotations=None) == "read"
     assert classify_tier("memory_write", scopes=None, config=None, annotations=None) == "write"
+
+
+def test_outward_skip_spec_keeps_internal_note_as_write() -> None:
+    """Odoo post_message subtype=note must not raise to outward (helpdesk_internal_note)."""
+    cfg = {
+        "outward_tools": ["post_message"],
+        "outward_skip_spec": {"post_message": {"subtype": ["note"]}},
+    }
+    scopes = {"modify": ["post_message"]}
+    assert (
+        classify_tier(
+            "post_message",
+            scopes=scopes,
+            config=cfg,
+            annotations=None,
+            arguments={"subtype": "note", "body": "Checked the logs"},
+        )
+        == "write"
+    )
+    assert (
+        classify_tier(
+            "post_message",
+            scopes=scopes,
+            config=cfg,
+            annotations=None,
+            arguments={"subtype": "comment", "body": "Hello"},
+        )
+        == "outward"
+    )

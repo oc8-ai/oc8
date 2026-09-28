@@ -140,6 +140,12 @@ def _run_program_locally(
         if timeout_s is not None
         else program_timeout_s(os.environ.get("OC8_RUN_PROGRAM_TIMEOUT_S"))
     )
+    # Scripts live under programs/, so python3 puts that dir on sys.path[0]
+    # — not cwd. Without PYTHONPATH=cwd, `import oc8_tools` fails even when
+    # /workspace/oc8_tools.py exists (P12 bulk_partner_review).
+    env = os.environ.copy()
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = cwd if not existing else f"{cwd}{os.pathsep}{existing}"
     try:
         proc = subprocess.run(
             ["python3", path],
@@ -147,6 +153,7 @@ def _run_program_locally(
             timeout=timeout,
             capture_output=True,
             text=True,
+            env=env,
         )
         return {
             "stdout": proc.stdout[:RUN_SHELL_OUTPUT_CHARS],
@@ -224,8 +231,8 @@ def main() -> int:
                         with open(sdk_path, "w", encoding="utf-8") as fh:
                             fh.write(sdk_py)
                 # parallel_tool_calls may still appear on StepResult (spec §3.5 /
-                # control-plane pre-pass); the shell no longer reads it — batch
-                # dispatch is sequential server-side via POST /tools.
+                # control-plane pre-pass). The shell always posts one /tools
+                # batch; a leading read run is overlapped on the server.
                 log(
                     f"step {step_no}: model responded, tool_calls={len(calls)} "
                     f"text={_preview(step.get('text') or '')!r}"

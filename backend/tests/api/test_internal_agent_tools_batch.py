@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any
 
@@ -23,6 +24,8 @@ def _agent_token(tenant: uuid.UUID, agent_id: uuid.UUID, run_id: uuid.UUID) -> s
 async def _seed_mcp_run(
     db: Any,
     tenant: uuid.UUID,
+    *,
+    parallel_tool_calls: bool = False,
 ) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
     """Agent + run bound to an odoo MCP connection. Returns (agent_id, run_id, conn_id)."""
     from oc8 import models as m
@@ -34,6 +37,17 @@ async def _seed_mcp_run(
     )
     db.add(dept)
     await db.flush()
+    model_config_id = None
+    if parallel_tool_calls:
+        model_config = m.ModelConfig(
+            tenant_id=tenant,
+            provider="fake",
+            model="fake",
+            params={"parallel_tool_calls": True},
+        )
+        db.add(model_config)
+        await db.flush()
+        model_config_id = model_config.id
     agent = m.Agent(
         tenant_id=tenant,
         department_id=dept.id,
@@ -42,6 +56,7 @@ async def _seed_mcp_run(
         narrowing={},
         definition={},
         presentation={},
+        model_config_id=model_config_id,
     )
     db.add(agent)
     await db.flush()
@@ -232,4 +247,103 @@ async def test_single_tool_route_still_works(
     )
     assert code == 200, body
     assert body["status"] == "ok"
-    assert "ok" in body["output"]
+
+
+@pytest.mark.asyncio
+async def test_parallel_reads_overlap_and_keep_call_order(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release = asyncio.Event()
+    seen = 0
+
+    async def fake_call(connection_id: uuid.UUID, *, tool: str = "", **kwargs: Any) -> str:
+        nonlocal seen
+        seen += 1
+        if seen >= 2:
+            release.set()
+        await asyncio.wait_for(release.wait(), timeout=1.0)
+        model = kwargs.get("arguments", {}).get("model", "")
+        return f"ok:{tool}:{model}"
+
+    monkeypatch.setattr("oc8.api.v1.internal_agent.mcp_pool.call", fake_call)
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id, _conn_id = await _seed_mcp_run(
+            db, tenant, parallel_tool_calls=True
+        )
+
+    code, body = await _post_tools(
+        tenant,
+        agent_id,
+        run_id,
+        [
+            {"id": "c1", "name": "search_records", "arguments": {"model": "crm.lead"}},
+            {"id": "c2", "name": "search_records", "arguments": {"model": "res.partner"}},
+        ],
+    )
+
+    assert code == 200, body
+    results = body["results"]
+    assert [r["status"] for r in results] == ["ok", "ok"]
+    assert "crm.lead" in results[0]["output"]
+    assert "res.partner" in results[1]["output"]
+    assert seen == 2
+
+
+@pytest.mark.asyncio
+async def test_parallel_reads_do_not_start_a_later_write_or_a_call_after_suspend(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    order: list[str] = []
+
+    async def fake_call(connection_id: uuid.UUID, *, tool: str = "", **kwargs: Any) -> str:
+        order.append(tool)
+        if tool == "search_records":
+            await asyncio.sleep(0.05)
+        return "ok"
+
+    monkeypatch.setattr("oc8.api.v1.internal_agent.mcp_pool.call", fake_call)
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id, _conn_id = await _seed_mcp_run(
+            db, tenant, parallel_tool_calls=True
+        )
+
+    code, body = await _post_tools(
+        tenant,
+        agent_id,
+        run_id,
+        [
+            {"id": "c1", "name": "search_records", "arguments": {"model": "crm.lead"}},
+            {"id": "c2", "name": "search_records", "arguments": {"model": "res.partner"}},
+            {"id": "c3", "name": "create_record", "arguments": {"model": "crm.lead"}},
+        ],
+    )
+
+    assert code == 200, body
+    assert len(body["results"]) == 3
+    assert order == ["search_records", "search_records", "create_record"]
+
+    order.clear()
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id, _conn_id = await _seed_mcp_run(
+            db, tenant, parallel_tool_calls=True
+        )
+
+    code, body = await _post_tools(
+        tenant,
+        agent_id,
+        run_id,
+        [
+            {"id": "c1", "name": "search_records", "arguments": {"model": "crm.lead"}},
+            {"id": "c2", "name": "ask_user", "arguments": {"question": "Which one?"}},
+            {"id": "c3", "name": "search_records", "arguments": {"model": "res.partner"}},
+        ],
+    )
+
+    assert code == 200, body
+    assert [r["status"] for r in body["results"]] == ["ok", "waiting_for_input"]
+    assert order == ["search_records"]

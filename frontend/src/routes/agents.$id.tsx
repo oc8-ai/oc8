@@ -2920,7 +2920,18 @@ function ActivityRow({ item }: { item: ActivityItem }) {
         <span className="min-w-0 flex-1 truncate text-foreground/90">{item.message}</span>
         <span className="font-mono text-xs text-muted-foreground">{item.time}</span>
       </div>
-      {item.detail && <p className="mt-1 text-xs text-muted-foreground">{item.detail}</p>}
+      {item.detail?.startsWith("http://") || item.detail?.startsWith("https://") ? (
+        <a
+          href={item.detail}
+          target="_blank"
+          rel="noreferrer"
+          className="mt-1 inline-block text-xs text-primary underline"
+        >
+          {t("Open record", "Datensatz öffnen")}
+        </a>
+      ) : (
+        item.detail && <p className="mt-1 text-xs text-muted-foreground">{item.detail}</p>
+      )}
     </li>
   );
 }

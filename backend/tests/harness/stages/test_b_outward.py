@@ -99,3 +99,52 @@ async def test_without_a_task_nothing_is_checked_or_remembered(
         )
         assert check.target is not None and check.refusal is None
         await remember_outward(db, tenant_id=tenant, task_id=None, target=check.target, output="ok")
+
+
+async def test_outward_skip_spec_lets_an_internal_note_through(
+    app_session: AppSessionFactory,
+) -> None:
+    """subtype=note is not a recipient; the real customer reply must still count."""
+    from oc8.agent.outward import outward_target
+
+    focus = {
+        "tool_entities": {"post_message": "helpdesk.ticket"},
+        "id_fields": ["record_id"],
+    }
+    skip = {"post_message": {"subtype": ["note"]}}
+    note = ToolCall(
+        id="1",
+        name="post_message",
+        arguments={"record_id": 7, "subtype": "note", "body": "Checked the logs"},
+    )
+    comment = ToolCall(
+        id="2",
+        name="post_message",
+        arguments={"record_id": 7, "subtype": "comment", "body": "Hello"},
+    )
+    assert (
+        outward_target(
+            note.name, note.arguments, focus, ["post_message"], skip_spec=skip
+        )
+        is None
+    )
+    assert (
+        outward_target(
+            comment.name, comment.arguments, focus, ["post_message"], skip_spec=skip
+        )
+        == "helpdesk.ticket#7"
+    )
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        task_id = await _task(db, tenant)
+        check = await check_outward(
+            db,
+            tenant_id=tenant,
+            task_id=task_id,
+            tc=note,
+            focus_spec=focus,
+            outward_tools=["post_message"],
+            skip_spec=skip,
+        )
+    assert check.target is None and check.refusal is None

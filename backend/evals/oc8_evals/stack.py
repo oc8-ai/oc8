@@ -72,7 +72,38 @@ def caps_params(task: Task) -> dict:
     return params
 
 
-async def assign_skill(db, *, tenant_id, agent_id, definition: dict) -> None:
+def department_frame_for(task: Task) -> dict[str, Any]:
+    """Department frame for one eval attempt.
+
+    code_mode bulk (25 partner writes) cannot fit DEFAULT_RECORDS_PER_RUN=5;
+    records_per_run=0 lifts the blast ceiling for that department only.
+    """
+    frame: dict[str, Any] = {"tools": task.frame_tools}
+    if task.code_mode:
+        frame["limits"] = {"records_per_run": 0}
+    return frame
+
+
+def agent_definition_for(task: Task) -> dict[str, Any]:
+    """Agent definition for one eval attempt.
+
+    Outward grant + clarify flag are fixture choices; B5 thresholds stay as
+    in Package 12. Autonomous tasks that must send without parking get an
+    explicit b5_grants outward entry. Clarify is off when the task does not
+    expect a question (calendar create otherwise invents missing facts).
+    """
+    definition: dict[str, Any] = {
+        "max_steps": task.max_steps,
+        "autonomy": task.autonomy,
+    }
+    if task.autonomy == "autonomous" and not task.expects_approval:
+        definition["b5_grants"] = ["outward"]
+    if not task.expects_question:
+        definition["clarify_before_irreversible"] = False
+    return definition
+
+
+async def assign_skill(db, *, tenant_id, agent_id, definition: dict) -> uuid.UUID:
     import hashlib
     import json
 
@@ -106,6 +137,7 @@ async def assign_skill(db, *, tenant_id, agent_id, definition: dict) -> None:
             overrides={},
         )
     )
+    return version.id
 
 
 @dataclass
@@ -205,7 +237,9 @@ async def create_fixture(
             agent_model_config_id = clone.id
 
         dept = m.Department(
-            tenant_id=tenant_id, name=f"EVAL {run_tag} {task.id}", frame={"tools": task.frame_tools}
+            tenant_id=tenant_id,
+            name=f"EVAL {run_tag} {task.id}",
+            frame=department_frame_for(task),
         )
         db.add(dept)
         await db.flush()
@@ -216,7 +250,7 @@ async def create_fixture(
             role_title="Office agent",
             status="running",
             narrowing={},
-            definition={"max_steps": task.max_steps, "autonomy": task.autonomy},
+            definition=agent_definition_for(task),
             presentation={},
             runtime_ref=RUNTIME_REFS[runtime],
             model_config_id=agent_model_config_id,

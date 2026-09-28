@@ -262,3 +262,61 @@ def test_select_completion_tools_procedure_texts_pull_named_tool_inline() -> Non
     assert "create_quotation" in names
     assert "find_tools" in names
     assert all(c["name"] != "create_quotation" for c in catalog)
+
+
+def test_skill_scope_keeps_the_other_connection_out_of_the_inline_list() -> None:
+    from oc8.modelrouter import NeutralTool
+
+    from oc8.agent.harness.retrieval import select_completion_tools
+    from oc8.agent.offering import allowed_connections_for_skills, connection_by_tool
+
+    find_tools = NeutralTool(
+        name="find_tools",
+        description=_FIND_TOOLS_DESC,
+        parameters={"type": "object", "properties": {}},
+    )
+    quote = NeutralTool(
+        name="create_quotation",
+        description="Make a quote",
+        parameters={"type": "object", "properties": {}},
+    )
+    issue = NeutralTool(
+        name="jira_create_issue",
+        description="Open an issue",
+        parameters={"type": "object", "properties": {}},
+    )
+    routes = {
+        "create_quotation": ["odoo", "create_quotation"],
+        "jira_create_issue": ["jira", "jira_create_issue"],
+    }
+    completion, catalog = select_completion_tools(
+        [quote, issue],
+        control_names=frozenset(),
+        skill_names=frozenset(),
+        mission="",
+        skill_texts=[],
+        pinned=[],
+        tool_list_may_change=True,
+        mcp_connection="odoo",
+        tool_notes=None,
+        find_tools=find_tools,
+        connection_by_tool=connection_by_tool(routes),
+        allowed_connections=allowed_connections_for_skills(routes, ["create_quotation"]),
+    )
+    names = [tool.name for tool in completion]
+    assert "create_quotation" in names
+    assert "jira_create_issue" not in names
+    assert "find_tools" in names
+    held = next(card for card in catalog if card["name"] == "jira_create_issue")
+    assert held["connection"] == "jira"
+
+
+def test_unmatched_skill_tools_do_not_hide_the_connections() -> None:
+    from oc8.agent.offering import allowed_connections_for_skills
+
+    routes = {
+        "create_quotation": ["odoo", "create_quotation"],
+        "jira_create_issue": ["jira", "jira_create_issue"],
+    }
+    assert allowed_connections_for_skills(routes, ["not_on_this_run"]) is None
+    assert allowed_connections_for_skills(routes, []) is None

@@ -22,6 +22,16 @@ def should_compact(state: HarnessState, caps: ModelCaps) -> bool:
     )
 
 
+def already_compacted_this_step(state: HarnessState) -> bool:
+    """True after this step already paid for a summary.
+
+    A context overflow on that same step must propagate. Another summary
+    would be a second full model call on a transcript that was just rebuilt,
+    and the gap rule allows one compaction per five steps.
+    """
+    return state.last_compacted_step == state.step_no
+
+
 def _text(message: NeutralMessage) -> str:
     if isinstance(message.content, str):
         return message.content

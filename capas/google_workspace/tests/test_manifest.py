@@ -131,6 +131,17 @@ def test_outward_tools_lives_in_config_not_scopes() -> None:
     assert "outward_tools" not in conn.scopes
 
 
+def test_create_tools_exempt_calendar_inserts_from_read_before_write() -> None:
+    """Provisional start-keyed creates must not require a prior read of the event."""
+    manifest = _manifest()
+    assert manifest.tool_pack is not None
+    conn = manifest.tool_pack.connections[0]
+    assert conn.config.get("create_tools") == [
+        "calendar_create_event",
+        "calendar_create_meet_link",
+    ]
+
+
 def test_the_bridge_launch_command_matches_the_package_on_disk() -> None:
     """`tool_pack.toml` and `setup/mcp.toml` both launch the SAME bridge, and
     the module they name has to be the package that actually exists -- a stale

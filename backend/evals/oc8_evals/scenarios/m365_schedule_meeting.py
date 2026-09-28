@@ -17,9 +17,18 @@ async def setup(ctx: ScenarioContext) -> dict[str, Any]:
     return {}
 
 
+def _ts(value: str) -> str:
+    # Same Z-suffix trap as google_schedule_meeting: bare ISO busy slots must
+    # compare equal to RFC3339 times that end in Z.
+    return value.rstrip("Zz")
+
+
 def _free(start: str, end: str) -> bool:
+    start, end = _ts(start), _ts(end)
     return all(
-        not (start < b_end and b_start < end) for slots in BUSY.values() for b_start, b_end in slots
+        not (start < _ts(b_end) and _ts(b_start) < end)
+        for slots in BUSY.values()
+        for b_start, b_end in slots
     )
 
 

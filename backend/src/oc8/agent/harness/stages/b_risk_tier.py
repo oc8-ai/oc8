@@ -77,8 +77,11 @@ def classify_tier(
     scopes: dict[str, Any] | list[Any] | None,
     config: dict[str, Any] | None,
     annotations: dict[str, Any] | None,
+    arguments: dict[str, Any] | None = None,
 ) -> RiskTier:
     """Classify one tool call. Higher sources never lower a tier."""
+    from oc8.agent.outward import is_outward_skipped
+
     tier = _base_tier(tool, scopes)
 
     if annotations:
@@ -97,6 +100,9 @@ def classify_tier(
     if tool in (cfg.get("irreversible_tools") or []):
         tier = _raise(tier, "irreversible")
     if tool in (cfg.get("outward_tools") or []):
-        tier = _raise(tier, "outward")
+        skip = cfg.get("outward_skip_spec")
+        skip_dict = skip if isinstance(skip, dict) else None
+        if not is_outward_skipped(tool, arguments or {}, skip_dict):
+            tier = _raise(tier, "outward")
 
     return tier

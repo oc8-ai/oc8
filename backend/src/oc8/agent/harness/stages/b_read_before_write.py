@@ -57,9 +57,14 @@ def read_before_write_denial(
     label: str,
 ) -> str | None:
     """Return the deny text, or None to allow."""
-    del tool
     cfg = config or {}
     if cfg.get("read_before_write", True) is False or identity is None or tier == "read":
+        return None
+    # Creates name a record that does not exist yet (e.g. calendar_create_event
+    # keyed on `start` for outward-once). Requiring a prior read is impossible
+    # and blocks booking after a successful free/busy check.
+    create_tools = cfg.get("create_tools") or []
+    if isinstance(create_tools, list) and tool in create_tools:
         return None
 
     kind, id = identity

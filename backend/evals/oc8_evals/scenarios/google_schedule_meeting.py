@@ -17,9 +17,19 @@ async def setup(ctx: ScenarioContext) -> dict[str, Any]:
     return {}
 
 
+def _ts(value: str) -> str:
+    # Models often emit RFC3339 with a trailing Z; BUSY slots are bare local
+    # ISO. Lexicographic compare then treats "13:00:00" < "13:00:00Z", so a
+    # free 12:00–13:00 booking falsely overlaps Bob's 13:00 start.
+    return value.rstrip("Zz")
+
+
 def _free(start: str, end: str) -> bool:
+    start, end = _ts(start), _ts(end)
     return all(
-        not (start < b_end and b_start < end) for slots in BUSY.values() for b_start, b_end in slots
+        not (start < _ts(b_end) and _ts(b_start) < end)
+        for slots in BUSY.values()
+        for b_start, b_end in slots
     )
 
 

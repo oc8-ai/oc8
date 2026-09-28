@@ -247,6 +247,45 @@ def _schema_of(tool: Any) -> dict[str, Any]:
     return schema or {"type": "object", "properties": {}}
 
 
+async def _list_resources(session: ClientSession) -> list[dict[str, str]]:
+    """Names and descriptions. A server with no resources, or an older SDK, lists none."""
+    list_resources = getattr(session, "list_resources", None)
+    if list_resources is None:
+        return []
+    try:
+        listed = await list_resources()
+    except Exception:
+        return []
+    out: list[dict[str, str]] = []
+    for resource in getattr(listed, "resources", []) or []:
+        uri = getattr(resource, "uri", None)
+        if uri is None:
+            continue
+        out.append(
+            {
+                "uri": str(uri),
+                "name": str(getattr(resource, "name", "") or ""),
+                "description": str(getattr(resource, "description", "") or ""),
+            }
+        )
+    return out
+
+
+async def _list_prompt_names(session: ClientSession) -> list[str]:
+    list_prompts = getattr(session, "list_prompts", None)
+    if list_prompts is None:
+        return []
+    try:
+        listed = await list_prompts()
+    except Exception:
+        return []
+    return [
+        str(prompt.name)
+        for prompt in (getattr(listed, "prompts", []) or [])
+        if getattr(prompt, "name", None)
+    ]
+
+
 class McpSession:
     def __init__(
         self,
@@ -265,6 +304,8 @@ class McpSession:
         self._session: ClientSession | None = None
         self._timeout_s = MCP_REQUEST_TIMEOUT_SECONDS if timeout_s is None else timeout_s
         self.tools: list[NeutralTool] = []
+        self.resources: list[dict[str, str]] = []
+        self.prompt_names: list[str] = []
         self._errlog = _StderrTail()
 
     async def __aenter__(self) -> McpSession:
@@ -311,6 +352,8 @@ class McpSession:
             )
             for t in listed.tools
         ]
+        self.resources = await _list_resources(self._session)
+        self.prompt_names = await _list_prompt_names(self._session)
         return self
 
     async def __aexit__(
@@ -330,7 +373,19 @@ class McpSession:
     async def call(self, name: str, arguments: dict[str, Any]) -> str:
         if self._session is None:
             raise RuntimeError("MCP session not started")
-        result = await self._session.call_tool(name, arguments)
+        try:
+            result = await self._session.call_tool(
+                name, arguments, allow_input_required=True
+            )
+        except TypeError as exc:
+            if "allow_input_required" not in str(exc):
+                raise
+            result = await self._session.call_tool(name, arguments)
+        from oc8.agent.elicitation import ElicitationNeeded, elicitation_message
+
+        question = elicitation_message(result)
+        if question is not None:
+            raise ElicitationNeeded(question)
         parts: list[str] = []
         for block in result.content:
             text = getattr(block, "text", None)
@@ -350,3 +405,15 @@ class McpSession:
         if result.is_error:
             raise McpToolError(text)
         return text
+
+    async def read_resource(self, uri: str) -> str:
+        """The body of one resource. Listing never includes this."""
+        if self._session is None:
+            raise RuntimeError("MCP session not started")
+        result = await self._session.read_resource(uri)
+        parts: list[str] = []
+        for block in getattr(result, "contents", []) or []:
+            text = getattr(block, "text", None)
+            if isinstance(text, str) and text:
+                parts.append(text)
+        return "\n".join(parts) if parts else "(no output)"

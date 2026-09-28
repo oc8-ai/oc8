@@ -178,6 +178,29 @@ PROCEDURE_STEP_DONE = NeutralTool(
     },
 )
 
+READ_RESOURCE = NeutralTool(
+    name="read_resource",
+    description=(
+        "Read one resource from a connected system. "
+        "Pass the connection name and the resource uri from the list you were given. "
+        "This returns that one resource, not the list."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "connection": {
+                "type": "string",
+                "description": "The connection that owns the resource.",
+            },
+            "uri": {
+                "type": "string",
+                "description": "The resource uri from the list you were given.",
+            },
+        },
+        "required": ["connection", "uri"],
+    },
+)
+
 ASK_USER = NeutralTool(
     name="ask_user",
     description=(
@@ -812,6 +835,7 @@ CONTROL_TOOL_SCHEMAS: dict[str, NeutralTool] = {
     MEMORY_WRITE.name: MEMORY_WRITE,
     TODO_WRITE.name: TODO_WRITE,
     FIND_TOOLS.name: FIND_TOOLS,
+    READ_RESOURCE.name: READ_RESOURCE,
     PROCEDURE_STEP_DONE.name: PROCEDURE_STEP_DONE,
     ASK_USER.name: ASK_USER,
     DELEGATE_TASK.name: DELEGATE_TASK,
@@ -891,6 +915,7 @@ def offered_tools(
         FETCH_URL,
         TODO_WRITE,
         PROCEDURE_STEP_DONE,
+        READ_RESOURCE,
         READ_RUN_FILE,
     ]
     if offer_write_output_file:
@@ -955,18 +980,12 @@ def offered_tools(
     if has_instruction_files:
         offered.append(READ_INSTRUCTION_FILE)
     offered.extend(skill_tool_schemas(assigned_skills))
-
-    if active_skills:
-        wanted = {r.tool for s in active_skills for r in s.definition.requires_tools}
-        # An active skill focuses the model on its own tools. This changes what is
-        # OFFERED only -- _authorize still checks the frame on every call, so this
-        # can never widen anything. The fallback matters: a skill whose required
-        # tools this connection does not have must not leave the model with no
-        # connection tools at all, or it cannot act.
-        narrowed = [t for t in mcp_tools if t.name in wanted]
-        offered.extend(narrowed or mcp_tools)
-    else:
-        offered.extend(mcp_tools)
+    # Every connected tool stays on the list. An active skill's
+    # select_completion_tools pass keeps its own connections inline and puts
+    # the others in the deferred catalog, so find_tools can still pin them.
+    # Dropping them here would make the other system unreachable for the
+    # rest of the run. _authorize still checks the frame on every call.
+    offered.extend(mcp_tools)
     return offered
 
 
@@ -1289,8 +1308,18 @@ def _execute_find_tools(
     tc: ToolCall, harness_state: HarnessState | None
 ) -> ControlOutcome:
     """Rank the deferred catalog and pin matches for the next step."""
+    from oc8.agent.offering import notice_for_find
+
+    query = str(tc.arguments.get("query", ""))
+    raw_connection = tc.arguments.get("connection")
+    connection: str | None = None
+    if raw_connection is not None:
+        connection = str(raw_connection).strip() or None
+    notice = None
+    if harness_state is not None:
+        notice = notice_for_find(harness_state.unavailable_connections, query, connection)
     if harness_state is None or not harness_state.tool_catalog:
-        return ControlOutcome(output=_MISSING_DEFERRED)
+        return ControlOutcome(output=notice or _MISSING_DEFERRED)
 
     cards: list[ToolCard] = []
     for raw in harness_state.tool_catalog:
@@ -1305,14 +1334,8 @@ def _execute_find_tools(
             )
         )
     if not cards:
-        return ControlOutcome(output=_MISSING_DEFERRED)
+        return ControlOutcome(output=notice or _MISSING_DEFERRED)
 
-    raw_connection = tc.arguments.get("connection")
-    connection: str | None = None
-    if raw_connection is not None:
-        connection = str(raw_connection).strip() or None
-
-    query = str(tc.arguments.get("query", ""))
     ranked = rank_tools(
         cards,
         query,
@@ -1320,9 +1343,11 @@ def _execute_find_tools(
         require_match=bool(query.strip()),
     )
     if not ranked:
-        return ControlOutcome(output=_NO_MATCHES)
+        return ControlOutcome(output=notice or _NO_MATCHES)
 
     lines: list[str] = []
+    if notice:
+        lines.append(notice)
     for card in ranked:
         first_line = card.description.split("\n", 1)[0]
         lines.append(f"{card.name} — {first_line} ({card.connection})")
@@ -1388,6 +1413,50 @@ def _execute_procedure_step_done(
     return ControlOutcome(output=f"Procedure step {step_id} marked done.")
 
 
+async def _execute_read_resource(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    agent: m.Agent,
+    tc: ToolCall,
+) -> ControlOutcome:
+    """One resource body, through the same pool as a tool call."""
+    from sqlalchemy import select
+
+    from oc8.agent import mcp_pool
+    from oc8.agent.mcp_env import has_oauth_ref, resolve_mcp_env
+    from oc8.agent.mcp_requirements import wrap_with_requirements
+
+    connection = str(tc.arguments.get("connection", "")).strip()
+    uri = str(tc.arguments.get("uri", "")).strip()
+    row = await db.scalar(
+        select(m.McpConnection).where(
+            m.McpConnection.department_id == agent.department_id,
+            m.McpConnection.name == connection,
+            m.McpConnection.connected.is_(True),
+        )
+    )
+    if row is None:
+        return ControlOutcome(output=f"ERROR: no connected system named {connection}")
+    cfg = row.config if isinstance(row.config, dict) else {}
+    env = await resolve_mcp_env(
+        db, tenant_id=tenant_id, cfg=cfg, connection_name=row.name
+    )
+    command, args = wrap_with_requirements(cfg.get("command", ""), cfg.get("args", []), cfg)
+    try:
+        text = await mcp_pool.read_resource(
+            row.id,
+            command=command,
+            args=args,
+            env=env,
+            uri=uri,
+            reusable=not has_oauth_ref(cfg),
+        )
+    except Exception as exc:
+        return ControlOutcome(output=f"ERROR: {exc}")
+    return ControlOutcome(output=text)
+
+
 async def execute_control_tool(
     db: AsyncSession,
     *,
@@ -1431,6 +1500,13 @@ async def execute_control_tool(
 
     if tc.name == FIND_TOOLS.name:
         return _execute_find_tools(tc, harness_state)
+
+    if tc.name == READ_RESOURCE.name:
+        if decision.effect is not Effect.ALLOW:
+            return ControlOutcome(output=f"ERROR: {decision.reason or 'denied'}")
+        return await _execute_read_resource(
+            db, tenant_id=tenant_id, agent=agent, tc=tc
+        )
 
     if tc.name == PROCEDURE_STEP_DONE.name:
         return _execute_procedure_step_done(
@@ -2489,6 +2565,13 @@ async def execute_control_tool(
         # role 'tool'", verified against a hosted vLLM behind LiteLLM), which
         # killed the run on the next step. This way the ordering hazard cannot
         # exist: there is no extra message to place.
+        if harness_state is not None:
+            from oc8.agent.offering import pin_skill_tools
+
+            harness_state.pinned_tools = pin_skill_tools(
+                harness_state.pinned_tools,
+                [req.tool for req in skill.definition.requires_tools],
+            )
         if skill.definition.steps and harness_state is not None:
             from oc8.agent.harness.procedures import satisfied_ids
 

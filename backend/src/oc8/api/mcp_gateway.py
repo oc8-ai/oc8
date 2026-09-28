@@ -52,6 +52,7 @@ from oc8.agent.outward import (
     remember_delivery,
 )
 from oc8.agent.provenance import fence
+from oc8.agent.record_link import record_url_from_env
 from oc8.agent.tool_idempotency import (
     record_invocation,
     replayed_result,
@@ -920,13 +921,30 @@ async def _call_tool(
     # Before the call, never after: the point is that the recipient is not
     # reached a second time, and a check that ran afterwards would only be able
     # to report it.
-    target = outward_target(tc.name, tc.arguments, focus_spec, outward_tools)
+    target = outward_target(
+        tc.name,
+        tc.arguments,
+        focus_spec,
+        outward_tools,
+        skip_spec=cfg.get("outward_skip_spec"),
+    )
     if target is not None and run.task_id is not None:
         if await already_delivered(db, tenant_id=run.tenant_id, task_id=run.task_id, target=target):
             return _tool_result(REFUSAL.format(target=target), is_error=True)
 
     focus = describe_focus(tc.name, tc.arguments, focus_spec)
     names_record = describes_a_record(tc.name, tc.arguments, focus_spec)
+    try:
+        # Resolved inside the guard: minting an OAuth-backed token is now part
+        # of this, and a failure there belongs to the model as a tool error --
+        # not as a 500 out of the whole tools/call. Done before the live-log
+        # line so that line can carry the record's own address.
+        env = await _env(conn, db, run.tenant_id)
+    except Exception as exc:  # surface to the model, not as a broken server
+        return _tool_result(f"ERROR: {exc}", is_error=True)
+    record_url = record_url_from_env(
+        conn.name, env, record_identity(tc.name, tc.arguments, focus_spec)
+    )
     if focus is not None:
         await note_focus(
             db,
@@ -935,12 +953,9 @@ async def _call_tool(
             task_id=run.task_id,
             focus=focus,
             specific=names_record,
+            record_url=record_url,
         )
     try:
-        # Resolved inside the guard: minting an OAuth-backed token is now part
-        # of this, and a failure there belongs to the model as a tool error --
-        # not as a 500 out of the whole tools/call.
-        env = await _env(conn, db, run.tenant_id)
         # Reused across calls: the handshake behind this costs ~3s and the call
         # itself ~50ms, so paying it per call was the whole of the latency. Not
         # reused when the environment carries a minted token that expires.
@@ -973,6 +988,7 @@ async def _call_tool(
                 focus=f"{focus} \u201e{title}\u201c",
                 specific=True,
                 feed=False,  # the feed already has this call; only the card gains
+                record_url=record_url,
             )
 
     if target is not None and run.task_id is not None:

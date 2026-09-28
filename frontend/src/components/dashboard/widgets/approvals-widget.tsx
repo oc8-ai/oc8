@@ -710,6 +710,17 @@ function ApprovalPane({
               {t("What happens if you agree", "Was passiert, wenn du zustimmst")}
             </div>
 
+            {(approval.recordUrl?.startsWith("http://") ||
+              approval.recordUrl?.startsWith("https://")) && (
+              <a
+                href={approval.recordUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="mb-2 inline-block text-sm text-primary underline"
+              >
+                {t("Open record", "Datensatz öffnen")}
+              </a>
+            )}
             {approval.toolName && (
               <div className="rounded-md border border-border bg-panel/60">
                 <div className="flex items-center gap-2 border-b border-border px-3 py-2">

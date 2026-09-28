@@ -284,6 +284,83 @@ async def tools(
     return list(entry.session.tools)
 
 
+async def resources(
+    connection_id: uuid.UUID,
+    *,
+    command: str,
+    args: list[str],
+    env: dict[str, str],
+    now: dt.datetime | None = None,
+    reusable: bool = True,
+) -> list[dict[str, str]]:
+    """Resource names already collected when the session listed its tools."""
+    stamp = now or dt.datetime.now(tz=dt.UTC)
+    if not reusable:
+        async with _single_use(
+            connection_id, command=command, args=args, env=env, stamp=stamp
+        ) as session:
+            return list(session.resources)
+    entry = _LIVE.get(connection_id)
+    if entry is None:
+        return []
+    return list(entry.session.resources)
+
+
+async def prompt_names(
+    connection_id: uuid.UUID,
+    *,
+    command: str,
+    args: list[str],
+    env: dict[str, str],
+    now: dt.datetime | None = None,
+    reusable: bool = True,
+) -> list[str]:
+    stamp = now or dt.datetime.now(tz=dt.UTC)
+    if not reusable:
+        async with _single_use(
+            connection_id, command=command, args=args, env=env, stamp=stamp
+        ) as session:
+            return list(session.prompt_names)
+    entry = _LIVE.get(connection_id)
+    if entry is None:
+        return []
+    return list(entry.session.prompt_names)
+
+
+async def read_resource(
+    connection_id: uuid.UUID,
+    *,
+    command: str,
+    args: list[str],
+    env: dict[str, str],
+    uri: str,
+    now: dt.datetime | None = None,
+    reusable: bool = True,
+) -> str:
+    """The body of one resource, on the same pooled session as a tool call."""
+    stamp = now or dt.datetime.now(tz=dt.UTC)
+    if not reusable:
+        async with _single_use(
+            connection_id, command=command, args=args, env=env, stamp=stamp
+        ) as session:
+            return await session.read_resource(uri)
+    entry = _LIVE.get(connection_id)
+    if entry is not None and stamp - entry.opened_at > MAX_AGE:
+        _LIVE.pop(connection_id, None)
+        await _close(entry, connection_id, "aged out")
+        entry = None
+    if entry is None:
+        entry = await _start(connection_id, command=command, args=args, env=env, stamp=stamp)
+    async with entry.lock:
+        try:
+            return await entry.session.read_resource(uri)
+        except Exception:
+            if _LIVE.get(connection_id) is entry:
+                _LIVE.pop(connection_id, None)
+            await _close(entry, connection_id, "read_resource failed")
+            raise
+
+
 async def close_all() -> None:
     """Give up every session. For shutdown and for tests."""
     for connection_id, entry in list(_LIVE.items()):

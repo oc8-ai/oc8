@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from oc8.agent.harness.caps import ModelCaps
 from oc8.agent.harness.prompts import compaction_instruction
-from oc8.agent.harness.stages.a_compaction import rebuild_transcript, should_compact
+from oc8.agent.harness.stages.a_compaction import (
+    already_compacted_this_step,
+    rebuild_transcript,
+    should_compact,
+)
 from oc8.agent.harness.state import HarnessState
 from oc8.modelrouter import NeutralMessage, ToolCall
 
@@ -19,6 +23,11 @@ def test_should_not_compact_until_five_steps_after_last_compaction() -> None:
         last_compacted_step=10,
     )
     assert should_compact(state, ModelCaps(context_window_tokens=100_000)) is False
+
+
+def test_already_compacted_this_step_blocks_a_second_summary() -> None:
+    assert already_compacted_this_step(HarnessState(step_no=4, last_compacted_step=4)) is True
+    assert already_compacted_this_step(HarnessState(step_no=9, last_compacted_step=4)) is False
 
 
 def test_should_compact_above_threshold_after_five_steps() -> None:

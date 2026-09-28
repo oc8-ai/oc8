@@ -16,7 +16,14 @@ from pathlib import Path
 import httpx
 import pytest
 
-from oc8.isolated_shell import _mirror_spill, _preview, _run_shell_locally, check_response, main
+from oc8.isolated_shell import (
+    _mirror_spill,
+    _preview,
+    _run_program_locally,
+    _run_shell_locally,
+    check_response,
+    main,
+)
 
 STEP = "http://oc8:8000/api/v1/internal/agent/1234/step"
 
@@ -316,6 +323,19 @@ def test_main_mirrors_a_spill_from_tool(
 def test_run_shell_locally_captures_a_nonzero_exit_code(tmp_path: Path) -> None:
     result = _run_shell_locally("exit 3", cwd=str(tmp_path))
     assert result["exit_code"] == 3
+    assert result["timed_out"] is False
+
+
+def test_run_program_imports_oc8_tools_from_workspace(tmp_path: Path) -> None:
+    """programs/step-N.py must see /workspace/oc8_tools.py via PYTHONPATH."""
+    (tmp_path / "oc8_tools.py").write_text("VALUE = 42\n", encoding="utf-8")
+    result = _run_program_locally(
+        "import oc8_tools\nprint(oc8_tools.VALUE)\n",
+        step_no=1,
+        cwd=str(tmp_path),
+    )
+    assert result["exit_code"] == 0, result
+    assert "42" in result["stdout"]
     assert result["timed_out"] is False
 
 

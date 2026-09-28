@@ -14,7 +14,15 @@ from mcp.server import Server, ServerRequestContext
 Handler = Callable[[dict[str, Any]], Awaitable[Any]]
 
 
-def serve(name: str, tools: list[types.Tool], handlers: dict[str, Handler]) -> None:
+def serve(
+    name: str,
+    tools: list[types.Tool],
+    handlers: dict[str, Handler],
+    *,
+    resources: list[types.Resource] | None = None,
+    prompts: list[types.Prompt] | None = None,
+    read_resource: Callable[[str], Awaitable[str]] | None = None,
+) -> None:
     async def _on_list_tools(
         ctx: ServerRequestContext, params: types.PaginatedRequestParams | None
     ) -> types.ListToolsResult:
@@ -35,9 +43,44 @@ def serve(name: str, tools: list[types.Tool], handlers: dict[str, Handler]) -> N
             return types.CallToolResult(
                 content=[types.TextContent(type="text", text=f"ERROR: {exc}")], is_error=True
             )
+        if isinstance(result, dict) and isinstance(result.get("_elicitation"), str):
+            question = result["_elicitation"]
+            return types.CallToolResult(
+                content=[types.TextContent(type="text", text=question)],
+                structured_content={"elicitation": question},
+            )
         return types.CallToolResult(content=[types.TextContent(type="text", text=str(result))])
 
-    server = Server(name, on_list_tools=_on_list_tools, on_call_tool=_on_call_tool)
+    async def _on_list_resources(
+        ctx: ServerRequestContext, params: types.PaginatedRequestParams | None
+    ) -> types.ListResourcesResult:
+        return types.ListResourcesResult(resources=list(resources or []))
+
+    async def _on_read_resource(
+        ctx: ServerRequestContext, params: types.ReadResourceRequestParams
+    ) -> types.ReadResourceResult:
+        uri = str(params.uri)
+        if read_resource is None:
+            text = ""
+        else:
+            text = await read_resource(uri)
+        return types.ReadResourceResult(
+            contents=[types.TextResourceContents(uri=uri, text=text)]
+        )
+
+    async def _on_list_prompts(
+        ctx: ServerRequestContext, params: types.PaginatedRequestParams | None
+    ) -> types.ListPromptsResult:
+        return types.ListPromptsResult(prompts=list(prompts or []))
+
+    server = Server(
+        name,
+        on_list_tools=_on_list_tools,
+        on_call_tool=_on_call_tool,
+        on_list_resources=_on_list_resources,
+        on_read_resource=_on_read_resource,
+        on_list_prompts=_on_list_prompts,
+    )
 
     async def _run() -> None:
         async with mcp.server.stdio.stdio_server() as (read, write):
