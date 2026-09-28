@@ -8,7 +8,7 @@
 const API_URL =
   (import.meta.env.VITE_API_URL as string | undefined) ?? "http://localhost:8099/api/v1";
 const TOKEN_KEY = "oc8-dev-token";
-const COMMUNITY_TOKEN_KEY = "oc8-community-token";
+export const COMMUNITY_TOKEN_KEY = "oc8-community-token";
 
 async function getToken(): Promise<string> {
   // Check for community token first (single-instance auth)
@@ -221,6 +221,74 @@ export async function publicPost<T>(path: string, body: unknown): Promise<T> {
   return (await res.json()) as T;
 }
 
+/** `/auth/sso/exchange` is a service_routers() route with NO `/api/v1`
+ *  prefix (see oc8-enterprise's SAML SSO design spec §1) -- the one-time
+ *  code IS the credential, same category as `publicPost`'s routes, but the
+ *  URL needs `/api/v1` stripped back off `API_URL` first. */
+const ROOT_API_URL = API_URL.replace(/\/api\/v1\/?$/, "");
+
+export interface SsoExchangeResponse {
+  token: string;
+  /** True when `token` is a NARROW totp:challenge-scoped token rather than a
+   *  session: the SSO callback must render the TOTP challenge instead of
+   *  storing it. Same field the password login's own response carries for
+   *  the same decision -- both screens branch on it identically. */
+  requiresTotpCode?: boolean;
+  /** True when `token` is a NARROW totp:enroll-scoped token: the member owes
+   *  us an enrollment before any session exists. */
+  requiresTotpEnrollment?: boolean;
+}
+
+export async function exchangeSsoCode(code: string): Promise<SsoExchangeResponse> {
+  const res = await fetch(`${ROOT_API_URL}/auth/sso/exchange`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code }),
+  });
+  if (!res.ok) throw await toError(res);
+  return (await res.json()) as SsoExchangeResponse;
+}
+
+export interface SsoSamlConfig {
+  enabled: boolean;
+  idpEntityId: string;
+  idpSsoUrl: string;
+  defaultRoleId: string;
+  emailAttribute: string;
+  displayNameAttribute: string;
+  spEntityId: string;
+  acsUrl: string;
+}
+
+export interface SsoSamlConfigInput {
+  metadataXml: string;
+  defaultRoleId: string;
+  emailAttribute?: string;
+  displayNameAttribute?: string;
+  enabled?: boolean;
+}
+
+export async function getSsoSamlConfig(): Promise<SsoSamlConfig | null> {
+  const res = await fetch(`${API_URL}/sso/saml`, {
+    headers: { authorization: `Bearer ${await getToken()}` },
+  });
+  if (!res.ok) throw await toError(res);
+  return (await res.json()) as SsoSamlConfig | null;
+}
+
+export async function putSsoSamlConfig(input: SsoSamlConfigInput): Promise<SsoSamlConfig> {
+  const res = await fetch(`${API_URL}/sso/saml`, {
+    method: "PUT",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${await getToken()}`,
+    },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw await toError(res);
+  return (await res.json()) as SsoSamlConfig;
+}
+
 // ---- Company backup / restore -----------------------------------------------
 // These three don't fit `api.*`: export returns a binary blob, and preview /
 // restore send multipart/form-data (a file), not JSON. `BackupPreviewDTO` and
@@ -405,7 +473,11 @@ export function deleteFile(fileId: string): Promise<void> {
 // types) stay snake_case on purpose, same as the backup DTOs above.
 
 export interface CapaExportItemInput {
-  kind: "department" | "agent" | "skill";
+  // Mirrors `CapaExportItem.kind`'s `Literal` in `oc8.api.v1.capas` --
+  // "tool_pack" is a custom-MCP-wizard capa's OWN current manifest
+  // (`build_tool_pack_export`), not reconstructed from department/agent/
+  // skill DB rows the way the other three kinds are.
+  kind: "department" | "agent" | "skill" | "tool_pack";
   id: string;
   name: string;
   version: string;
@@ -452,4 +524,4 @@ export async function downloadCapaExport(
   return { blob: await res.blob(), filename: match?.[1] ?? "capa-export.zip" };
 }
 
-export { API_URL, getToken, COMMUNITY_TOKEN_KEY };
+export { API_URL, getToken };

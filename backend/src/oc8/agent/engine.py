@@ -17,7 +17,8 @@ import datetime as dt
 import json
 import logging
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -32,18 +33,18 @@ from oc8.agent.control_tools import (
     execute_control_tool,
     offered_tools,
 )
+from oc8.agent.elicitation import ElicitationNeeded, arguments_with_answer
 from oc8.agent.harness import GateVerdict, Harness, resolve_caps
 from oc8.agent.harness.calls import (
     call_sig as _call_sig,  # re-exported for mcp_gateway.py and older tests
 )
-from oc8.agent.harness.prompts import compaction_instruction
-from oc8.agent.harness.retrieval import select_completion_tools
-from oc8.agent.harness.step_timing import finish_step, note_model, note_tools, start_step
 from oc8.agent.harness.procedures import (
     newly_satisfied_lines,
     procedure_haystack,
     satisfied_ids,
 )
+from oc8.agent.harness.prompts import compaction_instruction
+from oc8.agent.harness.retrieval import select_completion_tools
 from oc8.agent.harness.stages.a_compaction import (
     already_compacted_this_step,
     prompt_token_fallback,
@@ -78,18 +79,19 @@ from oc8.agent.harness.stages.c_ledger import (
 )
 from oc8.agent.harness.stages.c_reminders import track_repeat_tool_call
 from oc8.agent.harness.stages.c_spill import persist_spill
-from oc8.agent.elicitation import ElicitationNeeded, arguments_with_answer
-from oc8.agent.mcp_client import McpServerStartupError, McpSession
+from oc8.agent.harness.step_timing import finish_step, note_model, note_tools, start_step
+from oc8.agent.mcp_client import open_tool_session, resolve_auth_header
+from oc8.agent.mcp_env import resolve_mcp_env
+from oc8.agent.mcp_requirements import wrap_with_requirements
 from oc8.agent.offering import (
     allowed_connections_for_skills,
     connection_by_tool,
     unavailable_sentence,
 )
-from oc8.agent.mcp_env import resolve_mcp_env
-from oc8.agent.mcp_requirements import wrap_with_requirements
 from oc8.agent.outward import outward_target
 from oc8.agent.preamble import build_run_preamble
 from oc8.agent.tool_notes import apply_tool_notes
+from oc8.agent.tool_routing import RoutedToolset
 from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_identity
 from oc8.approvals import raise_approval
 from oc8.audit import append_event
@@ -348,6 +350,88 @@ async def open_run_task(
     return task
 
 
+@dataclass(frozen=True)
+class _McpAuth:
+    connection_key: str
+    tool_scopes: dict[str, Any] | None
+    value_spec: dict[str, Any] | None
+    focus_spec: dict[str, Any] | None
+    outward_tools: list[str] | None
+    guardrail_attribute_specs: list[dict[str, Any]]
+
+
+def _mcp_auth(mcp_conn: m.McpConnection) -> _McpAuth:
+    """Frame-check inputs for one connection -- scopes, value, focus, attributes."""
+    cfg = mcp_conn.config if isinstance(mcp_conn.config, dict) else {}
+    # The read/write/send classification `required_right` needs lives
+    # on the manifest's own ToolPackConnection, not this row's
+    # `scopes` column -- that column is an unrelated, list-shaped
+    # field (see `resolve_tool_pack_connection`'s docstring). Reading
+    # it here used to fail closed to "write" for every tool call
+    # whenever the row's `scopes` wasn't itself a dict, which is the
+    # common case.
+    manifest_conn = resolve_tool_pack_connection(
+        str(cfg.get("_plugin_name", "")), str(cfg.get("_connection_key", ""))
+    )
+    if manifest_conn is not None and isinstance(manifest_conn.scopes, dict):
+        tool_scopes: dict[str, Any] | None = manifest_conn.scopes
+    elif isinstance(mcp_conn.scopes, dict):
+        # A connection with no manifest (plugin removed from disk, or
+        # never plugin-backed at all) that still carries an operator-
+        # supplied dict on the row itself -- `CreateMcpConnectionRequest`
+        # allows this. Kept as a fallback, not the primary path.
+        tool_scopes = mcp_conn.scopes
+    else:
+        tool_scopes = None
+    vs = cfg.get("value_spec")
+    fs = cfg.get("focus_spec")
+    ot = cfg.get("outward_tools")
+    return _McpAuth(
+        connection_key=mcp_conn.name,
+        tool_scopes=tool_scopes,
+        value_spec=vs if isinstance(vs, dict) else None,
+        focus_spec=fs if isinstance(fs, dict) else None,
+        outward_tools=ot if isinstance(ot, list) else None,
+        guardrail_attribute_specs=(
+            [
+                {
+                    "key": a.key,
+                    "datatype": a.datatype,
+                    "tools": a.tools,
+                    "extract": a.extract,
+                }
+                for a in manifest_conn.guardrail_attributes
+            ]
+            if manifest_conn is not None
+            else []
+        ),
+    )
+
+
+async def _open_mcp_session(
+    db: AsyncSession, *, tenant_id: uuid.UUID, mcp_conn: m.McpConnection
+) -> Any:
+    cfg = mcp_conn.config if isinstance(mcp_conn.config, dict) else {}
+    env = await resolve_mcp_env(db, tenant_id=tenant_id, cfg=cfg, connection_name=mcp_conn.name)
+    headers = resolve_auth_header(cfg, env)
+    if mcp_conn.transport == "manual_http":
+        return await open_tool_session(
+            transport="manual_http",
+            server_url=mcp_conn.server_url,
+            http_tools=list(cfg.get("http_tools", [])),
+            headers=headers,
+        )
+    command, args = wrap_with_requirements(cfg.get("command", ""), cfg.get("args", []), cfg)
+    return await open_tool_session(
+        transport=mcp_conn.transport,
+        command=command,
+        args=args,
+        server_url=mcp_conn.server_url,
+        headers=headers,
+        env=env,
+    )
+
+
 async def run_agent(
     db: AsyncSession,
     *,
@@ -356,6 +440,7 @@ async def run_agent(
     tenant_id: uuid.UUID,
     run_id: uuid.UUID | None = None,
     mcp_conn: m.McpConnection | None = None,
+    mcp_conns: Sequence[m.McpConnection] | None = None,
     toolset: Toolset | None = None,
     parent_task_id: uuid.UUID | None = None,
     delegation_depth: int = 0,
@@ -400,6 +485,28 @@ async def run_agent(
         department = await db.get(m.Department, agent.department_id)
         frame: dict[str, Any] = department.frame if department is not None else {}
         tool_policies = effective_tool_policies(frame, agent.narrowing or {})
+        extra_conns: list[m.McpConnection] = list(mcp_conns) if mcp_conns else []
+        # A resume leg continues the task its suspended leg opened; see
+        # open_run_task. The run is the only place that link is recorded, so a
+        # runtime that gets no run_id (a direct run_agent call in a test) simply
+        # opens a fresh task, as before. The same row also carries stamped
+        # pins (`mcp_connection_ids`) so an in-process run sees every login
+        # the executor resolved, not just the first.
+        run_row: m.AgentRun | None = (
+            await db.get(m.AgentRun, run_id) if run_id is not None else None
+        )
+        if not extra_conns and run_row is not None:
+            raw_ids = run_row.context.get("mcp_connection_ids")
+            if isinstance(raw_ids, list):
+                for raw in raw_ids:
+                    try:
+                        loaded = await db.get(m.McpConnection, uuid.UUID(str(raw)))
+                    except ValueError:
+                        continue
+                    if loaded is not None:
+                        extra_conns.append(loaded)
+        if not extra_conns and mcp_conn is not None:
+            extra_conns = [mcp_conn]
         if toolset is not None:
             connection_config: dict[str, Any] = {}
             connection_key: str | None = CODING_FRAME_KEY
@@ -411,52 +518,17 @@ async def run_agent(
             focus_spec: dict[str, Any] | None = None
             outward_tools: list[str] | None = None
             guardrail_attribute_specs: list[dict[str, Any]] = []
-        elif mcp_conn is not None:
-            connection_key = mcp_conn.name
-            _cfg = mcp_conn.config if isinstance(mcp_conn.config, dict) else {}
-            connection_config = _cfg
-            # The read/write/send classification `required_right` needs lives
-            # on the manifest's own ToolPackConnection, not this row's
-            # `scopes` column -- that column is an unrelated, list-shaped
-            # field (see `resolve_tool_pack_connection`'s docstring). Reading
-            # it here used to fail closed to "write" for every tool call
-            # whenever the row's `scopes` wasn't itself a dict, which is the
-            # common case.
-            _manifest_conn = resolve_tool_pack_connection(
-                str(_cfg.get("_plugin_name", "")), str(_cfg.get("_connection_key", ""))
+        elif extra_conns:
+            auth = _mcp_auth(extra_conns[0])
+            connection_key = auth.connection_key
+            connection_config = (
+                extra_conns[0].config if isinstance(extra_conns[0].config, dict) else {}
             )
-            if _manifest_conn is not None and isinstance(_manifest_conn.scopes, dict):
-                tool_scopes = _manifest_conn.scopes
-            elif isinstance(mcp_conn.scopes, dict):
-                # A connection with no manifest (plugin removed from disk, or
-                # never plugin-backed at all) that still carries an operator-
-                # supplied dict on the row itself -- `CreateMcpConnectionRequest`
-                # allows this. Kept as a fallback, not the primary path.
-                tool_scopes = mcp_conn.scopes
-            else:
-                tool_scopes = None
-            _vs = _cfg.get("value_spec")
-            _fs = _cfg.get("focus_spec")
-            _ot = _cfg.get("outward_tools")
-            value_spec = _vs if isinstance(_vs, dict) else None
-            focus_spec = _fs if isinstance(_fs, dict) else None
-            outward_tools = _ot if isinstance(_ot, list) else None
-            # `_manifest_conn` (resolved above for `tool_scopes`) also carries
-            # this connection's declared `GuardrailAttribute`s -- reused here
-            # rather than re-parsing the manifest a second time.
-            guardrail_attribute_specs = (
-                [
-                    {
-                        "key": a.key,
-                        "datatype": a.datatype,
-                        "tools": a.tools,
-                        "extract": a.extract,
-                    }
-                    for a in _manifest_conn.guardrail_attributes
-                ]
-                if _manifest_conn is not None
-                else []
-            )
+            tool_scopes = auth.tool_scopes
+            value_spec = auth.value_spec
+            focus_spec = auth.focus_spec
+            outward_tools = auth.outward_tools
+            guardrail_attribute_specs = auth.guardrail_attribute_specs
         else:
             connection_config = {}
             connection_key = None
@@ -465,31 +537,31 @@ async def run_agent(
             focus_spec = None
             outward_tools = None
             guardrail_attribute_specs = []
-
-        async def _record_url(name: str, arguments: dict[str, Any]) -> str | None:
+        async def _record_url(
+            name: str,
+            arguments: dict[str, Any],
+            connection_name: str | None = None,
+            spec: dict[str, Any] | None = None,
+        ) -> str | None:
             # Same address the isolated loop stores: an Odoo form URL or a Jira
-            # browse page, built from the connection's own base URL.
-            if mcp_conn is None or mcp_conn.name not in ("odoo", "jira"):
+            # browse page, built from the connection that owns the tool.
+            owner = next((item for item in extra_conns if item.name == connection_name), None)
+            if owner is None and len(extra_conns) == 1:
+                owner = extra_conns[0]
+            if owner is None or owner.name not in ("odoo", "jira"):
                 return None
-            ident = record_identity(name, arguments, focus_spec)
+            ident = record_identity(name, arguments, spec if spec is not None else focus_spec)
             if ident is None:
                 return None
-            cfg = mcp_conn.config if isinstance(mcp_conn.config, dict) else {}
+            cfg = owner.config if isinstance(owner.config, dict) else {}
             env = await resolve_mcp_env(
-                db, tenant_id=tenant_id, cfg=cfg, connection_name=mcp_conn.name
+                db, tenant_id=tenant_id, cfg=cfg, connection_name=owner.name
             )
             from oc8.agent.record_link import record_url_from_env
 
-            return record_url_from_env(mcp_conn.name, env, ident)
+            return record_url_from_env(owner.name, env, ident)
 
-        # A resume leg continues the task its suspended leg opened; see
-        # open_run_task. The run is the only place that link is recorded, so a
-        # runtime that gets no run_id (a direct run_agent call in a test) simply
-        # opens a fresh task, as before.
-        resume_task_id: uuid.UUID | None = None
-        if run_id is not None:
-            run_row = await db.get(m.AgentRun, run_id)
-            resume_task_id = run_row.task_id if run_row is not None else None
+        resume_task_id: uuid.UUID | None = run_row.task_id if run_row is not None else None
         task = await open_run_task(
             db,
             agent=agent,
@@ -613,6 +685,8 @@ async def run_agent(
                 return
             await publish_run_token_delta(tenant_id, run_id=run_id, text=text)
 
+        startup_unavailable: list[dict[str, str]] = []
+
         async def loop(tools: list[NeutralTool], server: Toolset | None) -> RunResult:
             active_skills: list[LoadedSkill] = []
 
@@ -639,30 +713,39 @@ async def run_agent(
             harness = Harness(
                 caps=resolve_caps(model_config.params if model_config is not None else None)
             )
+            if startup_unavailable:
+                harness.state.unavailable_connections = list(startup_unavailable)
             definition = agent.definition if isinstance(agent.definition, dict) else {}
             autonomy = autonomy_of(definition)
             raw_b5_grants = definition.get("b5_grants")
             b5_grants = raw_b5_grants if isinstance(raw_b5_grants, list) else []
 
-            def _gate(tc: ToolCall) -> GateVerdict:
+            def _gate(
+                tc: ToolCall,
+                *,
+                scopes: dict[str, Any] | None,
+                config: dict[str, Any],
+                connection: str | None,
+                spec: dict[str, Any] | None,
+            ) -> GateVerdict:
                 offered = next((tool for tool in _offered() if tool.name == tc.name), None)
                 tier = classify_tier(
                     tc.name,
-                    scopes=tool_scopes,
-                    config=connection_config,
+                    scopes=scopes,
+                    config=config,
                     annotations=offered.annotations if offered is not None else None,
                     arguments=tc.arguments,
                 )
-                identity = record_identity(tc.name, tc.arguments, focus_spec)
+                identity = record_identity(tc.name, tc.arguments, spec)
                 return harness.gate(
                     tc,
                     tier=tier,
                     ledger=harness.state.ledger,
-                    connection=connection_key or "oc8",
-                    config=connection_config,
+                    connection=connection or "oc8",
+                    config=config,
                     autonomy=autonomy,
                     granted=tier in b5_grants,
-                    record_label=describe_focus(tc.name, tc.arguments, focus_spec) or "",
+                    record_label=describe_focus(tc.name, tc.arguments, spec) or "",
                     identity=identity,
                     procedures=_active_procedures(active_skills),
                 )
@@ -1227,7 +1310,11 @@ async def run_agent(
                     str, tuple[str, dt.datetime, int, ToolError | None]
                 ] = {}
                 call_justifications: dict[str, str] = {}
-                if harness.caps.parallel_tool_calls and server is not None:
+                if (
+                    harness.caps.parallel_tool_calls
+                    and server is not None
+                    and not isinstance(server, RoutedToolset)
+                ):
                     read_batch: list[ToolCall] = []
                     for _pre_tc in result.tool_calls:
                         if _pre_tc.name in CONTROL_TOOL_NAMES:
@@ -1331,17 +1418,50 @@ async def run_agent(
                                 precomputed_error,
                             )
                 for tc in result.tool_calls:
+                    call_key = connection_key
+                    call_scopes = tool_scopes
+                    call_guardrails = guardrail_attribute_specs
+                    per_value = value_spec
+                    call_focus = focus_spec
+                    call_outward = outward_tools
+                    auth_tc = tc
+                    if isinstance(server, RoutedToolset):
+                        found = server.route(tc.name)
+                        if found is not None:
+                            bundle = server.auth_by_connection.get(found.connection)
+                            if isinstance(bundle, _McpAuth):
+                                call_key = bundle.connection_key
+                                call_scopes = bundle.tool_scopes
+                                call_guardrails = bundle.guardrail_attribute_specs
+                                per_value = bundle.value_spec
+                                call_focus = bundle.focus_spec
+                                call_outward = bundle.outward_tools
+                            auth_tc = ToolCall(id=tc.id, name=found.tool, arguments=tc.arguments)
+                    owner = next((item for item in extra_conns if item.name == call_key), None)
+                    call_config = (
+                        owner.config
+                        if owner is not None and isinstance(owner.config, dict)
+                        else connection_config
+                    )
+                    call_value_spec: dict[str, Any] | None = per_value
+                    if skill_metric_keys:
+                        merged = dict(per_value or {})
+                        merged["direct_fields"] = [
+                            *(merged.get("direct_fields") or []),
+                            *skill_metric_keys,
+                        ]
+                        call_value_spec = merged
                     decision = _authorize(
                         agent,
-                        tc,
+                        auth_tc,
                         frame=frame,
                         delegation_depth=task.delegation_depth,
                         tool_policies=tool_policies,
-                        connection_key=connection_key,
-                        tool_scopes=tool_scopes,
+                        connection_key=call_key,
+                        tool_scopes=call_scopes,
                         skill_tool_names=skill_tool_names,
                         value_spec=call_value_spec,
-                        guardrail_attribute_specs=guardrail_attribute_specs,
+                        guardrail_attribute_specs=call_guardrails,
                         skill_thresholds=tuple(
                             g.gt
                             for s in active_skills
@@ -1430,7 +1550,13 @@ async def run_agent(
                             continue
                         gate_verdict = None
                         if decision.effect is Effect.ALLOW:
-                            gate_verdict = _gate(tc)
+                            gate_verdict = _gate(
+                                auth_tc,
+                                scopes=call_scopes,
+                                config=call_config,
+                                connection=call_key,
+                                spec=call_focus,
+                            )
                             if gate_verdict.effect == "ask":
                                 verdict = pre_decided.get(_call_sig(tc)) if pre_decided else None
                                 if verdict == "approve":
@@ -1482,7 +1608,9 @@ async def run_agent(
                                     reason_context=decision.context,
                                 )
                             else:
-                                link = await _record_url(tc.name, tc.arguments)
+                                link = await _record_url(
+                                    auth_tc.name, tc.arguments, call_key, call_focus
+                                )
                                 ar = await raise_approval(
                                     db,
                                     tenant_id=tenant_id,
@@ -1645,7 +1773,7 @@ async def run_agent(
                         # near-zero duration for one that never left the process
                         # would silently drag every denial into that average.
                         _tool_call_dispatched = True
-                        writes = required_right(tc.name, tool_scopes) != "read"
+                        writes = required_right(auth_tc.name, call_scopes) != "read"
                         offered_tool = next(
                             (tool for tool in _offered() if tool.name == tc.name), None
                         )
@@ -1654,10 +1782,10 @@ async def run_agent(
                             and offered_tool.annotations is not None
                             and offered_tool.annotations.get("idempotentHint") is True
                         )
-                        access_identity = record_identity(tc.name, tc.arguments, focus_spec)
+                        access_identity = record_identity(auth_tc.name, tc.arguments, call_focus)
                         identity = access_identity if writes else None
                         record_label = (
-                            describe_focus(tc.name, tc.arguments, focus_spec)
+                            describe_focus(auth_tc.name, tc.arguments, call_focus)
                             or (
                                 f"{access_identity[0]} {access_identity[1]}"
                                 if access_identity is not None
@@ -1810,12 +1938,12 @@ async def run_agent(
                                 db,
                                 tenant_id=tenant_id,
                                 task_id=task.id,
-                                tc=tc,
-                                focus_spec=focus_spec,
-                                outward_tools=outward_tools,
+                                tc=auth_tc,
+                                focus_spec=call_focus,
+                                outward_tools=call_outward,
                                 skip_spec=(
-                                    connection_config.get("outward_skip_spec")
-                                    if isinstance(connection_config, dict)
+                                    call_config.get("outward_skip_spec")
+                                    if isinstance(call_config, dict)
                                     else None
                                 ),
                             )
@@ -1834,7 +1962,7 @@ async def run_agent(
                             # Live-log which record the agent is working on, from
                             # the connection's own focus_spec (a plugin supplies
                             # it; the core names nothing software-specific).
-                            focus = describe_focus(tc.name, tc.arguments, focus_spec)
+                            focus = describe_focus(auth_tc.name, tc.arguments, call_focus)
                             if focus is not None:
                                 await note_focus(
                                     db,
@@ -1842,9 +1970,13 @@ async def run_agent(
                                     agent_id=agent.id,
                                     task_id=task.id,
                                     focus=focus,
-                                    specific=describes_a_record(tc.name, tc.arguments, focus_spec),
+                                    specific=describes_a_record(
+                                        auth_tc.name, tc.arguments, call_focus
+                                    ),
                                     cache_hit=cached_result is not None,
-                                    record_url=await _record_url(tc.name, tc.arguments),
+                                    record_url=await _record_url(
+                                        auth_tc.name, tc.arguments, call_key, call_focus
+                                    ),
                                 )
                             replay = await replay_for(
                                 db,
@@ -2081,30 +2213,59 @@ async def run_agent(
             try:
                 if toolset is not None:
                     return await loop(toolset.tools, toolset)
-                if mcp_conn is not None:
-                    cfg = mcp_conn.config or {}
-                    env = await resolve_mcp_env(
-                        db, tenant_id=tenant_id, cfg=cfg, connection_name=mcp_conn.name
-                    )
-                    command, args = wrap_with_requirements(
-                        cfg.get("command", ""), cfg.get("args", []), cfg
-                    )
-                    try:
-                        async with McpSession(command, args, env=env) as server:
-                            return await loop(apply_tool_notes(server.tools, cfg), server)
-                    except McpServerStartupError as exc:
-                        reason = " ".join(str(exc).split())[:200]
-                        harness.state.unavailable_connections = [
-                            {"name": mcp_conn.name, "reason": reason}
-                        ]
-                        messages.append(
-                            NeutralMessage(
-                                role="user",
-                                content=unavailable_sentence(mcp_conn.name, reason),
-                            )
+                def _note_unavailable(conn: m.McpConnection, exc: BaseException) -> None:
+                    reason = " ".join(str(exc).split())[:200] or type(exc).__name__
+                    startup_unavailable.append({"name": conn.name, "reason": reason})
+                    messages.append(
+                        NeutralMessage(
+                            role="user",
+                            content=unavailable_sentence(conn.name, reason),
                         )
+                    )
+                    logger.warning(
+                        "connection %s (%s) offers no tools right now; the rest stay available",
+                        conn.name,
+                        conn.id,
+                        exc_info=True,
+                    )
+
+                if not extra_conns:
+                    return await loop([], None)
+                if len(extra_conns) == 1:
+                    only = extra_conns[0]
+                    cfg = only.config if isinstance(only.config, dict) else {}
+                    try:
+                        tool_session = await _open_mcp_session(
+                            db, tenant_id=tenant_id, mcp_conn=only
+                        )
+                        async with tool_session as server:
+                            return await loop(apply_tool_notes(server.tools, cfg), server)
+                    except Exception as exc:
+                        _note_unavailable(only, exc)
                         return await loop([], None)
-                return await loop([], None)
+                async with AsyncExitStack() as stack:
+                    sessions: dict[str, Any] = {}
+                    tools_by_connection: dict[str, list[NeutralTool]] = {}
+                    auth_by_connection: dict[str, _McpAuth] = {}
+                    for conn in extra_conns:
+                        cfg = conn.config if isinstance(conn.config, dict) else {}
+                        try:
+                            opened = await _open_mcp_session(db, tenant_id=tenant_id, mcp_conn=conn)
+                            session = await stack.enter_async_context(opened)
+                        except Exception as exc:
+                            _note_unavailable(conn, exc)
+                            continue
+                        sessions[conn.name] = session
+                        tools_by_connection[conn.name] = apply_tool_notes(session.tools, cfg)
+                        auth_by_connection[conn.name] = _mcp_auth(conn)
+                    if not sessions:
+                        return await loop([], None)
+                    routed = RoutedToolset(
+                        sessions,
+                        tools_by_connection,
+                        auth_by_connection=auth_by_connection,
+                    )
+                    return await loop(routed.tools, routed)
             finally:
                 if session_state["started"]:
                     await dispatch_claude_event(tenant_id, "SessionEnd", _hook_ctx())

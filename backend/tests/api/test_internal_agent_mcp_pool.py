@@ -165,7 +165,7 @@ async def test_two_tool_calls_share_one_pool_call_setup(
         return "ok"
 
     monkeypatch.setattr("oc8.api.v1.internal_agent.mcp_pool.call", fake_call)
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _ForbiddenSession)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _ForbiddenSession)
 
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:  # type: ignore[operator]
@@ -197,7 +197,7 @@ async def test_oauth_tool_call_passes_reusable_false(
 
     monkeypatch.setattr("oc8.api.v1.internal_agent.mcp_pool.call", fake_call)
     monkeypatch.setattr("oc8.api.v1.internal_agent._mcp_env", fake_env)
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _ForbiddenSession)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _ForbiddenSession)
 
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:  # type: ignore[operator]
@@ -270,7 +270,7 @@ async def test_first_step_lists_tools_through_the_pool(
         return _stream
 
     monkeypatch.setattr("oc8.api.v1.internal_agent.mcp_pool.tools", fake_tools)
-    monkeypatch.setattr("oc8.agent.mcp_pool.McpSession", _ForbiddenSession)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _ForbiddenSession)
     monkeypatch.setattr(
         "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
     )

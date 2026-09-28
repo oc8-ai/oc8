@@ -29,20 +29,25 @@ from pydantic import BaseModel
 from sqlalchemy import text
 
 from oc8 import models as m
-from oc8.agent import cache_flow
+from oc8.agent import cache_flow, mcp_pool
 from oc8.agent.control_tools import (
     CONTROL_TOOL_NAMES,
     FIND_TOOLS,
     execute_control_tool,
     offered_tools,
 )
+from oc8.agent.elicitation import ElicitationNeeded, arguments_with_answer
 from oc8.agent.engine import _max_steps
 from oc8.agent.harness import Harness, resolve_caps
 from oc8.agent.harness.calls import call_sig as _call_sig
+from oc8.agent.harness.procedures import (
+    newly_satisfied_lines,
+    procedure_haystack,
+    satisfied_ids,
+)
 from oc8.agent.harness.prompts import compaction_instruction
 from oc8.agent.harness.retrieval import select_completion_tools
 from oc8.agent.harness.sdk import render_oc8_tools
-from oc8.agent.harness.step_timing import finish_step, note_model, note_tools, start_step
 from oc8.agent.harness.stages.a_compaction import (
     already_compacted_this_step,
     prompt_token_fallback,
@@ -74,13 +79,8 @@ from oc8.agent.harness.stages.c_ledger import (
     render_ledger_block,
 )
 from oc8.agent.harness.stages.c_spill import persist_spill
-from oc8.agent.harness.procedures import (
-    newly_satisfied_lines,
-    procedure_haystack,
-    satisfied_ids,
-)
-from oc8.agent import mcp_pool
-from oc8.agent.elicitation import ElicitationNeeded, arguments_with_answer
+from oc8.agent.harness.step_timing import finish_step, note_model, note_tools, start_step
+from oc8.agent.mcp_client import resolve_auth_header
 from oc8.agent.mcp_env import has_oauth_ref, resolve_mcp_env
 from oc8.agent.mcp_requirements import wrap_with_requirements
 from oc8.agent.outward import outward_target
@@ -341,6 +341,7 @@ async def _discover_connection_tools(
         reusable = not has_oauth_ref(cfg)
         try:
             env = await _mcp_env(conn, db, run.tenant_id)
+            headers = resolve_auth_header(cfg, env)
             command, args = wrap_with_requirements(
                 cfg.get("command", ""), cfg.get("args", []), cfg
             )
@@ -349,14 +350,21 @@ async def _discover_connection_tools(
                 command=command,
                 args=args,
                 env=env,
+                transport=conn.transport,
+                server_url=conn.server_url or "",
+                headers=headers,
+                http_tools=list(cfg.get("http_tools", [])),
                 reusable=reusable,
             )
-            listed_resources = await mcp_pool.resources(
-                conn.id, command=command, args=args, env=env, reusable=reusable
-            )
-            listed_prompts = await mcp_pool.prompt_names(
-                conn.id, command=command, args=args, env=env, reusable=reusable
-            )
+            if conn.transport == "manual_http":
+                listed_resources, listed_prompts = [], []
+            else:
+                listed_resources = await mcp_pool.resources(
+                    conn.id, command=command, args=args, env=env, reusable=reusable
+                )
+                listed_prompts = await mcp_pool.prompt_names(
+                    conn.id, command=command, args=args, env=env, reusable=reusable
+                )
         except Exception as exc:
             logger.warning(
                 "connection %s (%s) offers no tools right now; the rest stay available",
@@ -489,6 +497,7 @@ async def _finish_elicitation(
         try:
             env = await _mcp_env(conn, db, run.tenant_id)
             cfg = _mcp_params(conn)
+            headers = resolve_auth_header(cfg, env)
             command, args = wrap_with_requirements(
                 cfg.get("command", ""), cfg.get("args", []), cfg
             )
@@ -499,6 +508,10 @@ async def _finish_elicitation(
                 env=env,
                 tool=tool,
                 arguments=arguments,
+                transport=conn.transport,
+                server_url=conn.server_url or "",
+                headers=headers,
+                http_tools=list(cfg.get("http_tools", [])),
                 reusable=not has_oauth_ref(cfg),
             )
         except ElicitationNeeded as exc:
@@ -1322,6 +1335,7 @@ async def _precompute_leading_reads(
         return {}
 
     env = await _mcp_env(conn, db, run.tenant_id)
+    headers = resolve_auth_header(cfg, env)
     command, args = wrap_with_requirements(cfg.get("command", ""), cfg.get("args", []), cfg)
     sem = asyncio.Semaphore(_READ_PARALLEL_LIMIT)
 
@@ -1338,6 +1352,10 @@ async def _precompute_leading_reads(
                     env=env,
                     tool=call.name,
                     arguments=arguments,
+                    transport=conn.transport,
+                    server_url=conn.server_url or "",
+                    headers=headers,
+                    http_tools=list(cfg.get("http_tools", [])),
                     reusable=True,
                 )
                 error = None
@@ -1959,6 +1977,7 @@ async def _dispatch_one_tool(
                     # as a tool error, exactly like an unreachable bridge. A
                     # replayed write needs no bridge and now mints nothing.
                     env = await _mcp_env(conn, db, run.tenant_id)
+                    headers = resolve_auth_header(cfg, env)
                     command, args = wrap_with_requirements(
                         cfg.get("command", ""), cfg.get("args", []), cfg
                     )
@@ -1969,6 +1988,10 @@ async def _dispatch_one_tool(
                         env=env,
                         tool=tc.name,
                         arguments=tc.arguments,
+                        transport=conn.transport,
+                        server_url=conn.server_url or "",
+                        headers=headers,
+                        http_tools=list(cfg.get("http_tools", [])),
                         reusable=not has_oauth_ref(cfg),
                     )
                 except ElicitationNeeded as exc:

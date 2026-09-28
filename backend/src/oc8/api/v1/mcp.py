@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 
 from oc8 import models as m
-from oc8.agent.mcp_client import McpSession
+from oc8.agent.mcp_client import open_tool_session, resolve_auth_header
 from oc8.agent.mcp_env import resolve_mcp_env
 from oc8.agent.mcp_requirements import wrap_with_requirements
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
@@ -20,6 +20,7 @@ from oc8.capas.discovery import find_plugin
 from oc8.capas.guardrails import GuardrailLibrary
 from oc8.capas.i18n import translations_for
 from oc8.capas.manifest import ManifestError, ToolPackConnection, parse_manifest
+from oc8.realtime.emit import publish_mcp_test_log
 from oc8.schemas.dto import (
     ConnectionToolNamesDTO,
     GuardrailAdjustableDTO,
@@ -359,11 +360,46 @@ async def test_connection(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "connection not found")
     cfg = conn.config or {}
     now = _utcnow_iso()
+
+    _STEP_MESSAGES = {
+        "spawn": "Starting session…",
+        "handshake": "Handshake complete.",
+        "list_tools": "Tool list received.",
+    }
+
+    async def on_step(step: str) -> None:
+        await publish_mcp_test_log(
+            principal.tenant_id, connection_id=conn_id, step=step, message=_STEP_MESSAGES[step]
+        )
+
     try:
         async with asyncio.timeout(_TEST_TIMEOUT_S):
             env = await _connection_env(db, conn)
-            command, args = wrap_with_requirements(cfg.get("command", ""), cfg.get("args", []), cfg)
-            async with McpSession(command, args, env=env) as session:
+            headers = resolve_auth_header(cfg, env)
+            if conn.transport == "manual_http":
+                http_tools = list(cfg.get("http_tools", []))
+                if not http_tools:
+                    raise ValueError("connection has no described HTTP tools")
+                tool_session = await open_tool_session(
+                    transport="manual_http",
+                    server_url=conn.server_url,
+                    http_tools=http_tools,
+                    headers=headers,
+                )
+            else:
+                command, args = wrap_with_requirements(
+                    cfg.get("command", ""), cfg.get("args", []), cfg
+                )
+                tool_session = await open_tool_session(
+                    transport=conn.transport,
+                    command=command,
+                    args=args,
+                    server_url=conn.server_url,
+                    headers=headers,
+                    env=env,
+                    on_step=on_step,
+                )
+            async with tool_session as session:
                 names = [t.name for t in session.tools]
         conn.connected = True
         conn.health = {
@@ -372,8 +408,18 @@ async def test_connection(
             "toolCount": len(names),
             "tools": names,
         }
+        await publish_mcp_test_log(
+            principal.tenant_id,
+            connection_id=conn_id,
+            step="result",
+            message=f"Connected — {len(names)} tool(s) discovered.",
+        )
     except Exception as exc:  # any bring-up failure is an operator-visible error health, not a 500
         conn.connected = False
-        conn.health = {"status": "error", "checkedAt": now, "error": str(exc)[:500]}
+        error = str(exc)[:500]
+        conn.health = {"status": "error", "checkedAt": now, "error": error}
+        await publish_mcp_test_log(
+            principal.tenant_id, connection_id=conn_id, step="result", message=f"Error: {error}"
+        )
     await db.commit()
     return _to_dto(conn)

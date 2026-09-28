@@ -194,6 +194,15 @@ def create_app(
 
     app.include_router(mcp_router, prefix="/mcp", tags=["tool-gateway"])
 
+    # The outward-facing MCP server: whoever holds a member's own API key
+    # (Settings -> API keys) can reach the same Copilot capability surface
+    # from outside oc8. Verified by its own bespoke auth dependency, never by
+    # an operator session token, so it is mounted apart from /mcp for the
+    # same reason /mcp is mounted apart from /api/v1.
+    from oc8.api.mcp_external import router as mcp_external_router
+
+    app.include_router(mcp_external_router, prefix="/mcp/external", tags=["external-mcp"])
+
     return app
 
 

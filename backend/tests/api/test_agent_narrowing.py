@@ -1,6 +1,6 @@
 """Tests for agent narrowing override tracking.
 
-`_enforce_narrowing_logins` (agents_write.py) is the ONLY writer of
+`enforce_narrowing_logins` (agents_write.py) is the ONLY writer of
 `Agent.narrowing_overridden_keys` — the column the new "N of M agents deviate"
 feature will read. A tool key is only "overridden" if an operator's save
 actually changed its value from what was stored before, not merely because

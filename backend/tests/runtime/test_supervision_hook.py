@@ -89,3 +89,12 @@ async def test_default_query_port_is_fail_closed_without_a_database() -> None:
         )
         is False
     )
+
+
+def test_app_runtime_composition_installs_the_supervision_hook() -> None:
+    from oc8.edition.runtime import COMMUNITY_RUNTIME_COMPOSITION
+    from oc8.supervision.runtime import SUPERVISION_QUERY_PORT, SUPERVISION_RUN_HOOK
+
+    with COMMUNITY_RUNTIME_COMPOSITION.activate():
+        assert current_supervision_run_hook() is SUPERVISION_RUN_HOOK
+        assert current_supervision_query_port() is SUPERVISION_QUERY_PORT

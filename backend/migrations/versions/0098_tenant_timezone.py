@@ -4,14 +4,8 @@ UTC; oc8.agent.harness.prompts.resolve_timezone falls back safely on any
 value zoneinfo does not recognize, so this column is never a hard failure
 point.
 
-NOTE: this chains on the locally-untracked 0094_api_key_expires_at.py
-(Package 2 ledger). When a real 0094 migration merges in from dev, delete
-the local one, renumber this file to whatever comes after the real one, and
-fix down_revision accordingly -- this is a known, already-accepted landmine,
-not a new one.
-
-Revision ID: 0095
-Revises: 0094
+Revision ID: 0098
+Revises: 0097
 Create Date: 2026-09-20
 
 NOTE: 0001_initial.py builds its frozen table set via a live
@@ -26,8 +20,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision: str = "0095"
-down_revision: str | None = "0094"
+revision: str = "0098"
+down_revision: str | None = "0097"
 branch_labels: str | None = None
 depends_on: str | None = None
 

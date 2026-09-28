@@ -288,6 +288,36 @@ export function useSetMemberPassword() {
   });
 }
 
+/** What `POST /members/{id}/password-reset` returns: the link is always
+ *  present so a missing mail server is not a dead end; `resetSent` is
+ *  whether `deliver` actually handed it to the relay. */
+export interface MemberPasswordReset {
+  resetLink: string;
+  resetSent: boolean;
+}
+
+/** Mint a fresh set-password link for an existing member and try to email
+ *  it. The user-detail counterpart to the invite `POST /members` mints on
+ *  create -- an administrator looking at somebody who already exists had
+ *  no other door. */
+export function useMintMemberPasswordReset() {
+  return useMutation({
+    mutationFn: (memberId: string) =>
+      api.post<MemberPasswordReset>(`/members/${memberId}/password-reset`),
+  });
+}
+
+/** Soft-delete a person so they disappear from the users list. Refused
+ *  with a 409 if the caller is looking at themselves -- same lockout
+ *  `PUT /members/{id}/role` already refuses, by a different verb. */
+export function useDeleteMember() {
+  const invalidate = useAuthorityInvalidator();
+  return useMutation({
+    mutationFn: (memberId: string) => api.delete<void>(`/members/${memberId}`),
+    onSuccess: invalidate,
+  });
+}
+
 /** Rename a member's sign-in identity (their email, in local-password mode).
  *  Refused with a 409 if another live member already holds the target
  *  identity -- surfaced to the caller as a thrown error, same as every other

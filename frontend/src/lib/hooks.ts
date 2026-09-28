@@ -17,6 +17,7 @@ import {
 } from "@/lib/api";
 import type { RuntimeOption } from "@/components/runtime-picker";
 import type { GuardrailLibraryEntry, GuardrailPreset } from "@/components/guardrail-preset-picker";
+import { mcpTestLogKey, type McpTestLogLine } from "@/lib/live/apply-event";
 import type {
   ActivityItem,
   Agent,
@@ -644,6 +645,72 @@ export function useOrganizationSettings() {
   });
 }
 
+// Self-service API keys (Settings -> API keys), authenticating the outward
+// MCP gateway (`/mcp/external`, api/mcp_external.py). Always the CALLER's own
+// keys -- there is no id-scoped read here to mirror, since the backend
+// derives `memberId` from the bearer token on every one of these routes
+// (api/v1/api_keys.py), never from a path parameter.
+export interface ApiKeyDTO {
+  id: string;
+  name: string;
+  tokenPrefix: string;
+  enabled: boolean;
+  allowedOrigins: string[];
+  lastUsedAt: string | null;
+  createdAt: string;
+  // null = never expires. Set by the member at creation, not a tenant-wide policy.
+  expiresAt: string | null;
+}
+
+export interface ApiKeyCreatedDTO extends ApiKeyDTO {
+  // Present ONLY in the create response -- shown once, never retrievable again.
+  token: string;
+}
+
+const API_KEYS_KEY = ["settings", "api-keys"] as const;
+
+export function useApiKeys() {
+  return useQuery({
+    queryKey: API_KEYS_KEY,
+    queryFn: () => api.get<ApiKeyDTO[]>("/settings/api-keys"),
+  });
+}
+
+export function useCreateApiKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { name: string; allowedOrigins: string[]; expiresAt?: string | null }) =>
+      api.post<ApiKeyCreatedDTO>("/settings/api-keys", body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: API_KEYS_KEY }),
+  });
+}
+
+export function useUpdateApiKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      keyId,
+      ...body
+    }: {
+      keyId: string;
+      name?: string;
+      enabled?: boolean;
+      allowedOrigins?: string[];
+      // Omit to leave untouched, `null` to clear (never expires).
+      expiresAt?: string | null;
+    }) => api.patch<ApiKeyDTO>(`/settings/api-keys/${keyId}`, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: API_KEYS_KEY }),
+  });
+}
+
+export function useDeleteApiKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (keyId: string) => api.delete<void>(`/settings/api-keys/${keyId}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: API_KEYS_KEY }),
+  });
+}
+
 export function useUpdateOrganizationSettings() {
   const qc = useQueryClient();
   return useMutation({
@@ -916,11 +983,16 @@ export const useApprovals = (status = "pending") => {
  *
  * Only `status=open` is served — the backend refuses anything else rather than
  * quietly returning the open ones, so there is no parameter here to get wrong.
+ *
+ * `refetchInterval` defaults to off (the sidebar badge only needs it on
+ * navigation/focus) — chat-window.tsx passes one while a session's run is
+ * outstanding, so a question that opens mid-chat surfaces without a reload.
  */
-export const useClarifications = () =>
+export const useClarifications = (refetchInterval: number | false = false) =>
   useQuery({
     queryKey: keys.clarifications,
     queryFn: () => api.get<Clarification[]>("/clarifications?status=open"),
+    refetchInterval,
   });
 
 /** The task board across every department this caller can see -- `GET /tasks`. */
@@ -1399,6 +1471,20 @@ export function useTestMcpConnectionById() {
   return useMutation({
     mutationFn: (id: string) => api.post<McpConnection>(`/mcp/connections/${id}/test`),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.mcp }),
+  });
+}
+
+// The step-by-step "Test connection" log (McpTestLogDrawer): `enabled: false`
+// because, unlike every other useQuery in this file, there is no GET this
+// could fetch from -- the cache entry it reads is written ONLY by the
+// mcp.test.log live patcher (apply-event.ts) as events arrive over the
+// tenant's WebSocket. This hook exists purely to re-render on those writes.
+export function useMcpTestLog(connectionId: string) {
+  return useQuery({
+    queryKey: mcpTestLogKey(connectionId),
+    queryFn: () => [] as McpTestLogLine[],
+    enabled: false,
+    initialData: [] as McpTestLogLine[],
   });
 }
 
@@ -2153,6 +2239,41 @@ export function useInstallPluginFromDisk() {
     mutationFn: (pluginId: string) =>
       api.post<{ id: string; name: string; semver: string }>("/capas/install-from-disk", {
         pluginId,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["plugins", "available"] });
+      qc.invalidateQueries({ queryKey: ["plugins"] });
+    },
+  });
+}
+
+export interface InstalledCustomCapa {
+  id: string;
+  pluginId: string;
+  name: string;
+  type: string;
+  semver: string;
+  trustLevel: string;
+}
+
+export function useInstallCustomCapa() {
+  const qc = useQueryClient();
+  return useMutation({
+    // POST /capas already accepts a raw, wizard-built manifest -- no new
+    // backend endpoint. `origin: "custom"` is the only thing that
+    // distinguishes this from a disk-discovered catalog capa anywhere
+    // downstream reads it.
+    mutationFn: (body: { manifest: Record<string, unknown> }) =>
+      api.post<InstalledCustomCapa>("/capas", {
+        manifest: body.manifest,
+        origin: "custom",
+        // Unlike a disk-discovered capa, nothing here has been through any
+        // review -- it's whatever an admin typed into the wizard. Matches
+        // the same origin->trust mapping seed/__init__.py already uses for
+        // non-local capas, rather than falling back to the manifest's own
+        // (unset) trust, which install_plugin would otherwise default to
+        // "first_party".
+        trustLevel: "community",
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["plugins", "available"] });

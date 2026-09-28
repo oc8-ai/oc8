@@ -39,7 +39,7 @@ class Capa(Base, PkMixin, TenantMixin, TimestampMixin):
             f"type IN ({', '.join(repr(t.strip()) for t in _CAPA_TYPES.split(','))})",
             name="ck_capa_type",
         ),
-        CheckConstraint("origin IN ('local','store')", name="ck_capa_origin"),
+        CheckConstraint("origin IN ('local','store','custom')", name="ck_capa_origin"),
         CheckConstraint(
             "trust_level IN ('first_party','verified','community')",
             name="ck_capa_trust",

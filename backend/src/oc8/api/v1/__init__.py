@@ -7,6 +7,7 @@ from fastapi import APIRouter
 from oc8.api.v1 import (
     agents,
     agents_write,
+    api_keys,
     approvals,
     audit,
     auth,
@@ -47,6 +48,7 @@ from oc8.api.v1 import (
     secrets,
     settings,
     skills_write,
+    supervision,
     tasks,
     totp,
     triggers,
@@ -57,6 +59,7 @@ api_router = APIRouter()
 api_router.include_router(auth.router, tags=["auth"])
 api_router.include_router(totp.router, tags=["auth"])
 api_router.include_router(i18n.router, tags=["i18n"])
+api_router.include_router(api_keys.router, tags=["settings"])
 api_router.include_router(departments.router, tags=["departments"])
 api_router.include_router(onboarding.router, tags=["onboarding"])
 api_router.include_router(agents.router, tags=["agents"])
@@ -93,6 +96,7 @@ api_router.include_router(runtimes.router, tags=["runtimes"])
 api_router.include_router(settings.router, tags=["settings"])
 api_router.include_router(events.router, tags=["events"])
 api_router.include_router(handoffs.router, tags=["handoffs"])
+api_router.include_router(supervision.router, tags=["supervision"])
 api_router.include_router(contracts.router, tags=["contracts"])
 api_router.include_router(copilot.router, tags=["copilot"])
 api_router.include_router(flows.router, tags=["flows"])

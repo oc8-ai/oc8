@@ -326,6 +326,7 @@ DELEGATABLE_PERMISSIONS: Final[frozenset[str]] = frozenset(
         # string tenant-wide still only ever sees what `scope.viewable` admits.
         perm(AGENT, VIEW),
         perm(DEPARTMENT, VIEW),
+        perm(SUPERVISION, VIEW),
     }
 )
 
@@ -394,15 +395,6 @@ NEVER_DELEGATABLE: Final[dict[str, str]] = {
         "configuration_snapshot hands the model every agent tenant-wide with no "
         "department filter, and a prepared proposal can name any agent by id; "
         "delegating this is delegating agent:manage in every department at once"
-    ),
-    # ---- lives in a package this catalogue's own route sweep cannot see
-    perm(SUPERVISION, VIEW): (
-        "the community/enterprise split (52f7b82) moved the whole supervision "
-        "API into enterprise/, so no route in this package's own tree gates it "
-        "-- ticking it in the role builder here would offer a box community "
-        "itself can never open. EXIT: when a route-coverage test also sweeps "
-        "the enterprise-composed app (create_app(edition_extensions=...)), not "
-        "when this package alone changes"
     ),
     # ---- minting authority
     perm(ROLE, MANAGE): "a role that mints roles is a role that mints root",

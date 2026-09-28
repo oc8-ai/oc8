@@ -16,6 +16,19 @@ export const liveQueryKeys: readonly unknown[][] = [
   ["departments"],
 ];
 
+export interface McpTestLogLine {
+  step: string;
+  message: string;
+}
+
+// Not in liveQueryKeys above: unlike those, this cache entry has no backing
+// GET endpoint to resync from on reconnect -- it exists only while a "Test
+// connection" log drawer is open, reset by the caller (McpTestLogDrawer)
+// each time a new test starts.
+export function mcpTestLogKey(connectionId: string): unknown[] {
+  return ["mcp-test-log", connectionId];
+}
+
 type Patcher = (qc: QueryClient, data: Record<string, unknown>) => void;
 
 const patchers: Record<string, Patcher> = {
@@ -159,6 +172,21 @@ const patchers: Record<string, Patcher> = {
   "flow_run.status": (qc) => qc.invalidateQueries({ queryKey: ["flow-runs"] }),
   "supervision.intervention": (qc) =>
     qc.invalidateQueries({ queryKey: ["supervision-interventions"] }),
+  // One step of a "Test connection" run (spawn/handshake/list_tools/result)
+  // -- see backend/src/oc8/realtime/emit.py's publish_mcp_test_log. Appended,
+  // same shape as run.output_delta: nothing here is replayed from history,
+  // so a drawer opened after the test finished only shows what arrives on
+  // the NEXT test run.
+  "mcp.test.log": (qc, d) => {
+    const connectionId = d.connection_id as string | undefined;
+    const step = d.step as string | undefined;
+    const message = d.message as string | undefined;
+    if (!connectionId || !step || !message) return;
+    qc.setQueryData(mcpTestLogKey(connectionId), (prev: McpTestLogLine[] | undefined) => [
+      ...(prev ?? []),
+      { step, message },
+    ]);
+  },
 };
 
 // backend agent.status -> mock UI AgentStatus (running|warning|error|paused|waiting_for_task)

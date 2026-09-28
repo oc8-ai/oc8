@@ -24,6 +24,7 @@ from oc8.capas.manifest import (
     SkillTemplateSpec,
     TemplateAgent,
     TemplateAgentTrigger,
+    parse_manifest,
 )
 
 __all__ = [
@@ -32,6 +33,7 @@ __all__ = [
     "build_agent_export",
     "build_department_export",
     "build_skill_export",
+    "build_tool_pack_export",
 ]
 
 #: The same folder-name convention `discovery.py` enforces (folder name must
@@ -438,3 +440,41 @@ async def build_department_export(
         depends=sorted(set(depends)),
     )
     return ExportedCapa(folder_name=capa_name, manifest_toml=_render(manifest), warnings=warnings)
+
+
+async def build_tool_pack_export(
+    db: AsyncSession, *, tenant_id: uuid.UUID, capa_id: uuid.UUID
+) -> ExportedCapa:
+    """A tool-pack capa's export is its OWN current manifest, re-validated
+    and re-rendered -- unlike agent/department/skill exports, there is no
+    live entity to reconstruct a manifest FROM: `install_plugin` already
+    stored one (`CapaVersion.manifest`), and this is its only portable
+    representation. `capa_name`/`version`/`summary` are therefore not
+    parameters here (contrast the other three `build_*_export` functions):
+    the wizard cannot rename a tool-pack capa through export, only through a
+    fresh wizard run under a new name (spec §2's repeat-name-is-new-version
+    path)."""
+    capa = await db.get(m.Capa, capa_id)
+    if capa is None or capa.tenant_id != tenant_id:
+        raise ExportValidationError(f"capa {capa_id} not found")
+    if capa.type != "tool_pack":
+        raise ExportValidationError(f"capa {capa.name!r} is not a tool pack (type={capa.type!r})")
+    if capa.current_version_id is None:
+        raise ExportValidationError(f"capa {capa.name!r} has no current version")
+    version = await db.get(m.CapaVersion, capa.current_version_id)
+    assert version is not None
+    manifest = parse_manifest(version.manifest)
+    warnings: list[str] = []
+    if manifest.tool_pack is not None:
+        for conn in manifest.tool_pack.connections:
+            cfg = dict(conn.config)
+            dropped = [k for k in _NON_PORTABLE_POLICY_KEYS if cfg.get(k)]
+            if dropped:
+                warnings.append(
+                    f"connection '{conn.key}' carried tenant-specific reference(s) "
+                    f"({', '.join(dropped)}) -- dropped from the export"
+                )
+                for key in _NON_PORTABLE_POLICY_KEYS:
+                    cfg.pop(key, None)
+            conn.config = cfg
+    return ExportedCapa(folder_name=capa.name, manifest_toml=_render(manifest), warnings=warnings)

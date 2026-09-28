@@ -38,6 +38,12 @@ const GATE_PUBLIC_ROUTES = new Set([
   "/forgot-password",
   "/reset-password",
   "/confirm-email",
+  // Reachable pre-session: the SAML ACS redirect lands a browser here
+  // directly from the IdP, with no oc8 token yet (Enterprise's SAML SSO
+  // design spec §4 step 8). Inert in Community-only deployments -- the
+  // route itself only exists when Enterprise's editionRoutes are composed
+  // in.
+  "/sso/callback",
 ]);
 
 // Routes that skip the `<AppShell/>` wrapper: the gate set above, plus

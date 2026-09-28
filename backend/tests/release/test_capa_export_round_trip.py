@@ -242,6 +242,87 @@ async def test_export_unzip_install_round_trip(
         assert "kbs" not in (new_dept.frame or {})
 
 
+@pytest.mark.asyncio
+async def test_tool_pack_export_round_trips_a_custom_manual_http_capa(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.capas.export import build_tool_pack_export
+    from oc8.capas.service import install_plugin
+
+    tenant = uuid.uuid4()
+    manifest = {
+        "name": "acme_billing",
+        "version": "1.0.0",
+        "type": "tool_pack",
+        "summary": "Acme's billing REST API.",
+        "tool_pack": {
+            "connections": [
+                {
+                    "key": "default",
+                    "name": "acme_billing",
+                    "server_url": "https://api.acme.example/v1",
+                    "transport": "manual_http",
+                    "config": {
+                        "auth_header_name": "Authorization",
+                        "http_tools": [
+                            {
+                                "name": "get_invoice",
+                                "description": "Fetch an invoice by id.",
+                                "method": "GET",
+                                "url_template": "/invoices/{id}",
+                                "param_schema": {
+                                    "type": "object",
+                                    "properties": {"id": {"type": "string"}},
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        },
+        "setup": {
+            "title": "Acme Billing",
+            "fields": [
+                {"key": "token", "label": "API token", "kind": "password"},
+            ],
+            "mcp": {
+                "connection_key": "default",
+                "name": "acme_billing",
+                "secret_env_fields": {"Authorization": "token"},
+            },
+        },
+    }
+    async with app_session(tenant) as db:
+        version = await install_plugin(
+            db, tenant_id=tenant, manifest_data=manifest, origin="custom"
+        )
+        await db.commit()
+
+    async with app_session(tenant) as db:
+        exported = await build_tool_pack_export(db, tenant_id=tenant, capa_id=version.capa_id)
+        assert exported.warnings == []
+        assert "acme_billing" in exported.manifest_toml
+        assert "get_invoice" in exported.manifest_toml
+
+    # Re-install into a second tenant from the exported TOML alone.
+    import tomllib
+
+    # `_render()` wraps the manifest fields under a top-level [plugin] table
+    # (the on-disk plugin.toml convention `discovery.py` reads) -- but
+    # `install_plugin`/`parse_manifest` take the FLAT dict `Manifest` itself
+    # validates against (the same shape `POST /capas`'s `InstallRequest.manifest`
+    # is), so re-importing from the rendered TOML means unwrapping that table
+    # first, exactly as a real "download export -> reinstall" flow would.
+    reimport_manifest = tomllib.loads(exported.manifest_toml)["plugin"]
+    other_tenant = uuid.uuid4()
+    async with app_session(other_tenant) as db:
+        reimported = await install_plugin(
+            db, tenant_id=other_tenant, manifest_data=reimport_manifest, origin="custom"
+        )
+        await db.commit()
+        assert reimported.semver == "1.0.0"
+
+
 def test_no_uuid_anywhere_in_a_rendered_department_manifest() -> None:
     """The hard guarantee behind "no secrets/ids in the ZIP" -- not just a
     docstring claim. Walks the rendered TOML text itself (not a Python dict,

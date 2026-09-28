@@ -43,6 +43,7 @@ from oc8.agent.control_tools import (
     execute_control_tool,
 )
 from oc8.agent.engine import _authorize, _call_sig
+from oc8.agent.mcp_client import resolve_auth_header
 from oc8.agent.mcp_env import has_oauth_ref, resolve_mcp_env
 from oc8.agent.mcp_requirements import wrap_with_requirements
 from oc8.agent.outward import (
@@ -149,11 +150,31 @@ async def _connections(
 ) -> list[m.McpConnection]:
     """Every system this run may reach, not merely the first one.
 
-    A pinned `mcp_connection_id` still wins: a delegation or an explicit
-    "run against THIS connection" means exactly that. Everything else gets the
-    department's connected systems -- all of them. The old `.limit(1)` here is
-    why an agent set up with two systems silently saw one.
+    A list of pinned `mcp_connection_ids` wins: two (or more) logins the
+    agent was assigned, none of which appear in the department fallback
+    because a login is tenant-global. A single `mcp_connection_id` still
+    wins over the department list: a delegation or an explicit "run against
+    THIS connection" means exactly that. Everything else gets the
+    department's connected systems -- all of them. The old `.limit(1)` here
+    is why an agent set up with two systems silently saw one.
     """
+    raw_ids = run.context.get("mcp_connection_ids")
+    if isinstance(raw_ids, list) and raw_ids:
+        pinned_found: list[m.McpConnection] = []
+        pinned_seen: set[uuid.UUID] = set()
+        for raw in raw_ids:
+            try:
+                conn_id = uuid.UUID(str(raw))
+            except ValueError:
+                continue
+            if conn_id in pinned_seen:
+                continue
+            pinned = await db.get(m.McpConnection, conn_id)
+            if pinned is None:
+                continue
+            pinned_found.append(pinned)
+            pinned_seen.add(conn_id)
+        return pinned_found
     mcp_id = run.context.get("mcp_connection_id")
     if mcp_id:
         pinned = await db.get(m.McpConnection, uuid.UUID(str(mcp_id)))
@@ -321,6 +342,7 @@ async def _list_tools(
             # that failure would take the whole list down -- which is exactly the
             # incident the except below was written for.
             env = await _env(conn, db, run.tenant_id)
+            headers = resolve_auth_header(cfg, env)
             # Wrapped HERE, not in mcp_pool: the pool has no cfg, and this is
             # the launch path every packaged/containerized runtime uses. Without
             # it a connection's `requirements` overlay reaches the in-process
@@ -334,6 +356,10 @@ async def _list_tools(
                 command=command,
                 args=args,
                 env=env,
+                transport=conn.transport,
+                server_url=conn.server_url,
+                headers=headers,
+                http_tools=list(cfg.get("http_tools", [])),
                 reusable=not has_oauth_ref(cfg),
             )
         except Exception:
@@ -956,6 +982,7 @@ async def _call_tool(
             record_url=record_url,
         )
     try:
+        headers = resolve_auth_header(cfg, env)
         # Reused across calls: the handshake behind this costs ~3s and the call
         # itself ~50ms, so paying it per call was the whole of the latency. Not
         # reused when the environment carries a minted token that expires.
@@ -968,6 +995,10 @@ async def _call_tool(
             env=env,
             tool=tc.name,
             arguments=tc.arguments,
+            transport=conn.transport,
+            server_url=conn.server_url,
+            headers=headers,
+            http_tools=list(cfg.get("http_tools", [])),
             reusable=not has_oauth_ref(cfg),
         )
     except Exception as exc:  # surface to the model, not as a broken server

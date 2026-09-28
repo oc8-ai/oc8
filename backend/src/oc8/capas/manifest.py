@@ -405,7 +405,11 @@ class SetupMcpSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     connection_key: str = "default"
     name: str
-    command: str
+    # Empty for a remote-MCP or manual-HTTP connection -- `configure_plugin`
+    # (api/v1/capas.py) still writes this verbatim into the connection's
+    # `config["command"]`, but nothing reads that key for a non-stdio
+    # transport (see agent/mcp_client.py's `open_tool_session`).
+    command: str = ""
     args: list[str] = []
     scopes: list[str] = []
     env: dict[str, str] = {}

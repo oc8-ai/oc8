@@ -29,7 +29,11 @@ that tools have names.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any, Protocol
+
+from oc8.modelrouter.types import NeutralTool
 
 #: Separates a connection from a tool in an advertised name. A dot is safe: MCP
 #: tool names are `[a-zA-Z0-9_-]` by convention, so a dot cannot collide with a
@@ -87,3 +91,49 @@ def resolve(name: str, routes: dict[str, Route]) -> Route | None:
         if candidate is not None and candidate.connection == connection:
             return candidate
     return None
+
+
+class _CallableSession(Protocol):
+    async def call(self, name: str, arguments: dict[str, Any]) -> str: ...
+
+
+class RoutedToolset:
+    """Several MCP sessions presented as one Toolset.
+
+    Advertised names follow `build_routes`. A call on a qualified (or unique
+    bare) name reaches the session that owns the tool, never a neighbour.
+    """
+
+    def __init__(
+        self,
+        sessions: Mapping[str, _CallableSession],
+        tools_by_connection: Mapping[str, list[NeutralTool]],
+        *,
+        auth_by_connection: Mapping[str, Any] | None = None,
+    ) -> None:
+        self._sessions = dict(sessions)
+        self.auth_by_connection: dict[str, Any] = dict(auth_by_connection or {})
+        self._routes = build_routes(
+            {name: [t.name for t in tools] for name, tools in tools_by_connection.items()}
+        )
+        advertised_of = {(r.connection, r.tool): name for name, r in self._routes.items()}
+        advertised: list[NeutralTool] = []
+        for conn_name, tools in tools_by_connection.items():
+            for tool in tools:
+                advertised.append(
+                    NeutralTool(
+                        name=advertised_of[(conn_name, tool.name)],
+                        description=tool.description,
+                        parameters=tool.parameters,
+                    )
+                )
+        self.tools = advertised
+
+    def route(self, advertised: str) -> Route | None:
+        return resolve(advertised, self._routes)
+
+    async def call(self, name: str, arguments: dict[str, Any]) -> str:
+        found = self.route(name)
+        if found is None:
+            raise RuntimeError(f"unknown tool {name!r}")
+        return await self._sessions[found.connection].call(found.tool, arguments)

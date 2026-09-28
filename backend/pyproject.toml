@@ -41,6 +41,12 @@ dependencies = [
     # and an open bound pulled it in on a routine rebuild, breaking every tool
     # call at once. The client reads both, so this is a review gate, not a wall.
     "mcp>=1.2,<3",
+    # mcp 2.x's streamable_http client imports this (a separate PyPI package
+    # from httpx, despite the name) but mcp 1.x does not depend on it at all.
+    # agent/mcp_client.py imports it directly at module level, so without an
+    # explicit dependency, resolving to mcp 1.x under the range above breaks
+    # the whole module on ModuleNotFoundError.
+    "httpx2>=2.5",
     "python-multipart>=0.0.18",
     "jsonschema>=4",
     "packaging>=24",

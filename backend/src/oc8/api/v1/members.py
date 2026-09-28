@@ -6,7 +6,7 @@ grants: a Head of Sales who can enrol himself in Engineering is the department
 boundary in a different coat, and it would arrive through the very screen this
 slice exists to give him.
 
-These four routes use `require_permission`, not `require_departmental`. That is
+These routes use `require_permission`, not `require_departmental`. That is
 the point -- no seat grants authority over seats, so there is nothing
 departmental to resolve, and a gate that admitted "somebody with a seat
 somewhere" would be exactly the hole above.
@@ -33,7 +33,7 @@ from oc8.authz.permissions import MANAGE, MEMBER, VIEW, perm
 from oc8.authz.scope import scope_for_principal, subject_uuid_for
 from oc8.config import get_settings
 from oc8.mail.send import SmtpConfig, deliver, resolve_smtp_config
-from oc8.schemas.dto import MemberDTO
+from oc8.schemas.dto import MemberDTO, MemberPasswordResetDTO
 from oc8.schemas.paging import Page
 from oc8.schemas.requests import (
     CreateMemberRequest,
@@ -44,6 +44,7 @@ from oc8.schemas.requests import (
 from oc8.workspace.members import (
     MemberRow,
     UnknownSeatRole,
+    delete_member,
     get_member,
     grant_seat,
     list_members,
@@ -63,6 +64,58 @@ router = APIRouter()
 #: days. 7 days balances that against the same window a stale, forgotten
 #: link stays a live credential for.
 INVITE_TOKEN_TTL = dt.timedelta(days=7)
+#: Duplicated from `auth.PASSWORD_RESET_TOKEN_TTL` rather than imported:
+#: `auth.py` already imports `_member_dto` from this module.
+PASSWORD_RESET_TOKEN_TTL = dt.timedelta(hours=1)
+
+
+async def _spend_unused_tokens(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    member_id: uuid.UUID,
+    purpose: str | None = None,
+) -> None:
+    """Mark unused verification tokens spent. `purpose=None` spends every one."""
+    stmt = (
+        update(m.AccountVerificationToken)
+        .where(
+            m.AccountVerificationToken.tenant_id == tenant_id,
+            m.AccountVerificationToken.member_id == member_id,
+            m.AccountVerificationToken.used_at.is_(None),
+        )
+        .values(used_at=dt.datetime.now(tz=dt.UTC))
+    )
+    if purpose is not None:
+        stmt = stmt.where(m.AccountVerificationToken.purpose == purpose)
+    await db.execute(stmt)
+
+
+async def _mint_access_token(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    member: m.OrgMember,
+    purpose: str,
+    ttl: dt.timedelta,
+) -> str:
+    """Spend unused tokens of this purpose, mint a new one, return the link.
+
+    The plaintext is mailed (or handed back once) and never stored -- same
+    discipline as every other verification token in this table.
+    """
+    await _spend_unused_tokens(db, tenant_id=tenant_id, member_id=member.id, purpose=purpose)
+    token = secrets.token_urlsafe(32)
+    db.add(
+        m.AccountVerificationToken(
+            tenant_id=tenant_id,
+            member_id=member.id,
+            purpose=purpose,
+            token_hash=hashlib.sha256(token.encode()).hexdigest(),
+            expires_at=dt.datetime.now(tz=dt.UTC) + ttl,
+        )
+    )
+    return f"{get_settings().frontend_base_url.rstrip('/')}/reset-password?token={token}"
 
 
 async def _acting_member_id(db: AsyncSession, principal: Principal) -> uuid.UUID | None:
@@ -122,10 +175,9 @@ async def list_members_route(
 
     Widened to the Design System Consistency plan's uniform search/filter/
     group/pagination contract (spec §1.1) -- `Page[MemberDTO]` instead of a
-    bare list, matching Tasks 3-8's other list-query routes. No
-    `includeArchived`: `OrgMember` has no `SoftDeleteMixin` and archive was
-    never requested for Members (per the plan's Global Constraint, Members'
-    detail view and CRUD stay out of scope -- only this list door widens).
+    bare list, matching Tasks 3-8's other list-query routes. Soft-deleted
+    members (`deleted_at` set by `DELETE /members/{id}`) are omitted: the
+    list is who can still sign in, not the audit of who ever could.
     """
     rows, total = await list_members(
         db,
@@ -213,35 +265,14 @@ async def create_member(
         # A re-invite (this same branch, reached again for a subject whose
         # first link leaked, went to the wrong inbox, or simply expired
         # unused) must not leave that earlier link live for the rest of its
-        # 7-day `INVITE_TOKEN_TTL` -- mirrors `forgot_password`'s exact
-        # UPDATE-then-mint pattern in `auth.py` (spend every prior unused row
-        # for this member/purpose before writing the new one), just with
-        # `invite` in place of `password_reset`.
-        await db.execute(
-            update(m.AccountVerificationToken)
-            .where(
-                m.AccountVerificationToken.tenant_id == principal.tenant_id,
-                m.AccountVerificationToken.member_id == member.id,
-                m.AccountVerificationToken.purpose == "invite",
-                m.AccountVerificationToken.used_at.is_(None),
-            )
-            .values(used_at=dt.datetime.now(tz=dt.UTC))
-        )
-        invite_token = secrets.token_urlsafe(32)
-        db.add(
-            m.AccountVerificationToken(
-                tenant_id=principal.tenant_id,
-                member_id=member.id,
-                purpose="invite",
-                # The plaintext is mailed (or handed back once, in the
-                # response) and never stored -- same discipline as every
-                # other verification token in this table.
-                token_hash=hashlib.sha256(invite_token.encode()).hexdigest(),
-                expires_at=dt.datetime.now(tz=dt.UTC) + INVITE_TOKEN_TTL,
-            )
-        )
-        invite_link = (
-            f"{get_settings().frontend_base_url.rstrip('/')}/reset-password?token={invite_token}"
+        # 7-day `INVITE_TOKEN_TTL` -- `_mint_access_token` spends every prior
+        # unused `invite` row before writing the new one.
+        invite_link = await _mint_access_token(
+            db,
+            tenant_id=principal.tenant_id,
+            member=member,
+            purpose="invite",
+            ttl=INVITE_TOKEN_TTL,
         )
         # Resolved here, inside the still-open, still tenant-bound transaction
         # -- RLS binds `app.tenant_id` transaction-locally, and it dies at
@@ -536,3 +567,124 @@ async def revoke_seat_route(
     dto = await _member_dto(db, member)
     await db.commit()
     return dto
+
+
+@router.post(
+    "/members/{member_id}/password-reset",
+    response_model=MemberPasswordResetDTO,
+    dependencies=[Depends(require_permission(perm(MEMBER, MANAGE)))],
+)
+async def mint_member_password_reset(
+    member_id: uuid.UUID,
+    db: DbSession,
+    principal: CurrentPrincipal,
+) -> MemberPasswordResetDTO:
+    """Mint a fresh set-password link for an existing member, and try to email it.
+
+    The user-detail screen's counterpart to the invite `POST /members` mints
+    on create: an administrator looking at somebody who already exists had
+    no door to mint a new link or re-trigger the mail. Passwordless members
+    get a 7-day `invite` (they still have a password to SET); members who
+    already have a password get a 1-hour `password_reset`. Either way the
+    previous unused token of that purpose is spent first, and the link is
+    always returned so a missing mail server is not a dead end.
+    """
+    member = await get_member(db, tenant_id=principal.tenant_id, member_id=member_id)
+    if member is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "member not found")
+
+    if member.password_hash is None:
+        purpose = "invite"
+        ttl = INVITE_TOKEN_TTL
+        action = "member.invited"
+        reason = "invite link re-minted through POST /members/{id}/password-reset"
+        mail_subject = "You've been invited"
+        mail_body_prefix = (
+            "An administrator created an account for you.\nClick this link to set your password:"
+        )
+        mail_expiry = f"This link expires in {INVITE_TOKEN_TTL.days} days."
+    else:
+        purpose = "password_reset"
+        ttl = PASSWORD_RESET_TOKEN_TTL
+        action = "member.password_reset_requested"
+        reason = "reset link minted by an administrator"
+        mail_subject = "Reset your password"
+        mail_body_prefix = "An administrator sent you a link to set a new password:"
+        mail_expiry = "This link expires in 1 hour."
+
+    reset_link = await _mint_access_token(
+        db,
+        tenant_id=principal.tenant_id,
+        member=member,
+        purpose=purpose,
+        ttl=ttl,
+    )
+    smtp = await resolve_smtp_config(db, tenant_id=principal.tenant_id)
+    recipient = member.subject
+    await append_event(
+        db,
+        tenant_id=principal.tenant_id,
+        actor_type="operator",
+        actor_id=await _acting_member_id(db, principal),
+        category="member",
+        action=action,
+        resource={"member_id": str(member.id), "subject": member.subject},
+        reason=reason,
+        principal=principal,
+    )
+    await db.commit()
+
+    reset_sent = False
+    if smtp is not None:
+        reset_sent = await deliver(
+            smtp,
+            to=recipient,
+            subject=mail_subject,
+            body=f"{mail_body_prefix}\n{reset_link}\n\n{mail_expiry}",
+        )
+    return MemberPasswordResetDTO(reset_link=reset_link, reset_sent=reset_sent)
+
+
+@router.delete(
+    "/members/{member_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_permission(perm(MEMBER, MANAGE)))],
+)
+async def delete_member_route(
+    member_id: uuid.UUID,
+    db: DbSession,
+    principal: CurrentPrincipal,
+) -> None:
+    """Soft-delete a person so they disappear from the users list and cannot sign in.
+
+    Refuses the caller's own row: deleting yourself is the lockout
+    `PUT /members/{id}/role` already refuses, by a different verb. Unused
+    invite and reset links are spent in the same transaction so a leftover
+    mailed token cannot resurrect access after the row is gone.
+    """
+    member = await get_member(db, tenant_id=principal.tenant_id, member_id=member_id)
+    if member is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "member not found")
+    if member.subject == principal.subject:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "You cannot delete yourself — that would lock the only door back.",
+        )
+
+    gone = await delete_member(db, tenant_id=principal.tenant_id, member_id=member.id)
+    if gone is None:  # pragma: no cover - get_member already 404'd
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "member not found")
+
+    await _spend_unused_tokens(db, tenant_id=principal.tenant_id, member_id=member.id)
+    await append_event(
+        db,
+        tenant_id=principal.tenant_id,
+        actor_type="operator",
+        actor_id=await _acting_member_id(db, principal),
+        category="member",
+        action="member.deleted",
+        resource={"member_id": str(member.id), "subject": member.subject},
+        reason="offboarded by an administrator",
+        principal=principal,
+    )
+    await db.commit()

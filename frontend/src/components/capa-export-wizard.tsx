@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Loader2, Search } from "lucide-react";
+import { Check, Loader2, Search } from "lucide-react";
 import { toast } from "sonner";
 import { StepDots } from "@/components/onboarding/step-dots";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -22,6 +22,11 @@ type Selection = {
   departmentIds: Set<string>;
   agentIds: Set<string>;
   skillIds: Set<string>;
+  // At most one, and only ever set from `initialSelection` below -- unlike
+  // the three id sets above, there's no picker UI for this: the Capas route
+  // hands off a single just-installed tool-pack capa, pre-checked, never a
+  // browsable list of tool packs to choose among.
+  toolPack: { id: string; name: string } | null;
 };
 
 type ItemDetails = { name: string; version: string; summary: string };
@@ -43,7 +48,19 @@ function detailKey(kind: CapaExportItemInput["kind"], id: string): string {
   return `${kind}:${id}`;
 }
 
-export function CapaExportWizard({ onClose }: { onClose: () => void }) {
+export function CapaExportWizard({
+  onClose,
+  // Set by the Capas route right after the custom MCP wizard installs a
+  // capa, so "Save & export as capa" hands off straight into this wizard
+  // with that one tool-pack capa already checked -- see `build_tool_pack_export`
+  // (backend/src/oc8/capas/export.py) for why a tool-pack export has no
+  // Details-step-editable name/version/summary of its own (it re-renders the
+  // capa's OWN stored manifest, ignoring whatever this wizard would send).
+  initialSelection,
+}: {
+  onClose: () => void;
+  initialSelection?: { kind: "tool_pack"; id: string; name: string };
+}) {
   const t = useT();
   const [step, setStep] = useState<WizardStep>("selection");
 
@@ -68,6 +85,7 @@ export function CapaExportWizard({ onClose }: { onClose: () => void }) {
     departmentIds: new Set(),
     agentIds: new Set(),
     skillIds: new Set(),
+    toolPack: initialSelection ? { id: initialSelection.id, name: initialSelection.name } : null,
   });
   const [details, setDetails] = useState<DetailsByKey>({});
   const preview = usePreviewCapaExport();
@@ -85,7 +103,10 @@ export function CapaExportWizard({ onClose }: { onClose: () => void }) {
   const selectableAgents = agents.filter((a) => !coveredAgentIds.has(a.id));
 
   const hasSelection =
-    selection.departmentIds.size > 0 || selection.agentIds.size > 0 || selection.skillIds.size > 0;
+    selection.departmentIds.size > 0 ||
+    selection.agentIds.size > 0 ||
+    selection.skillIds.size > 0 ||
+    selection.toolPack !== null;
 
   function toggle(kind: keyof Selection, id: string, checked: boolean) {
     setSelection((prev) => {
@@ -127,6 +148,19 @@ export function CapaExportWizard({ onClose }: { onClose: () => void }) {
 
   function buildItems(): CapaExportItemInput[] {
     const items: CapaExportItemInput[] = [];
+    if (selection.toolPack) {
+      // version/summary are the same request-shape defaults `detailFor`
+      // falls back to for the other three kinds -- `build_tool_pack_export`
+      // ignores all three (see the comment on `initialSelection` above), so
+      // there's no Details-step row to source them from here.
+      items.push({
+        kind: "tool_pack",
+        id: selection.toolPack.id,
+        name: selection.toolPack.name,
+        version: "1.0.0",
+        summary: "",
+      });
+    }
     for (const deptId of selection.departmentIds) {
       const dept = departments.find((d) => d.id === deptId);
       if (!dept) continue;
@@ -409,6 +443,16 @@ function SelectionStep({
   const totalItems = departments.length + selectableAgents.length + localSkills.length;
   return (
     <div className="space-y-5">
+      {selection.toolPack && (
+        <section>
+          <p className="text-sm font-medium">{t("Custom MCP capa", "Custom-MCP-Capa")}</p>
+          <div className="mt-2 flex items-center gap-2.5 rounded-md border border-primary bg-primary/10 px-3 py-2 text-sm">
+            <Check className="h-4 w-4 shrink-0 text-primary" />
+            {selection.toolPack.name}
+          </div>
+        </section>
+      )}
+
       {totalItems > 0 && (
         <div className="relative">
           <Search className="pointer-events-none absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />

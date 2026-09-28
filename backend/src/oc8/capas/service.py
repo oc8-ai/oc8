@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
@@ -11,12 +12,20 @@ from packaging.version import Version
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oc8.capas.manifest import Manifest, ManifestError, parse_manifest
+from oc8.capas.discovery import DiscoveredPlugin, find_plugin
+from oc8.capas.manifest import (
+    Manifest,
+    ManifestError,
+    PluginSetupSpec,
+    SetupFieldSpec,
+    parse_manifest,
+)
 from oc8.capas.registry import enabled_capability_registry
 from oc8.constants import CORE_VERSION
 from oc8.models import (
     Agent,
     Capa,
+    CapaInstallation,
     CapaVersion,
     Department,
     MemoryStore,
@@ -31,10 +40,14 @@ __all__ = [
     "DependencyError",
     "DuplicateVersionError",
     "ManifestError",
+    "MissingDependencyError",
     "PluginError",
+    "SetupValidationError",
     "install_plugin",
+    "install_with_dependencies",
     "instantiate_agent",
     "instantiate_department",
+    "validate_setup_values",
 ]
 
 
@@ -54,9 +67,66 @@ class CoreCompatError(PluginError):
     pass
 
 
+class MissingDependencyError(PluginError):
+    """A `plugin_depends` entry named a plugin that isn't on disk."""
+
+
+class SetupValidationError(PluginError):
+    """One of `configure_plugin`'s three request-shape checks failed."""
+
+
+def validate_setup_values(
+    setup: PluginSetupSpec, fields: dict[str, SetupFieldSpec], values: dict[str, str]
+) -> None:
+    """The three checks `configure_plugin` (api/v1/capas.py) runs against a
+    submitted setup form before touching anything stateful: every submitted
+    key is declared, every required field has a value, and any declared
+    `any_of` credential-set alternative is satisfied by at least one group.
+    Pulled out so the Copilot gateway's `capa.configure` operation (secret-
+    blind, no MCP connection support) can run the identical validation the
+    REST route does, instead of drifting from it.
+    """
+    unknown = sorted(set(values) - set(fields))
+    if unknown:
+        raise SetupValidationError(f"unknown setup fields: {', '.join(unknown)}")
+    for field in setup.fields:
+        if field.required and not values.get(field.key, field.default).strip():
+            raise SetupValidationError(f"setup field {field.key!r} is required")
+    for alternative in setup.validation.any_of:
+        unknown_fields = sorted(set(alternative) - set(fields))
+        if unknown_fields:
+            raise SetupValidationError(
+                f"setup validation references unknown fields: {', '.join(unknown_fields)}"
+            )
+    if setup.validation.any_of and not any(
+        all(values.get(key, fields[key].default).strip() for key in alternative)
+        for alternative in setup.validation.any_of
+    ):
+        alternatives = " or ".join(" + ".join(group) for group in setup.validation.any_of)
+        raise SetupValidationError(f"provide one complete credential set: {alternatives}")
+
+
 def _artifact_hash(manifest: Manifest) -> bytes:
     canonical = json.dumps(manifest.model_dump(mode="json"), sort_keys=True).encode()
     return hashlib.sha256(canonical).digest()
+
+
+async def _load_installation_config(
+    db: AsyncSession, *, capa_id: uuid.UUID
+) -> dict[str, str]:
+    """The tenant-submitted, non-secret setup values for this capa, if any
+    setup was ever run -- the same dict `_configure_without_connection`
+    (api/v1/capas.py) writes to. `{}` both when no CapaInstallation row
+    exists yet (every pre-existing hand-built test fixture, and any capa
+    hired before ever being enabled+configured) and when one exists with an
+    empty config -- both mean "no substitution values available", handled
+    identically by `_substitute_template_values` leaving every token as-is."""
+    installation = (
+        await db.execute(
+            select(CapaInstallation).where(CapaInstallation.capa_id == capa_id)
+        )
+    ).scalar_one_or_none()
+    return dict(installation.config) if installation is not None else {}
 
 
 def _check_core_compat(spec: str) -> None:
@@ -67,6 +137,18 @@ def _check_core_compat(spec: str) -> None:
             raise CoreCompatError(f"core {CORE_VERSION} does not satisfy core_compat {spec!r}")
     except InvalidSpecifier as exc:
         raise CoreCompatError(f"invalid core_compat {spec!r}: {exc}") from exc
+
+
+def _substitute_template_values(text: str, config: dict[str, str]) -> str:
+    """Replace {{key}} tokens in `text` with config[key]. A token with no
+    matching key is left as-is -- hiring with no setup run yet (every
+    pre-existing template) must keep behaving exactly as it does today."""
+
+    def _sub(match: re.Match[str]) -> str:
+        key = match.group(1)
+        return config.get(key, match.group(0))
+
+    return re.sub(r"\{\{(\w+)\}\}", _sub, text)
 
 
 async def install_plugin(
@@ -133,6 +215,57 @@ async def install_plugin(
     return version
 
 
+async def install_with_dependencies(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    found: DiscoveredPlugin,
+    origin: str,
+    _seen: set[str] | None = None,
+) -> CapaVersion | None:
+    """Install `found` for `tenant_id`, first recursively installing any
+    not-yet-installed `plugin_depends` entries (design §9). Never enables a
+    dependency -- only `install_plugin` runs for it, exactly as if an
+    operator had installed it manually and not yet clicked Enable.
+
+    Moved here from `api/v1/capas.py` (was `_install_with_dependencies`) so
+    both the REST route and the Copilot gateway's `capa.install` operation
+    can call it without a service module importing a route module. Domain
+    exceptions (`PluginError`/`MissingDependencyError`) replace the two
+    `HTTPException` raises the route-local version used -- callers map them
+    to their own transport's error shape (`HTTPException` for the REST
+    route, `InvalidOperation` for the Copilot gateway).
+    """
+    plugin_id = found.plugin_id
+    seen = _seen if _seen is not None else set()
+    if plugin_id in seen:
+        return None
+    seen.add(plugin_id)
+
+    if not found.valid or found.manifest is None:
+        raise PluginError(found.error or "invalid manifest")
+
+    for dep_name in found.manifest.get("plugin_depends") or []:
+        already_installed = (
+            await db.execute(select(Capa).where(Capa.tenant_id == tenant_id, Capa.name == dep_name))
+        ).scalar_one_or_none()
+        if already_installed is None:
+            dep = find_plugin(dep_name)
+            if dep is None:
+                msg = f"{plugin_id} depends on a plugin not found on disk: {dep_name}"
+                raise MissingDependencyError(msg)
+            await install_with_dependencies(
+                db, tenant_id=tenant_id, found=dep, origin=origin, _seen=seen
+            )
+
+    try:
+        return await install_plugin(
+            db, tenant_id=tenant_id, manifest_data=found.manifest, origin=origin
+        )
+    except DuplicateVersionError:
+        raise
+
+
 async def _assign_named_skills(
     db: AsyncSession, *, tenant_id: uuid.UUID, agent_id: uuid.UUID, skill_names: list[str]
 ) -> None:
@@ -189,6 +322,7 @@ async def _create_trigger_if_present(
     tenant_id: uuid.UUID,
     agent_id: uuid.UUID,
     trigger: dict[str, object] | None,
+    config: dict[str, str],
 ) -> None:
     """Goes through `triggers/service.py::create_trigger` -- the single funnel
     every trigger creation is required to go through (see that function's own
@@ -199,7 +333,10 @@ async def _create_trigger_if_present(
     template was silently, permanently dead. Routing through `create_trigger`
     also gets cron-expression validation (a hand-edited manifest's
     `cron_expression` is an unvalidated `str` at the `TemplateAgent` schema
-    level) and startup jitter for free."""
+    level) and startup jitter for free.
+
+    `config` substitutes {{field_key}} tokens into `task_text`/
+    `cron_expression` before validation -- see `_substitute_template_values`."""
     if not trigger:
         return
     try:
@@ -208,8 +345,10 @@ async def _create_trigger_if_present(
             tenant_id=tenant_id,
             agent_id=agent_id,
             kind="cron",
-            task_text=str(trigger.get("task_text", "")),
-            cron_expression=str(trigger.get("cron_expression", "")),
+            task_text=_substitute_template_values(str(trigger.get("task_text", "")), config),
+            cron_expression=_substitute_template_values(
+                str(trigger.get("cron_expression", "")), config
+            ),
         )
     except InvalidTriggerConfig as exc:
         raise PluginError(f"invalid trigger in template: {exc}") from exc
@@ -226,13 +365,14 @@ async def instantiate_agent(
     mf = version.manifest
     if mf.get("type", "agent_template") != "agent_template":
         raise PluginError("only agent_template plugins can be instantiated as agents")
+    config = await _load_installation_config(db, capa_id=version.capa_id)
     # Same shape as one entry under department_template.agents — when present,
     # mission/persona land on the Agent row. Absent = legacy thin instantiate.
     spec = dict(mf.get("agent_template") or {})
     definition: dict[str, object] = {
         "plugin": mf.get("name", ""),
         "version": version.semver,
-        "persona": spec.get("persona", ""),
+        "persona": _substitute_template_values(str(spec.get("persona", "")), config),
         "skills": list(spec.get("skills") or []),
     }
     if spec.get("max_steps"):
@@ -241,8 +381,8 @@ async def instantiate_agent(
         tenant_id=tenant_id,
         department_id=department_id,
         name=name or str(spec.get("name") or mf.get("name", "Agent")),
-        role_title=str(spec.get("role_title") or ""),
-        mission=str(spec.get("mission") or ""),
+        role_title=_substitute_template_values(str(spec.get("role_title") or ""), config),
+        mission=_substitute_template_values(str(spec.get("mission") or ""), config),
         status="stopped",
         narrowing=dict(spec.get("narrowing") or {}),
         definition=definition,
@@ -255,7 +395,11 @@ async def instantiate_agent(
         db, tenant_id=tenant_id, agent_id=agent.id, skill_names=list(spec.get("skills") or [])
     )
     await _create_trigger_if_present(
-        db, tenant_id=tenant_id, agent_id=agent.id, trigger=spec.get("trigger")
+        db,
+        tenant_id=tenant_id,
+        agent_id=agent.id,
+        trigger=spec.get("trigger"),
+        config=config,
     )
     return agent
 
@@ -272,6 +416,7 @@ async def instantiate_department(
     mf = version.manifest
     if mf.get("type") != "department_template" or not mf.get("department_template"):
         raise PluginError("only department_template plugins can be instantiated as departments")
+    config = await _load_installation_config(db, capa_id=version.capa_id)
     spec = mf["department_template"]
     agent_defs = list(spec.get("agents", []))
 
@@ -301,15 +446,15 @@ async def instantiate_department(
             tenant_id=tenant_id,
             department_id=dept.id,
             name=a["name"],
-            role_title=a.get("role_title", ""),
-            mission=a.get("mission", ""),
+            role_title=_substitute_template_values(str(a.get("role_title", "")), config),
+            mission=_substitute_template_values(str(a.get("mission", "")), config),
             is_team_lead=bool(a.get("is_team_lead", False)),
             status="stopped",
             narrowing=dict(a.get("narrowing", {})),
             definition={
                 "plugin": mf.get("name", ""),
                 "version": version.semver,
-                "persona": a.get("persona", ""),
+                "persona": _substitute_template_values(str(a.get("persona", "")), config),
                 "reports_to": a.get("reports_to"),
                 "skills": list(a.get("skills", [])),
                 **({"max_steps": int(a["max_steps"])} if a.get("max_steps") else {}),
@@ -322,7 +467,11 @@ async def instantiate_department(
             db, tenant_id=tenant_id, agent_id=agent.id, skill_names=list(a.get("skills") or [])
         )
         await _create_trigger_if_present(
-            db, tenant_id=tenant_id, agent_id=agent.id, trigger=a.get("trigger")
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent.id,
+            trigger=a.get("trigger"),
+            config=config,
         )
         if lead_id is None and agent.is_team_lead:
             lead_id = agent.id

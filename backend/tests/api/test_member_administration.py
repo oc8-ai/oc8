@@ -434,9 +434,7 @@ def _community(monkeypatch: pytest.MonkeyPatch) -> None:
     OTHER test in this file exercises the feature switched OFF -- this is the
     one override that switches it on, mirroring `test_auth_config.py`'s own
     `Settings(env="production")` monkeypatch."""
-    monkeypatch.setattr(
-        "oc8.api.v1.members.get_settings", lambda: Settings(env="production")
-    )
+    monkeypatch.setattr("oc8.api.v1.members.get_settings", lambda: Settings(env="production"))
 
 
 async def test_creating_a_passwordless_member_mints_and_mails_an_invite(
@@ -655,3 +653,332 @@ async def test_dev_mode_mints_no_invite_for_a_passwordless_member(
                 )
             )
         ).scalar_one_or_none() is None
+
+
+# --- offboarding: DELETE /members/{id} -----------------------------------
+#
+# Soft-delete was on the row (`SoftDeleteMixin`, partial unique indexes,
+# login/scope filters) but nothing in the API wrote `deleted_at`. The
+# administrator's user-detail screen could not remove a person, so a leaver
+# kept their seats, role, and any live invite/reset link.
+
+
+async def test_deleting_a_member_soft_deletes_them_and_drops_them_from_the_list(
+    app_session: AppSessionFactory,
+) -> None:
+    office = await _office(app_session)
+    admin = _headers(office.tenant, "boss", "org_admin")
+
+    async with _http() as http:
+        created = await http.post(
+            "/api/v1/members",
+            json={"subject": "leaver@example.com", "displayName": "Leaver"},
+            headers=admin,
+        )
+        assert created.status_code == 201, created.text
+        member_id = created.json()["id"]
+
+        deleted = await http.delete(f"/api/v1/members/{member_id}", headers=admin)
+        assert deleted.status_code == 204, deleted.text
+
+        listed = await http.get("/api/v1/members", headers=admin)
+    assert listed.status_code == 200, listed.text
+    subjects = {r["subject"] for r in listed.json()["items"]}
+    assert "leaver@example.com" not in subjects
+
+    async with app_session(office.tenant) as db:
+        row = (
+            await db.execute(select(m.OrgMember).where(m.OrgMember.id == uuid.UUID(member_id)))
+        ).scalar_one()
+        assert row.deleted_at is not None, "offboarding must stamp deleted_at, not vaporise the row"
+
+
+async def test_deleting_yourself_is_refused(
+    app_session: AppSessionFactory,
+) -> None:
+    """The same lockout `PUT /members/{id}/role` refuses: an administrator who
+    deletes their own row has no door back through the product."""
+    office = await _office(app_session)
+    admin = _headers(office.tenant, "boss", "org_admin")
+
+    async with _http() as http:
+        created = await http.post(
+            "/api/v1/members",
+            json={"subject": "boss", "displayName": "Boss"},
+            headers=admin,
+        )
+        assert created.status_code in {200, 201}, created.text
+        member_id = created.json()["id"]
+
+        deleted = await http.delete(f"/api/v1/members/{member_id}", headers=admin)
+    assert deleted.status_code == 409, deleted.text
+    assert "yourself" in deleted.text.lower() or "own" in deleted.text.lower()
+
+    async with app_session(office.tenant) as db:
+        row = (
+            await db.execute(select(m.OrgMember).where(m.OrgMember.id == uuid.UUID(member_id)))
+        ).scalar_one()
+        assert row.deleted_at is None
+
+
+async def test_deleting_an_unknown_member_is_404(app_session: AppSessionFactory) -> None:
+    office = await _office(app_session)
+    admin = _headers(office.tenant, "boss", "org_admin")
+    async with _http() as http:
+        deleted = await http.delete(f"/api/v1/members/{uuid.uuid4()}", headers=admin)
+    assert deleted.status_code == 404, deleted.text
+
+
+async def test_deleting_a_member_requires_member_manage(
+    app_session: AppSessionFactory,
+) -> None:
+    office = await _office(app_session)
+    admin = _headers(office.tenant, "boss", "org_admin")
+    viewer = _headers(office.tenant, "viewer", "member")
+
+    async with _http() as http:
+        created = await http.post(
+            "/api/v1/members",
+            json={"subject": "target@example.com"},
+            headers=admin,
+        )
+        assert created.status_code == 201, created.text
+        refused = await http.delete(f"/api/v1/members/{created.json()['id']}", headers=viewer)
+    assert refused.status_code == 403, refused.text
+
+
+async def test_deleting_a_member_spends_their_unused_invite_link(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A leftover invite must not stay redeemable after the person is gone."""
+    _community(monkeypatch)
+    office = await _office(app_session)
+    admin = _headers(office.tenant, "boss", "org_admin")
+
+    async with _http() as http:
+        created = await http.post(
+            "/api/v1/members",
+            json={"subject": "gone@example.com"},
+            headers=admin,
+        )
+        assert created.status_code == 201, created.text
+        member_id = created.json()["id"]
+        assert created.json()["inviteLink"]
+
+        deleted = await http.delete(f"/api/v1/members/{member_id}", headers=admin)
+    assert deleted.status_code == 204, deleted.text
+
+    async with app_session(office.tenant) as db:
+        token = (
+            await db.execute(
+                select(m.AccountVerificationToken).where(
+                    m.AccountVerificationToken.tenant_id == office.tenant,
+                    m.AccountVerificationToken.member_id == uuid.UUID(member_id),
+                )
+            )
+        ).scalar_one()
+        assert token.used_at is not None
+
+
+async def test_deleting_a_member_is_audited(app_session: AppSessionFactory) -> None:
+    office = await _office(app_session)
+    admin = _headers(office.tenant, "boss", "org_admin")
+
+    async with _http() as http:
+        created = await http.post(
+            "/api/v1/members",
+            json={"subject": "audited-leaver@example.com"},
+            headers=admin,
+        )
+        member_id = created.json()["id"]
+        deleted = await http.delete(f"/api/v1/members/{member_id}", headers=admin)
+    assert deleted.status_code == 204, deleted.text
+
+    async with app_session(office.tenant) as db:
+        actions = list(
+            (
+                await db.execute(
+                    select(m.AuditEvent.action).where(m.AuditEvent.tenant_id == office.tenant)
+                )
+            ).scalars()
+        )
+    assert "member.deleted" in actions
+
+
+# --- admin-minted password-reset / re-invite from the user detail screen --
+#
+# `POST /members` mints an invite only when creating (or re-POSTing) a
+# still-passwordless member. An administrator looking at an existing user
+# had no door to mint a fresh reset link or re-trigger the email.
+
+
+async def test_admin_password_reset_mails_a_link_for_a_member_with_a_password(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _community(monkeypatch)
+    office = await _office(app_session)
+    admin = _headers(office.tenant, "boss", "org_admin")
+    async with app_session(office.tenant) as db:
+        await _configure_smtp(db, office.tenant)
+
+    with patch("oc8.credentials.smtp.smtplib.SMTP") as smtp_cls:
+        client = MagicMock()
+        smtp_cls.return_value.__enter__.return_value = client
+        async with _http() as http:
+            created = await http.post(
+                "/api/v1/members",
+                json={
+                    "subject": "haspass@example.com",
+                    "displayName": "Has Pass",
+                    "password": "CorrectHorse1",
+                },
+                headers=admin,
+            )
+            assert created.status_code == 201, created.text
+            member_id = created.json()["id"]
+
+            reset = await http.post(f"/api/v1/members/{member_id}/password-reset", headers=admin)
+    assert reset.status_code == 200, reset.text
+    body = reset.json()
+    assert body["resetSent"] is True, body
+    assert body["resetLink"] and "token=" in body["resetLink"]
+    assert client.send_message.call_count == 1
+
+    async with app_session(office.tenant) as db:
+        token = (
+            await db.execute(
+                select(m.AccountVerificationToken).where(
+                    m.AccountVerificationToken.tenant_id == office.tenant,
+                    m.AccountVerificationToken.member_id == uuid.UUID(member_id),
+                )
+            )
+        ).scalar_one()
+        assert token.purpose == "password_reset"
+        assert token.used_at is None
+
+
+async def test_admin_password_reset_without_mail_server_still_returns_a_link(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _community(monkeypatch)
+    office = await _office(app_session)
+    admin = _headers(office.tenant, "boss", "org_admin")
+
+    async with _http() as http:
+        created = await http.post(
+            "/api/v1/members",
+            json={"subject": "noleak@example.com", "password": "CorrectHorse1"},
+            headers=admin,
+        )
+        member_id = created.json()["id"]
+        reset = await http.post(f"/api/v1/members/{member_id}/password-reset", headers=admin)
+    assert reset.status_code == 200, reset.text
+    body = reset.json()
+    assert body["resetSent"] is False
+    assert body["resetLink"] and "token=" in body["resetLink"]
+
+
+async def test_admin_password_reset_for_a_passwordless_member_mints_an_invite(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same 7-day invite a create-without-password mints -- they still have
+    nothing to reset, they have a password to SET."""
+    _community(monkeypatch)
+    office = await _office(app_session)
+    admin = _headers(office.tenant, "boss", "org_admin")
+
+    async with _http() as http:
+        created = await http.post(
+            "/api/v1/members",
+            json={"subject": "stillwaiting@example.com"},
+            headers=admin,
+        )
+        member_id = created.json()["id"]
+        reset = await http.post(f"/api/v1/members/{member_id}/password-reset", headers=admin)
+    assert reset.status_code == 200, reset.text
+    assert reset.json()["resetLink"]
+
+    async with app_session(office.tenant) as db:
+        tokens = list(
+            (
+                await db.execute(
+                    select(m.AccountVerificationToken).where(
+                        m.AccountVerificationToken.tenant_id == office.tenant,
+                        m.AccountVerificationToken.member_id == uuid.UUID(member_id),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        live = [t for t in tokens if t.used_at is None]
+        assert len(live) == 1
+        assert live[0].purpose == "invite"
+
+
+async def test_admin_password_reset_spends_the_earlier_unused_link(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _community(monkeypatch)
+    office = await _office(app_session)
+    admin = _headers(office.tenant, "boss", "org_admin")
+
+    async with _http() as http:
+        created = await http.post(
+            "/api/v1/members",
+            json={"subject": "again@example.com", "password": "CorrectHorse1"},
+            headers=admin,
+        )
+        member_id = created.json()["id"]
+        first = await http.post(f"/api/v1/members/{member_id}/password-reset", headers=admin)
+        second = await http.post(f"/api/v1/members/{member_id}/password-reset", headers=admin)
+    assert first.status_code == 200 and second.status_code == 200
+    assert first.json()["resetLink"] != second.json()["resetLink"]
+
+    async with app_session(office.tenant) as db:
+        tokens = list(
+            (
+                await db.execute(
+                    select(m.AccountVerificationToken)
+                    .where(
+                        m.AccountVerificationToken.tenant_id == office.tenant,
+                        m.AccountVerificationToken.member_id == uuid.UUID(member_id),
+                    )
+                    .order_by(m.AccountVerificationToken.created_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(tokens) == 2
+    assert tokens[0].used_at is not None
+    assert tokens[1].used_at is None
+
+
+async def test_admin_password_reset_requires_member_manage(
+    app_session: AppSessionFactory,
+) -> None:
+    office = await _office(app_session)
+    admin = _headers(office.tenant, "boss", "org_admin")
+    viewer = _headers(office.tenant, "viewer", "member")
+
+    async with _http() as http:
+        created = await http.post(
+            "/api/v1/members",
+            json={"subject": "gated@example.com", "password": "CorrectHorse1"},
+            headers=admin,
+        )
+        refused = await http.post(
+            f"/api/v1/members/{created.json()['id']}/password-reset", headers=viewer
+        )
+    assert refused.status_code == 403, refused.text
+
+
+async def test_admin_password_reset_unknown_member_is_404(
+    app_session: AppSessionFactory,
+) -> None:
+    office = await _office(app_session)
+    admin = _headers(office.tenant, "boss", "org_admin")
+    async with _http() as http:
+        reset = await http.post(f"/api/v1/members/{uuid.uuid4()}/password-reset", headers=admin)
+    assert reset.status_code == 404, reset.text

@@ -1,0 +1,39 @@
+# The tool-pack half of the treg_mcp plugin. This file's TOP LEVEL *is* the
+# `tool_pack` table (design §2/§3) -- there is no `[plugin.tool_pack]`
+# wrapper.
+#
+# `server_url` points at treg's curated `/mcp/v2/` surface rather than the
+# broader `/mcp/` one: v2 is the same surface treg built for Claude's own
+# Connector Directory, and its own docs describe it as separating read calls
+# from write calls "so Claude receives accurate safety signals" -- the
+# closest thing to a right/wrong classification this connection can lean on
+# given the catalog itself is not fixed. `/mcp/` additionally exposes
+# team-owned tools and imported skills that are meaningless to classify
+# without knowing what a given tenant has imported.
+
+[[connections]]
+key = "primary"
+name = "treg"
+transport = "http"
+server_url = "https://treg.to/mcp/v2/"
+credential_type = "treg_token"
+
+# Deliberately no `[connections.scopes]` table: unlike every other tool-pack
+# capa in this repo, treg's tool list is not known at manifest-authoring
+# time -- it is whatever the tenant has registered on their own treg
+# account, and can change without a new oc8 release. Materialising this
+# connection leaves `scopes` empty, exactly the shape the custom/wizard-
+# authored remote-MCP capas already use (2026-09-19-custom-mcp-capa-design.md
+# §2) -- the live connection test discovers the real tool list, and an
+# operator grants access to what it actually finds rather than to a stale
+# guess baked in here. No `guardrails/` presets ship for the same reason:
+# a preset gating on `read`/`modify` needs a `scopes` classification to gate
+# against, which this connection does not have.
+
+[connections.config]
+# Every call -- CLI, raw HTTP or MCP -- authenticates to treg with this one
+# header (treg's own docs: "X-Treg-Token ... identifies you on every call").
+# `resolve_auth_header` (agent/mcp_client.py) reads this key generically for
+# any http-transport connection; nothing treg-specific lives outside this
+# manifest.
+auth_header_name = "X-Treg-Token"
