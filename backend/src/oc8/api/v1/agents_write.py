@@ -24,13 +24,23 @@ from sqlalchemy import func, select
 
 from oc8 import models as m
 from oc8.agents.hire import create_hire_request, require_hire_approval
-from oc8.agents.versioning import publish_version
-from oc8.api.deps import DbSession, authorize_agent_write, require_agent_write
-from oc8.api.v1._serializers import agent_to_dto
+from oc8.agents.publish_hooks import PublishHookFailed
+from oc8.agents.versioning import (
+    NoChangesToPublish,
+    publish_version,
+)
+from oc8.api.deps import (
+    DbSession,
+    authorize_agent_write,
+    require_agent_write,
+    require_permission,
+)
+from oc8.api.v1._serializers import agent_to_dto, agent_version_to_dto
 from oc8.api.v1.agents import _agent_detail_dto
 from oc8.api.v1.files import _attachment_dto, _store_upload
 from oc8.audit import append_event
 from oc8.authz.pdp import ToolPolicy, missing_skill_requirements, narrowing_within_frame
+from oc8.authz.permissions import AGENT_VERSION_PUBLISH
 from oc8.authz.scope import HumanActor
 from oc8.capas.discovery import connection_supports_value_spec, resolve_tool_pack_connection
 from oc8.capas.manifest import GuardrailAttribute
@@ -54,6 +64,7 @@ from oc8.runtime.registry import (
 from oc8.schemas.dto import (
     AgentDetailDTO,
     AgentDTO,
+    AgentVersionDTO,
     ConditionDTO,
     FileAttachmentDTO,
     FunctionGuardrailInterpretationDTO,
@@ -70,6 +81,7 @@ from oc8.schemas.requests import (
     LifecycleRequest,
     ModelConfigRequest,
     NarrowingRequest,
+    PublishAgentVersionRequest,
     RuntimeAssignRequest,
 )
 
@@ -1111,6 +1123,125 @@ async def assign_skill(
         principal=principal,
     )
     return {"status": "assigned"}
+
+
+async def _publish_or_refuse(
+    db: DbSession,
+    agent: m.Agent,
+    *,
+    note: str | None,
+    published_by: uuid.UUID,
+    current_no: int | None,
+    meta: dict[str, Any] | None = None,
+) -> m.AgentVersion:
+    """`publish_version` with its two refusals translated to HTTP. Shared by
+    publish and rollback so the two answer identically -- a rollback IS a
+    publish, and a client must not need two error vocabularies for one act.
+
+    A publish hook that refuses comes back 422, not 409: a 409 says "your view
+    of the world is out of date", and a compliance gate refusing is not that --
+    the request was well-formed and the state was current, and the answer is
+    still no. `get_db` rolls back on any exception leaving the route, so the
+    version row added inside `publish_version` (and, for a rollback, every
+    working-copy write before it) never reaches the database -- which is what
+    makes a hook a veto rather than a complaint after the fact.
+    """
+    try:
+        return await publish_version(db, agent, note=note, published_by=published_by, meta=meta)
+    except NoChangesToPublish as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {"error": "no_changes_to_publish", "currentVersionNo": current_no},
+        ) from exc
+    except PublishHookFailed as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            {
+                "error": "publish_hook_rejected",
+                "hook": exc.hook_name,
+                "reason": str(exc.cause),
+            },
+        ) from exc
+
+
+async def _current_version_no(db: DbSession, agent: m.Agent) -> int | None:
+    if agent.current_version_id is None:
+        return None
+    current = await db.get(m.AgentVersion, agent.current_version_id)
+    return current.version_no if current is not None else None
+
+
+@router.post(
+    "/agents/{agent_id}/versions",
+    response_model=AgentVersionDTO,
+    status_code=status.HTTP_201_CREATED,
+    # TWO gates, and both are needed. This one is the tenant-wide
+    # `agent_version:publish` -- the governed act (spec §6): an editor may change
+    # a draft with `agent:manage` and still not be able to put it into
+    # production. `require_agent_write` below is the department door, and
+    # `authorize_agent_write` in the body is the per-agent narrow.
+    dependencies=[Depends(require_permission(AGENT_VERSION_PUBLISH))],
+)
+async def publish_agent_version(
+    agent_id: uuid.UUID,
+    body: PublishAgentVersionRequest,
+    db: DbSession,
+    request: Request,
+    actor: Annotated[HumanActor, Depends(require_agent_write())],
+) -> AgentVersionDTO:
+    """Turn the working copy into the numbered version that runs (spec §2.7).
+
+    Two 409s, checked in this order:
+
+    * **stale** -- `expected_current_version_no` disagrees with what is current,
+      so somebody else published while this operator was editing. The client
+      must refetch.
+    * **no-op** -- the snapshot hashes identically to the current version.
+      There is nothing to publish and retrying will never help.
+
+    Staleness first, because the two carry opposite instructions: a stale client
+    whose draft also happens to be clean must be told to refetch, and "nothing
+    to publish" would send it away still holding a version number that moved.
+
+    `publish_version` appends `agent.version.published` itself, so this route
+    appends nothing extra -- one operator action, one event.
+    """
+    agent = await _load_agent(db, agent_id)
+    # The department is now known. Authorize BEFORE the snapshot below, which
+    # reads `agent.narrowing` -- exactly the frame-derived shape a wrong-
+    # department caller must not learn from a response. Same ordering rule as
+    # every other route in this module; see the module docstring.
+    await authorize_agent_write(
+        request,
+        db,
+        actor,
+        agent.department_id,
+        not_found=HTTPException(status.HTTP_404_NOT_FOUND, "agent not found"),
+    )
+
+    current_no = await _current_version_no(db, agent)
+    if body.expected_current_version_no != current_no:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {
+                "error": "stale_version",
+                "expected": body.expected_current_version_no,
+                "current": current_no,
+            },
+        )
+
+    version = await _publish_or_refuse(
+        db,
+        agent,
+        note=body.note,
+        # `member.id`, not `principal.subject`: `published_by` is a UUID column
+        # and the subject is an identity-provider string. Every other
+        # attribution column in the schema names the member row.
+        published_by=actor.member.id,
+        current_no=current_no,
+    )
+    await db.flush()
+    return agent_version_to_dto(version, current_version_id=agent.current_version_id)
 
 
 @router.delete(
