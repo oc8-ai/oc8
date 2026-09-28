@@ -12,9 +12,11 @@ from sqlalchemy import (
     DateTime,
     Index,
     Integer,
+    LargeBinary,
     Text,
     UniqueConstraint,
     Uuid,
+    func,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -301,6 +303,12 @@ class Agent(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     trust_level: Mapped[str] = mapped_column(Text, nullable=False, default="first_party")
     # Display helpers backing the office/agent screens.
     presentation: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    # The `AgentVersion` that IS this agent's published behavioural config right
+    # now -- mirrors `Skill.current_version_id`. Null until the first publish;
+    # `create_agent` publishes v1 in the same transaction, so in practice only
+    # a pre-migration row (backfilled to v1 by 0098) or a row from a partially
+    # failed create can be null in production.
+    current_version_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
 
     __table_args__ = (
         CheckConstraint(
@@ -326,3 +334,27 @@ class Agent(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
             postgresql_where=text("is_tenant_assistant AND deleted_at IS NULL"),
         ),
     )
+
+
+class AgentVersion(Base, PkMixin, TenantMixin, TimestampMixin):
+    """An immutable snapshot of an agent's behavioural configuration.
+
+    The `agent` row is the working copy; a version is what actually runs.
+    Runs pin `agent_run.agent_version_id`, so publishing never changes what
+    an in-flight run is doing -- the same rule `SkillAssignment` already
+    applies to skill versions.
+    """
+
+    __tablename__ = "agent_version"
+
+    agent_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    version_no: Mapped[int] = mapped_column(Integer)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    payload_hash: Mapped[bytes] = mapped_column(LargeBinary)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_by: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    published_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (UniqueConstraint("agent_id", "version_no", name="uq_agent_version_no"),)

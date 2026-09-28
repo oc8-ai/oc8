@@ -24,6 +24,7 @@ from sqlalchemy import func, select
 
 from oc8 import models as m
 from oc8.agents.hire import create_hire_request, require_hire_approval
+from oc8.agents.versioning import publish_version
 from oc8.api.deps import DbSession, authorize_agent_write, require_agent_write
 from oc8.api.v1._serializers import agent_to_dto
 from oc8.api.v1.agents import _agent_detail_dto
@@ -272,6 +273,12 @@ async def create_agent(
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_ENTITY, _violation_body(exc.violations)
             ) from exc
+
+    # Publish v1 in the same transaction as the create -- after runtime
+    # assignment, so a caller-requested runtime is already reflected in the
+    # snapshot, and before the audit event below (skills_write.py's
+    # create_skill follows the same create-and-publish-atomically shape).
+    await publish_version(db, agent, published_by=actor.member.id)
 
     if gated:
         await create_hire_request(db, agent=agent)
