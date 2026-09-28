@@ -32,7 +32,7 @@ from sqlalchemy import func, select
 from oc8 import models as m
 from oc8.agents.repo import visible_agent, visible_agents
 from oc8.api.deps import DbSession, require_departmental
-from oc8.api.v1._serializers import agent_to_dto, agent_version_to_summary_dto
+from oc8.api.v1._serializers import agent_to_dto, agent_version_to_dto, agent_version_to_summary_dto
 from oc8.api.v1.files import _attachment_dto
 from oc8.authz.authority import authority_for_principal, tenant_wide_read
 from oc8.authz.pdp import ToolPolicy, effective_tool_policies, tool_policy_source
@@ -44,6 +44,7 @@ from oc8.schemas.dto import (
     AgentDTO,
     AgentInstructionHistoryDTO,
     AgentInstructionRevisionDTO,
+    AgentVersionDTO,
     AgentVersionSummaryDTO,
     FileAttachmentDTO,
     ToolPolicyDTO,
@@ -205,6 +206,44 @@ async def list_instruction_files(
     return [_attachment_dto(row) for row in rows]
 
 
+async def _visible_agent_or_404(
+    request: Request, db: DbSession, actor: HumanActor, agent_id: uuid.UUID
+) -> m.Agent:
+    """The read gate every version route repeats, in one place.
+
+    Four routes in this file resolve the same (authority, tenant_wide,
+    visible_agent, 404) sequence against `agent_version:view`. Written out four
+    times, the fourth copy is where somebody eventually asks
+    `tenant_wide_read` about the wrong permission.
+    """
+    authority = await authority_for_principal(request, db, actor.principal)
+    tenant_wide = tenant_wide_read(authority, perm(AGENT_VERSION, VIEW))
+    agent = await visible_agent(db, scope=actor.scope, tenant_wide=tenant_wide, agent_id=agent_id)
+    if agent is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
+    return agent
+
+
+async def _version_or_404(db: DbSession, agent: m.Agent, version_no: int) -> m.AgentVersion:
+    """One version of THIS agent.
+
+    The `agent_id` predicate is not optional cleanliness: `version_no` is
+    unique per agent, not per tenant, so every agent in the tenant has a v1 and
+    a query without it would answer with whichever one Postgres reached first.
+    """
+    row = (
+        await db.execute(
+            select(m.AgentVersion).where(
+                m.AgentVersion.agent_id == agent.id,
+                m.AgentVersion.version_no == version_no,
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "version not found")
+    return row
+
+
 #: Same ceiling as the instruction history above, and for the same reason: a
 #: tenant that has published a thousand versions of one agent must not be able
 #: to ask for all of them in one request.
@@ -239,11 +278,7 @@ async def list_agent_versions(
     `agent:view`: those are different grants and a caller may hold either
     without the other.
     """
-    authority = await authority_for_principal(request, db, actor.principal)
-    tenant_wide = tenant_wide_read(authority, perm(AGENT_VERSION, VIEW))
-    agent = await visible_agent(db, scope=actor.scope, tenant_wide=tenant_wide, agent_id=agent_id)
-    if agent is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
+    agent = await _visible_agent_or_404(request, db, actor, agent_id)
 
     # `agent_version` carries no foreign key (house convention -- there are two
     # `ForeignKey()` declarations in the whole models package), so this
@@ -273,6 +308,29 @@ async def list_agent_versions(
         ],
         total_count=total_count,
     )
+
+
+@router.get(
+    "/agents/{agent_id}/versions/{version_no}",
+    response_model=AgentVersionDTO,
+)
+async def get_agent_version(
+    agent_id: uuid.UUID,
+    version_no: int,
+    request: Request,
+    db: DbSession,
+    actor: Annotated[HumanActor, Depends(require_departmental(perm(AGENT_VERSION, VIEW)))],
+) -> AgentVersionDTO:
+    """One version's full payload (spec §4).
+
+    Addressed by `version_no` rather than by id: that is the number the
+    Versions tab shows, the number `agent.version.published` records, and the
+    number `rolled_back_from` names. Routing by UUID would make the UI carry
+    both identifiers for one row.
+    """
+    agent = await _visible_agent_or_404(request, db, actor, agent_id)
+    row = await _version_or_404(db, agent, version_no)
+    return agent_version_to_dto(row, current_version_id=agent.current_version_id)
 
 
 async def _agent_detail_dto(db: DbSession, agent: m.Agent) -> AgentDetailDTO:

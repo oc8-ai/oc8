@@ -152,3 +152,85 @@ async def test_versions_of_another_agent_never_leak_into_the_list(
                 headers={"Authorization": f"Bearer {_token(tenant)}"},
             )
     assert res.json()["totalCount"] == 2
+
+
+async def test_one_version_returns_its_full_payload(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    agent_id = await _agent_with_versions(app_session, tenant, 3)
+
+    app = create_app()
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as client:
+            res = await client.get(
+                f"/api/v1/agents/{agent_id}/versions/2",
+                headers={"Authorization": f"Bearer {_token(tenant)}"},
+            )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["versionNo"] == 2
+    assert body["isCurrent"] is False
+    # `_agent_with_versions` sets mission to `m{n}` before publishing v{n+1}.
+    assert body["payload"]["mission"] == "m1"
+    assert set(body["payload"]) >= {"mission", "narrowing", "definition"}
+    # Hex, not base64 and not a JSON array of ints.
+    assert len(body["payloadHash"]) == 64
+    int(body["payloadHash"], 16)
+    # `_meta` is provenance, surfaced as `rolledBackFrom`, never inside payload.
+    assert "_meta" not in body["payload"]
+
+
+async def test_an_unknown_version_number_is_a_404(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    agent_id = await _agent_with_versions(app_session, tenant, 1)
+
+    app = create_app()
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as client:
+            res = await client.get(
+                f"/api/v1/agents/{agent_id}/versions/99",
+                headers={"Authorization": f"Bearer {_token(tenant)}"},
+            )
+    assert res.status_code == 404, res.text
+
+
+async def test_a_version_number_belonging_to_another_agent_is_a_404(
+    app_session: AppSessionFactory,
+) -> None:
+    """The `agent_id` term again. Every agent has a v1, so without it this route
+    would return SOME agent's v1 for every request that asked for v1."""
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    mine = await _agent_with_versions(app_session, tenant, 1)
+    other = await _agent_with_versions(app_session, tenant, 4)
+
+    app = create_app()
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as client:
+            headers = {"Authorization": f"Bearer {_token(tenant)}"}
+            res = await client.get(f"/api/v1/agents/{mine}/versions/4", headers=headers)
+            sanity = await client.get(f"/api/v1/agents/{other}/versions/4", headers=headers)
+    assert res.status_code == 404, res.text
+    assert sanity.status_code == 200, sanity.text
+
+
+async def test_reading_one_version_needs_the_permission(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    agent_id = await _agent_with_versions(app_session, tenant, 1)
+
+    app = create_app()
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as client:
+            res = await client.get(
+                f"/api/v1/agents/{agent_id}/versions/1",
+                headers={"Authorization": f"Bearer {_token(tenant, 'member')}"},
+            )
+    assert res.status_code == 403, res.text
