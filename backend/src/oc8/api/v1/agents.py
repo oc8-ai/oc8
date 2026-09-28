@@ -32,11 +32,11 @@ from sqlalchemy import func, select
 from oc8 import models as m
 from oc8.agents.repo import visible_agent, visible_agents
 from oc8.api.deps import DbSession, require_departmental
-from oc8.api.v1._serializers import agent_to_dto
+from oc8.api.v1._serializers import agent_to_dto, agent_version_to_summary_dto
 from oc8.api.v1.files import _attachment_dto
 from oc8.authz.authority import authority_for_principal, tenant_wide_read
 from oc8.authz.pdp import ToolPolicy, effective_tool_policies, tool_policy_source
-from oc8.authz.permissions import AGENT, VIEW, perm
+from oc8.authz.permissions import AGENT, AGENT_VERSION, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.runtime.states import TERMINAL
 from oc8.schemas.dto import (
@@ -44,6 +44,7 @@ from oc8.schemas.dto import (
     AgentDTO,
     AgentInstructionHistoryDTO,
     AgentInstructionRevisionDTO,
+    AgentVersionSummaryDTO,
     FileAttachmentDTO,
     ToolPolicyDTO,
 )
@@ -202,6 +203,76 @@ async def list_instruction_files(
         .all()
     )
     return [_attachment_dto(row) for row in rows]
+
+
+#: Same ceiling as the instruction history above, and for the same reason: a
+#: tenant that has published a thousand versions of one agent must not be able
+#: to ask for all of them in one request.
+_VERSIONS_MAX_LIMIT = 100
+
+
+@router.get(
+    "/agents/{agent_id}/versions",
+    response_model=Page[AgentVersionSummaryDTO],
+)
+async def list_agent_versions(
+    agent_id: uuid.UUID,
+    request: Request,
+    db: DbSession,
+    actor: Annotated[HumanActor, Depends(require_departmental(perm(AGENT_VERSION, VIEW)))],
+    limit: Annotated[int, Query(ge=1, le=_VERSIONS_MAX_LIMIT)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> Page[AgentVersionSummaryDTO]:
+    """Every published version of this agent, newest first (spec §4).
+
+    `require_departmental` rather than `require_permission` even though no seat
+    carries `agent_version:view`: the gate's job here is to resolve the
+    `HumanActor` whose `scope` `visible_agent` needs, and using the departmental
+    shape leaves the door open for a later slice that DOES put this string in
+    `SEAT_PERMISSIONS` without rewriting the route. Today the practical effect
+    is tenant-wide-only, and a seat-only caller (`dept_viewer`) gets a 403 --
+    which is the intended asymmetry, not an oversight: spec §6 makes reading
+    version history its own grant, and `SEAT_PERMISSIONS` is closed at four
+    strings by `tests/authz/test_seat_vocabulary.py`.
+
+    `tenant_wide_read` is asked about THIS route's permission, not about
+    `agent:view`: those are different grants and a caller may hold either
+    without the other.
+    """
+    authority = await authority_for_principal(request, db, actor.principal)
+    tenant_wide = tenant_wide_read(authority, perm(AGENT_VERSION, VIEW))
+    agent = await visible_agent(db, scope=actor.scope, tenant_wide=tenant_wide, agent_id=agent_id)
+    if agent is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
+
+    # `agent_version` carries no foreign key (house convention -- there are two
+    # `ForeignKey()` declarations in the whole models package), so this
+    # predicate is the ONLY thing scoping the query to this agent. RLS scopes it
+    # to the tenant; nothing scopes it to the row but this.
+    where = (m.AgentVersion.agent_id == agent.id,)
+    total_count = (
+        await db.execute(select(func.count()).select_from(m.AgentVersion).where(*where))
+    ).scalar_one()
+    rows = (
+        (
+            await db.execute(
+                select(m.AgentVersion)
+                .where(*where)
+                .order_by(m.AgentVersion.version_no.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return Page(
+        items=[
+            agent_version_to_summary_dto(row, current_version_id=agent.current_version_id)
+            for row in rows
+        ],
+        total_count=total_count,
+    )
 
 
 async def _agent_detail_dto(db: DbSession, agent: m.Agent) -> AgentDetailDTO:

@@ -10,12 +10,15 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select
 
 from oc8 import models as m
+from oc8.agents.versioning import version_meta, version_payload
 from oc8.knowledge.chunks import ChunkRow, DocumentSummary
 from oc8.knowledge.retrieval import SimilarChunkRow
 from oc8.modelrouter.registry import canonical_provider
 from oc8.schemas.dto import (
     ActivityDTO,
     AgentDTO,
+    AgentVersionDTO,
+    AgentVersionSummaryDTO,
     ApprovalDTO,
     ApprovalOptionDTO,
     ClarificationDTO,
@@ -413,6 +416,45 @@ def skill_to_dto(s: m.Skill, version: m.SkillVersion | None) -> SkillDTO:
         description_translations=_i18n_str(i18n, "description"),
         instructions_translations=_i18n_str(i18n, "instructions"),
         guardrails_translations=_i18n_str_list(i18n, "guardrails"),
+    )
+
+
+def agent_version_to_summary_dto(
+    v: m.AgentVersion, *, current_version_id: uuid.UUID | None
+) -> AgentVersionSummaryDTO:
+    """`is_current` is passed IN rather than read off the row.
+
+    A version does not know whether it is live -- `agent.current_version_id`
+    does -- and a serializer that re-read the agent to find out would issue one
+    query per row and would also have to be async, which every other function
+    in this module deliberately is not.
+    """
+    rolled_back_from = version_meta(v).get("rolled_back_from")
+    return AgentVersionSummaryDTO(
+        id=str(v.id),
+        version_no=v.version_no,
+        note=v.note,
+        published_by=str(v.published_by) if v.published_by is not None else None,
+        published_at=v.published_at.isoformat(),
+        is_current=current_version_id is not None and v.id == current_version_id,
+        rolled_back_from=(int(rolled_back_from) if isinstance(rolled_back_from, int) else None),
+    )
+
+
+def agent_version_to_dto(
+    v: m.AgentVersion, *, current_version_id: uuid.UUID | None
+) -> AgentVersionDTO:
+    """The summary plus the configuration snapshot and its hash.
+
+    `version_payload` strips the reserved `_meta` key: it is provenance, already
+    surfaced as `rolled_back_from`, and leaving it inside `payload` would make
+    every client's payload renderer show a field that is not configuration.
+    """
+    summary = agent_version_to_summary_dto(v, current_version_id=current_version_id)
+    return AgentVersionDTO(
+        **summary.model_dump(),
+        payload=version_payload(v),
+        payload_hash=v.payload_hash.hex(),
     )
 
 
