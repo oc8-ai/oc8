@@ -120,6 +120,10 @@ ALLOWED: dict[str, str] = {
     ),
     "runtime/executor.py": "the agent runtime loading its OWN agent row to run or reap it",
     "runtime/reconcile.py": "background reconciliation loading its own stale agent rows",
+    "runtime/intake.py": (
+        "enqueue_run reads only the target agent's current_version_id to pin the run "
+        "it creates; every caller has already authorized starting that agent"
+    ),
     "runtime/run_context.py": (
         "sweep false-positive: raw SQL against the agent_run table, whose name merely "
         "contains 'agent' as a substring"

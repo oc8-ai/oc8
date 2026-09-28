@@ -92,6 +92,7 @@ class RunRepository:
         idempotency_key: str | None = None,
         coalesce_key: str | None = None,
         task_id: uuid.UUID | None = None,
+        agent_version_id: uuid.UUID | None = None,
     ) -> AgentRun:
         run = AgentRun(
             tenant_id=tenant_id,
@@ -102,6 +103,7 @@ class RunRepository:
             idempotency_key=idempotency_key,
             coalesce_key=coalesce_key,
             task_id=task_id,
+            agent_version_id=agent_version_id,
         )
         self._s.add(run)
         await self._s.flush()
