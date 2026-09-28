@@ -109,6 +109,7 @@ import {
 } from "@/lib/mock-data";
 import { type Skill } from "@/lib/skills";
 import { AgentPublishBar } from "@/components/agent-publish-bar";
+import { AgentVersionsTab } from "@/components/agent-versions-tab";
 import { AgentRuntimePanel } from "@/components/agent-runtime-panel";
 import { ChatWindow } from "@/components/chat-window";
 import { ComponentGrantPanel } from "@/components/component-grant-panel";
@@ -158,6 +159,7 @@ const TAB_IDS = [
   "skills",
   "memory",
   "history",
+  "versions",
 ] as const;
 type TabId = (typeof TAB_IDS)[number];
 
@@ -249,6 +251,7 @@ function AgentDetail() {
     { id: "skills", label: t("Skills", "Skills") },
     { id: "memory", label: t("Memory", "Gedächtnis") },
     { id: "history", label: t("History", "Verlauf") },
+    { id: "versions", label: t("Versions", "Versionen") },
   ];
 
   function submitRun() {
@@ -538,6 +541,8 @@ function AgentDetail() {
       {tab === "skills" && (
         <AgentSkillsTab agentId={agent.id} agentName={agent.name} mayManage={mayManage} />
       )}
+
+      {tab === "versions" && <AgentVersionsTab agentId={agent.id} mayManage={mayManage} />}
     </div>
   );
 }
