@@ -720,6 +720,31 @@ class PrincipalUsageDTO(CamelModel):
     saved_cost_micros: int
 
 
+class TokenUsageExportRowDTO(CamelModel):
+    """One `token_usage_record` row for `GET /usage/export` -- one row per
+    metered request, unlike `PrincipalUsageDTO`'s per-day/per-group rollup.
+    `cost_micros` is computed at render time from the versioned `ModelPrice`
+    table (see `metering/pricing.py`); cost is deliberately not stored on the
+    record itself."""
+
+    ts: str
+    agent_id: str | None
+    agent_name: str | None
+    department_id: str | None
+    department_name: str | None
+    model: str
+    provider: str
+    tokens_in: int
+    tokens_out: int
+    cache_hit: bool
+    saved_tokens_in: int
+    saved_tokens_out: int
+    platform_units: int
+    cost_micros: int | None
+    skill_id: str | None
+    request_id: str
+
+
 class GuardrailPresetDTO(CamelModel):
     """A named permission set the connection's plugin ships (§ guardrail
     presets). Data only, mirroring `oc8.capas.manifest.GuardrailPreset` --
