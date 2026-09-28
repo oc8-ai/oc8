@@ -60,6 +60,8 @@ export interface AgentDetail {
   // null means "inherit settings.agent_max_steps", not a literal framework
   // default value.
   maxSteps: number | null;
+  /** Last successful Auto-router tier for this agent (fast|balanced|strong). */
+  autoRouterAffinityTier?: string | null;
 }
 
 // Reuses the ["agents", id] key already invalidated by the "agent.status"

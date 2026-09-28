@@ -13,12 +13,19 @@ expects.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 
 from oc8.modelrouter.types import CompletionChunk, CompletionResult, ToolCall, Usage
 
 OnText = Callable[[str], Awaitable[None]]
+
+
+@dataclass
+class StreamTiming:
+    ttft_ms: int | None = None
+    model_wait_ms: int = 0
 
 
 @dataclass
@@ -83,14 +90,24 @@ class _Accumulator:
 
 
 async def accumulate_stream(
-    chunks: AsyncIterator[CompletionChunk], *, on_text: OnText | None = None
+    chunks: AsyncIterator[CompletionChunk],
+    *,
+    on_text: OnText | None = None,
+    timing: StreamTiming | None = None,
 ) -> CompletionResult:
     """Drain `chunks`, calling `on_text` with each text fragment as it
     arrives, and return the fully assembled CompletionResult once the
     stream ends."""
+    started = time.monotonic() if timing is not None else None
     acc = _Accumulator()
-    async for chunk in chunks:
-        acc.absorb(chunk)
-        if chunk.text and on_text is not None:
-            await on_text(chunk.text)
-    return acc.result()
+    try:
+        async for chunk in chunks:
+            if timing is not None and timing.ttft_ms is None and chunk.text:
+                timing.ttft_ms = int((time.monotonic() - started) * 1000)
+            acc.absorb(chunk)
+            if chunk.text and on_text is not None:
+                await on_text(chunk.text)
+        return acc.result()
+    finally:
+        if timing is not None:
+            timing.model_wait_ms = int((time.monotonic() - started) * 1000)

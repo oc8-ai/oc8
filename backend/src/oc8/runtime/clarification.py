@@ -5,6 +5,8 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oc8.agent.harness.stages.c_ledger import mark_decision_answered
+from oc8.agent.harness.state import CONTEXT_KEY, HarnessState
 from oc8.models.run import AgentRun, Clarification
 from oc8.runtime.repository import RunRepository
 from oc8.runtime.states import RunState
@@ -77,6 +79,12 @@ async def resolve_clarification(db: AsyncSession, *, run: AgentRun, answer: str)
         clar.answer = answer
         clar.status = "answered"
         entries.append({"question": clar.question, "answer": answer})
+    # Mark the ledger decision answered while the harness is still on the
+    # current context, before we replace it (Package 9 ruling 6).
+    if CONTEXT_KEY in run.context:
+        harness = HarnessState.from_run_context(run.context)
+        mark_decision_answered(harness.ledger)
+        harness.store(run.context)
     new_ctx = {**run.context, "clarifications": entries}
     new_ctx.pop("pending_question", None)
     run.context = new_ctx

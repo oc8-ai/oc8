@@ -124,6 +124,10 @@ class McpServerStartupError(RuntimeError):
     """A stdio MCP server failed to come up, with the reason it printed."""
 
 
+class McpToolError(RuntimeError):
+    """Protocol-level tool failure (`CallToolResult.is_error`)."""
+
+
 #: `package.module.SomeError: message` -- a raised exception with its origin,
 #: as opposed to the bare `Error: ...` a program prints on its way out.
 _QUALIFIED_EXCEPTION = re.compile(r"^[A-Za-z_][\w.]*\.[A-Z]\w*(Error|Exception|Fault):\s+\S")
@@ -221,6 +225,21 @@ class _StderrTail:
         return ""
 
 
+_ANNOTATION_KEYS = ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint")
+
+
+def _annotations_of(tool: Any) -> dict[str, Any] | None:
+    raw = getattr(tool, "annotations", None)
+    if raw is None:
+        return None
+    out: dict[str, Any] = {}
+    for key in _ANNOTATION_KEYS:
+        val = raw.get(key) if isinstance(raw, dict) else getattr(raw, key, None)
+        if val is not None:
+            out[key] = bool(val)
+    return out or None
+
+
 def _schema_of(tool: Any) -> dict[str, Any]:
     """A tool's parameter schema, whichever major of the MCP SDK is installed.
 
@@ -231,6 +250,45 @@ def _schema_of(tool: Any) -> dict[str, Any]:
     """
     schema = getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None)
     return schema or {"type": "object", "properties": {}}
+
+
+async def _list_resources(session: ClientSession) -> list[dict[str, str]]:
+    """Names and descriptions. A server with no resources, or an older SDK, lists none."""
+    list_resources = getattr(session, "list_resources", None)
+    if list_resources is None:
+        return []
+    try:
+        listed = await list_resources()
+    except Exception:
+        return []
+    out: list[dict[str, str]] = []
+    for resource in getattr(listed, "resources", []) or []:
+        uri = getattr(resource, "uri", None)
+        if uri is None:
+            continue
+        out.append(
+            {
+                "uri": str(uri),
+                "name": str(getattr(resource, "name", "") or ""),
+                "description": str(getattr(resource, "description", "") or ""),
+            }
+        )
+    return out
+
+
+async def _list_prompt_names(session: ClientSession) -> list[str]:
+    list_prompts = getattr(session, "list_prompts", None)
+    if list_prompts is None:
+        return []
+    try:
+        listed = await list_prompts()
+    except Exception:
+        return []
+    return [
+        str(prompt.name)
+        for prompt in (getattr(listed, "prompts", []) or [])
+        if getattr(prompt, "name", None)
+    ]
 
 
 class McpSession:
@@ -258,6 +316,8 @@ class McpSession:
         self._session: ClientSession | None = None
         self._timeout_s = MCP_REQUEST_TIMEOUT_SECONDS if timeout_s is None else timeout_s
         self.tools: list[NeutralTool] = []
+        self.resources: list[dict[str, str]] = []
+        self.prompt_names: list[str] = []
         self._errlog = _StderrTail()
         # Only "Test connection" passes this -- every other caller (the agent
         # pool, the isolated runtime's tool gateway) launches sessions by the
@@ -328,9 +388,12 @@ class McpSession:
                 name=t.name,
                 description=t.description or "",
                 parameters=_schema_of(t),
+                annotations=_annotations_of(t),
             )
             for t in listed.tools
         ]
+        self.resources = await _list_resources(self._session)
+        self.prompt_names = await _list_prompt_names(self._session)
         return self
 
     async def __aexit__(
@@ -350,7 +413,19 @@ class McpSession:
     async def call(self, name: str, arguments: dict[str, Any]) -> str:
         if self._session is None:
             raise RuntimeError("MCP session not started")
-        result = await self._session.call_tool(name, arguments)
+        try:
+            result = await self._session.call_tool(
+                name, arguments, allow_input_required=True
+            )
+        except TypeError as exc:
+            if "allow_input_required" not in str(exc):
+                raise
+            result = await self._session.call_tool(name, arguments)
+        from oc8.agent.elicitation import ElicitationNeeded, elicitation_message
+
+        question = elicitation_message(result)
+        if question is not None:
+            raise ElicitationNeeded(question)
         parts: list[str] = []
         for block in result.content:
             text = getattr(block, "text", None)
@@ -368,8 +443,20 @@ class McpSession:
         # and the department cache (oc8.agent.cache_flow) had no signal to
         # avoid replaying the failing request. Live-observed 2026-08-26.
         if result.is_error:
-            raise RuntimeError(text)
+            raise McpToolError(text)
         return text
+
+    async def read_resource(self, uri: str) -> str:
+        """The body of one resource. Listing never includes this."""
+        if self._session is None:
+            raise RuntimeError("MCP session not started")
+        result = await self._session.read_resource(uri)
+        parts: list[str] = []
+        for block in getattr(result, "contents", []) or []:
+            text = getattr(block, "text", None)
+            if isinstance(text, str) and text:
+                parts.append(text)
+        return "\n".join(parts) if parts else "(no output)"
 
 
 class HttpToolSession:

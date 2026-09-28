@@ -1,6 +1,6 @@
 """`POST /agents` publishes v1 in the same transaction as the create (A2 of
 the versioning spec): every hired agent has a `current_version_id` from the
-moment it exists, matching the invariant the 0098 backfill establishes for
+moment it exists, matching the invariant the 0099 backfill establishes for
 pre-existing rows."""
 
 from __future__ import annotations

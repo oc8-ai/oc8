@@ -50,6 +50,11 @@ args = ["-m", "mcp_bridge"]
 # internal_agent.py, mcp_gateway.py, outward.py) actually looks for it.
 outward_tools = ["mail_send", "mail_reply"]
 
+destructive_tools = ["mail_delete", "files_delete", "calendar_cancel_event"]
+irreversible_tools = ["mail_send", "mail_reply"]
+read_before_write = true
+entity_lookup_tools = ["mail_search", "calendar_list_events"]
+
 [connections.config.env]
 PYTHONPATH = "/app/capas/microsoft365"
 

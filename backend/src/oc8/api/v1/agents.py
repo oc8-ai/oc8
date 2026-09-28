@@ -521,7 +521,16 @@ async def _agent_detail_dto(db: DbSession, agent: m.Agent) -> AgentDetailDTO:
             str(agent.current_version_id) if agent.current_version_id is not None else None
         ),
         current_version_no=(current_version.version_no if current_version is not None else None),
+        auto_router_affinity_tier=_auto_affinity_tier(agent),
     )
+
+
+def _auto_affinity_tier(agent: m.Agent) -> str | None:
+    raw = (agent.definition or {}).get("auto_router_affinity")
+    if not isinstance(raw, dict):
+        return None
+    tier = raw.get("tier")
+    return str(tier) if isinstance(tier, str) and tier else None
 
 
 def _frame_tools_json(frame: dict[str, object]) -> dict[str, dict[str, object]]:

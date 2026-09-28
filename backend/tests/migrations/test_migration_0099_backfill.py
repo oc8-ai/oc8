@@ -1,4 +1,4 @@
-"""Migration 0098's v1 backfill computes a REAL payload for each pre-existing
+"""Migration 0099's v1 backfill computes a REAL payload for each pre-existing
 agent -- the same one `oc8.agents.versioning.snapshot_agent` would compute
 for it right now -- not a placeholder. `backfill_v1`/`_agent_payload`/
 `_payload_hash` are exercised directly (loaded via `importlib`, since Alembic
@@ -24,11 +24,11 @@ import sqlalchemy as sa
 
 from oc8.agents.versioning import payload_hash
 
-_PATH = Path(__file__).resolve().parents[2] / "migrations" / "versions" / "0098_agent_version.py"
+_PATH = Path(__file__).resolve().parents[2] / "migrations" / "versions" / "0099_agent_version.py"
 
 
 def _module() -> object:
-    spec = importlib.util.spec_from_file_location("oc8_migration_0098", _PATH)
+    spec = importlib.util.spec_from_file_location("oc8_migration_0099", _PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

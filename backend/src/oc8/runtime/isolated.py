@@ -291,6 +291,14 @@ class DockerIsolatedRuntime:
         # .py's `ctx["todos"] = control.todos`) -- this is the one place that
         # copy makes it onto the RunResult the executor's merge_context() persists.
         todos = (fresh.context.get("todos", []) if fresh is not None else []) or []
+        # Same reasoning as todos / rendered_components: /step and /tool already
+        # wrote every stepTimings entry onto run.context -- this is the one place
+        # that copy makes it onto the RunResult the executor's merge_context()
+        # persists. Omitting it here lets RunResult's empty default wipe the
+        # already-durable list at the run's own terminal commit.
+        step_timings = (
+            fresh.context.get("stepTimings", []) if fresh is not None else []
+        ) or []
         return RunResult(
             task_id=task_id,
             agent_id=agent.id,
@@ -300,4 +308,5 @@ class DockerIsolatedRuntime:
             pending_runs=[uuid.UUID(str(r)) for r in pending_raw],
             rendered_components=list(rendered_components),
             todos=list(todos),
+            step_timings=list(step_timings),
         )

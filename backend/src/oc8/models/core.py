@@ -54,6 +54,12 @@ class Organization(Base, PkMixin, TimestampMixin):
     totp_step_up_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )
+    #: IANA zone name (e.g. "Europe/Berlin"). Resolved with a safe UTC
+    #: fallback by oc8.agent.harness.prompts.resolve_timezone -- an invalid
+    #: or unrecognized value here never breaks a run, it just falls back.
+    timezone: Mapped[str] = mapped_column(
+        Text, nullable=False, default="UTC", server_default=text("'UTC'")
+    )
 
     __table_args__ = (
         CheckConstraint("tier IN ('standard','enterprise','onprem')", name="ck_org_tier"),
@@ -306,7 +312,7 @@ class Agent(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     # The `AgentVersion` that IS this agent's published behavioural config right
     # now -- mirrors `Skill.current_version_id`. Null until the first publish;
     # `create_agent` publishes v1 in the same transaction, so in practice only
-    # a pre-migration row (backfilled to v1 by 0098) or a row from a partially
+    # a pre-migration row (backfilled to v1 by 0099) or a row from a partially
     # failed create can be null in production.
     current_version_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
 

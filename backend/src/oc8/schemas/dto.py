@@ -61,6 +61,8 @@ class TaskDTO(CamelModel):
     agent_id: str | None = None
     column: str  # backlog | in_progress | waiting | done
     meta: str | None = None
+    #: Form URL of the record this task is on, when the connection can name one.
+    record_url: str | None = None
     title_translations: dict[str, str] = {}
     meta_translations: dict[str, str] = {}
 
@@ -162,6 +164,8 @@ class ApprovalDTO(CamelModel):
     #: `None` for every approval not raised that way -- `detail` remains the
     #: only "why" for those.
     reason_context: dict[str, Any] | None = None
+    #: The record in the source system, when the held call names one.
+    record_url: str | None = None
 
 
 class ClarificationDTO(CamelModel):
@@ -368,6 +372,12 @@ class ModelDTO(CamelModel):
     #: the last POST /models/{id}/test check (see catalog.py).
     health_error: str | None = None
     health_checked_at: str | None = None
+    #: Auto-router (`provider="auto"`): tier → concrete ModelConfig id.
+    auto_tiers: dict[str, str] | None = None
+    auto_shadow_only: bool = False
+    auto_cascade_verify: bool = False
+    auto_preference_router: bool = False
+    auto_preference_examples: list[dict[str, Any]] | None = None
 
 
 class ModelDiscoverResponse(CamelModel):
@@ -678,6 +688,9 @@ class AgentDetailDTO(AgentDTO):
     #: restore, a psql insert. Every hired agent has a v1 from birth.
     current_version_id: str | None = None
     current_version_no: int | None = None
+    #: Last successful Auto-router tier for this agent
+    #: (``definition["auto_router_affinity"]["tier"]``): fast | balanced | strong.
+    auto_router_affinity_tier: str | None = None
 
 
 class AgentInstructionRevisionDTO(CamelModel):
@@ -1011,6 +1024,10 @@ class RunDTO(CamelModel):
     tool_calls: list[dict[str, object]] = []
     task_id: str | None = None
     question: str | None = None
+    # AgentRun.updated_at, i.e. the run's heartbeat (see runtime/reconcile.py's
+    # HEARTBEAT_SECONDS/ABANDONED_AFTER) -- lets the frontend tell a run that's
+    # genuinely wedged from one that's just doing a slow step.
+    updated_at: str
     # Durable copy of every render_component call this run made (agent/engine.py's
     # RunResult.rendered_components / internal_agent.py's ctx["rendered_components"]).
     # Unlike the live-only `run.component_rendered` WS event, this survives a page
@@ -1026,7 +1043,7 @@ class RunDTO(CamelModel):
     #: `GET /agents/{id}/versions/{n}` is addressed by, so a transcript can link
     #: straight to the configuration that produced it.
     #:
-    #: Null for a run created before version pinning existed. Migration 0098
+    #: Null for a run created before version pinning existed. Migration 0099
     #: deliberately did not backfill those: inventing a version for a historical
     #: run is a claim about the past nothing can support, and the runtimes
     #: already treat null as "read the live row".

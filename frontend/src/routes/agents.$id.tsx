@@ -52,6 +52,7 @@ import {
   useDeleteAgent,
   useDeleteAgentMemory,
   useDeleteAgentTrigger,
+  isTerminalRunState,
   useKnowledgeBases,
   useRenameAgent,
   useRun,
@@ -76,7 +77,14 @@ import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/
 import { CredentialPicker } from "@/components/credential-picker";
 import type { GuardrailValue } from "@/components/guardrail-preset-picker";
 import { ToolGuardrailTable, describeGuardrailSaveError } from "@/components/tool-guardrail-table";
-import { SUBSCRIPTION_PROVIDER, SubscriptionRiskBadge, supportsRawParams } from "@/routes/models";
+import {
+  AutoRouterBadge,
+  isAutoProvider,
+  modelAssignmentLabel,
+  SUBSCRIPTION_PROVIDER,
+  SubscriptionRiskBadge,
+  supportsRawParams,
+} from "@/routes/models";
 import {
   extraToPairs,
   pairsToExtra,
@@ -1112,6 +1120,7 @@ export function AssignedModelPanel({
   const t = useT();
   const switchModel = useSwitchAgentModel();
   const assigned = models.find((model) => model.id === agent.modelConfigId);
+  const assignedIsAuto = !!assigned && isAutoProvider(assigned.provider);
   const showEffort = assigned?.provider === "anthropic";
   const showRawParams = !!assigned && supportsRawParams(assigned.provider);
 
@@ -1208,6 +1217,19 @@ export function AssignedModelPanel({
           <SubscriptionRiskBadge />
         </div>
       )}
+      {assignedIsAuto && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <AutoRouterBadge />
+          {agent.autoRouterAffinityTier && (
+            <span className="text-[11px] text-muted-foreground">
+              {t(
+                `Uses ${agent.autoRouterAffinityTier} (affinity)`,
+                `Nutzt ${agent.autoRouterAffinityTier} (Affinity)`,
+              )}
+            </span>
+          )}
+        </div>
+      )}
       <select
         className="mt-4 w-full rounded-md border border-border bg-background/30 px-3 py-2 text-sm outline-none focus:border-primary/50 disabled:cursor-not-allowed disabled:opacity-60"
         value={agent.modelConfigId ?? ""}
@@ -1230,7 +1252,7 @@ export function AssignedModelPanel({
         </option>
         {models.map((model) => (
           <option key={model.id} value={model.id}>
-            {model.displayName || model.model} · {model.provider}
+            {modelAssignmentLabel(model)}
           </option>
         ))}
       </select>
@@ -2366,8 +2388,54 @@ function WorkspaceFilesPanel({ agentId }: { agentId: string }) {
 // slice of the activity feed (useActivity, live-patched by "activity.logged").
 // No client-side simulation — every line here comes from the backend.
 
-function isTerminalRunState(state: string): boolean {
-  return state === "done" || state === "failed" || state === "interrupted";
+// Ticks every second, but only while `active` -- a terminal run has no
+// reason to keep re-rendering its parent once a second forever.
+function useNow(active: boolean, intervalMs = 1000): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(id);
+  }, [active, intervalMs]);
+  return now;
+}
+
+// Matches backend/src/oc8/runtime/reconcile.py's ABANDONED_AFTER (10 min) and
+// worker.py's LEASE_LOST_AFTER_MS -- the same window the reconciler and the
+// queue's lease reclaim both use. Below this, a quiet run is unremarkable
+// (steps legitimately take a while); above it, the reconciler has already
+// closed it and this run is no longer live anyway.
+const ABANDON_AFTER_MS = 10 * 60 * 1000;
+// Threshold before we say anything at all -- steps routinely run past a
+// minute on their own, so flagging every gap between heartbeats would just
+// be noise. See the design discussion: chosen as a middle ground between
+// reacting on the first missed heartbeat (30s) and waiting for half the
+// abandon window.
+const STALE_AFTER_MS = 2 * 60 * 1000;
+
+export function StalenessNotice({ updatedAt }: { updatedAt: string }) {
+  const t = useT();
+  const now = useNow(true);
+  const staleMs = now - new Date(updatedAt).getTime();
+  if (staleMs < STALE_AFTER_MS) return null;
+  const remainingMs = Math.max(0, ABANDON_AFTER_MS - staleMs);
+  const staleMin = Math.floor(staleMs / 60_000);
+  const staleSec = Math.floor((staleMs % 60_000) / 1000);
+  const remainingMin = Math.max(1, Math.round(remainingMs / 60_000));
+  return (
+    <div className="flex items-center gap-1.5 text-xs text-[color:var(--status-warning)]">
+      <Clock className="h-3.5 w-3.5" />
+      {remainingMs > 0
+        ? t(
+            `No response for ${staleMin}m ${staleSec}s — oc8 will automatically retry this run in about ${remainingMin} min if it doesn't recover.`,
+            `Seit ${staleMin} Min ${staleSec} Sek keine Rückmeldung — oc8 versucht in ca. ${remainingMin} Min automatisch einen Neustart, falls sich das nicht von selbst löst.`,
+          )
+        : t(
+            `No response for ${staleMin}m ${staleSec}s — oc8 should be repairing this run now.`,
+            `Seit ${staleMin} Min ${staleSec} Sek keine Rückmeldung — oc8 sollte diesen Lauf jetzt reparieren.`,
+          )}
+    </div>
+  );
 }
 
 function LiveLog({ agentId, runId }: { agentId: string; runId: string | null }) {
@@ -2391,24 +2459,36 @@ function LiveLog({ agentId, runId }: { agentId: string; runId: string | null }) 
   const [cancelledRunId, setCancelledRunId] = useState<string | null>(null);
   const alreadyRequestedCancel = !!runId && cancelledRunId === runId;
 
+  // Ticks the dot's color in step with StalenessNotice's own text below --
+  // both read the same threshold, but each keeps its own clock so this
+  // component doesn't have to know StalenessNotice renders anything at all.
+  const now = useNow(live);
+  const stale =
+    live && !!run.data && now - new Date(run.data.updatedAt).getTime() >= STALE_AFTER_MS;
+
   return (
     <div className="space-y-4">
       <Panel className="p-5">
-        <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <span
               className={cn(
                 "relative inline-flex h-2.5 w-2.5 rounded-full",
-                live ? "bg-[color:var(--status-running)]" : "bg-muted-foreground/60",
+                stale
+                  ? "bg-[color:var(--status-warning)]"
+                  : live
+                    ? "bg-[color:var(--status-running)]"
+                    : "bg-muted-foreground/60",
               )}
             >
-              {live && (
+              {live && !stale && (
                 <span className="absolute inset-0 animate-ping rounded-full bg-[color:var(--status-running)] opacity-60" />
               )}
             </span>
             <div className="text-xs uppercase tracking-wider text-muted-foreground">
               {t("Live Log · current run", "Live-Log · aktueller Lauf")}
             </div>
+            {stale && run.data && <StalenessNotice updatedAt={run.data.updatedAt} />}
           </div>
           <div className="flex items-center gap-2">
             {live && (
@@ -2861,7 +2941,18 @@ function ActivityRow({ item }: { item: ActivityItem }) {
         <span className="min-w-0 flex-1 truncate text-foreground/90">{item.message}</span>
         <span className="font-mono text-xs text-muted-foreground">{item.time}</span>
       </div>
-      {item.detail && <p className="mt-1 text-xs text-muted-foreground">{item.detail}</p>}
+      {item.detail?.startsWith("http://") || item.detail?.startsWith("https://") ? (
+        <a
+          href={item.detail}
+          target="_blank"
+          rel="noreferrer"
+          className="mt-1 inline-block text-xs text-primary underline"
+        >
+          {t("Open record", "Datensatz öffnen")}
+        </a>
+      ) : (
+        item.detail && <p className="mt-1 text-xs text-muted-foreground">{item.detail}</p>
+      )}
     </li>
   );
 }

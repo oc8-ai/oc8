@@ -957,9 +957,19 @@ function TaskCard({ task, members }: { task: Task; members: Agent[] }) {
         <span className={cn("leading-snug", isDone && "line-through")}>{task.title}</span>
         <AgentBadge agentId={task.agentId} members={members} />
       </div>
-      {task.meta && (
-        <div className="mt-1 font-mono text-[10px] text-muted-foreground">{task.meta}</div>
-      )}
+      {task.meta &&
+        (task.recordUrl?.startsWith("http://") || task.recordUrl?.startsWith("https://") ? (
+          <a
+            href={task.recordUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="mt-1 block font-mono text-[10px] text-primary underline"
+          >
+            {task.meta}
+          </a>
+        ) : (
+          <div className="mt-1 font-mono text-[10px] text-muted-foreground">{task.meta}</div>
+        ))}
     </div>
   );
 }

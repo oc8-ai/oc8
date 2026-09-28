@@ -122,6 +122,21 @@ def test_internal_only_cannot_reach_the_customer() -> None:
     assert {"create_record", "update_record"} <= set(p.only)
 
 
+def test_connection_config_declares_capability_seam_keys() -> None:
+    """Neutral seam keys under `[connections.config]` drive destructive,
+    irreversible, lookup and approval gating without Odoo-specific core code."""
+    cfg = _connection().config
+    assert cfg.get("destructive_tools") == ["delete_record"]
+    assert cfg.get("irreversible_tools") == []
+    assert cfg.get("read_before_write") is True
+    assert cfg.get("entity_lookup_tools") == ["search_records"]
+    assert cfg.get("approval_templates") == {
+        "post_message": "Allow {connection} to post a message on {record}?",
+        "delete_record": "Allow {connection} to delete {record}?",
+    }
+    assert "preview" not in cfg
+
+
 def test_no_deletions_differs_from_assist_by_never_rather_than_ask() -> None:
     """The two are only worth shipping separately if they actually differ.
 

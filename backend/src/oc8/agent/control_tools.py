@@ -13,6 +13,7 @@ connection's tools stay entirely the connection's business.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -20,11 +21,13 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agent.components import COMPONENT_CATALOG
+from oc8.agent.harness.retrieval import ToolCard, rank_tools
+from oc8.agent.harness.state import HarnessState, ProcedureMark
 from oc8.agents.repo import visible_agent, visible_agents
 from oc8.agents.versioning import pinned_model_config_id
 from oc8.approvals import (
@@ -52,11 +55,14 @@ from oc8.modelrouter import NeutralTool, ToolCall
 from oc8.realtime.emit import record_activity
 from oc8.runtime.repository import RunRepository
 from oc8.skills.runtime import LoadedSkill, instruction_block, skill_tool_schemas
+from oc8.storage import s3
 from oc8.storage.attachments import (
     AttachmentTooLarge,
     UnsupportedContentType,
     store_attachment_bytes,
 )
+
+logger = logging.getLogger(__name__)
 
 MEMORY_WRITE = NeutralTool(
     name="memory_write",
@@ -113,6 +119,86 @@ TODO_WRITE = NeutralTool(
             },
         },
         "required": ["todos"],
+    },
+)
+
+FIND_TOOLS = NeutralTool(
+    name="find_tools",
+    description=(
+        "Search tools that are not in your current list. "
+        "Returns up to 10 matches; they are available on the next step."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": (
+                    "What you are looking for. Empty returns the first "
+                    "deferred tools sorted by name."
+                ),
+            },
+            "connection": {
+                "type": "string",
+                "description": (
+                    "Optional: only search tools belonging to this connection."
+                ),
+            },
+        },
+        "required": ["query"],
+    },
+)
+
+PROCEDURE_STEP_DONE = NeutralTool(
+    name="procedure_step_done",
+    description=(
+        "Mark a manual procedure step done and record evidence. "
+        "Only for steps whose requirement is manual; the system tracks "
+        "read_of, tool_called, and confirmation steps itself."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "step_id": {
+                "type": "string",
+                "description": "The id of the manual step to mark done.",
+            },
+            "evidence": {
+                "type": "string",
+                "description": "Short note of what was completed (max 500 chars).",
+            },
+            "skill": {
+                "type": "string",
+                "description": (
+                    "Optional: skill slug when more than one active procedure "
+                    "has this step id."
+                ),
+            },
+        },
+        "required": ["step_id", "evidence"],
+    },
+)
+
+READ_RESOURCE = NeutralTool(
+    name="read_resource",
+    description=(
+        "Read one resource from a connected system. "
+        "Pass the connection name and the resource uri from the list you were given. "
+        "This returns that one resource, not the list."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "connection": {
+                "type": "string",
+                "description": "The connection that owns the resource.",
+            },
+            "uri": {
+                "type": "string",
+                "description": "The resource uri from the list you were given.",
+            },
+        },
+        "required": ["connection", "uri"],
     },
 )
 
@@ -358,18 +444,68 @@ WRITE_OUTPUT_FILE = NeutralTool(
     },
 )
 
+RUN_SHELL = NeutralTool(
+    name="run_shell",
+    description=(
+        "Run a bash command inside your own container. cwd is /workspace. "
+        "Use this to write and run a script for anything no other tool "
+        "covers: render a JavaScript-heavy page, take a screenshot, generate "
+        "a PDF, resize or convert an image, convert a data file. Python 3.12, "
+        "a headless Chromium via Playwright, Pillow, pandas, and a PDF "
+        "library are preinstalled. Write files under /workspace/output/ to "
+        "hand them back -- they are saved automatically when the run ends, "
+        "the same as write_output_file. Output is truncated if very long; "
+        "prefer writing a file over printing large results."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "command": {
+                "type": "string",
+                "description": "The bash command to run, e.g. `python3 script.py`.",
+            },
+        },
+        "required": ["command"],
+    },
+)
+
+RUN_PROGRAM = NeutralTool(
+    name="run_program",
+    description=(
+        "Run a Python program in this container for bulk work (more than about five\n"
+        "records, or a join across tools). One function per tool lives in oc8_tools;\n"
+        "call those, do not invent HTTP. Only what the program prints comes back\n"
+        "into context. A denial or an approval request aborts the program — issue\n"
+        "that one call as a normal tool call afterwards. Do not use this for a\n"
+        "single record."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "code": {
+                "type": "string",
+                "description": "The Python program to run. Import tools from oc8_tools.",
+            },
+            "purpose": {
+                "type": "string",
+                "description": "Why this program is needed (short).",
+            },
+        },
+        "required": ["code", "purpose"],
+    },
+)
+
 READ_RUN_FILE = NeutralTool(
     name="read_run_file",
     description=(
         "Read the content of a file another agent run produced (via "
-        "write_output_file or by writing under /workspace/output/) -- for "
-        "example a file a colleague you delegated to just finished writing. "
-        "`filename` is that file's exact name. `run_id` is optional: give it "
-        "when you know which run produced the file (e.g. one you just "
-        "delegated to) to disambiguate two runs that used the same "
-        "filename; omitted, the most recently produced file with that name "
-        "in your tenant is returned. Only works for text-extractable files "
-        "-- produced images are not readable through this tool."
+        "write_output_file, a spilled tool result, or by writing under "
+        "/workspace/output/). `filename` is that file's exact name. `run_id` "
+        "is optional: give it when you know which run produced the file. "
+        "`offset` and `limit` are optional character offsets into the file "
+        "(default: from the start, up to the built-in per-call cap). Only "
+        "works for text-extractable files -- produced images are not readable "
+        "through this tool."
     ),
     parameters={
         "type": "object",
@@ -378,6 +514,14 @@ READ_RUN_FILE = NeutralTool(
             "run_id": {
                 "type": "string",
                 "description": "Optional: the id of the run that produced the file.",
+            },
+            "offset": {
+                "type": "integer",
+                "description": "Optional character offset to start reading from (default 0).",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Optional maximum number of characters to return.",
             },
         },
         "required": ["filename"],
@@ -691,6 +835,9 @@ KPI_OVERVIEW = NeutralTool(
 CONTROL_TOOL_SCHEMAS: dict[str, NeutralTool] = {
     MEMORY_WRITE.name: MEMORY_WRITE,
     TODO_WRITE.name: TODO_WRITE,
+    FIND_TOOLS.name: FIND_TOOLS,
+    READ_RESOURCE.name: READ_RESOURCE,
+    PROCEDURE_STEP_DONE.name: PROCEDURE_STEP_DONE,
     ASK_USER.name: ASK_USER,
     DELEGATE_TASK.name: DELEGATE_TASK,
     REQUEST_DECISION.name: REQUEST_DECISION,
@@ -703,6 +850,8 @@ CONTROL_TOOL_SCHEMAS: dict[str, NeutralTool] = {
     READ_REFERENCE_FILE.name: READ_REFERENCE_FILE,
     READ_INSTRUCTION_FILE.name: READ_INSTRUCTION_FILE,
     WRITE_OUTPUT_FILE.name: WRITE_OUTPUT_FILE,
+    RUN_SHELL.name: RUN_SHELL,
+    RUN_PROGRAM.name: RUN_PROGRAM,
     READ_RUN_FILE.name: READ_RUN_FILE,
     LIST_PENDING_APPROVALS.name: LIST_PENDING_APPROVALS,
     DEPARTMENT_STATUS.name: DEPARTMENT_STATUS,
@@ -734,6 +883,8 @@ def offered_tools(
     copilot_permissions: frozenset[str] = frozenset(),
     offer_write_output_file: bool = False,
     is_team_lead: bool | None = None,
+    offer_run_shell: bool = False,
+    offer_run_program: bool = False,
 ) -> list[NeutralTool]:
     """The full tool list to offer the model this step.
 
@@ -754,6 +905,9 @@ def offered_tools(
 
     `is_team_lead` is the run's PINNED flag (`resolve_version`); every runtime
     passes it, and the live-row fallback exists only for a run-less caller.
+
+    `offer_run_program` is only meaningful together with `offer_run_shell`
+    (isolated shell): code mode still goes through the same local_result path.
     """
     if is_team_lead is None:
         is_team_lead = agent.is_team_lead
@@ -762,9 +916,21 @@ def offered_tools(
     # execute_control_tool. Withdrawing the tool the moment it activates would
     # strand a model that re-checks its own tool list mid-task with an unknown
     # tool name instead of a harmless "already active" response.
-    offered = [MEMORY_WRITE, RENDER_COMPONENT, FETCH_URL, TODO_WRITE, READ_RUN_FILE]
+    offered = [
+        MEMORY_WRITE,
+        RENDER_COMPONENT,
+        FETCH_URL,
+        TODO_WRITE,
+        PROCEDURE_STEP_DONE,
+        READ_RESOURCE,
+        READ_RUN_FILE,
+    ]
     if offer_write_output_file:
         offered.append(WRITE_OUTPUT_FILE)
+    if offer_run_shell:
+        offered.append(RUN_SHELL)
+        if offer_run_program:
+            offered.append(RUN_PROGRAM)
     # ASK_USER parks the run and waits for an answer through the SAME door the
     # question arrived on. That holds for every other agent, whose only doors
     # are the web Chat tab and internal handoffs -- both can answer a park.
@@ -821,18 +987,12 @@ def offered_tools(
     if has_instruction_files:
         offered.append(READ_INSTRUCTION_FILE)
     offered.extend(skill_tool_schemas(assigned_skills))
-
-    if active_skills:
-        wanted = {r.tool for s in active_skills for r in s.definition.requires_tools}
-        # An active skill focuses the model on its own tools. This changes what is
-        # OFFERED only -- _authorize still checks the frame on every call, so this
-        # can never widen anything. The fallback matters: a skill whose required
-        # tools this connection does not have must not leave the model with no
-        # connection tools at all, or it cannot act.
-        narrowed = [t for t in mcp_tools if t.name in wanted]
-        offered.extend(narrowed or mcp_tools)
-    else:
-        offered.extend(mcp_tools)
+    # Every connected tool stays on the list. An active skill's
+    # select_completion_tools pass keeps its own connections inline and puts
+    # the others in the deferred catalog, so find_tools can still pin them.
+    # Dropping them here would make the other system unreachable for the
+    # rest of the run. _authorize still checks the frame on every call.
+    offered.extend(mcp_tools)
     return offered
 
 
@@ -1146,6 +1306,174 @@ def _parse_iso(value: object) -> dt.datetime | None:
         return None
 
 
+def _format_run_shell_result(result: dict[str, Any]) -> str:
+    if result.get("timed_out"):
+        return f"ERROR: command timed out\nstdout: {result.get('stdout', '')}"
+    lines = [f"exit_code={result.get('exit_code')}"]
+    if result.get("stdout"):
+        lines.append(f"stdout:\n{result['stdout']}")
+    if result.get("stderr"):
+        lines.append(f"stderr:\n{result['stderr']}")
+    return "\n".join(lines)
+
+
+_MISSING_DEFERRED = "No deferred tools. Every tool is already in your list."
+_NO_MATCHES = "No matching tools."
+
+
+def _execute_find_tools(
+    tc: ToolCall, harness_state: HarnessState | None
+) -> ControlOutcome:
+    """Rank the deferred catalog and pin matches for the next step."""
+    from oc8.agent.offering import notice_for_find
+
+    query = str(tc.arguments.get("query", ""))
+    raw_connection = tc.arguments.get("connection")
+    connection: str | None = None
+    if raw_connection is not None:
+        connection = str(raw_connection).strip() or None
+    notice = None
+    if harness_state is not None:
+        notice = notice_for_find(harness_state.unavailable_connections, query, connection)
+    if harness_state is None or not harness_state.tool_catalog:
+        return ControlOutcome(output=notice or _MISSING_DEFERRED)
+
+    cards: list[ToolCard] = []
+    for raw in harness_state.tool_catalog:
+        if not isinstance(raw, dict):
+            continue
+        cards.append(
+            ToolCard(
+                name=str(raw.get("name", "")),
+                description=str(raw.get("description", "")),
+                connection=str(raw.get("connection", "")),
+                notes=str(raw.get("notes", "")),
+            )
+        )
+    if not cards:
+        return ControlOutcome(output=notice or _MISSING_DEFERRED)
+
+    ranked = rank_tools(
+        cards,
+        query,
+        connection=connection,
+        require_match=bool(query.strip()),
+    )
+    if not ranked:
+        return ControlOutcome(output=notice or _NO_MATCHES)
+
+    lines: list[str] = []
+    if notice:
+        lines.append(notice)
+    for card in ranked:
+        first_line = card.description.split("\n", 1)[0]
+        lines.append(f"{card.name} — {first_line} ({card.connection})")
+        if card.name not in harness_state.pinned_tools:
+            harness_state.pinned_tools.append(card.name)
+    return ControlOutcome(output="\n".join(lines))
+
+
+_PROCEDURE_AMBIGUOUS = (
+    "ERROR: procedure_step_done needs one matching active procedure."
+)
+_EVIDENCE_CAP = 500
+
+
+def _execute_procedure_step_done(
+    tc: ToolCall,
+    harness_state: HarnessState | None,
+    active_procedure_skills: Sequence[LoadedSkill] | None,
+) -> ControlOutcome:
+    """Mark a manual procedure step done (Package 9 ruling 8)."""
+    step_id = str(tc.arguments.get("step_id", "")).strip()
+    evidence = str(tc.arguments.get("evidence", "")).strip()[:_EVIDENCE_CAP]
+    skill_arg = tc.arguments.get("skill")
+    skill_slug = (
+        str(skill_arg).strip() if skill_arg is not None and str(skill_arg).strip() else None
+    )
+
+    if not step_id:
+        return ControlOutcome(output="ERROR: procedure_step_done requires a step_id")
+    if harness_state is None:
+        return ControlOutcome(output=_PROCEDURE_AMBIGUOUS)
+
+    candidates = list(active_procedure_skills or ())
+    if skill_slug is not None:
+        matches = [s for s in candidates if s.definition.slug == skill_slug]
+    else:
+        matches = [
+            s
+            for s in candidates
+            if any(step.id == step_id for step in s.definition.steps)
+        ]
+
+    if len(matches) != 1:
+        return ControlOutcome(output=_PROCEDURE_AMBIGUOUS)
+
+    skill = matches[0]
+    step = next((s for s in skill.definition.steps if s.id == step_id), None)
+    if step is None:
+        return ControlOutcome(output=_PROCEDURE_AMBIGUOUS)
+    if step.requires_kind != "manual":
+        return ControlOutcome(
+            output=(
+                f"ERROR: step {step_id} is tracked by the system; "
+                "do not mark it manually."
+            )
+        )
+
+    mark = harness_state.procedure.get(skill.definition.slug)
+    if mark is None:
+        mark = ProcedureMark()
+        harness_state.procedure[skill.definition.slug] = mark
+    mark.evidence[step_id] = evidence
+    return ControlOutcome(output=f"Procedure step {step_id} marked done.")
+
+
+async def _execute_read_resource(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    agent: m.Agent,
+    tc: ToolCall,
+) -> ControlOutcome:
+    """One resource body, through the same pool as a tool call."""
+    from sqlalchemy import select
+
+    from oc8.agent import mcp_pool
+    from oc8.agent.mcp_env import has_oauth_ref, resolve_mcp_env
+    from oc8.agent.mcp_requirements import wrap_with_requirements
+
+    connection = str(tc.arguments.get("connection", "")).strip()
+    uri = str(tc.arguments.get("uri", "")).strip()
+    row = await db.scalar(
+        select(m.McpConnection).where(
+            m.McpConnection.department_id == agent.department_id,
+            m.McpConnection.name == connection,
+            m.McpConnection.connected.is_(True),
+        )
+    )
+    if row is None:
+        return ControlOutcome(output=f"ERROR: no connected system named {connection}")
+    cfg = row.config if isinstance(row.config, dict) else {}
+    env = await resolve_mcp_env(
+        db, tenant_id=tenant_id, cfg=cfg, connection_name=row.name
+    )
+    command, args = wrap_with_requirements(cfg.get("command", ""), cfg.get("args", []), cfg)
+    try:
+        text = await mcp_pool.read_resource(
+            row.id,
+            command=command,
+            args=args,
+            env=env,
+            uri=uri,
+            reusable=not has_oauth_ref(cfg),
+        )
+    except Exception as exc:
+        return ControlOutcome(output=f"ERROR: {exc}")
+    return ControlOutcome(output=text)
+
+
 async def execute_control_tool(
     db: AsyncSession,
     *,
@@ -1160,6 +1488,9 @@ async def execute_control_tool(
     originating_operator: str | None,
     run_id: uuid.UUID | None = None,
     pinned: Mapping[str, Any] | None = None,
+    local_result: dict[str, Any] | None = None,
+    harness_state: HarnessState | None = None,
+    active_procedure_skills: Sequence[LoadedSkill] | None = None,
 ) -> ControlOutcome | None:
     """Run one core-owned tool call, or return None if it isn't one.
 
@@ -1177,8 +1508,32 @@ async def execute_control_tool(
     `pinned` is the run's resolved agent version (`resolve_version`); every
     real runtime passes it so a control tool sees the same configuration the
     rest of the run does. None (a run-less direct call) reads the live row.
+
+    `harness_state` is optional until both runtimes thread it (Package 8 A4).
+    find_tools needs it to read the deferred catalog and write pins;
+    procedure_step_done needs it to store manual evidence. Other control tools
+    ignore it.
+
+    `active_procedure_skills` is the caller's active skills that carry
+    procedure steps (Package 9). Task 5 threads the real list; until then
+    callers (and unit tests) may pass fakes or leave it None.
     """
     skill_by_tool = {s.tool_name: s for s in assigned_skills}
+
+    if tc.name == FIND_TOOLS.name:
+        return _execute_find_tools(tc, harness_state)
+
+    if tc.name == READ_RESOURCE.name:
+        if decision.effect is not Effect.ALLOW:
+            return ControlOutcome(output=f"ERROR: {decision.reason or 'denied'}")
+        return await _execute_read_resource(
+            db, tenant_id=tenant_id, agent=agent, tc=tc
+        )
+
+    if tc.name == PROCEDURE_STEP_DONE.name:
+        return _execute_procedure_step_done(
+            tc, harness_state, active_procedure_skills
+        )
 
     if tc.name == SEARCH_MEMORY.name:
         query = str(tc.arguments.get("query", "")).strip()
@@ -1483,6 +1838,24 @@ async def execute_control_tool(
         )
         return ControlOutcome(output=f"Saved '{filename}' ({attachment.size_bytes} bytes).")
 
+    if tc.name == RUN_SHELL.name:
+        # isolated_shell.py already ran this locally before the call ever
+        # reached here (see its module docstring) -- there is nothing left
+        # to execute, only the already-computed result to record.
+        if local_result is None:
+            return ControlOutcome(output="ERROR: run_shell was not executed locally by the runtime")
+        return ControlOutcome(output=_format_run_shell_result(local_result))
+
+    if tc.name == RUN_PROGRAM.name:
+        # Same local_result contract as run_shell: the isolated shell runs the
+        # program before POSTing /tool. Missing local_result means this call
+        # never came from that path.
+        if local_result is None:
+            return ControlOutcome(
+                output="ERROR: run_program was not executed locally by the runtime"
+            )
+        return ControlOutcome(output=_format_run_shell_result(local_result))
+
     if tc.name == READ_RUN_FILE.name:
         filename = str(tc.arguments.get("filename", "")).strip()
         if not filename:
@@ -1502,17 +1875,15 @@ async def execute_control_tool(
         # owner_id IS the agent), owner_id here is the AgentRun.id that
         # produced the file, so "belongs to this agent" isn't a column to
         # filter on -- content-level cross-agent access is the whole point
-        # (see the design's Cross-agent read section). Same newest-wins
-        # tiebreak as read_instruction_file for the same reason: nothing
-        # makes filename unique within a tenant either.
+        # (see the design's Cross-agent read section). With no explicit
+        # producer, prefer the active run's own file before the tenant-wide
+        # newest-wins fallback; filenames are not unique within a tenant.
+        ordering: list[Any] = []
+        if not run_id_arg and run_id is not None:
+            ordering.append(case((m.FileAttachment.owner_id == run_id, 0), else_=1))
+        ordering.extend([m.FileAttachment.created_at.desc(), m.FileAttachment.id.desc()])
         attachment = (
-            (
-                await db.execute(
-                    select(m.FileAttachment)
-                    .where(*conditions)
-                    .order_by(m.FileAttachment.created_at.desc(), m.FileAttachment.id.desc())
-                )
-            )
+            (await db.execute(select(m.FileAttachment).where(*conditions).order_by(*ordering)))
             .scalars()
             .first()
         )
@@ -1525,8 +1896,53 @@ async def execute_control_tool(
                     "support vision through this tool."
                 )
             )
-        text = attachment.extracted_text or "(could not read this file's content)"
-        truncated = text[:_MAX_REFERENCE_FILE_BYTES]
+
+        def _as_nonneg_int(raw: Any, *, name: str) -> int | str | None:
+            if raw is None or raw == "":
+                return None
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                return f"ERROR: read_run_file `{name}` must be an integer"
+            if value < 0:
+                return f"ERROR: read_run_file `{name}` must be >= 0"
+            return value
+
+        offset_or_err = _as_nonneg_int(tc.arguments.get("offset"), name="offset")
+        if isinstance(offset_or_err, str):
+            return ControlOutcome(output=offset_or_err)
+        limit_or_err = _as_nonneg_int(tc.arguments.get("limit"), name="limit")
+        if isinstance(limit_or_err, str):
+            return ControlOutcome(output=limit_or_err)
+        offset = offset_or_err or 0
+        if attachment.content_type == "text/plain":
+            try:
+                text = (await s3.get_object(attachment.bucket_key)).decode(
+                    "utf-8", errors="replace"
+                )
+            except Exception:
+                logger.exception(
+                    "failed to read run file %r from object storage", attachment.bucket_key
+                )
+                text = attachment.extracted_text or ""
+                fallback_unavailable = (
+                    not text
+                    or text == "(could not read this file's content)"
+                    or offset >= len(text)
+                )
+                if fallback_unavailable:
+                    return ControlOutcome(
+                        output=(
+                            f"ERROR: could not read '{filename}' from object storage, "
+                            f"and fallback text does not cover offset {offset}"
+                        )
+                    )
+        else:
+            text = attachment.extracted_text or "(could not read this file's content)"
+        sliced = text[offset:]
+        if limit_or_err is not None:
+            sliced = sliced[:limit_or_err]
+        truncated = sliced[:_MAX_REFERENCE_FILE_BYTES]
         await record_activity(
             db,
             tenant_id=tenant_id,
@@ -1879,8 +2295,7 @@ async def execute_control_tool(
         if not rows:
             return ControlOutcome(output=f"No {status} approvals.")
         lines = [
-            f"- {r.id} | {r.title} | {r.action_type} | department {r.department_id}"
-            for r in rows
+            f"- {r.id} | {r.title} | {r.action_type} | department {r.department_id}" for r in rows
         ]
         return ControlOutcome(output="\n".join(lines))
 
@@ -1912,9 +2327,7 @@ async def execute_control_tool(
             if dept is None:
                 return ControlOutcome(output="ERROR: department not found")
             goal = dept.goal or "(none)"
-            return ControlOutcome(
-                output=f"{dept.name} | id {dept.id} | goal: {goal}"
-            )
+            return ControlOutcome(output=f"{dept.name} | id {dept.id} | goal: {goal}")
         search = tc.arguments.get("search")
         search_str = str(search) if search else None
         rows, _total = await visible_departments(
@@ -2016,20 +2429,14 @@ async def execute_control_tool(
         agent_id_raw = tc.arguments.get("agent_id")
         department_id_raw = tc.arguments.get("department_id")
         if agent_id_raw and department_id_raw:
-            return ControlOutcome(
-                output="ERROR: pass at most one of agent_id/department_id"
-            )
-        agent_actor = await _resolve_agent_actor(
-            db, tenant_id=tenant_id, task=task, run_id=run_id
-        )
+            return ControlOutcome(output="ERROR: pass at most one of agent_id/department_id")
+        agent_actor = await _resolve_agent_actor(db, tenant_id=tenant_id, task=task, run_id=run_id)
         if agent_actor is None:
             return ControlOutcome(output="ERROR: could not resolve who you are acting for")
         authority = await authority_for_member(
             db,
             agent_actor.member,
-            token_role=await _acting_token_role(
-                db, tenant_id=tenant_id, run_id=run_id
-            ),
+            token_role=await _acting_token_role(db, tenant_id=tenant_id, run_id=run_id),
         )
         date_from = _parse_iso(tc.arguments.get("date_from"))
         date_to = _parse_iso(tc.arguments.get("date_to"))
@@ -2038,14 +2445,11 @@ async def execute_control_tool(
         scope_label = "the whole tenant"
         if agent_id_raw:
             view_perm = perm(AGENT, VIEW)
-            admitted = (
-                view_perm in authority.tenant_wide
-                or agent_actor.scope.holds_anywhere(view_perm)
+            admitted = view_perm in authority.tenant_wide or agent_actor.scope.holds_anywhere(
+                view_perm
             )
             if not admitted:
-                return ControlOutcome(
-                    output="ERROR: you don't have permission to view this agent"
-                )
+                return ControlOutcome(output="ERROR: you don't have permission to view this agent")
             try:
                 target_agent_id = uuid.UUID(str(agent_id_raw))
             except ValueError:
@@ -2062,15 +2466,12 @@ async def execute_control_tool(
             scope_label = f"agent {target.name}"
         elif department_id_raw:
             view_perm = perm(DEPARTMENT, VIEW)
-            admitted = (
-                view_perm in authority.tenant_wide
-                or agent_actor.scope.holds_anywhere(view_perm)
+            admitted = view_perm in authority.tenant_wide or agent_actor.scope.holds_anywhere(
+                view_perm
             )
             if not admitted:
                 return ControlOutcome(
-                    output=(
-                        "ERROR: you don't have permission to view this department"
-                    )
+                    output=("ERROR: you don't have permission to view this department")
                 )
             try:
                 target_department_id = uuid.UUID(str(department_id_raw))
@@ -2091,10 +2492,7 @@ async def execute_control_tool(
             # same reasoning as budget_overview -- no seat fallback.
             if perm(STATISTICS, VIEW) not in authority.tenant_wide:
                 return ControlOutcome(
-                    output=(
-                        "ERROR: you don't have permission to view "
-                        "tenant-wide statistics"
-                    )
+                    output=("ERROR: you don't have permission to view tenant-wide statistics")
                 )
         result = await compute_kpis(
             db,
@@ -2190,10 +2588,29 @@ async def execute_control_tool(
         # role 'tool'", verified against a hosted vLLM behind LiteLLM), which
         # killed the run on the next step. This way the ordering hazard cannot
         # exist: there is no extra message to place.
+        if harness_state is not None:
+            from oc8.agent.offering import pin_skill_tools
+
+            harness_state.pinned_tools = pin_skill_tools(
+                harness_state.pinned_tools,
+                [req.tool for req in skill.definition.requires_tools],
+            )
+        if skill.definition.steps and harness_state is not None:
+            from oc8.agent.harness.procedures import satisfied_ids
+
+            slug = skill.definition.slug or skill.tool_name
+            done = satisfied_ids(
+                skill.definition.steps,
+                harness_state.ledger,
+                harness_state.procedure.get(slug),
+            )
+            block = instruction_block(skill, done)
+        else:
+            block = instruction_block(skill)
         return ControlOutcome(
             output=(
                 f"Skill '{skill.name}' activated. Follow this procedure:\n\n"
-                f"{instruction_block(skill)}"
+                f"{block}"
             ),
             activated_skill=skill,
         )

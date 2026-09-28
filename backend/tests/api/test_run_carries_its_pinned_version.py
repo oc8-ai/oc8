@@ -5,7 +5,7 @@ configuration that produced it (spec §5). A run that pins a version and never
 says which one keeps that question unanswerable from the UI, which is most of
 the value of having done the pinning at all.
 
-`null` for a historical run is the correct answer, not a bug: migration 0098
+`null` for a historical run is the correct answer, not a bug: migration 0099
 deliberately did NOT backfill `agent_run.agent_version_id`, because inventing a
 version for a run that happened before versioning existed would be a claim
 about the past.

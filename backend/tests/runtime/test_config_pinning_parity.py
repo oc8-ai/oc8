@@ -133,7 +133,11 @@ async def test_inprocess_run_uses_pinned_narrowing_after_midrun_publish(
             toolset=_FakeToolset(_ok),
         )
 
-    assert result.tool_calls[-1]["result"] == "wrote it", result.tool_calls
+    # The harness's C3 step-stamp ("[step N/max · HH:MM TZ] ") now prefixes
+    # every shaped tool result -- irrelevant to what this test actually checks
+    # (that the write went through under the pinned, permissive narrowing),
+    # so match on the suffix rather than the whole string.
+    assert result.tool_calls[-1]["result"].endswith("wrote it"), result.tool_calls
 
 
 async def test_inprocess_run_uses_pinned_mission_in_its_system_prompt(

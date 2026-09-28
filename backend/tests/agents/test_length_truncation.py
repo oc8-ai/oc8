@@ -70,6 +70,37 @@ class _AlwaysTruncated:
         yield chunk_from_result(await self.complete(req))
 
 
+class _LengthRetryOverflowsOnce:
+    """The length retry overflows, compacts, then succeeds on its one retry."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.request_ids: list[uuid.UUID] = []
+
+    async def complete(self, req: Any) -> CompletionResult:
+        self.calls += 1
+        self.request_ids.append(req.request_id)
+        if self.calls == 1:
+            return CompletionResult(
+                text="", tool_calls=[], usage=Usage(6832, 1536),
+                stop_reason="length", provider="openrouter", model="z-ai/glm-5.3-flash",
+            )
+        if self.calls == 2:
+            raise RuntimeError("max_tokens must be at least 1, got -7075")
+        if self.calls == 3:
+            return CompletionResult(
+                text="Task remains; retry the completion.", tool_calls=[], usage=Usage(5000, 30),
+                stop_reason="stop", provider="openrouter", model="z-ai/glm-5.3-flash",
+            )
+        return CompletionResult(
+            text="Ticket resolved after compaction.", tool_calls=[], usage=Usage(5100, 20),
+            stop_reason="stop", provider="openrouter", model="z-ai/glm-5.3-flash",
+        )
+
+    async def stream(self, req: Any) -> Any:
+        yield chunk_from_result(await self.complete(req))
+
+
 class _TruncatedButWithAToolCall:
     """Truncated (stop_reason == "length") but a tool call still came through
     -- this is NOT the empty-truncation case and must proceed normally,
@@ -137,6 +168,28 @@ async def test_persistent_empty_truncation_reports_failed_not_done(
     assert result.status == "failed"
     # Exactly one retry, never an unbounded loop.
     assert router.calls == 2
+
+
+async def test_length_retry_compacts_and_retries_once_on_overflow(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    router = _LengthRetryOverflowsOnce()
+    monkeypatch.setattr("oc8.agent.engine.get_model_router", lambda: router)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        dept = m.Department(tenant_id=tenant, name="IT-Support", frame={})
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(tenant_id=tenant, department_id=dept.id, name="Lennart")
+        db.add(agent)
+        await db.flush()
+        result = await run_agent(
+            db, agent=agent, task_text="Handle the ticket", tenant_id=tenant
+        )
+    assert result.status == "done"
+    assert result.output == "Ticket resolved after compaction."
+    assert router.calls == 4
+    assert len(set(router.request_ids)) == 4
 
 
 async def test_a_truncated_call_that_still_produced_a_tool_call_is_not_retried(

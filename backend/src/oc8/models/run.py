@@ -31,7 +31,7 @@ class AgentRun(Base, PkMixin, TenantMixin, TimestampMixin):
     agent_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
     # The `AgentVersion` this run's behavioural config is pinned to, so a
     # publish mid-run cannot change what a running agent is doing. Null for
-    # every run from before this column existed (0098 does not backfill
+    # every run from before this column existed (0099 does not backfill
     # `agent_run` -- inventing a version for a historical run would be a claim
     # about the past nobody can support) -- a reader treats null as "read the
     # live `agent` row", the same fallback `Agent.current_version_id` being

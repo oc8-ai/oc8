@@ -189,3 +189,21 @@ async def test_listing_tools_with_an_expiring_environment_is_not_pooled() -> Non
     assert await mcp_pool.tools(conn, command="x", args=[], env={}, reusable=False) == ["a", "b"]
     assert conn not in mcp_pool._LIVE
     assert _FakeSession.closed == 1
+
+
+async def test_close_drops_one_connection_and_the_next_call_handshakes_again() -> None:
+    conn = uuid.uuid4()
+    other = uuid.uuid4()
+    await _call(conn)
+    await _call(other)
+    assert _FakeSession.opened == 2
+    await mcp_pool.close(conn)
+    await _call(conn)
+    await _call(other)
+    assert _FakeSession.opened == 3, "only the closed connection handshakes again"
+    assert _FakeSession.closed >= 1
+
+
+async def test_close_of_an_unknown_connection_is_a_no_op() -> None:
+    await mcp_pool.close(uuid.uuid4())
+    assert _FakeSession.closed == 0

@@ -54,11 +54,37 @@ REFUSAL = (
 )
 
 
+def is_outward_skipped(
+    tool_name: str,
+    arguments: dict[str, Any],
+    skip_spec: dict[str, Any] | None,
+) -> bool:
+    """True when the connection's outward_skip_spec says this call reaches nobody.
+
+    Used for the note/comment split on a single tool (e.g. Odoo post_message
+    with subtype=note). Declared on the connection; the core stays software-
+    neutral and only matches argument values against the declared lists.
+    """
+    if not skip_spec:
+        return False
+    rules = skip_spec.get(tool_name)
+    if not isinstance(rules, dict):
+        return False
+    for key, allowed in rules.items():
+        if not isinstance(allowed, list):
+            continue
+        if arguments.get(key) in allowed:
+            return True
+    return False
+
+
 def outward_target(
     tool_name: str,
     arguments: dict[str, Any],
     focus_spec: dict[str, Any] | None,
     outward_tools: list[str] | None,
+    *,
+    skip_spec: dict[str, Any] | None = None,
 ) -> str | None:
     """Who this call would reach, or None when it reaches nobody.
 
@@ -66,6 +92,8 @@ def outward_target(
     and the one that must stay free of any cost.
     """
     if not outward_tools or tool_name not in outward_tools:
+        return None
+    if is_outward_skipped(tool_name, arguments, skip_spec):
         return None
     spec = focus_spec or {}
     # Both declared shapes, not just `entity_field`: software with one endpoint
