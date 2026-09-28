@@ -94,10 +94,50 @@ function parseErrorDetail(err: unknown): Record<string, unknown> | null {
   }
 }
 
+/** Names what a rollback's `version_references_missing` (422) found gone,
+ *  from the backend's `missing` dict (`agents/versioning.py`'s
+ *  `missing_references`, keyed by payload field -- NOT camelCased, since an
+ *  `HTTPException` detail dict is plain JSON, not run through `CamelModel`).
+ *  Falls back to "something" rather than silently describing nothing when the
+ *  shape doesn't match what's expected -- still readable, just less precise. */
+function describeMissingReferences(
+  missing: unknown,
+  t: (en: string, de: string) => string,
+): string {
+  const rec =
+    missing !== null && typeof missing === "object" ? (missing as Record<string, unknown>) : {};
+  const count = (key: string) => (Array.isArray(rec[key]) ? (rec[key] as unknown[]).length : 0);
+  const kb = count("knowledge_grants");
+  const sv = count("skill_assignments");
+  const mc = count("model_config_id");
+  const parts: string[] = [];
+  if (kb > 0) {
+    parts.push(
+      t(
+        `${kb} knowledge base${kb === 1 ? "" : "s"}`,
+        `${kb} Wissensdatenbank${kb === 1 ? "" : "en"}`,
+      ),
+    );
+  }
+  if (sv > 0) {
+    parts.push(
+      t(`${sv} skill version${sv === 1 ? "" : "s"}`, `${sv} Skill-Version${sv === 1 ? "" : "en"}`),
+    );
+  }
+  if (mc > 0) {
+    parts.push(t("its model configuration", "seine Modellkonfiguration"));
+  }
+  return parts.length > 0 ? parts.join(", ") : t("something", "etwas");
+}
+
 /** Turns the backend's structured 409/422 bodies into a sentence that says what
- *  to DO. A generic "couldn't publish" is the failure this exists to avoid:
- *  the three refusals have three different remedies (refetch, change something,
- *  talk to whoever owns the gate) and only one of them is retrying. */
+ *  to DO. A generic "couldn't publish"/"couldn't roll back" is the failure this
+ *  exists to avoid: the refusals have different remedies (refetch, change
+ *  something, talk to whoever owns the gate, or pick an older version) and only
+ *  one of them is retrying. Shared by publish AND rollback -- a rollback IS a
+ *  publish on the backend (spec §2.7) and hits the same error vocabulary, plus
+ *  two refusals ONLY rollback can raise (a stale target's dangling references,
+ *  or a restored narrowing the department frame no longer permits). */
 export function describePublishError(err: unknown, t: (en: string, de: string) => string): string {
   const detail = parseErrorDetail(err);
   const code = typeof detail?.error === "string" ? detail.error : "";
@@ -119,6 +159,28 @@ export function describePublishError(err: unknown, t: (en: string, de: string) =
     return t(
       `A policy check refused this configuration: ${reason}`,
       `Eine Richtlinienprüfung hat diese Konfiguration abgelehnt: ${reason}`,
+    );
+  }
+  if (code === "version_references_missing") {
+    const what = describeMissingReferences(detail?.missing, t);
+    return t(
+      `This version points at ${what} that no longer exist. Pick a different version, or recreate what was deleted first.`,
+      `Diese Version verweist auf ${what}, die nicht mehr existieren. Wählen Sie eine andere Version, oder stellen Sie das Gelöschte zuerst wieder her.`,
+    );
+  }
+  if (code === "narrowing_exceeds_frame") {
+    const violations = Array.isArray(detail?.violations)
+      ? (detail.violations as Array<{ tool_key?: unknown; reason?: unknown }>)
+      : [];
+    const first = violations[0];
+    const firstText =
+      first && typeof first.tool_key === "string" && typeof first.reason === "string"
+        ? `${first.tool_key} (${first.reason})`
+        : "";
+    const more = violations.length > 1 ? ` +${violations.length - 1}` : "";
+    return t(
+      `This version's access no longer fits the department's current permissions${firstText ? `: ${firstText}${more}` : ""}.`,
+      `Der Zugriff dieser Version passt nicht mehr zu den aktuellen Berechtigungen der Abteilung${firstText ? `: ${firstText}${more}` : ""}.`,
     );
   }
   return err instanceof Error ? err.message : String(err);

@@ -153,6 +153,48 @@ describe("AgentVersionsTab", () => {
     expect(String(toastError.mock.calls[0]?.[1]?.description ?? "")).toMatch(/policy check/i);
   });
 
+  it("explains a rollback refused over since-deleted dependencies", async () => {
+    // Real shape from `agents/versioning.py`'s `missing_references`, as raised
+    // by the rollback route in agents_write.py -- keyed by payload field, not
+    // camelCased (a raw HTTPException detail dict, not a CamelModel).
+    postMock.mockRejectedValue(
+      apiError(422, {
+        error: "version_references_missing",
+        missing: { knowledge_grants: ["kb-1", "kb-2"], model_config_id: ["mc-1"] },
+      }),
+    );
+    renderTab(<AgentVersionsTab agentId="ag-1" mayManage={true} />);
+    const rows = await screen.findAllByRole("row");
+    fireEvent.click(within(rows[3]).getByRole("button", { name: /roll back/i }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: /roll back to v1/i }));
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    const description = String(toastError.mock.calls[0]?.[1]?.description ?? "");
+    expect(description).toMatch(/2 knowledge bases/i);
+    expect(description).toMatch(/model configuration/i);
+    expect(description).not.toMatch(/"error":"version_references_missing"/);
+  });
+
+  it("explains a rollback refused because the restored access exceeds the department frame", async () => {
+    // Real shape from `authz/pdp.py`'s `SubsetViolation` dataclass, serialized
+    // via `.__dict__` -- `tool_key`/`reason`, not camelCased.
+    postMock.mockRejectedValue(
+      apiError(422, {
+        error: "narrowing_exceeds_frame",
+        violations: [{ tool_key: "odoo.crm", reason: "'write' not granted by frame" }],
+      }),
+    );
+    renderTab(<AgentVersionsTab agentId="ag-1" mayManage={true} />);
+    const rows = await screen.findAllByRole("row");
+    fireEvent.click(within(rows[3]).getByRole("button", { name: /roll back/i }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: /roll back to v1/i }));
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    const description = String(toastError.mock.calls[0]?.[1]?.description ?? "");
+    expect(description).toMatch(/odoo\.crm/);
+    expect(description).toMatch(/department/i);
+  });
+
   it("offers Diff but not Roll back to a caller who may not publish", async () => {
     mayMock.mockReturnValue(false);
     renderTab(<AgentVersionsTab agentId="ag-1" mayManage={true} />);
