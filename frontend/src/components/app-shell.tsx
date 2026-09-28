@@ -17,6 +17,8 @@ import {
   LayoutGrid,
   LogOut,
   Moon,
+  PanelLeftClose,
+  PanelLeftOpen,
   Puzzle,
   Settings,
   ShieldCheck,
@@ -216,51 +218,87 @@ function useCollapsedSections(): [Set<string>, (id: string) => void, (id: string
   return [closed, toggle, reveal];
 }
 
+const SIDEBAR_COLLAPSED_KEY = "oc8-sidebar-collapsed";
+
+/** The reader's own persisted choice for every page EXCEPT /workspace, which always
+ *  forces the rail regardless of this value (see AppShell's `collapsed`). */
+function usePersistedSidebarCollapsed(): [boolean, (next: boolean) => void] {
+  const [collapsed, setCollapsedState] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
+  });
+  const setCollapsed = useCallback((next: boolean) => {
+    setCollapsedState(next);
+    try {
+      window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, next ? "1" : "0");
+    } catch {
+      /* noop, matches the sections-state precedent */
+    }
+  }, []);
+  return [collapsed, setCollapsed];
+}
+
 function NavItemLink({
   item,
   pathname,
   nested = false,
+  collapsed = false,
 }: {
   item: NavLink;
   pathname: string;
   nested?: boolean;
+  /** Whole-sidebar rail state (not this item's own state) -- hides the label
+   *  and swaps the numeric badge pill for a plain dot, since neither fits an
+   *  icon-only column. */
+  collapsed?: boolean;
 }) {
   const active = item.exact ? pathname === item.to : pathname.startsWith(item.to);
   const Icon = item.icon;
+  const hasBadge = item.badge != null && item.badge > 0;
   return (
     <Link
       to={item.to as "/"}
+      title={collapsed ? item.label : undefined}
       className={cn(
         "group flex items-center gap-3 rounded-md py-2 text-sm transition-colors",
         // Nested items are indented by the rule to their left rather than by
         // padding alone, so the label keeps its width and still truncates
         // cleanly when the sidebar is the narrowest it ever gets.
-        nested ? "pl-3 pr-3" : "px-3",
+        collapsed ? "justify-center px-2" : nested ? "pl-3 pr-3" : "px-3",
         active
           ? "bg-primary/10 text-primary"
           : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-foreground",
       )}
       aria-current={active ? "page" : undefined}
     >
-      <Icon
-        className={cn(
-          "h-4 w-4 shrink-0",
-          active ? "text-primary" : "text-muted-foreground group-hover:text-foreground",
-        )}
-      />
-      <span className="truncate">{item.label}</span>
-      {item.badge != null && item.badge > 0 && (
-        <span className="ml-auto grid h-5 min-w-5 place-items-center rounded-full bg-[color:var(--status-warning)] px-1 text-[10px] font-semibold text-black">
-          {item.badge}
-        </span>
-      )}
-      {active && (
-        <span
+      <span className="relative inline-flex shrink-0">
+        <Icon
           className={cn(
-            "h-1.5 w-1.5 shrink-0 rounded-full bg-primary shadow-[0_0_10px_var(--primary)]",
-            item.badge ? "ml-1.5" : "ml-auto",
+            "h-4 w-4 shrink-0",
+            active ? "text-primary" : "text-muted-foreground group-hover:text-foreground",
           )}
         />
+        {collapsed && hasBadge && (
+          <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-[color:var(--status-warning)]" />
+        )}
+      </span>
+      {!collapsed && (
+        <>
+          <span className="truncate">{item.label}</span>
+          {hasBadge && (
+            <span className="ml-auto grid h-5 min-w-5 place-items-center rounded-full bg-[color:var(--status-warning)] px-1 text-[10px] font-semibold text-black">
+              {item.badge}
+            </span>
+          )}
+          {active && (
+            <span
+              className={cn(
+                "h-1.5 w-1.5 shrink-0 rounded-full bg-primary shadow-[0_0_10px_var(--primary)]",
+                item.badge ? "ml-1.5" : "ml-auto",
+              )}
+            />
+          )}
+        </>
       )}
     </Link>
   );
@@ -283,6 +321,8 @@ function NavItemSection({
   collapsed,
   onToggle,
   onReveal,
+  sidebarCollapsed = false,
+  onExpandSidebar,
 }: {
   section: NavSection;
   items: NavLink[];
@@ -290,6 +330,13 @@ function NavItemSection({
   collapsed: boolean;
   onToggle: () => void;
   onReveal: (id: string) => void;
+  /** Whole-sidebar rail state. An icon column has no room for this section's
+   *  own chevron/children, so while this is true the section renders as a
+   *  single icon-only item instead (see the early return below). */
+  sidebarCollapsed?: boolean;
+  /** Un-collapses the whole sidebar -- the same setter the dock's toggle
+   *  button uses. Only called from the rail-mode click handler below. */
+  onExpandSidebar?: () => void;
 }) {
   const t = useT();
   const holdsActive = items.some((c) => (c.exact ? pathname === c.to : pathname.startsWith(c.to)));
@@ -300,6 +347,41 @@ function NavItemSection({
   const open = !collapsed;
   const Icon = section.icon;
   const panelId = `nav-section-${section.section}`;
+
+  // The rail has no room for a chevron or its children -- clicking the
+  // section here does two things at once: it un-collapses the whole sidebar
+  // AND reveals this section, so the reader lands exactly where they clicked
+  // rather than on a still-closed section in a now-wide sidebar.
+  if (sidebarCollapsed) {
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          onExpandSidebar?.();
+          onReveal(id);
+        }}
+        title={section.label}
+        className={cn(
+          "group flex w-full items-center justify-center rounded-md py-2 text-sm transition-colors",
+          holdsActive
+            ? "text-sidebar-foreground"
+            : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-foreground",
+        )}
+      >
+        <span className="relative inline-flex shrink-0">
+          <Icon
+            className={cn(
+              "h-4 w-4 shrink-0",
+              holdsActive ? "text-primary" : "text-muted-foreground group-hover:text-foreground",
+            )}
+          />
+          {holdsActive && (
+            <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-primary shadow-[0_0_10px_var(--primary)]" />
+          )}
+        </span>
+      </button>
+    );
+  }
 
   return (
     <div>
@@ -365,6 +447,31 @@ export function AppShell() {
   // administrator on every page.
   const assignedRole = useAssignedRoleName();
   const [closedSections, toggleSection, revealSection] = useCollapsedSections();
+
+  // Two mechanisms, deliberately kept apart -- see `usePersistedSidebarCollapsed`'s
+  // doc comment and the design note in the sidebar-collapse spec. `userCollapsed`
+  // is the reader's own persisted choice, honoured on every route except
+  // /workspace. `workspaceExpandOverride` is a same-visit-only override that
+  // reverts the moment the reader arrives at /workspace fresh -- it is never
+  // written to storage, so it can never leak into `userCollapsed`'s behaviour
+  // elsewhere, and clicking it while on /workspace never touches the persisted key.
+  const [userCollapsed, setUserCollapsed] = usePersistedSidebarCollapsed();
+  const onWorkspace = pathname.startsWith("/workspace");
+  const [workspaceExpandOverride, setWorkspaceExpandOverride] = useState(false);
+  useEffect(() => {
+    if (onWorkspace) setWorkspaceExpandOverride(false);
+  }, [onWorkspace]);
+  const collapsed = onWorkspace ? !workspaceExpandOverride : userCollapsed;
+  const toggleSidebar = () => {
+    if (onWorkspace) setWorkspaceExpandOverride((v) => !v);
+    else setUserCollapsed(!userCollapsed);
+  };
+  // Passed to a collapsed section's rail-mode click handler -- un-collapsing
+  // is a one-way expand there, never a toggle (see `NavItemSection`).
+  const expandSidebar = useCallback(() => {
+    if (onWorkspace) setWorkspaceExpandOverride(true);
+    else setUserCollapsed(false);
+  }, [onWorkspace, setUserCollapsed]);
 
   const { data: approvals = [] } = useApprovals("pending");
   const { data: clarifications = [] } = useClarifications();
@@ -660,28 +767,50 @@ export function AppShell() {
 
   return (
     <div className="flex min-h-screen w-full bg-background text-foreground">
-      <aside className="hidden md:flex md:w-64 shrink-0 flex-col border-r border-border bg-sidebar">
-        <div className="flex flex-col items-start gap-1.5 px-6 py-6">
+      <aside
+        className={cn(
+          "hidden md:flex shrink-0 flex-col border-r border-border bg-sidebar transition-[width] duration-200",
+          collapsed ? "md:w-[68px]" : "md:w-64",
+        )}
+      >
+        <div
+          className={cn(
+            "flex flex-col items-start gap-1.5 px-6 py-6",
+            collapsed && "items-center px-0",
+          )}
+        >
           {/* The lockup SVG already draws "oc8" as artwork (brand sheet:
               "Wordmark -- drawn artwork, not type -- never reset in a
               font") -- a second, separately-typeset "oc8" beside it was a
-              duplicate wordmark, not a second brand element. */}
-          <img
-            src={theme === "dark" ? "/oc8_Logo_white.svg" : "/oc8_Logo.svg"}
-            alt="oc8"
-            className="h-9 w-auto shrink-0 select-none"
-            draggable={false}
-          />
-          <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
-            <span>{t("Control Panel", "Leitstand")}</span>
-          </div>
+              duplicate wordmark, not a second brand element. Collapsed to the
+              rail, there is no room for the wordmark OR the caption -- rather
+              than inventing a second, square mark, this header simply goes
+              quiet until the sidebar is wide again. */}
+          {!collapsed && (
+            <>
+              <img
+                src={theme === "dark" ? "/oc8_Logo_white.svg" : "/oc8_Logo.svg"}
+                alt="oc8"
+                className="h-9 w-auto shrink-0 select-none"
+                draggable={false}
+              />
+              <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                <span>{t("Control Panel", "Leitstand")}</span>
+              </div>
+            </>
+          )}
         </div>
 
         <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-2">
           {nav.map((entry) => {
             if (!isSection(entry)) {
               return visible(entry) ? (
-                <NavItemLink key={entry.to} item={entry} pathname={pathname} />
+                <NavItemLink
+                  key={entry.to}
+                  item={entry}
+                  pathname={pathname}
+                  collapsed={collapsed}
+                />
               ) : null;
             }
             // A section with nothing in it the caller may open is not rendered
@@ -699,19 +828,58 @@ export function AppShell() {
                 collapsed={closedSections.has(entry.section)}
                 onToggle={() => toggleSection(entry.section)}
                 onReveal={revealSection}
+                sidebarCollapsed={collapsed}
+                onExpandSidebar={expandSidebar}
               />
             );
           })}
         </nav>
 
-        <div className="border-t border-sidebar-border px-4 py-4 text-xs text-muted-foreground">
-          <div className="flex items-center justify-between">
-            <span className="inline-flex items-center gap-2">
-              <span className="status-dot text-[color:var(--status-running)] bg-[color:var(--status-running)]" />
-              {t("All systems operational", "Alle Systeme betriebsbereit")}
-            </span>
-            <span className="text-[10px]">v0.9</span>
-          </div>
+        <div
+          className={cn(
+            "border-t border-sidebar-border px-4 py-4 text-xs text-muted-foreground",
+            collapsed && "flex justify-center px-0",
+          )}
+        >
+          {collapsed ? (
+            <span className="status-dot text-[color:var(--status-running)] bg-[color:var(--status-running)]" />
+          ) : (
+            <div className="flex items-center justify-between">
+              <span className="inline-flex items-center gap-2">
+                <span className="status-dot text-[color:var(--status-running)] bg-[color:var(--status-running)]" />
+                {t("All systems operational", "Alle Systeme betriebsbereit")}
+              </span>
+              <span className="text-[10px]">v0.9</span>
+            </div>
+          )}
+        </div>
+
+        <div className="border-t border-sidebar-border p-2">
+          <button
+            type="button"
+            onClick={toggleSidebar}
+            aria-label={
+              collapsed
+                ? t("Expand sidebar", "Seitenleiste ausklappen")
+                : t("Collapse sidebar", "Seitenleiste einklappen")
+            }
+            title={
+              collapsed
+                ? t("Expand sidebar", "Seitenleiste ausklappen")
+                : t("Collapse sidebar", "Seitenleiste einklappen")
+            }
+            className={cn(
+              "flex w-full items-center gap-2 rounded-md py-2 text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground",
+              collapsed ? "justify-center px-2" : "px-3",
+            )}
+          >
+            {collapsed ? (
+              <PanelLeftOpen className="h-4 w-4 shrink-0" />
+            ) : (
+              <PanelLeftClose className="h-4 w-4 shrink-0" />
+            )}
+            {!collapsed && <span>{t("Collapse", "Einklappen")}</span>}
+          </button>
         </div>
       </aside>
 
