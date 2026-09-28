@@ -13,6 +13,7 @@ from sqlalchemy import select
 from oc8 import models as m
 from oc8.agent.assistant import get_or_create_assistant
 from oc8.agents.repo import visible_agent
+from oc8.agents.versioning import pinned_version_no
 from oc8.api.deps import CurrentPrincipal, DbSession, require_departmental, require_permission
 from oc8.api.v1.run import run_to_dto
 from oc8.authz.authority import Authority, authority_for_principal, tenant_wide_read
@@ -48,9 +49,7 @@ def _session_dto(session: m.ChatSession) -> ChatSessionDTO:
     )
 
 
-async def _message_dto(
-    msg: m.ChatMessage, db: DbSession, tenant_id: uuid.UUID
-) -> ChatMessageDTO:
+async def _message_dto(msg: m.ChatMessage, db: DbSession, tenant_id: uuid.UUID) -> ChatMessageDTO:
     result = await db.execute(
         select(m.FileAttachment).where(
             m.FileAttachment.tenant_id == tenant_id,
@@ -333,4 +332,7 @@ async def get_session_run(
     run_row = await db.get(m.AgentRun, run_id)
     if run_row is None or (run_row.context or {}).get("chat_session_id") != str(session_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
-    return run_to_dto(run_row)
+    # Same `pinned_version_no` helper `GET /runs/{id}` (run.py) uses, so
+    # `agentVersionNo` is filled identically on both routes that serialize a
+    # `RunDTO` for the same frontend query-cache entry (`["run", runId]`).
+    return run_to_dto(run_row, agent_version_no=await pinned_version_no(db, run_row))

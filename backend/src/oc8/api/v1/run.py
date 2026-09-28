@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from oc8 import models as m
+from oc8.agents.versioning import pinned_version_no
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
 from oc8.audit import append_event
 from oc8.authz.permissions import RUN, RUN_CONTROL, RUN_START, VIEW, perm
@@ -31,7 +32,19 @@ class RunMessageRequest(BaseModel):
     body: str
 
 
-def run_to_dto(run: m.AgentRun) -> RunDTO:
+def run_to_dto(run: m.AgentRun, *, agent_version_no: int | None = None) -> RunDTO:
+    """`agent_version_no` is passed IN rather than resolved here.
+
+    This function is synchronous and has five callers, three of which are write
+    routes (`run`, `answer_run`, `cancel_run`) that return immediately after
+    `db.commit()` -- at which point the transaction-local `app.tenant_id`
+    binding is gone and any further query would silently return zero rows
+    under RLS. Only `get_run` (here) and
+    `get_session_run` (chat.py) read the number, via the shared
+    `versioning.pinned_version_no` helper -- both serialize a `RunDTO` for the
+    same frontend query-cache entry (`["run", runId]`), so both must fill this
+    identically or whichever refetches last would blank out the other's value.
+    """
     ctx = run.context or {}
     return RunDTO(
         id=str(run.id),
@@ -45,6 +58,7 @@ def run_to_dto(run: m.AgentRun) -> RunDTO:
         question=ctx.get("pending_question"),
         rendered_components=ctx.get("rendered_components", []),
         todos=ctx.get("todos", []),
+        agent_version_no=agent_version_no,
     )
 
 
@@ -144,7 +158,7 @@ async def get_run(run_id: uuid.UUID, db: DbSession, principal: CurrentPrincipal)
     run_row = await db.get(m.AgentRun, run_id)
     if run_row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
-    return run_to_dto(run_row)
+    return run_to_dto(run_row, agent_version_no=await pinned_version_no(db, run_row))
 
 
 @router.post(

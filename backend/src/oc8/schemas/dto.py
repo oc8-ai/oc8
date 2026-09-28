@@ -667,6 +667,17 @@ class AgentDetailDTO(AgentDTO):
     #: ["max_steps"], a top-level key -- see engine._max_steps). None means
     #: "inherit settings.agent_max_steps", not a framework default value.
     max_steps: int | None = None
+    #: The version that actually runs. The thin shape `lib/skills.ts` already
+    #: uses for skills -- an id plus the number, and no client-side version
+    #: state machine. Whether the working copy has DRIFTED from it is a separate
+    #: question with its own endpoint (`GET /agents/{id}/draft-status`), because
+    #: it changes on a different schedule: thirteen write endpoints move it and
+    #: a publish clears it, while the rest of this payload is stable.
+    #:
+    #: Null only for a row written outside `create_agent` -- a fixture, a
+    #: restore, a psql insert. Every hired agent has a v1 from birth.
+    current_version_id: str | None = None
+    current_version_no: int | None = None
 
 
 class AgentInstructionRevisionDTO(CamelModel):
@@ -1010,6 +1021,16 @@ class RunDTO(CamelModel):
     # .py's ctx["todos"]). Empty means either the agent never called todo_write,
     # or it cleared the list on its last call -- both render as "no todos".
     todos: list[TodoDTO] = []
+    #: The version this run is pinned to (`agent_run.agent_version_id`), by
+    #: NUMBER rather than id -- that is what the Versions tab shows and what
+    #: `GET /agents/{id}/versions/{n}` is addressed by, so a transcript can link
+    #: straight to the configuration that produced it.
+    #:
+    #: Null for a run created before version pinning existed. Migration 0098
+    #: deliberately did not backfill those: inventing a version for a historical
+    #: run is a claim about the past nothing can support, and the runtimes
+    #: already treat null as "read the live row".
+    agent_version_no: int | None = None
 
 
 class ChatSessionDTO(CamelModel):

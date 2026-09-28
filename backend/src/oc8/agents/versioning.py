@@ -369,6 +369,25 @@ async def resolve_version(
     return await snapshot_agent(db, agent)
 
 
+async def pinned_version_no(db: AsyncSession, run: m.AgentRun) -> int | None:
+    """The version number `run.agent_version_id` points at, or `None`.
+
+    Two routes serialize a `RunDTO` for the same frontend query-cache entry
+    (`["run", runId]`): `GET /runs/{id}` (run.py) and the chat surface's
+    `GET /chat/sessions/{sessionId}/runs/{runId}` (chat.py, used by
+    `useCopilotRunActivity`). Both call this so `agentVersionNo` is filled
+    identically no matter which query last wrote the cache -- otherwise the
+    one that leaves it null would intermittently overwrite the other's value.
+
+    `None` for a run pinned to nothing (a historical row from before version
+    pinning existed) -- see `resolve_version`'s own None-safe fallback.
+    """
+    if run.agent_version_id is None:
+        return None
+    version = await db.get(m.AgentVersion, run.agent_version_id)
+    return version.version_no if version is not None else None
+
+
 def pinned_model_config_id(cfg: Mapping[str, Any]) -> uuid.UUID | None:
     """`cfg["model_config_id"]` as a UUID. A payload stores it as a string
     (it is JSON), so every reader would otherwise re-parse it by hand."""

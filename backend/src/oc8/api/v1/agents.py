@@ -436,6 +436,15 @@ async def _agent_detail_dto(db: DbSession, agent: m.Agent) -> AgentDetailDTO:
     frame = dept.frame if dept else {}
     dept_name = dept.name if dept else None
 
+    # One `get` by primary key, on a row that is almost always already in the
+    # identity map for this request -- the alternative is a JOIN in every one of
+    # this function's five callers.
+    current_version = (
+        await db.get(m.AgentVersion, agent.current_version_id)
+        if agent.current_version_id is not None
+        else None
+    )
+
     effective = effective_tool_policies(frame, agent.narrowing)
     overridden_keys = frozenset(agent.narrowing_overridden_keys or [])
     tool_policy_sources = {
@@ -508,6 +517,10 @@ async def _agent_detail_dto(db: DbSession, agent: m.Agent) -> AgentDetailDTO:
         # Top-level key, unlike the four sampling fields above -- see
         # engine._max_steps and switch_model in agents_write.py.
         max_steps=(agent.definition or {}).get("max_steps"),
+        current_version_id=(
+            str(agent.current_version_id) if agent.current_version_id is not None else None
+        ),
+        current_version_no=(current_version.version_no if current_version is not None else None),
     )
 
 
