@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from collections.abc import Mapping
 from typing import Any
 
 from sqlalchemy import func, select
@@ -177,21 +178,47 @@ async def publish_version(
     return version
 
 
-async def resolve_version(db: AsyncSession, run: m.AgentRun, agent: m.Agent) -> dict[str, Any]:
+async def resolve_version(
+    db: AsyncSession, run: m.AgentRun | None, agent: m.Agent
+) -> dict[str, Any]:
     """The behavioural payload `run` should execute with: the version it was
-    pinned to at start, falling back to `agent`'s current version, falling
+    pinned to at intake, falling back to `agent`'s current version, falling
     back to a live snapshot for the rare row that has neither (e.g. a
     pre-migration agent that predates any publish). Never raises -- a reader
     always gets a usable payload.
 
-    Small helper pulled forward from task A4 (run pinning), since later
-    tasks consume it by this exact name; A4 owns wiring it into the actual
-    run-start/step path and may extend this if that turns up a need this
-    slice didn't anticipate.
+    Every runtime reads an agent's behavioural fields (narrowing, mission,
+    definition, model_config_id, is_team_lead, ...) through this, never off
+    the live `Agent` row: the row is the operator's working draft, and a
+    change to it must not land between two tool calls of a run already in
+    flight. `department.frame` is deliberately NOT part of the payload -- the
+    tenant's policy ceiling bites immediately, mid-run included.
+
+    `run` may be None for a caller with no run behind it (a direct
+    `run_agent` call in a test); that resolves exactly like an unpinned run.
     """
-    version_id = run.agent_version_id or agent.current_version_id
+    pinned = run.agent_version_id if run is not None else None
+    version_id = pinned or agent.current_version_id
     if version_id is not None:
         version = await db.get(m.AgentVersion, version_id)
         if version is not None:
-            return version.payload
+            payload = dict(version.payload)
+            # A version published before a column joined `_VERSIONED_COLUMNS`
+            # does not carry it. Readers index the payload directly, so fill
+            # the gap from the row -- the only value that field has ever had
+            # for this agent, since it was never versioned before.
+            for col in _VERSIONED_COLUMNS:
+                if col not in payload:
+                    val = getattr(agent, col)
+                    payload[col] = str(val) if isinstance(val, uuid.UUID) else val
+            return payload
     return await snapshot_agent(db, agent)
+
+
+def pinned_model_config_id(cfg: Mapping[str, Any]) -> uuid.UUID | None:
+    """`cfg["model_config_id"]` as a UUID. A payload stores it as a string
+    (it is JSON), so every reader would otherwise re-parse it by hand."""
+    raw = cfg.get("model_config_id")
+    if raw is None or raw == "":
+        return None
+    return raw if isinstance(raw, uuid.UUID) else uuid.UUID(str(raw))

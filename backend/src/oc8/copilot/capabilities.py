@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agents.hire import require_hire_approval
+from oc8.agents.versioning import publish_version
 from oc8.auth import Principal
 from oc8.authz import pdp
 from oc8.automation.catalogue import list_installed_automation_events
@@ -636,6 +637,10 @@ async def apply_operation(db: AsyncSession, *, tenant_id: uuid.UUID, data: dict[
         await db.flush()
         db.add(m.MemoryStore(tenant_id=tenant_id, tier="agent", owner_id=agent.id))
         await db.flush()
+        # v1 in the same transaction as the create, like every other creation
+        # path (api/v1/agents_write.py::create_agent): runs are pinned to a
+        # version, and an agent without one would run off its live row.
+        await publish_version(db, agent, note="created by the Copilot")
         return
     if isinstance(operation, AgentRename):
         agent = await db.get(m.Agent, operation.agentId)

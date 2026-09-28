@@ -99,11 +99,17 @@ def resolve_params(
     config: m.ModelConfig | None,
     *,
     agent: m.Agent | None = None,
+    definition: dict[str, Any] | None = None,
 ) -> ModelParams:
     """Sampling parameters for one model call.
 
     ``agent`` may be None for callers that have no agent (e.g. the coding loop).
+    ``definition`` is the run's PINNED agent definition (`resolve_version`);
+    when given it is read instead of ``agent.definition``, so a mid-run edit
+    of the live row never changes the sampling a running run uses.
     """
+    if definition is None and agent is not None:
+        definition = agent.definition
     temperature = DEFAULT_TEMPERATURE
     max_tokens = DEFAULT_MAX_TOKENS
     effort: str | None = None
@@ -116,7 +122,7 @@ def resolve_params(
     # model's own raw keys it didn't mention.
     for source in (
         (config.params or {}) if config is not None else {},
-        ((agent.definition or {}).get("model_params") or {}) if agent is not None else {},
+        (definition or {}).get("model_params") or {},
     ):
         if not isinstance(source, dict):
             continue

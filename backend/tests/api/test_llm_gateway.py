@@ -384,7 +384,7 @@ async def test_billing_survives_the_cancellation_of_its_own_request(
     async with tenant_session(tenant) as request_db:
         agent = await request_db.get(m.Agent, agent_id)
         assert agent is not None
-        caller = GatewayCaller(tenant_id=tenant, agent=agent, run_id=run_id)
+        caller = GatewayCaller(tenant_id=tenant, agent=agent, run_id=run_id, pinned={})
         gen = _sse(
             request_db, caller,
             common={

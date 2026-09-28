@@ -55,6 +55,7 @@ from oc8.agent.preamble import build_run_preamble
 from oc8.agent.tool_idempotency import record_invocation, replayed_result
 from oc8.agent.tool_notes import apply_tool_notes
 from oc8.agent.tool_semantics import describe_focus, describes_a_record
+from oc8.agents.versioning import pinned_model_config_id, resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession, unguarded
 from oc8.approvals import raise_approval
 from oc8.audit import append_event
@@ -180,10 +181,21 @@ def _from_message(msg: NeutralMessage) -> dict[str, Any]:
 
 async def _load(
     db: DbSession, run: m.AgentRun
-) -> tuple[m.Agent, m.Department | None, m.McpConnection | None]:
+) -> tuple[m.Agent, m.Department | None, m.McpConnection | None, dict[str, Any]]:
+    """The run's agent, department, bound connection -- and, last, the agent
+    configuration the run executes under (`resolve_version`).
+
+    Called afresh on every /step and /tool, so every behavioural field must be
+    read off that 4th element and never off the live `agent` row: the row is
+    the operator's working draft, and reading it here is exactly how a config
+    change used to land between two tool calls of one run. Re-reading on each
+    call is fine now, because what it resolves to is immutable. The
+    department (and its frame) stays a live read on purpose -- tightening
+    the tenant's ceiling must bite mid-run."""
     agent = await db.get(m.Agent, run.agent_id)
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
+    cfg = await resolve_version(db, run, agent)
     dept = await db.get(m.Department, agent.department_id)
     conn = None
     mcp_id = run.context.get("mcp_connection_id")
@@ -203,7 +215,7 @@ async def _load(
                 .limit(1)
             )
         ).scalar_one_or_none()
-    return agent, dept, conn
+    return agent, dept, conn, cfg
 
 
 def _mcp_params(conn: m.McpConnection) -> dict[str, Any]:
@@ -263,7 +275,8 @@ async def step(
     principal: CurrentPrincipal,
 ) -> StepResult:
     run = await _run_for_token(run_id, db, principal)
-    agent, dept, conn = await _load(db, run)
+    agent, dept, conn, pinned = await _load(db, run)
+    max_steps = _max_steps(pinned["definition"])
 
     ctx = dict(run.context)
 
@@ -275,7 +288,7 @@ async def step(
     # far above any real budget and must never be the thing that actually
     # stops a run. No model call, no cost, on this path -- ctx["steps"] isn't
     # incremented here, so a resumed/retried request stays idempotent.
-    if int(ctx.get("steps", 0)) >= _max_steps(agent):
+    if int(ctx.get("steps", 0)) >= max_steps:
         return StepResult(done=True, text="Reached step limit.", status_override="done")
 
     transcript: list[dict[str, Any]] = list(ctx.get("transcript", []))
@@ -284,9 +297,8 @@ async def step(
     # Resolved BEFORE seeding, because the preamble's KB retrieval needs the
     # locality to decide what may leave the tenant's region.
     settings = get_settings()
-    model_config = (
-        await db.get(m.ModelConfig, agent.model_config_id) if agent.model_config_id else None
-    )
+    pinned_model_id = pinned_model_config_id(pinned)
+    model_config = await db.get(m.ModelConfig, pinned_model_id) if pinned_model_id else None
     if model_config is not None:
         provider, model = model_config.provider, model_config.model
     else:
@@ -336,6 +348,7 @@ async def step(
             supports_vision=supports_vision,
             task=task_row,
             run_id=run_id,
+            pinned=pinned,
         )
         transcript = [_from_message(msg) for msg in preamble.messages]
         assigned_skills = preamble.assigned_skills
@@ -400,11 +413,11 @@ async def step(
     # engine calls offered_tools directly, never over HTTP). A real runtime
     # plugin (e.g. claude_code_runtime) has its own local file tools, so only
     # offer write_output_file for the builtin isolated shell, which has none.
-    offer_write_output_file = (
-        not agent.runtime_ref or agent.runtime_ref == BUILTIN_ISOLATED_RUNTIME_REF
-    )
+    runtime_ref = pinned["runtime_ref"]
+    offer_write_output_file = not runtime_ref or runtime_ref == BUILTIN_ISOLATED_RUNTIME_REF
     tools = offered_tools(
         agent,
+        is_team_lead=bool(pinned["is_team_lead"]),
         assigned_skills=assigned_skills,
         active_skills=active_skills,
         mcp_tools=mcp_tools,
@@ -417,7 +430,7 @@ async def step(
     resolved_tools = tools
     # Shared with the in-process engine so sampling cannot drift between the
     # two runtimes -- see oc8.modelrouter.sampling.
-    resolved_params = resolve_params(model_config, agent=agent)
+    resolved_params = resolve_params(model_config, agent=agent, definition=pinned["definition"])
     # Must match what fallback.py's own base_url resolution will actually
     # send for this provider (params override, else the tenant's bound
     # credential) -- see agent/engine.py's identical comment.
@@ -567,7 +580,7 @@ async def step(
             if (
                 open_todos
                 and todo_continue_rounds < TODO_CONTINUATION_MAX_ROUNDS
-                and int(ctx["steps"]) < _max_steps(agent)
+                and int(ctx["steps"]) < max_steps
             ):
                 todo_continue_rounds += 1
                 transcript.append(
@@ -603,7 +616,7 @@ async def step(
         step_text = "Model exceeded its token budget without producing an answer or tool call."
 
     return StepResult(
-        done=not result.tool_calls and int(ctx["steps"]) <= _max_steps(agent),
+        done=not result.tool_calls and int(ctx["steps"]) <= max_steps,
         text=step_text,
         tool_calls=[
             {"id": t.id, "name": t.name, "arguments": t.arguments} for t in result.tool_calls
@@ -640,7 +653,7 @@ async def tool(
     principal: CurrentPrincipal,
 ) -> ToolResult:
     run = await _run_for_token(run_id, db, principal)
-    agent, dept, conn = await _load(db, run)
+    agent, dept, conn, pinned = await _load(db, run)
     tc = ToolCall(id=body.id, name=body.name, arguments=body.arguments)
 
     assigned_skills = await load_assigned_skills(db, agent=agent, tenant_id=run.tenant_id)
@@ -678,10 +691,12 @@ async def tool(
             for g in s.definition.guardrails
             if g.type == "value_threshold" and g.then == "require_approval"
         ),
-        tool_policies=effective_tool_policies(frame, agent.narrowing or {}),
+        tool_policies=effective_tool_policies(frame, pinned["narrowing"] or {}),
         connection_key=conn.name if conn is not None else None,
         tool_scopes=scopes,
         value_spec=value_spec,
+        narrowing=pinned["narrowing"] or {},
+        is_team_lead=bool(pinned["is_team_lead"]),
     )
     # Honour an operator's earlier decision on this exact call (resume).
     if decision.effect is Effect.REQUIRE_APPROVAL:
@@ -773,6 +788,7 @@ async def tool(
             mcp_conn=conn,
             originating_operator=run.context.get("originating_operator"),
             run_id=run.id,
+            pinned=pinned,
         )
         if task is not None
         else None

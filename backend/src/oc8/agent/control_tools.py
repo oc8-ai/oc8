@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.agent.components import COMPONENT_CATALOG
 from oc8.agents.repo import visible_agent, visible_agents
+from oc8.agents.versioning import pinned_model_config_id
 from oc8.approvals import (
     AlreadyDecided,
     NotYourDepartment,
@@ -732,6 +733,7 @@ def offered_tools(
     has_instruction_files: bool = False,
     copilot_permissions: frozenset[str] = frozenset(),
     offer_write_output_file: bool = False,
+    is_team_lead: bool | None = None,
 ) -> list[NeutralTool]:
     """The full tool list to offer the model this step.
 
@@ -749,7 +751,12 @@ def offered_tools(
     `/workspace/output/` mount instead, so offering the tool there would be a
     second, redundant way to do the same thing. read_run_file has no such
     gate: reading a file another run produced is useful from every runtime.
+
+    `is_team_lead` is the run's PINNED flag (`resolve_version`); every runtime
+    passes it, and the live-row fallback exists only for a run-less caller.
     """
+    if is_team_lead is None:
+        is_team_lead = agent.is_team_lead
     # Skill tools stay offered even once active: a model that invokes an
     # already-active skill again just hits the no-op branch in
     # execute_control_tool. Withdrawing the tool the moment it activates would
@@ -776,7 +783,7 @@ def offered_tools(
     # that door cannot answer.
     if not agent.is_tenant_assistant:
         offered.append(ASK_USER)
-    if agent.is_team_lead:
+    if is_team_lead:
         offered.append(DELEGATE_TASK)
     if agent.is_tenant_assistant:
         # Only the Assistant is the one that talks to a human about how oc8
@@ -1091,12 +1098,22 @@ async def _department_frame(db: AsyncSession, agent: m.Agent) -> dict[str, Any]:
     return dict(dept.frame or {}) if dept is not None else {}
 
 
-async def _model_locality(db: AsyncSession, agent: m.Agent) -> str:
+async def _model_locality(
+    db: AsyncSession, agent: m.Agent, pinned: Mapping[str, Any] | None = None
+) -> str:
     """Where this agent's model runs. "cloud" when unknown -- the stricter of
-    the two, since it is what excludes restricted material from retrieval."""
-    if agent.model_config_id is None:
+    the two, since it is what excludes restricted material from retrieval.
+
+    Read off the run's PINNED model (`pinned`, from `resolve_version`), the one
+    this run's completions actually go to: a mid-run switch of the live row to
+    a local model must not unlock restricted material for a run still talking
+    to a cloud one."""
+    model_config_id = (
+        pinned_model_config_id(pinned) if pinned is not None else agent.model_config_id
+    )
+    if model_config_id is None:
         return "cloud"
-    config = await db.get(m.ModelConfig, agent.model_config_id)
+    config = await db.get(m.ModelConfig, model_config_id)
     return str(getattr(config, "locality", "cloud") or "cloud")
 
 
@@ -1142,6 +1159,7 @@ async def execute_control_tool(
     mcp_conn: m.McpConnection | None,
     originating_operator: str | None,
     run_id: uuid.UUID | None = None,
+    pinned: Mapping[str, Any] | None = None,
 ) -> ControlOutcome | None:
     """Run one core-owned tool call, or return None if it isn't one.
 
@@ -1155,6 +1173,10 @@ async def execute_control_tool(
     run, and several runs share one task, so it cannot be re-derived from the
     task afterwards. It defaults to None only so a direct call with no run
     behind it (tests) stays valid -- and None fails closed, dropping the claim.
+
+    `pinned` is the run's resolved agent version (`resolve_version`); every
+    real runtime passes it so a control tool sees the same configuration the
+    rest of the run does. None (a run-less direct call) reads the live row.
     """
     skill_by_tool = {s.tool_name: s for s in assigned_skills}
 
@@ -1208,7 +1230,7 @@ async def execute_control_tool(
             tenant_id=tenant_id,
             query_text=query,
             frame=await _department_frame(db, agent),
-            model_locality=await _model_locality(db, agent),
+            model_locality=await _model_locality(db, agent, pinned),
         )
         # A trail, because "did it consult the handbook or guess?" has to be
         # answerable afterwards. Without it I drew the wrong conclusion myself:

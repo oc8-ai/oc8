@@ -288,3 +288,24 @@ async def test_resolve_version_falls_back_to_current_when_run_has_no_pin(
 
         payload = await resolve_version(db, run, a)
     assert payload["mission"] == "only mission"
+
+
+async def test_resolve_version_fills_a_column_an_older_payload_predates(
+    app_session: AppSessionFactory,
+) -> None:
+    """Every runtime indexes the resolved payload directly, so a version
+    published before a column was versioned must not KeyError a run."""
+    agent = await _make_agent(app_session, is_team_lead=True)
+    async with app_session(agent.tenant_id) as db:
+        a = await db.get(m.Agent, agent.id)
+        assert a is not None and a.current_version_id is not None
+        version = await db.get(m.AgentVersion, a.current_version_id)
+        assert version is not None
+        version.payload = {k: v for k, v in version.payload.items() if k != "is_team_lead"}
+        await db.flush()
+        run = m.AgentRun(tenant_id=agent.tenant_id, agent_id=agent.id, agent_version_id=version.id)
+        db.add(run)
+        await db.flush()
+
+        payload = await resolve_version(db, run, a)
+    assert payload["is_team_lead"] is True

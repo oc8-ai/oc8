@@ -45,6 +45,7 @@ from oc8.agent.tool_semantics import (
     extract_attributes,
     extract_value,
 )
+from oc8.agents.versioning import pinned_model_config_id, resolve_version
 from oc8.approvals import raise_approval
 from oc8.audit import append_event
 from oc8.authz.pdp import (
@@ -107,10 +108,14 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_STEPS = 12  # framework default; overridable via settings or per agent
 
 
-def _max_steps(agent: m.Agent) -> int:
+def _max_steps(definition: dict[str, Any] | None) -> int:
     """Step budget for a run: an agent plugin may raise it per agent for longer,
-    multi-record workflows; otherwise the framework setting applies."""
-    override = (agent.definition or {}).get("max_steps")
+    multi-record workflows; otherwise the framework setting applies.
+
+    Takes the run's PINNED definition (`resolve_version(...)["definition"]`),
+    not the agent row, so every runtime bounds a run by the budget of the
+    version it started with."""
+    override = (definition or {}).get("max_steps")
     if isinstance(override, int) and override > 0:
         return override
     return max(1, get_settings().agent_max_steps)
@@ -370,6 +375,8 @@ def _authorize(
     skill_tool_names: frozenset[str] = frozenset(),
     value_spec: dict[str, Any] | None = None,
     guardrail_attribute_specs: Sequence[dict[str, Any]] = (),
+    narrowing: dict[str, Any] | None = None,
+    is_team_lead: bool | None = None,
 ) -> Decision:
     """PEP for a tool call. Every connection tool is decided against the
     department frame (§5.3): which entry governs it is the connection key, and
@@ -385,7 +392,15 @@ def _authorize(
     server and a connection could name a plain tool `skill_anything` to dodge
     the frame check entirely. A stray `skill_`-prefixed tool that isn't one of
     this agent's assigned skills falls through to the normal frame check
-    below, exactly like any other tool of that connection."""
+    below, exactly like any other tool of that connection.
+
+    `narrowing` and `is_team_lead` are the run's PINNED values
+    (`resolve_version`). Every runtime passes them; the fallback to the live
+    `agent` row exists only for a direct call with no run behind it."""
+    if narrowing is None:
+        narrowing = agent.narrowing or {}
+    if is_team_lead is None:
+        is_team_lead = agent.is_team_lead
     if tc.name in skill_tool_names:
         return Decision(Effect.ALLOW)
     if tc.name == "ask_user":
@@ -412,7 +427,7 @@ def _authorize(
         # never going to be enforced by this frame in the first place.
         return Decision(Effect.ALLOW)
     if tc.name == "delegate_task":
-        if not agent.is_team_lead:
+        if not is_team_lead:
             return Decision(Effect.DENY, "only a team lead can delegate tasks")
         if not str(tc.arguments.get("task_text", "")).strip():
             return Decision(Effect.DENY, "task_text must not be empty")
@@ -433,7 +448,7 @@ def _authorize(
             return Decision(Effect.DENY, "content must not be empty")
         if len(content) > MAX_MEMORY_CONTENT_LENGTH:
             return Decision(Effect.DENY, f"content exceeds {MAX_MEMORY_CONTENT_LENGTH} characters")
-        return authorize_memory_write(frame, agent.narrowing or {}, tier)
+        return authorize_memory_write(frame, narrowing, tier)
     agent_threshold = (agent.presentation or {}).get("approval_value_eur")
     applicable_attributes = [
         spec
@@ -631,9 +646,27 @@ async def run_agent(
         settings = get_settings()
         router = get_model_router()
 
+        # A resume leg continues the task its suspended leg opened; see
+        # open_run_task. The run is the only place that link is recorded, so a
+        # runtime that gets no run_id (a direct run_agent call in a test) simply
+        # opens a fresh task, as before. The same row also carries stamped
+        # pins (`mcp_connection_ids`) so an in-process run sees every login
+        # the executor resolved, not just the first -- and the agent version
+        # this run was pinned to at intake.
+        run_row: m.AgentRun | None = (
+            await db.get(m.AgentRun, run_id) if run_id is not None else None
+        )
+        # Every behavioural field below (model, narrowing, definition, mission,
+        # team-lead flag) comes from the run's pinned version, never the live
+        # row -- the same answer the isolated control plane and the MCP gateway
+        # give for the same run. `department.frame` stays a live read on
+        # purpose: it is the tenant's ceiling and must bite mid-run.
+        pinned = await resolve_version(db, run_row, agent)
+        pinned_model_id = pinned_model_config_id(pinned)
+
         model_config: m.ModelConfig | None = None
-        if agent.model_config_id is not None:
-            model_config = await db.get(m.ModelConfig, agent.model_config_id)
+        if pinned_model_id is not None:
+            model_config = await db.get(m.ModelConfig, pinned_model_id)
         if model_config is not None:
             provider = model_config.provider
             model = model_config.model
@@ -661,17 +694,8 @@ async def run_agent(
         ]
         department = await db.get(m.Department, agent.department_id)
         frame: dict[str, Any] = department.frame if department is not None else {}
-        tool_policies = effective_tool_policies(frame, agent.narrowing or {})
+        tool_policies = effective_tool_policies(frame, pinned["narrowing"] or {})
         extra_conns: list[m.McpConnection] = list(mcp_conns) if mcp_conns else []
-        # A resume leg continues the task its suspended leg opened; see
-        # open_run_task. The run is the only place that link is recorded, so a
-        # runtime that gets no run_id (a direct run_agent call in a test) simply
-        # opens a fresh task, as before. The same row also carries stamped
-        # pins (`mcp_connection_ids`) so an in-process run sees every login
-        # the executor resolved, not just the first.
-        run_row: m.AgentRun | None = (
-            await db.get(m.AgentRun, run_id) if run_id is not None else None
-        )
         if not extra_conns and run_row is not None:
             raw_ids = run_row.context.get("mcp_connection_ids")
             if isinstance(raw_ids, list):
@@ -765,6 +789,7 @@ async def run_agent(
             supports_vision=supports_vision,
             task=task,
             run_id=run_id,
+            pinned=pinned,
         )
         messages: list[NeutralMessage] = list(preamble.messages)
         assigned_skills = preamble.assigned_skills
@@ -828,6 +853,7 @@ async def run_agent(
                 # see oc8.agent.control_tools.
                 return offered_tools(
                     agent,
+                    is_team_lead=bool(pinned["is_team_lead"]),
                     assigned_skills=assigned_skills,
                     active_skills=active_skills,
                     mcp_tools=tools,
@@ -872,7 +898,7 @@ async def run_agent(
             steps = 0
             checkpoint_trace_delta: list[dict[str, Any]] = []
             tokens_since_checkpoint = 0
-            max_steps = _max_steps(agent)
+            max_steps = _max_steps(pinned["definition"])
             # See todo_continuation_reminder: counts auto-continuation rounds
             # separately from `steps` so it can be capped independently of
             # max_steps, even though each round also consumes one step.
@@ -940,7 +966,9 @@ async def run_agent(
                 request_id = uuid.uuid4()
                 resolved_messages = messages
                 resolved_tools = _offered()
-                resolved_params = resolve_params(model_config, agent=agent)
+                resolved_params = resolve_params(
+                    model_config, agent=agent, definition=pinned["definition"]
+                )
                 # Must match what fallback.py's own base_url resolution will
                 # actually send for this provider (params override, else the
                 # tenant's bound credential) -- a cache key that ignores the
@@ -1224,6 +1252,8 @@ async def run_agent(
                         skill_tool_names=skill_tool_names,
                         value_spec=call_value_spec,
                         guardrail_attribute_specs=call_guardrails,
+                        narrowing=pinned["narrowing"] or {},
+                        is_team_lead=bool(pinned["is_team_lead"]),
                         skill_thresholds=tuple(
                             g.gt
                             for s in active_skills
@@ -1418,6 +1448,7 @@ async def run_agent(
                             mcp_conn=mcp_conn,
                             originating_operator=originating_operator,
                             run_id=run_id,
+                            pinned=pinned,
                         )
                         if control is not None:
                             # A core-owned tool (memory/ask/delegate/skill). The

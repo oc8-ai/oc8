@@ -14,6 +14,7 @@ Core-neutral: names no vendor, product or software specifics.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -40,12 +41,18 @@ from oc8.modelrouter.types import ImagePart, TextPart
 from oc8.skills.runtime import LoadedSkill, catalog_block, load_assigned_skills
 
 
-def system_prompt(agent: m.Agent) -> str:
+def system_prompt(agent: m.Agent, pinned: Mapping[str, Any] | None = None) -> str:
+    """`pinned` is the run's resolved version (`resolve_version`); when given,
+    role title and mission come from it rather than the live row, so a
+    mid-run edit never rewrites the instructions a run is working to. `name`
+    and `presentation` are identity/operational state, not versioned."""
     pres = agent.presentation or {}
     guardrails = pres.get("guardrails", [])
-    parts = [f"You are {agent.name}" + (f", {agent.role_title}." if agent.role_title else ".")]
-    if agent.mission:
-        parts.append(agent.mission)
+    role_title = pinned["role_title"] if pinned is not None else agent.role_title
+    mission = pinned["mission"] if pinned is not None else agent.mission
+    parts = [f"You are {agent.name}" + (f", {role_title}." if role_title else ".")]
+    if mission:
+        parts.append(mission)
     if guardrails:
         parts.append("Guardrails you must respect:\n" + "\n".join(f"- {g}" for g in guardrails))
     parts.append(
@@ -233,14 +240,18 @@ async def build_run_preamble(
     supports_vision: bool = False,
     task: m.Task | None = None,
     run_id: uuid.UUID | None = None,
+    pinned: Mapping[str, Any] | None = None,
 ) -> RunPreamble:
     """Seed a run's conversation: system context first, the task last.
 
     Message order is part of the contract -- the task must be the final turn, so
     the model reads its instructions against context already established.
+
+    `pinned` is the run's resolved agent version (`resolve_version`). Every
+    runtime passes it; None (a direct call with no run) reads the live row.
     """
     messages: list[NeutralMessage] = [
-        NeutralMessage(role="system", content=system_prompt(agent))
+        NeutralMessage(role="system", content=system_prompt(agent, pinned))
     ]
     # Said once, before anything a stranger wrote can arrive. Every answer a
     # connection returns is fenced as <external>, and this is what makes that
@@ -296,7 +307,8 @@ async def build_run_preamble(
             )
         )
 
-    if agent.is_team_lead:
+    is_team_lead = bool(pinned["is_team_lead"]) if pinned is not None else agent.is_team_lead
+    if is_team_lead:
         # Appended as its own system message (like memory/KB context) because
         # system_prompt is a pure sync function and this needs the DB.
         roster = await roster_block(db, agent=agent)

@@ -66,6 +66,7 @@ from oc8.agent.tool_semantics import (
     record_identity,
     record_title,
 )
+from oc8.agents.versioning import resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession
 from oc8.approvals import raise_approval
 from oc8.audit import append_event
@@ -323,9 +324,15 @@ async def _list_tools(
     same reasoning as withholding delegate_task from a non-lead. The frame is
     read PER CONNECTION, so a department can grant one system and withhold
     another.
+
+    The agent's side of the intersection (narrowing, team-lead flag) is the
+    run's PINNED version, not the live row: this is called on every
+    `tools/list`, and a mid-run edit must not change what a running run is
+    offered. The frame stays live on purpose -- it is the tenant's ceiling.
     """
     frame = dept.frame if dept is not None else {}
-    policies = effective_tool_policies(frame, agent.narrowing or {})
+    pinned = await resolve_version(db, run, agent)
+    policies = effective_tool_policies(frame, pinned["narrowing"] or {})
 
     allowed: dict[str, list[Any]] = {}
     for conn in conns:
@@ -430,7 +437,7 @@ async def _list_tools(
     # Assistant's own doors -- has no reply-to-a-clarification path at all.
     if not agent.is_tenant_assistant:
         core.append(ASK_USER)
-    if agent.is_team_lead:
+    if pinned["is_team_lead"]:
         # Same argument as REQUEST_DECISION above, one step further. delegate_task
         # was withheld here as a lifecycle tool, but it is not one: it creates a
         # run for SOMEBODY ELSE and returns a sentence -- it never suspends the
@@ -557,6 +564,12 @@ async def _call_tool(
     arguments: dict[str, Any],
 ) -> dict[str, Any]:
     frame = dept.frame if dept is not None else {}
+    # The agent's behavioural config for THIS run: the version pinned at
+    # intake, never the live row -- otherwise a narrowing tightened (or
+    # loosened) between two tool calls changes what the same run may do.
+    # Resolved once, beside the frame, which alone stays a live read.
+    pinned = await resolve_version(db, run, agent)
+    narrowing: dict[str, Any] = pinned["narrowing"] or {}
     # Which system this call belongs to, and what it is called THERE. Every
     # seam below -- the right classification, the value, the record, whether it
     # reaches a person -- belongs to that connection and to no other, which is
@@ -687,9 +700,7 @@ async def _call_tool(
         # company-tier write comes back as REQUIRE_APPROVAL.
         core_tc = _ToolCall(id=str(uuid.uuid4()), name=name, arguments=arguments)
         if name == MEMORY_WRITE.name:
-            core_decision = authorize_memory_write(
-                frame, agent.narrowing or {}, str(arguments.get("tier", ""))
-            )
+            core_decision = authorize_memory_write(frame, narrowing, str(arguments.get("tier", "")))
         elif name == DELEGATE_TASK.name:
             # Not waved through: _authorize is where "not yourself", "a real
             # agent id" and the depth limit live, and the limit is the only thing
@@ -701,7 +712,9 @@ async def _call_tool(
                 skill_tool_names=skill_tool_names,
                 delegation_depth=int(run.context.get("delegation_depth", 0)),
                 skill_thresholds=(),
-                tool_policies=effective_tool_policies(frame, agent.narrowing or {}),
+                tool_policies=effective_tool_policies(frame, narrowing),
+                narrowing=narrowing,
+                is_team_lead=bool(pinned["is_team_lead"]),
                 # A core tool belongs to no connection, so it has neither scopes
                 # nor a connection key -- the checks that matter for it (self,
                 # real id, depth) are inside _authorize.
@@ -722,6 +735,7 @@ async def _call_tool(
             mcp_conn=conn,
             originating_operator=run.context.get("originating_operator"),
             run_id=run.id,
+            pinned=pinned,
         )
         assert outcome is not None
         if outcome.pending_run is not None:
@@ -786,7 +800,9 @@ async def _call_tool(
             for g in s.definition.guardrails
             if g.type == "value_threshold" and g.then == "require_approval"
         ),
-        tool_policies=effective_tool_policies(frame, agent.narrowing or {}),
+        tool_policies=effective_tool_policies(frame, narrowing),
+        narrowing=narrowing,
+        is_team_lead=bool(pinned["is_team_lead"]),
         connection_key=conn.name if conn is not None else None,
         tool_scopes=scopes,
         value_spec=value_spec,

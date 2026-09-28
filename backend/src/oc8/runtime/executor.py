@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.agents.versioning import resolve_version
 from oc8.db.session import tenant_session
 from oc8.observability import get_tracer, record_run_outcome
 from oc8.realtime.emit import publish_agent_status, record_activity
@@ -355,7 +356,11 @@ class _ConnectionChoice(NamedTuple):
 
 
 async def _resolve_mcp_connection(
-    db: AsyncSession, *, agent: m.Agent, run_context: dict[str, Any]
+    db: AsyncSession,
+    *,
+    agent: m.Agent,
+    run_context: dict[str, Any],
+    narrowing: dict[str, Any] | None = None,
 ) -> _ConnectionChoice:
     """Which McpConnection this agent's run uses, and why it can't have one.
 
@@ -403,7 +408,12 @@ async def _resolve_mcp_connection(
             return _ConnectionChoice(None, f"unknown MCP connection: {mcp_id}")
         return _ConnectionChoice(conn, None)
 
-    raw_tools = (agent.narrowing or {}).get("tools") or {}
+    # `narrowing` is the run's pinned version (`resolve_version`), so the login
+    # a run acts through is the one its version names; the live-row fallback
+    # is for a caller with no run behind it.
+    if narrowing is None:
+        narrowing = agent.narrowing or {}
+    raw_tools = narrowing.get("tools") or {}
     tools: dict[str, Any] = raw_tools if isinstance(raw_tools, dict) else {}
     # Sorted so two runs of the same agent always decide identically. Keys are
     # connection NAMES (the frame keys tools by name, not id) -- the same shape
@@ -668,7 +678,13 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             agent.status = "running"
             await publish_agent_status(agent)
 
-            choice = await _resolve_mcp_connection(db, agent=agent, run_context=run.context)
+            pinned = await resolve_version(db, run, agent)
+            choice = await _resolve_mcp_connection(
+                db,
+                agent=agent,
+                run_context=run.context,
+                narrowing=pinned["narrowing"] or {},
+            )
             mcp_conn, mcp_error = choice.connection, choice.error
             if mcp_error is not None:
                 # Loud on purpose: acting through the wrong login is worse than
