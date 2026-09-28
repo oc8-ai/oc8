@@ -62,6 +62,12 @@ export interface AgentDetail {
   maxSteps: number | null;
   /** Last successful Auto-router tier for this agent (fast|balanced|strong). */
   autoRouterAffinityTier?: string | null;
+  // The version that actually runs. Mirrors lib/skills.ts's thin shape -- an id
+  // plus the number, no client-side version state machine. Whether the working
+  // copy has DRIFTED from it is a separate query (useAgentDraftStatus), because
+  // it changes on a different schedule.
+  currentVersionId: string | null;
+  currentVersionNo: number | null;
 }
 
 // Reuses the ["agents", id] key already invalidated by the "agent.status"

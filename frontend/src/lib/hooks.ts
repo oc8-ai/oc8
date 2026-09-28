@@ -351,6 +351,12 @@ export interface RunDTO {
   // every runtime, in-process or isolated. Same "never from GET, WS-only"
   // rule: absent until the first fragment lands.
   liveAnswer?: string;
+  // The version this run is pinned to, by NUMBER -- what the Versions tab shows
+  // and what GET /agents/{id}/versions/{n} is addressed by. Null for a run
+  // created before pinning existed: migration 0098 deliberately did not
+  // backfill those, because inventing a version for a historical run is a claim
+  // about the past nothing supports.
+  agentVersionNo?: number | null;
   // AgentRun.updated_at -- the run's heartbeat (backend/src/oc8/runtime/reconcile.py's
   // HEARTBEAT_SECONDS/ABANDONED_AFTER). Only refreshed by the poll in useRun below:
   // the "run.status" WS event fires on state transitions, not on a plain heartbeat
