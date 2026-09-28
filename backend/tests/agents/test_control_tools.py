@@ -125,9 +125,9 @@ def test_an_ordinary_team_lead_still_gets_ask_user() -> None:
     assert "ask_user" in names
 
 
-def test_an_active_skill_narrows_the_connection_tools() -> None:
-    """An active skill focuses the model on its own tools. OFFERING only --
-    _authorize still checks the frame on every call, so this cannot widen."""
+def test_an_active_skill_keeps_every_connection_tool_offered() -> None:
+    """The skill narrows what is inline, later, in select_completion_tools.
+    Dropping the other tools here would leave find_tools nothing to pin."""
     skill = _skill("skill_x", requires=["read_record"])
     names = [
         t.name
@@ -135,14 +135,13 @@ def test_an_active_skill_narrows_the_connection_tools() -> None:
             _agent(), assigned_skills=[skill], active_skills=[skill], mcp_tools=MCP_TOOLS
         )
     ]
-    assert "read_record" in names
-    assert "create_record" not in names
-    assert "send_email" not in names
+    for tool in MCP_TOOLS:
+        assert tool.name in names
 
 
 def test_a_skill_requiring_nothing_available_falls_back_to_all_tools() -> None:
-    """A skill whose required tools this connection does not have must not leave
-    the model with no connection tools at all -- it would be unable to act."""
+    """A skill that names a tool this run does not have still leaves every
+    connection tool offered. Hiding them would leave the model unable to act."""
     skill = _skill("skill_x", requires=["nonexistent_tool"])
     names = [
         t.name
@@ -196,7 +195,11 @@ def test_control_tool_names_matches_the_schemas() -> None:
         "kpi_overview",
         "fetch_url",
         "todo_write",
+        "find_tools",
+        "procedure_step_done",
         "write_output_file",
+        "run_shell",
+        "run_program",
         "read_run_file",
     }
 

@@ -153,6 +153,7 @@ async def note_focus(
     specific: bool = True,
     feed: bool = True,
     cache_hit: bool = False,
+    record_url: str | None = None,
 ) -> None:
     """Record what an agent is working on right now: in the feed, and on the task.
 
@@ -174,6 +175,7 @@ async def note_focus(
             agent_id=agent_id,
             status="info",
             message=focus,
+            detail=record_url,
             cache_hit=cache_hit,
         )
     if task_id is None:
@@ -192,4 +194,8 @@ async def note_focus(
     # so rather than showing a blank card.
     if specific or not task.meta_label:
         task.meta_label = focus
+    if record_url:
+        payload = dict(task.payload or {})
+        payload["record_url"] = record_url
+        task.payload = payload
     await db.flush()

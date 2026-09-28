@@ -102,7 +102,16 @@ async def test_lists_files_across_all_of_the_agents_runs_newest_first(
             content_type="text/plain",
             size_bytes=9,
         )
-        db.add_all([older_file, newer_file, other_file])
+        spill = m.FileAttachment(
+            tenant_id=tenant,
+            owner_type="agent_run",
+            owner_id=newer_run.id,
+            bucket_key="workspace-files-spill",
+            filename="step-2-search_records.txt",
+            content_type="text/plain",
+            size_bytes=8_001,
+        )
+        db.add_all([older_file, newer_file, other_file, spill])
         await db.flush()
         newer_run_id = newer_run.id
         newer_file_id = newer_file.id

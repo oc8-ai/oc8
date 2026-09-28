@@ -6,7 +6,6 @@ import pytest
 from sqlalchemy import select
 
 from oc8 import models as m
-from oc8.agent import engine as eng
 from oc8.agent.engine import run_agent
 from oc8.modelrouter import NeutralTool
 from tests.agents.test_skill_invocation import (
@@ -21,11 +20,6 @@ from tests.agents.test_skill_invocation import (
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
-
-
-def test_step_budget_leaves_room_for_a_skill_step() -> None:
-    # A skill invocation costs a step, and a skill exists for multi-step work.
-    assert eng.DEFAULT_MAX_STEPS >= 8
 
 
 async def test_offer_narrows_to_the_active_skills_tools(

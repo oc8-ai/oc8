@@ -895,6 +895,7 @@ export interface Task {
   agentId: string | null;
   column: TaskColumn;
   meta?: string;
+  recordUrl?: string | null;
   titleTranslations?: Record<string, string>;
   metaTranslations?: Record<string, string>;
 }

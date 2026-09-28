@@ -114,6 +114,7 @@ export interface Approval {
   // via `authorize_tool_call` (e.g. agent decision requests) -- `detail`
   // remains the only "why" for those.
   reasonContext?: Record<string, unknown> | null;
+  recordUrl?: string | null;
 }
 
 /** A question an agent parked mid-run. The other half of the workspace queue. */
@@ -350,6 +351,24 @@ export interface RunDTO {
   // every runtime, in-process or isolated. Same "never from GET, WS-only"
   // rule: absent until the first fragment lands.
   liveAnswer?: string;
+  // AgentRun.updated_at -- the run's heartbeat (backend/src/oc8/runtime/reconcile.py's
+  // HEARTBEAT_SECONDS/ABANDONED_AFTER). Only refreshed by the poll in useRun below:
+  // the "run.status" WS event fires on state transitions, not on a plain heartbeat
+  // tick, so a run sitting in "running" for minutes would otherwise show a stale
+  // value from whenever the page last fetched.
+  updatedAt: string;
+}
+
+export function isTerminalRunState(state: string): boolean {
+  return state === "done" || state === "failed" || state === "interrupted";
+}
+
+// GET /runs/{id} never carries liveAnswer (it arrives only on run.token_delta).
+// A poll that replaced the cache would wipe the text the model is still
+// streaming. Keep the fragments already on screen.
+export function mergePolledRun(previous: RunDTO | undefined, fresh: RunDTO): RunDTO {
+  if (!previous?.liveAnswer) return fresh;
+  return { ...fresh, liveAnswer: previous.liveAnswer };
 }
 
 const keys = {
@@ -1578,8 +1597,21 @@ export function useRunAgent() {
 export function useRun(runId: string | null) {
   return useQuery({
     queryKey: ["run", runId],
-    queryFn: () => api.get<RunDTO>(`/runs/${runId}`),
+    queryFn: async ({ client }) => {
+      const fresh = await api.get<RunDTO>(`/runs/${runId}`);
+      // Read after the fetch so fragments that arrived while it was in
+      // flight stay in the string.
+      const previous = client.getQueryData<RunDTO>(["run", runId]);
+      return mergePolledRun(previous, fresh);
+    },
     enabled: !!runId,
+    // Live runs only: keeps `updatedAt` fresh enough for the staleness
+    // indicator (see the field's comment above) without polling a run
+    // that's already finished.
+    refetchInterval: (query) => {
+      const state = (query.state.data as RunDTO | undefined)?.state;
+      return state && !isTerminalRunState(state) ? 20_000 : false;
+    },
   });
 }
 

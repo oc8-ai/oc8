@@ -13,6 +13,7 @@ Core-neutral: names no vendor, product or software specifics.
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -22,6 +23,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agent.control_tools import _acting_token_role, _resolve_agent_actor
+from oc8.agent.harness.caps import ModelCaps
+from oc8.agent.harness.prompts import (
+    TENANT_ASSISTANT_OPENER,
+    render_system_prompt,
+    resolve_timezone,
+    run_context_block,
+)
 from oc8.agent.provenance import RULE as PROVENANCE_RULE
 from oc8.authz.authority import authority_for_member
 from oc8.authz.permissions import (
@@ -33,47 +41,56 @@ from oc8.authz.permissions import (
     VIEW,
     perm,
 )
+from oc8.authz.scope import AgentActor
 from oc8.knowledge.retrieval import granted_kb_ids, retrieve_kb_context
 from oc8.memory.router import retrieve_context
 from oc8.modelrouter import NeutralMessage
 from oc8.modelrouter.types import ImagePart, TextPart
 from oc8.skills.runtime import LoadedSkill, catalog_block, load_assigned_skills
 
+_ORIGIN_LABELS: dict[str, str] = {
+    "chat": "chat",
+    "cron": "schedule",
+    "decision": "decision follow-up",
+    "webhook": "webhook trigger",
+    "event": "trigger",
+    "manual": "manual run",
+    "handoff": "handoff",
+}
 
-def system_prompt(agent: m.Agent) -> str:
-    pres = agent.presentation or {}
-    guardrails = pres.get("guardrails", [])
-    parts = [f"You are {agent.name}" + (f", {agent.role_title}." if agent.role_title else ".")]
-    if agent.mission:
-        parts.append(agent.mission)
-    if guardrails:
-        parts.append("Guardrails you must respect:\n" + "\n".join(f"- {g}" for g in guardrails))
-    parts.append(
-        "You have tools available. To use a tool you MUST invoke it through the "
-        "function-calling interface — never write the tool call as text or JSON in "
-        "your reply. Call one tool at a time and wait for its result. When the task "
-        "is fully done, reply with a short plain-text summary and call no further tools."
-    )
-    parts.append(
-        "Before you report completion, actively verify you covered the whole task, "
-        "not just the first sub-part that happened to have work in it: re-read your "
-        "own instructions and check whether anything else they describe still needs "
-        "action right now -- including records or items that were already in "
-        "progress before this run started, not only newly arrived ones. Only report "
-        "'nothing to do' once you have actually checked, not because a first search "
-        "came back empty. If you run out of steps before finishing, say so plainly "
-        "in your summary instead of presenting a partial result as complete."
-    )
-    if agent.is_tenant_assistant:
-        parts.append(
-            "At the start of a new conversation, before waiting for the human to "
-            "ask anything, proactively call list_pending_approvals and "
-            "department_status (whichever of these you have been offered) and "
-            "open with a short status summary -- what is waiting for a "
-            "decision, and how the departments you can see are doing. Skip this "
-            "if the conversation already has prior turns."
+
+async def _origin_label(db: AsyncSession, *, run: m.AgentRun | None) -> str:
+    """A2 "Origin" line. `run.source` is the ck_agent_run_source CHECK
+    constraint's enum (manual/cron/event/webhook/delegation/decision/
+    handoff/chat). "delegation" gets a best-effort parent-agent name;
+    everything else is a flat label. A run_id-less call (e.g. a fixture
+    that builds Agent/Department/McpConnection directly and calls
+    run_agent with no AgentRun row at all) defaults to "manual run" --
+    there is no run to introspect, and a direct invocation is, mechanically,
+    the same shape as a manual one."""
+    if run is None:
+        return "manual run"
+    if run.source == "delegation":
+        task = await db.get(m.Task, run.task_id) if run.task_id else None
+        parent_task = (
+            await db.get(m.Task, task.parent_task_id) if task and task.parent_task_id else None
         )
-    return "\n\n".join(parts)
+        parent_agent = (
+            await db.get(m.Agent, parent_task.assigned_agent_id)
+            if parent_task and parent_task.assigned_agent_id
+            else None
+        )
+        if parent_agent is not None:
+            return f"delegation from {parent_agent.name}"
+        return "delegation"
+    return _ORIGIN_LABELS.get(run.source, run.source)
+
+
+def system_prompt(agent: m.Agent, *, caps: ModelCaps, tenant_name: str) -> str:
+    prompt = render_system_prompt(agent, caps=caps, tenant_name=tenant_name)
+    if agent.is_tenant_assistant:
+        prompt = f"{prompt}\n\n{TENANT_ASSISTANT_OPENER}"
+    return prompt
 
 
 @dataclass
@@ -104,6 +121,11 @@ class RunPreamble:
     #: fetched on demand.
     has_instruction_files: bool = False
     copilot_permissions: frozenset[str] = frozenset()
+    #: The tenant's resolved timezone label (resolve_timezone's first return
+    #: value) -- read back by engine.py/internal_agent.py after this call so
+    #: C3's step stamp (format_step_stamp) uses the SAME resolved zone as A2's
+    #: "Now" line, rather than re-resolving it a second time.
+    tz: str = "UTC"
 
 
 async def roster_block(db: AsyncSession, *, agent: m.Agent) -> str | None:
@@ -183,6 +205,7 @@ async def _gated_copilot_permissions(
     tenant_id: uuid.UUID,
     task: m.Task | None,
     run_id: uuid.UUID | None,
+    actor: AgentActor | None,
 ) -> frozenset[str]:
     """Which of the 5 status tools' permissions this run's Assistant may
     offer, mirroring `require_departmental`'s admission formula
@@ -192,12 +215,15 @@ async def _gated_copilot_permissions(
     task behind it -- every other agent, and every non-chat origin
     (delegated/scheduled runs have no chat session), gets the empty set,
     which is exactly what `offered_tools` needs to withhold all 5 tools.
+
+    `actor` is `build_run_preamble`'s own already-resolved
+    `_resolve_agent_actor` call (for A2's "Acting for" line) passed straight
+    through -- both need the identical `(tenant_id, task, run_id)` lookup, so
+    resolving it twice per run would be a pointless duplicate query.
     """
     if not agent.is_tenant_assistant or task is None:
         return frozenset()
-    agent_actor = await _resolve_agent_actor(
-        db, tenant_id=tenant_id, task=task, run_id=run_id
-    )
+    agent_actor = actor
     if agent_actor is None:
         return frozenset()
     authority = await authority_for_member(
@@ -229,6 +255,8 @@ async def build_run_preamble(
     task_text: str,
     frame: dict[str, Any],
     model_locality: str,
+    caps: ModelCaps,
+    max_steps: int,
     task_images: list[ImagePart] | None = None,
     supports_vision: bool = False,
     task: m.Task | None = None,
@@ -239,8 +267,58 @@ async def build_run_preamble(
     Message order is part of the contract -- the task must be the final turn, so
     the model reads its instructions against context already established.
     """
+    org = await db.get(m.Organization, tenant_id)
+    tenant_name = org.name if org is not None else "the organization"
+
+    tz_label, tz = resolve_timezone(org.timezone if org is not None else "UTC")
+    now = dt.datetime.now(tz)
+
+    # _resolve_agent_actor requires a real Task (it dereferences task.id); a
+    # delegated/scheduled run passes task=None, in which case there is no
+    # chat-driven human behind this run at all, the same fail-closed shape as
+    # _gated_copilot_permissions' own guard just below.
+    actor = (
+        await _resolve_agent_actor(db, tenant_id=tenant_id, task=task, run_id=run_id)
+        if task is not None
+        else None
+    )
+    if actor is not None:
+        acting_for = actor.member.display_name or actor.member.subject
+    else:
+        acting_for = "scheduled run, no acting person"
+
+    run = await db.get(m.AgentRun, run_id) if run_id is not None else None
+    origin = await _origin_label(db, run=run)
+
+    department = await db.get(m.Department, agent.department_id)
+    department_name = department.name if department is not None else "unassigned"
+
+    connection_names = sorted(frame.get("tools", {}).keys())
+    connection_details: dict[str, str] = {}
+    if connection_names:
+        rows = (
+            (
+                await db.execute(
+                    select(m.McpConnection).where(
+                        m.McpConnection.tenant_id == tenant_id,
+                        m.McpConnection.department_id == agent.department_id,
+                        m.McpConnection.name.in_(connection_names),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in rows:
+            cfg = row.config if isinstance(row.config, dict) else {}
+            instruction = cfg.get("server_instructions")
+            if isinstance(instruction, str) and instruction:
+                connection_details[row.name] = instruction
+
     messages: list[NeutralMessage] = [
-        NeutralMessage(role="system", content=system_prompt(agent))
+        NeutralMessage(
+            role="system", content=system_prompt(agent, caps=caps, tenant_name=tenant_name)
+        )
     ]
     # Said once, before anything a stranger wrote can arrive. Every answer a
     # connection returns is fenced as <external>, and this is what makes that
@@ -308,6 +386,24 @@ async def build_run_preamble(
     if catalog:
         messages.append(NeutralMessage(role="system", content=catalog))
 
+    messages.append(
+        NeutralMessage(
+            role="user",
+            content=run_context_block(
+                now=now,
+                tz_label=tz_label,
+                acting_for=acting_for,
+                origin=origin,
+                department=department_name,
+                connection_names=connection_names,
+                max_steps=max_steps,
+                instruction_file_count=instruction_file_count,
+                task_attachment_count=len(task_images) if task_images else 0,
+                connection_details=connection_details or None,
+            ),
+        )
+    )
+
     if task_images and supports_vision:
         messages.append(
             NeutralMessage(role="user", content=[TextPart(text=task_text), *task_images])
@@ -322,7 +418,7 @@ async def build_run_preamble(
         messages.append(NeutralMessage(role="user", content=task_text + note))
 
     copilot_permissions = await _gated_copilot_permissions(
-        db, agent=agent, tenant_id=tenant_id, task=task, run_id=run_id
+        db, agent=agent, tenant_id=tenant_id, task=task, run_id=run_id, actor=actor
     )
     return RunPreamble(
         messages=messages,
@@ -335,4 +431,5 @@ async def build_run_preamble(
         has_knowledge=has_knowledge,
         has_instruction_files=has_instruction_files,
         copilot_permissions=copilot_permissions,
+        tz=tz_label,
     )

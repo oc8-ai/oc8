@@ -122,7 +122,19 @@ function ActivityPage() {
                 </button>
                 {isOpen && (
                   <div className="border-t border-border bg-background/30 px-14 py-3 text-xs text-muted-foreground">
-                    {it.detail ?? t("No further details for this entry.", "Keine weiteren Details zu diesem Eintrag.")}
+                    {it.detail?.startsWith("http://") || it.detail?.startsWith("https://") ? (
+                      <a
+                        href={it.detail}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-primary underline"
+                      >
+                        {t("Open record", "Datensatz öffnen")}
+                      </a>
+                    ) : (
+                      (it.detail ??
+                        t("No further details for this entry.", "Keine weiteren Details zu diesem Eintrag."))
+                    )}
                   </div>
                 )}
               </li>
