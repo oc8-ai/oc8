@@ -48,9 +48,16 @@ def _default_policy() -> ProvisionerPolicy:
         settings.codex_agent_image,
         settings.opencode_agent_image,
     }
+    # Images a runtime capa declares for itself. Looked up here, at call time,
+    # so a test can patch the helper without importing this module first.
+    from oc8.runtime.images import declared_runtime_images
+
+    capa_images = declared_runtime_images()
     return ProvisionerPolicy(
-        allowed_images={agent_image, nanoclaw_agent, nanoclaw_provisioner, hook_image} | cli_images,
-        networked_images={agent_image, nanoclaw_agent} | cli_images,
+        allowed_images={agent_image, nanoclaw_agent, nanoclaw_provisioner, hook_image}
+        | cli_images
+        | capa_images,
+        networked_images={agent_image, nanoclaw_agent} | cli_images | capa_images,
         agent_network=settings.agent_runtime_network,
         session_root=settings.runtime_session_root,
         platform_mounts={

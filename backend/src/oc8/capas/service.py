@@ -139,6 +139,97 @@ def _check_core_compat(spec: str) -> None:
         raise CoreCompatError(f"invalid core_compat {spec!r}: {exc}") from exc
 
 
+#: Hard ceiling on how many copies one template agent may become. A setup
+#: form can offer a smaller range; it cannot hire past this.
+MAX_TEMPLATE_REPEAT = 32
+
+
+def _repeat_count(raw: str, key: str) -> int:
+    text = raw.strip()
+    if not text:
+        return 1
+    try:
+        count = int(text)
+    except ValueError as exc:
+        raise PluginError(
+            f"setup field {key!r} must be a whole number, got {raw!r}"
+        ) from exc
+    if count < 1 or count > MAX_TEMPLATE_REPEAT:
+        raise PluginError(
+            f"setup field {key!r} must be between 1 and {MAX_TEMPLATE_REPEAT}, got {count}"
+        )
+    return count
+
+
+def _with_copy_index(value: object, index: int) -> object:
+    token = str(index)
+    if isinstance(value, str):
+        return value.replace("{{n}}", token)
+    if isinstance(value, dict):
+        return {key: _with_copy_index(item, index) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_with_copy_index(item, index) for item in value]
+    return value
+
+
+def _expand_agent_defs(
+    agent_defs: list[dict[str, object]], config: dict[str, str]
+) -> list[dict[str, object]]:
+    """One template row becomes `repeat_from_setup` copies.
+
+    A blank or missing setup value means one copy. The first copy keeps
+    `is_team_lead`. Later copies report to that first copy when the template
+    itself was the lead and named nobody else. `{{n}}` is the copy index.
+    """
+    expanded: list[dict[str, object]] = []
+    for agent in agent_defs:
+        key = str(agent.get("repeat_from_setup") or "").strip()
+        count = _repeat_count(str(config.get(key, "") if key else ""), key) if key else 1
+        first_name = ""
+        for index in range(1, count + 1):
+            copy = dict(_with_copy_index(agent, index))  # type: ignore[arg-type]
+            template_name = str(agent.get("name") or "")
+            if "{{n}}" in template_name:
+                copy["name"] = template_name.replace("{{n}}", str(index))
+            elif count > 1:
+                copy["name"] = f"{template_name} {index}"
+            else:
+                copy["name"] = template_name
+            if index == 1:
+                first_name = str(copy["name"])
+                copy["is_team_lead"] = bool(agent.get("is_team_lead", False))
+            else:
+                copy["is_team_lead"] = False
+                if agent.get("is_team_lead") and not agent.get("reports_to"):
+                    copy["reports_to"] = first_name
+            expanded.append(copy)
+    return expanded
+
+
+async def _runtime_ref_for_template(
+    db: AsyncSession, *, tenant_id: uuid.UUID, plugin_name: str
+) -> str:
+    """The installed, enabled runtime capa id a template agent named."""
+    plugin = (
+        await db.execute(
+            select(Capa).where(Capa.tenant_id == tenant_id, Capa.name == plugin_name)
+        )
+    ).scalar_one_or_none()
+    if plugin is None or plugin.type != "runtime_adapter":
+        raise PluginError(f"runtime {plugin_name!r} is not an installed runtime")
+    installation = (
+        await db.execute(
+            select(CapaInstallation).where(
+                CapaInstallation.tenant_id == tenant_id,
+                CapaInstallation.capa_id == plugin.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if installation is None or installation.status != "enabled":
+        raise PluginError(f"runtime {plugin_name!r} is not enabled")
+    return str(plugin.id)
+
+
 def _substitute_template_values(text: str, config: dict[str, str]) -> str:
     """Replace {{key}} tokens in `text` with config[key]. A token with no
     matching key is left as-is -- hiring with no setup run yet (every
@@ -418,7 +509,7 @@ async def instantiate_department(
         raise PluginError("only department_template plugins can be instantiated as departments")
     config = await _load_installation_config(db, capa_id=version.capa_id)
     spec = mf["department_template"]
-    agent_defs = list(spec.get("agents", []))
+    agent_defs = _expand_agent_defs(list(spec.get("agents", [])), config)
 
     names = [a["name"] for a in agent_defs]
     if len(names) != len(set(names)):
@@ -473,6 +564,11 @@ async def instantiate_department(
             trigger=a.get("trigger"),
             config=config,
         )
+        runtime_name = str(a.get("runtime") or "").strip()
+        if runtime_name:
+            agent.runtime_ref = await _runtime_ref_for_template(
+                db, tenant_id=tenant_id, plugin_name=runtime_name
+            )
         if lead_id is None and agent.is_team_lead:
             lead_id = agent.id
 

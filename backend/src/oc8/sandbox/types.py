@@ -25,6 +25,24 @@ class BindMount:
 
 
 @dataclass(frozen=True)
+class RegistryAuth:
+    """Login used only to pull a missing image.
+
+    It is not part of the container environment. ``__repr__`` hides the
+    password so a logged spec cannot print it.
+    """
+
+    username: str
+    password: str
+    registry: str = ""
+
+    def __repr__(self) -> str:
+        return (
+            f"RegistryAuth(username={self.username!r}, registry={self.registry!r}, password='***')"
+        )
+
+
+@dataclass(frozen=True)
 class SandboxSpec:
     """Configuration for a provisioned sandbox container.
 
@@ -76,6 +94,9 @@ class SandboxSpec:
     Bind mounts carry HOST ownership, so a container that must read or write a
     directory the control plane created has to run as the uid that created it.
     Upstream harnesses pass the host's uid for exactly this reason."""
+    registry_auth: RegistryAuth | None = None
+    """Login for pulling `image` when it is not already local. Never copied
+    into ``env``. None pulls anonymously."""
 
 
 @dataclass(frozen=True)

@@ -196,6 +196,8 @@ search_label = "Durchsucht"
 "helpdesk.stage" = "Ticket-Stufe"
 "helpdesk.team" = "Support-Team"
 "mail.message" = "Gesprächsverlauf"
+"project.task" = "Aufgabe"
+"project.project" = "Projekt"
 
 [connections.config.focus_spec.verbs]
 create_record = "Erstellt"

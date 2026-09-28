@@ -104,6 +104,126 @@ async def test_duplicate_name_and_bad_reports_to_rejected(
             )
 
 
+async def test_repeat_from_setup_hires_a_numbered_team_on_one_runtime(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as s:
+        runtime = m.Capa(tenant_id=tenant, name="example_runtime", type="runtime_adapter")
+        department_capa = m.Capa(
+            tenant_id=tenant, name="example_department", type="department_template"
+        )
+        s.add(runtime)
+        s.add(department_capa)
+        await s.flush()
+        s.add(m.CapaInstallation(tenant_id=tenant, capa_id=runtime.id, status="enabled"))
+        s.add(
+            m.CapaInstallation(
+                tenant_id=tenant,
+                capa_id=department_capa.id,
+                status="enabled",
+                config={"team_size": "3", "project": "Widgets"},
+            )
+        )
+        await s.flush()
+        version = _version(
+            agents=[
+                {
+                    "name": "Senior {{n}}",
+                    "is_team_lead": True,
+                    "mission": "Work {{project}} as number {{n}}",
+                    "repeat_from_setup": "team_size",
+                    "runtime": "example_runtime",
+                    "trigger": {
+                        "kind": "cron",
+                        "cron_expression": "*/5 * * * *",
+                        "task_text": "Poll {{project}}",
+                    },
+                }
+            ]
+        )
+        version.tenant_id = tenant
+        version.capa_id = department_capa.id
+        dept = await instantiate_department(s, tenant_id=tenant, version=version, name="Desk")
+        agents = (
+            (await s.execute(select(m.Agent).where(m.Agent.department_id == dept.id)))
+            .scalars()
+            .all()
+        )
+        by_name = {agent.name: agent for agent in agents}
+        assert set(by_name) == {"Senior 1", "Senior 2", "Senior 3"}
+        assert by_name["Senior 1"].is_team_lead
+        assert dept.team_lead_agent_id == by_name["Senior 1"].id
+        assert by_name["Senior 2"].definition["reports_to"] == "Senior 1"
+        assert by_name["Senior 3"].mission == "Work Widgets as number 3"
+        assert all(agent.runtime_ref == str(runtime.id) for agent in agents)
+        triggers = (await s.execute(select(m.Trigger))).scalars().all()
+        assert len(triggers) == 3
+        assert {trigger.task_text for trigger in triggers} == {"Poll Widgets"}
+
+
+async def test_blank_repeat_stays_one_agent_and_an_unnamed_runtime_stays_unset(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as s:
+        version = _version(
+            agents=[{"name": "Solo", "repeat_from_setup": "team_size", "mission": "Go"}]
+        )
+        dept = await instantiate_department(s, tenant_id=tenant, version=version, name="Desk")
+        agents = (
+            (await s.execute(select(m.Agent).where(m.Agent.department_id == dept.id)))
+            .scalars()
+            .all()
+        )
+        assert [agent.name for agent in agents] == ["Solo"]
+        assert agents[0].runtime_ref is None
+
+
+async def test_repeat_count_and_missing_runtime_are_refused(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as s:
+        capa = m.Capa(tenant_id=tenant, name="counted", type="department_template")
+        s.add(capa)
+        await s.flush()
+        s.add(
+            m.CapaInstallation(
+                tenant_id=tenant, capa_id=capa.id, status="enabled", config={"team_size": "40"}
+            )
+        )
+        await s.flush()
+        version = _version(agents=[{"name": "A", "repeat_from_setup": "team_size"}])
+        version.capa_id = capa.id
+        with pytest.raises(PluginError, match="between 1 and 32"):
+            await instantiate_department(s, tenant_id=tenant, version=version, name="X")
+        installation = (
+            await s.execute(
+                select(m.CapaInstallation).where(m.CapaInstallation.capa_id == capa.id)
+            )
+        ).scalar_one()
+        installation.config = {"team_size": "several"}
+        version.manifest = {
+            **version.manifest,
+            "department_template": {
+                "frame": {},
+                "agents": [{"name": "A", "repeat_from_setup": "team_size"}],
+            },
+        }
+        with pytest.raises(PluginError, match="whole number"):
+            await instantiate_department(s, tenant_id=tenant, version=version, name="X")
+        version.manifest = {
+            **version.manifest,
+            "department_template": {
+                "frame": {},
+                "agents": [{"name": "A", "runtime": "missing_runtime"}],
+            },
+        }
+        with pytest.raises(PluginError, match="not an installed runtime"):
+            await instantiate_department(s, tenant_id=tenant, version=version, name="X")
+
+
 async def test_instantiate_creates_trigger_when_agent_has_one(
     app_session: AppSessionFactory,
 ) -> None:
