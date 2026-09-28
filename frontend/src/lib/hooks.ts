@@ -259,12 +259,20 @@ export interface ModelDTO {
   credentialId: string | null;
   healthError: string | null;
   healthCheckedAt: string | null;
+  /** Auto-router (`provider="auto"`): tier → concrete ModelConfig id. */
+  autoTiers?: Record<string, string> | null;
+  autoShadowOnly?: boolean;
+  autoCascadeVerify?: boolean;
+  autoPreferenceRouter?: boolean;
+  autoPreferenceExamples?: Array<Record<string, unknown>> | null;
 }
 
 export interface ModelProviderDTO {
   canonical: string;
   locality: string;
   available: boolean;
+  /** Optional display label (e.g. Auto's "Auto (complexity router)"). */
+  label?: string;
 }
 
 export interface OrganizationSettingsDTO {
@@ -295,6 +303,11 @@ export interface ModelWriteBody {
   usedByCopilot?: boolean;
   supportsVision?: boolean;
   credentialId?: string | null;
+  autoTiers?: Record<string, string> | null;
+  autoShadowOnly?: boolean;
+  autoCascadeVerify?: boolean;
+  autoPreferenceRouter?: boolean;
+  autoPreferenceExamples?: Array<Record<string, unknown>> | null;
 }
 
 export interface RunComponentDTO {

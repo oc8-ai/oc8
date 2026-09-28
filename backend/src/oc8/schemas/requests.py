@@ -141,6 +141,20 @@ class ModelConfigWrite(CamelModel):
     #: leaves the tenant-wide "first credential of this provider's type"
     #: convention as the fallback (resolve_model_key/resolve_model_base_url).
     credential_id: str | None = None
+    #: Auto-router only (`provider="auto"`): map tier name → concrete
+    #: ModelConfig id. Keys: fast | balanced | strong.
+    auto_tiers: dict[str, str] | None = None
+    #: Auto-router: log the complexity choice but always enforce balanced
+    #: (or latched) until operators trust the policy.
+    auto_shadow_only: bool | None = None
+    #: Auto-router phase-2: after a cheap final answer, escalate once if the
+    #: text looks uncertain / too short.
+    auto_cascade_verify: bool | None = None
+    #: Auto-router phase-3: blend heuristic with preference_examples overlap.
+    auto_preference_router: bool | None = None
+    #: Labeled snippets for the preference router:
+    #: ``[{"text": "...", "needs_strong": true}, ...]``.
+    auto_preference_examples: list[dict[str, Any]] | None = None
 
 
 class ModelDiscoverRequest(CamelModel):

@@ -42,6 +42,7 @@ async def test_list_providers_returns_every_canonical() -> None:
                 # it is authorised by a per-connection login, not an env key.
                 "openai_chatgpt": "cloud",
                 "ollama": "local",
+                "auto": "cloud",
             }
             assert all("available" in p for p in r.json())
             # ollama is local -> always available regardless of env keys
@@ -482,6 +483,81 @@ async def test_create_model_rejects_unknown_provider_and_bad_locality() -> None:
                 headers=headers,
             )
             assert r.status_code == 422, r.text
+
+
+async def test_create_auto_model_with_tiers(app_session: AppSessionFactory) -> None:
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    async with app_session(tenant) as db:
+        fast = m.ModelConfig(
+            tenant_id=tenant,
+            provider="ollama",
+            model="tiny",
+            locality="local",
+            display_name="Tiny",
+        )
+        strong = m.ModelConfig(
+            tenant_id=tenant,
+            provider="anthropic",
+            model="opus",
+            locality="cloud",
+            display_name="Opus",
+        )
+        db.add_all([fast, strong])
+        await db.flush()
+        fast_id, strong_id = str(fast.id), str(strong.id)
+
+    app = create_app()
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as client:
+            headers = {"Authorization": f"Bearer {_token(tenant)}"}
+            r = await client.post(
+                "/api/v1/models",
+                json={
+                    "provider": "auto",
+                    "model": "router",
+                    "locality": "cloud",
+                    "displayName": "Auto Router",
+                    "autoTiers": {"fast": fast_id, "strong": strong_id},
+                    "autoShadowOnly": True,
+                    "autoCascadeVerify": True,
+                    "autoPreferenceRouter": True,
+                    "autoPreferenceExamples": [
+                        {"text": "security audit", "needs_strong": True},
+                    ],
+                },
+                headers=headers,
+            )
+            assert r.status_code == 201, r.text
+            body = r.json()
+            assert body["provider"] == "auto"
+            assert body["autoTiers"] == {"fast": fast_id, "strong": strong_id}
+            assert body["autoShadowOnly"] is True
+            assert body["autoCascadeVerify"] is True
+            assert body["autoPreferenceRouter"] is True
+            assert body["autoPreferenceExamples"] == [
+                {"text": "security audit", "needs_strong": True},
+            ]
+
+            # Nested auto target rejected
+            nested = await client.post(
+                "/api/v1/models",
+                json={
+                    "provider": "auto",
+                    "locality": "cloud",
+                    "autoTiers": {"fast": body["id"]},
+                },
+                headers=headers,
+            )
+            assert nested.status_code == 422, nested.text
+
+            # Missing tiers rejected
+            missing = await client.post(
+                "/api/v1/models",
+                json={"provider": "auto", "locality": "cloud"},
+                headers=headers,
+            )
+            assert missing.status_code == 422, missing.text
 
 
 async def test_patch_missing_model_returns_404() -> None:

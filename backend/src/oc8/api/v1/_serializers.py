@@ -359,11 +359,18 @@ def _dict_or_none(value: Any) -> dict[str, Any] | None:
 def model_to_dto(mc: m.ModelConfig, assigned_to: list[str]) -> ModelDTO:
     health: dict[str, Any] = mc.health or {}
     cost: dict[str, Any] = mc.cost_meta or {}
+    params = mc.params or {}
+    raw_tiers = params.get("tiers")
+    auto_tiers: dict[str, str] | None = None
+    if isinstance(raw_tiers, dict) and raw_tiers:
+        auto_tiers = {str(k): str(v) for k, v in raw_tiers.items()}
+    examples = params.get("preference_examples")
     return ModelDTO(
         id=str(mc.id),
         # Normalize to the registry's canonical provider so the value matches the
         # provider dropdown options (POST already stores canonical; seeded rows may
         # carry a display alias like "Ollama"/"GPT" that must not mis-select the form).
+        # `auto` is a virtual router provider, not in the adapter registry.
         provider=canonical_provider(mc.provider) or mc.provider,
         name=mc.display_name or mc.model,
         status=health.get("status", "healthy"),
@@ -374,17 +381,22 @@ def model_to_dto(mc: m.ModelConfig, assigned_to: list[str]) -> ModelDTO:
         model=mc.model,
         locality=mc.locality,
         display_name=mc.display_name,
-        context_window=_int_or_none((mc.params or {}).get("context_window")),
-        max_tokens=_int_or_none((mc.params or {}).get("max_tokens")),
-        supports_vision=bool((mc.params or {}).get("supports_vision", False)),
-        effort=_str_or_none((mc.params or {}).get("effort")),
-        extra=_dict_or_none((mc.params or {}).get("extra")),
+        context_window=_int_or_none(params.get("context_window")),
+        max_tokens=_int_or_none(params.get("max_tokens")),
+        supports_vision=bool(params.get("supports_vision", False)),
+        effort=_str_or_none(params.get("effort")),
+        extra=_dict_or_none(params.get("extra")),
         # `mapped_column(default=False)` applies at INSERT, not at construction; a
         # row built and serialized before its first flush still reads None here.
         used_by_copilot=bool(mc.used_by_copilot),
         credential_id=str(mc.credential_id) if mc.credential_id else None,
         health_error=health.get("error"),
         health_checked_at=health.get("checkedAt"),
+        auto_tiers=auto_tiers,
+        auto_shadow_only=bool(params.get("shadow_only")),
+        auto_cascade_verify=bool(params.get("cascade_verify")),
+        auto_preference_router=bool(params.get("preference_router")),
+        auto_preference_examples=examples if isinstance(examples, list) else None,
     )
 
 

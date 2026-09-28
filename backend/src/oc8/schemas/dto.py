@@ -372,6 +372,12 @@ class ModelDTO(CamelModel):
     #: the last POST /models/{id}/test check (see catalog.py).
     health_error: str | None = None
     health_checked_at: str | None = None
+    #: Auto-router (`provider="auto"`): tier → concrete ModelConfig id.
+    auto_tiers: dict[str, str] | None = None
+    auto_shadow_only: bool = False
+    auto_cascade_verify: bool = False
+    auto_preference_router: bool = False
+    auto_preference_examples: list[dict[str, Any]] | None = None
 
 
 class ModelDiscoverResponse(CamelModel):
@@ -671,6 +677,9 @@ class AgentDetailDTO(AgentDTO):
     #: ["max_steps"], a top-level key -- see engine._max_steps). None means
     #: "inherit settings.agent_max_steps", not a framework default value.
     max_steps: int | None = None
+    #: Last successful Auto-router tier for this agent
+    #: (``definition["auto_router_affinity"]["tier"]``): fast | balanced | strong.
+    auto_router_affinity_tier: str | None = None
 
 
 class AgentInstructionRevisionDTO(CamelModel):

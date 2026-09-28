@@ -672,6 +672,16 @@ export const models: Model[] = [
     assignedTo: ["hera"],
     note: "On-premise, no data leaves the VPC.",
   },
+  {
+    id: "m-auto",
+    provider: "auto",
+    name: "Auto",
+    status: "healthy",
+    costTier: "$$",
+    latency: "—",
+    assignedTo: [],
+    note: "Complexity router — picks among tier models.",
+  },
 ];
 
 export function agentById(id: string) {
