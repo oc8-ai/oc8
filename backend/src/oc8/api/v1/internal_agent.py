@@ -115,7 +115,12 @@ from oc8.modelrouter.keys import resolve_model_base_url
 from oc8.modelrouter.sampling import bumped_for_length_retry, resolve_params
 from oc8.modelrouter.trim import overflow_tokens
 from oc8.modelrouter.types import ImagePart, ModelParams, TextPart, with_prompt_cache_key
-from oc8.realtime.emit import note_focus, publish_run_token_delta, publish_run_tool_call
+from oc8.realtime.emit import (
+    note_focus,
+    publish_run_step_timing,
+    publish_run_token_delta,
+    publish_run_tool_call,
+)
 from oc8.runtime.approval_resume import pre_decided_map
 from oc8.runtime.registry import BUILTIN_ISOLATED_RUNTIME_REF
 from oc8.runtime.run_context import append_tool_call
@@ -585,6 +590,21 @@ class StepResult(BaseModel):
     sdk_py: str = ""
 
 
+async def _finish_step_timing(run: m.AgentRun, rec: dict[str, Any]) -> None:
+    """Close a step's timing and tell an already-open tab about it.
+
+    `finish_step` (oc8.agent.harness.step_timing, unchanged here) already
+    computes the final five-key entry; this only adds the live-publish side
+    that capture never had. No DB write of its own: `ctx["stepTimings"]`
+    (holding `rec`) rides along on whichever context write the caller makes
+    right after this, exactly the arrangement `publish_run_tool_call`
+    documents at its own call site -- this only spares an already-open tab
+    the wait for that reload.
+    """
+    finish_step(rec)
+    await publish_run_step_timing(run.tenant_id, run_id=run.id, timing=rec)
+
+
 @router.post(
     "/internal/agent/{run_id}/step",
     response_model=StepResult,
@@ -615,7 +635,7 @@ async def step(
         # common next-/step finish never runs on this early exit.
         step_timings = ctx.get("stepTimings") or []
         if step_timings and "_t0" in step_timings[-1]:
-            finish_step(step_timings[-1])
+            await _finish_step_timing(run, step_timings[-1])
             run.context = ctx
             await db.commit()
         return StepResult(done=True, text="Reached step limit.", status_override="done")
@@ -950,7 +970,7 @@ async def step(
         # executor.py.
         step_timings = ctx.setdefault("stepTimings", [])
         if step_timings and "_t0" in step_timings[-1]:
-            finish_step(step_timings[-1])
+            await _finish_step_timing(run, step_timings[-1])
         step_rec = start_step(harness.state.step_no)
         step_timings.append(step_rec)
         step_probe = StreamTiming()
@@ -1099,14 +1119,14 @@ async def step(
             )
             if not verdict.ok:
                 note_tools(step_rec, 0)
-                finish_step(step_rec)
+                await _finish_step_timing(run, step_rec)
                 transcript.append(
                     _from_message(NeutralMessage(role="user", content=verdict.reminder or ""))
                 )
                 continue
         if not result.tool_calls:
             note_tools(step_rec, 0)
-            finish_step(step_rec)
+            await _finish_step_timing(run, step_rec)
         break
 
     harness.store(ctx)
@@ -1633,7 +1653,7 @@ async def _dispatch_one_tool(
     if decision.effect is Effect.REQUIRE_APPROVAL:
         step_timings = ctx.setdefault("stepTimings", [])
         if step_timings and "_t0" in step_timings[-1]:
-            finish_step(step_timings[-1])
+            await _finish_step_timing(run, step_timings[-1])
         link = await _record_url()
         ar = await raise_approval(
             db,
@@ -2115,7 +2135,7 @@ async def _dispatch_one_tool(
         open_rec = step_timings[-1]
         note_tools(open_rec, int(open_rec.get("tool_wait_ms", 0)) + duration_ms)
         if suspend is not None:
-            finish_step(open_rec)
+            await _finish_step_timing(run, open_rec)
 
     # This tool call belongs to the completion /step just cached (see its own
     # ctx["pending_cache_key"] comment) -- a real failure here means that

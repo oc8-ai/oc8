@@ -144,6 +144,7 @@ from oc8.observability import get_tracer, record_budget_exceeded, record_tool_ca
 from oc8.realtime.emit import (
     note_focus,
     publish_agent_status,
+    publish_run_step_timing,
     publish_run_token_delta,
     publish_run_tool_call,
     record_activity,
@@ -729,6 +730,22 @@ async def run_agent(
                 return
             await append_tool_call(db, run_row, entry)
             await publish_run_tool_call(tenant_id, run_id=run_id, call=entry)
+
+        async def _finish_step_timing(rec: dict[str, Any], tool_wait_ms: int) -> None:
+            # note_tools/finish_step are dev's own capture
+            # (oc8.agent.harness.step_timing, unchanged here) -- this only
+            # adds the live-publish side that capture never had. No DB write
+            # of its own, unlike _live_tool_call above: stepTimings has no
+            # incremental append path, and this run's own step_timings list
+            # already lands durably through the executor's terminal
+            # merge_context({"stepTimings": result.step_timings, ...}); this
+            # only spares an already-open tab the wait for that reload. Same
+            # no-run no-op as _live_tool_call.
+            note_tools(rec, tool_wait_ms)
+            finish_step(rec)
+            if run_id is None:
+                return
+            await publish_run_step_timing(tenant_id, run_id=run_id, timing=rec)
 
         async def _live_token_delta(text: str) -> None:
             # No DB write here, unlike _live_tool_call above -- the full text
@@ -1351,8 +1368,7 @@ async def run_agent(
                     result.tool_calls = _salvage_tool_calls(result.text, _offered())
 
                 if not result.tool_calls:
-                    note_tools(step_rec, 0)
-                    finish_step(step_rec)
+                    await _finish_step_timing(step_rec, 0)
                     if result.stop_reason == "length" and not result.text.strip():
                         # Truncated even after the retry above -- the model
                         # never produced an answer or a tool call, so this must
@@ -1902,8 +1918,7 @@ async def run_agent(
                                 force=True,
                                 contains_restricted=contains_restricted,
                             )
-                            note_tools(step_rec, step_tool_wait_ms)
-                            finish_step(step_rec)
+                            await _finish_step_timing(step_rec, step_tool_wait_ms)
                             return RunResult(
                                 task.id,
                                 agent.id,
@@ -2111,8 +2126,7 @@ async def run_agent(
                                     .total_seconds()
                                     * 1000
                                 )
-                                note_tools(step_rec, step_tool_wait_ms)
-                                finish_step(step_rec)
+                                await _finish_step_timing(step_rec, step_tool_wait_ms)
                                 return RunResult(
                                     task.id,
                                     agent.id,
@@ -2243,8 +2257,7 @@ async def run_agent(
                                                 }
                                                 parked.context = parked_ctx
                                         task.state = "waiting_for_input"
-                                        note_tools(step_rec, step_tool_wait_ms)
-                                        finish_step(step_rec)
+                                        await _finish_step_timing(step_rec, step_tool_wait_ms)
                                         return RunResult(
                                             task.id,
                                             agent.id,
@@ -2438,8 +2451,7 @@ async def run_agent(
                 if cached_result is None and step_had_tool_error:
                     await cache_flow.invalidate(key)
 
-                note_tools(step_rec, step_tool_wait_ms)
-                finish_step(step_rec)
+                await _finish_step_timing(step_rec, step_tool_wait_ms)
 
             task.state = "done"
             await maybe_checkpoint(
