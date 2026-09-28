@@ -31,7 +31,7 @@ from sqlalchemy import func, select
 
 from oc8 import models as m
 from oc8.agents.repo import visible_agent, visible_agents
-from oc8.agents.versioning import diff_payloads, snapshot_agent, version_payload
+from oc8.agents.versioning import diff_payloads, draft_status, snapshot_agent, version_payload
 from oc8.api.deps import DbSession, require_departmental
 from oc8.api.v1._serializers import agent_to_dto, agent_version_to_dto, agent_version_to_summary_dto
 from oc8.api.v1.files import _attachment_dto
@@ -42,6 +42,7 @@ from oc8.authz.scope import HumanActor
 from oc8.runtime.states import TERMINAL
 from oc8.schemas.dto import (
     AgentDetailDTO,
+    AgentDraftStatusDTO,
     AgentDTO,
     AgentInstructionHistoryDTO,
     AgentInstructionRevisionDTO,
@@ -388,6 +389,37 @@ async def get_agent_version(
     agent = await _visible_agent_or_404(request, db, actor, agent_id)
     row = await _version_or_404(db, agent, version_no)
     return agent_version_to_dto(row, current_version_id=agent.current_version_id)
+
+
+@router.get(
+    "/agents/{agent_id}/draft-status",
+    response_model=AgentDraftStatusDTO,
+)
+async def get_agent_draft_status(
+    agent_id: uuid.UUID,
+    request: Request,
+    db: DbSession,
+    actor: Annotated[HumanActor, Depends(require_departmental(perm(AGENT_VERSION, VIEW)))],
+) -> AgentDraftStatusDTO:
+    """The working copy versus the current version (spec §4).
+
+    Its own endpoint rather than three fields on `AgentDetailDTO`, because it
+    changes on a different schedule: every save to any of thirteen write
+    endpoints moves it, and a publish clears it, while the rest of the detail
+    payload is stable. The publish bar can invalidate this one key without
+    refetching the agent's whole effective-tools computation.
+
+    Gated on `agent_version:view` rather than `agent:view`: "how far has this
+    agent drifted from what is running" is a statement about the version
+    history, and spec §6 makes reading that its own grant.
+    """
+    agent = await _visible_agent_or_404(request, db, actor, agent_id)
+    status_ = await draft_status(db, agent)
+    return AgentDraftStatusDTO(
+        dirty=status_.dirty,
+        changed_fields=list(status_.changed_fields),
+        current_version_no=status_.current_version_no,
+    )
 
 
 async def _agent_detail_dto(db: DbSession, agent: m.Agent) -> AgentDetailDTO:
