@@ -23,17 +23,23 @@ install and an incremental deploy.
 Backfill: every non-deleted agent gets v1 from its current row state, so
 there is never an agent without a current version. `agent_run` is NOT
 backfilled -- inventing a version for a historical run would be a claim
-about the past we cannot support. The backfill leaves `skill_assignments`/
-`knowledge_grants` empty inside the payload: those bindings are already
-version-pinned in their own tables, and a mechanical backfill must not claim
-a snapshot it did not actually take; `oc8.agents.versioning.snapshot_agent`
-populates both for every publish from here on.
+about the past we cannot support. The backfilled payload is the REAL
+payload, not a placeholder: `_agent_payload` below duplicates
+`oc8.agents.versioning.snapshot_agent`'s exact column set and
+skill-assignment/knowledge-grant filters in raw SQL (a migration must not
+import app code, so this is a deliberate duplication -- keep the two in
+sync if `snapshot_agent`'s shape ever changes; `tests/migrations/
+test_migration_0098_backfill.py` pins the shape from this side). A
+placeholder hash would make every migrated agent look permanently "dirty"
+to a later draft-status diff, and a rollback to a fake v1 would silently
+disable real skill assignments and delete real knowledge grants -- neither
+is acceptable for a row nothing has actually changed on yet.
 
-`payload_hash` is computed with the built-in `sha256(bytea)` (core Postgres
-since v11), not pgcrypto's `digest()` -- pgcrypto is not enabled by any
-migration in this project and there is no reason to add it just for a
-migration-time placeholder hash that real publishes will immediately
-supersede.
+`payload_hash` is computed in Python with the same canonical
+`json.dumps(..., sort_keys=True, separators=(",", ":"), default=str)` +
+`hashlib.sha256` that `oc8.agents.versioning.payload_hash` uses, then bound
+as a parameter -- not a SQL-side digest of anything, and not pgcrypto's
+`digest()` (pgcrypto is not enabled by any migration in this project).
 
 Revision ID: 0098
 Revises: 0097
@@ -41,8 +47,13 @@ Revises: 0097
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import hashlib
+import json
+import uuid
+from collections.abc import Mapping, Sequence
+from typing import Any
 
+import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0098"
@@ -83,31 +94,106 @@ def upgrade() -> None:
     op.execute("ALTER TABLE agent ADD COLUMN IF NOT EXISTS current_version_id uuid")
     op.execute("ALTER TABLE agent_run ADD COLUMN IF NOT EXISTS agent_version_id uuid")
 
-    op.execute("""
-        INSERT INTO agent_version (id, tenant_id, agent_id, version_no, payload,
-                                   payload_hash, published_at, created_at, updated_at)
-        SELECT gen_random_uuid(), a.tenant_id, a.id, 1,
-               jsonb_build_object(
-                 'mission', a.mission, 'role_title', a.role_title,
-                 'definition', a.definition, 'model_config_id', a.model_config_id,
-                 'narrowing', a.narrowing,
-                 'narrowing_overridden_keys', a.narrowing_overridden_keys,
-                 'role_id', a.role_id, 'runtime_ref', a.runtime_ref,
-                 'is_team_lead', a.is_team_lead,
-                 'skill_assignments', '[]'::jsonb, 'knowledge_grants', '[]'::jsonb
-               ),
-               sha256('backfill-v1'::bytea), now(), now(), now()
-        FROM agent a
-        WHERE a.deleted_at IS NULL AND a.current_version_id IS NULL
-          AND NOT EXISTS (
-              SELECT 1 FROM agent_version v WHERE v.agent_id = a.id AND v.version_no = 1
-          )
-    """)
-    op.execute("""
-        UPDATE agent a SET current_version_id = v.id
-        FROM agent_version v
-        WHERE v.agent_id = a.id AND v.version_no = 1 AND a.current_version_id IS NULL
-    """)
+    backfill_v1(op.get_bind())
+
+
+def backfill_v1(conn: sa.engine.Connection) -> None:
+    """Give every non-deleted, unversioned agent a real v1, computed the same
+    way `oc8.agents.versioning.snapshot_agent` would compute it for that
+    agent right now. Factored out of `upgrade()` so a test can call it
+    directly against a live connection without running the whole migration
+    chain."""
+    agents = conn.execute(
+        sa.text("""
+            SELECT id, tenant_id, mission, role_title, definition, model_config_id,
+                   narrowing, narrowing_overridden_keys, role_id, runtime_ref, is_team_lead
+            FROM agent
+            WHERE deleted_at IS NULL AND current_version_id IS NULL
+        """)
+    ).all()
+
+    for agent in agents:
+        already = conn.execute(
+            sa.text("SELECT 1 FROM agent_version WHERE agent_id = :agent_id AND version_no = 1"),
+            {"agent_id": agent.id},
+        ).first()
+        if already is not None:
+            continue
+
+        payload = _agent_payload(conn, agent)
+        version_id = uuid.uuid4()
+        conn.execute(
+            sa.text("""
+                INSERT INTO agent_version
+                    (id, tenant_id, agent_id, version_no, payload, payload_hash,
+                     published_at, created_at, updated_at)
+                VALUES
+                    (:id, :tenant_id, :agent_id, 1, CAST(:payload AS jsonb), :payload_hash,
+                     now(), now(), now())
+            """),
+            {
+                "id": version_id,
+                "tenant_id": agent.tenant_id,
+                "agent_id": agent.id,
+                "payload": json.dumps(payload, default=str),
+                "payload_hash": _payload_hash(payload),
+            },
+        )
+        conn.execute(
+            sa.text("UPDATE agent SET current_version_id = :version_id WHERE id = :agent_id"),
+            {"version_id": version_id, "agent_id": agent.id},
+        )
+
+
+def _agent_payload(conn: sa.engine.Connection, agent: sa.engine.Row[Any]) -> dict[str, Any]:
+    """Mirrors `oc8.agents.versioning.snapshot_agent`'s exact column set and
+    the same `skill_assignment` / `knowledge_grant` filters (agent-scoped,
+    not soft-deleted, enabled-only for skills; `grantee_type='agent'` for
+    knowledge) -- duplicated here in raw SQL rather than imported, since a
+    migration must not depend on app code."""
+    payload: dict[str, Any] = {
+        "mission": agent.mission,
+        "role_title": agent.role_title,
+        "definition": agent.definition,
+        "model_config_id": str(agent.model_config_id)
+        if agent.model_config_id is not None
+        else None,
+        "narrowing": agent.narrowing,
+        "narrowing_overridden_keys": agent.narrowing_overridden_keys,
+        "role_id": str(agent.role_id) if agent.role_id is not None else None,
+        "runtime_ref": agent.runtime_ref,
+        "is_team_lead": agent.is_team_lead,
+    }
+
+    assignments = conn.execute(
+        sa.text("""
+            SELECT skill_version_id FROM skill_assignment
+            WHERE agent_id = :agent_id AND deleted_at IS NULL AND enabled IS TRUE
+        """),
+        {"agent_id": agent.id},
+    ).all()
+    payload["skill_assignments"] = sorted(
+        ({"skill_version_id": str(row.skill_version_id)} for row in assignments),
+        key=lambda d: d["skill_version_id"],
+    )
+
+    grants = conn.execute(
+        sa.text("""
+            SELECT kb_id FROM knowledge_grant
+            WHERE grantee_type = 'agent' AND grantee_id = :agent_id
+        """),
+        {"agent_id": agent.id},
+    ).all()
+    payload["knowledge_grants"] = sorted(str(row.kb_id) for row in grants)
+
+    return payload
+
+
+def _payload_hash(payload: Mapping[str, Any]) -> bytes:
+    """The same canonical form `oc8.agents.versioning.payload_hash` uses --
+    duplicated rather than imported for the same reason as `_agent_payload`."""
+    canonical = json.dumps(dict(payload), sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode()).digest()
 
 
 def downgrade() -> None:

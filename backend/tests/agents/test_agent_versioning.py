@@ -112,7 +112,7 @@ async def test_snapshot_scopes_skill_assignments_to_this_agent_enabled_only(
         assert a is not None
         snap = await snapshot_agent(db, a)
 
-    assert snap["skill_assignments"] == [str(mine.skill_version_id)]
+    assert snap["skill_assignments"] == [{"skill_version_id": str(mine.skill_version_id)}]
 
 
 async def test_snapshot_scopes_knowledge_grants_to_this_agent(

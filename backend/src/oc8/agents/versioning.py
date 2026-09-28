@@ -88,7 +88,10 @@ async def snapshot_agent(db: AsyncSession, agent: m.Agent) -> dict[str, Any]:
         .scalars()
         .all()
     )
-    payload["skill_assignments"] = sorted(str(a.skill_version_id) for a in assignments)
+    payload["skill_assignments"] = sorted(
+        ({"skill_version_id": str(a.skill_version_id)} for a in assignments),
+        key=lambda d: d["skill_version_id"],
+    )
 
     # KnowledgeGrant has NO `agent_id` either -- it is a polymorphic grant:
     # `grantee_type IN ('department','agent')` plus `grantee_id`
