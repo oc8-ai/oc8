@@ -41,6 +41,7 @@ from oc8 import models as m
 from oc8.agent.engine import RunResult, open_run_task
 from oc8.config import get_settings
 from oc8.realtime.emit import publish_run_output_delta
+from oc8.runtime.images import registry_auth_for_runtime, runtime_image
 from oc8.sandbox import get_sandbox_driver
 from oc8.sandbox.mounts import validate_mounts
 from oc8.sandbox.naming import container_name
@@ -222,6 +223,13 @@ async def _rebind(db: AsyncSession, tenant_id: uuid.UUID) -> None:
 
 
 class ClaudeCodeRuntime:
+    # A subclass that reuses this loop names its own capa here. Image, registry
+    # login, and the resume session id all follow it.
+    plugin_name = _PLUGIN_NAME
+
+    def prepare_config_home(self, config_home: str) -> None:
+        """Seed CLAUDE_CONFIG_DIR before the CLI starts. The default writes nothing."""
+
     async def execute(
         self,
         db: AsyncSession,
@@ -274,7 +282,7 @@ class ClaudeCodeRuntime:
         settings = get_settings()
         token = run_token(tenant_id=tenant_id, agent=agent, run_id=run_id)
         mcp_url = f"{settings.internal_base_url}/mcp"
-        resume_session_id = get_session_id(run, _PLUGIN_NAME)
+        resume_session_id = get_session_id(run, self.plugin_name)
         session_root = SESSION_ROOT_OVERRIDE or settings.runtime_session_root
 
         # Both mount sources are created HERE, before provision(): Docker
@@ -284,12 +292,16 @@ class ClaudeCodeRuntime:
         # cli_harness.dirs.
         workspace_path = ensure_dir(_workspace_dir(session_root, run_id))
         config_home_path = ensure_dir(_config_home_dir(session_root, run_id))
+        self.prepare_config_home(config_home_path)
         mcp_config_path = _write_mcp_config(
             session_root=session_root, run_id=run_id, mcp_url=mcp_url, token=token
         )
 
         spec = SandboxSpec(
-            image=settings.claude_code_agent_image,
+            image=runtime_image(self.plugin_name, settings.claude_code_agent_image),
+            registry_auth=await registry_auth_for_runtime(
+                db, tenant_id=tenant_id, plugin_name=self.plugin_name
+            ),
             name=container_name(agent.name, "claude", run_id),
             # Identity for the startup reaper; the name is only for humans.
             labels={RUN_LABEL: str(run_id)},
@@ -393,7 +405,7 @@ class ClaudeCodeRuntime:
                             # erase it -- leaving this loop spinning for the
                             # full 30-minute deadline on a run that HAS parked.
                             # See cli_harness.session_state.
-                            await set_session_id(db, run, _PLUGIN_NAME, str(session_id))
+                            await set_session_id(db, run, self.plugin_name, str(session_id))
                             await db.commit()
                             await _rebind(db, tenant_id)
 
@@ -499,7 +511,7 @@ class ClaudeCodeRuntime:
 
         session_id = result_event.get("session_id")
         if session_id:
-            await clear_session_id(db, run, _PLUGIN_NAME)
+            await clear_session_id(db, run, self.plugin_name)
             await db.commit()
             # The caller (oc8.runtime.executor) re-reads the run row on this
             # same `db` the instant execute() returns, so a commit here must

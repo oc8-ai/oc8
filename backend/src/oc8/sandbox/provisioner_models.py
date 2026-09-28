@@ -6,7 +6,7 @@ import base64
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from oc8.sandbox.types import BindMount, SandboxHandle, SandboxSpec
+from oc8.sandbox.types import BindMount, RegistryAuth, SandboxHandle, SandboxSpec
 
 
 class _TransportModel(BaseModel):
@@ -27,6 +27,21 @@ class BindMountDTO(_TransportModel):
         )
 
 
+class RegistryAuthDTO(_TransportModel):
+    username: str
+    password: str
+    registry: str = ""
+
+    def to_domain(self) -> RegistryAuth:
+        return RegistryAuth(
+            username=self.username, password=self.password, registry=self.registry
+        )
+
+    @classmethod
+    def from_domain(cls, auth: RegistryAuth) -> RegistryAuthDTO:
+        return cls(username=auth.username, password=auth.password, registry=auth.registry)
+
+
 class SandboxSpecDTO(_TransportModel):
     image: str
     env: dict[str, str] = Field(default_factory=dict)
@@ -44,6 +59,7 @@ class SandboxSpecDTO(_TransportModel):
     labels: dict[str, str] = Field(default_factory=dict)
     name: str | None = None
     user: str | None = None
+    registry_auth: RegistryAuthDTO | None = None
 
     def to_domain(self) -> SandboxSpec:
         return SandboxSpec(
@@ -66,6 +82,7 @@ class SandboxSpecDTO(_TransportModel):
             labels=self.labels,
             name=self.name,
             user=self.user,
+            registry_auth=None if self.registry_auth is None else self.registry_auth.to_domain(),
         )
 
     @classmethod
@@ -87,6 +104,9 @@ class SandboxSpecDTO(_TransportModel):
             labels=spec.labels,
             name=spec.name,
             user=spec.user,
+            registry_auth=None
+            if spec.registry_auth is None
+            else RegistryAuthDTO.from_domain(spec.registry_auth),
         )
 
 

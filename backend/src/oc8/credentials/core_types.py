@@ -69,6 +69,25 @@ CORE_CREDENTIAL_TYPES["openai_compatible_api_key"] = _provider_key_type(
 # reads that pointer and calls oc8.oauth.tokens.get_access_token()
 # instead of the normal secret-store field lookup every other credential
 # type here uses.
+# A registry login any runtime capa can ask for in its setup. The password
+# stays in the secret store. A pull reads it once and does not copy it into
+# the container.
+CORE_CREDENTIAL_TYPES["container_registry"] = CredentialTypeSpec(
+    name="container_registry",
+    display_name="Container registry",
+    fields=[
+        SetupFieldSpec(
+            key="registry",
+            label="Registry host",
+            kind="text",
+            placeholder="ghcr.io",
+            help="Host only, such as ghcr.io. No scheme and no repository path.",
+        ),
+        SetupFieldSpec(key="username", label="Username", kind="text"),
+        SetupFieldSpec(key="password", label="Password or token", kind="password"),
+    ],
+)
+
 CORE_CREDENTIAL_TYPES["openai_chatgpt_subscription"] = CredentialTypeSpec(
     name="openai_chatgpt_subscription",
     display_name="ChatGPT subscription",

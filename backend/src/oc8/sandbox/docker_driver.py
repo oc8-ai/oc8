@@ -40,6 +40,78 @@ def _labels(extra: dict[str, str]) -> dict[str, str]:
 DEFAULT_EXEC_TIMEOUT = 300
 
 
+def registry_host_of(image: str) -> str:
+    """The registry host an image reference pulls from.
+
+    A name with no registry (`alpine:latest`) is Docker Hub. The host is the
+    first path segment when that segment contains a dot, a colon, or is
+    `localhost`. The tag colon after the last slash is not part of the host.
+    """
+    name = image.split("@", 1)[0]
+    slash = name.find("/")
+    if slash < 0:
+        return "docker.io"
+    first = name[:slash]
+    if first == "localhost" or "." in first or ":" in first:
+        return first
+    return "docker.io"
+
+
+def _split_image_ref(image: str) -> tuple[str, str | None]:
+    name = image.split("@", 1)[0]
+    slash = name.rfind("/")
+    colon = name.rfind(":")
+    if colon > slash:
+        return name[:colon], name[colon + 1 :]
+    return name, None
+
+
+def _pull_was_refused(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return any(
+        word in text
+        for word in (
+            "unauthorized",
+            "authentication",
+            "denied",
+            "pull access",
+            "insufficient_scope",
+        )
+    )
+
+
+def _ensure_local_image(client: docker.DockerClient, spec: SandboxSpec) -> None:  # type: ignore[name-defined]
+    """Pull `spec.image` when the daemon does not have it yet.
+
+    `registry_auth` is passed only to the pull. A private tag with no login
+    fails before a container is created, and says to save the registry login
+    on the runtime. A login whose host is not the image's registry is refused
+    so the token is not sent anywhere else.
+    """
+    try:
+        client.images.get(spec.image)
+        return
+    except docker.errors.ImageNotFound:
+        pass
+    auth = spec.registry_auth
+    if auth is not None and auth.registry and auth.registry != registry_host_of(spec.image):
+        raise SandboxError(
+            f"registry login is for {auth.registry!r} but the image is on "
+            f"{registry_host_of(spec.image)!r}"
+        )
+    repository, tag = _split_image_ref(spec.image)
+    auth_config = None if auth is None else {"username": auth.username, "password": auth.password}
+    try:
+        client.images.pull(repository, tag=tag, auth_config=auth_config)
+    except docker.errors.DockerException as exc:
+        if auth is None and _pull_was_refused(exc):
+            raise SandboxError(
+                "image is missing and the registry refused an anonymous pull; "
+                "add the registry login in the runtime setup"
+            ) from exc
+        raise SandboxError(f"image pull failed: {exc}") from exc
+
+
 def _force_remove(container: Container) -> None:
     """Best-effort cleanup of a partially-provisioned container.
 
@@ -82,6 +154,10 @@ class DockerSandboxDriver:
                 run_kwargs["user"] = spec.user
             if spec.name is not None:
                 run_kwargs["name"] = spec.name
+            try:
+                _ensure_local_image(self._client, spec)
+            except docker.errors.DockerException as exc:
+                raise SandboxError(f"provision failed: {exc}") from exc
             if spec.mounts:
                 # Deliberately unvalidated here: the driver has no idea what root is
                 # legitimate for a given caller. `sandbox.mounts.validate_mounts`

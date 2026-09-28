@@ -46,6 +46,7 @@ from oc8.agent.harness.stages.d_verify import (
     verify_reminder,
 )
 from oc8.agent.harness.state import HarnessState, Ledger
+from oc8.agent.provenance import shorten_long_strings
 from oc8.modelrouter import ToolCall
 from oc8.skills.schema import Step
 
@@ -188,7 +189,7 @@ class Harness:
         if error is not None:
             output = render_error(tc.name, source, error)
         elif source != "oc8":
-            output = fence_external(output, source=f"{source}:{tc.name}")
+            output = fence_external(shorten_long_strings(output), source=f"{source}:{tc.name}")
         tz_label, resolved_tz = resolve_timezone(tz)
         now = dt.datetime.now(resolved_tz)
         stamp = format_step_stamp(
