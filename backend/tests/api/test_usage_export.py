@@ -179,3 +179,83 @@ async def test_export_honours_agent_id_filter(app_session: AppSessionFactory) ->
     assert len(rows) == 1
     assert rows[0]["agentId"] == str(target_agent_id)
     assert rows[0]["agentName"] == "Ada"
+
+
+async def test_cost_micros_prices_each_row_at_its_own_time_not_todays_rate(
+    app_session: AppSessionFactory,
+) -> None:
+    """Regression coverage for `export_usage`'s per-row `price_as_of` call.
+
+    `GET /usage`'s own historical-accuracy test
+    (`test_usage_uses_the_price_in_effect_at_usage_time_not_today`) exercises
+    the day-bucket aggregator, a different code path from this export's
+    per-row streaming loop -- it proves nothing about whether `export_usage`
+    itself prices correctly. Two `ModelPrice` versions straddle two
+    `TokenUsageRecord` timestamps here; a bug that priced every row at "now"
+    (or all rows at the same version) would make both rows' `costMicros`
+    equal, which this asserts against directly.
+
+    A fake, export-test-only provider/model keeps this independent of
+    whatever other `ModelPrice` rows other tests have left in this
+    session-scoped database (see conftest.py -- `model_price` is global, not
+    tenant-scoped, and the DB is not reset between tests).
+    """
+    tenant = uuid.uuid4()
+    provider = "usage-export-pricing-test-provider"
+    model = "usage-export-pricing-test-model"
+    pattern = "usageexportpricingtestmodel"
+    old_price = m.ModelPrice(
+        provider=provider,
+        model_pattern=pattern,
+        price_in_usd_per_1m=3.0,
+        price_out_usd_per_1m=15.0,
+        effective_from=datetime(2020, 1, 1, tzinfo=UTC),
+    )
+    new_price = m.ModelPrice(
+        provider=provider,
+        model_pattern=pattern,
+        price_in_usd_per_1m=99.0,
+        price_out_usd_per_1m=199.0,
+        effective_from=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    old_ts = datetime(2021, 6, 1, tzinfo=UTC)  # after old_price, before new_price
+    new_ts = datetime(2026, 6, 1, tzinfo=UTC)  # after new_price
+    async with app_session(tenant) as s:
+        s.add_all([old_price, new_price])
+        await s.flush()
+        s.add(
+            m.TokenUsageRecord(
+                tenant_id=tenant,
+                request_id=uuid.uuid4(),
+                model=model,
+                provider=provider,
+                tokens_in=1000,
+                tokens_out=500,
+                ts=old_ts,
+            )
+        )
+        s.add(
+            m.TokenUsageRecord(
+                tenant_id=tenant,
+                request_id=uuid.uuid4(),
+                model=model,
+                provider=provider,
+                tokens_in=1000,
+                tokens_out=500,
+                ts=new_ts,
+            )
+        )
+        await s.commit()
+
+    r = await _get(create_app(), "/api/v1/usage/export?format=jsonl", tenant)
+    assert r.status_code == 200, r.text
+    rows = [json.loads(ln) for ln in r.text.splitlines() if ln.strip()]
+    assert len(rows) == 2
+    rows.sort(key=lambda row: row["ts"])
+    old_row, new_row = rows
+
+    expected_old_cost = round(1000 * 3.0 + 500 * 15.0)
+    expected_new_cost = round(1000 * 99.0 + 500 * 199.0)
+    assert old_row["costMicros"] == expected_old_cost
+    assert new_row["costMicros"] == expected_new_cost
+    assert old_row["costMicros"] != new_row["costMicros"]
