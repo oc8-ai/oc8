@@ -46,6 +46,7 @@ import {
   type UsageDTO,
 } from "@/lib/hooks";
 import { useReconciliation, useRefreshReconciliation } from "@/lib/reconciliation-hooks";
+import { downloadUsageExport } from "@/lib/usage-export";
 
 export const Route = createFileRoute("/costs")({
   component: CostsPage,
@@ -182,6 +183,21 @@ function CostsPage() {
     { id: "limits", label: t("Limits", "Limits"), icon: ShieldAlert },
   ];
 
+  // Real GET /usage/export download -- the success toast fires only once the
+  // fetch has actually resolved and the browser has been handed a file, not
+  // optimistically on click (that was this button's original defect: it
+  // reported success and downloaded nothing).
+  const onExport = async () => {
+    try {
+      await downloadUsageExport({}, "csv");
+      toast.success(t("Report exported", "Bericht exportiert"), {
+        description: t("CSV downloaded to your device.", "CSV auf Ihr Gerät geladen."),
+      });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : t("Export failed", "Export fehlgeschlagen"));
+    }
+  };
+
   return (
     <div className="space-y-6">
       <Panel className="p-5">
@@ -222,11 +238,7 @@ function CostsPage() {
             </div>
             <button
               type="button"
-              onClick={() =>
-                toast.success(t("Report exported", "Bericht exportiert"), {
-                  description: t("CSV downloaded to your device.", "CSV auf Ihr Gerät geladen."),
-                })
-              }
+              onClick={onExport}
               className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background/40 px-3 py-2 text-xs text-muted-foreground hover:text-foreground"
             >
               <Download className="h-3.5 w-3.5" />
