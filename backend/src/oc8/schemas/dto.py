@@ -692,6 +692,71 @@ class AgentInstructionHistoryDTO(CamelModel):
     next_before_seq: int | None = None
 
 
+class AgentVersionSummaryDTO(CamelModel):
+    """One published agent version, as the Versions list renders it.
+
+    The list deliberately does NOT carry `payload`: a tenant with a hundred
+    versions of an agent whose `definition` is a grab-bag would ship a hundred
+    full configurations to render ten rows. `GET /agents/{id}/versions/{n}`
+    returns the payload for the one row somebody opened.
+    """
+
+    id: str
+    version_no: int
+    note: str | None = None
+    #: The `org_member.id` of whoever published it, or null for a version
+    #: written by something other than a person -- `create_agent`'s v1 when the
+    #: caller is a system principal, and the migration's backfilled v1 for
+    #: every agent that predates versioning.
+    published_by: str | None = None
+    published_at: str
+    is_current: bool = False
+    #: Set when this version was produced by a rollback, naming the version it
+    #: copied. Read out of the payload's reserved `_meta` key
+    #: (`agents.versioning.version_meta`), not out of a column -- a rollback is
+    #: rare and a column for it would be null on almost every row.
+    rolled_back_from: int | None = None
+
+
+class AgentVersionDTO(AgentVersionSummaryDTO):
+    """One version including its full configuration snapshot."""
+
+    payload: dict[str, Any] = {}
+    #: Hex, not bytes and not base64: JSON has no bytes type, and hex is the
+    #: spelling an operator can compare against `digest()` output in psql.
+    payload_hash: str = ""
+
+
+class AgentVersionFieldDiffDTO(CamelModel):
+    """One changed field. `field` is either a payload key (`mission`) or a
+    key one level inside a JSONB one (`narrowing.odoo`, `definition.max_steps`)
+    -- see `agents.versioning.diff_payloads` for why one level and no more."""
+
+    field: str
+    before: Any = None
+    after: Any = None
+
+
+class AgentVersionDiffDTO(CamelModel):
+    to_version_no: int | None = None
+    from_version_no: int
+    entries: list[AgentVersionFieldDiffDTO] = []
+
+
+class AgentDraftStatusDTO(CamelModel):
+    """The working copy versus the current version (spec §4).
+
+    `dirty` comes from the payload HASH and `changed_fields` from the diff, and
+    the boolean is the authority -- the publish endpoint's no-op 409 compares
+    hashes too, so a `dirty` derived from the field list could show a publish
+    bar for a publish the API would refuse.
+    """
+
+    dirty: bool = False
+    changed_fields: list[str] = []
+    current_version_no: int | None = None
+
+
 class MemoryRecordDTO(CamelModel):
     """One `memory_record` row, for the agent/department Memory tabs (§10).
     `status` is always "approved" for the agent/department tiers this DTO
