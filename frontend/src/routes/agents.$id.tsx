@@ -108,6 +108,7 @@ import {
   type Supervisor,
 } from "@/lib/mock-data";
 import { type Skill } from "@/lib/skills";
+import { AgentPublishBar } from "@/components/agent-publish-bar";
 import { AgentRuntimePanel } from "@/components/agent-runtime-panel";
 import { ChatWindow } from "@/components/chat-window";
 import { ComponentGrantPanel } from "@/components/component-grant-panel";
@@ -353,6 +354,11 @@ function AgentDetail() {
           </div>
         </div>
       </Panel>
+
+      {/* Above the tabs, not inside one: an edit made on the Guardrails tab has
+          to be publishable from wherever the operator ends up, and a bar that
+          lives inside a tab is a bar half the people who need it never see. */}
+      <AgentPublishBar agentId={agent.id} mayManage={mayManage} />
 
       {runPickerOpen && (
         <div
