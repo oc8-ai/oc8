@@ -11,9 +11,11 @@ existing evidence that the agent-token 403 lives only in
 future non-agent caller -- a workflow node, a room -- can be governed the same
 way without a second, weaker door. This file is the executable form of "there
 is no ungoverned side door": for a representative set of frame/narrowing/
-tool/right/value combinations, the actor path and the agent path must produce
-byte-identical decisions. If they ever diverge, a workflow can do something an
-agent cannot.
+tool/right/value/attribute combinations, the actor path and the agent path
+must produce byte-identical `Decision`s -- not just an identical `effect`,
+which two paths that happened to agree on the headline result but diverged
+on `reason`/`reason_code`/`context` would also satisfy. If they ever
+diverge, a workflow can do something an agent cannot.
 """
 
 from __future__ import annotations
@@ -27,12 +29,30 @@ import pytest
 from oc8.authz.actor import ToolActor, decide_for_actor
 from oc8.authz.pdp import authorize_tool_call, effective_tool_policies
 
-# (frame, narrowing, connection, tool, right, value)
-CASES: list[tuple[dict[str, Any], dict[str, Any], str, str, str, float | None]] = [
+# (frame, narrowing, connection, tool, right, value, attributes)
+CASES: list[
+    tuple[dict[str, Any], dict[str, Any], str, str, str, float | None, dict[str, Any] | None]
+] = [
     # plain read allow
-    ({"tools": {"odoo": {"enabled": True, "read": True}}}, {}, "odoo", "search_read", "read", None),
+    (
+        {"tools": {"odoo": {"enabled": True, "read": True}}},
+        {},
+        "odoo",
+        "search_read",
+        "read",
+        None,
+        None,
+    ),
     # plain modify allow
-    ({"tools": {"odoo": {"enabled": True, "modify": True}}}, {}, "odoo", "write", "modify", None),
+    (
+        {"tools": {"odoo": {"enabled": True, "modify": True}}},
+        {},
+        "odoo",
+        "write",
+        "modify",
+        None,
+        None,
+    ),
     # over the euro threshold -> require_approval
     (
         {"tools": {"odoo": {"enabled": True, "modify": True, "approval_eur": 3000}}},
@@ -41,6 +61,7 @@ CASES: list[tuple[dict[str, Any], dict[str, Any], str, str, str, float | None]] 
         "create_order",
         "modify",
         4200.0,
+        None,
     ),
     # under the euro threshold -> allow
     (
@@ -50,18 +71,26 @@ CASES: list[tuple[dict[str, Any], dict[str, Any], str, str, str, float | None]] 
         "create_order",
         "modify",
         100.0,
+        None,
     ),
-    # narrowing tightens a frame-granted right away -> deny
+    # narrowing tightens a frame-granted right away -> deny for "right not
+    # granted", distinct from the "connection disabled" deny below. The
+    # narrowing must explicitly re-assert enabled=True: leaving it unset
+    # would make `effective_tool_policies` compute enabled=False (frame AND
+    # narrowing, and narrowing's own default is False) and this would
+    # silently collapse into the same "disabled" branch as the next case,
+    # never touching the one it's meant to exercise.
     (
         {"tools": {"odoo": {"enabled": True, "modify": True}}},
-        {"tools": {"odoo": {"modify": False}}},
+        {"tools": {"odoo": {"enabled": True, "modify": False}}},
         "odoo",
         "write",
         "modify",
         None,
+        None,
     ),
     # connection not granted by the frame at all -> deny
-    ({"tools": {}}, {}, "odoo", "search_read", "read", None),
+    ({"tools": {}}, {}, "odoo", "search_read", "read", None, None),
     # approval_actions: always requires a human, whatever the value
     (
         {"tools": {"odoo": {"enabled": True, "modify": True, "approval_actions": ["modify"]}}},
@@ -70,6 +99,7 @@ CASES: list[tuple[dict[str, Any], dict[str, Any], str, str, str, float | None]] 
         "write",
         "modify",
         0.0,
+        None,
     ),
     # approval_actions naming a specific tool rather than a right
     (
@@ -86,6 +116,7 @@ CASES: list[tuple[dict[str, Any], dict[str, Any], str, str, str, float | None]] 
         "odoo",
         "mail_send",
         "modify",
+        None,
         None,
     ),
     # `only` intersection: tool outside the surface -> deny
@@ -104,6 +135,7 @@ CASES: list[tuple[dict[str, Any], dict[str, Any], str, str, str, float | None]] 
         "crm_lead_read",
         "read",
         None,
+        None,
     ),
     # `only` intersection: tool inside the surface -> allow
     (
@@ -121,8 +153,12 @@ CASES: list[tuple[dict[str, Any], dict[str, Any], str, str, str, float | None]] 
         "res_partner_read",
         "read",
         None,
+        None,
     ),
-    # generic condition matches -> require_approval
+    # generic condition matches -> require_approval. `attributes` must
+    # actually be passed on both sides, or `_condition_matches` sees an
+    # attribute-less call and this collapses into plain ALLOW without ever
+    # reaching `evaluate_conditions`'s match branch.
     (
         {
             "tools": {
@@ -146,8 +182,12 @@ CASES: list[tuple[dict[str, Any], dict[str, Any], str, str, str, float | None]] 
         "create_order",
         "modify",
         12480.0,
+        {"order_value": 12480},
     ),
-    # generic condition present but doesn't match -> falls through to allow
+    # generic condition evaluated but doesn't match -> falls through to
+    # allow. `attributes` is passed here too (rather than omitted), so this
+    # genuinely exercises "the condition was checked and failed", not just
+    # "the attribute was never supplied".
     (
         {
             "tools": {
@@ -171,6 +211,7 @@ CASES: list[tuple[dict[str, Any], dict[str, Any], str, str, str, float | None]] 
         "create_order",
         "modify",
         100.0,
+        {"order_value": 100},
     ),
     # tool not enabled at all -> deny
     (
@@ -180,11 +221,12 @@ CASES: list[tuple[dict[str, Any], dict[str, Any], str, str, str, float | None]] 
         "search_read",
         "read",
         None,
+        None,
     ),
 ]
 
 
-@pytest.mark.parametrize("frame,narrowing,conn,tool,right,value", CASES)
+@pytest.mark.parametrize("frame,narrowing,conn,tool,right,value,attributes", CASES)
 def test_actor_path_and_agent_path_agree(
     frame: dict[str, Any],
     narrowing: dict[str, Any],
@@ -192,8 +234,17 @@ def test_actor_path_and_agent_path_agree(
     tool: str,
     right: str,
     value: float | None,
+    attributes: dict[str, Any] | None,
 ) -> None:
     """The executable form of 'there is no ungoverned side door'.
+
+    Asserts full `Decision` equality (`effect`, `reason`, `reason_code`,
+    `context` all included via dataclass `__eq__`) rather than picking two
+    fields to compare -- on the DENY cases here `reason_code` is `None` on
+    both sides regardless of what either function actually did, so comparing
+    only that field would never catch the two paths disagreeing on
+    `reason`/`context`, or on `effect` itself if `reason_code` merely
+    happened to still line up.
 
     If these two ever diverge, a workflow can do something an agent cannot,
     which is exactly the failure the workflow design exists to prevent.
@@ -204,6 +255,7 @@ def test_actor_path_and_agent_path_agree(
         right=right,
         value=value,
         tool=tool,
+        attributes=attributes,
     )
     actor = ToolActor(
         tenant_id=uuid4(),
@@ -213,10 +265,9 @@ def test_actor_path_and_agent_path_agree(
         label="workflow:test",
     )
     actor_decision = decide_for_actor(
-        actor, connection_key=conn, tool=tool, right=right, value=value
+        actor, connection_key=conn, tool=tool, right=right, value=value, attributes=attributes
     )
-    assert actor_decision.effect is agent_decision.effect
-    assert actor_decision.reason_code == agent_decision.reason_code
+    assert actor_decision == agent_decision
 
 
 def test_tool_actor_is_frozen_and_carries_attribution() -> None:

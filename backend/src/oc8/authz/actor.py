@@ -11,6 +11,24 @@ that happens to agree with it today.
 `decide_for_actor` is deliberately a near-trivial wrapper: it must never grow
 its own logic, or the parity it exists to prove would be manufactured rather
 than demonstrated. See `tests/authz/test_actor_neutral_authorization.py`.
+
+**What this does NOT yet carry, on purpose (scope of Foundation Task C1):**
+`agent/engine.py`'s real call site passes `extra_thresholds` -- the calling
+agent's own `approval_value_eur` plus any active skill guardrail threshold,
+folded in alongside the frame's `approval_eur` so the strictest of the three
+governs -- and runs a set of control-tool checks (`ask_user`,
+`propose_change`, `delegate_task`, `memory_write`, etc.) before ever reaching
+`authorize_tool_call` at all. `decide_for_actor` has no equivalent for
+either: it takes only what `ToolActor` carries, so a workflow node governed
+through it today gets the frame/narrowing decision alone, with no per-actor
+approval threshold and no control-tool semantics layered on top. This
+matches the brief's interface exactly (`decide_for_actor` was scoped to wrap
+`effective_tool_policies` + `authorize_tool_call`, nothing more) -- it is not
+a bug here, but it IS a gap the workflow engine will need to close, either by
+growing `ToolActor` (e.g. an optional threshold field) or by keeping
+control-tool-equivalent checks as the caller's job the way `agent/engine.py`
+does today. Whoever builds that next should not assume `ToolActor` already
+covers it.
 """
 
 from __future__ import annotations
