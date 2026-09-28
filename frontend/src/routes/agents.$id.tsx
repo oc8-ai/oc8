@@ -76,7 +76,14 @@ import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/
 import { CredentialPicker } from "@/components/credential-picker";
 import type { GuardrailValue } from "@/components/guardrail-preset-picker";
 import { ToolGuardrailTable, describeGuardrailSaveError } from "@/components/tool-guardrail-table";
-import { SUBSCRIPTION_PROVIDER, SubscriptionRiskBadge, supportsRawParams } from "@/routes/models";
+import {
+  AutoRouterBadge,
+  isAutoProvider,
+  modelAssignmentLabel,
+  SUBSCRIPTION_PROVIDER,
+  SubscriptionRiskBadge,
+  supportsRawParams,
+} from "@/routes/models";
 import {
   extraToPairs,
   pairsToExtra,
@@ -1112,6 +1119,7 @@ export function AssignedModelPanel({
   const t = useT();
   const switchModel = useSwitchAgentModel();
   const assigned = models.find((model) => model.id === agent.modelConfigId);
+  const assignedIsAuto = !!assigned && isAutoProvider(assigned.provider);
   const showEffort = assigned?.provider === "anthropic";
   const showRawParams = !!assigned && supportsRawParams(assigned.provider);
 
@@ -1208,6 +1216,19 @@ export function AssignedModelPanel({
           <SubscriptionRiskBadge />
         </div>
       )}
+      {assignedIsAuto && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <AutoRouterBadge />
+          {agent.autoRouterAffinityTier && (
+            <span className="text-[11px] text-muted-foreground">
+              {t(
+                `Uses ${agent.autoRouterAffinityTier} (affinity)`,
+                `Nutzt ${agent.autoRouterAffinityTier} (Affinity)`,
+              )}
+            </span>
+          )}
+        </div>
+      )}
       <select
         className="mt-4 w-full rounded-md border border-border bg-background/30 px-3 py-2 text-sm outline-none focus:border-primary/50 disabled:cursor-not-allowed disabled:opacity-60"
         value={agent.modelConfigId ?? ""}
@@ -1230,7 +1251,7 @@ export function AssignedModelPanel({
         </option>
         {models.map((model) => (
           <option key={model.id} value={model.id}>
-            {model.displayName || model.model} · {model.provider}
+            {modelAssignmentLabel(model)}
           </option>
         ))}
       </select>

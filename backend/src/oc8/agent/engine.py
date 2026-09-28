@@ -84,6 +84,17 @@ from oc8.modelrouter import (
     stream_completion_with_fallback,
 )
 from oc8.modelrouter.accumulate import accumulate_stream
+from oc8.modelrouter.auto_router import (
+    AutoRouterError,
+    cascade_should_escalate,
+    cascade_verify_enabled,
+    escalate_auto_router,
+    is_auto_config,
+    record_preference_label,
+    remember_agent_route,
+    resolve_auto_config,
+    tier_map,
+)
 from oc8.modelrouter.keys import resolve_model_base_url
 from oc8.modelrouter.sampling import bumped_for_length_retry, resolve_params
 from oc8.modelrouter.types import ImagePart, ModelParams
@@ -634,10 +645,23 @@ async def run_agent(
         model_config: m.ModelConfig | None = None
         if agent.model_config_id is not None:
             model_config = await db.get(m.ModelConfig, agent.model_config_id)
-        if model_config is not None:
+        # Virtual Auto ModelConfig: keep the policy row and resolve a concrete
+        # target before each completion (session latch + one-way escalation).
+        auto_cfg: m.ModelConfig | None = (
+            model_config if is_auto_config(model_config) else None
+        )
+        cascade_flag = {"attempted": False, "escalated": False}
+        # Filled each step before completion; nested helpers mutate this object
+        # (never rebound) so escalations are visible without B023 loop binding.
+        active_route: dict[str, Any] = {}
+        if model_config is not None and auto_cfg is None:
             provider = model_config.provider
             model = model_config.model
             model_locality = model_config.locality
+        elif auto_cfg is not None:
+            provider = auto_cfg.provider
+            model = auto_cfg.model
+            model_locality = auto_cfg.locality
         else:
             provider = (agent.presentation or {}).get("provider", settings.default_model_provider)
             model = settings.default_model
@@ -647,11 +671,24 @@ async def run_agent(
         # request, so that is what decides whether an attached image can be
         # sent along with it. Resolved here, right alongside the same
         # model_config lookup, rather than deep inside build_run_preamble.
-        supports_vision = (
-            bool(model_config.params.get("supports_vision", False))
-            if model_config is not None
-            else False
-        )
+        if auto_cfg is not None:
+            supports_vision = False
+            try:
+                for cfg_id in tier_map(auto_cfg).values():
+                    tier_cfg = await db.get(m.ModelConfig, cfg_id)
+                    if tier_cfg is not None and bool(
+                        (tier_cfg.params or {}).get("supports_vision", False)
+                    ):
+                        supports_vision = True
+                        break
+            except AutoRouterError:
+                supports_vision = False
+        else:
+            supports_vision = (
+                bool(model_config.params.get("supports_vision", False))
+                if model_config is not None
+                else False
+            )
         task_images = [
             ImagePart(
                 data=await s3.get_object(entry["bucket_key"]),
@@ -821,6 +858,7 @@ async def run_agent(
             await publish_run_token_delta(tenant_id, run_id=run_id, text=text)
 
         async def loop(tools: list[NeutralTool], server: Toolset | None) -> RunResult:
+            nonlocal model_config, provider, model, model_locality
             active_skills: list[LoadedSkill] = []
 
             def _offered() -> list[NeutralTool]:
@@ -940,6 +978,43 @@ async def run_agent(
                 request_id = uuid.uuid4()
                 resolved_messages = messages
                 resolved_tools = _offered()
+                if auto_cfg is not None:
+                    try:
+                        model_config, _route = await resolve_auto_config(
+                            db,
+                            auto_cfg,
+                            tenant_id=tenant_id,
+                            agent_id=agent.id,
+                            run=run_row,
+                            agent=agent,
+                            messages=resolved_messages,
+                            tools=resolved_tools,
+                            needs_vision=bool(task_images),
+                            contains_restricted=contains_restricted,
+                        )
+                    except AutoRouterError as exc:
+                        task.state = "failed"
+                        await record_activity(
+                            db,
+                            tenant_id=tenant_id,
+                            agent_id=agent.id,
+                            status="warning",
+                            message=f"{agent.name}: auto router misconfigured: {exc}",
+                        )
+                        return RunResult(
+                            task.id,
+                            agent.id,
+                            "failed",
+                            f"Auto model router misconfigured: {exc}",
+                            tool_trace,
+                            steps,
+                            pending_runs,
+                            rendered_components,
+                            todos,
+                        )
+                    provider = model_config.provider
+                    model = model_config.model
+                    model_locality = model_config.locality
                 resolved_params = resolve_params(model_config, agent=agent)
                 # Must match what fallback.py's own base_url resolution will
                 # actually send for this provider (params override, else the
@@ -991,6 +1066,15 @@ async def run_agent(
                         saved_tokens_out=result.usage.tokens_out,
                     )
                 else:
+                    active_route.clear()
+                    active_route.update(
+                        {
+                            "config": model_config,
+                            "provider": provider,
+                            "model": model,
+                            "params": resolved_params,
+                        }
+                    )
 
                     async def _complete(
                         sampling_params: ModelParams,
@@ -1004,9 +1088,9 @@ async def run_agent(
                                 router,
                                 tenant_id=tenant_id,
                                 agent_id=agent.id,
-                                primary=model_config,
-                                no_config_provider=provider,
-                                no_config_model=model,
+                                primary=active_route["config"],
+                                no_config_provider=active_route["provider"],
+                                no_config_model=active_route["model"],
                                 messages=msgs,
                                 tools=tls,
                                 params=sampling_params,
@@ -1034,7 +1118,52 @@ async def run_agent(
                             creator_id=active_skills[-1].creator_id if active_skills else None,
                         )
 
-                    result = await _complete(resolved_params, request_id)
+                    async def _apply_auto_escalation(
+                        reason: str,
+                        msgs: list[NeutralMessage] = resolved_messages,
+                        tls: list[NeutralTool] = resolved_tools,
+                    ) -> bool:
+                        """Bump tier + refresh active target. True if tier changed."""
+                        nonlocal model_config, provider, model, model_locality, resolved_params
+                        if auto_cfg is None:
+                            return False
+                        bumped = await escalate_auto_router(
+                            db,
+                            auto_cfg,
+                            tenant_id=tenant_id,
+                            agent_id=agent.id,
+                            run=run_row,
+                            agent=agent,
+                            reason=reason,
+                            messages=msgs,
+                            tools=tls,
+                            needs_vision=bool(task_images),
+                            contains_restricted=contains_restricted,
+                        )
+                        if bumped is None:
+                            return False
+                        model_config, _decision = bumped
+                        provider = model_config.provider
+                        model = model_config.model
+                        model_locality = model_config.locality
+                        resolved_params = resolve_params(model_config, agent=agent)
+                        active_route["config"] = model_config
+                        active_route["provider"] = provider
+                        active_route["model"] = model
+                        active_route["params"] = resolved_params
+                        return True
+
+                    try:
+                        result = await _complete(active_route["params"], request_id)
+                    except Exception:
+                        # Retry exhaustion / hard provider failure: one-way escalate
+                        # and retry once on a stronger tier when Auto is configured.
+                        if auto_cfg is None or not await _apply_auto_escalation(
+                            "retry_exhaustion"
+                        ):
+                            raise
+                        request_id = uuid.uuid4()
+                        result = await _complete(active_route["params"], request_id)
                     await _record(result, request_id)
                     if not result.tool_calls:
                         result.tool_calls = _salvage_tool_calls(result.text, _offered())
@@ -1051,12 +1180,55 @@ async def run_agent(
                         # agent finished" with nothing actually done.
                         retry_request_id = uuid.uuid4()
                         result = await _complete(
-                            bumped_for_length_retry(resolved_params), retry_request_id
+                            bumped_for_length_retry(active_route["params"]),
+                            retry_request_id,
                         )
                         await _record(result, retry_request_id)
                         if not result.tool_calls:
                             result.tool_calls = _salvage_tool_calls(result.text, _offered())
-                    await cache_flow.store_if_matching(key, result, provider=provider, model=model)
+                    # Phase-2 cascade: heuristic or cheap self-check → escalate once.
+                    if (
+                        auto_cfg is not None
+                        and not cascade_flag["attempted"]
+                        and cascade_verify_enabled(auto_cfg)
+                        and not result.tool_calls
+                        and model_config is not None
+                    ):
+                        cascade_flag["attempted"] = True
+                        verdict = await cascade_should_escalate(
+                            db,
+                            tenant_id=tenant_id,
+                            agent_id=agent.id,
+                            answer=result.text,
+                            messages=resolved_messages,
+                            verifier_config=model_config,
+                            contains_restricted=contains_restricted,
+                        )
+                        if verdict.escalate and await _apply_auto_escalation(
+                            f"cascade_verify:{verdict.via}"
+                        ):
+                            cascade_flag["escalated"] = True
+                            record_preference_label(
+                                auto_cfg,
+                                messages=resolved_messages,
+                                needs_strong=True,
+                                source=f"cascade:{verdict.via}",
+                            )
+                            cascade_request_id = uuid.uuid4()
+                            result = await _complete(
+                                active_route["params"], cascade_request_id
+                            )
+                            await _record(result, cascade_request_id)
+                            if not result.tool_calls:
+                                result.tool_calls = _salvage_tool_calls(
+                                    result.text, _offered()
+                                )
+                    await cache_flow.store_if_matching(
+                        key,
+                        result,
+                        provider=active_route["provider"],
+                        model=active_route["model"],
+                    )
                 tokens_since_checkpoint += result.usage.tokens_in + result.usage.tokens_out
 
                 if not result.tool_calls:
@@ -1136,6 +1308,28 @@ async def run_agent(
                         )
 
                     task.state = "done"
+                    if auto_cfg is not None:
+                        # Task-success label: escalated runs needed strong;
+                        # clean finishes teach weak_ok for similar prompts.
+                        ar = (
+                            ((run_row.context or {}).get("auto_router") or {})
+                            if run_row is not None
+                            else {}
+                        )
+                        escalated = bool(ar.get("escalated")) or bool(
+                            cascade_flag.get("escalated")
+                        )
+                        record_preference_label(
+                            auto_cfg,
+                            messages=messages,
+                            needs_strong=escalated,
+                            source=(
+                                "task_success_escalated" if escalated else "task_success_weak"
+                            ),
+                        )
+                        remember_agent_route(
+                            agent, auto_cfg, run=run_row, concrete=model_config
+                        )
                     await record_activity(
                         db,
                         tenant_id=tenant_id,
@@ -1291,6 +1485,25 @@ async def run_agent(
                                     NeutralMessage(role="user", content=repeat_reminder)
                                 )
                             checkpoint_trace_delta.append(tool_trace[-1])
+                            if auto_cfg is not None:
+                                bumped = await escalate_auto_router(
+                                    db,
+                                    auto_cfg,
+                                    tenant_id=tenant_id,
+                                    agent_id=agent.id,
+                                    run=run_row,
+                                    agent=agent,
+                                    reason="tool_error",
+                                    messages=messages,
+                                    tools=_offered(),
+                                    needs_vision=bool(task_images),
+                                    contains_restricted=contains_restricted,
+                                )
+                                if bumped is not None:
+                                    model_config, _decision = bumped
+                                    provider = model_config.provider
+                                    model = model_config.model
+                                    model_locality = model_config.locality
                             await dispatch_claude_event(
                                 tenant_id,
                                 "PostToolUseFailure",
@@ -1522,6 +1735,33 @@ async def run_agent(
                                     task_id=task.id,
                                     target=target,
                                 )
+                        if auto_cfg is not None and (
+                            output.startswith("ERROR:") or not (output or "").strip()
+                        ):
+                            # One-way escalate for the rest of the run; next
+                            # resolve_auto_config honours the latch.
+                            bumped = await escalate_auto_router(
+                                db,
+                                auto_cfg,
+                                tenant_id=tenant_id,
+                                agent_id=agent.id,
+                                run=run_row,
+                                agent=agent,
+                                reason=(
+                                    "tool_error"
+                                    if output.startswith("ERROR:")
+                                    else "empty_tool_result"
+                                ),
+                                messages=messages,
+                                tools=_offered(),
+                                needs_vision=bool(task_images),
+                                contains_restricted=contains_restricted,
+                            )
+                            if bumped is not None:
+                                model_config, _decision = bumped
+                                provider = model_config.provider
+                                model = model_config.model
+                                model_locality = model_config.locality
                         output, tool_output_budget_note = _account_tool_output(output)
                         _tool_call_entry: dict[str, Any] = {
                             "tool": tc.name,

@@ -290,7 +290,16 @@ async def _agent_detail_dto(db: DbSession, agent: m.Agent) -> AgentDetailDTO:
         # Top-level key, unlike the four sampling fields above -- see
         # engine._max_steps and switch_model in agents_write.py.
         max_steps=(agent.definition or {}).get("max_steps"),
+        auto_router_affinity_tier=_auto_affinity_tier(agent),
     )
+
+
+def _auto_affinity_tier(agent: m.Agent) -> str | None:
+    raw = (agent.definition or {}).get("auto_router_affinity")
+    if not isinstance(raw, dict):
+        return None
+    tier = raw.get("tier")
+    return str(tier) if isinstance(tier, str) and tier else None
 
 
 def _frame_tools_json(frame: dict[str, object]) -> dict[str, dict[str, object]]:

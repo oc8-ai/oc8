@@ -44,6 +44,7 @@ import {
   useUpdateModel,
   type ModelDTO,
   type ModelProviderDTO,
+  type ModelWriteBody,
 } from "@/lib/hooks";
 import {
   useCreateModelPrice,
@@ -75,6 +76,9 @@ interface ProviderGroup {
 // `routes/agents.$id.tsx`.
 export const SUBSCRIPTION_PROVIDER = "openai_chatgpt";
 
+/** Virtual complexity router — not a real LLM adapter. */
+export const AUTO_PROVIDER = "auto";
+
 // Every adapter merges ModelParams.extra into its outbound payload EXCEPT
 // these two (modelrouter/adapters/ollama.py + chatgpt_subscription.py each
 // build their own payload and never look at params.extra) -- everything else,
@@ -87,10 +91,38 @@ export const SUBSCRIPTION_PROVIDER = "openai_chatgpt";
 // allowlist would silently hide the editor for every plugin provider even
 // though its adapter supports it -- exactly the OpenRouter case this feature
 // was built for. Exported for the agent detail page's Assigned-LLM panel,
-// same reuse reason as SUBSCRIPTION_PROVIDER above.
-const RAW_PARAMS_UNSUPPORTED_PROVIDERS = new Set(["ollama", SUBSCRIPTION_PROVIDER]);
+// same reuse reason as SUBSCRIPTION_PROVIDER above. Auto is included because
+// it is a router policy, not a completion adapter.
+const RAW_PARAMS_UNSUPPORTED_PROVIDERS = new Set(["ollama", SUBSCRIPTION_PROVIDER, AUTO_PROVIDER]);
 export function supportsRawParams(provider: string): boolean {
   return !RAW_PARAMS_UNSUPPORTED_PROVIDERS.has(provider);
+}
+
+export function isAutoProvider(provider: string): boolean {
+  return provider === AUTO_PROVIDER;
+}
+
+/** Label for agent selects / pickers — Auto reads as a router, not an LLM. */
+export function modelAssignmentLabel(m: ModelDTO): string {
+  if (isAutoProvider(m.provider)) {
+    return `${m.displayName || m.name || "Auto"} · Auto router`;
+  }
+  return `${m.displayName || m.model} · ${m.provider}`;
+}
+
+export function AutoRouterBadge() {
+  const t = useT();
+  return (
+    <span
+      title={t(
+        "Complexity router — picks among the tier models you configure (fast / balanced / strong).",
+        "Komplexitäts-Router — wählt unter den konfigurierten Tier-Modellen (fast / balanced / strong).",
+      )}
+      className="rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary"
+    >
+      {t("Auto router", "Auto-Router")}
+    </span>
+  );
 }
 
 // Persistent, non-dismissable reminder wherever a model or provider tile is
@@ -178,7 +210,13 @@ export function ModelsPage() {
         // inline credential picker, a second path to connect a provider
         // that bypassed the wizard entirely. Connecting a NEW provider now
         // only happens through "Add model provider".
-        (g) => g.available || g.configs.length > 0,
+        // Auto is always "available" server-side (no key) but is configured
+        // via New model, not as a Connected LLM tile — only show it once
+        // an Auto ModelConfig exists.
+        (g) =>
+          g.canonical === AUTO_PROVIDER
+            ? g.configs.length > 0
+            : g.available || g.configs.length > 0,
       );
   }, [models, providers]);
 
@@ -354,13 +392,14 @@ export function ModelsPage() {
                       <div className="flex items-center gap-2 font-medium">
                         <Cpu className="h-4 w-4 text-primary" />
                         {m.name}
+                        {isAutoProvider(m.provider) && <AutoRouterBadge />}
                       </div>
                       <div className="mt-0.5 text-xs text-muted-foreground">{m.note}</div>
                     </td>
                     <td className="px-5 py-4">
                       <div className="flex flex-wrap items-center gap-1">
                         <span className="rounded-full border border-border bg-background/40 px-2 py-0.5 text-xs">
-                          {m.provider}
+                          {isAutoProvider(m.provider) ? t("Auto", "Auto") : m.provider}
                         </span>
                         {m.provider === SUBSCRIPTION_PROVIDER && <SubscriptionRiskBadge />}
                       </div>
@@ -490,13 +529,14 @@ const RECONCILIATION_PROVIDERS = new Set(["anthropic", "openai"]);
 export function ProviderCard({ group, mayManage }: { group: ProviderGroup; mayManage: boolean }) {
   const t = useT();
   const isLocal = group.locality === "local";
+  const isAuto = group.canonical === AUTO_PROVIDER;
   const KindIcon = isLocal ? HardDrive : Cloud;
   const agentCount = group.configs.reduce((sum, c) => sum + c.assignedTo.length, 0);
   const hue = hashHue(group.canonical);
   const supportsReconciliation = RECONCILIATION_PROVIDERS.has(group.canonical);
 
   const credentialType = `${group.canonical}_api_key`;
-  const { data: credentials = [] } = useCredentials(isLocal ? undefined : credentialType);
+  const { data: credentials = [] } = useCredentials(isLocal || isAuto ? undefined : credentialType);
   const deleteModel = useDeleteModel();
   const deleteCredential = useDeleteCredential();
   const qc = useQueryClient();
@@ -532,7 +572,7 @@ export function ProviderCard({ group, mayManage }: { group: ProviderGroup; mayMa
     setRemoving(true);
     try {
       await Promise.all(group.configs.map((c) => deleteModel.mutateAsync(c.id)));
-      if (!isLocal && credentials[0]) {
+      if (!isLocal && !isAuto && credentials[0]) {
         await deleteCredential.mutateAsync(credentials[0].id);
       }
       // Neither useDeleteModel nor useDeleteCredential invalidates this --
@@ -562,18 +602,33 @@ export function ProviderCard({ group, mayManage }: { group: ProviderGroup; mayMa
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <span className="truncate font-medium">{group.canonical}</span>
-              <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                <KindIcon className="h-2.5 w-2.5" /> {isLocal ? "local" : "cloud"}
+              <span className="truncate font-medium">
+                {isAuto ? t("Auto", "Auto") : group.canonical}
               </span>
+              {isAuto ? (
+                <AutoRouterBadge />
+              ) : (
+                <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                  <KindIcon className="h-2.5 w-2.5" /> {isLocal ? "local" : "cloud"}
+                </span>
+              )}
               {group.canonical === SUBSCRIPTION_PROVIDER && <SubscriptionRiskBadge />}
             </div>
             <div className="text-[11px] text-muted-foreground">
-              {agentCount} agent{agentCount === 1 ? "" : "s"} using this provider
+              {isAuto
+                ? t(
+                    "Routes each turn to a configured tier model",
+                    "Leitet jeden Zug an ein konfiguriertes Tier-Modell weiter",
+                  )
+                : `${agentCount} agent${agentCount === 1 ? "" : "s"} using this provider`}
             </div>
           </div>
         </div>
-        {isLocal ? (
+        {isAuto ? (
+          <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+            {t("no key", "kein Schlüssel")}
+          </span>
+        ) : isLocal ? (
           <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-[10px] text-muted-foreground">
             local
           </span>
@@ -594,7 +649,7 @@ export function ProviderCard({ group, mayManage }: { group: ProviderGroup; mayMa
             key={c.id}
             className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 font-mono text-[10px]"
           >
-            {c.model}
+            {isAuto ? c.displayName || c.name || "Auto" : c.model}
           </span>
         ))}
         {group.configs.length > 3 && (
@@ -607,7 +662,7 @@ export function ProviderCard({ group, mayManage }: { group: ProviderGroup; mayMa
         )}
       </div>
 
-      {mayManage && !isLocal && (
+      {mayManage && !isLocal && !isAuto && (
         <CompletionKeyPicker canonical={group.canonical} available={group.available} />
       )}
 
@@ -842,10 +897,14 @@ function Field({
 // ---------- Model create/edit dialog (real backend, §model registry) ----------
 // Free-text model tag: the registry accepts arbitrary provider model strings
 // (e.g. "llama3.1:8b", "claude-3-5-sonnet-20241022"), so the tag field is a
-// plain input — never a fixed dropdown.
+// plain input — never a fixed dropdown. Provider `auto` is a virtual router:
+// no discover / model tag / credential — operators pick concrete tier models.
+const AUTO_TIERS = ["fast", "balanced", "strong"] as const;
+
 function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClose: () => void }) {
   const t = useT();
   const { data: providers = [] } = useModelProviders();
+  const { data: allModels = [] } = useModels();
   const createModel = useCreateModel();
   const updateModel = useUpdateModel();
   const discoverModels = useDiscoverModels();
@@ -868,11 +927,21 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
   const [discoveredModels, setDiscoveredModels] = useState<string[] | null>(null);
   const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set());
   const [manualMode, setManualMode] = useState(false);
+  const [tierFast, setTierFast] = useState(editing?.autoTiers?.fast ?? "");
+  const [tierBalanced, setTierBalanced] = useState(editing?.autoTiers?.balanced ?? "");
+  const [tierStrong, setTierStrong] = useState(editing?.autoTiers?.strong ?? "");
+  const [autoShadowOnly, setAutoShadowOnly] = useState(editing?.autoShadowOnly ?? false);
+  const [autoCascadeVerify, setAutoCascadeVerify] = useState(editing?.autoCascadeVerify ?? false);
+  const [autoPreferenceRouter, setAutoPreferenceRouter] = useState(
+    editing?.autoPreferenceRouter ?? false,
+  );
 
   const effectiveProvider = provider || providers[0]?.canonical || "";
+  const isAuto = isAutoProvider(effectiveProvider);
   const isPending = createModel.isPending || updateModel.isPending;
   const showPicker =
-    !editing && discoveredModels !== null && discoveredModels.length > 0 && !manualMode;
+    !editing && !isAuto && discoveredModels !== null && discoveredModels.length > 0 && !manualMode;
+  const tierTargets = allModels.filter((m) => !isAutoProvider(m.provider) && m.id !== editing?.id);
 
   const resetDiscovery = () => {
     setDiscoveredModels(null);
@@ -881,7 +950,7 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
   };
 
   const fetchModels = async () => {
-    if (!effectiveProvider) return;
+    if (!effectiveProvider || isAuto) return;
     try {
       const { models } = await discoverModels.mutateAsync({ provider: effectiveProvider });
       if (models.length === 0) {
@@ -910,9 +979,60 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
     });
   };
 
+  const buildAutoTiers = (): Record<string, string> | null => {
+    const tiers: Record<string, string> = {};
+    if (tierFast) tiers.fast = tierFast;
+    if (tierBalanced) tiers.balanced = tierBalanced;
+    if (tierStrong) tiers.strong = tierStrong;
+    return Object.keys(tiers).length > 0 ? tiers : null;
+  };
+
   const handleSubmit = async () => {
     if (!effectiveProvider) {
       toast.error(t("Provider is required", "Anbieter ist erforderlich"));
+      return;
+    }
+    if (isAuto) {
+      const autoTiers = buildAutoTiers();
+      if (!autoTiers) {
+        toast.error(
+          t(
+            "Pick at least one tier model (fast, balanced, or strong)",
+            "Wähle mindestens ein Tier-Modell (fast, balanced oder strong)",
+          ),
+        );
+        return;
+      }
+      const body: ModelWriteBody = {
+        provider: AUTO_PROVIDER,
+        model: "router",
+        locality: "cloud",
+        displayName: displayName.trim() || "Auto",
+        usedByCopilot,
+        autoTiers,
+        autoShadowOnly,
+        autoCascadeVerify,
+        autoPreferenceRouter,
+      };
+      try {
+        if (editing) {
+          await updateModel.mutateAsync({ id: editing.id, ...body });
+        } else {
+          await createModel.mutateAsync(body);
+        }
+        toast.success(
+          editing
+            ? t("Auto router updated", "Auto-Router aktualisiert")
+            : t("Auto router added", "Auto-Router hinzugefügt"),
+        );
+        onClose();
+      } catch (err) {
+        toast.error(
+          err instanceof Error
+            ? err.message
+            : t("Something went wrong", "Etwas ist schiefgelaufen"),
+        );
+      }
       return;
     }
     if (showPicker) {
@@ -986,6 +1106,14 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
     }
   };
 
+  const tierValue = (tier: (typeof AUTO_TIERS)[number]) =>
+    tier === "fast" ? tierFast : tier === "balanced" ? tierBalanced : tierStrong;
+  const setTierValue = (tier: (typeof AUTO_TIERS)[number], value: string) => {
+    if (tier === "fast") setTierFast(value);
+    else if (tier === "balanced") setTierBalanced(value);
+    else setTierStrong(value);
+  };
+
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4" onClick={onClose}>
       <div
@@ -995,13 +1123,22 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
         <header className="mb-4 flex items-start justify-between gap-3">
           <div>
             <div className="font-serif text-lg leading-tight">
-              {editing ? t("Edit model", "Modell bearbeiten") : t("New model", "Neues Modell")}
+              {editing
+                ? isAuto
+                  ? t("Edit Auto router", "Auto-Router bearbeiten")
+                  : t("Edit model", "Modell bearbeiten")
+                : t("New model", "Neues Modell")}
             </div>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              {t(
-                "Registers a model config agents can be assigned to.",
-                "Registriert eine Modell-Konfiguration, die Agenten zugewiesen werden kann.",
-              )}
+              {isAuto
+                ? t(
+                    "A virtual router that picks among your connected models by task complexity.",
+                    "Ein virtueller Router, der unter deinen verbundenen Modellen nach Aufgabenkomplexität wählt.",
+                  )
+                : t(
+                    "Registers a model config agents can be assigned to.",
+                    "Registriert eine Modell-Konfiguration, die Agenten zugewiesen werden kann.",
+                  )}
             </p>
           </div>
           <button
@@ -1029,103 +1166,115 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
               {providers.length === 0 && <option value="">{t("Loading…", "Lädt…")}</option>}
               {providers.map((p) => (
                 <option key={p.canonical} value={p.canonical}>
-                  {p.canonical} ({p.locality})
+                  {p.label || `${p.canonical} (${p.locality})`}
                 </option>
               ))}
             </select>
           </label>
 
-          {!editing && !manualMode && (
-            <button
-              type="button"
-              onClick={fetchModels}
-              disabled={discoverModels.isPending || !effectiveProvider}
-              className="w-full rounded-md border border-border px-3 py-2 text-sm font-medium text-foreground transition hover:border-primary/40 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <RefreshCw className="mr-1.5 inline h-3.5 w-3.5" />
-              {discoverModels.isPending
-                ? t("Fetching models…", "Modelle werden geladen …")
-                : discoveredModels
-                  ? t("Fetch again", "Erneut laden")
-                  : t("Fetch available models", "Verfügbare Modelle laden")}
-            </button>
-          )}
-
-          {showPicker ? (
-            <div className="block">
-              <div className="mb-1 flex items-center justify-between">
-                <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                  {t("Models", "Modelle")}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setManualMode(true)}
-                  className="text-[11px] text-muted-foreground underline hover:text-foreground"
-                >
-                  {t("Enter manually instead", "Stattdessen manuell eingeben")}
-                </button>
-              </div>
-              <div className="max-h-56 space-y-1 overflow-y-auto rounded-md border border-border bg-background/30 p-2">
-                {discoveredModels?.map((id) => (
-                  <label
-                    key={id}
-                    className="flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-background/50"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selectedModels.has(id)}
-                      onChange={() => toggleModel(id)}
-                    />
-                    <span className="font-mono text-xs">{id}</span>
-                  </label>
-                ))}
-              </div>
-              <p className="mt-1 text-[11px] text-muted-foreground">
-                {t(`${selectedModels.size} selected`, `${selectedModels.size} ausgewählt`)}
-              </p>
-            </div>
-          ) : (
-            <div className="block">
-              {!editing && manualMode && discoveredModels === null && (
-                <p className="mb-1 text-[11px] text-[color:var(--status-warning)]">
-                  {t(
-                    "Automatic discovery isn't available for this provider — enter the model tag manually.",
-                    "Automatisches Abrufen ist für diesen Anbieter nicht verfügbar — Modell-Tag manuell eingeben.",
-                  )}
-                </p>
-              )}
-              <Field
-                label={t("Model tag", "Modell-Tag")}
-                placeholder="llama3.1:8b / claude-3-5-sonnet-20241022"
-                mono
-                value={modelTag}
-                onChange={setModelTag}
-              />
-            </div>
-          )}
-
-          <label className="block">
-            <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
-              {t("Locality", "Standort")}
-            </span>
-            <select
-              value={locality}
-              onChange={(e) => setLocality(e.target.value as "cloud" | "local")}
-              className="w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
-            >
-              <option value="cloud">{t("Cloud", "Cloud")}</option>
-              <option value="local">{t("Local", "Lokal")}</option>
-            </select>
-          </label>
-
-          {!showPicker && (
+          {isAuto ? (
             <>
               <Field
                 label={t("Display name (optional)", "Anzeigename (optional)")}
-                placeholder="e.g. Sales GPT"
+                placeholder="Auto"
                 value={displayName}
                 onChange={setDisplayName}
               />
+
+              <div className="space-y-2 rounded-md border border-border bg-background/30 p-3">
+                <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
+                  {t("Tier models", "Tier-Modelle")}
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  {t(
+                    "Map each complexity tier to an existing model config. At least one is required.",
+                    "Ordne jedem Komplexitäts-Tier eine bestehende Modell-Konfiguration zu. Mindestens eine ist erforderlich.",
+                  )}
+                </p>
+                {AUTO_TIERS.map((tier) => (
+                  <label key={tier} className="block">
+                    <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
+                      {tier}
+                    </span>
+                    <select
+                      value={tierValue(tier)}
+                      onChange={(e) => setTierValue(tier, e.target.value)}
+                      className="w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
+                    >
+                      <option value="">{t("— none —", "— keines —")}</option>
+                      {tierTargets.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.displayName || m.model} · {m.provider}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ))}
+                {tierTargets.length === 0 && (
+                  <p className="text-[11px] text-[color:var(--status-warning)]">
+                    {t(
+                      "Add at least one concrete model first, then configure Auto tiers.",
+                      "Lege zuerst mindestens ein konkretes Modell an, dann Auto-Tiers konfigurieren.",
+                    )}
+                  </p>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <label className="flex items-start gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={autoCascadeVerify}
+                    onChange={(e) => setAutoCascadeVerify(e.target.checked)}
+                  />
+                  <span>
+                    <span className="font-medium">{t("Cascade verify", "Cascade-Verify")}</span>
+                    <span className="mt-0.5 block text-[11px] text-muted-foreground">
+                      {t(
+                        "After a cheap answer, escalate once if a self-check looks uncertain.",
+                        "Nach einer günstigen Antwort einmal eskalieren, wenn der Self-Check unsicher wirkt.",
+                      )}
+                    </span>
+                  </span>
+                </label>
+                <label className="flex items-start gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={autoPreferenceRouter}
+                    onChange={(e) => setAutoPreferenceRouter(e.target.checked)}
+                  />
+                  <span>
+                    <span className="font-medium">
+                      {t("Preference router", "Preference-Router")}
+                    </span>
+                    <span className="mt-0.5 block text-[11px] text-muted-foreground">
+                      {t(
+                        "Blend the heuristic with learned preference examples from past runs.",
+                        "Heuristik mit gelernten Preference-Beispielen aus früheren Läufen mischen.",
+                      )}
+                    </span>
+                  </span>
+                </label>
+                <label className="flex items-start gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={autoShadowOnly}
+                    onChange={(e) => setAutoShadowOnly(e.target.checked)}
+                  />
+                  <span>
+                    <span className="font-medium">{t("Shadow only", "Nur Shadow")}</span>
+                    <span className="mt-0.5 block text-[11px] text-muted-foreground">
+                      {t(
+                        "Log the complexity choice but always run balanced (or latched) until you trust the policy.",
+                        "Komplexitätswahl loggen, aber immer balanced (oder gelatcht) laufen lassen, bis die Policy vertrauenswürdig ist.",
+                      )}
+                    </span>
+                  </span>
+                </label>
+              </div>
 
               <label className="flex items-center gap-2 text-sm">
                 <input
@@ -1135,62 +1284,167 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
                 />
                 {t("Use this model for the Copilot", "Dieses Modell für den Copilot nutzen")}
               </label>
+            </>
+          ) : (
+            <>
+              {!editing && !manualMode && (
+                <button
+                  type="button"
+                  onClick={fetchModels}
+                  disabled={discoverModels.isPending || !effectiveProvider}
+                  className="w-full rounded-md border border-border px-3 py-2 text-sm font-medium text-foreground transition hover:border-primary/40 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <RefreshCw className="mr-1.5 inline h-3.5 w-3.5" />
+                  {discoverModels.isPending
+                    ? t("Fetching models…", "Modelle werden geladen …")
+                    : discoveredModels
+                      ? t("Fetch again", "Erneut laden")
+                      : t("Fetch available models", "Verfügbare Modelle laden")}
+                </button>
+              )}
 
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={supportsVision}
-                  onChange={(e) => setSupportsVision(e.target.checked)}
-                />
-                {t(
-                  "This model can see images (vision)",
-                  "Dieses Modell kann Bilder verarbeiten (Vision)",
-                )}
-              </label>
-
-              {editing && (
-                <label className="block">
-                  <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
-                    {t("Max output tokens (optional)", "Max. Output-Tokens (optional)")}
-                  </span>
-                  <input
-                    type="number"
-                    min={1}
-                    placeholder="1536"
-                    value={maxTokens}
-                    onChange={(e) => setMaxTokens(e.target.value)}
-                    className="w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
-                  />
+              {showPicker ? (
+                <div className="block">
+                  <div className="mb-1 flex items-center justify-between">
+                    <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
+                      {t("Models", "Modelle")}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setManualMode(true)}
+                      className="text-[11px] text-muted-foreground underline hover:text-foreground"
+                    >
+                      {t("Enter manually instead", "Stattdessen manuell eingeben")}
+                    </button>
+                  </div>
+                  <div className="max-h-56 space-y-1 overflow-y-auto rounded-md border border-border bg-background/30 p-2">
+                    {discoveredModels?.map((id) => (
+                      <label
+                        key={id}
+                        className="flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-background/50"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedModels.has(id)}
+                          onChange={() => toggleModel(id)}
+                        />
+                        <span className="font-mono text-xs">{id}</span>
+                      </label>
+                    ))}
+                  </div>
                   <p className="mt-1 text-[11px] text-muted-foreground">
-                    {t(
-                      "How much an agent on this model may write per turn, before oc8 cuts it off. Leave blank for the framework default (1536). Raise this for reasoning-heavy models on large tasks — hidden reasoning tokens count against this budget too.",
-                      "Wie viel ein Agent auf diesem Modell pro Zug schreiben darf, bevor oc8 abschneidet. Leer lassen für den Standard (1536). Bei reasoning-lastigen Modellen und großen Aufgaben höher setzen — auch unsichtbare Reasoning-Tokens zählen gegen dieses Budget.",
-                    )}
+                    {t(`${selectedModels.size} selected`, `${selectedModels.size} ausgewählt`)}
                   </p>
-                </label>
+                </div>
+              ) : (
+                <div className="block">
+                  {!editing && manualMode && discoveredModels === null && (
+                    <p className="mb-1 text-[11px] text-[color:var(--status-warning)]">
+                      {t(
+                        "Automatic discovery isn't available for this provider — enter the model tag manually.",
+                        "Automatisches Abrufen ist für diesen Anbieter nicht verfügbar — Modell-Tag manuell eingeben.",
+                      )}
+                    </p>
+                  )}
+                  <Field
+                    label={t("Model tag", "Modell-Tag")}
+                    placeholder="llama3.1:8b / claude-3-5-sonnet-20241022"
+                    mono
+                    value={modelTag}
+                    onChange={setModelTag}
+                  />
+                </div>
               )}
 
               <label className="block">
                 <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
-                  {t("Effort (optional)", "Effort (optional)")}
+                  {t("Locality", "Standort")}
                 </span>
-                <input
-                  type="text"
-                  placeholder="e.g. high"
-                  value={effort}
-                  onChange={(e) => setEffort(e.target.value)}
+                <select
+                  value={locality}
+                  onChange={(e) => setLocality(e.target.value as "cloud" | "local")}
                   className="w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
-                />
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  {t(
-                    "Reasoning effort forwarded as-is to providers that support it (currently Anthropic). Leave blank to omit. Not validated here — the provider decides which values it accepts.",
-                    "Reasoning-Aufwand, unverändert an Anbieter weitergereicht, die dies unterstützen (aktuell Anthropic). Leer lassen, um es wegzulassen. Wird hier nicht validiert — der Anbieter entscheidet, welche Werte er akzeptiert.",
-                  )}
-                </p>
+                >
+                  <option value="cloud">{t("Cloud", "Cloud")}</option>
+                  <option value="local">{t("Local", "Lokal")}</option>
+                </select>
               </label>
 
-              {supportsRawParams(effectiveProvider) && (
-                <RawParamsEditor pairs={rawParams} onChange={setRawParams} />
+              {!showPicker && (
+                <>
+                  <Field
+                    label={t("Display name (optional)", "Anzeigename (optional)")}
+                    placeholder="e.g. Sales GPT"
+                    value={displayName}
+                    onChange={setDisplayName}
+                  />
+
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={usedByCopilot}
+                      onChange={(e) => setUsedByCopilot(e.target.checked)}
+                    />
+                    {t("Use this model for the Copilot", "Dieses Modell für den Copilot nutzen")}
+                  </label>
+
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={supportsVision}
+                      onChange={(e) => setSupportsVision(e.target.checked)}
+                    />
+                    {t(
+                      "This model can see images (vision)",
+                      "Dieses Modell kann Bilder verarbeiten (Vision)",
+                    )}
+                  </label>
+
+                  {editing && (
+                    <label className="block">
+                      <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
+                        {t("Max output tokens (optional)", "Max. Output-Tokens (optional)")}
+                      </span>
+                      <input
+                        type="number"
+                        min={1}
+                        placeholder="1536"
+                        value={maxTokens}
+                        onChange={(e) => setMaxTokens(e.target.value)}
+                        className="w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
+                      />
+                      <p className="mt-1 text-[11px] text-muted-foreground">
+                        {t(
+                          "How much an agent on this model may write per turn, before oc8 cuts it off. Leave blank for the framework default (1536). Raise this for reasoning-heavy models on large tasks — hidden reasoning tokens count against this budget too.",
+                          "Wie viel ein Agent auf diesem Modell pro Zug schreiben darf, bevor oc8 abschneidet. Leer lassen für den Standard (1536). Bei reasoning-lastigen Modellen und großen Aufgaben höher setzen — auch unsichtbare Reasoning-Tokens zählen gegen dieses Budget.",
+                        )}
+                      </p>
+                    </label>
+                  )}
+
+                  <label className="block">
+                    <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
+                      {t("Effort (optional)", "Effort (optional)")}
+                    </span>
+                    <input
+                      type="text"
+                      placeholder="e.g. high"
+                      value={effort}
+                      onChange={(e) => setEffort(e.target.value)}
+                      className="w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
+                    />
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      {t(
+                        "Reasoning effort forwarded as-is to providers that support it (currently Anthropic). Leave blank to omit. Not validated here — the provider decides which values it accepts.",
+                        "Reasoning-Aufwand, unverändert an Anbieter weitergereicht, die dies unterstützen (aktuell Anthropic). Leer lassen, um es wegzulassen. Wird hier nicht validiert — der Anbieter entscheidet, welche Werte er akzeptiert.",
+                      )}
+                    </p>
+                  </label>
+
+                  {supportsRawParams(effectiveProvider) && (
+                    <RawParamsEditor pairs={rawParams} onChange={setRawParams} />
+                  )}
+                </>
               )}
             </>
           )}
@@ -1218,7 +1472,9 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
                     `Add ${selectedModels.size} model(s)`,
                     `${selectedModels.size} Modell(e) hinzufügen`,
                   )
-                : t("Add model", "Modell hinzufügen")}
+                : isAuto
+                  ? t("Add Auto router", "Auto-Router hinzufügen")
+                  : t("Add model", "Modell hinzufügen")}
           </button>
         </footer>
       </div>
@@ -1374,52 +1630,54 @@ export function AddProviderWizard({
                   {t("Loading providers…", "Anbieter werden geladen…")}
                 </div>
               )}
-              {providers.map((p) => {
-                const active = canonical === p.canonical;
-                const isLocal = p.locality === "local";
-                return (
-                  <button
-                    key={p.canonical}
-                    type="button"
-                    onClick={() => selectProvider(p)}
-                    className={cn(
-                      "flex w-full items-start gap-3 rounded-lg border p-3 text-left transition",
-                      active
-                        ? "border-primary/60 bg-primary/10"
-                        : "border-border bg-background/30 hover:bg-background/50",
-                    )}
-                  >
-                    <div
-                      className="grid h-10 w-10 shrink-0 place-items-center rounded-md font-serif text-black"
-                      style={{ background: `oklch(0.75 0.14 ${hashHue(p.canonical)})` }}
+              {providers
+                .filter((p) => p.canonical !== AUTO_PROVIDER)
+                .map((p) => {
+                  const active = canonical === p.canonical;
+                  const isLocal = p.locality === "local";
+                  return (
+                    <button
+                      key={p.canonical}
+                      type="button"
+                      onClick={() => selectProvider(p)}
+                      className={cn(
+                        "flex w-full items-start gap-3 rounded-lg border p-3 text-left transition",
+                        active
+                          ? "border-primary/60 bg-primary/10"
+                          : "border-border bg-background/30 hover:bg-background/50",
+                      )}
                     >
-                      {p.canonical[0]?.toUpperCase()}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium">{p.canonical}</span>
-                        <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                          {isLocal ? "local" : "cloud"}
-                        </span>
-                        {!isLocal && p.canonical !== SUBSCRIPTION_PROVIDER && (
-                          <span
-                            className={cn(
-                              "rounded-full border px-1.5 py-0.5 text-[10px]",
-                              p.available
-                                ? "border-[color:var(--status-running)]/40 bg-[color:var(--status-running)]/10 text-[color:var(--status-running)]"
-                                : "border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 text-[color:var(--status-warning)]",
-                            )}
-                          >
-                            {p.available ? "key set" : "key missing"}
-                          </span>
-                        )}
-                        {p.canonical === SUBSCRIPTION_PROVIDER && <SubscriptionRiskBadge />}
+                      <div
+                        className="grid h-10 w-10 shrink-0 place-items-center rounded-md font-serif text-black"
+                        style={{ background: `oklch(0.75 0.14 ${hashHue(p.canonical)})` }}
+                      >
+                        {p.canonical[0]?.toUpperCase()}
                       </div>
-                    </div>
-                    {active && <CheckCircle2 className="mt-1 h-4 w-4 text-primary" />}
-                  </button>
-                );
-              })}
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">{p.canonical}</span>
+                          <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                            {isLocal ? "local" : "cloud"}
+                          </span>
+                          {!isLocal && p.canonical !== SUBSCRIPTION_PROVIDER && (
+                            <span
+                              className={cn(
+                                "rounded-full border px-1.5 py-0.5 text-[10px]",
+                                p.available
+                                  ? "border-[color:var(--status-running)]/40 bg-[color:var(--status-running)]/10 text-[color:var(--status-running)]"
+                                  : "border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 text-[color:var(--status-warning)]",
+                              )}
+                            >
+                              {p.available ? "key set" : "key missing"}
+                            </span>
+                          )}
+                          {p.canonical === SUBSCRIPTION_PROVIDER && <SubscriptionRiskBadge />}
+                        </div>
+                      </div>
+                      {active && <CheckCircle2 className="mt-1 h-4 w-4 text-primary" />}
+                    </button>
+                  );
+                })}
             </div>
           )}
 
