@@ -148,6 +148,7 @@ def task_to_dto(t: m.Task) -> TaskDTO:
         agent_id=str(t.assigned_agent_id) if t.assigned_agent_id else None,
         column=TASK_STATE_TO_COLUMN.get(t.state, "backlog"),
         meta=t.meta_label,
+        record_url=payload.get("record_url") if isinstance(payload.get("record_url"), str) else None,
         title_translations=_i18n_str(i18n, "title"),
         meta_translations=_i18n_str(i18n, "meta"),
     )
@@ -267,6 +268,7 @@ def approval_to_dto(a: m.ApprovalRequest, names: ApprovalNames | None = None) ->
         title_translations=_i18n_str(payload.get("i18n"), "title"),
         detail_translations=_i18n_str(payload.get("i18n"), "detail"),
         reason_context=a.reason_context,
+        record_url=payload.get("record_url") if isinstance(payload.get("record_url"), str) else None,
     )
 
 

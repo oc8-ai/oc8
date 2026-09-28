@@ -56,6 +56,15 @@ outward_tools = [
     "calendar_create_meet_link",
 ]
 
+destructive_tools = ["drive_delete", "calendar_cancel_event"]
+irreversible_tools = ["gmail_send", "gmail_reply"]
+read_before_write = true
+# Creates insert a record that does not exist yet. focus_spec still keys them
+# on `start` for the outward-once cap, but B2 must not demand a prior read of
+# that provisional id (P12 google_schedule_meeting: free/busy OK, create denied).
+create_tools = ["calendar_create_event", "calendar_create_meet_link"]
+entity_lookup_tools = ["gmail_search", "calendar_list_events"]
+
 # NEUTRAL SEAM (focus_spec): WHICH record a call touches. Here it exists for one
 # job -- to scope the outward-once cap above to the EVENT a call reaches instead
 # of to the tool name.

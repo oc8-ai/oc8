@@ -1,0 +1,24 @@
+id = "cross_ticket_issue"
+systems = ["odoo", "jira"]
+origin = "manual"
+scenario = "cross_ticket_issue"
+autonomy = "autonomous"
+expects_question = false
+expects_approval = false
+task_text = """
+There is one open helpdesk ticket named "{prefix}Link Jira issue". Create exactly one Jira issue whose description contains this ticket's numeric id, then write that issue's key into the ticket description. Do not close the ticket and do not comment on the issue.
+"""
+
+[frame_tools.odoo]
+enabled = true
+read = true
+modify = true
+
+[frame_tools.jira]
+enabled = true
+read = true
+modify = true
+
+[budget]
+max_steps = 30
+max_tokens = 300000

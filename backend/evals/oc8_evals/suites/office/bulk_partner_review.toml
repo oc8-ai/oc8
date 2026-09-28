@@ -1,0 +1,23 @@
+id = "bulk_partner_review"
+systems = ["odoo"]
+origin = "manual"
+scenario = "bulk_partner_review"
+autonomy = "autonomous"
+expects_question = false
+expects_approval = false
+code_mode = true
+task_text = """
+Set function to "Reviewed" on every partner whose name starts with "{prefix}".
+There are 25 such partners named "{prefix}Person 01" through "{prefix}Person 25".
+Do it in one program if a program tool is available. Updating one record at a time will not fit the step budget.
+Do not change any other partner.
+"""
+
+[frame_tools.odoo]
+enabled = true
+read = true
+modify = true
+
+[budget]
+max_steps = 8
+max_tokens = 300000

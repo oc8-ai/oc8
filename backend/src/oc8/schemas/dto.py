@@ -61,6 +61,8 @@ class TaskDTO(CamelModel):
     agent_id: str | None = None
     column: str  # backlog | in_progress | waiting | done
     meta: str | None = None
+    #: Form URL of the record this task is on, when the connection can name one.
+    record_url: str | None = None
     title_translations: dict[str, str] = {}
     meta_translations: dict[str, str] = {}
 
@@ -162,6 +164,8 @@ class ApprovalDTO(CamelModel):
     #: `None` for every approval not raised that way -- `detail` remains the
     #: only "why" for those.
     reason_context: dict[str, Any] | None = None
+    #: The record in the source system, when the held call names one.
+    record_url: str | None = None
 
 
 class ClarificationDTO(CamelModel):
@@ -910,6 +914,10 @@ class RunDTO(CamelModel):
     tool_calls: list[dict[str, object]] = []
     task_id: str | None = None
     question: str | None = None
+    # AgentRun.updated_at, i.e. the run's heartbeat (see runtime/reconcile.py's
+    # HEARTBEAT_SECONDS/ABANDONED_AFTER) -- lets the frontend tell a run that's
+    # genuinely wedged from one that's just doing a slow step.
+    updated_at: str
     # Durable copy of every render_component call this run made (agent/engine.py's
     # RunResult.rendered_components / internal_agent.py's ctx["rendered_components"]).
     # Unlike the live-only `run.component_rendered` WS event, this survives a page

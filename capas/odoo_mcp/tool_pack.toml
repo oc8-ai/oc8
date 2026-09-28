@@ -66,6 +66,15 @@ args = ["tool", "run", "mcp-server-odoo"]
 # else here writes to the system, not to a human, and stays unlimited.
 outward_tools = ["post_message"]
 
+destructive_tools = ["delete_record"]
+irreversible_tools = []
+read_before_write = true
+entity_lookup_tools = ["search_records"]
+
+[connections.config.approval_templates]
+post_message = "Allow {connection} to post a message on {record}?"
+delete_record = "Allow {connection} to delete {record}?"
+
 # NEUTRAL SEAM (outward_skip_spec): `post_message` writes BOTH an internal note
 # (subtype "note", staff-only, never reaches the customer) and a genuine
 # customer-visible reply (subtype "comment") through the same tool. Without

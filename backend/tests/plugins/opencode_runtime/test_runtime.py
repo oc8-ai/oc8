@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from cli_harness.toolchain import TOOLCHAIN_NOTE
 
 from oc8 import models as m
 from oc8.sandbox.types import ExecResult, SandboxHandle
@@ -349,7 +350,7 @@ async def test_task_text_cannot_be_parsed_as_a_flag(
         )
 
     fresh_spec = driver.specs[0]
-    assert fresh_spec.command[-2:] == ["--", hostile_task_text]
+    assert fresh_spec.command[-2:] == ["--", f"{hostile_task_text}\n\n{TOOLCHAIN_NOTE}"]
 
     driver.specs.clear()
     agent2, run_id2 = await _seed_agent(
@@ -366,7 +367,7 @@ async def test_task_text_cannot_be_parsed_as_a_flag(
         )
 
     resume_spec = driver.specs[0]
-    assert resume_spec.command[-2:] == ["--", hostile_task_text]
+    assert resume_spec.command[-2:] == ["--", f"{hostile_task_text}\n\n{TOOLCHAIN_NOTE}"]
     assert "opencode-sess-9" in resume_spec.command
 
 
@@ -750,3 +751,37 @@ async def test_the_session_id_is_committed_once_not_every_poll(
         )
 
     assert writes == [], "the id was already known; nothing should have been re-committed"
+
+
+async def test_the_toolchain_note_is_appended_to_the_task_prompt(
+    app_session: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The brief's literal `_FakeDriver(["done"], exit_code=0)` does not match
+    this plugin's real stdout-line shape: OpencodeRuntime parses each line as
+    a JSON opencode event (see test_a_finished_run_returns_done above), not a
+    bare string, so a plain "done" line would blow up in json.loads() before
+    ever reaching the assertion this test actually needs. Using the same
+    JSON "text" event shape as the other tests in this file instead."""
+    from runtime.runtime import OpencodeRuntime
+
+    _use_tmp_session_root(monkeypatch, tmp_path)
+    driver = _FakeDriver(
+        [
+            '{"type":"text","sessionID":"opencode-sess-1",'
+            '"part":{"type":"text","text":"done","time":{"end":123456}}}',
+        ],
+        exit_code=0,
+    )
+    _install(monkeypatch, driver)
+
+    tenant = uuid.uuid4()
+    agent, run_id = await _seed_agent(app_session, tenant, {})
+    async with app_session(tenant) as db:
+        db.add(agent)
+        await OpencodeRuntime().execute(
+            db, agent=agent, task_text="fix the bug", tenant_id=tenant, run_id=run_id,
+        )
+
+    spec = driver.specs[0]
+    assert spec.command[-1].startswith("fix the bug\n\n")
+    assert "Playwright" in spec.command[-1]

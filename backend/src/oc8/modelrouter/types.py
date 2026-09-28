@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Protocol
 
 Role = Literal["system", "user", "assistant", "tool"]
@@ -44,6 +44,7 @@ class NeutralTool:
     name: str
     description: str
     parameters: dict[str, Any]  # JSON Schema (draft 2020-12)
+    annotations: dict[str, Any] | None = None
 
 
 @dataclass
@@ -118,6 +119,14 @@ class ModelParams:
     #: is dropped rather than clobbering it -- see each adapter's payload
     #: builder. None/empty omits the merge entirely.
     extra: dict[str, Any] | None = None
+
+
+def with_prompt_cache_key(params: ModelParams, cache_key: str | None) -> ModelParams:
+    if not cache_key:
+        return params
+    extra = dict(params.extra or {})
+    extra["prompt_cache_key"] = cache_key
+    return replace(params, extra=extra)
 
 
 @dataclass

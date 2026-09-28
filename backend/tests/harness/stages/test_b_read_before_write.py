@@ -1,0 +1,231 @@
+from oc8.agent.harness.stages.b_read_before_write import (
+    entity_key,
+    note_access,
+    read_before_write_denial,
+)
+from oc8.agent.harness.state import Ledger
+
+
+def test_entity_key_joins_connection_kind_and_id() -> None:
+    assert entity_key("office", "document", "42") == "office/document/42"
+
+
+def test_read_before_write_can_be_disabled() -> None:
+    assert (
+        read_before_write_denial(
+            tool="update_document",
+            tier="write",
+            identity=("document", "42"),
+            ledger=Ledger(),
+            connection="office",
+            config={"read_before_write": False},
+            label="Quarterly plan",
+        )
+        is None
+    )
+
+
+def test_create_without_an_entity_identity_is_exempt() -> None:
+    assert (
+        read_before_write_denial(
+            tool="create_document",
+            tier="write",
+            identity=None,
+            ledger=Ledger(),
+            connection="office",
+            config={},
+            label="Quarterly plan",
+        )
+        is None
+    )
+
+
+def test_create_tools_are_exempt_even_with_a_provisional_identity() -> None:
+    """calendar_create_event keys outward on start; that must not trip B2."""
+    assert (
+        read_before_write_denial(
+            tool="calendar_create_event",
+            tier="outward",
+            identity=("calendar_event", "2026-09-28T15:00:00Z"),
+            ledger=Ledger(),
+            connection="google_workspace",
+            config={
+                "read_before_write": True,
+                "create_tools": ["calendar_create_event", "calendar_create_meet_link"],
+                "entity_lookup_tools": ["calendar_list_events"],
+            },
+            label="",
+        )
+        is None
+    )
+
+
+def test_read_tool_is_exempt() -> None:
+    assert (
+        read_before_write_denial(
+            tool="get_document",
+            tier="read",
+            identity=("document", "42"),
+            ledger=Ledger(),
+            connection="office",
+            config={},
+            label="Quarterly plan",
+        )
+        is None
+    )
+
+
+def test_write_is_denied_until_entity_was_read() -> None:
+    assert read_before_write_denial(
+        tool="update_document",
+        tier="write",
+        identity=("document", "42"),
+        ledger=Ledger(),
+        connection="office",
+        config={"entity_lookup_tools": ["find_document", "get_document"]},
+        label="Quarterly plan",
+    ) == (
+        "Precondition not met: you have not read Quarterly plan (document 42) in this run.\n"
+        "Read it first — e.g. find_document —\n"
+        "then make the change. This is a policy decision, not a tool error."
+    )
+
+
+def test_denial_uses_generic_suggestion_without_lookup_tool() -> None:
+    assert read_before_write_denial(
+        tool="update_document",
+        tier="write",
+        identity=("document", "42"),
+        ledger=Ledger(),
+        connection="office",
+        config=None,
+        label="Quarterly plan",
+    ) == (
+        "Precondition not met: you have not read Quarterly plan (document 42) in this run.\n"
+        "Read it first — e.g. a search/read tool —\n"
+        "then make the change. This is a policy decision, not a tool error."
+    )
+
+
+def test_note_access_allows_a_later_write() -> None:
+    ledger = Ledger()
+    note_access(
+        ledger,
+        connection="office",
+        kind="document",
+        id="42",
+        label="Quarterly plan",
+        step_no=3,
+        wrote=False,
+        tool="get_document",
+    )
+
+    assert (
+        read_before_write_denial(
+            tool="update_document",
+            tier="write",
+            identity=("document", "42"),
+            ledger=ledger,
+            connection="office",
+            config={},
+            label="Quarterly plan",
+        )
+        is None
+    )
+    entity = ledger.entities["office/document/42"]
+    assert entity.first_read_step == 3
+    assert entity.last_read_step == 3
+    assert entity.last_write_step is None
+    assert entity.write_tools == []
+
+
+def test_note_access_tracks_writes_without_marking_a_read() -> None:
+    ledger = Ledger()
+    note_access(
+        ledger,
+        connection="office",
+        kind="document",
+        id="42",
+        label="Quarterly plan",
+        step_no=4,
+        wrote=True,
+        tool="update_document",
+    )
+
+    entity = ledger.entities["office/document/42"]
+    assert entity.first_read_step is None
+    assert entity.last_read_step is None
+    assert entity.last_write_step == 4
+    assert entity.write_tools == ["update_document"]
+
+
+def test_a_write_is_unverified_until_a_later_read() -> None:
+    ledger = Ledger()
+    note_access(
+        ledger,
+        connection="c",
+        kind="order",
+        id="9",
+        label="Order",
+        step_no=2,
+        wrote=True,
+        tool="update_record",
+    )
+    assert ledger.writes_unverified == ["c/order/9"]
+    note_access(
+        ledger,
+        connection="c",
+        kind="order",
+        id="9",
+        label="Order",
+        step_no=3,
+        wrote=False,
+        tool="get_record",
+    )
+    assert ledger.writes_unverified == []
+
+
+def test_outward_writes_are_not_tracked() -> None:
+    ledger = Ledger()
+    note_access(
+        ledger,
+        connection="c",
+        kind="ticket",
+        id="1",
+        label="T",
+        step_no=1,
+        wrote=True,
+        tool="post_message",
+        exempt_unverified=True,
+    )
+    assert ledger.writes_unverified == []
+    assert ledger.entities["c/ticket/1"].last_write_step == 1
+
+
+def test_a_failed_path_is_the_callers_job() -> None:
+    # note_access itself does not look at ERROR text; callers skip it.
+    # A second write of the same key does not duplicate the list entry.
+    ledger = Ledger()
+    note_access(
+        ledger,
+        connection="c",
+        kind="k",
+        id="1",
+        label="",
+        step_no=1,
+        wrote=True,
+        tool="a",
+    )
+    note_access(
+        ledger,
+        connection="c",
+        kind="k",
+        id="1",
+        label="",
+        step_no=4,
+        wrote=True,
+        tool="b",
+    )
+    assert ledger.writes_unverified == ["c/k/1"]
+    assert ledger.entities["c/k/1"].write_tools == ["a", "b"]
+    assert ledger.entities["c/k/1"].last_write_step == 4

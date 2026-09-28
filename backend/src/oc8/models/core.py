@@ -52,6 +52,12 @@ class Organization(Base, PkMixin, TimestampMixin):
     totp_step_up_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )
+    #: IANA zone name (e.g. "Europe/Berlin"). Resolved with a safe UTC
+    #: fallback by oc8.agent.harness.prompts.resolve_timezone -- an invalid
+    #: or unrecognized value here never breaks a run, it just falls back.
+    timezone: Mapped[str] = mapped_column(
+        Text, nullable=False, default="UTC", server_default=text("'UTC'")
+    )
 
     __table_args__ = (
         CheckConstraint("tier IN ('standard','enterprise','onprem')", name="ck_org_tier"),

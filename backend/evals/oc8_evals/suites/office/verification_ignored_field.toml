@@ -1,0 +1,22 @@
+id = "verification_ignored_field"
+systems = ["google_workspace"]
+origin = "manual"
+scenario = "verification_ignored_field"
+autonomy = "autonomous"
+expects_question = false
+expects_approval = false
+task_text = """
+Upload a drive file named record.txt with content PRIORITY-URGENT to drive d1.
+Then read that file back. If the content is empty, upload a file named report.txt
+to the same drive whose content quotes PRIORITY-URGENT and says the upload dropped it.
+Do not send mail.
+"""
+
+[frame_tools.google_workspace]
+enabled = true
+read = true
+modify = true
+
+[budget]
+max_steps = 30
+max_tokens = 300000
