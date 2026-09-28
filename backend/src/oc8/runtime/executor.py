@@ -803,8 +803,11 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
 
             run_error: str | None = None
             try:
+                # The pinned runtime_ref, so a runtime assignment not yet
+                # published cannot move a run already in flight (or resumed)
+                # onto a different runtime.
                 runtime_adapter = runtime or await resolve_runtime(
-                    db, tenant_id=tenant_id, agent=agent
+                    db, tenant_id=tenant_id, agent=agent, runtime_ref=pinned["runtime_ref"]
                 )
                 # One heartbeat for every runtime, wrapped here rather than
                 # inside each adapter: there are three of them, and a liveness

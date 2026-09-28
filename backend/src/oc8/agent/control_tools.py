@@ -1192,6 +1192,7 @@ async def execute_control_tool(
             tenant_id=tenant_id,
             frame=await _department_frame(db, agent),
             query_text=query,
+            narrowing=(pinned["narrowing"] or {}) if pinned is not None else None,
         )
         if not recalled.strip():
             return ControlOutcome(

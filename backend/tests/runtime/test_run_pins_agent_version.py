@@ -1,6 +1,10 @@
-"""Task A3: `enqueue_run` pins the agent's current version onto the run it
-creates, so every run source (HTTP, chat, cron, webhook, delegation) executes
-against one immutable configuration from intake to finish."""
+"""Task A3: a run created through `enqueue_run` (HTTP, chat, cron, webhook)
+is pinned to the agent's current version, so it executes against one
+immutable configuration from intake to finish.
+
+The pin itself lives in `RunRepository.create`, which `enqueue_run` calls.
+The run-creation paths that bypass `enqueue_run` (a delegated sub-run, a lead's
+wake-up) are covered in `test_every_run_is_pinned.py`."""
 
 from __future__ import annotations
 

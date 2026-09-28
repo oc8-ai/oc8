@@ -11,7 +11,6 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oc8.models.core import Agent
 from oc8.models.run import AgentRun
 from oc8.runtime.queue import get_run_queue
 from oc8.runtime.repository import RunRepository
@@ -108,16 +107,8 @@ async def enqueue_run(
     #    only the savepoint unwinds, leaving the outer transaction -- and its
     #    transaction-local tenant binding -- alive, so the follow-up SELECT is
     #    still RLS-scoped and can see the row that won the race.
-    # Pin the version that is current right now. A publish landing after this
-    # read gives the run the version it replaced -- never a mixture, because a
-    # version is immutable and everything downstream reads it through
-    # `resolve_version`. `None` (an agent with no version yet, or an id this
-    # tenant cannot see) leaves the run unpinned; `resolve_version` then falls
-    # back to the agent's current version or a live snapshot.
-    agent_version_id = (
-        await db.execute(select(Agent.current_version_id).where(Agent.id == agent_id))
-    ).scalar_one_or_none()
-
+    # `repo.create` pins the run to the agent's current version -- see its
+    # docstring; every run-creation path gets that from the same funnel.
     repo = RunRepository(db)
     try:
         async with db.begin_nested():
@@ -129,7 +120,6 @@ async def enqueue_run(
                 idempotency_key=idempotency_key,
                 coalesce_key=coalesce_key,
                 task_id=task_id,
-                agent_version_id=agent_version_id,
             )
     except IntegrityError:
         existing = (

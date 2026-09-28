@@ -261,7 +261,12 @@ async def build_run_preamble(
     messages.append(NeutralMessage(role="system", content=PROVENANCE_RULE))
 
     memory_ctx = await retrieve_context(
-        db, agent=agent, tenant_id=tenant_id, frame=frame, query_text=task_text
+        db,
+        agent=agent,
+        tenant_id=tenant_id,
+        frame=frame,
+        query_text=task_text,
+        narrowing=(pinned["narrowing"] or {}) if pinned is not None else None,
     )
     if memory_ctx:
         messages.append(NeutralMessage(role="system", content=memory_ctx))
