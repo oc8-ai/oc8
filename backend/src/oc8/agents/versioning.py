@@ -25,6 +25,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.agents.publish_hooks import run_publish_hooks
 from oc8.audit import append_event
 
 #: The behavioural subset of `Agent` that a version snapshots. Anything NOT
@@ -175,6 +176,13 @@ async def publish_version(
         action="agent.version.published",
         resource={"agent_id": str(agent.id), "version_no": version.version_no},
     )
+    # Inside this transaction, and last: the hooks may read the version row and
+    # the audit event, and a refusal must be able to undo both. Every publish
+    # path reaches here -- `create_agent`'s v1, the publish endpoint, and the
+    # rollback endpoint -- which is what makes a rollback "re-enter the publish
+    # gate" (spec §2.7) rather than quietly skip it the way a `current_version_
+    # id` repoint would have.
+    await run_publish_hooks(db, version)
     return version
 
 
