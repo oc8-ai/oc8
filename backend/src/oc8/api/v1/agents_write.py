@@ -27,7 +27,12 @@ from oc8.agents.hire import create_hire_request, require_hire_approval
 from oc8.agents.publish_hooks import PublishHookFailed
 from oc8.agents.versioning import (
     NoChangesToPublish,
+    apply_payload,
+    draft_status,
+    missing_references,
+    pinned_model_config_id,
     publish_version,
+    version_payload,
 )
 from oc8.api.deps import (
     DbSession,
@@ -1239,6 +1244,155 @@ async def publish_agent_version(
         # attribution column in the schema names the member row.
         published_by=actor.member.id,
         current_no=current_no,
+    )
+    await db.flush()
+    return agent_version_to_dto(version, current_version_id=agent.current_version_id)
+
+
+@router.post(
+    "/agents/{agent_id}/versions/{version_no}/rollback",
+    response_model=AgentVersionDTO,
+    status_code=status.HTTP_201_CREATED,
+    # `agent_version:publish`, not a permission of its own: a rollback IS a
+    # publish (spec §2.7, §6). Two names for one authority would mean the first
+    # tenant to grant one without the other discovers they are the same thing.
+    dependencies=[Depends(require_permission(AGENT_VERSION_PUBLISH))],
+)
+async def rollback_agent_version(
+    agent_id: uuid.UUID,
+    version_no: int,
+    db: DbSession,
+    request: Request,
+    actor: Annotated[HumanActor, Depends(require_agent_write())],
+) -> AgentVersionDTO:
+    """Copy an old version onto the working copy and publish it as a NEW one.
+
+    Deliberately not a repoint of `current_version_id`, even though the Skill
+    precedent repoints (`skills_write.py::create_skill_version`). Three reasons,
+    from spec §2.7 and decision 3: version numbers stay monotonic in TIME, so
+    "what was live on date X" is answerable by ordering alone; the rollback
+    re-enters `publish_version` and therefore re-runs the publish hooks, which a
+    repoint would silently skip; and it is `git revert`, not `git reset`.
+
+    No request body; the note is generated (`"Rollback to vN"`).
+
+    **The working copy is overwritten**, unpublished edits included (spec §2.7:
+    the payload is copied "onto the agent row"; the UI confirms with the diff
+    first). Which fields were discarded is recorded on the rollback's audit
+    event, so a draft is never lost without trace. Every refusal below --
+    including the no-op 409 and a refusing hook, both raised AFTER the
+    overwrite -- leaves the route by exception, and `get_db` rolls the whole
+    transaction back, so a refused rollback never touches the draft.
+
+    Refusals, all BEFORE anything is written:
+
+    * **422 `narrowing_exceeds_frame`** -- the restored narrowing no longer fits
+      the department frame as it stands TODAY. The PDP would intersect at
+      runtime anyway, but every other writer of `agent.narrowing` validates
+      first, and this must not become the one door that stores an out-of-frame
+      value.
+    * **422 `version_references_missing`** -- the target names a knowledge
+      base, skill version or model config that has since been deleted.
+      Restoring it would re-create the dangling grant `delete_base` removes as
+      an authz hazard; dropping it would publish a version that is not the one
+      asked for. See `versioning.missing_references`.
+    * **422 subscription model** -- the restored `model_config_id` is one
+      `switch_model` would refuse for this agent (a ChatGPT subscription with
+      an enabled trigger). Same one-door reasoning as the frame check.
+
+    Deliberately NOT re-run, because they guard an operator's FRESH input and a
+    rolled-back value already passed them when first written: `set_narrowing`'s
+    `value_spec` check and `enforce_narrowing_logins`. The latter also MUTATES
+    `narrowing_overridden_keys`, a versioned field this rollback is restoring,
+    so running it would corrupt the provenance being recovered. Residual risk:
+    a login or runtime the restored version names that has since been removed
+    fails at run time, not here.
+    """
+    agent = await _load_agent(db, agent_id)
+    # Before the target is even loaded, and long before `dept.frame` is read:
+    # the 422 below carries violations derived from that frame.
+    await authorize_agent_write(
+        request,
+        db,
+        actor,
+        agent.department_id,
+        not_found=HTTPException(status.HTTP_404_NOT_FOUND, "agent not found"),
+    )
+    principal = actor.principal
+
+    target = (
+        await db.execute(
+            select(m.AgentVersion).where(
+                m.AgentVersion.agent_id == agent.id,
+                m.AgentVersion.version_no == version_no,
+            )
+        )
+    ).scalar_one_or_none()
+    if target is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "version not found")
+
+    payload = version_payload(target)
+    dept = await db.get(m.Department, agent.department_id)
+    frame = dept.frame if dept else {}
+    violations = narrowing_within_frame(frame, payload.get("narrowing") or {})
+    if violations:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            {"error": "narrowing_exceeds_frame", "violations": [v.__dict__ for v in violations]},
+        )
+
+    missing = await missing_references(db, payload)
+    if missing:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            {"error": "version_references_missing", "missing": missing},
+        )
+
+    restored_model = pinned_model_config_id(payload)
+    if restored_model != agent.model_config_id:
+        try:
+            await assert_manual_only_compatible(
+                db, agent_id=agent.id, model_config_id=restored_model
+            )
+        except SubscriptionModelNotManualOnly as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+
+    current_no = await _current_version_no(db, agent)
+    # Read BEFORE the overwrite: this is the draft about to be discarded.
+    discarded = (await draft_status(db, agent)).changed_fields
+
+    await apply_payload(db, agent, payload)
+    await db.flush()
+    version = await _publish_or_refuse(
+        db,
+        agent,
+        note=f"Rollback to v{version_no}",
+        published_by=actor.member.id,
+        current_no=current_no,
+        # The reserved `_meta` key, which `payload_hash` excludes -- see
+        # META_KEY in agents/versioning.py. Inside the hash it would break the
+        # no-op 409 for every agent that has ever been rolled back.
+        meta={"rolled_back_from": version_no},
+    )
+
+    # A SECOND event, on top of `publish_version`'s own
+    # `agent.version.published`. The first records that a version exists; this
+    # records the operator action, its target, and what it threw away.
+    await append_event(
+        db,
+        tenant_id=principal.tenant_id,
+        actor_type="operator",
+        actor_id=None,
+        category="admin",
+        action="agent.version.rolled_back",
+        resource={
+            "agent_id": str(agent.id),
+            "version_no": version.version_no,
+            "rolled_back_from": version_no,
+            "discarded_draft_fields": list(discarded),
+            "by": principal.subject,
+        },
+        principal=principal,
     )
     await db.flush()
     return agent_version_to_dto(version, current_version_id=agent.current_version_id)

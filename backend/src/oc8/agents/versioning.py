@@ -15,6 +15,7 @@ add/flush only -- callers own the commit, same convention as
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import uuid
@@ -375,3 +376,204 @@ def pinned_model_config_id(cfg: Mapping[str, Any]) -> uuid.UUID | None:
     if raw is None or raw == "":
         return None
     return raw if isinstance(raw, uuid.UUID) else uuid.UUID(str(raw))
+
+
+#: The two versioned columns that are UUIDs. `snapshot_agent` stringifies them
+#: (JSONB has no UUID type), so the inverse has to parse them back -- assigning
+#: the string would give SQLAlchemy a `str` where the column is `Uuid`.
+_UUID_COLUMNS: Final[frozenset[str]] = frozenset({"model_config_id", "role_id"})
+
+
+async def missing_references(db: AsyncSession, payload: dict[str, Any]) -> dict[str, list[str]]:
+    """Ids `payload` points at that no longer exist (or are soft-deleted), by
+    payload field. Empty dict when everything resolves.
+
+    Rollback's pre-flight, run before anything is written. A version is
+    immutable but what it references is not: a knowledge base deleted since
+    (its grants were removed WITH it -- `knowledge/tombstone.py` calls a
+    dangling grant an authz hazard), a model config deleted after the agent
+    was moved off it, a skill version removed. Restoring any of those would
+    either re-create exactly the dangling row a deletion was careful to remove,
+    or publish a version whose payload silently differs from its target if the
+    reference were dropped instead. Refusing is the only answer that is neither.
+
+    `role_id` is deliberately not checked: nothing in the codebase reads or
+    writes `agent.role_id` other than versioning itself, so there is no table
+    whose absence would mean anything.
+    """
+    missing: dict[str, list[str]] = {}
+
+    kb_ids = {uuid.UUID(str(k)) for k in payload.get("knowledge_grants") or []}
+    if kb_ids:
+        live = set(
+            (
+                await db.execute(
+                    select(m.KnowledgeBase.id).where(
+                        m.KnowledgeBase.id.in_(kb_ids), m.KnowledgeBase.deleted_at.is_(None)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if kb_ids - live:
+            missing["knowledge_grants"] = sorted(str(k) for k in kb_ids - live)
+
+    sv_ids = {
+        uuid.UUID(str(row["skill_version_id"])) for row in payload.get("skill_assignments") or []
+    }
+    if sv_ids:
+        live = set(
+            (
+                await db.execute(
+                    # Joined to `skill`: `delete_skill` HARD-deletes a skill
+                    # nobody is assigned to and leaves its versions behind, so
+                    # a version row alone does not prove the skill exists. An
+                    # ARCHIVED skill (`skill.deleted_at` set) does count as
+                    # live -- archiving exists precisely so assignments keep
+                    # resolving.
+                    select(m.SkillVersion.id)
+                    .join(m.Skill, m.Skill.id == m.SkillVersion.skill_id)
+                    .where(m.SkillVersion.id.in_(sv_ids), m.SkillVersion.deleted_at.is_(None))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if sv_ids - live:
+            missing["skill_assignments"] = sorted(str(s) for s in sv_ids - live)
+
+    model_id = pinned_model_config_id(payload)
+    if model_id is not None and await db.get(m.ModelConfig, model_id) is None:
+        missing["model_config_id"] = [str(model_id)]
+
+    return missing
+
+
+async def apply_payload(db: AsyncSession, agent: m.Agent, payload: dict[str, Any]) -> None:
+    """Copy a version's payload back onto the working copy: `snapshot_agent`
+    inverted. `apply_payload` then `snapshot_agent` reproduces `payload`
+    exactly (minus `_meta`) -- `test_apply_payload_round_trips_to_an_identical_
+    snapshot` pins that, and it is the property that makes a rollback publish
+    the version it claims to restore.
+
+    Used ONLY by rollback. A rollback that set the scalar columns and left
+    `skill_assignment` and `knowledge_grant` alone would restore an agent's
+    instructions while leaving it holding whatever skills and knowledge somebody
+    added afterwards -- a configuration that never existed at any point in time.
+
+    A key ABSENT from the payload is left alone rather than cleared. Absent is
+    not empty: a version stored before a field joined the snapshot never
+    recorded it, and `resolve_version` already serves such a version with the
+    row's current value -- so leaving it is what that version has actually been
+    running with, whereas clearing it would, for the two collections, silently
+    strip every skill and grant the agent holds.
+
+    Does NOT publish, validate against the department frame or any other live
+    constraint, check `missing_references`, or audit. The caller owns all of
+    those, in the order `api/v1/agents_write.py`'s module docstring requires.
+    """
+    for col in _VERSIONED_COLUMNS:
+        if col not in payload:
+            continue
+        value = payload[col]
+        if col in _UUID_COLUMNS:
+            setattr(agent, col, uuid.UUID(str(value)) if value else None)
+        else:
+            # Deep-copied: the payload is usually the version row's own JSONB,
+            # and aliasing it onto the agent would let a later in-place edit of
+            # the working copy reach into an immutable version.
+            setattr(agent, col, copy.deepcopy(value))
+
+    if "skill_assignments" in payload:
+        await _apply_skill_assignments(db, agent, payload["skill_assignments"] or [])
+    if "knowledge_grants" in payload:
+        await _apply_knowledge_grants(db, agent, payload["knowledge_grants"] or [])
+
+
+async def _apply_skill_assignments(
+    db: AsyncSession, agent: m.Agent, wanted: list[dict[str, Any]]
+) -> None:
+    """Make this agent's OWN live assignments exactly `wanted`.
+
+    Disable, never delete: `assign_skill` re-enables an existing row rather
+    than inserting a second one, so `enabled` is the live/not-live term the
+    rest of the codebase already agrees on, and the row has to survive for a
+    later re-assign to find it.
+
+    Soft-deleted rows are loaded too, and REVIVED if wanted rather than joined
+    by a fresh insert: `uq_skill_assignment_agent` (migration 0040) is UNIQUE
+    over (agent_id, skill_version_id) with no `deleted_at` term, so an insert
+    beside a soft-deleted row for the same pair is an IntegrityError.
+
+    `agent_id == agent.id` only. Department- and tenant-wide assignments
+    (agent_id NULL) are inherited policy that `snapshot_agent` excludes, and
+    disabling one would strip a skill from every colleague.
+    """
+    target = {uuid.UUID(str(row["skill_version_id"])) for row in wanted}
+    existing = (
+        (await db.execute(select(m.SkillAssignment).where(m.SkillAssignment.agent_id == agent.id)))
+        .scalars()
+        .all()
+    )
+    seen: set[uuid.UUID] = set()
+    for row in existing:
+        seen.add(row.skill_version_id)
+        if row.skill_version_id in target:
+            row.enabled = True
+            row.deleted_at = None
+        elif row.deleted_at is None:
+            row.enabled = False
+    for version_id in sorted(target - seen):
+        db.add(
+            m.SkillAssignment(
+                tenant_id=agent.tenant_id,
+                agent_id=agent.id,
+                skill_version_id=version_id,
+                enabled=True,
+            )
+        )
+
+
+async def _apply_knowledge_grants(db: AsyncSession, agent: m.Agent, wanted: list[str]) -> None:
+    """Make this agent's knowledge grants exactly `wanted`.
+
+    Filtered on `grantee_type == "agent"` as well as `grantee_id`, and that is
+    not belt-and-braces: `knowledge_grant` holds department-wide rows in the
+    same two columns, so a delete keyed on `grantee_id` alone could revoke a
+    whole department's knowledge base.
+
+    Hard delete rather than soft: `KnowledgeGrant` has no `SoftDeleteMixin` and
+    a UNIQUE over (tenant, kb, grantee_type, grantee_id), so a disabled row
+    would block the grant ever being made again. A removed grant's `scope` is
+    not versioned (the payload holds kb ids only) -- re-created grants get the
+    column default, which is what every grant writer in the codebase uses.
+    """
+    target = {uuid.UUID(str(kb_id)) for kb_id in wanted}
+    existing = (
+        (
+            await db.execute(
+                select(m.KnowledgeGrant).where(
+                    m.KnowledgeGrant.grantee_type == "agent",
+                    m.KnowledgeGrant.grantee_id == agent.id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    seen: set[uuid.UUID] = set()
+    for row in existing:
+        if row.kb_id in target:
+            seen.add(row.kb_id)
+        else:
+            await db.delete(row)
+    for kb_id in sorted(target - seen):
+        db.add(
+            m.KnowledgeGrant(
+                tenant_id=agent.tenant_id,
+                kb_id=kb_id,
+                grantee_type="agent",
+                grantee_id=agent.id,
+            )
+        )
