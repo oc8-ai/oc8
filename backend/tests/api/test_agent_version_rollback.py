@@ -820,3 +820,182 @@ async def test_rolling_back_onto_a_subscription_model_with_triggers_is_refused(
             )
     assert res.status_code == 422, res.text
     assert "ChatGPT subscription" in str(res.json()["detail"])
+
+
+# ------------------------------------------------ fix round 1: grants + model
+
+
+async def _hire_with_grant_history(
+    app_session: AppSessionFactory, tenant: uuid.UUID
+) -> tuple[str, uuid.UUID]:
+    """v1: no grant. v2: one agent grant on a fresh KB. Returns (agent, kb)."""
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            agent_id = await _hire(client, _headers(tenant))
+
+    async with app_session(tenant) as db:
+        kb = m.KnowledgeBase(tenant_id=tenant, name=f"KB-{uuid.uuid4().hex}", embedding_model="e")
+        db.add(kb)
+        await db.flush()
+        db.add(
+            m.KnowledgeGrant(
+                tenant_id=tenant, kb_id=kb.id, grantee_type="agent", grantee_id=uuid.UUID(agent_id)
+            )
+        )
+        kb_id = kb.id
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            v2 = await client.post(
+                f"/api/v1/agents/{agent_id}/versions",
+                json={"expectedCurrentVersionNo": 1},
+                headers=_headers(tenant),
+            )
+            assert v2.status_code == 201, v2.text
+    return agent_id, kb_id
+
+
+async def test_a_dept_manager_may_not_change_knowledge_grants_through_a_rollback(
+    app_session: AppSessionFactory,
+) -> None:
+    """`POST /knowledge/grants` needs `knowledge:manage`, which `dept_manager`
+    does not hold. Rolling back to a version with a different grant set is a
+    grant write, so it needs the same permission -- otherwise rollback is the
+    side door that removes (or re-creates) a grant an admin decided on."""
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    agent_id, kb_id = await _hire_with_grant_history(app_session, tenant)
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            res = await client.post(
+                f"/api/v1/agents/{agent_id}/versions/1/rollback",
+                headers={"Authorization": f"Bearer {_token(tenant, 'dept_manager')}"},
+            )
+    assert res.status_code == 403, res.text
+    assert "knowledge:manage" in str(res.json()["detail"])
+
+    async with app_session(tenant) as db:
+        grants = (
+            (await db.execute(select(m.KnowledgeGrant).where(m.KnowledgeGrant.kb_id == kb_id)))
+            .scalars()
+            .all()
+        )
+        assert len(grants) == 1
+        count = (
+            await db.execute(
+                select(m.AgentVersion).where(m.AgentVersion.agent_id == uuid.UUID(agent_id))
+            )
+        ).all()
+        assert len(count) == 2
+
+
+async def test_a_dept_manager_may_roll_back_when_the_grants_do_not_change(
+    app_session: AppSessionFactory,
+) -> None:
+    """No blanket requirement: a rollback that leaves the grant set alone (here
+    v3 -> v2, both holding the same grant, differing only in mission) needs
+    nothing beyond `agent_version:publish`."""
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    agent_id, kb_id = await _hire_with_grant_history(app_session, tenant)
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            await _publish_missions(client, _headers(tenant), agent_id, [])
+            patched = await client.patch(
+                f"/api/v1/agents/{agent_id}/instructions",
+                json={"instructions": "v3"},
+                headers=_headers(tenant),
+            )
+            assert patched.status_code == 200
+            v3 = await client.post(
+                f"/api/v1/agents/{agent_id}/versions",
+                json={"expectedCurrentVersionNo": 2},
+                headers=_headers(tenant),
+            )
+            assert v3.status_code == 201, v3.text
+            res = await client.post(
+                f"/api/v1/agents/{agent_id}/versions/2/rollback",
+                headers={"Authorization": f"Bearer {_token(tenant, 'dept_manager')}"},
+            )
+            assert res.status_code == 201, res.text
+            assert res.json()["payload"]["knowledge_grants"] == [str(kb_id)]
+
+
+async def test_the_rollback_event_records_which_grants_changed(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    agent_id, kb_id = await _hire_with_grant_history(app_session, tenant)
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            res = await client.post(
+                f"/api/v1/agents/{agent_id}/versions/1/rollback", headers=_headers(tenant)
+            )
+            assert res.status_code == 201, res.text
+
+    async with app_session(tenant) as db:
+        event = (
+            await db.execute(
+                select(m.AuditEvent).where(
+                    m.AuditEvent.action == "agent.version.rolled_back",
+                    m.AuditEvent.resource["agent_id"].astext == agent_id,
+                )
+            )
+        ).scalar_one()
+    assert event.resource["knowledge_grants_added"] == []
+    assert event.resource["knowledge_grants_removed"] == [str(kb_id)]
+
+
+async def test_rolling_back_the_model_refreshes_the_displayed_model(
+    app_session: AppSessionFactory,
+) -> None:
+    """`presentation.llm/provider` is not versioned, so rollback must refresh
+    it itself when it changes `model_config_id` -- otherwise the agent list
+    names the model the agent ran BEFORE the rollback."""
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    async with app_session(tenant) as db:
+        first = m.ModelConfig(
+            tenant_id=tenant,
+            provider="anthropic",
+            model="claude-first",
+            display_name=f"First-{uuid.uuid4().hex[:6]}",
+        )
+        second = m.ModelConfig(tenant_id=tenant, provider="openai", model="gpt-second")
+        db.add_all([first, second])
+        await db.flush()
+        first_id, first_name, second_id = first.id, first.display_name, second.id
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            headers = _headers(tenant)
+            agent_id = await _hire(client, headers)
+            for index, model_id in enumerate([first_id, second_id], start=1):
+                switched = await client.patch(
+                    f"/api/v1/agents/{agent_id}/model-config",
+                    json={"modelConfigId": str(model_id)},
+                    headers=headers,
+                )
+                assert switched.status_code == 200, switched.text
+                published = await client.post(
+                    f"/api/v1/agents/{agent_id}/versions",
+                    json={"expectedCurrentVersionNo": index},
+                    headers=headers,
+                )
+                assert published.status_code == 201, published.text
+
+            before = await client.get(f"/api/v1/agents/{agent_id}", headers=headers)
+            assert (before.json()["llm"], before.json()["provider"]) == ("gpt-second", "openai")
+
+            res = await client.post(
+                f"/api/v1/agents/{agent_id}/versions/2/rollback", headers=headers
+            )
+            assert res.status_code == 201, res.text
+            after = await client.get(f"/api/v1/agents/{agent_id}", headers=headers)
+    assert (after.json()["llm"], after.json()["provider"]) == (first_name, "anthropic")

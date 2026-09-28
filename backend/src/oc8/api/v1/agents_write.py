@@ -24,6 +24,7 @@ from sqlalchemy import func, select
 
 from oc8 import models as m
 from oc8.agents.hire import create_hire_request, require_hire_approval
+from oc8.agents.presentation import show_model
 from oc8.agents.publish_hooks import PublishHookFailed
 from oc8.agents.versioning import (
     NoChangesToPublish,
@@ -32,6 +33,7 @@ from oc8.agents.versioning import (
     missing_references,
     pinned_model_config_id,
     publish_version,
+    snapshot_agent,
     version_payload,
 )
 from oc8.api.deps import (
@@ -44,8 +46,9 @@ from oc8.api.v1._serializers import agent_to_dto, agent_version_to_dto
 from oc8.api.v1.agents import _agent_detail_dto
 from oc8.api.v1.files import _attachment_dto, _store_upload
 from oc8.audit import append_event
+from oc8.authz.authority import authority_for_principal
 from oc8.authz.pdp import ToolPolicy, missing_skill_requirements, narrowing_within_frame
-from oc8.authz.permissions import AGENT_VERSION_PUBLISH
+from oc8.authz.permissions import AGENT_VERSION_PUBLISH, KNOWLEDGE, MANAGE, perm
 from oc8.authz.scope import HumanActor
 from oc8.capas.discovery import connection_supports_value_spec, resolve_tool_pack_connection
 from oc8.capas.manifest import GuardrailAttribute
@@ -784,10 +787,7 @@ async def switch_model(
     except SubscriptionModelNotManualOnly as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     agent.model_config_id = mc.id
-    pres = dict(agent.presentation or {})
-    pres["llm"] = mc.display_name or mc.model
-    pres["provider"] = mc.provider
-    agent.presentation = pres
+    show_model(agent, mc)
     # jsonb: replaced whole, or SQLAlchemy never notices the mutation. Each
     # of the four sampling overrides is independent -- a save that doesn't
     # mention a field (not in model_fields_set) leaves whatever this agent
@@ -1286,6 +1286,11 @@ async def rollback_agent_version(
 
     Refusals, all BEFORE anything is written:
 
+    * **403 `knowledge:manage`** -- only when the rollback would add or remove
+      one of the agent's knowledge grants. That is a grant write, and the grant
+      route itself requires `knowledge:manage`; `agent_version:publish` alone
+      (a department manager) must not reach it by the back door. A rollback
+      that leaves the grant set unchanged needs nothing extra.
     * **422 `narrowing_exceeds_frame`** -- the restored narrowing no longer fits
       the department frame as it stands TODAY. The PDP would intersect at
       runtime anyway, but every other writer of `agent.narrowing` validates
@@ -1332,6 +1337,29 @@ async def rollback_agent_version(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "version not found")
 
     payload = version_payload(target)
+
+    # A rollback that changes the agent's knowledge grants IS a grant write,
+    # and `POST /knowledge/grants` requires `knowledge:manage` -- which
+    # `dept_manager` holds `agent_version:publish` without. Unchecked, rollback
+    # would be the side door that re-creates a grant an admin revoked (a
+    # confidential base pulled after an incident) or drops one added since.
+    # Only when the grant set actually CHANGES: rolling back a mission must not
+    # suddenly need knowledge authority.
+    live_grants = set((await snapshot_agent(db, agent))["knowledge_grants"])
+    wanted_grants = {str(k) for k in payload.get("knowledge_grants") or []}
+    grants_added = sorted(wanted_grants - live_grants)
+    grants_removed = sorted(live_grants - wanted_grants)
+    if "knowledge_grants" not in payload:
+        # `apply_payload` leaves an absent key alone, so nothing would change.
+        grants_added, grants_removed = [], []
+    if grants_added or grants_removed:
+        authority = await authority_for_principal(request, db, principal)
+        if perm(KNOWLEDGE, MANAGE) not in authority.tenant_wide:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                f"requires permission: {perm(KNOWLEDGE, MANAGE)} "
+                "(this rollback changes the agent's knowledge grants)",
+            )
     dept = await db.get(m.Department, agent.department_id)
     frame = dept.frame if dept else {}
     violations = narrowing_within_frame(frame, payload.get("narrowing") or {})
@@ -1361,7 +1389,17 @@ async def rollback_agent_version(
     # Read BEFORE the overwrite: this is the draft about to be discarded.
     discarded = (await draft_status(db, agent)).changed_fields
 
+    model_before = agent.model_config_id
     await apply_payload(db, agent, payload)
+    if agent.model_config_id != model_before:
+        # `presentation.llm/provider` is not versioned, so nothing restored it;
+        # without this the agent list keeps naming the pre-rollback model.
+        show_model(
+            agent,
+            await db.get(m.ModelConfig, agent.model_config_id)
+            if agent.model_config_id is not None
+            else None,
+        )
     await db.flush()
     version = await _publish_or_refuse(
         db,
@@ -1390,6 +1428,8 @@ async def rollback_agent_version(
             "version_no": version.version_no,
             "rolled_back_from": version_no,
             "discarded_draft_fields": list(discarded),
+            "knowledge_grants_added": grants_added,
+            "knowledge_grants_removed": grants_removed,
             "by": principal.subject,
         },
         principal=principal,

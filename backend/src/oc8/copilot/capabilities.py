@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agents.hire import require_hire_approval
+from oc8.agents.presentation import show_model
 from oc8.agents.versioning import publish_version
 from oc8.auth import Principal
 from oc8.authz import pdp
@@ -791,10 +792,7 @@ async def apply_operation(db: AsyncSession, *, tenant_id: uuid.UUID, data: dict[
         except SubscriptionModelNotManualOnly as exc:
             raise InvalidOperation() from exc
         agent.model_config_id = mc.id
-        presentation = dict(agent.presentation or {})
-        presentation["llm"] = mc.display_name or mc.model
-        presentation["provider"] = mc.provider
-        agent.presentation = presentation
+        show_model(agent, mc)
         await db.flush()
         return
     if isinstance(operation, AgentSkillAssign):
