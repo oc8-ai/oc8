@@ -31,6 +31,7 @@ from sqlalchemy import func, select
 
 from oc8 import models as m
 from oc8.agents.repo import visible_agent, visible_agents
+from oc8.agents.versioning import diff_payloads, snapshot_agent, version_payload
 from oc8.api.deps import DbSession, require_departmental
 from oc8.api.v1._serializers import agent_to_dto, agent_version_to_dto, agent_version_to_summary_dto
 from oc8.api.v1.files import _attachment_dto
@@ -44,7 +45,9 @@ from oc8.schemas.dto import (
     AgentDTO,
     AgentInstructionHistoryDTO,
     AgentInstructionRevisionDTO,
+    AgentVersionDiffDTO,
     AgentVersionDTO,
+    AgentVersionFieldDiffDTO,
     AgentVersionSummaryDTO,
     FileAttachmentDTO,
     ToolPolicyDTO,
@@ -307,6 +310,60 @@ async def list_agent_versions(
             for row in rows
         ],
         total_count=total_count,
+    )
+
+
+@router.get(
+    # Declared BEFORE `/versions/{version_no}` on purpose. FastAPI matches in
+    # declaration order, and `{version_no}` is an `int` path param -- registered
+    # first, it swallows `/versions/diff` and answers 422 ("value is not a valid
+    # integer") for every request to this endpoint, with no handler ever
+    # reached. Pinned by `test_the_literal_diff_segment_is_not_read_as_a_
+    # version_number`.
+    "/agents/{agent_id}/versions/diff",
+    response_model=AgentVersionDiffDTO,
+)
+async def diff_agent_versions(
+    agent_id: uuid.UUID,
+    request: Request,
+    db: DbSession,
+    actor: Annotated[HumanActor, Depends(require_departmental(perm(AGENT_VERSION, VIEW)))],
+    # `from` is a Python keyword, so the parameter is `from_version` with an
+    # explicit alias -- the same `Query(alias=...)` shape `audit.py`'s export
+    # uses for its own `from`/`to` window.
+    from_version: Annotated[int, Query(alias="from", ge=1)],
+    to: Annotated[int | None, Query(ge=1)] = None,
+) -> AgentVersionDiffDTO:
+    """Structural diff of two payloads, computed server-side (spec §2.7).
+
+    Server-side rather than in the browser so the Review dialog, the Versions
+    tab and any future compliance report render the same comparison from the
+    same code -- three client-side implementations of "one level deep inside a
+    JSONB field" is three chances to disagree about what changed.
+
+    `to` omitted means the WORKING COPY, which is what the publish bar's Review
+    button asks for. `to_version_no` comes back null in that case rather than
+    carrying the current number: the right-hand side is an unpublished draft,
+    and naming it after a published version would be a lie in the one dialog an
+    operator reads before putting something into production.
+    """
+    agent = await _visible_agent_or_404(request, db, actor, agent_id)
+    before = version_payload(await _version_or_404(db, agent, from_version))
+    if to is None:
+        after = await snapshot_agent(db, agent)
+    else:
+        after = version_payload(await _version_or_404(db, agent, to))
+    return AgentVersionDiffDTO(
+        from_version_no=from_version,
+        to_version_no=to,
+        entries=[
+            AgentVersionFieldDiffDTO(
+                field=str(entry["field"]),
+                before=entry["before"],
+                after=entry["after"],
+            )
+            for entry in diff_payloads(before, after)
+        ],
     )
 
 
