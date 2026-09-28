@@ -940,6 +940,12 @@ async def step(
         harness.state.last_compacted_step = harness.state.step_no
         harness.state.ledger_sent_hash = ledger_fingerprint(harness.state.ledger)
 
+    # Step timings this request finishes but doesn't publish immediately --
+    # every close below shares the one commit at the bottom of this loop
+    # (`run.context = ctx; await db.commit()`), so publishing has to wait
+    # until that commit actually lands, not at the moment finish_step runs.
+    finished_step_timings: list[dict[str, Any]] = []
+
     while True:
         ledger_hash = ledger_fingerprint(harness.state.ledger)
         if ledger_hash != harness.state.ledger_sent_hash:
@@ -970,7 +976,7 @@ async def step(
         # executor.py.
         step_timings = ctx.setdefault("stepTimings", [])
         if step_timings and "_t0" in step_timings[-1]:
-            await _finish_step_timing(run, step_timings[-1])
+            finished_step_timings.append(finish_step(step_timings[-1]))
         step_rec = start_step(harness.state.step_no)
         step_timings.append(step_rec)
         step_probe = StreamTiming()
@@ -1119,20 +1125,26 @@ async def step(
             )
             if not verdict.ok:
                 note_tools(step_rec, 0)
-                await _finish_step_timing(run, step_rec)
+                finished_step_timings.append(finish_step(step_rec))
                 transcript.append(
                     _from_message(NeutralMessage(role="user", content=verdict.reminder or ""))
                 )
                 continue
         if not result.tool_calls:
             note_tools(step_rec, 0)
-            await _finish_step_timing(run, step_rec)
+            finished_step_timings.append(finish_step(step_rec))
         break
 
     harness.store(ctx)
     ctx["transcript"] = transcript
     run.context = ctx
     await db.commit()
+    # Only now, after the commit that actually persists these entries in
+    # `ctx["stepTimings"]`, tell an open tab about them -- publishing any
+    # earlier (right when finish_step ran, above) could hand out a live
+    # event for a step this request then failed to commit at all.
+    for timing in finished_step_timings:
+        await publish_run_step_timing(run.tenant_id, run_id=run.id, timing=timing)
 
     # Reaching here with no tool call and open todos means the round cap (or
     # the step budget) was hit, not that everything got done -- say so in the
@@ -1652,8 +1664,9 @@ async def _dispatch_one_tool(
 
     if decision.effect is Effect.REQUIRE_APPROVAL:
         step_timings = ctx.setdefault("stepTimings", [])
+        closed_step_timing: dict[str, Any] | None = None
         if step_timings and "_t0" in step_timings[-1]:
-            await _finish_step_timing(run, step_timings[-1])
+            closed_step_timing = finish_step(step_timings[-1])
         link = await _record_url()
         ar = await raise_approval(
             db,
@@ -1678,6 +1691,10 @@ async def _dispatch_one_tool(
             "isolated_result": {"status": "waiting_for_approval", "output": decision.reason or ""},
         }
         await db.commit()
+        if closed_step_timing is not None:
+            await publish_run_step_timing(
+                run.tenant_id, run_id=run.id, timing=closed_step_timing
+            )
         from oc8.realtime.bus import get_event_bus
 
         await get_event_bus().publish_event(
@@ -2131,11 +2148,12 @@ async def _dispatch_one_tool(
     # until the next /step finishes it (tool wait = sum of /tool calls before
     # the next model step). A suspend ends the step without another /step.
     step_timings = ctx.setdefault("stepTimings", [])
+    closed_suspend_timing: dict[str, Any] | None = None
     if dispatched and step_timings and "_t0" in step_timings[-1]:
         open_rec = step_timings[-1]
         note_tools(open_rec, int(open_rec.get("tool_wait_ms", 0)) + duration_ms)
         if suspend is not None:
-            await _finish_step_timing(run, open_rec)
+            closed_suspend_timing = finish_step(open_rec)
 
     # This tool call belongs to the completion /step just cached (see its own
     # ctx["pending_cache_key"] comment) -- a real failure here means that
@@ -2220,6 +2238,8 @@ async def _dispatch_one_tool(
     await append_tool_call(db, run, live_call)
     await db.commit()
     await publish_run_tool_call(run.tenant_id, run_id=run.id, call=live_call)
+    if closed_suspend_timing is not None:
+        await publish_run_step_timing(run.tenant_id, run_id=run.id, timing=closed_suspend_timing)
 
     if suspend is not None:
         return ToolResult(status=suspend, output=output, spill=spill_payload)

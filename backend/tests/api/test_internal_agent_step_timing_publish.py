@@ -20,10 +20,17 @@ from typing import Any
 import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.agent.harness.step_timing import start_step
 from oc8.main import create_app
-from tests.api.test_internal_agent import _agent_token, _plain_agent_run
+from tests.api.test_internal_agent import (
+    _agent_token,
+    _mcp_backed_run,
+    _plain_agent_run,
+    _post_tool,
+)
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -84,3 +91,116 @@ async def test_step_publishes_a_live_step_timing_when_the_step_finishes(
         stored = await db.get(m.AgentRun, run_id)
         assert stored is not None
         assert stored.context["stepTimings"] == [timing]
+
+
+async def _order_spies(
+    monkeypatch: pytest.MonkeyPatch, published: list[dict[str, Any]]
+) -> list[str]:
+    """Records "commit" / "publish" in the order they actually happen, so a
+    fix-round regression (publishing before the commit that persists the
+    timing) shows up as `["publish", "commit"]` instead of the required
+    `["commit", "publish"]` -- the same ordering `publish_run_tool_call`'s own
+    call site already gets right, which review round 1 found four of this
+    endpoint's `publish_run_step_timing` call sites got backwards.
+    """
+    order: list[str] = []
+    original_commit = AsyncSession.commit
+
+    async def _spy_commit(self: AsyncSession, *a: Any, **kw: Any) -> None:
+        await original_commit(self, *a, **kw)
+        order.append("commit")
+
+    async def _spy_publish(tenant_id: Any, *, run_id: Any, timing: dict[str, Any]) -> None:
+        order.append("publish")
+        published.append(timing)
+
+    monkeypatch.setattr(AsyncSession, "commit", _spy_commit)
+    monkeypatch.setattr("oc8.api.v1.internal_agent.publish_run_step_timing", _spy_publish)
+    return order
+
+
+async def test_the_suspend_path_publishes_only_after_its_commit(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_dispatch_one_tool`'s suspend close (a clarification via ask_user):
+    review round 1 found this fired `publish_run_step_timing` before the
+    `db.commit()` that actually persists the closed step timing, with output
+    shaping, spill persistence, and transcript building running in between --
+    a request failing in that window would hand an open tab a live event for
+    data that was never saved. Fixed to publish after the commit, matching
+    `publish_run_tool_call`'s own call site a few lines below it.
+    """
+    published: list[dict[str, Any]] = []
+    order = await _order_spies(monkeypatch, published)
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, _task, run = await _plain_agent_run(db, tenant, stepTimings=[start_step(1)])
+        agent_id, run_id = agent.id, run.id
+
+    # Fixture setup above commits its own row -- only the request itself
+    # should count towards the order asserted below.
+    order.clear()
+
+    code, body = await _post_tool(
+        tenant, agent_id, run_id, "ask_user", {"question": "Welches Konto soll ich nehmen?"}
+    )
+    assert code == 200, body
+    assert body["status"] == "waiting_for_input"
+
+    assert published, "the closed step timing was never published"
+    assert "commit" in order
+    assert order.index("commit") < order.index("publish"), order
+
+    async with app_session(tenant) as db:
+        stored = await db.get(m.AgentRun, run_id)
+        assert stored is not None
+        assert stored.context["stepTimings"][-1] == published[-1]
+
+
+async def test_the_require_approval_path_publishes_only_after_its_commit(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_dispatch_one_tool`'s REQUIRE_APPROVAL close: review round 1 found this
+    fired `publish_run_step_timing` before the eventual `db.commit()`, with a
+    `raise_approval` DB write running in between. Fixed the same way as the
+    suspend path above.
+    """
+    published: list[dict[str, Any]] = []
+    order = await _order_spies(monkeypatch, published)
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id = await _mcp_backed_run(
+            db,
+            tenant,
+            destructive_tools=["create_record"],
+            approval_templates={"create_record": "Allow deleting record {id}?"},
+        )
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {**run.context, "stepTimings": [start_step(1)]}
+        await db.flush()
+
+    # Fixture setup above commits its own rows -- only the request itself
+    # should count towards the order asserted below.
+    order.clear()
+
+    code, body = await _post_tool(
+        tenant,
+        agent_id,
+        run_id,
+        "create_record",
+        {"id": 7, "justification": "Duplicate record"},
+    )
+    assert code == 200, body
+    assert body["status"] == "waiting_for_approval"
+
+    assert published, "the closed step timing was never published"
+    assert "commit" in order
+    assert order.index("commit") < order.index("publish"), order
+
+    async with app_session(tenant) as db:
+        stored = await db.get(m.AgentRun, run_id)
+        assert stored is not None
+        assert stored.context["stepTimings"][-1] == published[-1]
