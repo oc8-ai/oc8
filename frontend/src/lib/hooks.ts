@@ -353,7 +353,7 @@ export interface RunDTO {
   liveAnswer?: string;
   // The version this run is pinned to, by NUMBER -- what the Versions tab shows
   // and what GET /agents/{id}/versions/{n} is addressed by. Null for a run
-  // created before pinning existed: migration 0098 deliberately did not
+  // created before pinning existed: migration 0099 deliberately did not
   // backfill those, because inventing a version for a historical run is a claim
   // about the past nothing supports.
   agentVersionNo?: number | null;
