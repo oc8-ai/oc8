@@ -219,6 +219,7 @@ async def raise_approval(
     department_id: uuid.UUID | _Derive | None = DERIVE,
     reason_code: str | None = None,
     reason_context: dict[str, Any] | None = None,
+    record_url: str | None = None,
 ) -> m.ApprovalRequest:
     """Create a request for a human, and tell the people who can answer it.
 
@@ -240,6 +241,12 @@ async def raise_approval(
     (see `authz.pdp.Decision`), stored together as `ApprovalRequest.reason_context`.
     Leave both None for an approval not raised from an `authorize_tool_call`
     decision -- `detail`/`amount_text` remain the only "why" for those.
+
+    `record_url` is the already-resolved deep link to the record being acted
+    on (§6). Resolved by the CALLER, not here: the URL shape belongs to the
+    tool pack's manifest and the base URL to the connection's own config, and
+    this funnel knows about neither -- see `oc8.approvals.record_url`. None
+    for every raiser that has no record in hand, which is most of them.
 
     `department_id` defaults to `DERIVE`, which reads it off the agent. It is
     pinned here, at the moment the question is asked, rather than joined through
@@ -266,6 +273,7 @@ async def raise_approval(
         reason_context={"code": reason_code, **(reason_context or {})}
         if reason_code is not None
         else None,
+        record_url=record_url,
     )
     db.add(approval)
     await db.flush()
