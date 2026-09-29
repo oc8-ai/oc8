@@ -261,6 +261,42 @@ class GuardrailAttribute(BaseModel):
         return self
 
 
+class ToolLabel(BaseModel):
+    """How one of this connection's tools reads to an end user.
+
+    `search_records` is what the model calls; "Looked up deals" is what a
+    salesperson should see. The pack declares this because core has no idea
+    what a deal is -- the same reason guardrail presets and guardrail
+    attributes live here rather than in `authz/` or in the frontend.
+
+    Every string is ENGLISH, like every other capa-authored string in this
+    file. German (and any other locale) comes from the plugin's own
+    `i18n/*.po` catalog, resolved through `oc8.capas.i18n.translations_for`
+    exactly as `GuardrailPreset.label` already is -- a `verb_de` field would
+    buy German and nothing else, and would be the only place in the codebase
+    where a translation lives outside a catalog.
+
+    Placeholders are `{name}`, filled from the CALL: `{model_label}` (the
+    `model_labels` entry for whatever the call's `model` argument says) plus
+    any top-level argument by its own name (`{id}`, `{subtype}`, ...). A
+    placeholder that cannot be filled makes the whole label fall back to the
+    right-derived one ("Read from odoo") rather than rendering a literal
+    `{count}` on somebody's screen -- see the frontend's `tool-labels.ts`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    #: Past tense, because a timeline row describes something that happened:
+    #: "Looked up", "Created", "Replied to".
+    verb: str
+    #: What the verb acted on, e.g. "{model_label}" or "ticket {id}". Empty
+    #: for a tool whose verb says everything ("Listed the available models").
+    object: str = ""
+    #: Present participle shown while the call is still in flight, e.g.
+    #: "Looking up {model_label}". Empty means the timeline shows the verb
+    #: form while running too, which reads oddly but is never wrong.
+    running: str = ""
+
+
 class ToolPackConnection(BaseModel):
     """An MCP server a tool pack describes. It is materialised DISCONNECTED --
     a manifest may describe a server, but only an operator may declare it
@@ -291,6 +327,17 @@ class ToolPackConnection(BaseModel):
     #: limits" Conditions (see `GuardrailAttribute`). Empty for a connection
     #: that predates the generic condition model or has nothing to gate on.
     guardrail_attributes: list[GuardrailAttribute] = []
+    #: How this connection's tools read to an end user, keyed by tool name
+    #: (see `ToolLabel`). Empty for a pack that has not written any, which is
+    #: every pack but odoo_mcp today -- the consumer then falls back to the
+    #: tool's own right ("Read from <connection>"), never to the raw name.
+    tool_labels: dict[str, ToolLabel] = {}
+    #: English plural nouns for the entity values this connection's calls
+    #: carry, keyed by the raw value (e.g. "crm.lead" -> "deals"). Referenced
+    #: from a `ToolLabel` as `{model_label}`. A value absent here has no
+    #: label, and a label needing one falls back rather than printing the raw
+    #: vendor identifier at a user.
+    model_labels: dict[str, str] = {}
 
     @model_validator(mode="after")
     def _validate_guardrail_presets(self) -> ToolPackConnection:
@@ -328,6 +375,19 @@ class ToolPackConnection(BaseModel):
                         self.key,
                     )
                     preset.approval_eur = None
+        # A label keyed by a tool this connection does not have is a typo that
+        # would otherwise show up as "the label just doesn't appear", which is
+        # indistinguishable from "the pack ships no labels". The design spec
+        # itself demonstrated the failure mode -- its example named
+        # `search_read`, which is not one of this pack's nine tools.
+        if self.tool_labels and isinstance(self.scopes, dict):
+            known = {name for names in self.scopes.values() for name in names}
+            unknown = sorted(set(self.tool_labels) - known)
+            if unknown:
+                raise ValueError(
+                    f"connection '{self.key}' declares tool_labels for unknown tool(s): "
+                    f"{', '.join(unknown)}"
+                )
         return self
 
 
