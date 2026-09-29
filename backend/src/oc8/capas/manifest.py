@@ -297,6 +297,73 @@ class ToolLabel(BaseModel):
     running: str = ""
 
 
+class RecordUrlTemplate(BaseModel):
+    """Where ONE record lives in the system behind this connection (§6 of the
+    AI workplace design).
+
+    The only vendor-specific thing in the whole approval-link feature, and it
+    lives here for the same reason `guardrail_presets` does: an approval that
+    says "wants to create a quotation for EUR 4,200" should link to that
+    quotation, and core must not learn a single URL shape to make that happen.
+
+    Core substitutes exactly three names and validates that up front:
+
+    * `{base_url}` -- read out of the CONNECTION's own `config` at
+      `base_url_path` (e.g. `["env", "ODOO_URL"]`). Not declared as a literal
+      here, because it is per-installation: the same pack points at a
+      customer's own host.
+    * `{model}` -- `models[entity]`, where `entity` is what `focus_spec`
+      already resolves a call's record to (`agent/tool_semantics.py::
+      record_identity`). Only listed entities produce a link; anything else
+      resolves to None, the same "only listed entities are surfaced" rule
+      `focus_spec.labels` already uses.
+    * `{id}` -- that record's reference, likewise from `record_identity`.
+
+    Declared at the connection's TOP LEVEL rather than inside `config`
+    deliberately: `capas/materialise.py::_refresh_declared_seams` only carries
+    the five `DECLARED_SEAMS` config keys onto an already-installed row, and
+    only on a re-enable, so a `config` entry would be frozen at whatever
+    version created the connection. Read live off the manifest instead, like
+    `scopes` and `guardrail_presets`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    #: e.g. "{base_url}/odoo/{model}/{id}"
+    template: str
+    #: Path into the connection's own `config` holding the installation's base
+    #: URL, e.g. `["env", "ODOO_URL"]`. Same "a path is a list of keys" shape
+    #: `value_spec.line_items.path` already uses.
+    base_url_path: list[str] = []
+    #: focus entity -> the segment that goes in `{model}`. An entity absent
+    #: from this map gets no link.
+    models: dict[str, str] = {}
+
+    @model_validator(mode="after")
+    def _only_known_placeholders(self) -> RecordUrlTemplate:
+        from string import Formatter
+
+        fields = {name for _lit, name, _spec, _conv in Formatter().parse(self.template) if name}
+        unknown = sorted(fields - {"base_url", "model", "id"})
+        if unknown:
+            raise ValueError(
+                f"record_url template has unknown placeholder(s): {', '.join(unknown)} "
+                "-- only {base_url}, {model} and {id} are substituted"
+            )
+        if "base_url" not in fields:
+            raise ValueError(
+                "record_url template must reference {base_url} -- a relative link is "
+                "useless to an approver reading it on a phone"
+            )
+        if not self.base_url_path:
+            raise ValueError(
+                "record_url template references {base_url} but declares no base_url_path "
+                "to read it from"
+            )
+        if not self.models:
+            raise ValueError("record_url declares no models, so it can never produce a link")
+        return self
+
+
 class ToolPackConnection(BaseModel):
     """An MCP server a tool pack describes. It is materialised DISCONNECTED --
     a manifest may describe a server, but only an operator may declare it
@@ -327,6 +394,10 @@ class ToolPackConnection(BaseModel):
     #: limits" Conditions (see `GuardrailAttribute`). Empty for a connection
     #: that predates the generic condition model or has nothing to gate on.
     guardrail_attributes: list[GuardrailAttribute] = []
+    #: Where one of this connection's records lives, for the deep link on an
+    #: approval (§6). None for a pack that has no answer -- which degrades to
+    #: exactly today's behaviour: no link, no error.
+    record_url: RecordUrlTemplate | None = None
     #: How this connection's tools read to an end user, keyed by tool name
     #: (see `ToolLabel`). Empty for a pack that has not written any, which is
     #: every pack but odoo_mcp today -- the consumer then falls back to the
