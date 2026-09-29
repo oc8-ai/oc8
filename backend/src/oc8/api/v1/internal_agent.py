@@ -125,6 +125,7 @@ from oc8.realtime.emit import (
 from oc8.runtime.approval_resume import pre_decided_map
 from oc8.runtime.registry import BUILTIN_ISOLATED_RUNTIME_REF
 from oc8.runtime.run_context import append_tool_call
+from oc8.runtime.step_record import call_state_for
 from oc8.skills.runtime import LoadedSkill, instruction_block, load_assigned_skills
 from oc8.storage import s3
 
@@ -1693,7 +1694,27 @@ async def _dispatch_one_tool(
             **ctx,
             "isolated_result": {"status": "waiting_for_approval", "output": decision.reason or ""},
         }
+        # The parked call itself, at parity with the in-process engine's own
+        # require-approval append: without this the timeline of an isolated
+        # run simply loses the step a human is being asked about, which is
+        # the one step they most need to see. Flush before the raw-SQL
+        # append -- append_tool_call's own _adopt() would otherwise read the
+        # row back before the isolated_result assignment above landed, and
+        # silently drop it from the ORM's view -- and commit ONCE after both,
+        # since a commit in between would unbind the tenant GUC.
+        await db.flush()
+        parked_call: dict[str, Any] = {
+            "tool": tc.name,
+            "arguments": tc.arguments,
+            "decision": "require_approval",
+            "step": int(ctx.get("steps", 0)),
+            "connection": conn.name if conn is not None else None,
+            "state": "awaiting_approval",
+            "reason": decision.reason,
+        }
+        await append_tool_call(db, run, parked_call)
         await db.commit()
+        await publish_run_tool_call(run.tenant_id, run_id=run.id, call=parked_call)
         if closed_step_timing is not None:
             await publish_run_step_timing(
                 run.tenant_id, run_id=run.id, timing=closed_step_timing
@@ -2100,6 +2121,12 @@ async def _dispatch_one_tool(
                 )
 
     succeeded = suspend is None and tool_error is None and not output.startswith("ERROR:")
+    # harness.shape() below prepends a "[step N/max · ...]" stamp to EVERY
+    # shaped result, so the reassigned `output` no longer starts with a
+    # literal "ERROR:" even for a genuine dispatched failure. call_state_for
+    # needs the pre-stamp text to tell "failed" from "done" -- `succeeded`
+    # just above is computed from this same unshaped value.
+    _tool_call_output_for_state = output
     procs = _active_procedures(active_skills)
     before_sat = _satisfied_map(procs, harness)
     if succeeded:
@@ -2234,10 +2261,15 @@ async def _dispatch_one_tool(
         "tool": tc.name,
         "arguments": tc.arguments,
         "result": output[:300],
+        "step": int(ctx.get("steps", 0)),
+        "connection": conn.name if conn is not None else None,
+        "state": call_state_for(_tool_call_output_for_state, dispatched=dispatched),
     }
     if dispatched:
         live_call["startedAt"] = started_at.isoformat()
         live_call["durationMs"] = duration_ms
+    else:
+        live_call["reason"] = tool_error.message if tool_error is not None else None
     await append_tool_call(db, run, live_call)
     await db.commit()
     await publish_run_tool_call(run.tenant_id, run_id=run.id, call=live_call)
