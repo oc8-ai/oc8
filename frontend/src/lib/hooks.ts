@@ -1628,6 +1628,22 @@ export function useRun(runId: string | null) {
   });
 }
 
+// The tenant's most recently touched runs -- `GET /runs`. The My Work
+// activity widget shows a step timeline per run, and the needs-me queue uses
+// the state filter to find work parked with nobody's name on it. Nothing else
+// lists runs: `activity_event` carries no run id, so the activity feed cannot
+// stand in for this.
+export function useRuns(opts: { state?: string; limit?: number } = {}) {
+  const params = new URLSearchParams();
+  if (opts.state) params.set("state", opts.state);
+  params.set("limit", String(opts.limit ?? 10));
+  const query = params.toString();
+  return useQuery({
+    queryKey: ["runs", opts.state ?? "all", opts.limit ?? 10],
+    queryFn: () => api.get<RunDTO[]>(`/runs?${query}`),
+  });
+}
+
 export interface ReportDTO {
   runId: string;
   agentId: string;

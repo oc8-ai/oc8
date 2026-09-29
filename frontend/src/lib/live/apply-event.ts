@@ -12,6 +12,7 @@ export const liveQueryKeys: readonly unknown[][] = [
   ["clarifications"],
   ["handoffs"],
   ["flow-runs"],
+  ["runs"],
   ["supervision-interventions"],
   ["departments"],
 ];
@@ -39,6 +40,9 @@ const patchers: Record<string, Patcher> = {
         prev ? { ...(prev as object), state: d.state, phase: d.phase } : prev,
       );
     }
+    // The list a state filter selects from -- a run that just parked or just
+    // finished belongs in a different bucket than a moment ago.
+    qc.invalidateQueries({ queryKey: ["runs"] });
     // terminal states free the agent -> reflect in the agents list (mirrors the
     // old useRun poll's terminal-state agents invalidation)
     if (d.state === "done" || d.state === "failed" || d.state === "interrupted") {
