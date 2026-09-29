@@ -98,6 +98,11 @@ export interface Approval {
   agentName?: string;
   taskId?: string | null;
   taskTitle?: string;
+  // The run this approval is holding, when there is one (resolved backend-side
+  // from the approval's task -- ApprovalRequest has no run column). `null`/absent
+  // for an approval that blocks no run, which is what the needs-me queue sorts
+  // on: work parked mid-task outranks a standalone question.
+  runId?: string | null;
   // ISO-8601. `time` above is NOT this: it comes from payload["time"], which
   // only the demo seed writes, so it is "" on every real row. Age on a row has
   // to be computed from `createdAt` or it says nothing.
@@ -2929,7 +2934,14 @@ export function useTenantKpis(params?: TenantKPIFilterParams) {
 
 // ---- Widget-based "My Work" dashboard (§ My Work Widget Dashboard plan) ----
 
-export type WidgetType = "chat" | "approvals" | "reports" | "budget" | "activity" | "tasks";
+export type WidgetType =
+  | "chat"
+  | "approvals"
+  | "reports"
+  | "budget"
+  | "activity"
+  | "tasks"
+  | "needs-me";
 
 export interface WidgetInstance {
   id: string;

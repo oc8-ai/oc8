@@ -1485,7 +1485,7 @@ class WidgetInstanceDTO(CamelModel):
     """
 
     id: str
-    type: Literal["chat", "approvals", "reports", "budget", "activity", "tasks"]
+    type: Literal["chat", "approvals", "reports", "budget", "activity", "tasks", "needs-me"]
     x: int
     y: int
     w: int
