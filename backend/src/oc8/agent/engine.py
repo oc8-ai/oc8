@@ -246,7 +246,7 @@ class RunResult:
     todos: list[dict[str, str]] = field(default_factory=list)
     # One latency record per model step (see harness.step_timing). Empty on
     # runs that never entered the step loop (e.g. budget gate).
-    step_timings: list[dict] = field(default_factory=list)
+    step_timings: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _json_chunks(text: str) -> list[str]:
@@ -825,7 +825,7 @@ async def run_agent(
                 )
 
             steps = 0
-            step_timings: list[dict] = []
+            step_timings: list[dict[str, Any]] = []
             checkpoint_trace_delta: list[dict[str, Any]] = []
             tokens_since_checkpoint = 0
             # max_steps is the outer, already-computed closure variable (see
@@ -1178,6 +1178,8 @@ async def run_agent(
                 async def _complete_with_overflow_retry(
                     sampling_params: ModelParams,
                     req_id: uuid.UUID,
+                    *,
+                    step_probe: StreamTiming = step_probe,
                 ) -> tuple[Any, uuid.UUID]:
                     nonlocal key, resolved_messages, overflow_retried
                     stamped = with_prompt_cache_key(

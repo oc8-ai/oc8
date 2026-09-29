@@ -1011,6 +1011,8 @@ async def step(
         async def _complete_with_overflow_retry(
             sampling_params: ModelParams,
             req_id: uuid.UUID,
+            *,
+            step_probe: StreamTiming = step_probe,
         ) -> tuple[Any, uuid.UUID]:
             nonlocal key, resolved_messages, overflow_retried
             stamped = with_prompt_cache_key(sampling_params, str(run.id))
