@@ -150,6 +150,7 @@ from oc8.realtime.emit import (
     record_activity,
 )
 from oc8.runtime.run_context import append_tool_call
+from oc8.runtime.step_record import call_state_for
 from oc8.runtime.supervision_hook import maybe_checkpoint, maybe_create_anchor
 from oc8.skills.runtime import (
     LoadedSkill,
@@ -1744,6 +1745,13 @@ async def run_agent(
                                     "tool": tc.name,
                                     "arguments": tc.arguments,
                                     "result": output[:300],
+                                    "step": steps,
+                                    "connection": connection_key,
+                                    # A plugin hook refusing the call is a
+                                    # denial, not a failure: nothing was
+                                    # attempted, so the timeline must not
+                                    # render it as the tool breaking.
+                                    "state": "denied",
                                 }
                             )
                             await _live_tool_call(tool_trace[-1])
@@ -1902,7 +1910,17 @@ async def run_agent(
                                 {
                                     "tool": tc.name,
                                     "arguments": tc.arguments,
+                                    # `decision` stays: approval_resume.py's
+                                    # sibling list uses the same word, and
+                                    # removing a key nothing forced us to
+                                    # remove is how an old run's record stops
+                                    # rendering. `state` is the field the
+                                    # timeline reads.
                                     "decision": "require_approval",
+                                    "step": steps,
+                                    "connection": connection_key,
+                                    "state": "awaiting_approval",
+                                    "reason": decision.reason,
                                 }
                             )
                             await _live_tool_call(tool_trace[-1])
@@ -2295,6 +2313,14 @@ async def run_agent(
                                     idempotent=idempotent,
                                 )
                         succeeded = tool_error is None and not output.startswith("ERROR:")
+                        # harness.shape() below prepends a "[step N/max · ...]"
+                        # stamp to EVERY shaped result, so the reassigned
+                        # `output` no longer starts with a literal "ERROR:"
+                        # even for a genuine dispatched failure. call_state_for
+                        # needs the pre-stamp text to tell "failed" from
+                        # "done" -- `succeeded` just above is computed from
+                        # this same unshaped value.
+                        _tool_call_output_for_state = output
                         procs = _active_procedures(active_skills)
                         before_sat = _satisfied_map(procs, harness)
                         if succeeded:
@@ -2395,6 +2421,11 @@ async def run_agent(
                             "tool": tc.name,
                             "arguments": tc.arguments,
                             "result": output[:300],
+                            "step": steps,
+                            "connection": connection_key,
+                            "state": call_state_for(
+                                _tool_call_output_for_state, dispatched=_tool_call_dispatched
+                            ),
                         }
                         if _tool_call_dispatched:
                             _tool_call_entry["startedAt"] = _tool_call_started_at.isoformat()
@@ -2408,6 +2439,10 @@ async def run_agent(
                                 )
                             )
                             step_tool_wait_ms += int(_tool_call_entry["durationMs"])
+                        if not _tool_call_dispatched:
+                            _tool_call_entry["reason"] = (
+                                tool_error.message if tool_error is not None else None
+                            )
                         tool_trace.append(_tool_call_entry)
                         await _live_tool_call(tool_trace[-1])
                         messages.append(
