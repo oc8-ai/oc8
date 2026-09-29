@@ -10,14 +10,20 @@ waiting on a human. This module owns the one derived field the two runtimes
 must agree on -- `state` -- plus the key set every entry is expected to carry.
 
 Step-level TIMING (`stepTimings`, one entry per model step) is a SEPARATE,
-already-solved concern and is not built here: `oc8.agent.harness.step_timing`
-already captures it (`start_step`/`note_model`/`note_tools`/`finish_step`),
-wired into both runtimes' own step loops and persisted through the run's
-existing context writes. Building a second capture mechanism next to that one
-would be exactly the "two seams that drift" failure this module's sibling
-concern (call state) exists to avoid -- see
-`tests/agents/test_engine_step_timings.py` for the verification that dev's
-existing capture already produces what this plan needs.
+already-solved concern and its CAPTURE is not built here:
+`oc8.agent.harness.step_timing` already captures it (`start_step`/
+`note_model`/`note_tools`/`finish_step`), wired into both runtimes' own step
+loops and persisted through the run's existing context writes. Building a
+second capture mechanism next to that one would be exactly the "two seams
+that drift" failure this module's sibling concern (call state) exists to
+avoid -- see `tests/agents/test_engine_step_timings.py` for the verification
+that dev's existing capture already produces what this plan needs.
+
+This module DOES own one small thing about that timing data, though:
+`step_timing_dto` below, the snake_case-to-camelCase translation applied at
+the wire boundary (both the `run_to_dto` fresh-`GET` path and every
+`publish_run_step_timing` call site), for the same "one seam, not two"
+reason as `call_state_for` -- see that function's own docstring.
 """
 
 from __future__ import annotations
@@ -49,3 +55,27 @@ def call_state_for(output: str, *, dispatched: bool) -> str:
     if not dispatched:
         return "denied"
     return "failed" if output.startswith("ERROR:") else "done"
+
+
+def step_timing_dto(entry: dict[str, object]) -> dict[str, object]:
+    """Translate one `stepTimings` entry from its stored, snake_case shape
+    (written by `oc8.agent.harness.step_timing`'s `start_step`/`note_model`/
+    `note_tools`/`finish_step` -- `step`, `model_wait_ms`, `ttft_ms`,
+    `tool_wait_ms`, `step_wall_ms`) into the camelCase shape the wire (both
+    `GET /runs/{id}`/`GET /chat/sessions/{sid}/runs/{rid}` via
+    `api/v1/run.py`'s `run_to_dto`, and the live `run.step_timing` event
+    published from `agent/engine.py` and `api/v1/internal_agent.py`) commits
+    to.
+
+    The stored snake_case keys must never change: the eval CLI
+    (`backend/evals/oc8_evals/*`) and this module's own `latency_lines()`
+    read them directly. This function is the one seam where the two shapes
+    meet, so a fresh `GET` and a live-patched entry always agree on casing.
+    """
+    return {
+        "step": entry.get("step"),
+        "modelWaitMs": entry.get("model_wait_ms"),
+        "ttftMs": entry.get("ttft_ms"),
+        "toolWaitMs": entry.get("tool_wait_ms"),
+        "stepWallMs": entry.get("step_wall_ms"),
+    }

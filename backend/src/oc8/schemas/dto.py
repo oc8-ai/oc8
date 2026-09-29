@@ -1048,6 +1048,20 @@ class RunDTO(CamelModel):
     #: run is a claim about the past nothing can support, and the runtimes
     #: already treat null as "read the live row".
     agent_version_no: int | None = None
+    # One entry per model step (oc8.runtime.step_record), in step order:
+    # {"step", "modelWaitMs", "ttftMs", "toolWaitMs", "stepWallMs"}. Unlike
+    # tool_calls above, this is NOT a verbatim pass-through: the stored JSONB
+    # (context["stepTimings"]) keeps the snake_case keys
+    # oc8.agent.harness.step_timing writes (model_wait_ms, ttft_ms, etc) --
+    # that format must never change, since the eval CLI and that module's own
+    # latency_lines() read it directly. run_to_dto translates each entry to
+    # the camelCase shape above via oc8.runtime.step_record.step_timing_dto
+    # before it ever reaches this field.
+    #
+    # Empty for a run older than this field, and for a run whose runtime
+    # never recorded one: the timeline renders a missing duration as nothing
+    # at all rather than as zero.
+    step_timings: list[dict[str, object]] = []
 
 
 class ChatSessionDTO(CamelModel):

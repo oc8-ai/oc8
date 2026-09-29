@@ -34,6 +34,7 @@ import pytest
 from oc8 import models as m
 from oc8.agent.engine import run_agent
 from oc8.modelrouter import CompletionResult, NeutralTool, ToolCall, Usage, chunk_from_result
+from oc8.runtime.step_record import step_timing_dto
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -204,7 +205,10 @@ async def test_live_step_timings_publish_once_per_finished_step(
         )
 
     assert [t["step"] for t in published] == [1, 2]
-    assert published == result.step_timings
+    # `published` is already-camelCase (Task 6's step_timing_dto, applied at
+    # engine.py's publish_run_step_timing call site); `result.step_timings`
+    # stays the raw snake_case shape dev's own capture produces.
+    assert published == [step_timing_dto(t) for t in result.step_timings]
 
 
 async def test_a_run_without_a_run_id_publishes_nothing_and_does_not_fail(

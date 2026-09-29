@@ -125,7 +125,7 @@ from oc8.realtime.emit import (
 from oc8.runtime.approval_resume import pre_decided_map
 from oc8.runtime.registry import BUILTIN_ISOLATED_RUNTIME_REF
 from oc8.runtime.run_context import append_tool_call
-from oc8.runtime.step_record import call_state_for
+from oc8.runtime.step_record import call_state_for, step_timing_dto
 from oc8.skills.runtime import LoadedSkill, instruction_block, load_assigned_skills
 from oc8.storage import s3
 
@@ -363,9 +363,7 @@ async def _discover_connection_tools(
         try:
             env = await _mcp_env(conn, db, run.tenant_id)
             headers = resolve_auth_header(cfg, env)
-            command, args = wrap_with_requirements(
-                cfg.get("command", ""), cfg.get("args", []), cfg
-            )
+            command, args = wrap_with_requirements(cfg.get("command", ""), cfg.get("args", []), cfg)
             listed = await mcp_pool.tools(
                 conn.id,
                 command=command,
@@ -507,7 +505,9 @@ async def _finish_elicitation(
 
     tool = str(pending.get("tool") or "")
     connection_name = str(pending.get("connection") or "")
-    arguments = arguments_with_answer(dict(pending.get("arguments") or {}), str(answers[-1]["answer"]))
+    arguments = arguments_with_answer(
+        dict(pending.get("arguments") or {}), str(answers[-1]["answer"])
+    )
     conn = next(
         (item for item in await _connections(db, run, dept) if item.name == connection_name),
         None,
@@ -519,9 +519,7 @@ async def _finish_elicitation(
             env = await _mcp_env(conn, db, run.tenant_id)
             cfg = _mcp_params(conn)
             headers = resolve_auth_header(cfg, env)
-            command, args = wrap_with_requirements(
-                cfg.get("command", ""), cfg.get("args", []), cfg
-            )
+            command, args = wrap_with_requirements(cfg.get("command", ""), cfg.get("args", []), cfg)
             output = await mcp_pool.call(
                 conn.id,
                 command=command,
@@ -641,7 +639,9 @@ async def step(
             # a live event for a step this request then failed to commit at
             # all, the same ordering `publish_run_tool_call`'s own call site
             # already gets right.
-            await publish_run_step_timing(run.tenant_id, run_id=run.id, timing=closed_step_timing)
+            await publish_run_step_timing(
+                run.tenant_id, run_id=run.id, timing=step_timing_dto(closed_step_timing)
+            )
         return StepResult(done=True, text="Reached step limit.", status_override="done")
 
     transcript: list[dict[str, Any]] = list(ctx.get("transcript", []))
@@ -746,7 +746,13 @@ async def step(
         # re-resolving org.timezone a second time on every later step.
         ctx["tz"] = preamble.tz
         if tools_fetch is not None:
-            tool_schemas_raw, ctx["tool_routes"], unavailable, resources, prompts = await tools_fetch
+            (
+                tool_schemas_raw,
+                ctx["tool_routes"],
+                unavailable,
+                resources,
+                prompts,
+            ) = await tools_fetch
             from oc8.agent.offering import prompt_sentence, resource_sentence, unavailable_sentence
 
             notes = [unavailable_sentence(item["name"], item["reason"]) for item in unavailable]
@@ -833,14 +839,10 @@ async def step(
     skill_tool_names = frozenset(s.tool_name for s in assigned_skills)
     from oc8.agent.offering import allowed_connections_for_skills, connection_by_tool
 
-    raw_notes = (_mcp_params(conn).get("tool_notes") if conn is not None else None)
+    raw_notes = _mcp_params(conn).get("tool_notes") if conn is not None else None
     tool_notes = raw_notes if isinstance(raw_notes, dict) else None
     routes = ctx.get("tool_routes") if isinstance(ctx.get("tool_routes"), dict) else {}
-    required = [
-        req.tool
-        for skill in active_skills
-        for req in skill.definition.requires_tools
-    ]
+    required = [req.tool for skill in active_skills for req in skill.definition.requires_tools]
     resolved_tools, catalog = select_completion_tools(
         tools,
         control_names=CONTROL_TOOL_NAMES,
@@ -984,6 +986,7 @@ async def step(
         step_rec = start_step(harness.state.step_no)
         step_timings.append(step_rec)
         step_probe = StreamTiming()
+
         # Department prompt caching, through the SAME helper the in-process engine
         # uses (oc8.agent.cache_flow) -- an isolated deployment must not silently
         # render a settings toggle and a savings figure that do nothing.
@@ -1013,9 +1016,7 @@ async def step(
             stamped = with_prompt_cache_key(sampling_params, str(run.id))
             try:
                 return (
-                    await _complete(
-                        resolved_messages, stamped, req_id, timing=step_probe
-                    ),
+                    await _complete(resolved_messages, stamped, req_id, timing=step_probe),
                     req_id,
                 )
             except Exception as exc:
@@ -1148,7 +1149,7 @@ async def step(
     # earlier (right when finish_step ran, above) could hand out a live
     # event for a step this request then failed to commit at all.
     for timing in finished_step_timings:
-        await publish_run_step_timing(run.tenant_id, run_id=run.id, timing=timing)
+        await publish_run_step_timing(run.tenant_id, run_id=run.id, timing=step_timing_dto(timing))
 
     # Reaching here with no tool call and open todos means the round cap (or
     # the step budget) was hit, not that everything got done -- say so in the
@@ -1224,9 +1225,10 @@ async def step(
             # let two concurrent /tool POSTs both read "not yet delivered"
             # from check_outward before either commits.
             skip = cfg.get("outward_skip_spec") if isinstance(cfg, dict) else None
-            if outward_target(
-                t.name, t.arguments, focus_spec, outward_tools, skip_spec=skip
-            ) is not None:
+            if (
+                outward_target(t.name, t.arguments, focus_spec, outward_tools, skip_spec=skip)
+                is not None
+            ):
                 break
             tool_tiers[t.id] = "read"
 
@@ -1357,11 +1359,7 @@ async def _precompute_leading_reads(
             break
         stripped, _justification = strip_justification(tc.arguments)
         schema = next(
-            (
-                raw
-                for raw in schemas
-                if isinstance(raw, dict) and raw.get("name") == call.name
-            ),
+            (raw for raw in schemas if isinstance(raw, dict) and raw.get("name") == call.name),
             None,
         )
         annotations = schema.get("annotations") if isinstance(schema, dict) else None
@@ -1378,9 +1376,10 @@ async def _precompute_leading_reads(
         ):
             break
         skip = cfg.get("outward_skip_spec") if isinstance(cfg, dict) else None
-        if outward_target(
-            call.name, stripped, focus_spec, outward_tools, skip_spec=skip
-        ) is not None:
+        if (
+            outward_target(call.name, stripped, focus_spec, outward_tools, skip_spec=skip)
+            is not None
+        ):
             break
         batch.append((call, stripped))
     if len(batch) < 2:
@@ -1612,9 +1611,7 @@ async def _dispatch_one_tool(
     )
     annotations = tool_schema.get("annotations") if tool_schema is not None else None
     typed_annotations = annotations if isinstance(annotations, dict) else None
-    idempotent = (
-        typed_annotations is not None and typed_annotations.get("idempotentHint") is True
-    )
+    idempotent = typed_annotations is not None and typed_annotations.get("idempotentHint") is True
     gate_verdict = None
     tier = None
     if decision.effect is Effect.ALLOW:
@@ -1717,7 +1714,7 @@ async def _dispatch_one_tool(
         await publish_run_tool_call(run.tenant_id, run_id=run.id, call=parked_call)
         if closed_step_timing is not None:
             await publish_run_step_timing(
-                run.tenant_id, run_id=run.id, timing=closed_step_timing
+                run.tenant_id, run_id=run.id, timing=step_timing_dto(closed_step_timing)
             )
         from oc8.realtime.bus import get_event_bus
 
@@ -1838,9 +1835,7 @@ async def _dispatch_one_tool(
                 clarify_tool,
                 exc_info=True,
             )
-        tc = apply_clarification(
-            tc, reply_text, chat=run.source == "chat", state=harness.state
-        )
+        tc = apply_clarification(tc, reply_text, chat=run.source == "chat", state=harness.state)
         facts = parse_clarification(reply_text)
         logger.info(
             "clarification checkpoint tool=%s tier=%s %s",
@@ -1874,13 +1869,8 @@ async def _dispatch_one_tool(
     writes = required_right(tc.name, scopes) != "read"
     access_identity = record_identity(tc.name, tc.arguments, focus_spec)
     identity = access_identity if writes else None
-    record_label = (
-        describe_focus(tc.name, tc.arguments, focus_spec)
-        or (
-            f"{access_identity[0]} {access_identity[1]}"
-            if access_identity is not None
-            else ""
-        )
+    record_label = describe_focus(tc.name, tc.arguments, focus_spec) or (
+        f"{access_identity[0]} {access_identity[1]}" if access_identity is not None else ""
     )
     control = (
         await execute_control_tool(
@@ -2161,9 +2151,7 @@ async def _dispatch_one_tool(
                 step=harness.state.step_no,
             )
     after_sat = _satisfied_map(procs, harness)
-    flip_lines = newly_satisfied_lines(
-        skills=procs, before=before_sat, after=after_sat
-    )
+    flip_lines = newly_satisfied_lines(skills=procs, before=before_sat, after=after_sat)
 
     # Stopped HERE, the moment the call itself returned -- not at the append
     # site far below, which is separated from it by the transcript rewrite and
@@ -2274,7 +2262,9 @@ async def _dispatch_one_tool(
     await db.commit()
     await publish_run_tool_call(run.tenant_id, run_id=run.id, call=live_call)
     if closed_suspend_timing is not None:
-        await publish_run_step_timing(run.tenant_id, run_id=run.id, timing=closed_suspend_timing)
+        await publish_run_step_timing(
+            run.tenant_id, run_id=run.id, timing=step_timing_dto(closed_suspend_timing)
+        )
 
     if suspend is not None:
         return ToolResult(status=suspend, output=output, spill=spill_payload)

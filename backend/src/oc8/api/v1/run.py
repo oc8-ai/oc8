@@ -19,6 +19,7 @@ from oc8.authz.permissions import RUN, RUN_CONTROL, RUN_START, VIEW, perm
 from oc8.runtime.clarification import resolve_clarification
 from oc8.runtime.intake import enqueue_run, publish_run
 from oc8.runtime.states import TERMINAL, RunState
+from oc8.runtime.step_record import step_timing_dto
 from oc8.schemas.dto import RunDTO, WorkspaceFileDTO, WorkspaceFilesDTO
 from oc8.schemas.requests import RunAgentRequest
 
@@ -62,6 +63,7 @@ def run_to_dto(run: m.AgentRun, *, agent_version_no: int | None = None) -> RunDT
         todos=ctx.get("todos", []),
         agent_version_no=agent_version_no,
         updated_at=run.updated_at.isoformat(),
+        step_timings=[step_timing_dto(e) for e in ctx.get("stepTimings", [])],
     )
 
 

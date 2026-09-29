@@ -334,6 +334,13 @@ export interface RunDTO {
   // append log — same durability as toolCalls/steps, present from the initial
   // GET /runs/{id} fetch, no WS-live patcher exists for it yet).
   todos?: RunTodoDTO[];
+  // One entry per model step, in step order: {step, modelWaitMs, ttftMs,
+  // toolWaitMs, stepWallMs}. From GET /runs/{id}, and kept current by the
+  // "run.step_timing" patcher (lib/live/apply-event.ts) as each step ends.
+  // Typed loosely on purpose, exactly like toolCalls above: this is a
+  // pass-through of a JSONB list, and lib/run-steps.ts is the one place that
+  // reads a key out of it.
+  stepTimings?: Array<Record<string, unknown>>;
   // Never returned by the backend -- populated client-side only, by the
   // "run.output_delta" live-event patcher (lib/live/apply-event.ts) as chunks
   // arrive over the WS. Absent until the first delta lands, so a fresh

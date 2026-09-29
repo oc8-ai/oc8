@@ -133,6 +133,10 @@ export interface RunActivityDTO {
   output: string | null;
   steps: number;
   toolCalls: Record<string, unknown>[];
+  // Same list GET /runs/{id} returns (both routes share run_to_dto) --
+  // optional because a run recorded before this field existed simply has
+  // none, and because the WS patcher may fill it in before a refetch does.
+  stepTimings?: Record<string, unknown>[];
   taskId: string | null;
   question: string | null;
   renderedComponents: RunComponentDTO[];

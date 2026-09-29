@@ -119,6 +119,30 @@ const patchers: Record<string, Patcher> = {
         : prev,
     );
   },
+  // One finished step's latency record (oc8.runtime.step_record), published
+  // by both runtimes as the NEXT step starts -- see
+  // backend/src/oc8/realtime/emit.py's publish_run_step_timing. Appended,
+  // same as run.tool_call above and for the same reason: the backend already
+  // persisted this entry to context->'stepTimings' before publishing, so a
+  // fresh page load gets it from the initial GET too; this only spares an
+  // already-open timeline the wait for a refetch before it can show that
+  // step's duration.
+  "run.step_timing": (qc, d) => {
+    const runId = d.run_id as string | undefined;
+    const timing = d.timing as Record<string, unknown> | undefined;
+    if (!runId || !timing) return;
+    qc.setQueryData(["run", runId], (prev: unknown) =>
+      prev
+        ? {
+            ...(prev as { stepTimings?: Record<string, unknown>[] }),
+            stepTimings: [
+              ...((prev as { stepTimings?: Record<string, unknown>[] }).stepTimings ?? []),
+              timing,
+            ],
+          }
+        : prev,
+    );
+  },
   // One text fragment of the model's own answer as it streams in (Stage 2
   // token streaming) -- see backend/src/oc8/realtime/emit.py's
   // publish_run_token_delta, called from BOTH engines' streaming accumulator

@@ -10,6 +10,15 @@ fired the moment each of those handlers' existing `finish_step` calls closes
 a step, mirroring the parity check
 `test_the_internal_endpoints_step_streams_token_deltas_live` already runs for
 `run.token_delta`.
+
+Task 6 changed what gets PUBLISHED (not what gets stored): every
+`publish_run_step_timing` call site now passes an already-camelCase `timing`
+dict (via `oc8.runtime.step_record.step_timing_dto`), so a live-patched
+timeline entry and one that arrives via a fresh `GET` agree on key casing.
+`agent_run.context["stepTimings"]` itself keeps the raw snake_case shape
+`oc8.agent.harness.step_timing` writes -- these assertions translate the
+stored entry with `step_timing_dto` before comparing it to what was
+published, rather than comparing the two verbatim.
 """
 
 from __future__ import annotations
@@ -25,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.agent.harness.step_timing import start_step
 from oc8.main import create_app
+from oc8.runtime.step_record import step_timing_dto
 from tests.api.test_internal_agent import (
     _agent_token,
     _mcp_backed_run,
@@ -86,12 +96,19 @@ async def test_step_publishes_a_live_step_timing_when_the_step_finishes(
     assert timing_events[0]["run_id"] == str(run_id)
     timing = timing_events[0]["timing"]
     assert timing["step"] == 1
-    assert set(timing) == {"step", "model_wait_ms", "ttft_ms", "tool_wait_ms", "step_wall_ms"}
+    assert set(timing) == {"step", "modelWaitMs", "ttftMs", "toolWaitMs", "stepWallMs"}
 
     async with app_session(tenant) as db:
         stored = await db.get(m.AgentRun, run_id)
         assert stored is not None
-        assert stored.context["stepTimings"] == [timing]
+        assert set(stored.context["stepTimings"][0]) == {
+            "step",
+            "model_wait_ms",
+            "ttft_ms",
+            "tool_wait_ms",
+            "step_wall_ms",
+        }
+        assert step_timing_dto(stored.context["stepTimings"][0]) == timing
 
 
 async def _order_spies(
@@ -156,7 +173,7 @@ async def test_the_suspend_path_publishes_only_after_its_commit(
     async with app_session(tenant) as db:
         stored = await db.get(m.AgentRun, run_id)
         assert stored is not None
-        assert stored.context["stepTimings"][-1] == published[-1]
+        assert step_timing_dto(stored.context["stepTimings"][-1]) == published[-1]
 
 
 async def test_the_max_steps_early_exit_publishes_only_after_its_commit(
@@ -198,7 +215,7 @@ async def test_the_max_steps_early_exit_publishes_only_after_its_commit(
     async with app_session(tenant) as db:
         stored = await db.get(m.AgentRun, run_id)
         assert stored is not None
-        assert stored.context["stepTimings"][-1] == published[-1]
+        assert step_timing_dto(stored.context["stepTimings"][-1]) == published[-1]
 
 
 async def test_the_require_approval_path_publishes_only_after_its_commit(
@@ -246,4 +263,4 @@ async def test_the_require_approval_path_publishes_only_after_its_commit(
     async with app_session(tenant) as db:
         stored = await db.get(m.AgentRun, run_id)
         assert stored is not None
-        assert stored.context["stepTimings"][-1] == published[-1]
+        assert step_timing_dto(stored.context["stepTimings"][-1]) == published[-1]

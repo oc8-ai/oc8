@@ -150,7 +150,7 @@ from oc8.realtime.emit import (
     record_activity,
 )
 from oc8.runtime.run_context import append_tool_call
-from oc8.runtime.step_record import call_state_for
+from oc8.runtime.step_record import call_state_for, step_timing_dto
 from oc8.runtime.supervision_hook import maybe_checkpoint, maybe_create_anchor
 from oc8.skills.runtime import (
     LoadedSkill,
@@ -495,9 +495,7 @@ async def run_agent(
             model_config = await db.get(m.ModelConfig, pinned_model_id)
         # Virtual Auto ModelConfig: keep the policy row and resolve a concrete
         # target before each completion (session latch + one-way escalation).
-        auto_cfg: m.ModelConfig | None = (
-            model_config if is_auto_config(model_config) else None
-        )
+        auto_cfg: m.ModelConfig | None = model_config if is_auto_config(model_config) else None
         cascade_flag = {"attempted": False, "escalated": False}
         # Mutated in place each step so nested completions see an escalation
         # without rebinding the names they close over.
@@ -590,6 +588,7 @@ async def run_agent(
             focus_spec = None
             outward_tools = None
             guardrail_attribute_specs = []
+
         async def _record_url(
             name: str,
             arguments: dict[str, Any],
@@ -746,7 +745,7 @@ async def run_agent(
             finish_step(rec)
             if run_id is None:
                 return
-            await publish_run_step_timing(tenant_id, run_id=run_id, timing=rec)
+            await publish_run_step_timing(tenant_id, run_id=run_id, timing=step_timing_dto(rec))
 
         async def _live_token_delta(text: str) -> None:
             # No DB write here, unlike _live_tool_call above -- the full text
@@ -844,11 +843,15 @@ async def run_agent(
                         if parked is not None and isinstance(parked.context, dict)
                         else None
                     )
-                    answers = [
-                        item
-                        for item in (parked.context or {}).get("clarifications", [])
-                        if isinstance(item, dict) and item.get("answer")
-                    ] if parked is not None and isinstance(parked.context, dict) else []
+                    answers = (
+                        [
+                            item
+                            for item in (parked.context or {}).get("clarifications", [])
+                            if isinstance(item, dict) and item.get("answer")
+                        ]
+                        if parked is not None and isinstance(parked.context, dict)
+                        else []
+                    )
                     if (
                         isinstance(pending, dict)
                         and answers
@@ -983,9 +986,7 @@ async def run_agent(
                     else {}
                 )
                 required = [
-                    req.tool
-                    for skill in active_skills
-                    for req in skill.definition.requires_tools
+                    req.tool for skill in active_skills for req in skill.definition.requires_tools
                 ]
                 resolved_tools, catalog = select_completion_tools(
                     resolved_tools,
@@ -1130,9 +1131,7 @@ async def run_agent(
                         messages,
                         summary=summary_result.text,
                         ledger_block=render_ledger_block(harness.state.ledger),
-                        skill_blocks=[
-                            _instruction_for(skill, harness) for skill in active_skills
-                        ],
+                        skill_blocks=[_instruction_for(skill, harness) for skill in active_skills],
                     )
                     harness.state.compactions += 1
                     harness.state.last_compacted_step = harness.state.step_no
@@ -1284,9 +1283,7 @@ async def run_agent(
                     except Exception:
                         # Retry exhaustion / hard provider failure: one-way escalate
                         # and retry once on a stronger tier when Auto is configured.
-                        if auto_cfg is None or not await _apply_auto_escalation(
-                            "retry_exhaustion"
-                        ):
+                        if auto_cfg is None or not await _apply_auto_escalation("retry_exhaustion"):
                             raise
                         request_id = uuid.uuid4()
                         result, request_id = await _complete_with_overflow_retry(
@@ -1446,28 +1443,20 @@ async def run_agent(
                             if run_row is not None
                             else {}
                         )
-                        escalated = bool(ar.get("escalated")) or bool(
-                            cascade_flag.get("escalated")
-                        )
+                        escalated = bool(ar.get("escalated")) or bool(cascade_flag.get("escalated"))
                         record_preference_label(
                             auto_cfg,
                             messages=messages,
                             needs_strong=escalated,
-                            source=(
-                                "task_success_escalated" if escalated else "task_success_weak"
-                            ),
+                            source=("task_success_escalated" if escalated else "task_success_weak"),
                         )
-                        remember_agent_route(
-                            agent, auto_cfg, run=run_row, concrete=model_config
-                        )
+                        remember_agent_route(agent, auto_cfg, run=run_row, concrete=model_config)
                     await record_activity(
                         db,
                         tenant_id=tenant_id,
                         agent_id=agent.id,
                         status=(
-                            "warning"
-                            if finish_verdict.exhausted_note is not None
-                            else "success"
+                            "warning" if finish_verdict.exhausted_note is not None else "success"
                         ),
                         message=f"{agent.name} completed: {task_text[:80]}",
                         detail=output_text[:500] or None,
@@ -1532,9 +1521,7 @@ async def run_agent(
                 # per-call loop below unchanged. Batch eligibility uses B0,
                 # tier, and outward classification; the read-tier gate runs
                 # later in the normal per-call ordering after hooks.
-                precomputed_outputs: dict[
-                    str, tuple[str, dt.datetime, int, ToolError | None]
-                ] = {}
+                precomputed_outputs: dict[str, tuple[str, dt.datetime, int, ToolError | None]] = {}
                 call_justifications: dict[str, str] = {}
                 if (
                     harness.caps.parallel_tool_calls
@@ -1572,20 +1559,23 @@ async def run_agent(
                                 pre_decision = Decision(Effect.ALLOW, "operator approved")
                         if pre_decision.effect is not Effect.ALLOW:
                             break
-                        if classify_tier(
-                            _pre_tc.name,
-                            scopes=tool_scopes,
-                            config=connection_config,
-                            annotations=next(
-                                (
-                                    tool.annotations
-                                    for tool in _offered()
-                                    if tool.name == _pre_tc.name
+                        if (
+                            classify_tier(
+                                _pre_tc.name,
+                                scopes=tool_scopes,
+                                config=connection_config,
+                                annotations=next(
+                                    (
+                                        tool.annotations
+                                        for tool in _offered()
+                                        if tool.name == _pre_tc.name
+                                    ),
+                                    None,
                                 ),
-                                None,
-                            ),
-                            arguments=_pre_tc.arguments,
-                        ) != "read":
+                                arguments=_pre_tc.arguments,
+                            )
+                            != "read"
+                        ):
                             break
                         if (
                             outward_target(
@@ -1853,9 +1843,7 @@ async def run_agent(
                                         "content": str(tc.arguments.get("content", "")),
                                         "justification": justification,
                                         "preview": (
-                                            gate_verdict.preview
-                                            if gate_verdict is not None
-                                            else ""
+                                            gate_verdict.preview if gate_verdict is not None else ""
                                         ),
                                     },
                                     reason_code=decision.reason_code,
@@ -1878,9 +1866,7 @@ async def run_agent(
                                         "arguments": tc.arguments,
                                         "justification": justification,
                                         "preview": (
-                                            gate_verdict.preview
-                                            if gate_verdict is not None
-                                            else ""
+                                            gate_verdict.preview if gate_verdict is not None else ""
                                         ),
                                         **({"record_url": link} if link else {}),
                                     },
@@ -2009,9 +1995,7 @@ async def run_agent(
                                     exc_info=True,
                                 )
                             chat = run_row is not None and run_row.source == "chat"
-                            tc = apply_clarification(
-                                tc, reply_text, chat=chat, state=harness.state
-                            )
+                            tc = apply_clarification(tc, reply_text, chat=chat, state=harness.state)
                             facts = parse_clarification(reply_text)
                             logger.info(
                                 "clarification checkpoint tool=%s tier=%s %s",
@@ -2047,13 +2031,10 @@ async def run_agent(
                         )
                         access_identity = record_identity(auth_tc.name, tc.arguments, call_focus)
                         identity = access_identity if writes else None
-                        record_label = (
-                            describe_focus(auth_tc.name, tc.arguments, call_focus)
-                            or (
-                                f"{access_identity[0]} {access_identity[1]}"
-                                if access_identity is not None
-                                else ""
-                            )
+                        record_label = describe_focus(auth_tc.name, tc.arguments, call_focus) or (
+                            f"{access_identity[0]} {access_identity[1]}"
+                            if access_identity is not None
+                            else ""
                         )
                         control = await execute_control_tool(
                             db,
@@ -2140,8 +2121,9 @@ async def run_agent(
                             if control.suspend == "waiting_for_input":
                                 task.state = "waiting_for_input"
                                 step_tool_wait_ms += int(
-                                    (dt.datetime.now(dt.UTC) - _tool_call_started_at)
-                                    .total_seconds()
+                                    (
+                                        dt.datetime.now(dt.UTC) - _tool_call_started_at
+                                    ).total_seconds()
                                     * 1000
                                 )
                                 await _finish_step_timing(step_rec, step_tool_wait_ms)
@@ -2351,9 +2333,7 @@ async def run_agent(
                                     connection=connection_key or "oc8",
                                     tool=tc.name,
                                     target=str(
-                                        tc.arguments.get("target")
-                                        or tc.arguments.get("to")
-                                        or ""
+                                        tc.arguments.get("target") or tc.arguments.get("to") or ""
                                     ),
                                     step=harness.state.step_no,
                                 )
@@ -2433,8 +2413,9 @@ async def run_agent(
                                 _precomputed_duration_ms
                                 if _precomputed_duration_ms is not None
                                 else int(
-                                    (dt.datetime.now(dt.UTC) - _tool_call_started_at)
-                                    .total_seconds()
+                                    (
+                                        dt.datetime.now(dt.UTC) - _tool_call_started_at
+                                    ).total_seconds()
                                     * 1000
                                 )
                             )
@@ -2518,6 +2499,7 @@ async def run_agent(
             try:
                 if toolset is not None:
                     return await loop(toolset.tools, toolset)
+
                 def _note_unavailable(conn: m.McpConnection, exc: BaseException) -> None:
                     reason = " ".join(str(exc).split())[:200] or type(exc).__name__
                     startup_unavailable.append({"name": conn.name, "reason": reason})

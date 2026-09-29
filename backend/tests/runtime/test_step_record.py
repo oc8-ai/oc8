@@ -8,12 +8,22 @@ not rebuild that. See `tests/agents/test_engine_step_timings.py` for the
 verification test proving that existing capture already satisfies this plan's
 needs.
 
+`step_timing_dto` (Task 6) is also covered here: the one small thing this
+module owns about that timing data, translating a stored snake_case entry
+into the camelCase shape both `run_to_dto` and every `publish_run_step_timing`
+call site commit to on the wire.
+
 Pure unit tests: no DB, no app.
 """
 
 from __future__ import annotations
 
-from oc8.runtime.step_record import CALL_STATES, REQUIRED_CALL_KEYS, call_state_for
+from oc8.runtime.step_record import (
+    CALL_STATES,
+    REQUIRED_CALL_KEYS,
+    call_state_for,
+    step_timing_dto,
+)
 
 
 def test_a_dispatched_call_with_a_plain_result_is_done() -> None:
@@ -43,3 +53,28 @@ def test_every_state_call_state_for_can_return_is_a_known_state() -> None:
 
 def test_the_required_call_keys_are_the_five_both_runtimes_must_write() -> None:
     assert REQUIRED_CALL_KEYS == {"tool", "arguments", "step", "connection", "state"}
+
+
+def test_step_timing_dto_translates_the_stored_snake_case_shape_to_camel_case() -> None:
+    stored = {
+        "step": 3,
+        "model_wait_ms": 120,
+        "ttft_ms": 40,
+        "tool_wait_ms": 5,
+        "step_wall_ms": 200,
+    }
+    assert step_timing_dto(stored) == {
+        "step": 3,
+        "modelWaitMs": 120,
+        "ttftMs": 40,
+        "toolWaitMs": 5,
+        "stepWallMs": 200,
+    }
+
+
+def test_step_timing_dto_carries_a_missing_ttft_through_as_none() -> None:
+    """A step that never streamed a first token (no model call reached, or a
+    non-streaming completion) leaves `ttft_ms` unset -- the timeline must
+    render that as a missing duration, not a coerced zero."""
+    stored = {"step": 1, "model_wait_ms": 10, "tool_wait_ms": 0, "step_wall_ms": 15}
+    assert step_timing_dto(stored)["ttftMs"] is None
