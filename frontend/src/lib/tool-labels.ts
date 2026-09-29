@@ -54,9 +54,9 @@ export type Translate = (en: string, de?: string) => string;
 export interface LabelledCall {
   tool: string;
   arguments?: Record<string, unknown>;
-  /** The connection NAME the call went to, as recorded on the call itself
-   *  (`toolCalls[].connection`). `null` for a core control tool and for any
-   *  record written before that field existed. */
+  /** The connection NAME the call went to, as recorded on each entry of a
+   *  run's tool-call list (its `.connection` field). `null` for a core
+   *  control tool and for any record written before that field existed. */
   connection?: string | null;
   /** Ask for the present-participle form ("Looking up deals"). */
   running?: boolean;
