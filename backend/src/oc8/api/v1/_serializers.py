@@ -299,9 +299,7 @@ def approval_to_dto(a: m.ApprovalRequest, names: ApprovalNames | None = None) ->
         title_translations=_i18n_str(payload.get("i18n"), "title"),
         detail_translations=_i18n_str(payload.get("i18n"), "detail"),
         reason_context=a.reason_context,
-        record_url=(
-            payload.get("record_url") if isinstance(payload.get("record_url"), str) else None
-        ),
+        record_url=a.record_url,
     )
 
 
