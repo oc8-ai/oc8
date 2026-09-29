@@ -496,3 +496,81 @@ msgid ""
 "Works alongside you, but nothing goes out without a person approving it."
 msgstr ""
 "Arbeitet mit, aber kein Vorgang verlässt das System ohne eine Freigabe."
+
+msgid "Looked up"
+msgstr "Nachgesehen"
+
+msgid "Looking up {model_label}"
+msgstr "Sucht {model_label}"
+
+msgid "Counted"
+msgstr "Gezählt"
+
+msgid "Counting {model_label}"
+msgstr "Zählt {model_label}"
+
+msgid "Opened"
+msgstr "Geöffnet"
+
+msgid "Opening {model_label} {id}"
+msgstr "Öffnet {model_label} {id}"
+
+msgid "Checked which data is available"
+msgstr "Nachgesehen, welche Daten verfügbar sind"
+
+msgid "Checking which data is available"
+msgstr "Sieht nach, welche Daten verfügbar sind"
+
+msgid "Checked which reports are available"
+msgstr "Nachgesehen, welche Berichte verfügbar sind"
+
+msgid "Checking which reports are available"
+msgstr "Sieht nach, welche Berichte verfügbar sind"
+
+msgid "Created"
+msgstr "Angelegt"
+
+msgid "a new {model_label} entry"
+msgstr "einen neuen Eintrag in {model_label}"
+
+msgid "Creating a new {model_label} entry"
+msgstr "Legt einen neuen Eintrag in {model_label} an"
+
+msgid "Updated"
+msgstr "Bearbeitet"
+
+msgid "Updating {model_label} {id}"
+msgstr "Bearbeitet {model_label} {id}"
+
+msgid "Deleted"
+msgstr "Gelöscht"
+
+msgid "Deleting {model_label} {id}"
+msgstr "Löscht {model_label} {id}"
+
+msgid "Replied on"
+msgstr "Geantwortet auf"
+
+msgid "Replying on {model_label} {id}"
+msgstr "Antwortet auf {model_label} {id}"
+
+msgid "deals"
+msgstr "Leads"
+
+msgid "quotes"
+msgstr "Angebote"
+
+msgid "contacts"
+msgstr "Kontakte"
+
+msgid "tickets"
+msgstr "Tickets"
+
+msgid "messages"
+msgstr "Nachrichten"
+
+msgid "{model_label}"
+msgstr "{model_label}"
+
+msgid "{model_label} {id}"
+msgstr "{model_label} {id}"
