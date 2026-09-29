@@ -45,6 +45,14 @@ describe("the approval pane's record link", () => {
     expect(screen.queryByRole("link", { name: /open the record/i })).toBeNull();
   });
 
+  it("refuses to render a non-http(s) URL", () => {
+    // The backend resolver already refuses anything but http(s), but this
+    // field also has to survive a future caller that does not go through it
+    // -- defense in depth against a `javascript:` URI in an `href`.
+    renderPane({ ...BASE, recordUrl: "javascript:alert(1)" });
+    expect(screen.queryByRole("link", { name: /open the record/i })).toBeNull();
+  });
+
   it("still renders the approval itself without a link", () => {
     renderPane(BASE);
     expect(screen.getByText("Nora wants to create a quotation")).toBeInTheDocument();

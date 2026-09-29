@@ -703,7 +703,8 @@ export function ApprovalPane({
               <p className="mt-2 text-sm leading-relaxed text-foreground/90">{approval.detail}</p>
             )
           )}
-          {approval.recordUrl && (
+          {(approval.recordUrl?.startsWith("http://") ||
+            approval.recordUrl?.startsWith("https://")) && (
             <a
               href={approval.recordUrl}
               target="_blank"
