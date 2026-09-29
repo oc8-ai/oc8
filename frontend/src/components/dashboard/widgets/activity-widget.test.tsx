@@ -41,8 +41,14 @@ describe("ActivityWidget", () => {
           state: "done",
           steps: 3,
           toolCalls: [
-            { tool: "memory_write", arguments: {}, result: "ok", step: 1, connection: null,
-              state: "done" },
+            {
+              tool: "memory_write",
+              arguments: {},
+              result: "ok",
+              step: 1,
+              connection: null,
+              state: "done",
+            },
           ],
           stepTimings: [{ step: 1, stepWallMs: 500 }],
         },
