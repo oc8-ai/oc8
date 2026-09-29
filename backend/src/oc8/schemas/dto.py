@@ -989,6 +989,50 @@ class ConnectionToolNamesDTO(CamelModel):
     modify: list[str] = []
 
 
+class ToolLabelDTO(CamelModel):
+    """One tool's human label, resolved for the browser.
+
+    English source strings plus every translation the pack's own `i18n/*.po`
+    catalogs carry, the same `<field>Translations` arrangement
+    `GuardrailPresetDTO` uses -- the frontend picks a locale with
+    `resolveTranslation()` and never parses a manifest or a catalog itself.
+    """
+
+    tool: str
+    verb: str
+    object: str = ""
+    running: str = ""
+    verb_translations: dict[str, str] = {}
+    object_translations: dict[str, str] = {}
+    running_translations: dict[str, str] = {}
+
+
+class ModelLabelDTO(CamelModel):
+    """One entity value's human plural, e.g. `crm.lead` -> "deals"."""
+
+    key: str
+    label: str
+    label_translations: dict[str, str] = {}
+
+
+class ConnectionToolLabelsDTO(CamelModel):
+    """Everything the step timeline needs to write one row's sentence without
+    knowing anything about the connected software.
+
+    `read`/`modify` are carried alongside the labels on purpose: they are the
+    SECOND tier of the label resolution order (a tool with no declared label
+    still becomes "Read from odoo" / "Changed something in odoo"), and
+    fetching them from a second endpoint would let a timeline render raw tool
+    names for as long as that request was in flight.
+    """
+
+    connection: str
+    labels: list[ToolLabelDTO] = []
+    model_labels: list[ModelLabelDTO] = []
+    read: list[str] = []
+    modify: list[str] = []
+
+
 class RenderedComponentDTO(CamelModel):
     """One render_component call's durable record -- the raw dict stored in
     `agent_run.context["rendered_components"]` / `chat_message.
