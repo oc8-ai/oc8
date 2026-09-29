@@ -278,3 +278,42 @@ running = "Replying on {model_label} {id}"
 "res.partner" = "contacts"
 "helpdesk.ticket" = "tickets"
 "mail.message" = "messages"
+
+# NEUTRAL SEAM (record_url): where one Odoo record lives, so an approval can
+# link straight to the quotation it is about instead of making the approver go
+# and find it (AI workplace design §6). Core substitutes exactly three names --
+# {base_url}, {model}, {id} -- and knows nothing else about Odoo.
+#
+# Declared HERE, at the connection's top level, and NOT under
+# [connections.config]: only the five DECLARED_SEAMS config keys are copied
+# onto an already-installed connection (capas/materialise.py), and only on a
+# re-enable. Everything at this level is read live off this file, so editing
+# the line below takes effect within the discovery cache's 5s TTL with no
+# re-install.
+#
+# `/odoo/<model>/<id>` is Odoo 17+'s web-client route. An older installation
+# wants the hash form instead:
+#   template = "{base_url}/web#id={id}&model={model}&view_type=form"
+# One line, one file, no core change -- which is the whole reason this lives
+# on the pack.
+#
+# base_url_path points at THIS connection's own env block below, which is what
+# `credential_env_fields.ODOO_URL = "url"` rewrites from an attached login --
+# so a customer's own host is used, never a literal from this file.
+[connections.record_url]
+template = "{base_url}/odoo/{model}/{id}"
+base_url_path = ["env", "ODOO_URL"]
+
+# Which entities are linkable. Deliberately the SAME set focus_spec.labels
+# names (a test asserts that): an entity the live log describes is one an
+# approval gets raised about, and a link that works for four models out of six
+# is a link an approver stops trusting. mail.message is the exception and is
+# listed anyway for symmetry -- Odoo resolves it to the record it hangs off.
+[connections.record_url.models]
+"crm.lead" = "crm.lead"
+"sale.order" = "sale.order"
+"res.partner" = "res.partner"
+"helpdesk.ticket" = "helpdesk.ticket"
+"helpdesk.stage" = "helpdesk.stage"
+"helpdesk.team" = "helpdesk.team"
+"mail.message" = "mail.message"
