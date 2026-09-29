@@ -70,6 +70,7 @@ from oc8.agent.tool_semantics import (
 from oc8.agents.versioning import resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession
 from oc8.approvals import raise_approval
+from oc8.approvals.record_url import record_url_for_connection
 from oc8.audit import append_event
 from oc8.authz.pdp import (
     Decision,
@@ -831,6 +832,12 @@ async def _call_tool(
     )
 
     if decision.effect is Effect.REQUIRE_APPROVAL:
+        # Which record this call is about, resolved from the SAME pure helper
+        # the blast-radius and claim machinery below already uses -- so the
+        # link on the approval and the record the run is reaching for can
+        # never disagree. A search names a kind of record rather than one and
+        # gets None here, which resolves to no link.
+        held_record = record_identity(tc.name, tc.arguments, focus_spec)
         ar = await raise_approval(
             db,
             tenant_id=run.tenant_id,
@@ -842,6 +849,11 @@ async def _call_tool(
             payload={"tool": tc.name, "arguments": tc.arguments},
             reason_code=decision.reason_code,
             reason_context=decision.context,
+            record_url=(
+                record_url_for_connection(conn, entity=held_record[0], ref=held_record[1])
+                if held_record is not None
+                else None
+            ),
         )
         # Park the run and return immediately -- no bounded wait. The adapter
         # polls for the park marker every couple of seconds (runtime.py's

@@ -93,6 +93,7 @@ from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_
 from oc8.agents.versioning import pinned_model_config_id, resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession, unguarded
 from oc8.approvals import raise_approval
+from oc8.approvals.record_url import record_url_for_connection
 from oc8.audit import append_event
 from oc8.authz.pdp import (
     Decision,
@@ -1671,6 +1672,10 @@ async def _dispatch_one_tool(
         if step_timings and "_t0" in step_timings[-1]:
             closed_step_timing = finish_step(step_timings[-1])
         link = await _record_url()
+        # Which record this call is about, resolved from the same pure helper
+        # the containerized gateway's equivalent branch uses -- so a held
+        # write looks identical to an operator whichever runtime raised it.
+        held_record = record_identity(tc.name, tc.arguments, focus_spec)
         ar = await raise_approval(
             db,
             tenant_id=run.tenant_id,
@@ -1686,6 +1691,11 @@ async def _dispatch_one_tool(
                 "preview": gate_verdict.preview if gate_verdict is not None else "",
                 **({"record_url": link} if link else {}),
             },
+            record_url=(
+                record_url_for_connection(conn, entity=held_record[0], ref=held_record[1])
+                if held_record is not None
+                else None
+            ),
         )
         # Record the suspend verdict so the isolated runtime maps the run to
         # waiting_for_approval after the container exits.

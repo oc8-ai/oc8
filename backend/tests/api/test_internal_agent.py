@@ -929,6 +929,8 @@ async def _mcp_backed_run(
     destructive_tools: list[str] | None = None,
     approval_templates: dict[str, str] | None = None,
     focus_spec: dict[str, Any] | None = None,
+    env: dict[str, str] | None = None,
+    create_tools: list[str] | None = None,
 ) -> tuple[Any, Any]:
     """An agent + RUNNING run with an `odoo` MCP connection bound, the fixture
     the two timing tests below (and the parallel-reads tier tests further
@@ -977,6 +979,10 @@ async def _mcp_backed_run(
         conn_config["approval_templates"] = approval_templates
     if focus_spec:
         conn_config["focus_spec"] = focus_spec
+    if env:
+        conn_config["env"] = env
+    if create_tools:
+        conn_config["create_tools"] = create_tools
     conn = m.McpConnection(
         tenant_id=tenant,
         department_id=dept.id,
