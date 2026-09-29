@@ -142,6 +142,13 @@ class ApprovalDTO(CamelModel):
     agent_name: str = ""
     task_id: str | None = None
     task_title: str = ""
+    #: The run this approval is holding, when there is one -- resolved from
+    #: the approval's `task_id` (an ApprovalRequest has no run_id column; the
+    #: run is what carries the task). `null` for an approval raised outside a
+    #: run (a budget incident, a `request_decision` on a task with no run
+    #: left), which is exactly the distinction the queue sorts on: an item
+    #: with a parked run behind it is blocking work, one without it is not.
+    run_id: str | None = None
     #: ISO-8601. What "vor 2 Std." on the row is computed from. There was no
     #: timestamp on this DTO at all, so the inbox could not say how long anything
     #: had been waiting.

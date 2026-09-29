@@ -187,6 +187,10 @@ class ApprovalNames:
     agents: dict[uuid.UUID, str] = field(default_factory=dict)
     tasks: dict[uuid.UUID, str] = field(default_factory=dict)
     members: dict[uuid.UUID, str] = field(default_factory=dict)
+    #: task_id -> the id of the run holding that task, for the approvals the
+    #: queue must sort by how much work they block. One batched query like
+    #: every other field here, never one per row.
+    runs: dict[uuid.UUID, uuid.UUID] = field(default_factory=dict)
 
 
 _NO_NAMES = ApprovalNames()
@@ -217,6 +221,22 @@ async def resolve_approval_names(
         found = (await db.execute(select(column, label).where(column.in_(ids)))).all()
         return {row[0]: row[1] or "" for row in found}
 
+    async def _runs(ids: set[uuid.UUID]) -> dict[uuid.UUID, uuid.UUID]:
+        """task_id -> run_id. Ordered so a task with more than one run (a
+        resumed run opens no new one, but a re-run of the same task does)
+        resolves to the most recent, which is the one a person looking at a
+        pending approval means."""
+        if not ids:
+            return {}
+        rows = (
+            await db.execute(
+                select(m.AgentRun.task_id, m.AgentRun.id)
+                .where(m.AgentRun.task_id.in_(ids))
+                .order_by(m.AgentRun.updated_at.asc())
+            )
+        ).all()
+        return {row[0]: row[1] for row in rows}
+
     return ApprovalNames(
         departments=await _names(m.Department.id, m.Department.name, department_ids),
         agents=await _names(m.Agent.id, m.Agent.name, agent_ids),
@@ -225,6 +245,7 @@ async def resolve_approval_names(
         # falling back to nothing rather than to the raw subject, because a
         # raw uuid printed under "entschieden von" is worse than a blank.
         members=await _names(m.OrgMember.id, m.OrgMember.display_name, member_ids),
+        runs=await _runs(task_ids),
     )
 
 
@@ -264,6 +285,11 @@ def approval_to_dto(a: m.ApprovalRequest, names: ApprovalNames | None = None) ->
         agent_name=resolved.agents.get(a.agent_id, ""),
         task_id=str(a.task_id) if a.task_id else None,
         task_title=resolved.tasks.get(a.task_id, "") if a.task_id else "",
+        run_id=(
+            str(resolved.runs[a.task_id])
+            if a.task_id is not None and a.task_id in resolved.runs
+            else None
+        ),
         created_at=a.created_at.isoformat() if a.created_at else "",
         decided_by_name=resolved.members.get(a.decided_by, "") if a.decided_by else "",
         tool_name=str(tool_name) if isinstance(tool_name, str) else None,

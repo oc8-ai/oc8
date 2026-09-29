@@ -67,6 +67,65 @@ def run_to_dto(run: m.AgentRun, *, agent_version_no: int | None = None) -> RunDT
     )
 
 
+#: How many runs one list request may return. Deliberately small: a RunDTO
+#: carries the run's whole toolCalls list and its stepTimings, so this is not
+#: a cheap row -- and the two consumers (the My Work activity widget, the
+#: needs-me queue) each show a handful.
+_MAX_RUNS = 20
+
+
+@router.get(
+    "/runs",
+    response_model=list[RunDTO],
+    dependencies=[Depends(require_permission(perm(RUN, VIEW)))],
+)
+async def list_runs(
+    db: DbSession,
+    principal: CurrentPrincipal,
+    state: str | None = None,
+    limit: int = 10,
+) -> list[RunDTO]:
+    """This tenant's most recently touched runs, newest first.
+
+    Why it exists: nothing else lists runs. The activity feed cannot stand in
+    for it -- `activity_event` has no `run_id` column, and `AgentDTO` carries
+    no run id either -- so "show me what my agents are doing, with the steps"
+    had no query behind it at all.
+
+    `state` is a comma-separated filter over `RunState` values; an unknown one
+    is a 400 rather than a silent empty list, because a caller that misspells
+    `waiting_for_aproval` would otherwise read the empty result as "nothing is
+    parked". Omitted means every state.
+
+    Scoping is RLS (tenant) plus `run:view`, the same pair that already gates
+    `GET /runs/{id}`: this route deliberately does not add a departmental
+    narrowing that the single-run route does not have, because two different
+    answers to "may I see this run" is how one of them ends up wrong.
+    """
+    stmt = select(m.AgentRun).where(m.AgentRun.tenant_id == principal.tenant_id)
+    if state:
+        wanted = [s.strip() for s in state.split(",") if s.strip()]
+        known = {s.value for s in RunState}
+        unknown = sorted(set(wanted) - known)
+        if unknown:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, f"unknown run state(s): {', '.join(unknown)}"
+            )
+        stmt = stmt.where(m.AgentRun.state.in_(wanted))
+    rows = (
+        (
+            await db.execute(
+                stmt.order_by(m.AgentRun.updated_at.desc(), m.AgentRun.id.desc()).limit(
+                    max(1, min(limit, _MAX_RUNS))
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [run_to_dto(row) for row in rows]
+
+
 @router.post(
     "/agents/{agent_id}/run",
     response_model=RunDTO,
