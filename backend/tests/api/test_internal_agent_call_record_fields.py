@@ -51,7 +51,10 @@ async def test_a_dispatched_call_records_step_state_and_connection(
         await db.commit()
 
     code, body = await _post_tool(
-        tenant, agent_id, run_id, "create_record",
+        tenant,
+        agent_id,
+        run_id,
+        "create_record",
         {"model": "sale.order", "values": {"partner_id": 7}},
     )
     assert code == 200, body
@@ -94,7 +97,10 @@ async def test_a_denied_call_is_denied_and_carries_the_reason(
         await db.commit()
 
     code, body = await _post_tool(
-        tenant, agent_id, run_id, "create_record",
+        tenant,
+        agent_id,
+        run_id,
+        "create_record",
         {"model": "sale.order", "values": {"partner_id": 7}},
     )
     assert code == 200, body
