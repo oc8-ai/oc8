@@ -6,10 +6,29 @@
 // autonomous run.
 
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
-import { ChevronDown, MessageSquare, Paperclip, Pencil, Plus, Send, Trash2, X } from "lucide-react";
+import {
+  BookOpen,
+  ChevronDown,
+  MessageSquare,
+  Paperclip,
+  Pencil,
+  Plus,
+  Send,
+  Trash2,
+  X,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
 import { ChatMarkdown } from "@/components/chat-markdown";
+import {
+  ComposerHint,
+  SigilPopover,
+  activeSigil,
+  cycleIndex,
+  replaceSigil,
+  type SigilItem,
+  type SigilToken,
+} from "@/components/composer-sigils";
 import { RUN_COMPONENT_REGISTRY } from "@/components/run-record-card";
 import {
   DropdownMenu,
@@ -18,7 +37,15 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useConfirm } from "@/hooks/use-confirm";
 import { MAX_ATTACHMENT_BYTES } from "@/lib/api";
-import { useAnswerClarification, useClarifications } from "@/lib/hooks";
+import {
+  chatCommands,
+  commandSummary,
+  detectCommand,
+  matchCommands,
+  useChatModes,
+} from "@/lib/chat-commands";
+import { useCan } from "@/lib/governance-hooks";
+import { useAnswerClarification, useClarifications, useKnowledgeBases } from "@/lib/hooks";
 import {
   useChatSessions,
   useCreateChatSession,
@@ -54,6 +81,48 @@ export function ChatWindow({ agentId, agentName }: { agentId: string; agentName:
   const [pendingAttachments, setPendingAttachments] = useState<FileAttachmentDTO[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const can = useCan();
+  const { data: modes } = useChatModes();
+  const commands = chatCommands(modes, can);
+  const [caret, setCaret] = useState(0);
+  const [pickerIndex, setPickerIndex] = useState(0);
+  const [contextRefs, setContextRefs] = useState<{ id: string; label: string }[]>([]);
+  const draftRef = useRef<HTMLTextAreaElement>(null);
+  const sigil: SigilToken | null = activeSigil(draft, caret);
+  // Only fetched while the `#` picker is actually open: a knowledge-base list
+  // is a paged query and nobody needs it for every chat render.
+  const { data: bases } = useKnowledgeBases({
+    search: sigil?.kind === "#" ? sigil.query : undefined,
+    pageSize: 8,
+  });
+  const armed = detectCommand(draft, commands);
+
+  const sigilItems: SigilItem[] =
+    sigil?.kind === "/"
+      ? matchCommands(sigil.query, commands).map((c) => ({
+          id: c.key,
+          label: `/${c.key}`,
+          hint: commandSummary(c.key, c.summary, t),
+        }))
+      : sigil?.kind === "#"
+        ? (bases?.items ?? [])
+            .filter((kb) => !contextRefs.some((ref) => ref.id === kb.id))
+            .map((kb) => ({ id: kb.id, label: kb.name, hint: kb.description || undefined }))
+        : [];
+
+  function pickSigilItem(item: SigilItem) {
+    if (!sigil) return;
+    if (sigil.kind === "/") {
+      // The command STAYS in the text: the backend is the parser, and a mode
+      // held only in React state would be lost by any other door.
+      setDraft(replaceSigil(draft, sigil, `/${item.id.replace(/^\//, "")} `));
+    } else {
+      setContextRefs((prev) => [...prev, { id: item.id, label: item.label }]);
+      setDraft(replaceSigil(draft, sigil, ""));
+    }
+    setPickerIndex(0);
+    draftRef.current?.focus();
+  }
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -69,9 +138,17 @@ export function ChatWindow({ agentId, agentName }: { agentId: string; agentName:
     if (!trimmed || !sessionId) return;
     setDraft("");
     const attachmentIds = pendingAttachments.map((a) => a.id);
+    const refs = contextRefs.map((ref) => ({ kind: "knowledge_base", id: ref.id }));
     sendMessage.mutate(
-      { message: trimmed, attachmentIds },
-      { onSuccess: () => setPendingAttachments([]) },
+      { message: trimmed, attachmentIds, contextRefs: refs },
+      {
+        onSuccess: () => {
+          setPendingAttachments([]);
+          // Per-message, not per-session: `#` attaches context to THIS turn
+          // (§5.2), so the next one starts clean.
+          setContextRefs([]);
+        },
+      },
     );
   }
 
@@ -205,7 +282,27 @@ export function ChatWindow({ agentId, agentName }: { agentId: string; agentName:
                 )}
               >
                 {m.role === "user" ? (
-                  <div className="whitespace-pre-wrap">{m.content}</div>
+                  <div className="space-y-1">
+                    {m.mode && (
+                      <span className="inline-block rounded-full bg-primary-foreground/20 px-1.5 py-0.5 font-mono text-[10px]">
+                        /{m.mode}
+                      </span>
+                    )}
+                    <div className="whitespace-pre-wrap">{m.content}</div>
+                    {m.contextRefs.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {m.contextRefs.map((ref) => (
+                          <span
+                            key={ref.id}
+                            className="inline-flex items-center gap-1 rounded-full border border-primary-foreground/30 px-1.5 py-0.5 text-[10px]"
+                          >
+                            <BookOpen className="h-2.5 w-2.5" />
+                            {ref.label}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 ) : (
                   <ChatMarkdown text={m.content} />
                 )}
@@ -292,6 +389,55 @@ export function ChatWindow({ agentId, agentName }: { agentId: string; agentName:
 
       {sessionId && (
         <div className="border-t border-border px-4 py-3">
+          {sigil && (sigil.kind === "/" || sigil.kind === "#") && (
+            <SigilPopover
+              title={
+                sigil.kind === "/"
+                  ? t("Commands", "Befehle")
+                  : t("Attach context", "Kontext anhängen")
+              }
+              items={sigilItems}
+              activeIndex={pickerIndex}
+              onPick={pickSigilItem}
+              onHoverIndex={setPickerIndex}
+              emptyText={
+                sigil.kind === "/"
+                  ? t("No command matches that.", "Kein Befehl passt dazu.")
+                  : t("No knowledge base matches that.", "Keine Wissensbasis passt dazu.")
+              }
+            />
+          )}
+          {armed && (
+            <div className="mb-2 flex items-center gap-1.5 text-[11px]">
+              <span className="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 font-mono text-primary">
+                /{armed.command.key}
+              </span>
+              <span className="text-muted-foreground">
+                {commandSummary(armed.command.key, armed.command.summary, t)}
+              </span>
+            </div>
+          )}
+          {contextRefs.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-1.5">
+              {contextRefs.map((ref) => (
+                <span
+                  key={ref.id}
+                  className="inline-flex max-w-[200px] items-center gap-1 truncate rounded-full border border-border bg-background/60 py-0.5 pl-2 pr-1 text-[11px] text-muted-foreground"
+                >
+                  <BookOpen className="h-2.5 w-2.5 shrink-0" />
+                  <span className="truncate">{ref.label}</span>
+                  <button
+                    type="button"
+                    onClick={() => setContextRefs((p) => p.filter((r) => r.id !== ref.id))}
+                    title={t("Remove", "Entfernen")}
+                    className="rounded-full p-0.5 transition hover:text-foreground"
+                  >
+                    <X className="h-2.5 w-2.5" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
           {pendingAttachments.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-1.5">
               {pendingAttachments.map((a) => (
@@ -332,10 +478,34 @@ export function ChatWindow({ agentId, agentName }: { agentId: string; agentName:
               <Paperclip className="h-3.5 w-3.5" />
             </button>
             <textarea
+              ref={draftRef}
               rows={1}
               value={draft}
-              onChange={(e) => setDraft(e.target.value)}
+              onChange={(e) => {
+                setDraft(e.target.value);
+                setCaret(e.target.selectionStart ?? e.target.value.length);
+                setPickerIndex(0);
+              }}
+              onKeyUp={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
+              onClick={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
               onKeyDown={(e) => {
+                const open = sigil && (sigil.kind === "/" || sigil.kind === "#");
+                if (open && sigilItems.length > 0) {
+                  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                    e.preventDefault();
+                    setPickerIndex((i) =>
+                      cycleIndex(i, e.key === "ArrowDown" ? 1 : -1, sigilItems.length),
+                    );
+                    return;
+                  }
+                  if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+                    // Enter picks from the picker rather than sending: a reader
+                    // mid-`@`/`#`/`/` is choosing, not finished.
+                    e.preventDefault();
+                    pickSigilItem(sigilItems[pickerIndex]);
+                    return;
+                  }
+                }
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
                   submit();
@@ -354,6 +524,7 @@ export function ChatWindow({ agentId, agentName }: { agentId: string; agentName:
               <Send className="h-3.5 w-3.5" />
             </button>
           </div>
+          <ComposerHint />
         </div>
       )}
     </Panel>

@@ -18,6 +18,12 @@ export interface ChatSessionDTO {
   lastMessageAt: string | null;
 }
 
+export interface ChatContextRefDTO {
+  kind: string;
+  id: string;
+  label: string;
+}
+
 export interface ChatMessageDTO {
   id: string;
   sessionId: string;
@@ -27,6 +33,11 @@ export interface ChatMessageDTO {
   renderedComponents: RunComponentDTO[];
   createdAt: string;
   attachments: FileAttachmentDTO[];
+  // How this turn was asked -- "ask" | "plan" | "do" | "summarise", or null for
+  // an ordinary message. The transcript renders it as a badge; the command word
+  // itself is not part of `content` (the backend strips it).
+  mode: string | null;
+  contextRefs: ChatContextRefDTO[];
 }
 
 const keys = {
@@ -98,10 +109,19 @@ export function useDeleteChatSession(agentId: string) {
 export function useSendChatMessage(sessionId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ message, attachmentIds }: { message: string; attachmentIds?: string[] }) =>
+    mutationFn: ({
+      message,
+      attachmentIds,
+      contextRefs,
+    }: {
+      message: string;
+      attachmentIds?: string[];
+      contextRefs?: { kind: string; id: string }[];
+    }) =>
       api.post<ChatMessageDTO>(`/chat/sessions/${sessionId}/messages`, {
         message,
         attachmentIds,
+        contextRefs,
       }),
     onSuccess: (message) => {
       qc.setQueryData<ChatMessageDTO[]>(keys.messages(sessionId), (prev) => [
