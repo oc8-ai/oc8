@@ -94,7 +94,7 @@ from oc8.agent.tool_notes import apply_tool_notes
 from oc8.agent.tool_routing import RoutedToolset
 from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_identity
 from oc8.agents.versioning import pinned_model_config_id, resolve_version
-from oc8.approvals import raise_approval
+from oc8.approvals import raise_approval, record_url_for_connection
 from oc8.audit import append_event
 from oc8.authz.pdp import Decision, Effect, effective_tool_policies, required_right
 from oc8.capas.claude_hooks import dispatch_claude_event
@@ -1861,6 +1861,13 @@ async def run_agent(
                                 link = await _record_url(
                                     auth_tc.name, tc.arguments, call_key, call_focus
                                 )
+                                # Same pure helper + manifest template the
+                                # gateway and the isolated runtime use, so a held
+                                # write carries the same link whichever runtime
+                                # raised it.
+                                held_record = record_identity(
+                                    auth_tc.name, tc.arguments, call_focus
+                                )
                                 ar = await raise_approval(
                                     db,
                                     tenant_id=tenant_id,
@@ -1880,6 +1887,13 @@ async def run_agent(
                                     },
                                     reason_code=decision.reason_code,
                                     reason_context=decision.context,
+                                    record_url=(
+                                        record_url_for_connection(
+                                            owner, entity=held_record[0], ref=held_record[1]
+                                        )
+                                        if held_record is not None
+                                        else None
+                                    ),
                                 )
 
                             from oc8.realtime.bus import get_event_bus

@@ -97,6 +97,34 @@ async def test_omitting_to_diffs_against_the_working_copy(
     assert body["entries"] == [{"field": "mission", "before": "second", "after": "third"}]
 
 
+async def test_the_working_copy_diff_leaves_out_a_live_knowledge_grant(
+    app_session: AppSessionFactory,
+) -> None:
+    """A knowledge grant is already in effect the moment it is made, so the
+    Review dialog must not list it as something a publish would change -- the
+    same exclusion the publish bar's count makes."""
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    agent_id = await _agent_v1_v2(app_session, tenant)
+    async with app_session(tenant) as db:
+        db.add(
+            m.KnowledgeGrant(
+                tenant_id=tenant, kb_id=uuid.uuid4(), grantee_type="agent", grantee_id=agent_id
+            )
+        )
+        await db.flush()
+
+    app = create_app()
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as client:
+            res = await client.get(
+                f"/api/v1/agents/{agent_id}/versions/diff?from=2",
+                headers={"Authorization": f"Bearer {_token(tenant)}"},
+            )
+    assert res.status_code == 200, res.text
+    assert res.json()["entries"] == [{"field": "mission", "before": "second", "after": "third"}]
+
+
 async def test_the_literal_diff_segment_is_not_read_as_a_version_number(
     app_session: AppSessionFactory,
 ) -> None:

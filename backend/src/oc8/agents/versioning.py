@@ -62,6 +62,37 @@ _VERSIONED_COLUMNS = (
 #: configuration key it has no meaning for.
 META_KEY: Final = "_meta"
 
+#: Keys inside `definition` that are OPERATIONAL state a runtime writes back
+#: onto the live row, never configuration an operator authored.
+#:
+#: `auto_router_affinity` is the Auto router's learned "this agent needs tier
+#: X" hint (`oc8.modelrouter.auto_router.store_agent_affinity`), written after
+#: every successful Auto-routed run. Inside the snapshot it would mark every
+#: such agent permanently dirty, get baked into the next version and be reset
+#: by a rollback. So, like `_meta`: stripped from every snapshot and every
+#: stored payload read back through `version_payload`, and carried across a
+#: rollback by `apply_payload`.
+OPERATIONAL_DEFINITION_KEYS: Final[frozenset[str]] = frozenset({"auto_router_affinity"})
+
+#: Payload fields recorded in a version for history and rollback but applied
+#: LIVE: runs read `skill_assignment` (`skills.runtime.load_assigned_skills`)
+#: and `knowledge_grant` (`knowledge.retrieval.granted_kb_ids`) directly, not
+#: through the pinned version. A change to either is already in effect, so it
+#: must not read as an unpublished change waiting for a publish.
+LIVE_APPLIED_FIELDS: Final[frozenset[str]] = frozenset({"skill_assignments", "knowledge_grants"})
+
+
+def _without_operational_keys(definition: Any) -> Any:
+    if not isinstance(definition, dict):
+        return definition
+    return {k: v for k, v in definition.items() if k not in OPERATIONAL_DEFINITION_KEYS}
+
+
+def _draft_view(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """The part of a payload that a publish actually changes at runtime -- what
+    the draft status and the working-copy diff compare."""
+    return {k: v for k, v in payload.items() if k not in LIVE_APPLIED_FIELDS}
+
 
 def version_payload(version: m.AgentVersion) -> dict[str, Any]:
     """The CONFIGURATION half of a stored payload: `_meta` removed.
@@ -71,7 +102,12 @@ def version_payload(version: m.AgentVersion) -> dict[str, Any]:
     here rather than touching `version.payload` directly, so there is exactly
     one place that knows the reserved key exists.
     """
-    return {k: v for k, v in (version.payload or {}).items() if k != META_KEY}
+    payload = {k: v for k, v in (version.payload or {}).items() if k != META_KEY}
+    if "definition" in payload:
+        # A version published (or backfilled) before the operational keys were
+        # stripped at snapshot time may still carry them.
+        payload["definition"] = _without_operational_keys(payload["definition"])
+    return payload
 
 
 def version_meta(version: m.AgentVersion) -> dict[str, Any]:
@@ -95,6 +131,7 @@ async def snapshot_agent(db: AsyncSession, agent: m.Agent) -> dict[str, Any]:
     for col in _VERSIONED_COLUMNS:
         val = getattr(agent, col)
         payload[col] = str(val) if isinstance(val, uuid.UUID) else val
+    payload["definition"] = _without_operational_keys(payload["definition"])
 
     # SkillAssignment has NO `skill_id` column -- only `skill_version_id`
     # (models/skills.py). It also carries SoftDeleteMixin plus an `enabled`
@@ -251,12 +288,28 @@ async def draft_status(db: AsyncSession, agent: m.Agent) -> DraftStatus:
             changed_fields=tuple(sorted(snapshot)),
             current_version_no=None,
         )
-    published = version_payload(current)
+    # Skills and knowledge grants are left out of both: they already apply
+    # live (see LIVE_APPLIED_FIELDS), so they are never a pending change. This
+    # can only make `dirty` stricter than the 409's full-hash check, never
+    # looser -- a draft this calls dirty always differs in a field the full
+    # hash covers too, so the publish bar still never leads to a 409. (The
+    # reverse -- clean here, yet a publish that would still go through to
+    # record a skill change -- is harmless, and is what lets a rollback that
+    # only restores skills or grants keep working.)
+    published = _draft_view(version_payload(current))
+    working = _draft_view(snapshot)
     return DraftStatus(
-        dirty=payload_hash(published) != payload_hash(snapshot),
-        changed_fields=tuple(changed_fields(published, snapshot)),
+        dirty=payload_hash(published) != payload_hash(working),
+        changed_fields=tuple(changed_fields(published, working)),
         current_version_no=current.version_no,
     )
+
+
+def draft_diff(published: dict[str, Any], working: dict[str, Any]) -> list[dict[str, Any]]:
+    """`diff_payloads` for the published-vs-working-copy comparison (the
+    publish bar's Review dialog): same exclusions as `draft_status`, so the
+    dialog never lists a change the bar does not count."""
+    return diff_payloads(_draft_view(published), _draft_view(working))
 
 
 async def publish_version(
@@ -498,6 +551,13 @@ async def apply_payload(db: AsyncSession, agent: m.Agent, payload: dict[str, Any
         value = payload[col]
         if col in _UUID_COLUMNS:
             setattr(agent, col, uuid.UUID(str(value)) if value else None)
+        elif col == "definition" and isinstance(value, dict):
+            # Operational keys are not part of any version, so a rollback keeps
+            # the live row's values rather than wiping them.
+            live = agent.definition if isinstance(agent.definition, dict) else {}
+            restored = copy.deepcopy(_without_operational_keys(value))
+            restored.update({k: live[k] for k in OPERATIONAL_DEFINITION_KEYS if k in live})
+            agent.definition = restored
         else:
             # Deep-copied: the payload is usually the version row's own JSONB,
             # and aliasing it onto the agent would let a later in-place edit of

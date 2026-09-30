@@ -124,6 +124,31 @@ async def test_a_knowledge_base_reference_is_resolved_labelled_and_narrows_the_t
         assert run is not None
         assert run.context["context_kb_ids"] == [str(kb.id)]
         assert "Preisliste 2026" in run.context["task"]
+        assert "search_knowledge" in run.context["task"]
+
+
+async def test_an_ask_turn_is_not_told_to_call_a_tool_it_does_not_have(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """/ask offers no tools at all, so the attached knowledge base is named but
+    the model is not told to search it -- that call could only be refused."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        session = await _session(db, tenant)
+        kb = m.KnowledgeBase(tenant_id=tenant, name="Preisliste 2026", embedding_model="e")
+        db.add(kb)
+        await db.flush()
+        _msg, run = await send_message(
+            db,
+            session=session,
+            tenant_id=tenant,
+            message="/ask what is the standard discount?",
+            context_refs=[{"kind": "knowledge_base", "id": str(kb.id)}],
+            originating_operator="op",
+        )
+        assert run is not None
+        assert "Preisliste 2026" in run.context["task"]
+        assert "search_knowledge" not in run.context["task"]
 
 
 async def test_a_reference_to_something_that_does_not_exist_is_dropped(

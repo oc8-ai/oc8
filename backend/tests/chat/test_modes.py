@@ -18,16 +18,11 @@ from oc8.chat.modes import (
     parse_command,
 )
 
+#: A realistic connection classification: only the pack's OWN tools. Core
+#: control tools are never listed on a connection's scopes, so listing them here
+#: would license them through a path the runtime never takes.
 SCOPES = {
-    "read": [
-        "search_records",
-        "get_record",
-        "search_knowledge",
-        "search_memory",
-        "fetch_url",
-        "render_component",
-        "todo_write",
-    ],
+    "read": ["search_records", "get_record"],
     "modify": ["create_record", "delete_record"],
 }
 
@@ -133,14 +128,26 @@ def test_plan_refuses_the_control_tools_that_change_something() -> None:
 
 
 def test_plan_allows_the_control_tools_that_only_read_or_show() -> None:
+    """Core tools sit on no connection: the gateway asks with
+    `tool_scopes=None`, the in-process engine with the connection's own scopes,
+    and neither lists them. They are classified by name instead."""
     for name in (
         "search_knowledge",
         "search_memory",
         "fetch_url",
         "render_component",
         "todo_write",
+        "read_resource",
+        "read_run_file",
+        "procedure_step_done",
     ):
-        assert mode_refusal(MODES["plan"], name, tool_scopes=SCOPES) is None
+        assert mode_refusal(MODES["plan"], name, tool_scopes=None) is None, name
+        assert mode_refusal(MODES["plan"], name, tool_scopes=SCOPES) is None, name
+
+
+def test_plan_refuses_the_control_tools_that_execute_commands() -> None:
+    for name in ("run_shell", "run_program"):
+        assert mode_refusal(MODES["plan"], name, tool_scopes=None) is not None
 
 
 def test_plan_refuses_an_unclassified_tool() -> None:

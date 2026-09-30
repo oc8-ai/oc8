@@ -368,11 +368,16 @@ async def send_message(
         # to read it with. Inlining a whole knowledge base here would blow the
         # prompt and defeat the retrieval narrowing set up below.
         named = ", ".join(f'"{ref["label"]}"' for ref in resolved_refs)
-        task_text += (
-            f"\n\n[Context attached by the operator: knowledge base {named}. "
-            "Search it with search_knowledge before answering; for this turn "
-            "that tool reads nothing else.]"
-        )
+        if mode is not None and not mode.allows_tools:
+            # /ask and /summarise offer no tool at all -- telling the model to
+            # call one would only earn a refusal.
+            task_text += f"\n\n[Context attached by the operator: knowledge base {named}.]"
+        else:
+            task_text += (
+                f"\n\n[Context attached by the operator: knowledge base {named}. "
+                "Search it with search_knowledge before answering; for this turn "
+                "that tool reads nothing else.]"
+            )
     for att in attachments:
         if att.is_image:
             continue

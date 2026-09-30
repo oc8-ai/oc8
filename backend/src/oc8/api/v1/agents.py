@@ -31,7 +31,13 @@ from sqlalchemy import func, select
 
 from oc8 import models as m
 from oc8.agents.repo import visible_agent, visible_agents
-from oc8.agents.versioning import diff_payloads, draft_status, snapshot_agent, version_payload
+from oc8.agents.versioning import (
+    diff_payloads,
+    draft_diff,
+    draft_status,
+    snapshot_agent,
+    version_payload,
+)
 from oc8.api.deps import DbSession, require_departmental
 from oc8.api.v1._serializers import agent_to_dto, agent_version_to_dto, agent_version_to_summary_dto
 from oc8.api.v1.files import _attachment_dto
@@ -351,9 +357,12 @@ async def diff_agent_versions(
     agent = await _visible_agent_or_404(request, db, actor, agent_id)
     before = version_payload(await _version_or_404(db, agent, from_version))
     if to is None:
-        after = await snapshot_agent(db, agent)
+        # Against the working copy: the same exclusions the publish bar's
+        # count uses (`draft_status`), so Review never lists a skill or
+        # knowledge change that is already live.
+        entries = draft_diff(before, await snapshot_agent(db, agent))
     else:
-        after = version_payload(await _version_or_404(db, agent, to))
+        entries = diff_payloads(before, version_payload(await _version_or_404(db, agent, to)))
     return AgentVersionDiffDTO(
         from_version_no=from_version,
         to_version_no=to,
@@ -363,7 +372,7 @@ async def diff_agent_versions(
                 before=entry["before"],
                 after=entry["after"],
             )
-            for entry in diff_payloads(before, after)
+            for entry in entries
         ],
     )
 

@@ -115,9 +115,16 @@ MODES: dict[str, ChatMode] = {m.key: m for m in (ASK, PLAN, DO, SUMMARISE)}
 #: connection, so they are named here.
 #:
 #: `delegate_task` is in the list and that is the point: "executes nothing"
-#: has to include "does not get somebody else to execute it". `render_component`,
-#: `todo_write`, `search_*`, `fetch_url` and the read_* family are absent --
-#: they show, list or read and change nothing outside the run.
+#: has to include "does not get somebody else to execute it". So are
+#: `run_shell`/`run_program`: executing a command is the opposite of "changes
+#: nothing". `render_component`, `todo_write`, `search_*`, `fetch_url` and the
+#: read_* family are absent -- they show, list or read and change nothing
+#: outside the run.
+#:
+#: Every OTHER core tool counts as a read in a read-only mode (see
+#: `mode_refusal`): core tools carry no connection scopes, so `required_right`
+#: would otherwise fail them closed to "modify" and /plan could not look
+#: anything up.
 WRITING_CONTROL_TOOLS: frozenset[str] = frozenset(
     {
         "memory_write",
@@ -127,6 +134,8 @@ WRITING_CONTROL_TOOLS: frozenset[str] = frozenset(
         "decide_approval",
         "request_decision",
         "ask_user",
+        "run_shell",
+        "run_program",
     }
 )
 
@@ -198,7 +207,18 @@ def mode_refusal(
         )
     if mode.allows_writes:
         return None
-    if tool_name in WRITING_CONTROL_TOOLS or required_right(tool_name, tool_scopes) != "read":
+    # Deferred: control_tools imports this module at load time.
+    from oc8.agent.control_tools import CONTROL_TOOL_NAMES
+
+    if tool_name in WRITING_CONTROL_TOOLS:
+        writes = True
+    elif tool_name in CONTROL_TOOL_NAMES:
+        # A core tool is classified by name, not by scopes -- it sits on no
+        # connection, and the gateway asks with `tool_scopes=None`.
+        writes = False
+    else:
+        writes = required_right(tool_name, tool_scopes) != "read"
+    if writes:
         return (
             f"/{mode.key} changes nothing -- {tool_name} is withheld for this turn. "
             "Describe what you would do with it instead, and the operator can send "

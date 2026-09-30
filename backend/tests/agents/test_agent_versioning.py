@@ -559,3 +559,117 @@ async def test_resolve_version_hands_a_runtime_no_metadata(
         resolved = await resolve_version(db, run, a)
         assert META_KEY not in resolved
         assert set(resolved) == VERSIONED_FIELDS
+
+
+# --- Operational definition keys and live-applied fields ---------------------
+
+
+async def test_an_auto_router_affinity_write_never_makes_the_agent_dirty(
+    app_session: AppSessionFactory,
+) -> None:
+    """The Auto router writes its learned tier onto the live row after every
+    successful run. That is operational state, not configuration: it must not
+    light up the publish bar, nor end up inside a version."""
+    from oc8.modelrouter.auto_router import agent_affinity, store_agent_affinity
+
+    agent = await _draft_agent(app_session, definition={"max_steps": 5})
+    async with app_session(agent.tenant_id) as db:
+        a = await db.get(m.Agent, agent.id)
+        assert a is not None
+        await publish_version(db, a, note="v1")
+        store_agent_affinity(a, tier="strong", config_id=uuid.uuid4())
+        await db.flush()
+
+        assert agent_affinity(a)["tier"] == "strong", "the hint itself is still stored"
+        status = await draft_status(db, a)
+        assert status.dirty is False
+        assert status.changed_fields == ()
+        snap = await snapshot_agent(db, a)
+        assert "auto_router_affinity" not in snap["definition"]
+        assert snap["definition"] == {"max_steps": 5}
+        with pytest.raises(NoChangesToPublish):
+            await publish_version(db, a, note="nothing to publish")
+
+
+async def test_a_version_that_still_carries_an_affinity_does_not_read_as_dirty(
+    app_session: AppSessionFactory,
+) -> None:
+    """Versions backfilled by migration 0099 snapshotted `definition` whole, so
+    an agent auto-routed before then carries the hint inside v1."""
+    agent = await _draft_agent(app_session, definition={"max_steps": 5})
+    async with app_session(agent.tenant_id) as db:
+        a = await db.get(m.Agent, agent.id)
+        assert a is not None
+        v1 = await publish_version(db, a, note="v1")
+        affinity = {"tier": "balanced", "config_id": str(uuid.uuid4())}
+        v1.payload = {
+            **v1.payload,
+            "definition": {"max_steps": 5, "auto_router_affinity": affinity},
+        }
+        a.definition = {"max_steps": 5, "auto_router_affinity": affinity}
+        await db.flush()
+
+        assert version_payload(v1)["definition"] == {"max_steps": 5}
+        assert (await draft_status(db, a)).dirty is False
+
+
+async def test_a_rollback_keeps_the_live_affinity(app_session: AppSessionFactory) -> None:
+    from oc8.agents.versioning import apply_payload
+
+    agent = await _draft_agent(app_session, definition={"max_steps": 5})
+    async with app_session(agent.tenant_id) as db:
+        a = await db.get(m.Agent, agent.id)
+        assert a is not None
+        v1 = await publish_version(db, a, note="v1")
+        affinity = {"tier": "strong", "config_id": str(uuid.uuid4())}
+        a.definition = {"max_steps": 9, "auto_router_affinity": affinity}
+        await db.flush()
+
+        await apply_payload(db, a, version_payload(v1))
+        assert a.definition == {"max_steps": 5, "auto_router_affinity": affinity}
+
+
+def test_the_operational_key_is_the_one_the_auto_router_writes() -> None:
+    from oc8.agents.versioning import OPERATIONAL_DEFINITION_KEYS
+    from oc8.modelrouter import auto_router
+
+    assert auto_router._AFFINITY_KEY in OPERATIONAL_DEFINITION_KEYS
+
+
+async def test_skill_and_knowledge_changes_are_live_so_never_unpublished(
+    app_session: AppSessionFactory,
+) -> None:
+    """Runs read skill assignments and knowledge grants off the live tables, so
+    either change is already in effect -- calling it "unpublished" would say a
+    publish is needed when it is not. It is still recorded in the snapshot, for
+    the next version's history and for rollback."""
+    agent = await _draft_agent(app_session)
+    async with app_session(agent.tenant_id) as db:
+        a = await db.get(m.Agent, agent.id)
+        assert a is not None
+        await publish_version(db, a, note="v1")
+        sv, _ = await _make_two_skill_versions(db, agent.tenant_id)
+        db.add(
+            m.SkillAssignment(
+                tenant_id=agent.tenant_id, agent_id=a.id, skill_version_id=sv.id, enabled=True
+            )
+        )
+        grant = m.KnowledgeGrant(
+            tenant_id=agent.tenant_id, kb_id=uuid.uuid4(), grantee_type="agent", grantee_id=a.id
+        )
+        db.add(grant)
+        await db.flush()
+
+        status = await draft_status(db, a)
+        assert status.dirty is False
+        assert status.changed_fields == ()
+        snap = await snapshot_agent(db, a)
+        assert snap["skill_assignments"] == [{"skill_version_id": str(sv.id)}]
+        assert snap["knowledge_grants"] == [str(grant.kb_id)]
+
+        # A real change alongside still counts, and only the real change is named.
+        a.mission = "changed"
+        await db.flush()
+        status = await draft_status(db, a)
+        assert status.dirty is True
+        assert status.changed_fields == ("mission",)

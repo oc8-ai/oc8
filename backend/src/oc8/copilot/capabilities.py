@@ -19,7 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.agents.hire import require_hire_approval
 from oc8.agents.presentation import show_model
-from oc8.agents.versioning import publish_version
+from oc8.agents.publish_hooks import PublishHookFailed
+from oc8.agents.versioning import NoChangesToPublish, draft_status, publish_version
 from oc8.auth import Principal
 from oc8.authz import pdp
 from oc8.automation.catalogue import list_installed_automation_events
@@ -437,6 +438,43 @@ async def target_revision(
     return str(changed)
 
 
+async def _has_no_draft(db: AsyncSession, agent: m.Agent) -> bool:
+    """Whether `agent`'s working copy is exactly its published version -- read
+    BEFORE a Copilot write, to decide whether that write may be published on
+    its own (`_publish_copilot_change`)."""
+    return not (await draft_status(db, agent)).dirty
+
+
+async def _publish_copilot_change(
+    db: AsyncSession, agent: m.Agent, *, had_no_draft: bool, what: str
+) -> None:
+    """Make an operator-approved Copilot change to a versioned agent field
+    actually take effect: runs execute the PUBLISHED version, so a write to the
+    live row alone would never reach one.
+
+    Published only when the agent had no pending draft before the write, so
+    the new version contains the Copilot's change and nothing else. With a
+    draft pending, publishing would also push the operator's own unfinished
+    edits live behind their back -- so instead the change joins that draft and
+    shows in the agent's publish bar with the rest of it, for the operator to
+    publish (the same `assistant.py` trade-off, which can always publish
+    because the Assistant has no operator draft to protect).
+
+    `NoChangesToPublish` is suppressed like `assistant.py` does (the operation
+    wrote the value the version already has). A publish hook veto rejects the
+    operation, which rolls the whole proposal back -- the same outcome as any
+    other refusal here.
+    """
+    if not had_no_draft:
+        return
+    try:
+        await publish_version(db, agent, note=f"Copilot: {what}")
+    except NoChangesToPublish:
+        pass
+    except PublishHookFailed as exc:
+        raise InvalidOperation() from exc
+
+
 async def apply_operation(db: AsyncSession, *, tenant_id: uuid.UUID, data: dict[str, Any]) -> None:
     """Apply exactly one validated operation through existing service boundaries."""
     operation = parse_operations([data])[0]
@@ -444,8 +482,10 @@ async def apply_operation(db: AsyncSession, *, tenant_id: uuid.UUID, data: dict[
         agent = await db.get(m.Agent, operation.agentId)
         if agent is None or agent.deleted_at is not None:
             raise InvalidOperation()
+        had_no_draft = await _has_no_draft(db, agent)
         agent.mission = operation.mission
         await db.flush()
+        await _publish_copilot_change(db, agent, had_no_draft=had_no_draft, what="mission")
         return
     if isinstance(operation, TriggerCreate):
         events = await list_installed_automation_events(db)
@@ -743,8 +783,10 @@ async def apply_operation(db: AsyncSession, *, tenant_id: uuid.UUID, data: dict[
             )
         except HTTPException as exc:
             raise InvalidOperation() from exc
+        had_no_draft = await _has_no_draft(db, agent)
         agent.narrowing = operation.narrowing
         await db.flush()
+        await _publish_copilot_change(db, agent, had_no_draft=had_no_draft, what="tool access")
         return
     if isinstance(operation, AgentNarrowingReset):
         agent = await db.get(m.Agent, operation.agentId)
@@ -753,6 +795,7 @@ async def apply_operation(db: AsyncSession, *, tenant_id: uuid.UUID, data: dict[
         raw_tools = dict((agent.narrowing or {}).get("tools", {}))
         if operation.connectionName not in raw_tools:
             raise InvalidOperation()
+        had_no_draft = await _has_no_draft(db, agent)
         new_tools = dict(raw_tools)
         del new_tools[operation.connectionName]
         narrowing = dict(agent.narrowing or {})
@@ -762,12 +805,16 @@ async def apply_operation(db: AsyncSession, *, tenant_id: uuid.UUID, data: dict[
         overridden.discard(operation.connectionName)
         agent.narrowing_overridden_keys = sorted(overridden)
         await db.flush()
+        await _publish_copilot_change(
+            db, agent, had_no_draft=had_no_draft, what="tool access reset"
+        )
         return
     if isinstance(operation, AgentRuntimeAssign):
         agent = await db.get(m.Agent, operation.agentId)
         if agent is None or agent.deleted_at is not None:
             raise InvalidOperation()
         principal = Principal(subject="copilot", tenant_id=tenant_id, role="org_admin")
+        had_no_draft = await _has_no_draft(db, agent)
         try:
             await assign_runtime(
                 db,
@@ -779,6 +826,7 @@ async def apply_operation(db: AsyncSession, *, tenant_id: uuid.UUID, data: dict[
         except (RuntimeNotFoundError, RuntimeNotExecutableError, RuntimeCapabilityError) as exc:
             raise InvalidOperation() from exc
         await db.flush()
+        await _publish_copilot_change(db, agent, had_no_draft=had_no_draft, what="runtime")
         return
     if isinstance(operation, AgentModelSwitch):
         agent = await db.get(m.Agent, operation.agentId)
@@ -791,9 +839,11 @@ async def apply_operation(db: AsyncSession, *, tenant_id: uuid.UUID, data: dict[
             await assert_manual_only_compatible(db, agent_id=agent.id, model_config_id=mc.id)
         except SubscriptionModelNotManualOnly as exc:
             raise InvalidOperation() from exc
+        had_no_draft = await _has_no_draft(db, agent)
         agent.model_config_id = mc.id
         show_model(agent, mc)
         await db.flush()
+        await _publish_copilot_change(db, agent, had_no_draft=had_no_draft, what="model")
         return
     if isinstance(operation, AgentSkillAssign):
         agent = await db.get(m.Agent, operation.agentId)
@@ -1038,9 +1088,11 @@ async def _apply_guardrail_set(
     if violations:
         raise InvalidOperation()
 
+    had_no_draft = await _has_no_draft(db, agent)
     agent.narrowing = narrowing
     overridden = list(agent.narrowing_overridden_keys or [])
     if operation.connectionName not in overridden:
         overridden.append(operation.connectionName)
     agent.narrowing_overridden_keys = overridden
     await db.flush()
+    await _publish_copilot_change(db, agent, had_no_draft=had_no_draft, what="guardrail")
