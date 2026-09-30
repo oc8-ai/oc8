@@ -44,6 +44,7 @@ import {
   matchCommands,
   useChatModes,
 } from "@/lib/chat-commands";
+import { nextStepChips } from "@/lib/chat-suggestions";
 import { useCan } from "@/lib/governance-hooks";
 import { useAnswerClarification, useClarifications, useKnowledgeBases } from "@/lib/hooks";
 import {
@@ -60,7 +61,19 @@ import {
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
-export function ChatWindow({ agentId, agentName }: { agentId: string; agentName: string }) {
+export function ChatWindow({
+  agentId,
+  agentName,
+  promptStarters = [],
+}: {
+  agentId: string;
+  agentName: string;
+  /** Shipped with the agent template (`AgentDTO.promptStarters`, §5.3),
+   *  offered as chips on an empty conversation. Passed down from the route
+   *  that already holds the full agent object (routes/agents.$id.tsx)
+   *  rather than fetched again here. */
+  promptStarters?: string[];
+}) {
   const t = useT();
   const { data: sessions, isLoading: sessionsLoading } = useChatSessions(agentId);
   const createSession = useCreateChatSession();
@@ -207,6 +220,27 @@ export function ChatWindow({ agentId, agentName }: { agentId: string; agentName:
       { onSuccess: () => setClarificationAnswer("") },
     );
   }
+
+  // Same deterministic chips as the copilot dock (§5.3, lib/chat-suggestions.ts).
+  // This page has no approvals/budget fetch of its own (unlike the dock, which
+  // is mounted once for the whole app session) -- passing zero-value defaults
+  // here means those two chips simply never appear, which is fine: the
+  // `/do`-carry-out-plan and summarise chips, plus this agent's own prompt
+  // starters, are what matter on a single-agent chat page.
+  const hasMessages = !!messages && messages.length > 0;
+  const lastUserTurn = [...(messages ?? [])].reverse().find((m) => m.role === "user");
+  const suggestions = nextStepChips(
+    {
+      hasMessages,
+      lastTurnRole: messages?.length ? messages[messages.length - 1].role : null,
+      lastUserMode: lastUserTurn?.mode ?? null,
+      pendingApprovals: 0,
+      budgetSoftExceeded: false,
+      mayViewBudget: can("budget:view"),
+      promptStarters,
+    },
+    t,
+  );
 
   return (
     <Panel className="flex h-[560px] flex-col overflow-hidden">
@@ -386,6 +420,24 @@ export function ChatWindow({ agentId, agentName }: { agentId: string; agentName:
           </div>
         )}
       </div>
+
+      {sessionId && suggestions.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 px-4 pb-2">
+          {suggestions.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              onClick={() => {
+                setDraft(s.insert);
+                draftRef.current?.focus();
+              }}
+              className="rounded-full border border-border bg-background/40 px-2.5 py-1 text-[11px] text-muted-foreground transition hover:text-foreground"
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       {sessionId && (
         <div className="border-t border-border px-4 py-3">

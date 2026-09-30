@@ -27,6 +27,7 @@ import type { CopilotProposal } from "@/lib/hooks";
 import {
   useAgents,
   useApplyCopilotProposal,
+  useApprovals,
   useAssistant,
   useAuth,
   useBudgetStatus,
@@ -35,6 +36,7 @@ import {
   useKnowledgeBases,
   useRejectCopilotProposal,
 } from "@/lib/hooks";
+import { nextStepChips } from "@/lib/chat-suggestions";
 import {
   useChatSessions,
   useCreateChatSession,
@@ -624,11 +626,23 @@ export function CopilotChatTab({
   });
   const armed = detectCommand(input, commands);
 
+  // Moved ahead of its original spot (just above `useCreateChatSession`) so
+  // `hasMessages` is known before the budget-status gate right below needs it.
+  const { data: messages } = useChatMessages(sessionId);
+  const hasMessages = !!messages && messages.length > 0;
+
   // `/budget` is answered HERE, from the number the screen can already read --
   // no run, no tokens, no audit entry, because nothing happened. The command is
   // only offered when the caller holds budget:view (see LOCAL_COMMANDS).
   const [showBudget, setShowBudget] = useState(false);
-  const { data: budget } = useBudgetStatus(null, { enabled: showBudget });
+  // Fetched once a conversation is actually active (not merely `showBudget`,
+  // i.e. `/budget` typed), because `nextStepChips` below needs to know
+  // `budget?.softExceeded` before the reader ever types that command -- but
+  // only while `hasMessages` (an empty transcript never renders that chip
+  // anyway), so an idle empty tab still never polls this.
+  const { data: budget } = useBudgetStatus(null, { enabled: showBudget || hasMessages });
+  // The approvals count feeds the same chip row.
+  const { data: pendingApprovals } = useApprovals("pending");
 
   // The dock's `@` picker, grouped by department -- this is the front door, so
   // switching who you are talking to belongs here (§5.4).
@@ -691,7 +705,6 @@ export function CopilotChatTab({
 
   const createSession = useCreateChatSession();
 
-  const { data: messages } = useChatMessages(sessionId);
   const sendMessage = useSendChatMessage(sessionId ?? "");
 
   // A send that failed (session creation OR the message post itself): shown
@@ -809,10 +822,22 @@ export function CopilotChatTab({
     );
   }
 
-  const suggestions = de
-    ? ["Was wartet auf Freigabe?", "Kosten diesen Monat?", "Neuen Agenten anlegen"]
-    : ["What needs approval?", "Cost this month?", "Create a new agent"];
-  const hasMessages = !!messages && messages.length > 0;
+  // Deterministic, computed from state (§5.3) -- these three strings used to be
+  // a fixed list shown only on an empty transcript, which meant the composer
+  // had nothing to suggest at the exact moments it mattered most.
+  const lastUserTurn = [...(messages ?? [])].reverse().find((m) => m.role === "user");
+  const suggestions = nextStepChips(
+    {
+      hasMessages,
+      lastTurnRole: messages?.length ? messages[messages.length - 1].role : null,
+      lastUserMode: lastUserTurn?.mode ?? null,
+      pendingApprovals: pendingApprovals?.length ?? 0,
+      budgetSoftExceeded: !!budget?.softExceeded,
+      mayViewBudget: can("budget:view"),
+      promptStarters: agents.find((a) => a.id === agentId)?.promptStarters ?? [],
+    },
+    t,
+  );
 
   if (!active) return null;
 
@@ -897,19 +922,19 @@ export function CopilotChatTab({
         )}
       </div>
 
-      {!hasMessages && (
+      {suggestions.length > 0 && (
         <div className="flex flex-wrap gap-1.5 px-4 pb-2">
           {suggestions.map((s) => (
             <button
-              key={s}
+              key={s.id}
               type="button"
               onClick={() => {
-                setInput(s);
+                setInput(s.insert);
                 inputRef.current?.focus();
               }}
               className="rounded-full border border-border bg-background/40 px-2.5 py-1 text-[11px] text-muted-foreground transition hover:text-foreground"
             >
-              {s}
+              {s.label}
             </button>
           ))}
         </div>

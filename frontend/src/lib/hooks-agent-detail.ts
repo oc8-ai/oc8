@@ -30,6 +30,13 @@ export interface AgentDetail {
   isLead: boolean;
   mission: string;
   departmentName: string | null;
+  // Inherited from AgentDTO (backend/src/oc8/schemas/dto.py) -- opening
+  // questions the composer offers on an empty conversation (§5.3). Was
+  // missing from this type even though AgentDetailDTO already sends it on
+  // the wire; added for chat-window.tsx's next-step chips (Task 16).
+  // Optional (like mock-data.ts's Agent.promptStarters) so the existing
+  // AgentDetail test fixtures that predate this field don't all need editing.
+  promptStarters?: string[];
   effectiveTools: Record<string, ToolPolicy>;
   departmentFrameTools: Record<string, ToolPolicy>;
   // The agent's own narrowing["tools"] row, verbatim -- not intersected with

@@ -456,7 +456,14 @@ function AgentDetail() {
         />
       )}
 
-      {tab === "chat" && <ChatWindow key={agent.id} agentId={agent.id} agentName={agent.name} />}
+      {tab === "chat" && (
+        <ChatWindow
+          key={agent.id}
+          agentId={agent.id}
+          agentName={agent.name}
+          promptStarters={agent.promptStarters ?? []}
+        />
+      )}
 
       {tab === "files" && <WorkspaceFilesPanel agentId={agent.id} />}
 
