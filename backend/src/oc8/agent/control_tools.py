@@ -1162,6 +1162,34 @@ async def _acting_token_role(
     return str(role) if isinstance(role, str) and role else None
 
 
+async def _context_kb_ids(
+    db: AsyncSession, *, tenant_id: uuid.UUID, run_id: uuid.UUID | None
+) -> frozenset[uuid.UUID] | None:
+    """Which knowledge bases the operator attached to this turn with `#`.
+
+    None means "no narrowing" -- every run that is not a chat turn, and every
+    chat turn that attached nothing. Read off the run for the same reason
+    `_acting_token_role` is: the attachment happened in an HTTP request that
+    ended long before this tool call.
+
+    A malformed id is skipped rather than raised on: the reference is a
+    convenience, and a bad one must not fail a lookup.
+    """
+    if run_id is None:
+        return None
+    run = await db.get(m.AgentRun, run_id)
+    raw = (run.context or {}).get("context_kb_ids") if run is not None else None
+    if not isinstance(raw, list) or not raw:
+        return None
+    out: set[uuid.UUID] = set()
+    for value in raw:
+        try:
+            out.add(uuid.UUID(str(value)))
+        except (ValueError, TypeError):
+            continue
+    return frozenset(out) if out else None
+
+
 async def _delegate(
     db: AsyncSession,
     *,
@@ -1602,6 +1630,9 @@ async def execute_control_tool(
             query_text=query,
             frame=await _department_frame(db, agent),
             model_locality=await _model_locality(db, agent, pinned),
+            # What the operator pointed at with `#` for this turn, intersected
+            # with this agent's grants inside retrieve_kb_context.
+            only_kb_ids=await _context_kb_ids(db, tenant_id=tenant_id, run_id=run_id),
         )
         # A trail, because "did it consult the handbook or guess?" has to be
         # answerable afterwards. Without it I drew the wrong conclusion myself:
@@ -1619,6 +1650,12 @@ async def execute_control_tool(
                 "task_id": str(task.id),
                 "query": query,
                 "found": bool(context.strip()),
+                "narrowed_to": sorted(
+                    str(i)
+                    for i in (
+                        await _context_kb_ids(db, tenant_id=tenant_id, run_id=run_id) or ()
+                    )
+                ),
             },
             originating_operator=originating_operator,
         )
