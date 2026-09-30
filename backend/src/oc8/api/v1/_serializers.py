@@ -109,6 +109,7 @@ def agent_to_dto(a: m.Agent) -> AgentDTO:
         department_id=str(a.department_id) if a.department_id else None,
         model_config_id=str(a.model_config_id) if a.model_config_id else None,
         is_lead=a.is_team_lead,
+        prompt_starters=[str(s) for s in (p.get("prompt_starters") or [])],
         deleted_at=a.deleted_at.isoformat() if a.deleted_at else None,
         role_translations=_i18n_str(i18n, "role"),
         last_action_translations=_i18n_str(i18n, "last_action"),

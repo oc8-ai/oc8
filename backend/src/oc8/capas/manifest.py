@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +112,24 @@ class TemplateAgent(BaseModel):
     # Component 3). None = no trigger, the same as every pre-existing
     # manifest that predates this field.
     trigger: TemplateAgentTrigger | None = None
+    #: Opening questions this agent's composer offers on an empty conversation
+    #: (§5.3 of the AI workplace design). Content, like `mission` and `skills`
+    #: -- the pack author knows what this agent is good for, and a generic
+    #: "What can you do?" teaches nobody anything.
+    #:
+    #: Capped at six because the composer shows at most three and a picker is
+    #: not a manual; each one capped at 120 characters because a starter that
+    #: wraps twice is not a starter.
+    prompt_starters: list[str] = Field(default_factory=list, max_length=6)
+
+    @field_validator("prompt_starters")
+    @classmethod
+    def _starters_are_short_and_non_empty(cls, v: list[str]) -> list[str]:
+        cleaned = [s.strip() for s in v if s.strip()]
+        too_long = [s for s in cleaned if len(s) > 120]
+        if too_long:
+            raise ValueError(f"prompt starter is longer than 120 characters: {too_long[0]!r}")
+        return cleaned
 
 
 class DepartmentTemplateSpec(BaseModel):

@@ -26,6 +26,10 @@ class AgentDTO(CamelModel):
     department_id: str | None = None
     model_config_id: str | None = None
     is_lead: bool = False
+    #: Opening questions the composer offers on an empty conversation (§5.3).
+    #: Empty for every agent whose template shipped none -- the composer then
+    #: falls back to three generic starters.
+    prompt_starters: list[str] = []
     deleted_at: str | None = None
     #: Demo-seed locale overlays (`{de: "…"}`). Empty on live agents.
     role_translations: dict[str, str] = {}

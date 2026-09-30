@@ -387,6 +387,10 @@ async def instantiate_agent(
         status="stopped",
         narrowing=dict(spec.get("narrowing") or {}),
         definition=definition,
+        # `presentation` is the DISPLAY side of an agent (agent_to_dto reads it);
+        # `definition` is the behavioural side. A prompt starter is a UI
+        # affordance, so it belongs here.
+        presentation={"prompt_starters": list(spec.get("prompt_starters") or [])},
     )
     db.add(agent)
     await db.flush()
@@ -465,6 +469,7 @@ async def instantiate_department(
                 "skills": list(a.get("skills", [])),
                 **({"max_steps": int(a["max_steps"])} if a.get("max_steps") else {}),
             },
+            presentation={"prompt_starters": list(a.get("prompt_starters") or [])},
         )
         db.add(agent)
         await db.flush()
