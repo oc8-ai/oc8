@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
@@ -259,7 +259,7 @@ describe("CopilotDock", () => {
 
     expect(createSessionMock).toHaveBeenCalledWith("assistant-1", expect.anything());
     expect(sendMessageMock).toHaveBeenCalledWith(
-      { message: "What needs approval?" },
+      { message: "What needs approval?", contextRefs: [] },
       expect.anything(),
     );
   });
@@ -279,7 +279,7 @@ describe("CopilotDock", () => {
 
     expect(createSessionMock).not.toHaveBeenCalled();
     expect(sendMessageMock).toHaveBeenCalledWith(
-      { message: "Cost this month?" },
+      { message: "Cost this month?", contextRefs: [] },
       expect.anything(),
     );
   });
@@ -635,7 +635,10 @@ describe("CopilotDock", () => {
     fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
 
     expect(createSessionMock).toHaveBeenCalledWith("assistant-1", expect.anything());
-    expect(sendMessageMock).toHaveBeenCalledWith({ message: "Fresh question" }, expect.anything());
+    expect(sendMessageMock).toHaveBeenCalledWith(
+      { message: "Fresh question", contextRefs: [] },
+      expect.anything(),
+    );
   });
 
   it("a new chat button still works right after a tenant's very first session is created lazily", () => {
@@ -1076,7 +1079,7 @@ describe("CopilotDock", () => {
       fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
 
       expect(sendMessageMock).toHaveBeenCalledWith(
-        { message: "/plan migrate the pipeline" },
+        { message: "/plan migrate the pipeline", contextRefs: [] },
         expect.anything(),
       );
     });
@@ -1085,6 +1088,45 @@ describe("CopilotDock", () => {
       renderDock();
       openDock();
       expect(screen.getByTestId("composer-hint")).toBeInTheDocument();
+    });
+
+    it("sending carries the context ref and then clears it", () => {
+      sessionsMock.mockReturnValue({
+        data: [
+          { id: "s1", agentId: "assistant-1", title: "", createdAt: "t", lastMessageAt: null },
+        ],
+      });
+      messagesMock.mockReturnValue({ data: [] });
+      knowledgeBasesMock.mockReturnValue({
+        data: { items: [{ id: "kb-1", name: "Preisliste", description: "Preisliste 2026" }] },
+      });
+      renderDock();
+      openDock();
+
+      const textarea = screen.getByPlaceholderText(/configure or ask oc8/i);
+      fireEvent.change(textarea, { target: { value: "#", selectionStart: 1 } });
+      fireEvent.click(screen.getByRole("option", { name: /Preisliste/i }));
+      expect(screen.getByText("Preisliste")).toBeInTheDocument();
+
+      fireEvent.change(textarea, { target: { value: "what's in here?" } });
+      fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
+
+      expect(sendMessageMock).toHaveBeenCalledWith(
+        {
+          message: "what's in here?",
+          contextRefs: [{ kind: "knowledge_base", id: "kb-1" }],
+        },
+        expect.anything(),
+      );
+
+      const [, opts] = sendMessageMock.mock.calls[0] as [
+        unknown,
+        { onSuccess?: (message: { runId: string }) => void } | undefined,
+      ];
+      act(() => {
+        opts?.onSuccess?.({ runId: "run-1" });
+      });
+      expect(screen.queryByText("Preisliste")).not.toBeInTheDocument();
     });
   });
 });

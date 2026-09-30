@@ -720,15 +720,21 @@ export function CopilotChatTab({
   // A message typed before any session exists yet: send() creates the
   // session first, then this fires once `sessionId` (and therefore a
   // `sendMessage` bound to the right session) lands on the next render.
-  const [pendingSend, setPendingSend] = useState<string | null>(null);
+  const [pendingSend, setPendingSend] = useState<{
+    text: string;
+    refs: { kind: string; id: string }[];
+  } | null>(null);
   useEffect(() => {
     if (!sessionId || pendingSend === null) return;
-    const text = pendingSend;
+    const { text, refs } = pendingSend;
     setPendingSend(null);
     sendMessage.mutate(
-      { message: text },
+      { message: text, contextRefs: refs },
       {
-        onSuccess: (message) => setActiveRunId(message.runId),
+        onSuccess: (message) => {
+          setActiveRunId(message.runId);
+          setContextRefs([]);
+        },
         onError: () => fail(text),
       },
     );
@@ -777,6 +783,7 @@ export function CopilotChatTab({
       }
       return;
     }
+    const refs = contextRefs.map((ref) => ({ kind: "knowledge_base", id: ref.id }));
     setSendError(false);
     setInput("");
     setActiveRunId(null);
@@ -784,16 +791,19 @@ export function CopilotChatTab({
       createSession.mutate(agentId, {
         onSuccess: (session) => {
           onSessionChange(session.id);
-          setPendingSend(text);
+          setPendingSend({ text, refs });
         },
         onError: () => fail(text),
       });
       return;
     }
     sendMessage.mutate(
-      { message: text },
+      { message: text, contextRefs: refs },
       {
-        onSuccess: (message) => setActiveRunId(message.runId),
+        onSuccess: (message) => {
+          setActiveRunId(message.runId);
+          setContextRefs([]);
+        },
         onError: () => fail(text),
       },
     );
