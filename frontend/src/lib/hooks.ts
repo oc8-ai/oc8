@@ -1921,13 +1921,14 @@ export function useBudgets() {
   return useQuery({ queryKey: ["budgets"], queryFn: () => api.get<BudgetDTO[]>("/budgets") });
 }
 
-export function useBudgetStatus(departmentId: string | null) {
+export function useBudgetStatus(departmentId: string | null, options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: ["budget-status", departmentId ?? "tenant"],
     queryFn: () =>
       api.get<BudgetStatusDTO>(
         departmentId ? `/budgets/status?department_id=${departmentId}` : "/budgets/status",
       ),
+    enabled: options?.enabled ?? true,
   });
 }
 
