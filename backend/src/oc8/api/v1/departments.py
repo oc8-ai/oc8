@@ -32,6 +32,7 @@ bug class and the exact same fix.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import uuid
 from collections.abc import Sequence
 from typing import Annotated, Any
@@ -56,6 +57,8 @@ from oc8.departments.repo import visible_department, visible_departments
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import AgentDTO, BoardDTO, DepartmentDTO, TaskDTO
 from oc8.schemas.paging import Page
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -332,6 +335,10 @@ async def _cascade_department_tools_change(
     await db.flush()
     for agent in touched:
         if agent.id not in publishable:
+            logger.info(
+                "department tool cascade deferred to existing draft: agent=%s",
+                agent.id,
+            )
             continue
         try:
             await publish_version(db, agent, note="department tool access changed")

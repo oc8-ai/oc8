@@ -8,6 +8,7 @@ existing resources and invoke their established server-side service.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import uuid
 from typing import Any, Literal
 
@@ -55,6 +56,8 @@ from oc8.runtime.registry import (
     resolve_runtime_plugin,
 )
 from oc8.triggers.service import create_trigger
+
+logger = logging.getLogger(__name__)
 
 
 class _Operation(BaseModel):
@@ -466,6 +469,11 @@ async def _publish_copilot_change(
     other refusal here.
     """
     if not had_no_draft:
+        logger.info(
+            "copilot change deferred to existing draft: agent=%s what=%s",
+            agent.id,
+            what,
+        )
         return
     try:
         await publish_version(db, agent, note=f"Copilot: {what}")
