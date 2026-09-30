@@ -109,6 +109,7 @@ from oc8.capas.claude_hooks.context import (
     task_created as claude_task_created,
 )
 from oc8.capas.discovery import resolve_tool_pack_connection
+from oc8.chat.modes import mode_from_context
 from oc8.coding.tools import CODING_FRAME_KEY, CODING_TOOL_RIGHTS, Toolset
 from oc8.config import get_settings
 from oc8.hooks.bus import dispatch_filter
@@ -482,6 +483,9 @@ async def run_agent(
         run_row: m.AgentRun | None = (
             await db.get(m.AgentRun, run_id) if run_id is not None else None
         )
+        # The slash command this turn was sent with, if any (chat/service.py
+        # writes it into the run's context; oc8.chat.modes reads it back).
+        chat_mode = mode_from_context(run_row.context if run_row is not None else None)
         # Every behavioural field below (model, narrowing, definition, mission,
         # team-lead flag) comes from the run's pinned version, never the live
         # row -- the same answer the isolated control plane and the MCP gateway
@@ -778,6 +782,7 @@ async def run_agent(
                     # The in-process engine is the one runtime with no
                     # /workspace mount of its own -- see offered_tools' docstring.
                     offer_write_output_file=True,
+                    chat_mode=chat_mode,
                 )
 
             # Per-run harness state (spec §3.3): the repeat-call tracker and the
@@ -1688,6 +1693,7 @@ async def run_agent(
                             for g in s.definition.guardrails
                             if g.type == "value_threshold" and g.then == "require_approval"
                         ),
+                        chat_mode=chat_mode,
                     )
                     if tc.id in call_justifications:
                         justification = call_justifications[tc.id]

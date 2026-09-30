@@ -79,6 +79,7 @@ from oc8.authz.pdp import (
     required_right,
 )
 from oc8.capas.discovery import resolve_tool_pack_connection
+from oc8.chat.modes import mode_from_context, mode_refusal
 from oc8.memory.policy import authorize_memory_write
 from oc8.realtime.emit import note_focus, record_activity
 from oc8.runtime.approval_resume import pre_decided_map
@@ -335,6 +336,11 @@ async def _list_tools(
     frame = dept.frame if dept is not None else {}
     pinned = await resolve_version(db, run, agent)
     policies = effective_tool_policies(frame, pinned["narrowing"] or {})
+    chat_mode = mode_from_context(run.context)
+    if chat_mode is not None and not chat_mode.allows_tools:
+        # /ask and /summarise take no tools at all -- returning early also
+        # skips launching every MCP server just to throw the list away.
+        return []
 
     allowed: dict[str, list[Any]] = {}
     for conn in conns:
@@ -394,7 +400,11 @@ async def _list_tools(
         allowed[conn.name] = [
             t
             for t in discovered
-            if policy.offers(t.name) and policy.has_right(required_right(t.name, scopes))
+            if policy.offers(t.name)
+            and policy.has_right(required_right(t.name, scopes))
+            # Scopes are known HERE (unlike in offered_tools), so a read-only
+            # mode's writing tools are withheld rather than offered-then-denied.
+            and mode_refusal(chat_mode, t.name, tool_scopes=scopes) is None
         ]
 
     # Built from what the agent may ACTUALLY use: a tool the frame withholds on
@@ -451,6 +461,7 @@ async def _list_tools(
         # tool she was told to call was not on her list. Withheld from a
         # non-lead for the reason above: every call would be denied.
         core.append(DELEGATE_TASK)
+    core = [t for t in core if mode_refusal(chat_mode, t.name, tool_scopes=None) is None]
     for core_tool in core:
         out.append(
             {
@@ -722,9 +733,19 @@ async def _call_tool(
                 # real id, depth) are inside _authorize.
                 tool_scopes=None,
                 connection_key=None,
+                chat_mode=mode_from_context(run.context),
             )
         else:
-            core_decision = Decision(Effect.ALLOW)
+            mode_denial = mode_refusal(mode_from_context(run.context), name, tool_scopes=None)
+            core_decision = (
+                Decision(Effect.DENY, mode_denial)
+                if mode_denial is not None
+                else Decision(Effect.ALLOW)
+            )
+        if core_decision.effect is Effect.DENY:
+            # Defence in depth: the tool was withheld from tools/list above, so
+            # a call arriving here means a harness cached an older list.
+            return _tool_result(f"ERROR: {core_decision.reason or 'denied'}", is_error=True)
         outcome = await execute_control_tool(
             db,
             tenant_id=run.tenant_id,
@@ -809,6 +830,7 @@ async def _call_tool(
         tool_scopes=scopes,
         value_spec=value_spec,
         guardrail_attribute_specs=_manifest_guardrail_attributes(conn),
+        chat_mode=mode_from_context(run.context),
     )
     # Honour an operator's earlier decision on this exact call (resume).
     if decision.effect is Effect.REQUIRE_APPROVAL:

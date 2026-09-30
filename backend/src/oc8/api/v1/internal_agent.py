@@ -102,6 +102,7 @@ from oc8.authz.pdp import (
     required_right,
 )
 from oc8.capas.discovery import resolve_tool_pack_connection
+from oc8.chat.modes import mode_from_context
 from oc8.config import get_settings
 from oc8.metering import record_usage
 from oc8.modelrouter import (
@@ -817,6 +818,7 @@ async def step(
         offer_write_output_file=offer_write_output_file,
         offer_run_shell=offer_write_output_file,
         offer_run_program=caps.code_mode,
+        chat_mode=mode_from_context(ctx),
     )
     # Code mode (ruling 6): seed the generated SDK once tools are known so
     # every later /step can return it as sdk_py for the shell to write.
@@ -1585,6 +1587,7 @@ async def _dispatch_one_tool(
         narrowing=pinned["narrowing"] or {},
         is_team_lead=bool(pinned["is_team_lead"]),
         guardrail_attribute_specs=guardrail_attribute_specs,
+        chat_mode=mode_from_context(run.context),
     )
     stripped, justification = strip_justification(tc.arguments)
     tc.arguments = stripped

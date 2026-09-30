@@ -46,6 +46,7 @@ from oc8.authz.pdp import Decision, Effect
 from oc8.authz.permissions import AGENT, APPROVAL, BUDGET, DEPARTMENT, STATISTICS, VIEW, perm
 from oc8.authz.scope import AgentActor, scope_for_member
 from oc8.capas.discovery import find_plugin
+from oc8.chat.modes import WRITING_CONTROL_TOOLS, ChatMode
 from oc8.departments.repo import visible_department, visible_departments
 from oc8.knowledge.retrieval import retrieve_kb_context
 from oc8.kpis.aggregate import compute_kpis
@@ -885,6 +886,7 @@ def offered_tools(
     is_team_lead: bool | None = None,
     offer_run_shell: bool = False,
     offer_run_program: bool = False,
+    chat_mode: ChatMode | None = None,
 ) -> list[NeutralTool]:
     """The full tool list to offer the model this step.
 
@@ -908,7 +910,18 @@ def offered_tools(
 
     `offer_run_program` is only meaningful together with `offer_run_shell`
     (isolated shell): code mode still goes through the same local_result path.
+
+    `chat_mode` withholds what the mode would deny anyway (`oc8.chat.modes`):
+    nothing at all for /ask and /summarise, and the writing core tools for
+    /plan. This is an EFFICIENCY measure, not the enforcement -- `_authorize`
+    is. Connection tools are left in the list here because this function is
+    not given the connection's read/modify classification; `_list_tools` in
+    the MCP gateway does have it and filters them, and the PEP denies the rest.
     """
+    if chat_mode is not None and not chat_mode.allows_tools:
+        # The cheap path, and cheap for real: no tool schemas in the request at
+        # all, so /ask costs one short completion.
+        return []
     if is_team_lead is None:
         is_team_lead = agent.is_team_lead
     # Skill tools stay offered even once active: a model that invokes an
@@ -993,6 +1006,8 @@ def offered_tools(
     # Dropping them here would make the other system unreachable for the
     # rest of the run. _authorize still checks the frame on every call.
     offered.extend(mcp_tools)
+    if chat_mode is not None and not chat_mode.allows_writes:
+        offered = [t for t in offered if t.name not in WRITING_CONTROL_TOOLS]
     return offered
 
 

@@ -15,6 +15,7 @@ from oc8 import models as m
 from oc8.agent.control_tools import DEPTH_LIMIT_REASON, MAX_DELEGATION_DEPTH
 from oc8.agent.tool_semantics import extract_attributes, extract_value
 from oc8.authz.pdp import Decision, Effect, ToolPolicy, authorize_tool_call, required_right
+from oc8.chat.modes import ChatMode, mode_refusal
 from oc8.memory.policy import authorize_memory_write
 from oc8.memory.router import MAX_MEMORY_CONTENT_LENGTH
 from oc8.modelrouter import ToolCall
@@ -35,6 +36,7 @@ def authorize(
     guardrail_attribute_specs: Sequence[dict[str, Any]] = (),
     narrowing: dict[str, Any] | None = None,
     is_team_lead: bool | None = None,
+    chat_mode: ChatMode | None = None,
 ) -> Decision:
     """PEP for a tool call. Every connection tool is decided against the
     department frame (§5.3): which entry governs it is the connection key, and
@@ -54,11 +56,26 @@ def authorize(
 
     `narrowing` and `is_team_lead` are the run's PINNED values
     (`resolve_version`). Every runtime passes them; the fallback to the live
-    `agent` row exists only for a direct call with no run behind it."""
+    `agent` row exists only for a direct call with no run behind it.
+
+    `chat_mode` is the slash command the operator sent this turn with
+    (`oc8.chat.modes`). Checked FIRST, above the skill/ask_user/propose_change
+    early ALLOWs, because a mode that "changes nothing" has to cover
+    delegate_task and memory_write too -- not just the connection's own tools.
+    It can only ever DENY: there is no branch where a mode turns a refusal into
+    an allow, which is what makes "a mode is a narrowing" true rather than
+    aspirational."""
     if narrowing is None:
         narrowing = agent.narrowing or {}
     if is_team_lead is None:
         is_team_lead = agent.is_team_lead
+    # FIRST, above every early ALLOW below: a mode narrows the whole turn, not
+    # just the connection tools. Denying here also means the existing
+    # append_event at all three call sites records it -- "denied because /plan"
+    # is in the audit trail without a fourth writer.
+    refused = mode_refusal(chat_mode, tc.name, tool_scopes=tool_scopes)
+    if refused is not None:
+        return Decision(Effect.DENY, refused)
     if tc.name in skill_tool_names:
         return Decision(Effect.ALLOW)
     if tc.name == "ask_user":
