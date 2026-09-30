@@ -1132,6 +1132,28 @@ class FileAttachmentDTO(CamelModel):
     created_at: str
 
 
+class ChatContextRefDTO(CamelModel):
+    kind: str
+    id: str
+    label: str
+
+
+class ChatModeDTO(CamelModel):
+    """One slash command the composer may offer (§5.2). Served from
+    `oc8.chat.modes` so the picker and the enforcement cannot disagree about
+    which commands exist.
+
+    `summary` is ENGLISH -- backend strings are. The frontend translates a key
+    it knows and falls back to this text for one it does not, so a mode added
+    later is readable without a frontend release.
+    """
+
+    key: str
+    summary: str
+    allows_tools: bool
+    allows_writes: bool
+
+
 class ChatMessageDTO(CamelModel):
     id: str
     session_id: str
@@ -1141,6 +1163,10 @@ class ChatMessageDTO(CamelModel):
     rendered_components: list[RenderedComponentDTO] = []
     created_at: str
     attachments: list[FileAttachmentDTO] = []
+    #: How this turn was asked -- see `oc8.chat.modes`. Null for an ordinary
+    #: message. The composer renders it as a badge on the sent turn.
+    mode: str | None = None
+    context_refs: list[ChatContextRefDTO] = []
 
 
 class ReportDTO(CamelModel):

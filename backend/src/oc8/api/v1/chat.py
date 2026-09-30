@@ -19,6 +19,7 @@ from oc8.api.v1.run import run_to_dto
 from oc8.authz.authority import Authority, authority_for_principal, tenant_wide_read
 from oc8.authz.permissions import AGENT, COPILOT, COPILOT_USE, MANAGE, RUN_START, VIEW, perm
 from oc8.authz.scope import HumanActor
+from oc8.chat.modes import MODES
 from oc8.chat.service import (
     create_session,
     delete_session,
@@ -29,7 +30,14 @@ from oc8.chat.service import (
     send_message,
 )
 from oc8.schemas.base import CamelModel
-from oc8.schemas.dto import ChatMessageDTO, ChatSessionDTO, FileAttachmentDTO, RunDTO
+from oc8.schemas.dto import (
+    ChatContextRefDTO,
+    ChatMessageDTO,
+    ChatModeDTO,
+    ChatSessionDTO,
+    FileAttachmentDTO,
+    RunDTO,
+)
 from oc8.schemas.requests import (
     CreateChatSessionRequest,
     RenameChatSessionRequest,
@@ -77,6 +85,16 @@ async def _message_dto(msg: m.ChatMessage, db: DbSession, tenant_id: uuid.UUID) 
         rendered_components=msg.rendered_components,
         created_at=msg.created_at.isoformat(),
         attachments=attachments,
+        mode=msg.mode,
+        context_refs=[
+            ChatContextRefDTO(
+                kind=str(ref.get("kind", "")),
+                id=str(ref.get("id", "")),
+                label=str(ref.get("label", "")),
+            )
+            for ref in (msg.context_refs or [])
+            if isinstance(ref, dict)
+        ],
     )
 
 
@@ -93,6 +111,29 @@ async def get_assistant(db: DbSession, principal: CurrentPrincipal) -> Assistant
     agent = await get_or_create_assistant(db, tenant_id=principal.tenant_id)
     await db.commit()
     return AssistantDTO(agent_id=str(agent.id))
+
+
+@router.get(
+    "/chat/modes",
+    response_model=list[ChatModeDTO],
+    dependencies=[Depends(require_permission(COPILOT_USE))],
+)
+async def get_chat_modes() -> list[ChatModeDTO]:
+    """The slash commands the composer may offer, in picker order.
+
+    Deliberately the same list `parse_command`/`mode_refusal` enforce against
+    (`oc8.chat.modes.MODES`) -- so the picker can never advertise a command
+    the backend would not honor, and vice versa.
+    """
+    return [
+        ChatModeDTO(
+            key=mode.key,
+            summary=mode.summary,
+            allows_tools=mode.allows_tools,
+            allows_writes=mode.allows_writes,
+        )
+        for mode in MODES.values()
+    ]
 
 
 async def _assistant_visible(
@@ -281,6 +322,7 @@ async def post_message(
         tenant_id=actor.principal.tenant_id,
         message=body.message,
         attachment_ids=body.attachment_ids,
+        context_refs=[{"kind": ref.kind, "id": str(ref.id)} for ref in body.context_refs],
         originating_operator=actor.principal.subject,
         # The token's role claim, recorded on the run: a member with no
         # ASSIGNED role resolves to `permissions_for(token.role)` everywhere

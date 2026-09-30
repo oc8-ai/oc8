@@ -31,9 +31,24 @@ class CreateChatSessionRequest(CamelModel):
     agent_id: uuid.UUID
 
 
+class ChatContextRefRequest(CamelModel):
+    """One thing the operator attached to a message with `#` (§5.2).
+
+    `knowledge_base` is the only kind Phase 1 accepts. The label is NOT taken
+    from the client -- `chat.service` resolves it from the row, so a client
+    cannot make a turn's transcript claim it consulted something else.
+    """
+
+    kind: Literal["knowledge_base"]
+    id: uuid.UUID
+
+
 class SendChatMessageRequest(CamelModel):
     message: str = Field(min_length=1, max_length=20_000)
     attachment_ids: list[uuid.UUID] = []
+    #: At most five: `#` is for pointing at a source, and a turn that names ten
+    #: of them is a search, not a reference.
+    context_refs: list[ChatContextRefRequest] = Field(default_factory=list, max_length=5)
 
 
 class RenameChatSessionRequest(CamelModel):
