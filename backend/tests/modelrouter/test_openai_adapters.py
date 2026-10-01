@@ -198,6 +198,36 @@ def test_an_ordinary_transcript_gains_no_bridging_turn() -> None:
     assert ordinary[3]["content"] == "created it"
 
 
+async def test_system_messages_are_merged_and_hoisted_to_the_front() -> None:
+    """Some OpenAI-compatible gateways reject any system message except one
+    first message. oc8 can create multiple system notes before and during a run,
+    so the adapter must present them as one leading system prompt.
+    """
+    sent = to_openai_messages(
+        [
+            NeutralMessage(role="system", content="base instructions"),
+            NeutralMessage(role="user", content="do it"),
+            NeutralMessage(
+                role="assistant",
+                tool_calls=[ToolCall(id="call_1", name="create_record", arguments={})],
+            ),
+            NeutralMessage(role="tool", content="parked", tool_call_id="call_1"),
+            NeutralMessage(role="system", content="history was trimmed"),
+            NeutralMessage(role="user", content="approved, carry on"),
+        ]
+    )
+    assert [m["role"] for m in sent] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+        "user",
+    ]
+    assert sent[0]["content"] == "base instructions\n\nhistory was trimmed"
+    assert sent[4]["content"], "tool-to-user bridge must still be inserted after hoisting"
+
+
 async def test_a_nameless_tool_call_never_reaches_the_provider() -> None:
     """A function with no name poisons a transcript permanently.
 
