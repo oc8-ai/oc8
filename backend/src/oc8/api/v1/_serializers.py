@@ -10,12 +10,15 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select
 
 from oc8 import models as m
+from oc8.agents.versioning import version_meta, version_payload
 from oc8.knowledge.chunks import ChunkRow, DocumentSummary
 from oc8.knowledge.retrieval import SimilarChunkRow
 from oc8.modelrouter.registry import canonical_provider
 from oc8.schemas.dto import (
     ActivityDTO,
     AgentDTO,
+    AgentVersionDTO,
+    AgentVersionSummaryDTO,
     ApprovalDTO,
     ApprovalOptionDTO,
     ClarificationDTO,
@@ -106,6 +109,7 @@ def agent_to_dto(a: m.Agent) -> AgentDTO:
         department_id=str(a.department_id) if a.department_id else None,
         model_config_id=str(a.model_config_id) if a.model_config_id else None,
         is_lead=a.is_team_lead,
+        prompt_starters=[str(s) for s in (p.get("prompt_starters") or [])],
         deleted_at=a.deleted_at.isoformat() if a.deleted_at else None,
         role_translations=_i18n_str(i18n, "role"),
         last_action_translations=_i18n_str(i18n, "last_action"),
@@ -148,7 +152,9 @@ def task_to_dto(t: m.Task) -> TaskDTO:
         agent_id=str(t.assigned_agent_id) if t.assigned_agent_id else None,
         column=TASK_STATE_TO_COLUMN.get(t.state, "backlog"),
         meta=t.meta_label,
-        record_url=payload.get("record_url") if isinstance(payload.get("record_url"), str) else None,
+        record_url=(
+            payload.get("record_url") if isinstance(payload.get("record_url"), str) else None
+        ),
         title_translations=_i18n_str(i18n, "title"),
         meta_translations=_i18n_str(i18n, "meta"),
     )
@@ -184,6 +190,10 @@ class ApprovalNames:
     agents: dict[uuid.UUID, str] = field(default_factory=dict)
     tasks: dict[uuid.UUID, str] = field(default_factory=dict)
     members: dict[uuid.UUID, str] = field(default_factory=dict)
+    #: task_id -> the id of the run holding that task, for the approvals the
+    #: queue must sort by how much work they block. One batched query like
+    #: every other field here, never one per row.
+    runs: dict[uuid.UUID, uuid.UUID] = field(default_factory=dict)
 
 
 _NO_NAMES = ApprovalNames()
@@ -214,6 +224,22 @@ async def resolve_approval_names(
         found = (await db.execute(select(column, label).where(column.in_(ids)))).all()
         return {row[0]: row[1] or "" for row in found}
 
+    async def _runs(ids: set[uuid.UUID]) -> dict[uuid.UUID, uuid.UUID]:
+        """task_id -> run_id. Ordered so a task with more than one run (a
+        resumed run opens no new one, but a re-run of the same task does)
+        resolves to the most recent, which is the one a person looking at a
+        pending approval means."""
+        if not ids:
+            return {}
+        rows = (
+            await db.execute(
+                select(m.AgentRun.task_id, m.AgentRun.id)
+                .where(m.AgentRun.task_id.in_(ids))
+                .order_by(m.AgentRun.updated_at.asc())
+            )
+        ).all()
+        return {row[0]: row[1] for row in rows}
+
     return ApprovalNames(
         departments=await _names(m.Department.id, m.Department.name, department_ids),
         agents=await _names(m.Agent.id, m.Agent.name, agent_ids),
@@ -222,6 +248,7 @@ async def resolve_approval_names(
         # falling back to nothing rather than to the raw subject, because a
         # raw uuid printed under "entschieden von" is worse than a blank.
         members=await _names(m.OrgMember.id, m.OrgMember.display_name, member_ids),
+        runs=await _runs(task_ids),
     )
 
 
@@ -261,6 +288,11 @@ def approval_to_dto(a: m.ApprovalRequest, names: ApprovalNames | None = None) ->
         agent_name=resolved.agents.get(a.agent_id, ""),
         task_id=str(a.task_id) if a.task_id else None,
         task_title=resolved.tasks.get(a.task_id, "") if a.task_id else "",
+        run_id=(
+            str(resolved.runs[a.task_id])
+            if a.task_id is not None and a.task_id in resolved.runs
+            else None
+        ),
         created_at=a.created_at.isoformat() if a.created_at else "",
         decided_by_name=resolved.members.get(a.decided_by, "") if a.decided_by else "",
         tool_name=str(tool_name) if isinstance(tool_name, str) else None,
@@ -268,7 +300,10 @@ def approval_to_dto(a: m.ApprovalRequest, names: ApprovalNames | None = None) ->
         title_translations=_i18n_str(payload.get("i18n"), "title"),
         detail_translations=_i18n_str(payload.get("i18n"), "detail"),
         reason_context=a.reason_context,
-        record_url=payload.get("record_url") if isinstance(payload.get("record_url"), str) else None,
+        # The column first; the payload key for rows raised before it existed
+        # (and any raiser that still only writes the payload).
+        record_url=a.record_url
+        or (payload.get("record_url") if isinstance(payload.get("record_url"), str) else None),
     )
 
 
@@ -427,6 +462,45 @@ def skill_to_dto(s: m.Skill, version: m.SkillVersion | None) -> SkillDTO:
         description_translations=_i18n_str(i18n, "description"),
         instructions_translations=_i18n_str(i18n, "instructions"),
         guardrails_translations=_i18n_str_list(i18n, "guardrails"),
+    )
+
+
+def agent_version_to_summary_dto(
+    v: m.AgentVersion, *, current_version_id: uuid.UUID | None
+) -> AgentVersionSummaryDTO:
+    """`is_current` is passed IN rather than read off the row.
+
+    A version does not know whether it is live -- `agent.current_version_id`
+    does -- and a serializer that re-read the agent to find out would issue one
+    query per row and would also have to be async, which every other function
+    in this module deliberately is not.
+    """
+    rolled_back_from = version_meta(v).get("rolled_back_from")
+    return AgentVersionSummaryDTO(
+        id=str(v.id),
+        version_no=v.version_no,
+        note=v.note,
+        published_by=str(v.published_by) if v.published_by is not None else None,
+        published_at=v.published_at.isoformat(),
+        is_current=current_version_id is not None and v.id == current_version_id,
+        rolled_back_from=(int(rolled_back_from) if isinstance(rolled_back_from, int) else None),
+    )
+
+
+def agent_version_to_dto(
+    v: m.AgentVersion, *, current_version_id: uuid.UUID | None
+) -> AgentVersionDTO:
+    """The summary plus the configuration snapshot and its hash.
+
+    `version_payload` strips the reserved `_meta` key: it is provenance, already
+    surfaced as `rolled_back_from`, and leaving it inside `payload` would make
+    every client's payload renderer show a field that is not configuration.
+    """
+    summary = agent_version_to_summary_dto(v, current_version_id=current_version_id)
+    return AgentVersionDTO(
+        **summary.model_dump(),
+        payload=version_payload(v),
+        payload_hash=v.payload_hash.hex(),
     )
 
 

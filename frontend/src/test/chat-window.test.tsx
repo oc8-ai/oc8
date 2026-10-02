@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const sessionsMock = vi.fn();
@@ -15,6 +15,46 @@ const uploadAttachmentMock = vi.fn();
 // destructure throw before any of those tests get to render.
 const clarificationsMock = vi.fn(() => ({ data: [] }));
 const answerClarificationMock = vi.fn();
+// Constant defaults for the composer's own data hooks -- these are called on
+// every render regardless of which describe block is running, so they need a
+// safe default even in suites that never touch `/` or `#`. The one seeded
+// knowledge base ("kb-1"/"Preisliste") is reused by every sigil test that
+// needs one, rather than re-declared per test.
+const chatModesMock = vi.fn(() => ({
+  data: [
+    {
+      key: "ask",
+      summary: "Answer from what you already know. No tools, no systems touched.",
+      allowsTools: false,
+      allowsWrites: false,
+    },
+    {
+      key: "plan",
+      summary: "Work out the steps and show them. Changes nothing.",
+      allowsTools: true,
+      allowsWrites: false,
+    },
+    {
+      key: "do",
+      summary: "Carry out what was agreed, under the usual guardrails.",
+      allowsTools: true,
+      allowsWrites: true,
+    },
+    {
+      key: "summarise",
+      summary: "Condense this conversation into a decision record.",
+      allowsTools: false,
+      allowsWrites: false,
+    },
+  ],
+}));
+const knowledgeBasesMock = vi.fn(() => ({
+  data: {
+    items: [{ id: "kb-1", name: "Preisliste", description: "Preisliste 2026" }],
+    totalCount: 1,
+  },
+  isLoading: false,
+}));
 
 vi.mock("@/lib/hooks-chat", () => ({
   useChatSessions: (agentId?: string) => sessionsMock(agentId),
@@ -29,7 +69,19 @@ vi.mock("@/lib/hooks-chat", () => ({
 vi.mock("@/lib/hooks", () => ({
   useClarifications: () => clarificationsMock(),
   useAnswerClarification: () => ({ mutate: answerClarificationMock, isPending: false }),
+  useKnowledgeBases: () => knowledgeBasesMock(),
 }));
+
+// The pure helpers stay REAL -- they are the thing under test here; only the
+// network hook is replaced.
+vi.mock("@/lib/chat-commands", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/chat-commands")>();
+  return { ...actual, useChatModes: () => chatModesMock() };
+});
+vi.mock("@/lib/governance-hooks", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/governance-hooks")>();
+  return { ...actual, useCan: () => () => true };
+});
 
 import { ChatWindow } from "@/components/chat-window";
 
@@ -83,6 +135,8 @@ describe("ChatWindow", () => {
           runId: null,
           renderedComponents: [],
           createdAt: "2026-08-27T00:00:00Z",
+          mode: null,
+          contextRefs: [],
         },
         {
           id: "m2",
@@ -92,6 +146,8 @@ describe("ChatWindow", () => {
           runId: "r1",
           renderedComponents: [],
           createdAt: "2026-08-27T00:00:01Z",
+          mode: null,
+          contextRefs: [],
         },
       ],
       isLoading: false,
@@ -116,6 +172,8 @@ describe("ChatWindow", () => {
           runId: null,
           renderedComponents: [],
           createdAt: "2026-08-27T00:00:00Z",
+          mode: null,
+          contextRefs: [],
         },
       ],
       isLoading: false,
@@ -144,6 +202,8 @@ describe("ChatWindow", () => {
             },
           ],
           createdAt: "2026-08-27T00:00:01Z",
+          mode: null,
+          contextRefs: [],
         },
       ],
       isLoading: false,
@@ -173,6 +233,8 @@ describe("ChatWindow waiting_for_input", () => {
           runId: null,
           renderedComponents: [],
           createdAt: "2026-08-27T00:00:00Z",
+          mode: null,
+          contextRefs: [],
         },
       ],
       isLoading: false,
@@ -421,7 +483,7 @@ describe("ChatWindow attachments", () => {
     fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
 
     expect(sendMessageMock).toHaveBeenCalledWith(
-      { message: "see attached", attachmentIds: ["att1"] },
+      { message: "see attached", attachmentIds: ["att1"], contextRefs: [] },
       expect.anything(),
     );
   });
@@ -438,6 +500,8 @@ describe("ChatWindow attachments", () => {
           renderedComponents: [],
           createdAt: "2026-08-27T00:00:00Z",
           attachments: [attachmentDto],
+          mode: null,
+          contextRefs: [],
         },
       ],
       isLoading: false,
@@ -500,5 +564,160 @@ describe("ChatWindow agent switching", () => {
     // session picker/messages would still be showing here.
     expect(screen.queryByRole("button", { name: "Agent 1 chat" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /start chat/i })).toBeInTheDocument();
+  });
+});
+
+describe("ChatWindow composer sigils", () => {
+  beforeEach(() => {
+    sessionsMock.mockReset();
+    createSessionMock.mockReset();
+    messagesMock.mockReset();
+    sendMessageMock.mockReset();
+    renameSessionMock.mockReset();
+    deleteSessionMock.mockReset();
+    uploadAttachmentMock.mockReset();
+    sessionsMock.mockReturnValue({
+      data: [{ id: "s1", agentId: "agent-1", title: "", createdAt: "2026-08-27T00:00:00Z" }],
+      isLoading: false,
+    });
+    messagesMock.mockReturnValue({ data: [], isLoading: false });
+  });
+
+  function typeDraft(text: string) {
+    const textarea = screen.getByPlaceholderText(/type a message/i) as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: text, selectionStart: text.length } });
+    return textarea;
+  }
+
+  it("typing '/' opens the command picker with a description per command", () => {
+    renderChat();
+    typeDraft("/");
+    expect(screen.getByRole("listbox", { name: /commands/i })).toBeInTheDocument();
+    expect(
+      screen.getByText("Answer from what you already know. No tools, no systems touched."),
+    ).toBeInTheDocument();
+  });
+
+  it("picking a command puts it in the draft and shows the armed pill", () => {
+    renderChat();
+    const textarea = typeDraft("/");
+    fireEvent.click(screen.getByRole("option", { name: /\/plan/i }));
+    expect(textarea.value).toBe("/plan ");
+    // The pill and the (re-offered) picker option both render the literal
+    // "/plan" text; either is proof the pick landed in the draft.
+    expect(screen.getAllByText("/plan").length).toBeGreaterThan(0);
+  });
+
+  it("an unknown slash command is still sendable", () => {
+    renderChat();
+    const textarea = typeDraft("/deploy the thing");
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(sendMessageMock).toHaveBeenCalledWith(
+      { message: "/deploy the thing", attachmentIds: [], contextRefs: [] },
+      expect.anything(),
+    );
+  });
+
+  it("a path is not a command", () => {
+    renderChat();
+    typeDraft("/etc/passwd is world readable?");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    // The armed pill is a <span>; excluding it as a selector keeps this from
+    // matching the textarea's own value, which also starts with "/etc".
+    expect(screen.queryByText(/^\/etc/, { selector: "span" })).not.toBeInTheDocument();
+  });
+
+  it("typing '#' offers knowledge bases and picking one adds a chip", () => {
+    renderChat();
+    typeDraft("#");
+    expect(screen.getByRole("listbox", { name: /attach context/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("option", { name: /Preisliste/i }));
+
+    expect(screen.getByText("Preisliste")).toBeInTheDocument();
+    const textarea = screen.getByPlaceholderText(/type a message/i) as HTMLTextAreaElement;
+    expect(textarea.value).not.toContain("#");
+  });
+
+  it("sending carries the context ref and then clears it", () => {
+    renderChat();
+    typeDraft("#");
+    fireEvent.click(screen.getByRole("option", { name: /Preisliste/i }));
+    expect(screen.getByText("Preisliste")).toBeInTheDocument();
+
+    const textarea = screen.getByPlaceholderText(/type a message/i);
+    fireEvent.change(textarea, {
+      target: { value: "what's in here?", selectionStart: 16 },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
+
+    expect(sendMessageMock).toHaveBeenCalledWith(
+      {
+        message: "what's in here?",
+        attachmentIds: [],
+        contextRefs: [{ kind: "knowledge_base", id: "kb-1" }],
+      },
+      expect.anything(),
+    );
+
+    const [, opts] = sendMessageMock.mock.calls[0] as [
+      unknown,
+      { onSuccess?: () => void } | undefined,
+    ];
+    act(() => {
+      opts?.onSuccess?.();
+    });
+    expect(screen.queryByText("Preisliste")).not.toBeInTheDocument();
+  });
+
+  it("Enter picks from the picker instead of sending", () => {
+    renderChat();
+    const textarea = typeDraft("/");
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(sendMessageMock).not.toHaveBeenCalled();
+  });
+
+  it("typing '@' does not open a picker in the agent-scoped chat", () => {
+    // Decision, not omission: switching agent is the front door's job -- see
+    // this task's scope note. Typing `@` here just types an `@`.
+    renderChat();
+    typeDraft("ask @sa");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  });
+
+  it("the composer hint names all three sigils", () => {
+    renderChat();
+    expect(screen.getByTestId("composer-hint")).toBeInTheDocument();
+  });
+
+  it("a sent turn shows its mode badge and its context chip", () => {
+    messagesMock.mockReturnValue({
+      data: [
+        {
+          id: "m1",
+          sessionId: "s1",
+          role: "user",
+          content: "check the price list",
+          runId: null,
+          renderedComponents: [],
+          createdAt: "2026-08-27T00:00:00Z",
+          mode: "plan",
+          contextRefs: [{ kind: "knowledge_base", id: "kb-1", label: "Preisliste" }],
+        },
+      ],
+      isLoading: false,
+    });
+    renderChat();
+    expect(screen.getByText("/plan")).toBeInTheDocument();
+    expect(screen.getByText("Preisliste")).toBeInTheDocument();
+  });
+
+  it("the paperclip and the # picker never offer the same thing", () => {
+    renderChat();
+    expect(screen.getByLabelText(/attach a file/i)).toBeInTheDocument();
+
+    typeDraft("#");
+    const listbox = screen.getByRole("listbox", { name: /attach context/i });
+    expect(listbox).toBeInTheDocument();
+    expect(within(listbox).queryByText(/attach a file/i)).not.toBeInTheDocument();
   });
 });

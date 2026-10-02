@@ -12,6 +12,7 @@ export const liveQueryKeys: readonly unknown[][] = [
   ["clarifications"],
   ["handoffs"],
   ["flow-runs"],
+  ["runs"],
   ["supervision-interventions"],
   ["departments"],
 ];
@@ -39,6 +40,9 @@ const patchers: Record<string, Patcher> = {
         prev ? { ...(prev as object), state: d.state, phase: d.phase } : prev,
       );
     }
+    // The list a state filter selects from -- a run that just parked or just
+    // finished belongs in a different bucket than a moment ago.
+    qc.invalidateQueries({ queryKey: ["runs"] });
     // terminal states free the agent -> reflect in the agents list (mirrors the
     // old useRun poll's terminal-state agents invalidation)
     if (d.state === "done" || d.state === "failed" || d.state === "interrupted") {
@@ -114,6 +118,30 @@ const patchers: Record<string, Patcher> = {
             toolCalls: [
               ...((prev as { toolCalls?: Record<string, unknown>[] }).toolCalls ?? []),
               call,
+            ],
+          }
+        : prev,
+    );
+  },
+  // One finished step's latency record (oc8.runtime.step_record), published
+  // by both runtimes as the NEXT step starts -- see
+  // backend/src/oc8/realtime/emit.py's publish_run_step_timing. Appended,
+  // same as run.tool_call above and for the same reason: the backend already
+  // persisted this entry to context->'stepTimings' before publishing, so a
+  // fresh page load gets it from the initial GET too; this only spares an
+  // already-open timeline the wait for a refetch before it can show that
+  // step's duration.
+  "run.step_timing": (qc, d) => {
+    const runId = d.run_id as string | undefined;
+    const timing = d.timing as Record<string, unknown> | undefined;
+    if (!runId || !timing) return;
+    qc.setQueryData(["run", runId], (prev: unknown) =>
+      prev
+        ? {
+            ...(prev as { stepTimings?: Record<string, unknown>[] }),
+            stepTimings: [
+              ...((prev as { stepTimings?: Record<string, unknown>[] }).stepTimings ?? []),
+              timing,
             ],
           }
         : prev,

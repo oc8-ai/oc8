@@ -28,6 +28,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from oc8 import models as m
+from oc8.agents.versioning import pinned_model_config_id, resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession
 from oc8.config import get_settings
 from oc8.db.session import tenant_session
@@ -66,6 +67,10 @@ class GatewayCaller(BaseModel):
     tenant_id: uuid.UUID
     agent: m.Agent
     run_id: uuid.UUID
+    #: The agent version the run is pinned to (`resolve_version`). Model and
+    #: sampling come from here, never the live row: a container calls this
+    #: gateway once per turn, and a model switch must not reach a running run.
+    pinned: dict[str, Any]
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -96,7 +101,12 @@ async def _caller(db: DbSession, principal: CurrentPrincipal) -> GatewayCaller:
     agent = await db.get(m.Agent, run.agent_id)
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
-    return GatewayCaller(tenant_id=run.tenant_id, agent=agent, run_id=run_id)
+    return GatewayCaller(
+        tenant_id=run.tenant_id,
+        agent=agent,
+        run_id=run_id,
+        pinned=await resolve_version(db, run, agent),
+    )
 
 
 # ------------------------------------------------------------------- inbound
@@ -269,9 +279,8 @@ async def _prepare(
     agent must not be able to pick the endpoint whose budget check is weaker.
     """
     agent = caller.agent
-    model_config = (
-        await db.get(m.ModelConfig, agent.model_config_id) if agent.model_config_id else None
-    )
+    pinned_model_id = pinned_model_config_id(caller.pinned)
+    model_config = await db.get(m.ModelConfig, pinned_model_id) if pinned_model_id else None
     settings = get_settings()
     if model_config is not None:
         provider, model = model_config.provider, model_config.model
@@ -299,7 +308,7 @@ async def _prepare(
         no_config_model=model,
         messages=messages,
         tools=tools,
-        params=resolve_params(model_config, agent=agent),
+        params=resolve_params(model_config, agent=agent, definition=caller.pinned["definition"]),
         request_id=request_id,
         contains_restricted=False,
     )

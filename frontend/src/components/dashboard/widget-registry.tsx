@@ -2,13 +2,22 @@
 // short, compiled lookup table, not a plugin system. A WidgetInstance whose
 // `type` is absent from this table (a future/removed type) is handled by
 // DashboardGrid's own fallback -- this registry itself only ever holds the
-// six current types.
-import { Activity, CheckCircle2, Kanban, MessageSquare, PieChart, Wallet } from "lucide-react";
+// seven current types.
+import {
+  Activity,
+  CheckCircle2,
+  Inbox,
+  Kanban,
+  MessageSquare,
+  PieChart,
+  Wallet,
+} from "lucide-react";
 import type { ReactElement } from "react";
 import { ActivityWidget } from "@/components/dashboard/widgets/activity-widget";
 import { ApprovalsWidget } from "@/components/dashboard/widgets/approvals-widget";
 import { BudgetWidget } from "@/components/dashboard/widgets/budget-widget";
 import { ChatWidget } from "@/components/dashboard/widgets/chat-widget";
+import { NeedsMeWidget } from "@/components/dashboard/widgets/needs-me-widget";
 import { ReportsWidget } from "@/components/dashboard/widgets/reports-widget";
 import { TaskBoardWidget } from "@/components/dashboard/widgets/task-board-widget";
 import type { WidgetType } from "@/lib/hooks";
@@ -41,6 +50,12 @@ export const WIDGET_REGISTRY: Record<
     component: ApprovalsWidget,
     defaultSize: { w: 4, h: 5 },
     icon: CheckCircle2,
+  },
+  "needs-me": {
+    label: (de) => (de ? "Wartet auf mich" : "Waiting on me"),
+    component: NeedsMeWidget,
+    defaultSize: { w: 4, h: 6 },
+    icon: Inbox,
   },
   reports: {
     label: (de) => (de ? "Reports" : "Reports"),

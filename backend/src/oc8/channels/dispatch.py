@@ -59,6 +59,7 @@ def notice_for(approval: m.ApprovalRequest) -> ApprovalNotice:
         ),
         expires_at=approval.expires_at,
         classification=_classification_of(approval),
+        record_url=approval.record_url or "",
     )
 
 

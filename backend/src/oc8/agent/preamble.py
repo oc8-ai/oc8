@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -58,7 +59,6 @@ _ORIGIN_LABELS: dict[str, str] = {
     "handoff": "handoff",
 }
 
-
 async def _origin_label(db: AsyncSession, *, run: m.AgentRun | None) -> str:
     """A2 "Origin" line. `run.source` is the ck_agent_run_source CHECK
     constraint's enum (manual/cron/event/webhook/delegation/decision/
@@ -86,8 +86,19 @@ async def _origin_label(db: AsyncSession, *, run: m.AgentRun | None) -> str:
     return _ORIGIN_LABELS.get(run.source, run.source)
 
 
-def system_prompt(agent: m.Agent, *, caps: ModelCaps, tenant_name: str) -> str:
-    prompt = render_system_prompt(agent, caps=caps, tenant_name=tenant_name)
+def system_prompt(
+    agent: m.Agent,
+    *,
+    caps: ModelCaps,
+    tenant_name: str,
+    pinned: Mapping[str, Any] | None = None,
+) -> str:
+    """`pinned` is the run's resolved version (`resolve_version`); when given,
+    role title and mission come from it rather than the live row, so a
+    mid-run edit never rewrites the instructions a run is working to. `name`
+    and `presentation` (guardrails) are identity/operational state, not
+    versioned -- see `render_system_prompt`'s own docstring."""
+    prompt = render_system_prompt(agent, caps=caps, tenant_name=tenant_name, pinned=pinned)
     if agent.is_tenant_assistant:
         prompt = f"{prompt}\n\n{TENANT_ASSISTANT_OPENER}"
     return prompt
@@ -261,11 +272,15 @@ async def build_run_preamble(
     supports_vision: bool = False,
     task: m.Task | None = None,
     run_id: uuid.UUID | None = None,
+    pinned: Mapping[str, Any] | None = None,
 ) -> RunPreamble:
     """Seed a run's conversation: system context first, the task last.
 
     Message order is part of the contract -- the task must be the final turn, so
     the model reads its instructions against context already established.
+
+    `pinned` is the run's resolved agent version (`resolve_version`). Every
+    runtime passes it; None (a direct call with no run) reads the live row.
     """
     org = await db.get(m.Organization, tenant_id)
     tenant_name = org.name if org is not None else "the organization"
@@ -317,7 +332,8 @@ async def build_run_preamble(
 
     messages: list[NeutralMessage] = [
         NeutralMessage(
-            role="system", content=system_prompt(agent, caps=caps, tenant_name=tenant_name)
+            role="system",
+            content=system_prompt(agent, caps=caps, tenant_name=tenant_name, pinned=pinned),
         )
     ]
     # Said once, before anything a stranger wrote can arrive. Every answer a
@@ -328,7 +344,12 @@ async def build_run_preamble(
     messages.append(NeutralMessage(role="system", content=PROVENANCE_RULE))
 
     memory_ctx = await retrieve_context(
-        db, agent=agent, tenant_id=tenant_id, frame=frame, query_text=task_text
+        db,
+        agent=agent,
+        tenant_id=tenant_id,
+        frame=frame,
+        query_text=task_text,
+        narrowing=(pinned["narrowing"] or {}) if pinned is not None else None,
     )
     if memory_ctx:
         messages.append(NeutralMessage(role="system", content=memory_ctx))
@@ -374,7 +395,8 @@ async def build_run_preamble(
             )
         )
 
-    if agent.is_team_lead:
+    is_team_lead = bool(pinned["is_team_lead"]) if pinned is not None else agent.is_team_lead
+    if is_team_lead:
         # Appended as its own system message (like memory/KB context) because
         # system_prompt is a pure sync function and this needs the DB.
         roster = await roster_block(db, agent=agent)

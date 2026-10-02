@@ -77,13 +77,26 @@ async def retrieve_kb_context(
     frame: dict[str, Any] | None = None,
     model_locality: str = "cloud",
     token_budget: int = KB_TOKEN_BUDGET,
+    only_kb_ids: frozenset[uuid.UUID] | None = None,
 ) -> tuple[str, bool]:
     """Returns (context, contains_restricted). frame/model_locality default
     to the safe/conservative values (no cleared_classes override, cloud
     locality) so existing callers that don't pass them get the strictest
     behavior — run_agent (the only production caller) always passes both
-    explicitly."""
+    explicitly.
+
+    `only_kb_ids` is what the operator attached to THIS turn with `#`
+    (`chat/service.py`). It is INTERSECTED with the agent's grants, never
+    substituted for them: a reference to a knowledge base this agent may not
+    read narrows the search to nothing and returns "", rather than reading it
+    or quietly falling back to everything. Same monotonic "can only tighten"
+    rule the frame algebra uses -- None means no narrowing at all, which is
+    every pre-existing caller."""
     kb_ids = await granted_kb_ids(db, agent=agent)
+    if only_kb_ids is not None:
+        # Intersection, never replacement. A `#` reference cannot reach a base
+        # the agent has no grant to.
+        kb_ids = {kb_id for kb_id in kb_ids if kb_id in only_kb_ids}
     if not kb_ids:
         return "", False
 

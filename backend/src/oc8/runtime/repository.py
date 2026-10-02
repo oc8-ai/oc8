@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.models import RunStateTransition
+from oc8.models.core import Agent
 from oc8.models.run import AgentRun
 from oc8.runtime.states import TERMINAL, RunState, assert_transition
 
@@ -93,6 +94,20 @@ class RunRepository:
         coalesce_key: str | None = None,
         task_id: uuid.UUID | None = None,
     ) -> AgentRun:
+        """Insert a queued run. The one funnel every run row is created
+        through -- intake, a delegated sub-run, a lead's wake-up -- so it is
+        also where the run is pinned to the agent version current right now.
+
+        Pinning here rather than at each call site means a new creation path
+        cannot forget it: an unpinned run falls back to the agent's CURRENT
+        version on every read, so a publish landing mid-run would reach it.
+        A publish after this point gives the run the version it replaced,
+        never a mixture, because a version is immutable. `None` (an agent
+        with no version yet, or an id this tenant cannot see) leaves the run
+        unpinned, and `resolve_version` falls back as before."""
+        agent_version_id = (
+            await self._s.execute(select(Agent.current_version_id).where(Agent.id == agent_id))
+        ).scalar_one_or_none()
         run = AgentRun(
             tenant_id=tenant_id,
             agent_id=agent_id,
@@ -102,6 +117,7 @@ class RunRepository:
             idempotency_key=idempotency_key,
             coalesce_key=coalesce_key,
             task_id=task_id,
+            agent_version_id=agent_version_id,
         )
         self._s.add(run)
         await self._s.flush()

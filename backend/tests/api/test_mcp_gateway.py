@@ -501,6 +501,90 @@ async def test_a_denied_call_is_a_readable_tool_error_not_a_transport_error(
     assert _FakeMcp.calls == [], "nothing may reach the tool server"
 
 
+async def _pin_then_tighten_narrowing(
+    db: Any, tenant: uuid.UUID, agent_id: uuid.UUID, run_id: uuid.UUID
+) -> None:
+    """Publish v1 with no narrowing, pin the run to it, then publish v2 with
+    the connection narrowed to read-only -- the mid-run change the gateway
+    must NOT apply to a run already in flight."""
+    from oc8.agents.versioning import publish_version
+
+    agent = await db.get(m.Agent, agent_id)
+    run = await db.get(m.AgentRun, run_id)
+    assert agent is not None and run is not None
+    await publish_version(db, agent)
+    run.agent_version_id = agent.current_version_id
+    agent.narrowing = {"tools": {"odoo": {"enabled": True, "read": True, "modify": False}}}
+    await publish_version(db, agent)
+    await db.flush()
+
+
+async def test_a_midrun_narrowing_change_does_not_reach_a_running_calls_authorization(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: `_call_tool` read `agent.narrowing` live on every call, so a
+    narrowing published between two tool calls of the same containerized run
+    changed what that run was allowed to do. The run is pinned to the version
+    it started with; only a NEW run picks up the tighter narrowing."""
+    _FakeMcp.calls = []
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant)
+        await _pin_then_tighten_narrowing(db, tenant, agent_id, run_id)
+
+    code, body = await _rpc(
+        _token(tenant, agent_id, run_id),
+        "tools/call",
+        {"name": "create_record", "arguments": {"model": "sale.order"}},
+    )
+    assert code == 200, body
+    assert body["result"]["isError"] is False, body
+    assert _FakeMcp.calls and _FakeMcp.calls[0][0] == "create_record"
+
+
+async def test_a_midrun_narrowing_change_does_not_reach_a_running_tools_list(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same regression on `tools/list`: the write tool the pinned version grants
+    stays offered after a mid-run publish narrows it away."""
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant)
+        await _pin_then_tighten_narrowing(db, tenant, agent_id, run_id)
+
+    code, body = await _rpc(_token(tenant, agent_id, run_id), "tools/list")
+    assert code == 200, body
+    names = [t["name"] for t in body["result"]["tools"]]
+    assert "create_record" in names, names
+
+
+async def test_a_run_pinned_after_the_narrowing_change_gets_the_tighter_narrowing(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half of the pin: a run pinned to the tightened version is denied."""
+    _FakeMcp.calls = []
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant)
+        await _pin_then_tighten_narrowing(db, tenant, agent_id, run_id)
+        agent = await db.get(m.Agent, agent_id)
+        run = await db.get(m.AgentRun, run_id)
+        assert agent is not None and run is not None
+        run.agent_version_id = agent.current_version_id
+
+    code, body = await _rpc(
+        _token(tenant, agent_id, run_id),
+        "tools/call",
+        {"name": "create_record", "arguments": {"model": "sale.order"}},
+    )
+    assert code == 200, body
+    assert body["result"]["isError"] is True, body
+    assert _FakeMcp.calls == []
+
+
 async def test_a_repeated_write_is_idempotent(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -16,6 +16,9 @@ export interface Agent {
   avatarColor: string;
   departmentId?: string;
   isLead?: boolean;
+  /** Opening questions this agent's composer offers on an empty conversation
+   *  (§5.3). Empty for an agent whose template ships none. */
+  promptStarters?: string[];
   /**
    * Team lead ("Teamleiter") supervising this agent. Reference to another
    * agent id, or `"human"` for human oversight. If omitted the department

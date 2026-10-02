@@ -80,6 +80,21 @@ _PROSE: Final[dict[str, tuple[str, str, str, str]]] = {
         "View agents",
         "Sees every agent in the tenant, including its tool narrowing.",
     ),
+    "agent_version:publish": (
+        "Konfiguration veröffentlichen",
+        "Macht die bearbeitete Konfiguration eines Agenten zur laufenden Version "
+        "-- und setzt sie auf eine frühere zurück.",
+        "Publish agent configuration",
+        "Turns an agent's edited configuration into the version that runs, and "
+        "rolls it back to an earlier one.",
+    ),
+    "agent_version:view": (
+        "Konfigurationsverlauf ansehen",
+        "Sieht jede veröffentlichte Version eines Agenten und die Unterschiede "
+        "zwischen zwei Versionen.",
+        "View configuration history",
+        "Sees every published version of an agent and the differences between any two of them.",
+    ),
     "approval:decide": (
         "Freigaben entscheiden",
         "Gibt wartende Vorgänge frei oder lehnt sie ab -- in den Abteilungen, "

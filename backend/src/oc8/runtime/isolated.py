@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agent.engine import CancelCheck, InboxCheck, RunResult, _max_steps, open_run_task
+from oc8.agents.versioning import resolve_version
 from oc8.auth import get_identity_provider
 from oc8.config import get_settings
 from oc8.metering import check_budget, trigger_budget_hard_stop
@@ -79,6 +80,9 @@ class DockerIsolatedRuntime:
         # resolve_tool_approval can then never find the run to resume: an
         # approved action would strand the run in waiting_for_approval forever.
         run_row = await db.get(m.AgentRun, run_id)
+        # The step budget the container is bounded by is the one of the version
+        # this run is pinned to -- the same one /step enforces.
+        pinned_definition = (await resolve_version(db, run_row, agent))["definition"]
         task = await open_run_task(
             db,
             agent=agent,
@@ -223,7 +227,7 @@ class DockerIsolatedRuntime:
             # the SAME per-agent budget internal_agent.py's /step endpoint
             # enforces, or a raised per-agent override would still get killed by
             # a wall-clock timeout sized for the framework default.
-            code = await driver.wait(handle, timeout_s=float(_max_steps(agent) * 60))
+            code = await driver.wait(handle, timeout_s=float(_max_steps(pinned_definition) * 60))
             if code != 0:
                 logs = await driver.logs(handle)
                 logger.warning(

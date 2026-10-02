@@ -1,19 +1,42 @@
-import { ChevronDown, Plus, Send, Sparkles, WifiOff, X } from "lucide-react";
+import { BookOpen, ChevronDown, Plus, Send, Sparkles, WifiOff, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { ChatMarkdown } from "@/components/chat-markdown";
 import { CopilotRunActivity, CopilotStreamingAnswer } from "@/components/copilot-run-activity";
 import { RUN_COMPONENT_REGISTRY } from "@/components/run-record-card";
+import {
+  ComposerHint,
+  SigilPopover,
+  activeSigil,
+  cycleIndex,
+  replaceSigil,
+  type SigilItem,
+  type SigilToken,
+} from "@/components/composer-sigils";
 import { useT } from "@/lib/i18n";
-import { useCan } from "@/lib/governance-hooks";
+import { useCan, useMay } from "@/lib/governance-hooks";
+import {
+  chatCommands,
+  commandSummary,
+  detectCommand,
+  matchCommands,
+  useChatModes,
+} from "@/lib/chat-commands";
+import type { Agent, Department } from "@/lib/mock-data";
 import type { CopilotProposal } from "@/lib/hooks";
 import {
+  useAgents,
   useApplyCopilotProposal,
+  useApprovals,
   useAssistant,
   useAuth,
+  useBudgetStatus,
   useCopilotProposals,
+  useDepartments,
+  useKnowledgeBases,
   useRejectCopilotProposal,
 } from "@/lib/hooks";
+import { nextStepChips } from "@/lib/chat-suggestions";
 import {
   useChatSessions,
   useCreateChatSession,
@@ -175,6 +198,10 @@ export function PendingProposals({ de }: { de: boolean }) {
 export interface CopilotTab {
   uiId: string;
   sessionId: string | null;
+  /** Which agent this tab is talking to. Absent = the tenant assistant, which
+   *  is every tab until somebody types `@`. Persisted with the tab, so a
+   *  reopened dock reopens the same conversation with the same agent. */
+  agentId?: string;
 }
 
 function tabsStorageKey(memberId: string): string {
@@ -234,6 +261,14 @@ function CopilotDockPanel() {
   const { data: assistant } = useAssistant();
   const assistantAgentId = assistant?.agentId;
   const { data: sessions } = useChatSessions(assistantAgentId);
+  // Titles for EVERY session this member has, not just the assistant's: a tab
+  // may now address another agent, and its title comes from the same list.
+  // `useChatSessions(assistantAgentId)` above stays as-is -- ChatSessionPicker
+  // is the assistant's own history and must not start listing other agents'.
+  const { data: allSessions } = useChatSessions();
+  const may = useMay();
+  const { data: agentPage } = useAgents({ pageSize: 100 });
+  const { data: departmentPage } = useDepartments({ pageSize: 100 });
   const liveConnectionStatus = useLiveConnectionStatus();
 
   const { data: me, isError: authFailed } = useAuth();
@@ -339,6 +374,15 @@ function CopilotDockPanel() {
     setTabs((prev) => prev.map((tab) => (tab.uiId === uiId ? { ...tab, sessionId } : tab)));
   }
 
+  function setTabAgent(uiId: string, agentId: string | undefined) {
+    // A new addressee is a new conversation: `ChatSession.agent_id` and its
+    // Task are a pair (oc8/chat/service.py), so the session is reset rather
+    // than re-pointed. Phase 2 replaces this with a real participant list.
+    setTabs((prev) =>
+      prev.map((tab) => (tab.uiId === uiId ? { ...tab, agentId, sessionId: null } : tab)),
+    );
+  }
+
   useEffect(() => {
     if (window.sessionStorage.getItem(COPILOT_AUTO_OPEN_KEY) === "1") {
       window.sessionStorage.removeItem(COPILOT_AUTO_OPEN_KEY);
@@ -395,8 +439,11 @@ function CopilotDockPanel() {
 
           <div className="flex items-center gap-1 overflow-x-auto border-b border-border px-2 py-1">
             {tabs.map((tab) => {
-              const title =
-                sessions?.find((s) => s.id === tab.sessionId)?.title || untitledChatText(de);
+              const session = allSessions?.find((s) => s.id === tab.sessionId);
+              const agentName = tab.agentId
+                ? (agentPage?.items.find((a) => a.id === tab.agentId)?.name ?? untitledChatText(de))
+                : null;
+              const title = session?.title || agentName || untitledChatText(de);
               return (
                 <div
                   key={tab.uiId}
@@ -473,7 +520,14 @@ function CopilotDockPanel() {
               active={tab.uiId === activeUiId}
               sessionId={tab.sessionId}
               onSessionChange={(sid) => setTabSession(tab.uiId, sid)}
-              assistantAgentId={assistantAgentId}
+              agentId={tab.agentId ?? assistantAgentId}
+              isAssistant={!tab.agentId}
+              agents={agentPage?.items ?? []}
+              departments={departmentPage?.items ?? []}
+              mayStartRuns={may("run:start")}
+              onAddressAgent={(agentId) =>
+                setTabAgent(tab.uiId, agentId === assistantAgentId ? undefined : agentId)
+              }
               draft={drafts[tab.uiId] ?? ""}
               onDraftChange={(text) => setDraft(tab.uiId, text)}
             />
@@ -525,14 +579,24 @@ function CopilotDockPanel() {
 export function CopilotChatTab({
   sessionId,
   onSessionChange,
-  assistantAgentId,
+  agentId,
+  isAssistant,
+  agents,
+  departments,
+  mayStartRuns,
+  onAddressAgent,
   active,
   draft,
   onDraftChange,
 }: {
   sessionId: string | null;
   onSessionChange: (sessionId: string | null) => void;
-  assistantAgentId: string | undefined;
+  agentId: string | undefined;
+  isAssistant: boolean;
+  agents: Agent[];
+  departments: Department[];
+  mayStartRuns: boolean;
+  onAddressAgent: (agentId: string) => void;
   active: boolean;
   draft: string;
   onDraftChange: (text: string) => void;
@@ -547,9 +611,100 @@ export function CopilotChatTab({
   const scroller = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
+  const can = useCan();
+  const { data: modes } = useChatModes();
+  const commands = chatCommands(modes, can);
+  const [caret, setCaret] = useState(0);
+  const [pickerIndex, setPickerIndex] = useState(0);
+  const [contextRefs, setContextRefs] = useState<{ id: string; label: string }[]>([]);
+  const sigil: SigilToken | null = activeSigil(input, caret);
+  // Only fetched while the `#` picker is actually open: a knowledge-base list
+  // is a paged query and nobody needs it for every chat render.
+  const { data: bases } = useKnowledgeBases({
+    search: sigil?.kind === "#" ? sigil.query : undefined,
+    pageSize: 8,
+  });
+  const armed = detectCommand(input, commands);
+
+  // Moved ahead of its original spot (just above `useCreateChatSession`) so
+  // `hasMessages` is known before the budget-status gate right below needs it.
+  const { data: messages } = useChatMessages(sessionId);
+  const hasMessages = !!messages && messages.length > 0;
+
+  // `/budget` is answered HERE, from the number the screen can already read --
+  // no run, no tokens, no audit entry, because nothing happened. The command is
+  // only offered when the caller holds budget:view (see LOCAL_COMMANDS).
+  const [showBudget, setShowBudget] = useState(false);
+  // Fetched once a conversation is actually active (not merely `showBudget`,
+  // i.e. `/budget` typed), because `nextStepChips` below needs to know
+  // `budget?.softExceeded` before the reader ever types that command -- but
+  // only while `hasMessages` (an empty transcript never renders that chip
+  // anyway), so an idle empty tab still never polls this.
+  const { data: budget } = useBudgetStatus(null, { enabled: showBudget || hasMessages });
+  // The approvals count feeds the same chip row.
+  const { data: pendingApprovals } = useApprovals("pending");
+
+  // The dock's `@` picker, grouped by department -- this is the front door, so
+  // switching who you are talking to belongs here (§5.4).
+  const agentItems: SigilItem[] = agents
+    .filter((a) => !a.deletedAt)
+    .filter((a) => a.name.toLowerCase().includes((sigil?.query ?? "").toLowerCase()))
+    .slice(0, 8)
+    .map((a) => ({
+      id: a.id,
+      label: a.name,
+      hint:
+        [a.role, departments.find((d) => d.id === a.departmentId)?.name]
+          .filter(Boolean)
+          .join(" · ") || undefined,
+      // Shown but not choosable, with the reason: POST
+      // /chat/sessions/{id}/messages needs run:start for any agent that is not
+      // the assistant, so offering it silently would end in a 403.
+      blocked:
+        !mayStartRuns && a.id !== agentId
+          ? t(
+              "You may not start runs for another agent.",
+              "Du darfst für andere Agenten keine Läufe starten.",
+            )
+          : undefined,
+    }));
+
+  const sigilItems: SigilItem[] =
+    sigil?.kind === "/"
+      ? matchCommands(sigil.query, commands).map((c) => ({
+          id: c.key,
+          label: `/${c.key}`,
+          hint: commandSummary(c.key, c.summary, t),
+        }))
+      : sigil?.kind === "@"
+        ? agentItems
+        : sigil?.kind === "#"
+          ? (bases?.items ?? [])
+              .filter((kb) => !contextRefs.some((ref) => ref.id === kb.id))
+              .map((kb) => ({ id: kb.id, label: kb.name, hint: kb.description || undefined }))
+          : [];
+
+  function pickSigilItem(item: SigilItem) {
+    if (!sigil) return;
+    if (sigil.kind === "/") {
+      // The command STAYS in the text: the backend is the parser, and a mode
+      // held only in React state would be lost by any other door.
+      setInput(replaceSigil(input, sigil, `/${item.id.replace(/^\//, "")} `));
+    } else if (sigil.kind === "@") {
+      onAddressAgent(item.id);
+      setInput(replaceSigil(input, sigil, ""));
+      setPickerIndex(0);
+      return;
+    } else {
+      setContextRefs((prev) => [...prev, { id: item.id, label: item.label }]);
+      setInput(replaceSigil(input, sigil, ""));
+    }
+    setPickerIndex(0);
+    inputRef.current?.focus();
+  }
+
   const createSession = useCreateChatSession();
 
-  const { data: messages } = useChatMessages(sessionId);
   const sendMessage = useSendChatMessage(sessionId ?? "");
 
   // A send that failed (session creation OR the message post itself): shown
@@ -578,15 +733,21 @@ export function CopilotChatTab({
   // A message typed before any session exists yet: send() creates the
   // session first, then this fires once `sessionId` (and therefore a
   // `sendMessage` bound to the right session) lands on the next render.
-  const [pendingSend, setPendingSend] = useState<string | null>(null);
+  const [pendingSend, setPendingSend] = useState<{
+    text: string;
+    refs: { kind: string; id: string }[];
+  } | null>(null);
   useEffect(() => {
     if (!sessionId || pendingSend === null) return;
-    const text = pendingSend;
+    const { text, refs } = pendingSend;
     setPendingSend(null);
     sendMessage.mutate(
-      { message: text },
+      { message: text, contextRefs: refs },
       {
-        onSuccess: (message) => setActiveRunId(message.runId),
+        onSuccess: (message) => {
+          setActiveRunId(message.runId);
+          setContextRefs([]);
+        },
         onError: () => fail(text),
       },
     );
@@ -626,33 +787,57 @@ export function CopilotChatTab({
 
   function send() {
     const text = input.trim();
-    if (!text || busy || !assistantAgentId) return;
+    if (!text || busy || !agentId) return;
+    const local = detectCommand(text, commands);
+    if (local?.command.local) {
+      if (local.command.key === "budget") {
+        setShowBudget(true);
+        setInput("");
+      }
+      return;
+    }
+    const refs = contextRefs.map((ref) => ({ kind: "knowledge_base", id: ref.id }));
     setSendError(false);
     setInput("");
     setActiveRunId(null);
     if (!sessionId) {
-      createSession.mutate(assistantAgentId, {
+      createSession.mutate(agentId, {
         onSuccess: (session) => {
           onSessionChange(session.id);
-          setPendingSend(text);
+          setPendingSend({ text, refs });
         },
         onError: () => fail(text),
       });
       return;
     }
     sendMessage.mutate(
-      { message: text },
+      { message: text, contextRefs: refs },
       {
-        onSuccess: (message) => setActiveRunId(message.runId),
+        onSuccess: (message) => {
+          setActiveRunId(message.runId);
+          setContextRefs([]);
+        },
         onError: () => fail(text),
       },
     );
   }
 
-  const suggestions = de
-    ? ["Was wartet auf Freigabe?", "Kosten diesen Monat?", "Neuen Agenten anlegen"]
-    : ["What needs approval?", "Cost this month?", "Create a new agent"];
-  const hasMessages = !!messages && messages.length > 0;
+  // Deterministic, computed from state (§5.3) -- these three strings used to be
+  // a fixed list shown only on an empty transcript, which meant the composer
+  // had nothing to suggest at the exact moments it mattered most.
+  const lastUserTurn = [...(messages ?? [])].reverse().find((m) => m.role === "user");
+  const suggestions = nextStepChips(
+    {
+      hasMessages,
+      lastTurnRole: messages?.length ? messages[messages.length - 1].role : null,
+      lastUserMode: lastUserTurn?.mode ?? null,
+      pendingApprovals: pendingApprovals?.length ?? 0,
+      budgetSoftExceeded: !!budget?.softExceeded,
+      mayViewBudget: can("budget:view"),
+      promptStarters: agents.find((a) => a.id === agentId)?.promptStarters ?? [],
+    },
+    t,
+  );
 
   if (!active) return null;
 
@@ -737,31 +922,147 @@ export function CopilotChatTab({
         )}
       </div>
 
-      {!hasMessages && (
+      {suggestions.length > 0 && (
         <div className="flex flex-wrap gap-1.5 px-4 pb-2">
           {suggestions.map((s) => (
             <button
-              key={s}
+              key={s.id}
               type="button"
               onClick={() => {
-                setInput(s);
+                setInput(s.insert);
                 inputRef.current?.focus();
               }}
               className="rounded-full border border-border bg-background/40 px-2.5 py-1 text-[11px] text-muted-foreground transition hover:text-foreground"
             >
-              {s}
+              {s.label}
             </button>
           ))}
         </div>
       )}
 
+      {showBudget && (
+        <div className="mx-4 mb-2 rounded-lg border border-border bg-background/40 px-3 py-2 text-xs">
+          <div className="mb-1 flex items-center justify-between">
+            <span className="font-medium">{t("Budget", "Budget")}</span>
+            <button
+              type="button"
+              onClick={() => setShowBudget(false)}
+              aria-label={t("Close", "Schließen")}
+              className="text-muted-foreground hover:text-foreground"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+          {budget ? (
+            <p className="text-muted-foreground">
+              {t(
+                `${budget.currentTokens.toLocaleString()} tokens used this month` +
+                  (budget.hardLimitTokens
+                    ? ` of ${budget.hardLimitTokens.toLocaleString()}`
+                    : " — no hard limit set"),
+                `${budget.currentTokens.toLocaleString()} Tokens diesen Monat verbraucht` +
+                  (budget.hardLimitTokens
+                    ? ` von ${budget.hardLimitTokens.toLocaleString()}`
+                    : " — kein hartes Limit gesetzt"),
+              )}
+            </p>
+          ) : (
+            <p className="text-muted-foreground">{t("Loading…", "Wird geladen…")}</p>
+          )}
+        </div>
+      )}
+
       <div className="border-t border-border p-3">
+        {sigil && (
+          <SigilPopover
+            title={
+              sigil.kind === "/"
+                ? t("Commands", "Befehle")
+                : sigil.kind === "@"
+                  ? t("Agents", "Agenten")
+                  : t("Attach context", "Kontext anhängen")
+            }
+            items={sigilItems}
+            activeIndex={pickerIndex}
+            onPick={pickSigilItem}
+            onHoverIndex={setPickerIndex}
+            emptyText={
+              sigil.kind === "@"
+                ? t("No agent matches that.", "Kein Agent passt dazu.")
+                : sigil.kind === "/"
+                  ? t("No command matches that.", "Kein Befehl passt dazu.")
+                  : t("No knowledge base matches that.", "Keine Wissensbasis passt dazu.")
+            }
+          />
+        )}
+        {armed && (
+          <div className="mb-2 flex items-center gap-1.5 text-[11px]">
+            <span className="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 font-mono text-primary">
+              /{armed.command.key}
+            </span>
+            <span className="text-muted-foreground">
+              {commandSummary(armed.command.key, armed.command.summary, t)}
+            </span>
+          </div>
+        )}
+        {contextRefs.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {contextRefs.map((ref) => (
+              <span
+                key={ref.id}
+                className="inline-flex max-w-[200px] items-center gap-1 truncate rounded-full border border-border bg-background/60 py-0.5 pl-2 pr-1 text-[11px] text-muted-foreground"
+              >
+                <BookOpen className="h-2.5 w-2.5 shrink-0" />
+                <span className="truncate">{ref.label}</span>
+                <button
+                  type="button"
+                  onClick={() => setContextRefs((p) => p.filter((r) => r.id !== ref.id))}
+                  title={t("Remove", "Entfernen")}
+                  className="rounded-full p-0.5 transition hover:text-foreground"
+                >
+                  <X className="h-2.5 w-2.5" />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        {!isAssistant && (
+          <div className="mb-1 text-[11px] text-muted-foreground">
+            {t(
+              `This conversation goes to ${agents.find((a) => a.id === agentId)?.name ?? "an agent"} — not the copilot.`,
+              `Dieses Gespräch geht an ${agents.find((a) => a.id === agentId)?.name ?? "einen Agenten"} — nicht an den Copilot.`,
+            )}
+          </div>
+        )}
         <div className="flex items-end gap-2 rounded-xl border border-border bg-background/40 px-3 py-2 focus-within:border-primary/50">
           <textarea
             ref={inputRef}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => {
+              setInput(e.target.value);
+              setCaret(e.target.selectionStart ?? e.target.value.length);
+              setPickerIndex(0);
+            }}
+            onKeyUp={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
+            onClick={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
             onKeyDown={(e) => {
+              const open = !!sigil;
+              if (open && sigilItems.length > 0) {
+                if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setPickerIndex((i) =>
+                    cycleIndex(i, e.key === "ArrowDown" ? 1 : -1, sigilItems.length),
+                  );
+                  return;
+                }
+                if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+                  // Enter picks from the picker rather than sending: a reader
+                  // mid-`@`/`#`/`/` is choosing, not finished.
+                  e.preventDefault();
+                  pickSigilItem(sigilItems[pickerIndex]);
+                  return;
+                }
+              }
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 send();
@@ -774,11 +1075,11 @@ export function CopilotChatTab({
           <button
             type="button"
             onClick={send}
-            disabled={!input.trim() || busy || !assistantAgentId}
+            disabled={!input.trim() || busy || !agentId}
             aria-label={de ? "Senden" : "Send"}
             className={cn(
               "grid h-8 w-8 shrink-0 place-items-center rounded-lg transition",
-              input.trim() && !busy && assistantAgentId
+              input.trim() && !busy && agentId
                 ? "bg-primary text-primary-foreground hover:brightness-110"
                 : "bg-muted/40 text-muted-foreground",
             )}
@@ -786,6 +1087,7 @@ export function CopilotChatTab({
             <Send className="h-3.5 w-3.5" />
           </button>
         </div>
+        <ComposerHint />
       </div>
     </>
   );

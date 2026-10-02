@@ -11,6 +11,7 @@ from oc8.models.collab import ContractBinding, Handoff, HandoffType
 from oc8.models.components import ComponentGrant
 from oc8.models.core import (
     Agent,
+    AgentVersion,
     Department,
     ModelConfig,
     Organization,
@@ -76,6 +77,7 @@ __all__ = [
     "Agent",
     "AgentCheckpoint",
     "AgentRun",
+    "AgentVersion",
     "ApiKey",
     "ApprovalChannelBinding",
     "ApprovalRequest",

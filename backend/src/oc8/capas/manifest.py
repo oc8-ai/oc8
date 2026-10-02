@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +112,24 @@ class TemplateAgent(BaseModel):
     # Component 3). None = no trigger, the same as every pre-existing
     # manifest that predates this field.
     trigger: TemplateAgentTrigger | None = None
+    #: Opening questions this agent's composer offers on an empty conversation
+    #: (§5.3 of the AI workplace design). Content, like `mission` and `skills`
+    #: -- the pack author knows what this agent is good for, and a generic
+    #: "What can you do?" teaches nobody anything.
+    #:
+    #: Capped at six because the composer shows at most three and a picker is
+    #: not a manual; each one capped at 120 characters because a starter that
+    #: wraps twice is not a starter.
+    prompt_starters: list[str] = Field(default_factory=list, max_length=6)
+
+    @field_validator("prompt_starters")
+    @classmethod
+    def _starters_are_short_and_non_empty(cls, v: list[str]) -> list[str]:
+        cleaned = [s.strip() for s in v if s.strip()]
+        too_long = [s for s in cleaned if len(s) > 120]
+        if too_long:
+            raise ValueError(f"prompt starter is longer than 120 characters: {too_long[0]!r}")
+        return cleaned
 
 
 class DepartmentTemplateSpec(BaseModel):
@@ -261,6 +279,109 @@ class GuardrailAttribute(BaseModel):
         return self
 
 
+class ToolLabel(BaseModel):
+    """How one of this connection's tools reads to an end user.
+
+    `search_records` is what the model calls; "Looked up deals" is what a
+    salesperson should see. The pack declares this because core has no idea
+    what a deal is -- the same reason guardrail presets and guardrail
+    attributes live here rather than in `authz/` or in the frontend.
+
+    Every string is ENGLISH, like every other capa-authored string in this
+    file. German (and any other locale) comes from the plugin's own
+    `i18n/*.po` catalog, resolved through `oc8.capas.i18n.translations_for`
+    exactly as `GuardrailPreset.label` already is -- a `verb_de` field would
+    buy German and nothing else, and would be the only place in the codebase
+    where a translation lives outside a catalog.
+
+    Placeholders are `{name}`, filled from the CALL: `{model_label}` (the
+    `model_labels` entry for whatever the call's `model` argument says) plus
+    any top-level argument by its own name (`{id}`, `{subtype}`, ...). A
+    placeholder that cannot be filled makes the whole label fall back to the
+    right-derived one ("Read from odoo") rather than rendering a literal
+    `{count}` on somebody's screen -- see the frontend's `tool-labels.ts`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    #: Past tense, because a timeline row describes something that happened:
+    #: "Looked up", "Created", "Replied to".
+    verb: str
+    #: What the verb acted on, e.g. "{model_label}" or "ticket {id}". Empty
+    #: for a tool whose verb says everything ("Listed the available models").
+    object: str = ""
+    #: Present participle shown while the call is still in flight, e.g.
+    #: "Looking up {model_label}". Empty means the timeline shows the verb
+    #: form while running too, which reads oddly but is never wrong.
+    running: str = ""
+
+
+class RecordUrlTemplate(BaseModel):
+    """Where ONE record lives in the system behind this connection (§6 of the
+    AI workplace design).
+
+    The only vendor-specific thing in the whole approval-link feature, and it
+    lives here for the same reason `guardrail_presets` does: an approval that
+    says "wants to create a quotation for EUR 4,200" should link to that
+    quotation, and core must not learn a single URL shape to make that happen.
+
+    Core substitutes exactly three names and validates that up front:
+
+    * `{base_url}` -- read out of the CONNECTION's own `config` at
+      `base_url_path` (e.g. `["env", "ODOO_URL"]`). Not declared as a literal
+      here, because it is per-installation: the same pack points at a
+      customer's own host.
+    * `{model}` -- `models[entity]`, where `entity` is what `focus_spec`
+      already resolves a call's record to (`agent/tool_semantics.py::
+      record_identity`). Only listed entities produce a link; anything else
+      resolves to None, the same "only listed entities are surfaced" rule
+      `focus_spec.labels` already uses.
+    * `{id}` -- that record's reference, likewise from `record_identity`.
+
+    Declared at the connection's TOP LEVEL rather than inside `config`
+    deliberately: `capas/materialise.py::_refresh_declared_seams` only carries
+    the five `DECLARED_SEAMS` config keys onto an already-installed row, and
+    only on a re-enable, so a `config` entry would be frozen at whatever
+    version created the connection. Read live off the manifest instead, like
+    `scopes` and `guardrail_presets`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    #: e.g. "{base_url}/odoo/{model}/{id}"
+    template: str
+    #: Path into the connection's own `config` holding the installation's base
+    #: URL, e.g. `["env", "ODOO_URL"]`. Same "a path is a list of keys" shape
+    #: `value_spec.line_items.path` already uses.
+    base_url_path: list[str] = []
+    #: focus entity -> the segment that goes in `{model}`. An entity absent
+    #: from this map gets no link.
+    models: dict[str, str] = {}
+
+    @model_validator(mode="after")
+    def _only_known_placeholders(self) -> RecordUrlTemplate:
+        from string import Formatter
+
+        fields = {name for _lit, name, _spec, _conv in Formatter().parse(self.template) if name}
+        unknown = sorted(fields - {"base_url", "model", "id"})
+        if unknown:
+            raise ValueError(
+                f"record_url template has unknown placeholder(s): {', '.join(unknown)} "
+                "-- only {base_url}, {model} and {id} are substituted"
+            )
+        if "base_url" not in fields:
+            raise ValueError(
+                "record_url template must reference {base_url} -- a relative link is "
+                "useless to an approver reading it on a phone"
+            )
+        if not self.base_url_path:
+            raise ValueError(
+                "record_url template references {base_url} but declares no base_url_path "
+                "to read it from"
+            )
+        if not self.models:
+            raise ValueError("record_url declares no models, so it can never produce a link")
+        return self
+
+
 class ToolPackConnection(BaseModel):
     """An MCP server a tool pack describes. It is materialised DISCONNECTED --
     a manifest may describe a server, but only an operator may declare it
@@ -291,6 +412,21 @@ class ToolPackConnection(BaseModel):
     #: limits" Conditions (see `GuardrailAttribute`). Empty for a connection
     #: that predates the generic condition model or has nothing to gate on.
     guardrail_attributes: list[GuardrailAttribute] = []
+    #: Where one of this connection's records lives, for the deep link on an
+    #: approval (§6). None for a pack that has no answer -- which degrades to
+    #: exactly today's behaviour: no link, no error.
+    record_url: RecordUrlTemplate | None = None
+    #: How this connection's tools read to an end user, keyed by tool name
+    #: (see `ToolLabel`). Empty for a pack that has not written any, which is
+    #: every pack but odoo_mcp today -- the consumer then falls back to the
+    #: tool's own right ("Read from <connection>"), never to the raw name.
+    tool_labels: dict[str, ToolLabel] = {}
+    #: English plural nouns for the entity values this connection's calls
+    #: carry, keyed by the raw value (e.g. "crm.lead" -> "deals"). Referenced
+    #: from a `ToolLabel` as `{model_label}`. A value absent here has no
+    #: label, and a label needing one falls back rather than printing the raw
+    #: vendor identifier at a user.
+    model_labels: dict[str, str] = {}
 
     @model_validator(mode="after")
     def _validate_guardrail_presets(self) -> ToolPackConnection:
@@ -328,6 +464,19 @@ class ToolPackConnection(BaseModel):
                         self.key,
                     )
                     preset.approval_eur = None
+        # A label keyed by a tool this connection does not have is a typo that
+        # would otherwise show up as "the label just doesn't appear", which is
+        # indistinguishable from "the pack ships no labels". The design spec
+        # itself demonstrated the failure mode -- its example named
+        # `search_read`, which is not one of this pack's nine tools.
+        if self.tool_labels and isinstance(self.scopes, dict):
+            known = {name for names in self.scopes.values() for name in names}
+            unknown = sorted(set(self.tool_labels) - known)
+            if unknown:
+                raise ValueError(
+                    f"connection '{self.key}' declares tool_labels for unknown tool(s): "
+                    f"{', '.join(unknown)}"
+                )
         return self
 
 

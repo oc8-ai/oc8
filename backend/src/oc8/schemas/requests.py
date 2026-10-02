@@ -31,9 +31,24 @@ class CreateChatSessionRequest(CamelModel):
     agent_id: uuid.UUID
 
 
+class ChatContextRefRequest(CamelModel):
+    """One thing the operator attached to a message with `#` (§5.2).
+
+    `knowledge_base` is the only kind Phase 1 accepts. The label is NOT taken
+    from the client -- `chat.service` resolves it from the row, so a client
+    cannot make a turn's transcript claim it consulted something else.
+    """
+
+    kind: Literal["knowledge_base"]
+    id: uuid.UUID
+
+
 class SendChatMessageRequest(CamelModel):
     message: str = Field(min_length=1, max_length=20_000)
     attachment_ids: list[uuid.UUID] = []
+    #: At most five: `#` is for pointing at a source, and a turn that names ten
+    #: of them is a search, not a reference.
+    context_refs: list[ChatContextRefRequest] = Field(default_factory=list, max_length=5)
 
 
 class RenameChatSessionRequest(CamelModel):
@@ -103,6 +118,27 @@ class InstructionsRequest(CamelModel):
 
 class AgentRenameRequest(CamelModel):
     name: str = Field(min_length=1, max_length=200)
+
+
+class PublishAgentVersionRequest(CamelModel):
+    """Body of `POST /agents/{id}/versions`.
+
+    `expected_current_version_no` is REQUIRED, and null only for an agent that
+    has never been published. Optional would mean a client could omit it and
+    lose the optimistic check silently, which is worse than not having one: the
+    UI would still look like two editors could not overwrite each other.
+
+    There is no `rollback` counterpart. A rollback names its target in the path
+    and generates its own note, so it has no body at all -- an optional body on
+    a POST is a shape FastAPI expresses awkwardly, for a note nobody was going
+    to type.
+    """
+
+    note: str | None = Field(default=None, max_length=500)
+    #: What the client believed was current when it rendered the publish bar.
+    #: A mismatch is a 409 (spec §2.7): two editors share one draft, and this
+    #: is the check that makes the second one find out.
+    expected_current_version_no: int | None
 
 
 class ModelConfigWrite(CamelModel):

@@ -30,6 +30,13 @@ export interface AgentDetail {
   isLead: boolean;
   mission: string;
   departmentName: string | null;
+  // Inherited from AgentDTO (backend/src/oc8/schemas/dto.py) -- opening
+  // questions the composer offers on an empty conversation (§5.3). Was
+  // missing from this type even though AgentDetailDTO already sends it on
+  // the wire; added for chat-window.tsx's next-step chips (Task 16).
+  // Optional (like mock-data.ts's Agent.promptStarters) so the existing
+  // AgentDetail test fixtures that predate this field don't all need editing.
+  promptStarters?: string[];
   effectiveTools: Record<string, ToolPolicy>;
   departmentFrameTools: Record<string, ToolPolicy>;
   // The agent's own narrowing["tools"] row, verbatim -- not intersected with
@@ -62,6 +69,12 @@ export interface AgentDetail {
   maxSteps: number | null;
   /** Last successful Auto-router tier for this agent (fast|balanced|strong). */
   autoRouterAffinityTier?: string | null;
+  // The version that actually runs. Mirrors lib/skills.ts's thin shape -- an id
+  // plus the number, no client-side version state machine. Whether the working
+  // copy has DRIFTED from it is a separate query (useAgentDraftStatus), because
+  // it changes on a different schedule.
+  currentVersionId: string | null;
+  currentVersionNo: number | null;
 }
 
 // Reuses the ["agents", id] key already invalidated by the "agent.status"

@@ -107,6 +107,27 @@ async def publish_run_tool_call(
     )
 
 
+async def publish_run_step_timing(
+    tenant_id: uuid.UUID, *, run_id: uuid.UUID, timing: dict[str, Any]
+) -> None:
+    """One step's finished latency record (`oc8.agent.harness.step_timing`),
+    so an open timeline tab fills in that step's duration the moment the next
+    step starts instead of only once the whole run ends. Deliberately carries
+    no DB write of its own, unlike `publish_run_tool_call` above:
+    `stepTimings` has no incremental append path -- both runtimes' own step
+    loops already hold this list (in memory for the in-process engine, on
+    `run.context` for the isolated runtime) and it lands durably through the
+    run's existing terminal/step-boundary context writes; this only spares an
+    already-open tab the wait for that reload.
+    """
+    await get_event_bus().publish_event(
+        tenant_id,
+        "run.step_timing",
+        {"run_id": str(run_id), "timing": timing},
+        source=f"oc8/run/{run_id}",
+    )
+
+
 async def record_activity(
     db: AsyncSession,
     *,

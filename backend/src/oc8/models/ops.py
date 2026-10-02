@@ -98,6 +98,19 @@ class ApprovalRequest(Base, PkMixin, TenantMixin, TimestampMixin):
     #: (e.g. `request_decision`, budget incidents, blast-radius stops) --
     #: those keep `detail`/`amount_text` as their only "why".
     reason_context: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    #: Deep link to the record this approval is about, resolved ONCE at raise
+    #: time from the tool pack's own `record_url` template (§6 of the AI
+    #: workplace design; `oc8.approvals.record_url`). Stored rather than
+    #: computed on read for two reasons: the template lives on a plugin
+    #: manifest that may be edited or uninstalled later, and every channel
+    #: (inbox, dashboard widget, Telegram, WhatsApp, Teams) is a view over
+    #: this row -- one write, five renderers.
+    #:
+    #: NULL for every approval whose connection declares no template, for
+    #: every approval not raised from a tool call at all (budget incidents,
+    #: hire requests, `request_decision`), and for every row written before
+    #: this column existed. The absence must never block an approval.
+    record_url: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (
         CheckConstraint(

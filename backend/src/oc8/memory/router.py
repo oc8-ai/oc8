@@ -123,8 +123,16 @@ async def retrieve_context(
     frame: dict[str, Any],
     query_text: str,
     token_budget_per_tier: int = 800,
+    narrowing: dict[str, Any] | None = None,
 ) -> str:
-    narrowing = agent.narrowing or {}
+    """Recalled memory for `query_text`, from every tier the agent may read.
+
+    `narrowing` is the run's PINNED narrowing (`resolve_version`), so which
+    tiers a run may read is decided by the same version that decides which
+    it may write (`authorize_memory_write`). Every runtime passes it; the
+    live-row fallback is for a caller with no run behind it."""
+    if narrowing is None:
+        narrowing = agent.narrowing or {}
     try:
         query_embedding = await get_model_router().embed(query_text)
     except EmbeddingUnavailable:

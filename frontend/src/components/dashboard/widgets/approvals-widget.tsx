@@ -5,6 +5,7 @@ import {
   ArrowRight,
   Check,
   ChevronRight,
+  ExternalLink,
   HelpCircle,
   KeyRound,
   Send,
@@ -625,7 +626,7 @@ function formatReasonContext(
   }
 }
 
-function ApprovalPane({
+export function ApprovalPane({
   approval,
   mayAct,
   viewOnlyBecause,
@@ -702,6 +703,18 @@ function ApprovalPane({
               <p className="mt-2 text-sm leading-relaxed text-foreground/90">{approval.detail}</p>
             )
           )}
+          {(approval.recordUrl?.startsWith("http://") ||
+            approval.recordUrl?.startsWith("https://")) && (
+            <a
+              href={approval.recordUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-2 inline-flex items-center gap-1.5 text-xs text-primary underline-offset-2 hover:underline"
+            >
+              <ExternalLink className="h-3.5 w-3.5 shrink-0" aria-hidden />
+              {t("Open the record", "Datensatz öffnen")}
+            </a>
+          )}
         </section>
 
         {(approval.toolName || options.length > 0) && (
@@ -710,17 +723,6 @@ function ApprovalPane({
               {t("What happens if you agree", "Was passiert, wenn du zustimmst")}
             </div>
 
-            {(approval.recordUrl?.startsWith("http://") ||
-              approval.recordUrl?.startsWith("https://")) && (
-              <a
-                href={approval.recordUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="mb-2 inline-block text-sm text-primary underline"
-              >
-                {t("Open record", "Datensatz öffnen")}
-              </a>
-            )}
             {approval.toolName && (
               <div className="rounded-md border border-border bg-panel/60">
                 <div className="flex items-center gap-2 border-b border-border px-3 py-2">

@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agent.engine import CancelCheck, InboxCheck, RunResult, open_run_task
+from oc8.agent.harness.caps import resolve_caps
 from oc8.agent.preamble import roster_block, system_prompt
 from oc8.auth import get_identity_provider
 from oc8.config import get_settings
@@ -676,8 +677,17 @@ class NanoclawRuntime:
         # Leaving it out here made a containerised lead strictly weaker than the
         # same lead in-process -- not a documented gap, just a missing block.
         roster = await roster_block(db, agent=agent) if agent.is_team_lead else None
+        # Live agent row, matching this function's own "everything here derives
+        # from the AGENT alone" contract above -- this plugin has never taken a
+        # pinned run version, so caps/tenant_name are resolved the same way.
+        model_config = (
+            await db.get(m.ModelConfig, agent.model_config_id) if agent.model_config_id else None
+        )
+        caps = resolve_caps(model_config.params if model_config is not None else None)
+        org = await db.get(m.Organization, tenant_id)
+        tenant_name = org.name if org is not None else "the organization"
         blocks = [
-            system_prompt(agent),
+            system_prompt(agent, caps=caps, tenant_name=tenant_name),
             # Prefixed: through the bridge the model sees these as
             # `mcp__oc8__skill_x`, and a catalogue naming the bare form sends it
             # hunting for a tool that is not on its list.

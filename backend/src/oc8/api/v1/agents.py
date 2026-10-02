@@ -31,19 +31,31 @@ from sqlalchemy import func, select
 
 from oc8 import models as m
 from oc8.agents.repo import visible_agent, visible_agents
+from oc8.agents.versioning import (
+    diff_payloads,
+    draft_diff,
+    draft_status,
+    snapshot_agent,
+    version_payload,
+)
 from oc8.api.deps import DbSession, require_departmental
-from oc8.api.v1._serializers import agent_to_dto
+from oc8.api.v1._serializers import agent_to_dto, agent_version_to_dto, agent_version_to_summary_dto
 from oc8.api.v1.files import _attachment_dto
 from oc8.authz.authority import authority_for_principal, tenant_wide_read
 from oc8.authz.pdp import ToolPolicy, effective_tool_policies, tool_policy_source
-from oc8.authz.permissions import AGENT, VIEW, perm
+from oc8.authz.permissions import AGENT, AGENT_VERSION, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.runtime.states import TERMINAL
 from oc8.schemas.dto import (
     AgentDetailDTO,
+    AgentDraftStatusDTO,
     AgentDTO,
     AgentInstructionHistoryDTO,
     AgentInstructionRevisionDTO,
+    AgentVersionDiffDTO,
+    AgentVersionDTO,
+    AgentVersionFieldDiffDTO,
+    AgentVersionSummaryDTO,
     FileAttachmentDTO,
     ToolPolicyDTO,
 )
@@ -204,6 +216,221 @@ async def list_instruction_files(
     return [_attachment_dto(row) for row in rows]
 
 
+async def _visible_agent_or_404(
+    request: Request, db: DbSession, actor: HumanActor, agent_id: uuid.UUID
+) -> m.Agent:
+    """The read gate every version route repeats, in one place.
+
+    Four routes in this file resolve the same (authority, tenant_wide,
+    visible_agent, 404) sequence against `agent_version:view`. Written out four
+    times, the fourth copy is where somebody eventually asks
+    `tenant_wide_read` about the wrong permission.
+    """
+    authority = await authority_for_principal(request, db, actor.principal)
+    tenant_wide = tenant_wide_read(authority, perm(AGENT_VERSION, VIEW))
+    agent = await visible_agent(db, scope=actor.scope, tenant_wide=tenant_wide, agent_id=agent_id)
+    if agent is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
+    return agent
+
+
+async def _version_or_404(db: DbSession, agent: m.Agent, version_no: int) -> m.AgentVersion:
+    """One version of THIS agent.
+
+    The `agent_id` predicate is not optional cleanliness: `version_no` is
+    unique per agent, not per tenant, so every agent in the tenant has a v1 and
+    a query without it would answer with whichever one Postgres reached first.
+    """
+    row = (
+        await db.execute(
+            select(m.AgentVersion).where(
+                m.AgentVersion.agent_id == agent.id,
+                m.AgentVersion.version_no == version_no,
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "version not found")
+    return row
+
+
+#: Same ceiling as the instruction history above, and for the same reason: a
+#: tenant that has published a thousand versions of one agent must not be able
+#: to ask for all of them in one request.
+_VERSIONS_MAX_LIMIT = 100
+
+
+@router.get(
+    "/agents/{agent_id}/versions",
+    response_model=Page[AgentVersionSummaryDTO],
+)
+async def list_agent_versions(
+    agent_id: uuid.UUID,
+    request: Request,
+    db: DbSession,
+    actor: Annotated[HumanActor, Depends(require_departmental(perm(AGENT_VERSION, VIEW)))],
+    limit: Annotated[int, Query(ge=1, le=_VERSIONS_MAX_LIMIT)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> Page[AgentVersionSummaryDTO]:
+    """Every published version of this agent, newest first (spec §4).
+
+    `require_departmental` rather than `require_permission` even though no seat
+    carries `agent_version:view`: the gate's job here is to resolve the
+    `HumanActor` whose `scope` `visible_agent` needs, and using the departmental
+    shape leaves the door open for a later slice that DOES put this string in
+    `SEAT_PERMISSIONS` without rewriting the route. Today the practical effect
+    is tenant-wide-only, and a seat-only caller (`dept_viewer`) gets a 403 --
+    which is the intended asymmetry, not an oversight: spec §6 makes reading
+    version history its own grant, and `SEAT_PERMISSIONS` is closed at four
+    strings by `tests/authz/test_seat_vocabulary.py`.
+
+    `tenant_wide_read` is asked about THIS route's permission, not about
+    `agent:view`: those are different grants and a caller may hold either
+    without the other.
+    """
+    agent = await _visible_agent_or_404(request, db, actor, agent_id)
+
+    # `agent_version` carries no foreign key (house convention -- there are two
+    # `ForeignKey()` declarations in the whole models package), so this
+    # predicate is the ONLY thing scoping the query to this agent. RLS scopes it
+    # to the tenant; nothing scopes it to the row but this.
+    where = (m.AgentVersion.agent_id == agent.id,)
+    total_count = (
+        await db.execute(select(func.count()).select_from(m.AgentVersion).where(*where))
+    ).scalar_one()
+    rows = (
+        (
+            await db.execute(
+                select(m.AgentVersion)
+                .where(*where)
+                .order_by(m.AgentVersion.version_no.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return Page(
+        items=[
+            agent_version_to_summary_dto(row, current_version_id=agent.current_version_id)
+            for row in rows
+        ],
+        total_count=total_count,
+    )
+
+
+@router.get(
+    # Declared BEFORE `/versions/{version_no}` on purpose. FastAPI matches in
+    # declaration order, and `{version_no}` is an `int` path param -- registered
+    # first, it swallows `/versions/diff` and answers 422 ("value is not a valid
+    # integer") for every request to this endpoint, with no handler ever
+    # reached. Pinned by `test_the_literal_diff_segment_is_not_read_as_a_
+    # version_number`.
+    "/agents/{agent_id}/versions/diff",
+    response_model=AgentVersionDiffDTO,
+)
+async def diff_agent_versions(
+    agent_id: uuid.UUID,
+    request: Request,
+    db: DbSession,
+    actor: Annotated[HumanActor, Depends(require_departmental(perm(AGENT_VERSION, VIEW)))],
+    # `from` is a Python keyword, so the parameter is `from_version` with an
+    # explicit alias -- the same `Query(alias=...)` shape `audit.py`'s export
+    # uses for its own `from`/`to` window.
+    from_version: Annotated[int, Query(alias="from", ge=1)],
+    to: Annotated[int | None, Query(ge=1)] = None,
+) -> AgentVersionDiffDTO:
+    """Structural diff of two payloads, computed server-side (spec §2.7).
+
+    Server-side rather than in the browser so the Review dialog, the Versions
+    tab and any future compliance report render the same comparison from the
+    same code -- three client-side implementations of "one level deep inside a
+    JSONB field" is three chances to disagree about what changed.
+
+    `to` omitted means the WORKING COPY, which is what the publish bar's Review
+    button asks for. `to_version_no` comes back null in that case rather than
+    carrying the current number: the right-hand side is an unpublished draft,
+    and naming it after a published version would be a lie in the one dialog an
+    operator reads before putting something into production.
+    """
+    agent = await _visible_agent_or_404(request, db, actor, agent_id)
+    before = version_payload(await _version_or_404(db, agent, from_version))
+    if to is None:
+        # Against the working copy: the same exclusions the publish bar's
+        # count uses (`draft_status`), so Review never lists a skill or
+        # knowledge change that is already live.
+        entries = draft_diff(before, await snapshot_agent(db, agent))
+    else:
+        entries = diff_payloads(before, version_payload(await _version_or_404(db, agent, to)))
+    return AgentVersionDiffDTO(
+        from_version_no=from_version,
+        to_version_no=to,
+        entries=[
+            AgentVersionFieldDiffDTO(
+                field=str(entry["field"]),
+                before=entry["before"],
+                after=entry["after"],
+            )
+            for entry in entries
+        ],
+    )
+
+
+@router.get(
+    "/agents/{agent_id}/versions/{version_no}",
+    response_model=AgentVersionDTO,
+)
+async def get_agent_version(
+    agent_id: uuid.UUID,
+    version_no: int,
+    request: Request,
+    db: DbSession,
+    actor: Annotated[HumanActor, Depends(require_departmental(perm(AGENT_VERSION, VIEW)))],
+) -> AgentVersionDTO:
+    """One version's full payload (spec §4).
+
+    Addressed by `version_no` rather than by id: that is the number the
+    Versions tab shows, the number `agent.version.published` records, and the
+    number `rolled_back_from` names. Routing by UUID would make the UI carry
+    both identifiers for one row.
+    """
+    agent = await _visible_agent_or_404(request, db, actor, agent_id)
+    row = await _version_or_404(db, agent, version_no)
+    return agent_version_to_dto(row, current_version_id=agent.current_version_id)
+
+
+@router.get(
+    "/agents/{agent_id}/draft-status",
+    response_model=AgentDraftStatusDTO,
+)
+async def get_agent_draft_status(
+    agent_id: uuid.UUID,
+    request: Request,
+    db: DbSession,
+    actor: Annotated[HumanActor, Depends(require_departmental(perm(AGENT_VERSION, VIEW)))],
+) -> AgentDraftStatusDTO:
+    """The working copy versus the current version (spec §4).
+
+    Its own endpoint rather than three fields on `AgentDetailDTO`, because it
+    changes on a different schedule: every save to any of thirteen write
+    endpoints moves it, and a publish clears it, while the rest of the detail
+    payload is stable. The publish bar can invalidate this one key without
+    refetching the agent's whole effective-tools computation.
+
+    Gated on `agent_version:view` rather than `agent:view`: "how far has this
+    agent drifted from what is running" is a statement about the version
+    history, and spec §6 makes reading that its own grant.
+    """
+    agent = await _visible_agent_or_404(request, db, actor, agent_id)
+    status_ = await draft_status(db, agent)
+    return AgentDraftStatusDTO(
+        dirty=status_.dirty,
+        changed_fields=list(status_.changed_fields),
+        current_version_no=status_.current_version_no,
+    )
+
+
 async def _agent_detail_dto(db: DbSession, agent: m.Agent) -> AgentDetailDTO:
     """The DTO body for an agent already loaded and already authorized.
 
@@ -217,6 +444,15 @@ async def _agent_detail_dto(db: DbSession, agent: m.Agent) -> AgentDetailDTO:
     dept = await db.get(m.Department, agent.department_id)
     frame = dept.frame if dept else {}
     dept_name = dept.name if dept else None
+
+    # One `get` by primary key, on a row that is almost always already in the
+    # identity map for this request -- the alternative is a JOIN in every one of
+    # this function's five callers.
+    current_version = (
+        await db.get(m.AgentVersion, agent.current_version_id)
+        if agent.current_version_id is not None
+        else None
+    )
 
     effective = effective_tool_policies(frame, agent.narrowing)
     overridden_keys = frozenset(agent.narrowing_overridden_keys or [])
@@ -290,6 +526,10 @@ async def _agent_detail_dto(db: DbSession, agent: m.Agent) -> AgentDetailDTO:
         # Top-level key, unlike the four sampling fields above -- see
         # engine._max_steps and switch_model in agents_write.py.
         max_steps=(agent.definition or {}).get("max_steps"),
+        current_version_id=(
+            str(agent.current_version_id) if agent.current_version_id is not None else None
+        ),
+        current_version_no=(current_version.version_no if current_version is not None else None),
         auto_router_affinity_tier=_auto_affinity_tier(agent),
     )
 

@@ -40,6 +40,15 @@ BUILTIN_IN_PROCESS_RUNTIME_REF = "builtin:in-process"
 BUILTIN_ISOLATED_RUNTIME_REF = "builtin:isolated"
 _BUILTIN_RUNTIME_REFS = {BUILTIN_IN_PROCESS_RUNTIME_REF, BUILTIN_ISOLATED_RUNTIME_REF}
 
+
+class _LiveRow:
+    """Sentinel type for "read `agent.runtime_ref` off the live row". Needed
+    because `None` is itself a meaningful runtime_ref ("never set")."""
+
+
+#: Default for `resolve_runtime`'s `runtime_ref`: no pinned value was given.
+LIVE_ROW = _LiveRow()
+
 # The two built-ins do NOT share a capability list: `maybe_checkpoint` is
 # called only from `oc8.agent.engine` (the in-process path), while
 # `DockerIsolatedRuntime` runs `oc8.isolated_shell` in a container -- a
@@ -186,7 +195,11 @@ async def list_enabled_runtime_plugins_for_tenant(
 
 
 async def resolve_runtime_plugin(
-    db: AsyncSession, *, tenant_id: uuid.UUID, agent: m.Agent
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    agent: m.Agent,
+    runtime_ref: _LiveRow | str | None = LIVE_ROW,
 ) -> tuple[m.Capa, m.CapaVersion] | None:
     """Resolve the agent's *currently assigned* runtime. None means "not a
     Capa-backed runtime" -- either never set, or explicitly pinned to one of
@@ -196,35 +209,49 @@ async def resolve_runtime_plugin(
     (resolve_runtime does, immediately below) -- this function only answers
     "is there a plugin behind this". A set-but-unresolvable plugin runtime_ref
     raises rather than returning None — a broken assignment must be
-    surfaced everywhere it's encountered, not silently treated as unset."""
-    if not agent.runtime_ref or agent.runtime_ref in _BUILTIN_RUNTIME_REFS:
+    surfaced everywhere it's encountered, not silently treated as unset.
+
+    `runtime_ref` overrides the live row's value -- see `resolve_runtime`."""
+    ref = agent.runtime_ref if isinstance(runtime_ref, _LiveRow) else runtime_ref
+    if not ref or ref in _BUILTIN_RUNTIME_REFS:
         return None
-    capa_id = uuid.UUID(agent.runtime_ref)
+    capa_id = uuid.UUID(ref)
     resolved = await load_runtime_plugin(db, tenant_id=tenant_id, capa_id=capa_id)
     if resolved is None:
-        raise RuntimeResolutionError(
-            f"runtime {agent.runtime_ref!r} is not installed/enabled for this tenant"
-        )
+        raise RuntimeResolutionError(f"runtime {ref!r} is not installed/enabled for this tenant")
     return resolved
 
 
 async def resolve_runtime(
-    db: AsyncSession, *, tenant_id: uuid.UUID, agent: m.Agent
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    agent: m.Agent,
+    runtime_ref: _LiveRow | str | None = LIVE_ROW,
 ) -> RuntimeAdapter:
+    """The runtime that executes `agent`'s run.
+
+    A run passes its PINNED `runtime_ref` (`resolve_version(...)["runtime_ref"]`)
+    so an unpublished runtime assignment never changes which runtime executes
+    a run already in flight -- including a run re-executed on resume. `None`
+    is a real value ("never set"), which is why "not given" is the separate
+    `LIVE_ROW` sentinel; only a caller with no run behind it (the evidence
+    sweep) reads the live row."""
+    ref = agent.runtime_ref if isinstance(runtime_ref, _LiveRow) else runtime_ref
     # An explicit built-in choice wins outright, overriding the tenant-wide
     # agent_isolation setting below -- that's the whole point of making the
     # two built-ins independently selectable rather than one hidden toggle.
-    if agent.runtime_ref == BUILTIN_ISOLATED_RUNTIME_REF:
+    if ref == BUILTIN_ISOLATED_RUNTIME_REF:
         from oc8.runtime.isolated import DockerIsolatedRuntime
 
         return DockerIsolatedRuntime()
-    if agent.runtime_ref == BUILTIN_IN_PROCESS_RUNTIME_REF:
+    if ref == BUILTIN_IN_PROCESS_RUNTIME_REF:
         return Oc8AgentRuntime()
     # An explicit plugin runtime_ref wins next. Otherwise (runtime_ref never
     # set at all), when isolation is enabled for the deployment (§8.5), a
     # first_party agent runs in a per-agent container instead of in-process --
     # exactly today's behavior, untouched by the two branches above.
-    resolved = await resolve_runtime_plugin(db, tenant_id=tenant_id, agent=agent)
+    resolved = await resolve_runtime_plugin(db, tenant_id=tenant_id, agent=agent, runtime_ref=ref)
     if resolved is None:
         from oc8.config import get_settings
 

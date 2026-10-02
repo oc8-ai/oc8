@@ -93,7 +93,8 @@ from oc8.agent.preamble import build_run_preamble
 from oc8.agent.tool_notes import apply_tool_notes
 from oc8.agent.tool_routing import RoutedToolset
 from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_identity
-from oc8.approvals import raise_approval
+from oc8.agents.versioning import pinned_model_config_id, resolve_version
+from oc8.approvals import raise_approval, record_url_for_connection
 from oc8.audit import append_event
 from oc8.authz.pdp import Decision, Effect, effective_tool_policies, required_right
 from oc8.capas.claude_hooks import dispatch_claude_event
@@ -108,6 +109,7 @@ from oc8.capas.claude_hooks.context import (
     task_created as claude_task_created,
 )
 from oc8.capas.discovery import resolve_tool_pack_connection
+from oc8.chat.modes import mode_from_context
 from oc8.coding.tools import CODING_FRAME_KEY, CODING_TOOL_RIGHTS, Toolset
 from oc8.config import get_settings
 from oc8.hooks.bus import dispatch_filter
@@ -143,11 +145,13 @@ from oc8.observability import get_tracer, record_budget_exceeded, record_tool_ca
 from oc8.realtime.emit import (
     note_focus,
     publish_agent_status,
+    publish_run_step_timing,
     publish_run_token_delta,
     publish_run_tool_call,
     record_activity,
 )
 from oc8.runtime.run_context import append_tool_call
+from oc8.runtime.step_record import call_state_for, step_timing_dto
 from oc8.runtime.supervision_hook import maybe_checkpoint, maybe_create_anchor
 from oc8.skills.runtime import (
     LoadedSkill,
@@ -203,10 +207,14 @@ def _instruction_for(skill: LoadedSkill, harness: Harness) -> str:
     return instruction_block(skill, done)
 
 
-def _max_steps(agent: m.Agent) -> int:
+def _max_steps(definition: dict[str, Any] | None) -> int:
     """Step budget for a run: an agent plugin may raise it per agent for longer,
-    multi-record workflows; otherwise the framework setting applies."""
-    override = (agent.definition or {}).get("max_steps")
+    multi-record workflows; otherwise the framework setting applies.
+
+    Takes the run's PINNED definition (`resolve_version(...)["definition"]`),
+    not the agent row, so every runtime bounds a run by the budget of the
+    version it started with."""
+    override = (definition or {}).get("max_steps")
     if isinstance(override, int) and override > 0:
         return override
     return max(1, get_settings().agent_max_steps)
@@ -239,7 +247,7 @@ class RunResult:
     todos: list[dict[str, str]] = field(default_factory=list)
     # One latency record per model step (see harness.step_timing). Empty on
     # runs that never entered the step loop (e.g. budget gate).
-    step_timings: list[dict] = field(default_factory=list)
+    step_timings: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _json_chunks(text: str) -> list[str]:
@@ -465,14 +473,33 @@ async def run_agent(
         settings = get_settings()
         router = get_model_router()
 
+        # A resume leg continues the task its suspended leg opened; see
+        # open_run_task. The run is the only place that link is recorded, so a
+        # runtime that gets no run_id (a direct run_agent call in a test) simply
+        # opens a fresh task, as before. The same row also carries stamped
+        # pins (`mcp_connection_ids`) so an in-process run sees every login
+        # the executor resolved, not just the first -- and the agent version
+        # this run was pinned to at intake.
+        run_row: m.AgentRun | None = (
+            await db.get(m.AgentRun, run_id) if run_id is not None else None
+        )
+        # The slash command this turn was sent with, if any (chat/service.py
+        # writes it into the run's context; oc8.chat.modes reads it back).
+        chat_mode = mode_from_context(run_row.context if run_row is not None else None)
+        # Every behavioural field below (model, narrowing, definition, mission,
+        # team-lead flag) comes from the run's pinned version, never the live
+        # row -- the same answer the isolated control plane and the MCP gateway
+        # give for the same run. `department.frame` stays a live read on
+        # purpose: it is the tenant's ceiling and must bite mid-run.
+        pinned = await resolve_version(db, run_row, agent)
+        pinned_model_id = pinned_model_config_id(pinned)
+
         model_config: m.ModelConfig | None = None
-        if agent.model_config_id is not None:
-            model_config = await db.get(m.ModelConfig, agent.model_config_id)
+        if pinned_model_id is not None:
+            model_config = await db.get(m.ModelConfig, pinned_model_id)
         # Virtual Auto ModelConfig: keep the policy row and resolve a concrete
         # target before each completion (session latch + one-way escalation).
-        auto_cfg: m.ModelConfig | None = (
-            model_config if is_auto_config(model_config) else None
-        )
+        auto_cfg: m.ModelConfig | None = model_config if is_auto_config(model_config) else None
         cascade_flag = {"attempted": False, "escalated": False}
         # Mutated in place each step so nested completions see an escalation
         # without rebinding the names they close over.
@@ -521,17 +548,8 @@ async def run_agent(
         ]
         department = await db.get(m.Department, agent.department_id)
         frame: dict[str, Any] = department.frame if department is not None else {}
-        tool_policies = effective_tool_policies(frame, agent.narrowing or {})
+        tool_policies = effective_tool_policies(frame, pinned["narrowing"] or {})
         extra_conns: list[m.McpConnection] = list(mcp_conns) if mcp_conns else []
-        # A resume leg continues the task its suspended leg opened; see
-        # open_run_task. The run is the only place that link is recorded, so a
-        # runtime that gets no run_id (a direct run_agent call in a test) simply
-        # opens a fresh task, as before. The same row also carries stamped
-        # pins (`mcp_connection_ids`) so an in-process run sees every login
-        # the executor resolved, not just the first.
-        run_row: m.AgentRun | None = (
-            await db.get(m.AgentRun, run_id) if run_id is not None else None
-        )
         if not extra_conns and run_row is not None:
             raw_ids = run_row.context.get("mcp_connection_ids")
             if isinstance(raw_ids, list):
@@ -574,6 +592,7 @@ async def run_agent(
             focus_spec = None
             outward_tools = None
             guardrail_attribute_specs = []
+
         async def _record_url(
             name: str,
             arguments: dict[str, Any],
@@ -641,11 +660,14 @@ async def run_agent(
         )
 
         # Computed once here and reused inside loop() below (a closure
-        # variable, since _max_steps is a pure function of `agent`) rather
-        # than a second, separately-named call to _max_steps -- both the
-        # preamble's step-budget line and the loop's own range bound must
-        # agree on the same number.
-        max_steps = _max_steps(agent)
+        # variable, since _max_steps is a pure function of the PINNED
+        # definition -- resolve_version(...)["definition"], never the live
+        # agent row, so a mid-run edit to the step budget can't move the
+        # goalposts under a run already in flight) rather than a second,
+        # separately-named call to _max_steps -- both the preamble's
+        # step-budget line and the loop's own range bound must agree on the
+        # same number.
+        max_steps = _max_steps(pinned["definition"])
 
         # Seeded from the shared preamble so an isolated run gets exactly the same
         # context (memory, KB, roster, skills catalog) as this one -- see
@@ -663,6 +685,7 @@ async def run_agent(
             supports_vision=supports_vision,
             task=task,
             run_id=run_id,
+            pinned=pinned,
         )
         messages: list[NeutralMessage] = list(preamble.messages)
         assigned_skills = preamble.assigned_skills
@@ -712,6 +735,22 @@ async def run_agent(
             await append_tool_call(db, run_row, entry)
             await publish_run_tool_call(tenant_id, run_id=run_id, call=entry)
 
+        async def _finish_step_timing(rec: dict[str, Any], tool_wait_ms: int) -> None:
+            # note_tools/finish_step are dev's own capture
+            # (oc8.agent.harness.step_timing, unchanged here) -- this only
+            # adds the live-publish side that capture never had. No DB write
+            # of its own, unlike _live_tool_call above: stepTimings has no
+            # incremental append path, and this run's own step_timings list
+            # already lands durably through the executor's terminal
+            # merge_context({"stepTimings": result.step_timings, ...}); this
+            # only spares an already-open tab the wait for that reload. Same
+            # no-run no-op as _live_tool_call.
+            note_tools(rec, tool_wait_ms)
+            finish_step(rec)
+            if run_id is None:
+                return
+            await publish_run_step_timing(tenant_id, run_id=run_id, timing=step_timing_dto(rec))
+
         async def _live_token_delta(text: str) -> None:
             # No DB write here, unlike _live_tool_call above -- the full text
             # still lands durably once the turn finishes (the transcript
@@ -733,6 +772,7 @@ async def run_agent(
                 # see oc8.agent.control_tools.
                 return offered_tools(
                     agent,
+                    is_team_lead=bool(pinned["is_team_lead"]),
                     assigned_skills=assigned_skills,
                     active_skills=active_skills,
                     mcp_tools=tools,
@@ -742,6 +782,7 @@ async def run_agent(
                     # The in-process engine is the one runtime with no
                     # /workspace mount of its own -- see offered_tools' docstring.
                     offer_write_output_file=True,
+                    chat_mode=chat_mode,
                 )
 
             # Per-run harness state (spec §3.3): the repeat-call tracker and the
@@ -789,12 +830,14 @@ async def run_agent(
                 )
 
             steps = 0
-            step_timings: list[dict] = []
+            step_timings: list[dict[str, Any]] = []
             checkpoint_trace_delta: list[dict[str, Any]] = []
             tokens_since_checkpoint = 0
             # max_steps is the outer, already-computed closure variable (see
             # _run() above) -- not recomputed here, so the preamble's step
-            # budget and this loop's own bound never drift apart.
+            # budget and this loop's own bound never drift apart. Todo
+            # continuation (formerly tracked here as todo_continue_rounds) now
+            # runs through stages/d_todo.py's harness stage.
             for steps in range(1, max_steps + 1):
                 # C3: the step stamp on this turn's shaped tool output reads this.
                 harness.state.step_no = steps
@@ -805,11 +848,15 @@ async def run_agent(
                         if parked is not None and isinstance(parked.context, dict)
                         else None
                     )
-                    answers = [
-                        item
-                        for item in (parked.context or {}).get("clarifications", [])
-                        if isinstance(item, dict) and item.get("answer")
-                    ] if parked is not None and isinstance(parked.context, dict) else []
+                    answers = (
+                        [
+                            item
+                            for item in (parked.context or {}).get("clarifications", [])
+                            if isinstance(item, dict) and item.get("answer")
+                        ]
+                        if parked is not None and isinstance(parked.context, dict)
+                        else []
+                    )
                     if (
                         isinstance(pending, dict)
                         and answers
@@ -944,9 +991,7 @@ async def run_agent(
                     else {}
                 )
                 required = [
-                    req.tool
-                    for skill in active_skills
-                    for req in skill.definition.requires_tools
+                    req.tool for skill in active_skills for req in skill.definition.requires_tools
                 ]
                 resolved_tools, catalog = select_completion_tools(
                     resolved_tools,
@@ -1005,7 +1050,9 @@ async def run_agent(
                 active_route["config"] = model_config
                 active_route["provider"] = provider
                 active_route["model"] = model
-                resolved_params = resolve_params(model_config, agent=agent)
+                resolved_params = resolve_params(
+                    model_config, agent=agent, definition=pinned["definition"]
+                )
                 # Must match what fallback.py's own base_url resolution will
                 # actually send for this provider (params override, else the
                 # tenant's bound credential) -- a cache key that ignores the
@@ -1089,9 +1136,7 @@ async def run_agent(
                         messages,
                         summary=summary_result.text,
                         ledger_block=render_ledger_block(harness.state.ledger),
-                        skill_blocks=[
-                            _instruction_for(skill, harness) for skill in active_skills
-                        ],
+                        skill_blocks=[_instruction_for(skill, harness) for skill in active_skills],
                     )
                     harness.state.compactions += 1
                     harness.state.last_compacted_step = harness.state.step_no
@@ -1138,6 +1183,8 @@ async def run_agent(
                 async def _complete_with_overflow_retry(
                     sampling_params: ModelParams,
                     req_id: uuid.UUID,
+                    *,
+                    step_probe: StreamTiming = step_probe,
                 ) -> tuple[Any, uuid.UUID]:
                     nonlocal key, resolved_messages, overflow_retried
                     stamped = with_prompt_cache_key(
@@ -1243,9 +1290,7 @@ async def run_agent(
                     except Exception:
                         # Retry exhaustion / hard provider failure: one-way escalate
                         # and retry once on a stronger tier when Auto is configured.
-                        if auto_cfg is None or not await _apply_auto_escalation(
-                            "retry_exhaustion"
-                        ):
+                        if auto_cfg is None or not await _apply_auto_escalation("retry_exhaustion"):
                             raise
                         request_id = uuid.uuid4()
                         result, request_id = await _complete_with_overflow_retry(
@@ -1328,8 +1373,7 @@ async def run_agent(
                     result.tool_calls = _salvage_tool_calls(result.text, _offered())
 
                 if not result.tool_calls:
-                    note_tools(step_rec, 0)
-                    finish_step(step_rec)
+                    await _finish_step_timing(step_rec, 0)
                     if result.stop_reason == "length" and not result.text.strip():
                         # Truncated even after the retry above -- the model
                         # never produced an answer or a tool call, so this must
@@ -1406,28 +1450,20 @@ async def run_agent(
                             if run_row is not None
                             else {}
                         )
-                        escalated = bool(ar.get("escalated")) or bool(
-                            cascade_flag.get("escalated")
-                        )
+                        escalated = bool(ar.get("escalated")) or bool(cascade_flag.get("escalated"))
                         record_preference_label(
                             auto_cfg,
                             messages=messages,
                             needs_strong=escalated,
-                            source=(
-                                "task_success_escalated" if escalated else "task_success_weak"
-                            ),
+                            source=("task_success_escalated" if escalated else "task_success_weak"),
                         )
-                        remember_agent_route(
-                            agent, auto_cfg, run=run_row, concrete=model_config
-                        )
+                        remember_agent_route(agent, auto_cfg, run=run_row, concrete=model_config)
                     await record_activity(
                         db,
                         tenant_id=tenant_id,
                         agent_id=agent.id,
                         status=(
-                            "warning"
-                            if finish_verdict.exhausted_note is not None
-                            else "success"
+                            "warning" if finish_verdict.exhausted_note is not None else "success"
                         ),
                         message=f"{agent.name} completed: {task_text[:80]}",
                         detail=output_text[:500] or None,
@@ -1492,9 +1528,7 @@ async def run_agent(
                 # per-call loop below unchanged. Batch eligibility uses B0,
                 # tier, and outward classification; the read-tier gate runs
                 # later in the normal per-call ordering after hooks.
-                precomputed_outputs: dict[
-                    str, tuple[str, dt.datetime, int, ToolError | None]
-                ] = {}
+                precomputed_outputs: dict[str, tuple[str, dt.datetime, int, ToolError | None]] = {}
                 call_justifications: dict[str, str] = {}
                 if (
                     harness.caps.parallel_tool_calls
@@ -1532,20 +1566,23 @@ async def run_agent(
                                 pre_decision = Decision(Effect.ALLOW, "operator approved")
                         if pre_decision.effect is not Effect.ALLOW:
                             break
-                        if classify_tier(
-                            _pre_tc.name,
-                            scopes=tool_scopes,
-                            config=connection_config,
-                            annotations=next(
-                                (
-                                    tool.annotations
-                                    for tool in _offered()
-                                    if tool.name == _pre_tc.name
+                        if (
+                            classify_tier(
+                                _pre_tc.name,
+                                scopes=tool_scopes,
+                                config=connection_config,
+                                annotations=next(
+                                    (
+                                        tool.annotations
+                                        for tool in _offered()
+                                        if tool.name == _pre_tc.name
+                                    ),
+                                    None,
                                 ),
-                                None,
-                            ),
-                            arguments=_pre_tc.arguments,
-                        ) != "read":
+                                arguments=_pre_tc.arguments,
+                            )
+                            != "read"
+                        ):
                             break
                         if (
                             outward_target(
@@ -1648,12 +1685,15 @@ async def run_agent(
                         skill_tool_names=skill_tool_names,
                         value_spec=call_value_spec,
                         guardrail_attribute_specs=call_guardrails,
+                        narrowing=pinned["narrowing"] or {},
+                        is_team_lead=bool(pinned["is_team_lead"]),
                         skill_thresholds=tuple(
                             g.gt
                             for s in active_skills
                             for g in s.definition.guardrails
                             if g.type == "value_threshold" and g.then == "require_approval"
                         ),
+                        chat_mode=chat_mode,
                     )
                     if tc.id in call_justifications:
                         justification = call_justifications[tc.id]
@@ -1703,6 +1743,13 @@ async def run_agent(
                                     "tool": tc.name,
                                     "arguments": tc.arguments,
                                     "result": output[:300],
+                                    "step": steps,
+                                    "connection": connection_key,
+                                    # A plugin hook refusing the call is a
+                                    # denial, not a failure: nothing was
+                                    # attempted, so the timeline must not
+                                    # render it as the tool breaking.
+                                    "state": "denied",
                                 }
                             )
                             await _live_tool_call(tool_trace[-1])
@@ -1804,9 +1851,7 @@ async def run_agent(
                                         "content": str(tc.arguments.get("content", "")),
                                         "justification": justification,
                                         "preview": (
-                                            gate_verdict.preview
-                                            if gate_verdict is not None
-                                            else ""
+                                            gate_verdict.preview if gate_verdict is not None else ""
                                         ),
                                     },
                                     reason_code=decision.reason_code,
@@ -1815,6 +1860,13 @@ async def run_agent(
                             else:
                                 link = await _record_url(
                                     auth_tc.name, tc.arguments, call_key, call_focus
+                                )
+                                # Same pure helper + manifest template the
+                                # gateway and the isolated runtime use, so a held
+                                # write carries the same link whichever runtime
+                                # raised it.
+                                held_record = record_identity(
+                                    auth_tc.name, tc.arguments, call_focus
                                 )
                                 ar = await raise_approval(
                                     db,
@@ -1829,14 +1881,19 @@ async def run_agent(
                                         "arguments": tc.arguments,
                                         "justification": justification,
                                         "preview": (
-                                            gate_verdict.preview
-                                            if gate_verdict is not None
-                                            else ""
+                                            gate_verdict.preview if gate_verdict is not None else ""
                                         ),
                                         **({"record_url": link} if link else {}),
                                     },
                                     reason_code=decision.reason_code,
                                     reason_context=decision.context,
+                                    record_url=(
+                                        record_url_for_connection(
+                                            owner, entity=held_record[0], ref=held_record[1]
+                                        )
+                                        if held_record is not None
+                                        else None
+                                    ),
                                 )
 
                             from oc8.realtime.bus import get_event_bus
@@ -1861,7 +1918,17 @@ async def run_agent(
                                 {
                                     "tool": tc.name,
                                     "arguments": tc.arguments,
+                                    # `decision` stays: approval_resume.py's
+                                    # sibling list uses the same word, and
+                                    # removing a key nothing forced us to
+                                    # remove is how an old run's record stops
+                                    # rendering. `state` is the field the
+                                    # timeline reads.
                                     "decision": "require_approval",
+                                    "step": steps,
+                                    "connection": connection_key,
+                                    "state": "awaiting_approval",
+                                    "reason": decision.reason,
                                 }
                             )
                             await _live_tool_call(tool_trace[-1])
@@ -1877,8 +1944,7 @@ async def run_agent(
                                 force=True,
                                 contains_restricted=contains_restricted,
                             )
-                            note_tools(step_rec, step_tool_wait_ms)
-                            finish_step(step_rec)
+                            await _finish_step_timing(step_rec, step_tool_wait_ms)
                             return RunResult(
                                 task.id,
                                 agent.id,
@@ -1951,9 +2017,7 @@ async def run_agent(
                                     exc_info=True,
                                 )
                             chat = run_row is not None and run_row.source == "chat"
-                            tc = apply_clarification(
-                                tc, reply_text, chat=chat, state=harness.state
-                            )
+                            tc = apply_clarification(tc, reply_text, chat=chat, state=harness.state)
                             facts = parse_clarification(reply_text)
                             logger.info(
                                 "clarification checkpoint tool=%s tier=%s %s",
@@ -1989,13 +2053,10 @@ async def run_agent(
                         )
                         access_identity = record_identity(auth_tc.name, tc.arguments, call_focus)
                         identity = access_identity if writes else None
-                        record_label = (
-                            describe_focus(auth_tc.name, tc.arguments, call_focus)
-                            or (
-                                f"{access_identity[0]} {access_identity[1]}"
-                                if access_identity is not None
-                                else ""
-                            )
+                        record_label = describe_focus(auth_tc.name, tc.arguments, call_focus) or (
+                            f"{access_identity[0]} {access_identity[1]}"
+                            if access_identity is not None
+                            else ""
                         )
                         control = await execute_control_tool(
                             db,
@@ -2009,6 +2070,7 @@ async def run_agent(
                             mcp_conn=mcp_conn,
                             originating_operator=originating_operator,
                             run_id=run_id,
+                            pinned=pinned,
                             harness_state=harness.state,
                             active_procedure_skills=[
                                 s for s in active_skills if s.definition.steps
@@ -2081,12 +2143,12 @@ async def run_agent(
                             if control.suspend == "waiting_for_input":
                                 task.state = "waiting_for_input"
                                 step_tool_wait_ms += int(
-                                    (dt.datetime.now(dt.UTC) - _tool_call_started_at)
-                                    .total_seconds()
+                                    (
+                                        dt.datetime.now(dt.UTC) - _tool_call_started_at
+                                    ).total_seconds()
                                     * 1000
                                 )
-                                note_tools(step_rec, step_tool_wait_ms)
-                                finish_step(step_rec)
+                                await _finish_step_timing(step_rec, step_tool_wait_ms)
                                 return RunResult(
                                     task.id,
                                     agent.id,
@@ -2217,8 +2279,7 @@ async def run_agent(
                                                 }
                                                 parked.context = parked_ctx
                                         task.state = "waiting_for_input"
-                                        note_tools(step_rec, step_tool_wait_ms)
-                                        finish_step(step_rec)
+                                        await _finish_step_timing(step_rec, step_tool_wait_ms)
                                         return RunResult(
                                             task.id,
                                             agent.id,
@@ -2256,6 +2317,14 @@ async def run_agent(
                                     idempotent=idempotent,
                                 )
                         succeeded = tool_error is None and not output.startswith("ERROR:")
+                        # harness.shape() below prepends a "[step N/max · ...]"
+                        # stamp to EVERY shaped result, so the reassigned
+                        # `output` no longer starts with a literal "ERROR:"
+                        # even for a genuine dispatched failure. call_state_for
+                        # needs the pre-stamp text to tell "failed" from
+                        # "done" -- `succeeded` just above is computed from
+                        # this same unshaped value.
+                        _tool_call_output_for_state = output
                         procs = _active_procedures(active_skills)
                         before_sat = _satisfied_map(procs, harness)
                         if succeeded:
@@ -2286,9 +2355,7 @@ async def run_agent(
                                     connection=connection_key or "oc8",
                                     tool=tc.name,
                                     target=str(
-                                        tc.arguments.get("target")
-                                        or tc.arguments.get("to")
-                                        or ""
+                                        tc.arguments.get("target") or tc.arguments.get("to") or ""
                                     ),
                                     step=harness.state.step_no,
                                 )
@@ -2356,6 +2423,11 @@ async def run_agent(
                             "tool": tc.name,
                             "arguments": tc.arguments,
                             "result": output[:300],
+                            "step": steps,
+                            "connection": connection_key,
+                            "state": call_state_for(
+                                _tool_call_output_for_state, dispatched=_tool_call_dispatched
+                            ),
                         }
                         if _tool_call_dispatched:
                             _tool_call_entry["startedAt"] = _tool_call_started_at.isoformat()
@@ -2363,12 +2435,17 @@ async def run_agent(
                                 _precomputed_duration_ms
                                 if _precomputed_duration_ms is not None
                                 else int(
-                                    (dt.datetime.now(dt.UTC) - _tool_call_started_at)
-                                    .total_seconds()
+                                    (
+                                        dt.datetime.now(dt.UTC) - _tool_call_started_at
+                                    ).total_seconds()
                                     * 1000
                                 )
                             )
                             step_tool_wait_ms += int(_tool_call_entry["durationMs"])
+                        if not _tool_call_dispatched:
+                            _tool_call_entry["reason"] = (
+                                tool_error.message if tool_error is not None else None
+                            )
                         tool_trace.append(_tool_call_entry)
                         await _live_tool_call(tool_trace[-1])
                         messages.append(
@@ -2412,8 +2489,7 @@ async def run_agent(
                 if cached_result is None and step_had_tool_error:
                     await cache_flow.invalidate(key)
 
-                note_tools(step_rec, step_tool_wait_ms)
-                finish_step(step_rec)
+                await _finish_step_timing(step_rec, step_tool_wait_ms)
 
             task.state = "done"
             await maybe_checkpoint(
@@ -2445,6 +2521,7 @@ async def run_agent(
             try:
                 if toolset is not None:
                     return await loop(toolset.tools, toolset)
+
                 def _note_unavailable(conn: m.McpConnection, exc: BaseException) -> None:
                     reason = " ".join(str(exc).split())[:200] or type(exc).__name__
                     startup_unavailable.append({"name": conn.name, "reason": reason})
