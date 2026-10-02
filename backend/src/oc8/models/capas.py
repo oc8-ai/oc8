@@ -15,7 +15,8 @@ from oc8.models._mixins import PkMixin, TenantMixin
 
 _CAPA_TYPES = (
     "skill, flow_template, agent_template, department_template, connector, "
-    "model_adapter, runtime_adapter, tool_pack, approval_channel, core_extension"
+    "vector_index, model_adapter, runtime_adapter, tool_pack, approval_channel, "
+    "core_extension"
 )
 
 

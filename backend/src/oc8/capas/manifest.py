@@ -17,6 +17,7 @@ PluginType = Literal[
     "agent_template",
     "department_template",
     "connector",
+    "vector_index",
     "model_adapter",
     "runtime_adapter",
     "tool_pack",

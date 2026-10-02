@@ -108,6 +108,16 @@ class KnowledgeBase(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin)
     source_ids: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="current")
     local_only: Mapped[bool] = mapped_column(nullable=False, default=False)
+    #: ``internal`` (default) searches ``kb_chunk``. Any other value is a
+    #: capa ``type_id`` resolved through ``resolve_vector_index`` — query-only,
+    #: no ingest into oc8.
+    index_type: Mapped[str] = mapped_column(Text, nullable=False, default="internal")
+    #: Non-secret mapping for an external index (collection, table, field keys).
+    #: Secrets live on ``credential_id``, never here.
+    index_config: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    #: Required when ``index_type`` is not ``internal``. Points at a
+    #: ``Credential`` whose type matches the capa's ``credential_type``.
+    credential_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
 
 
 class KbChunk(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
