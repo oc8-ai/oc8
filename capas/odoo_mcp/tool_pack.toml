@@ -196,6 +196,8 @@ search_label = "Durchsucht"
 "helpdesk.stage" = "Ticket-Stufe"
 "helpdesk.team" = "Support-Team"
 "mail.message" = "Gesprächsverlauf"
+"project.task" = "Aufgabe"
+"project.project" = "Projekt"
 
 [connections.config.focus_spec.verbs]
 create_record = "Erstellt"
@@ -317,3 +319,5 @@ base_url_path = ["env", "ODOO_URL"]
 "helpdesk.stage" = "helpdesk.stage"
 "helpdesk.team" = "helpdesk.team"
 "mail.message" = "mail.message"
+"project.task" = "project.task"
+"project.project" = "project.project"

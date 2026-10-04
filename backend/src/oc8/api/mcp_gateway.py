@@ -52,7 +52,7 @@ from oc8.agent.outward import (
     outward_target,
     remember_delivery,
 )
-from oc8.agent.provenance import fence
+from oc8.agent.provenance import fence, shorten_long_strings
 from oc8.agent.record_link import record_url_from_env
 from oc8.agent.tool_idempotency import (
     record_invocation,
@@ -1089,7 +1089,7 @@ async def _call_tool(
     # Fenced, so what a stranger wrote cannot pass itself off as an instruction
     # from oc8. Only the connection's answer -- never this gateway's own
     # refusals, which are the one voice the model must not disregard.
-    return _tool_result(fence(output, source=f"{conn.name}:{tc.name}"))
+    return _tool_result(fence(shorten_long_strings(output), source=f"{conn.name}:{tc.name}"))
 
 
 # --------------------------------------------------------------------- route

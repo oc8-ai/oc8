@@ -63,6 +63,7 @@ async def test_provision_serializes_only_the_sandbox_spec() -> None:
         "labels": {},
         "name": None,
         "user": None,
+        "registry_auth": None,
     }
 
 

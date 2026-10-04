@@ -93,6 +93,28 @@ def test_default_policy_still_refuses_an_unlisted_image() -> None:
         _default_policy().validate(SandboxSpec(image="attacker:latest"))
 
 
+def test_default_policy_allows_an_image_a_runtime_capa_declares(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "oc8.runtime.images.declared_runtime_images",
+        lambda paths=None: {"registry.example/custom-runtime:1"},
+    )
+    settings = get_settings()
+    policy = _default_policy()
+    assert "registry.example/custom-runtime:1" in policy.allowed_images
+    normalized = policy.validate(
+        SandboxSpec(
+            image="registry.example/custom-runtime:1",
+            network_disabled=False,
+            network=settings.agent_runtime_network,
+        )
+    )
+    assert normalized.image == "registry.example/custom-runtime:1"
+    with pytest.raises(SandboxError, match="image"):
+        policy.validate(SandboxSpec(image="attacker:latest"))
+
+
 def test_policy_forces_dropped_capabilities_and_rejects_excessive_resources() -> None:
     normalized = _policy().validate(
         SandboxSpec(

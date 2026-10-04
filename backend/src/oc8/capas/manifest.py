@@ -82,6 +82,10 @@ class SandboxManifest(BaseModel):
     image: str | None = None
     build: str | None = None
     services: list[str] = []
+    # Setup-field key whose credential authenticates a pull of `image`.
+    # Empty means a missing image is pulled anonymously. The credential
+    # never becomes a container environment variable.
+    registry_credential: str = ""
 
 
 class TemplateAgentTrigger(BaseModel):
@@ -113,6 +117,15 @@ class TemplateAgent(BaseModel):
     # Component 3). None = no trigger, the same as every pre-existing
     # manifest that predates this field.
     trigger: TemplateAgentTrigger | None = None
+    # Setup-field key holding how many copies of this agent hire creates.
+    # Empty means one agent, the historical behavior. The value is a whole
+    # number; the core clamps the upper bound so a setup form cannot hire
+    # an unbounded team. `{{n}}` in the name (and in the texts hire already
+    # substitutes) is the copy's index, starting at 1.
+    repeat_from_setup: str = ""
+    # Plugin name of a runtime_adapter to assign at hire. Empty leaves
+    # runtime_ref unset, the same as every template written before this field.
+    runtime: str = ""
     #: Opening questions this agent's composer offers on an empty conversation
     #: (§5.3 of the AI workplace design). Content, like `mission` and `skills`
     #: -- the pack author knows what this agent is good for, and a generic
