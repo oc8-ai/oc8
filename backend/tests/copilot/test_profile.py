@@ -110,6 +110,13 @@ async def test_offboarding_removes_personal_layer(app_session: AppSessionFactory
         assert states == ["cancelled"]
 
 
+async def test_offboarding_without_a_copilot_creates_none(app_session: AppSessionFactory) -> None:
+    tenant, member = uuid.uuid4(), uuid.uuid4()
+    async with app_session(tenant) as db:
+        await offboard_member(db, tenant_id=tenant, member_id=member)
+        assert (await db.execute(select(m.Agent.id))).scalars().all() == []
+
+
 async def _run(
     db: object, tenant: uuid.UUID, agent: uuid.UUID, session: uuid.UUID, state: str
 ) -> m.AgentRun:

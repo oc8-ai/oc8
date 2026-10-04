@@ -90,9 +90,12 @@ async def delete_note(
 async def delete_member_notes(
     db: AsyncSession, *, tenant_id: uuid.UUID, member_id: uuid.UUID
 ) -> None:
-    from oc8.agent.assistant import get_or_create_assistant
+    from oc8.agent.assistant import _load_assistant
 
-    assistant = await get_or_create_assistant(db, tenant_id=tenant_id)
+    # Never create one: a tenant without a Copilot has no notes to remove.
+    assistant = await _load_assistant(db, tenant_id=tenant_id)
+    if assistant is None:
+        return
     store_id = await _copilot_store_id(db, tenant_id=tenant_id, assistant_id=assistant.id)
     if store_id is None:
         return
