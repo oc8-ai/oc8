@@ -251,6 +251,8 @@ async def _maybe_wake_parent(
     chat_session_id: str | None = None,
     chat_channel: str | None = None,
     chat_channel_external_id: str | None = None,
+    door: str | None = None,
+    followup: dict[str, Any] | None = None,
 ) -> uuid.UUID | None:
     """Create a follow-up run for the team lead that delegated this sub-run, so
     it can react to the outcome (§7). Returns the new run's id for the caller to
@@ -330,6 +332,13 @@ async def _maybe_wake_parent(
         if chat_channel and chat_channel_external_id:
             context["chat_channel"] = chat_channel
             context["chat_channel_external_id"] = chat_channel_external_id
+        # The Copilot's follow-up restrictions key off these two; a wake-up that
+        # processes a delegated result must not shed them (it may be reading
+        # injected content), so they ride along like the channel does.
+        if door is not None:
+            context["door"] = door
+        if followup is not None:
+            context["followup"] = followup
     wake = await repo.create(
         tenant_id=tenant_id,
         agent_id=parent.assigned_agent_id,
@@ -887,6 +896,8 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         chat_channel_external_id=(run.context or {}).get(
                             "chat_channel_external_id"
                         ),
+                        door=(run.context or {}).get("door"),
+                        followup=(run.context or {}).get("followup"),
                     )
                     if wake_id is not None:
                         pending_runs.append(wake_id)
@@ -1010,6 +1021,8 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                                 chat_channel_external_id=(run.context or {}).get(
                                     "chat_channel_external_id"
                                 ),
+                                door=(run.context or {}).get("door"),
+                                followup=(run.context or {}).get("followup"),
                             )
                             if wake_id is not None:
                                 pending_runs.append(wake_id)
@@ -1090,6 +1103,8 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             chat_channel_external_id=(run.context or {}).get(
                                 "chat_channel_external_id"
                             ),
+                            door=(run.context or {}).get("door"),
+                            followup=(run.context or {}).get("followup"),
                         )
                         if wake_id is not None:
                             pending_runs.append(wake_id)

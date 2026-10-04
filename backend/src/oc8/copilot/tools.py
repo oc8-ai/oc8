@@ -71,6 +71,11 @@ def _uuid(raw: Any) -> uuid.UUID | None:
         return None
 
 
+def _channel(context: dict[str, Any]) -> str | None:
+    raw = context.get("chat_channel")
+    return str(raw) if raw else None
+
+
 def _card(r: m.Responsibility) -> dict[str, Any]:
     return {
         "component_key": "responsibility_card",
@@ -143,6 +148,13 @@ async def _dispatch(
     door: str,
     run_id: uuid.UUID | None,
 ) -> ControlOutcome:
+    own: uuid.UUID | None = None
+    if door == "followup":
+        # A follow-up turn may only touch the responsibility that fired it.
+        fu = context.get("followup")
+        own = _uuid(fu.get("responsibility_id")) if isinstance(fu, dict) else None
+        if own is None:
+            return ControlOutcome(output="ERROR: this follow-up has no responsibility to act on")
     if tc.name == RESPONSIBILITY_OPEN.name:
         if door == "followup":
             return ControlOutcome(
@@ -159,7 +171,7 @@ async def _dispatch(
             title=_text(args, "title", required=True) or "",
             goal=_text(args, "goal", required=True) or "",
             notify_rule=_text(args, "notify_rule") or "risks_and_decisions",
-            origin_channel=(str(context["chat_channel"]) if door == "telegram" else None),
+            origin_channel=(_channel(context) if door == "telegram" else None),
             run_id=run_id,
             actor_agent_id=agent.id,
             member_subject=member.subject,
@@ -169,6 +181,14 @@ async def _dispatch(
         )
     if tc.name == CANCEL_FOLLOWUP.name:
         fid = _uuid(args.get("followup_id"))
+        if door == "followup":
+            mine = {
+                t.id
+                for t in await list_followups(db, tenant_id=tenant_id, member_id=member.id)
+                if t.responsibility_id == own
+            }
+            if fid is not None and fid not in mine:
+                return ControlOutcome(output="ERROR: a follow-up can only end its own follow-ups")
         if fid is None or not await cancel_followup(
             db, tenant_id=tenant_id, member_id=member.id, trigger_id=fid
         ):
@@ -177,6 +197,8 @@ async def _dispatch(
     rid = _uuid(args.get("responsibility_id"))
     if rid is None:
         return ControlOutcome(output="ERROR: responsibility_id is required")
+    if door == "followup" and tc.name != SCHEDULE_FOLLOWUP.name and rid != own:
+        return ControlOutcome(output="ERROR: a follow-up can only change its own responsibility")
     if tc.name == RESPONSIBILITY_UPDATE.name:
         state = _text(args, "state")
         if state is not None and state not in ("active", "paused"):
@@ -220,14 +242,13 @@ async def _dispatch(
         # from it: only a single re-check of the SAME responsibility, and only
         # when nothing else is already scheduled for it.
         fu = context.get("followup")
-        own = _uuid(fu.get("responsibility_id")) if isinstance(fu, dict) else None
         firing = _uuid(fu.get("trigger_id")) if isinstance(fu, dict) else None
         if kind != "once":
             return ControlOutcome(
                 output="ERROR: a follow-up can only schedule one more single check; "
                 "recurring follow-ups are set up in a conversation with the person"
             )
-        if own is None or own != rid:
+        if own != rid:
             return ControlOutcome(
                 output="ERROR: a follow-up can only reschedule its own responsibility"
             )

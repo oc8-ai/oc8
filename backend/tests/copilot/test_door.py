@@ -11,5 +11,10 @@ def test_door_of() -> None:
 def test_door_of_stamped_and_fallbacks() -> None:
     assert door_of({"door": "telegram"}) == "telegram"
     assert door_of({"followup": {"responsibility_id": "x"}}) == "followup"
-    assert door_of({"door": "bogus", "chat_channel": "telegram"}) == "web"
+    assert door_of({"door": "bogus", "chat_channel": "telegram"}) == "telegram"
     assert door_of({}) == "web"
+
+
+def test_unrecognised_stamped_door_is_the_most_restrictive() -> None:
+    assert door_of({"door": "carrier-pigeon"}) == "telegram"
+    assert door_of({"door": None}) == "telegram"

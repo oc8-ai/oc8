@@ -15,9 +15,13 @@ def door_of(context: Mapping[str, Any] | None) -> Door:
     runs created before that existed (a channel without a follow-up marker is a
     messenger turn)."""
     ctx = context or {}
-    stamped = ctx.get("door")
-    if stamped in ("web", "followup", "telegram"):
-        return stamped  # type: ignore[no-any-return]
+    if "door" in ctx:
+        stamped = ctx["door"]
+        if stamped in ("web", "followup", "telegram"):
+            return stamped  # type: ignore[no-any-return]
+        # Present but unrecognised: fail toward the most restrictive door
+        # (ask_user withheld) rather than open to web.
+        return "telegram"
     if isinstance(ctx.get("followup"), dict):
         return "followup"
     if ctx.get("chat_channel") and ctx.get("chat_channel_external_id"):
