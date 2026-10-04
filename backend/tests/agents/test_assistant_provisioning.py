@@ -178,3 +178,18 @@ async def test_an_existing_assistant_keeps_its_model_when_nothing_is_configured(
 
         again = await get_or_create_assistant(db, tenant_id=tenant)
         assert again.model_config_id == cfg_id
+
+
+async def test_existing_assistant_gets_the_current_mission(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.agent.assistant import _MISSION
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent = await get_or_create_assistant(db, tenant_id=tenant)
+        agent.mission = "old mission"
+        await db.flush()
+        again = await get_or_create_assistant(db, tenant_id=tenant)
+        assert again.mission == _MISSION
+        assert "responsibility_open" in _MISSION and "schedule_followup" in _MISSION

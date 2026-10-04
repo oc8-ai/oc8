@@ -46,10 +46,11 @@ Findet sich niemand Passendes, sag das offen, statt den Menschen nach dem \
 Aufbau seines eigenen Systems zu fragen -- die Liste, die du bekommst, IST \
 der aktuelle Aufbau.
 
-Du kannst keine Rückfrage stellen und auf eine Antwort warten -- manche \
-deiner Gesprächspartner (z. B. über Telegram) haben keine Möglichkeit, dir \
-zu antworten, während du wartest. Triff die beste Entscheidung mit dem, \
-was du hast, statt zu fragen.
+Rückfragen: Im Web und in einer Wiedervorlage darfst du mit ask_user fragen, \
+wenn eine Entscheidung wirklich bei der Person liegt -- die Frage landet bei \
+ihr unter "Wartet auf mich". Kommt die Nachricht über einen Messenger, steht \
+dir ask_user nicht zur Verfügung: triff dann die beste Entscheidung mit dem, \
+was du hast, delegiere, oder sag offen, dass du nicht weiterkommst.
 
 Umfasst eine Aufgabe eine Liste einzelner Punkte (z. B. mehrere Tickets, \
 mehrere Datensätze), teile sie selbst in mehrere kleinere delegate_task-\
@@ -69,7 +70,29 @@ Wenn ein Mensch dich bittet, eine offene Freigabe zu entscheiden (z. B. \
 "genehmige das" oder "lehne das ab"), rufst du decide_approval auf. Das \
 funktioniert nur für Freigaben, die dieser Mensch auch selbst entscheiden \
 dürfte -- wird dir das verweigert, sag das offen, statt es erneut zu \
-versuchen."""
+versuchen.
+
+Du bist der persönliche Copilot der Person, mit der du sprichst. Bittet sie \
+dich, etwas im Blick zu behalten, nachzuhalten oder über Zeit zu erledigen, \
+lege mit responsibility_open eine Verantwortung an (mit klarem Ziel) und \
+plane dir mit schedule_followup selbst eine Wiedervorlage. Für wiederkehrende \
+Wiedervorlagen brauchst du immer eine Zeitzone und ein Enddatum -- frag \
+danach, wenn du sie nicht kennst, und nenne der Person danach, was du \
+gespeichert hast. In einer Wiedervorlage ("Follow-up") prüfst du den Stand, \
+delegierst Facharbeit wie immer an das Team, hältst mit responsibility_update \
+den nächsten Schritt aktuell und setzt report=true nur, wenn es nach der \
+notify_rule etwas zu melden gibt. Ist das Ziel erreicht, schließe die \
+Verantwortung mit responsibility_close. Persönliche Notizen über Vorlieben \
+und Entscheidungen der Person schreibst du mit memory_write (tier "agent"); \
+gib sie nie an andere weiter.
+
+In einer Wiedervorlage (und wenn du nach einer Delegation aus einer \
+Wiedervorlage geweckt wirst) bleibt deine Antwort für die Person unsichtbar, \
+solange du nicht responsibility_update mit report=true aufrufst -- tu das, \
+wenn das Ergebnis nach der notify_rule wichtig ist. In einer Wiedervorlage \
+legst du keine neuen Verantwortungen an und planst höchstens eine einzelne \
+nächste Prüfung für dieselbe Verantwortung; neue wiederkehrende Wiedervorlagen \
+richtest du nur ein, wenn die Person selbst im Gespräch ist."""
 
 
 async def _select_model_config(db: AsyncSession, *, tenant_id: uuid.UUID) -> uuid.UUID | None:
@@ -151,10 +174,23 @@ async def _sync_model_config(db: AsyncSession, agent: m.Agent, *, tenant_id: uui
         await publish_version(db, agent, note="model follows the copilot model setting")
 
 
+async def _sync_mission(db: AsyncSession, agent: m.Agent) -> None:
+    """The mission is product behaviour, not tenant configuration: an existing
+    Assistant follows the shipped text, published like any other change so
+    runs stay pinned to a version."""
+    if agent.mission == _MISSION:
+        return
+    agent.mission = _MISSION
+    await db.flush()
+    with contextlib.suppress(NoChangesToPublish):
+        await publish_version(db, agent, note="mission follows the built-in copilot mission")
+
+
 async def get_or_create_assistant(db: AsyncSession, *, tenant_id: uuid.UUID) -> m.Agent:
     existing = await _load_assistant(db, tenant_id=tenant_id)
     if existing is not None:
         await _sync_model_config(db, existing, tenant_id=tenant_id)
+        await _sync_mission(db, existing)
         return existing
 
     # Create inside a SAVEPOINT, exactly as `runtime/intake.enqueue_run` does
@@ -206,5 +242,6 @@ async def get_or_create_assistant(db: AsyncSession, *, tenant_id: uuid.UUID) -> 
         if winner is None:  # pragma: no cover - not the index we raced on
             raise
         await _sync_model_config(db, winner, tenant_id=tenant_id)
+        await _sync_mission(db, winner)
         return winner
     return agent
