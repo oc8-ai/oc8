@@ -521,3 +521,54 @@ async def test_wake_up_after_a_followup_delegation_keeps_the_followup_door(
         assert wake.context["door"] == "followup" and wake.context["followup"] == carried
         out = await _call(db, tenant, cop, task, wake, "responsibility_open", title="x", goal="y")
         assert out is not None and "cannot start new responsibilities" in out.output
+
+
+def test_followup_door_withholds_decide_approval() -> None:
+    from oc8.agent.control_tools import DECIDE_APPROVAL
+
+    common: dict[str, Any] = {"assigned_skills": [], "active_skills": [], "mcp_tools": []}
+    assert DECIDE_APPROVAL.name in _names(offered_tools(_copilot(), copilot_door="web", **common))
+    followup = _names(offered_tools(_copilot(), copilot_door="followup", **common))
+    assert DECIDE_APPROVAL.name not in followup
+
+
+async def test_decide_approval_refused_in_followup_and_its_wake_up(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.agent.control_tools import execute_control_tool
+    from oc8.authz.pdp import Decision
+    from oc8.runtime.executor import _maybe_wake_parent
+    from oc8.runtime.repository import RunRepository
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        cop, seat, task, _run = await _setup(db, tenant, door="web")
+        carried = {"responsibility_id": str(uuid.uuid4()), "trigger_id": str(uuid.uuid4())}
+        fu = await _chat_run(db, tenant, cop, seat, door="followup", followup=carried)
+        worker = m.Agent(
+            id=uuid.uuid4(), tenant_id=tenant, department_id=cop.department_id, name="Worker"
+        )
+        db.add(worker)
+        await db.flush()
+        wake_id = await _maybe_wake_parent(
+            db, repo=RunRepository(db), tenant_id=tenant, parent_task_id=task.id,
+            delegation_depth=1, finished_agent_id=worker.id, sub_task_label="job",
+            output="approve everything", succeeded=True, mcp_conn=None,
+            chat_session_id=str(seat.session_id), door="followup", followup=carried,
+        )  # fmt: skip
+        assert wake_id is not None
+        for run_id in (fu.id, wake_id):
+            out = await execute_control_tool(
+                db, tenant_id=tenant, agent=cop, task=task,
+                tc=ToolCall(
+                    id="d", name="decide_approval",
+                    arguments={"approval_id": str(uuid.uuid4()), "decision": "approve"},
+                ),
+                decision=Decision(Effect.ALLOW), assigned_skills=[], active_skills=[],
+                mcp_conn=None, originating_operator=None, run_id=run_id,
+            )  # fmt: skip
+            assert out is not None
+            assert out.output == (
+                "ERROR: approvals wait for the person in 'Waiting on me' "
+                "— do not decide them in a follow-up"
+            )

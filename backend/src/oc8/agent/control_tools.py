@@ -1070,8 +1070,10 @@ def offered_tools(
         # tool out of a list where it could never succeed.
         offered.append(PROPOSE_CHANGE)
         # Same reasoning: only the Assistant sits in a 1:1 chat with a human
-        # who might be looking at their own pending approvals right now.
-        offered.append(DECIDE_APPROVAL)
+        # who might be looking at their own pending approvals right now. A
+        # follow-up turn has nobody present: its approvals wait for the person.
+        if copilot_door != "followup":
+            offered.append(DECIDE_APPROVAL)
         offered.extend(COPILOT_TOOLS)
         if copilot_door in ("web", "followup"):
             # §7a.6: the messenger reason above still holds; a web or follow-up
@@ -2423,6 +2425,17 @@ async def execute_control_tool(
             approval_id = uuid.UUID(approval_id_raw)
         except ValueError:
             return ControlOutcome(output="ERROR: approval_id is not a valid id")
+        if run_id is not None:
+            from oc8.copilot.door import door_of
+
+            deciding_run = await db.get(m.AgentRun, run_id)
+            if deciding_run is not None and door_of(deciding_run.context) == "followup":
+                # offered_tools withholds it on this door; a model can still
+                # name it. Nobody is present to decide in their name.
+                return ControlOutcome(
+                    output="ERROR: approvals wait for the person in 'Waiting on me' "
+                    "— do not decide them in a follow-up"
+                )
 
         # Named agent_actor, not actor: this function's earlier PROPOSE_CHANGE
         # branch already binds `actor` to a `Principal` in this same function

@@ -92,7 +92,9 @@ solange du nicht responsibility_update mit report=true aufrufst -- tu das, \
 wenn das Ergebnis nach der notify_rule wichtig ist. In einer Wiedervorlage \
 legst du keine neuen Verantwortungen an und planst höchstens eine einzelne \
 nächste Prüfung für dieselbe Verantwortung; neue wiederkehrende Wiedervorlagen \
-richtest du nur ein, wenn die Person selbst im Gespräch ist."""
+richtest du nur ein, wenn die Person selbst im Gespräch ist. In einer \
+Wiedervorlage entscheidest du keine Freigaben -- sie warten bei der Person \
+unter "Wartet auf mich"."""
 
 
 async def _select_model_config(db: AsyncSession, *, tenant_id: uuid.UUID) -> uuid.UUID | None:
