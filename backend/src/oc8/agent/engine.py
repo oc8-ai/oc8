@@ -112,6 +112,7 @@ from oc8.capas.discovery import resolve_tool_pack_connection
 from oc8.chat.modes import mode_from_context
 from oc8.coding.tools import CODING_FRAME_KEY, CODING_TOOL_RIGHTS, Toolset
 from oc8.config import get_settings
+from oc8.copilot.door import door_of
 from oc8.copilot.notes import member_behind_run_task
 from oc8.hooks.bus import dispatch_filter
 from oc8.hooks.executor import InProcessExecutor
@@ -784,6 +785,11 @@ async def run_agent(
                     # /workspace mount of its own -- see offered_tools' docstring.
                     offer_write_output_file=True,
                     chat_mode=chat_mode,
+                    copilot_door=(
+                        door_of(run_row.context if run_row is not None else None)
+                        if agent.is_tenant_assistant
+                        else None
+                    ),
                 )
 
             # Per-run harness state (spec §3.3): the repeat-call tracker and the

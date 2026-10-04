@@ -104,6 +104,7 @@ from oc8.authz.pdp import (
 from oc8.capas.discovery import resolve_tool_pack_connection
 from oc8.chat.modes import mode_from_context
 from oc8.config import get_settings
+from oc8.copilot.door import door_of
 from oc8.metering import record_usage
 from oc8.modelrouter import (
     NeutralMessage,
@@ -819,6 +820,7 @@ async def step(
         offer_run_shell=offer_write_output_file,
         offer_run_program=caps.code_mode,
         chat_mode=mode_from_context(ctx),
+        copilot_door=door_of(ctx) if agent.is_tenant_assistant else None,
     )
     # Code mode (ruling 6): seed the generated SDK once tools are known so
     # every later /step can return it as sdk_py for the shell to write.

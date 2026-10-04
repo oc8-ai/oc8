@@ -834,6 +834,102 @@ KPI_OVERVIEW = NeutralTool(
     },
 )
 
+# --- The Copilot's dot tools (design §7a.3). Schemas live here so
+# CONTROL_TOOL_SCHEMAS knows them; the executors are in oc8.copilot.tools.
+RESPONSIBILITY_OPEN = NeutralTool(
+    name="responsibility_open",
+    description=(
+        "Start keeping track of something for the person you are talking to "
+        "(e.g. 'keep the offer for customer X current'). Use it when they ask you "
+        "to keep an eye on, follow up on, or take care of something over time. "
+        "Then schedule a follow-up for it."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "Short name, max 200 chars."},
+            "goal": {"type": "string", "description": "What 'done' looks like."},
+            "notify_rule": {
+                "type": "string",
+                "enum": ["decisions_only", "risks_and_decisions", "every_update"],
+                "description": "When to message them. Default risks_and_decisions.",
+            },
+        },
+        "required": ["title", "goal"],
+    },
+)
+RESPONSIBILITY_UPDATE = NeutralTool(
+    name="responsibility_update",
+    description=(
+        "Record progress on a responsibility: the next step, and whether this turn "
+        "has something to REPORT to the person under its notify_rule. If report is "
+        "false, your reply in a follow-up turn is not shown to them."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "responsibility_id": {"type": "string"},
+            "next_step": {"type": "string"},
+            "report": {"type": "boolean"},
+            "state": {"type": "string", "enum": ["active", "paused"]},
+        },
+        "required": ["responsibility_id"],
+    },
+)
+RESPONSIBILITY_CLOSE = NeutralTool(
+    name="responsibility_close",
+    description="Finish a responsibility as done or cancelled. Ends its follow-ups.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "responsibility_id": {"type": "string"},
+            "state": {"type": "string", "enum": ["done", "cancelled"]},
+            "reason": {"type": "string"},
+        },
+        "required": ["responsibility_id", "state", "reason"],
+    },
+)
+SCHEDULE_FOLLOWUP = NeutralTool(
+    name="schedule_followup",
+    description=(
+        "Schedule yourself to come back to a responsibility. kind 'once' needs run_at "
+        "(ISO-8601 with UTC offset); kind 'cron' needs cron_expression AND ends_at. "
+        "timezone (IANA, e.g. Europe/Berlin) is always required -- ask if you do not "
+        "know it. Minimum spacing 15 minutes, at most one year out. Tell the person "
+        "what you scheduled."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "responsibility_id": {"type": "string"},
+            "kind": {"type": "string", "enum": ["once", "cron"]},
+            "run_at": {"type": "string"},
+            "cron_expression": {"type": "string"},
+            "timezone": {"type": "string"},
+            "ends_at": {"type": "string"},
+            "prompt": {"type": "string", "description": "What to do when it fires."},
+        },
+        "required": ["responsibility_id", "kind", "timezone", "prompt"],
+    },
+)
+CANCEL_FOLLOWUP = NeutralTool(
+    name="cancel_followup",
+    description="End a scheduled follow-up.",
+    parameters={
+        "type": "object",
+        "properties": {"followup_id": {"type": "string"}},
+        "required": ["followup_id"],
+    },
+)
+COPILOT_TOOLS: tuple[NeutralTool, ...] = (
+    RESPONSIBILITY_OPEN,
+    RESPONSIBILITY_UPDATE,
+    RESPONSIBILITY_CLOSE,
+    SCHEDULE_FOLLOWUP,
+    CANCEL_FOLLOWUP,
+)
+COPILOT_TOOL_NAMES: frozenset[str] = frozenset(t.name for t in COPILOT_TOOLS)
+
 CONTROL_TOOL_SCHEMAS: dict[str, NeutralTool] = {
     MEMORY_WRITE.name: MEMORY_WRITE,
     TODO_WRITE.name: TODO_WRITE,
@@ -860,6 +956,7 @@ CONTROL_TOOL_SCHEMAS: dict[str, NeutralTool] = {
     AGENT_STATUS.name: AGENT_STATUS,
     BUDGET_OVERVIEW.name: BUDGET_OVERVIEW,
     KPI_OVERVIEW.name: KPI_OVERVIEW,
+    **{t.name: t for t in COPILOT_TOOLS},
 }
 CONTROL_TOOL_NAMES: frozenset[str] = frozenset(CONTROL_TOOL_SCHEMAS)
 
@@ -888,6 +985,7 @@ def offered_tools(
     offer_run_shell: bool = False,
     offer_run_program: bool = False,
     chat_mode: ChatMode | None = None,
+    copilot_door: str | None = None,
 ) -> list[NeutralTool]:
     """The full tool list to offer the model this step.
 
@@ -974,6 +1072,12 @@ def offered_tools(
         # Same reasoning: only the Assistant sits in a 1:1 chat with a human
         # who might be looking at their own pending approvals right now.
         offered.append(DECIDE_APPROVAL)
+        offered.extend(COPILOT_TOOLS)
+        if copilot_door in ("web", "followup"):
+            # §7a.6: the messenger reason above still holds; a web or follow-up
+            # turn's question lands in "Waiting on me" and can be answered.
+            # None (door unknown) and "telegram" both keep it withheld.
+            offered.append(ASK_USER)
         # The read-mostly status tools: gated a second time, per-permission,
         # on top of the is_tenant_assistant gate above -- a member whose
         # assigned role or department seat does not grant the underlying
@@ -1563,6 +1667,17 @@ async def execute_control_tool(
     callers (and unit tests) may pass fakes or leave it None.
     """
     skill_by_tool = {s.tool_name: s for s in assigned_skills}
+
+    from oc8.copilot.tools import execute_copilot_tool
+
+    if tc.name in COPILOT_TOOL_NAMES and decision.effect is not Effect.ALLOW:
+        # A mode (/plan, /ask) or any other refusal: these tools change state.
+        return ControlOutcome(output=f"ERROR: {decision.reason or 'denied'}")
+    copilot_outcome = await execute_copilot_tool(
+        db, tenant_id=tenant_id, agent=agent, task=task, tc=tc, run_id=run_id
+    )
+    if copilot_outcome is not None:
+        return copilot_outcome
 
     if tc.name == FIND_TOOLS.name:
         return _execute_find_tools(tc, harness_state)

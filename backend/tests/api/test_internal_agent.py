@@ -2583,3 +2583,45 @@ async def test_step_result_excludes_outward_calls_from_read_tier(
 
     assert body["parallel_tool_calls"] is True
     assert [tc["tier"] for tc in body["tool_calls"]] == ["read", "modify", "modify"]
+
+
+@pytest.mark.asyncio
+async def test_a_copilot_dot_card_reaches_the_run_s_rendered_components(
+    app_session: object,
+) -> None:
+    """Any control outcome carrying a card is stored on the run -- not just
+    render_component -- so record_assistant_reply can attach a responsibility
+    card to the chat message."""
+    from oc8 import models as m
+    from oc8.agent.assistant import get_or_create_assistant
+    from oc8.runtime.states import RunState
+    from tests.copilot.helpers import copilot_seat
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        cop = await get_or_create_assistant(db, tenant_id=tenant)
+        seat = await copilot_seat(db, tenant, "lisa@example.com")
+        run = m.AgentRun(
+            tenant_id=tenant,
+            agent_id=cop.id,
+            task_id=seat.task_id,
+            source="chat",
+            state=RunState.RUNNING.value,
+            context={"chat_session_id": str(seat.session_id), "door": "web"},
+        )
+        db.add(run)
+        await db.flush()
+        agent_id, run_id = cop.id, run.id
+        await db.commit()
+
+    code, body = await _post_tool(
+        tenant, agent_id, run_id, "responsibility_open", {"title": "Offsite", "goal": "On track"}
+    )
+    assert code == 200, body
+
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        fresh = await db.get(m.AgentRun, run_id)
+        assert fresh is not None
+        cards = fresh.context["rendered_components"]
+        assert [c["component_key"] for c in cards] == ["responsibility_card"]
+        assert cards[0]["props"]["title"] == "Offsite"
