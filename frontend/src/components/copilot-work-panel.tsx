@@ -75,9 +75,16 @@ function dayInZone(iso: string | null, tz: string | null, lang: string): string 
   }
 }
 
+/** Cron day-of-week (0 = Sunday) as a localized name. 2026-01-04 is a Sunday. */
+function weekdayName(day: number, lang: string): string {
+  return new Intl.DateTimeFormat(lang, { weekday: "long", timeZone: "UTC" }).format(
+    new Date(Date.UTC(2026, 0, 4 + day)),
+  );
+}
+
 /** Plain words for the schedules people actually create; anything else shows
  *  the raw cron (which is also the tooltip for every row). */
-function cronWords(t: ReturnType<typeof useT>, cron: string): string {
+function cronWords(t: ReturnType<typeof useT>, cron: string, lang: string): string {
   const m = /^(\d{1,2}) (\d{1,2}) \* \* \*$/.exec(cron.trim());
   if (m) {
     const time = `${m[2].padStart(2, "0")}:${m[1].padStart(2, "0")}`;
@@ -88,7 +95,9 @@ function cronWords(t: ReturnType<typeof useT>, cron: string): string {
     const time = `${w[2].padStart(2, "0")}:${w[1].padStart(2, "0")}`;
     return w[3] === "1-5"
       ? t("Weekdays at {time}", "Werktags um {time}").replace("{time}", time)
-      : t("Weekly at {time}", "Wöchentlich um {time}").replace("{time}", time);
+      : t("Weekly on {day} at {time}", "Wöchentlich am {day} um {time}")
+          .replace("{day}", weekdayName(Number(w[3]), lang))
+          .replace("{time}", time);
   }
   return cron;
 }
@@ -272,7 +281,7 @@ function FollowupRow({ f }: { f: FollowupDTO }) {
       <div className="text-xs text-muted-foreground" title={f.cronExpression ?? undefined}>
         {f.kind === "once" || !f.cronExpression
           ? t("Once", "Einmalig")
-          : cronWords(t, f.cronExpression)}
+          : cronWords(t, f.cronExpression, lang)}
       </div>
       {f.timezone && (
         <div className="text-xs text-muted-foreground">

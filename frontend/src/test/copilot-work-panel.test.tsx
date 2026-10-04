@@ -10,6 +10,7 @@ const m = vi.hoisted(() => ({
   resume: vi.fn(),
   cancelRun: vi.fn(),
   agentId: "agent-1" as string | undefined,
+  cron: "0 9 * * *",
 }));
 
 vi.mock("@/lib/hooks-copilot", () => ({
@@ -50,7 +51,7 @@ vi.mock("@/lib/hooks-copilot", () => ({
         responsibilityId: "r1",
         responsibilityTitle: "Watch the invoice",
         kind: "cron",
-        cronExpression: "0 9 * * *",
+        cronExpression: m.cron,
         timezone: "Europe/Berlin",
         nextRunAt: "2026-10-05T07:00:00Z",
         endsAt: "2026-11-01T00:00:00Z",
@@ -95,6 +96,7 @@ function openTab(name: RegExp) {
 beforeEach(() => {
   vi.clearAllMocks();
   m.agentId = "agent-1";
+  m.cron = "0 9 * * *";
 });
 
 describe("CopilotWorkPanel", () => {
@@ -116,6 +118,18 @@ describe("CopilotWorkPanel", () => {
     expect(screen.getByText(/Ends:/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "End schedule" }));
     expect(m.endFollowup).toHaveBeenCalledWith("f1");
+  });
+
+  it("names the weekday of a weekly schedule, and falls back to the raw cron", () => {
+    m.cron = "30 8 * * 1";
+    const { unmount } = wrap(<CopilotWorkPanel />);
+    openTab(/scheduled/i);
+    expect(screen.getByText("Weekly on Monday at 08:30")).toBeInTheDocument();
+    unmount();
+    m.cron = "30 8 * * 1,3";
+    wrap(<CopilotWorkPanel />);
+    openTab(/scheduled/i);
+    expect(screen.getByText("30 8 * * 1,3")).toBeInTheDocument();
   });
 
   it("the three stop controls call three different things", () => {

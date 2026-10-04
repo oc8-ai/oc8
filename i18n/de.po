@@ -4034,8 +4034,8 @@ msgstr "Jeden Tag um {time}"
 msgid "Weekdays at {time}"
 msgstr "Werktags um {time}"
 
-msgid "Weekly at {time}"
-msgstr "Wöchentlich um {time}"
+msgid "Weekly on {day} at {time}"
+msgstr "Wöchentlich am {day} um {time}"
 
 msgid "I'm {name}. Tell me what to keep an eye on and I'll take it from there."
 msgstr "Ich bin {name}. Sag mir, was ich im Blick behalten soll, den Rest übernehme ich."
