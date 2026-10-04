@@ -122,6 +122,7 @@ async def cancel_followup(
     for t in await list_followups(db, tenant_id=tenant_id, member_id=member_id):
         if t.id == trigger_id:
             t.enabled = False
+            t.last_skip_reason = None
             await db.flush()
             return True
     return False
@@ -133,7 +134,14 @@ async def _session_busy(db: AsyncSession, *, tenant_id: uuid.UUID, session_id: u
         .where(
             m.AgentRun.tenant_id == tenant_id,
             m.AgentRun.source == "chat",
-            m.AgentRun.state.in_([RunState.QUEUED.value, RunState.RUNNING.value]),
+            m.AgentRun.state.in_(
+                [
+                    RunState.QUEUED.value,
+                    RunState.RUNNING.value,
+                    RunState.WAITING_FOR_INPUT.value,
+                    RunState.WAITING_FOR_APPROVAL.value,
+                ]
+            ),
             m.AgentRun.context["chat_session_id"].astext == str(session_id),
         )
         .limit(1)
@@ -141,7 +149,7 @@ async def _session_busy(db: AsyncSession, *, tenant_id: uuid.UUID, session_id: u
     return found is not None
 
 
-async def _live_binding(
+async def live_binding_external_id(
     db: AsyncSession, *, tenant_id: uuid.UUID, member_id: uuid.UUID, channel: str
 ) -> str | None:
     return await db.scalar(
@@ -216,7 +224,10 @@ async def fire_followup(db: AsyncSession, trigger: m.Trigger, *, tenant_id: uuid
             outcome = "busy"
     if outcome is not None:
         trigger.last_skip_reason = outcome
-        _advance(trigger, now)
+        # A one-shot stays scheduled and is re-checked next tick; only a
+        # recurring schedule moves on (spec: skipped with a recorded reason).
+        if trigger.kind != "once":
+            _advance(trigger, now)
         logger.info("follow-up %s skipped: %s", trigger.id, outcome)
         await db.commit()
         return outcome
@@ -224,7 +235,7 @@ async def fire_followup(db: AsyncSession, trigger: m.Trigger, *, tenant_id: uuid
     assert r is not None
     channel = external_id = None
     if r.origin_channel:
-        external_id = await _live_binding(
+        external_id = await live_binding_external_id(
             db, tenant_id=tenant_id, member_id=member.id, channel=r.origin_channel
         )
         channel = r.origin_channel if external_id else None
@@ -255,14 +266,15 @@ async def catch_up(db: AsyncSession, *, tenant_id: uuid.UUID, member_id: uuid.UU
     fired = 0
     done: set[uuid.UUID] = set()
     for t in await list_followups(db, tenant_id=tenant_id, member_id=member_id):
-        if t.last_skip_reason != "paused" or t.responsibility_id is None:
+        # Never re-enable: a follow-up the member ended, or whose responsibility
+        # was closed, stays ended (cancel/close also clear last_skip_reason).
+        if not t.enabled or t.last_skip_reason != "paused" or t.responsibility_id is None:
             continue
         if t.responsibility_id in done:
             t.last_skip_reason = None  # covered by this responsibility's one catch-up
             continue
         done.add(t.responsibility_id)
         t.last_skip_reason = None
-        t.enabled = True  # a once-kind spent by its paused skip fires now instead
         if await fire_followup(db, t, tenant_id=tenant_id) == "fired":
             fired += 1
         # fire_followup commits, which ends the transaction-local tenant binding.
@@ -277,6 +289,8 @@ async def catch_up(db: AsyncSession, *, tenant_id: uuid.UUID, member_id: uuid.UU
 def is_quiet_followup(run: m.AgentRun, responsibility: m.Responsibility | None) -> bool:
     if not isinstance((run.context or {}).get("followup"), dict):
         return False
+    if run.state != RunState.DONE.value:
+        return False  # a failed follow-up must always tell the member
     return responsibility is None or responsibility.last_report_run_id != run.id
 
 

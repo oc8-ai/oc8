@@ -8,10 +8,10 @@ from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.agent.assistant import get_or_create_assistant
-from oc8.copilot.followups import catch_up, fire_followup, schedule_followup
+from oc8.copilot.followups import cancel_followup, catch_up, fire_followup, schedule_followup
 from oc8.copilot.profile import pause, resume
-from oc8.copilot.responsibilities import open_responsibility
-from oc8.copilot.schedule import FollowupRejected
+from oc8.copilot.responsibilities import close_responsibility, open_responsibility
+from oc8.copilot.schedule import FollowupRejected, FollowupSpec
 from tests.conftest import AppSessionFactory
 from tests.copilot.helpers import copilot_seat, once_in_an_hour
 
@@ -233,3 +233,260 @@ async def test_waiting_and_back(app_session: AppSessionFactory) -> None:
         await resolve_clarification(db, run=run, answer="The lake one")
         await db.refresh(resp)
         assert resp.state == "active"
+
+
+# ---- review fix round 1 ----
+
+CRON_SPEC = FollowupSpec(
+    "cron", "Europe/Berlin", None, "0 9 * * *", dt.datetime.now(tz=dt.UTC) + dt.timedelta(days=30)
+)
+
+
+async def _recurring_world(app_session: AppSessionFactory):  # type: ignore[no-untyped-def]
+    tenant, member_id, _session_id, r_id, _ = await _world(app_session)
+    async with app_session(tenant) as db:
+        assistant = await get_or_create_assistant(db, tenant_id=tenant)
+        t = await schedule_followup(
+            db,
+            tenant_id=tenant,
+            member_id=member_id,
+            responsibility_id=r_id,
+            assistant_id=assistant.id,
+            spec=CRON_SPEC,
+            prompt="daily",
+            member_subject="lisa@example.com",
+        )
+        await pause(db, tenant_id=tenant, member_id=member_id)
+        trig = await db.get(m.Trigger, t.id)
+        assert trig is not None
+        assert await fire_followup(db, trig, tenant_id=tenant) == "paused"
+        return tenant, member_id, r_id, t.id
+
+
+async def _assert_stays_ended(app_session, tenant, member_id, t_id) -> None:  # type: ignore[no-untyped-def]
+    async with app_session(tenant) as db:
+        await resume(db, tenant_id=tenant, member_id=member_id)
+        assert await catch_up(db, tenant_id=tenant, member_id=member_id) == 0
+        assert (await db.execute(select(m.AgentRun))).scalars().all() == []
+        t = await db.get(m.Trigger, t_id)
+        assert t is not None and t.enabled is False
+
+
+async def test_catch_up_does_not_resurrect_a_cancelled_followup(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant, member_id, _, t_id = await _recurring_world(app_session)
+    async with app_session(tenant) as db:
+        assert await cancel_followup(db, tenant_id=tenant, member_id=member_id, trigger_id=t_id)
+    await _assert_stays_ended(app_session, tenant, member_id, t_id)
+
+
+async def test_catch_up_does_not_resurrect_after_close(app_session: AppSessionFactory) -> None:
+    tenant, member_id, r_id, t_id = await _recurring_world(app_session)
+    async with app_session(tenant) as db:
+        await close_responsibility(
+            db,
+            tenant_id=tenant,
+            member_id=member_id,
+            responsibility_id=r_id,
+            state="cancelled",
+            reason="no longer needed",
+            actor_agent_id=None,
+            member_subject="lisa@example.com",
+        )
+    await _assert_stays_ended(app_session, tenant, member_id, t_id)
+
+
+async def test_once_followup_skipped_busy_stays_scheduled_and_fires_later(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant, _, session_id, _, t_id = await _world(app_session)
+    async with app_session(tenant) as db:
+        assistant = await get_or_create_assistant(db, tenant_id=tenant)
+        busy = m.AgentRun(
+            tenant_id=tenant,
+            agent_id=assistant.id,
+            source="chat",
+            state="running",
+            context={"chat_session_id": str(session_id), "task": "typing"},
+        )
+        db.add(busy)
+        await db.flush()
+        trigger = await db.get(m.Trigger, t_id)
+        assert trigger is not None
+        assert await fire_followup(db, trigger, tenant_id=tenant) == "busy"
+        busy_id = busy.id
+    async with app_session(tenant) as db:
+        trigger = await db.get(m.Trigger, t_id)
+        assert trigger is not None
+        assert trigger.enabled is True and trigger.last_skip_reason == "busy"
+        run = await db.get(m.AgentRun, busy_id)
+        assert run is not None
+        run.state = "done"
+        await db.flush()
+        assert await fire_followup(db, trigger, tenant_id=tenant) == "fired"
+        assert trigger.enabled is False and trigger.last_skip_reason is None
+
+
+async def test_waiting_runs_count_as_busy(app_session: AppSessionFactory) -> None:
+    tenant, _, session_id, _, t_id = await _world(app_session)
+    async with app_session(tenant) as db:
+        assistant = await get_or_create_assistant(db, tenant_id=tenant)
+        db.add(
+            m.AgentRun(
+                tenant_id=tenant,
+                agent_id=assistant.id,
+                source="chat",
+                state="waiting_for_input",
+                context={"chat_session_id": str(session_id), "task": "q"},
+            )
+        )
+        await db.flush()
+        trigger = await db.get(m.Trigger, t_id)
+        assert trigger is not None
+        assert await fire_followup(db, trigger, tenant_id=tenant) == "busy"
+
+
+async def test_soft_deleted_member_is_no_member(app_session: AppSessionFactory) -> None:
+    tenant, member_id, _, _, t_id = await _world(app_session)
+    async with app_session(tenant) as db:
+        member = await db.get(m.OrgMember, member_id)
+        assert member is not None
+        member.deleted_at = dt.datetime.now(tz=dt.UTC)
+        await db.flush()
+        trigger = await db.get(m.Trigger, t_id)
+        assert trigger is not None
+        assert await fire_followup(db, trigger, tenant_id=tenant) == "no_member"
+        assert (await db.execute(select(m.AgentRun))).scalars().all() == []
+
+
+async def test_cron_past_ends_at_is_ended(app_session: AppSessionFactory) -> None:
+    tenant, _member_id, _r_id, t_id = await _recurring_world(app_session)
+    async with app_session(tenant) as db:
+        trigger = await db.get(m.Trigger, t_id)
+        assert trigger is not None
+        trigger.ends_at = dt.datetime.now(tz=dt.UTC) - dt.timedelta(minutes=1)
+        await db.flush()
+        assert await fire_followup(db, trigger, tenant_id=tenant) == "ended"
+        assert trigger.enabled is False
+        assert (await db.execute(select(m.AgentRun))).scalars().all() == []
+
+
+async def test_door_and_reserved_extra_context(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    from oc8.chat.service import send_message
+
+    tenant, _member_id, session_id, _, _ = await _world(app_session)
+    async with app_session(tenant) as db:
+        session = await db.get(m.ChatSession, session_id)
+        assert session is not None
+        _msg, web = await send_message(
+            db,
+            session=session,
+            tenant_id=tenant,
+            message="hi",
+            originating_operator="lisa@example.com",
+            extra_context={"originating_operator": "evil", "door": "x", "keep": 1},
+        )
+        assert web is not None and web.context["door"] == "web"
+        assert web.context["originating_operator"] == "lisa@example.com"
+        assert web.context["keep"] == 1
+        web.state = "done"
+        await db.flush()
+        _msg, tg = await send_message(
+            db,
+            session=session,
+            tenant_id=tenant,
+            message="hi",
+            originating_operator="lisa@example.com",
+            chat_channel="telegram",
+            chat_channel_external_id="1",
+        )
+        assert tg is not None and tg.context["door"] == "telegram"
+
+
+async def test_failed_vs_quiet_vs_reporting_followup_replies(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.chat.service import record_assistant_reply
+
+    tenant, _, session_id, r_id, _ = await _world(app_session)
+    async with app_session(tenant) as db:
+        assistant = await get_or_create_assistant(db, tenant_id=tenant)
+        resp = await db.get(m.Responsibility, r_id)
+        assert resp is not None
+
+        async def reply(state: str, reported: bool) -> int:
+            run = m.AgentRun(
+                tenant_id=tenant,
+                agent_id=assistant.id,
+                source="chat",
+                state=state,
+                context={
+                    "chat_session_id": str(session_id),
+                    "followup": {"responsibility_id": str(r_id)},
+                },
+            )
+            db.add(run)
+            await db.flush()
+            resp.last_report_run_id = run.id if reported else None
+            before = len(
+                (
+                    await db.execute(
+                        select(m.ChatMessage).where(m.ChatMessage.session_id == session_id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            await record_assistant_reply(db, run=run, output="out")
+            await db.flush()
+            after = len(
+                (
+                    await db.execute(
+                        select(m.ChatMessage).where(m.ChatMessage.session_id == session_id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            return after - before
+
+        assert await reply("failed", False) == 1
+        assert await reply("done", False) == 0
+        assert await reply("done", True) == 1
+
+
+async def test_executor_sender_uses_current_binding(app_session: AppSessionFactory) -> None:
+    from oc8.runtime.executor import _current_chat_sender
+
+    tenant, member_id, session_id, r_id, _ = await _world(app_session)
+    async with app_session(tenant) as db:
+        assistant = await get_or_create_assistant(db, tenant_id=tenant)
+        binding = m.ApprovalChannelBinding(
+            tenant_id=tenant,
+            channel="telegram",
+            user_id=uuid.uuid4(),
+            member_id=member_id,
+            external_id="new",
+        )
+        db.add(binding)
+        run = m.AgentRun(
+            tenant_id=tenant,
+            agent_id=assistant.id,
+            source="chat",
+            state="done",
+            context={
+                "chat_session_id": str(session_id),
+                "chat_channel": "telegram",
+                "chat_channel_external_id": "old",
+                "followup": {"responsibility_id": str(r_id)},
+            },
+        )
+        db.add(run)
+        await db.flush()
+        assert await _current_chat_sender(db, run) == ("telegram", "new")
+        binding.revoked_at = dt.datetime.now(tz=dt.UTC)
+        await db.flush()
+        assert await _current_chat_sender(db, run) is None

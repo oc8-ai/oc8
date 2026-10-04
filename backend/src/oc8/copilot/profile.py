@@ -182,7 +182,7 @@ async def offboard_member(db: AsyncSession, *, tenant_id: uuid.UUID, member_id: 
     await db.execute(
         update(m.Trigger)
         .where(m.Trigger.tenant_id == tenant_id, m.Trigger.responsibility_id.in_(owned))
-        .values(enabled=False)
+        .values(enabled=False, last_skip_reason=None)
     )
     await db.execute(
         update(m.Responsibility)

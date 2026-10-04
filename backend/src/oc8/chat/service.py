@@ -430,7 +430,17 @@ async def send_message(
     else:
         context["door"] = "web"
     if extra_context:
-        context.update(extra_context)
+        # Never lets a caller overwrite who is acting or where the turn goes.
+        reserved = {
+            "originating_operator",
+            "operator_role",
+            "door",
+            "chat_channel",
+            "chat_channel_external_id",
+            "chat_session_id",
+            "task",
+        }
+        context.update({k: v for k, v in extra_context.items() if k not in reserved})
     if mode is not None:
         # Two consumers, deliberately: the model is TOLD (the directive below)
         # and the PEP ENFORCES (engine._authorize reads this key back through

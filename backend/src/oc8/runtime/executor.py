@@ -92,6 +92,25 @@ _CHAT_WAITING_FOR_APPROVAL = "This needs an approval before I can continue -- se
 _CHAT_RUN_FAILED = "That didn't work out -- see the run in oc8 for what happened."
 
 
+async def _current_chat_sender(db: AsyncSession, run: m.AgentRun) -> tuple[str, str] | None:
+    """`_chat_channel_sender_of`, but for a follow-up re-resolved against the
+    member's CURRENT binding at send time (invariant 12): a binding revoked
+    since firing means web only; a re-linked one means the new chat id."""
+    sender = _chat_channel_sender_of(run)
+    if sender is None or not isinstance((run.context or {}).get("followup"), dict):
+        return sender
+    from oc8.copilot.followups import live_binding_external_id
+
+    session_raw = (run.context or {}).get("chat_session_id")
+    session = await db.get(m.ChatSession, uuid.UUID(str(session_raw))) if session_raw else None
+    if session is None:
+        return None
+    current = await live_binding_external_id(
+        db, tenant_id=run.tenant_id, member_id=session.member_id, channel=sender[0]
+    )
+    return (sender[0], current) if current else None
+
+
 def _chat_channel_sender_of(run: m.AgentRun) -> tuple[str, str] | None:
     """The (channel id, external id) a `source="chat"` run should reply on,
     if it was started from a channel at all. None for a web chat turn and
@@ -896,7 +915,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                     from oc8.chat.service import record_assistant_reply
 
                     await record_assistant_reply(db, run=run, output=_CHAT_RUN_FAILED)
-                    failed_sender = _chat_channel_sender_of(run)
+                    failed_sender = await _current_chat_sender(db, run)
                     if failed_sender is not None:
                         failed_channel, failed_external_id = failed_sender
                         channel_replies.append(
@@ -952,7 +971,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         # them, though, so without a word here their last
                         # message is answered by "Bin dran" and then silence,
                         # for ever.
-                        parked_sender = _chat_channel_sender_of(run)
+                        parked_sender = await _current_chat_sender(db, run)
                         if parked_sender is not None:
                             parked_channel, parked_external_id = parked_sender
                             channel_replies.append(
@@ -1090,7 +1109,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         )
 
                         await record_assistant_reply(db, run=run, output=result.output)
-                        done_sender = _chat_channel_sender_of(run)
+                        done_sender = await _current_chat_sender(db, run)
                         if done_sender is not None and is_quiet_followup(
                             run, await load_responsibility_for_run(db, run=run)
                         ):
@@ -1107,7 +1126,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         # run is suspended, not finished, so nothing else tells
                         # the Telegram sender that their request is now sitting
                         # in somebody's approval queue.
-                        held_sender = _chat_channel_sender_of(run)
+                        held_sender = await _current_chat_sender(db, run)
                         if held_sender is not None:
                             held_channel, held_external_id = held_sender
                             channel_replies.append(

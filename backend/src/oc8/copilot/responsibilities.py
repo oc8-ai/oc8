@@ -160,7 +160,7 @@ async def close_responsibility(
     await db.execute(
         update(m.Trigger)
         .where(m.Trigger.tenant_id == tenant_id, m.Trigger.responsibility_id == r.id)
-        .values(enabled=False)
+        .values(enabled=False, last_skip_reason=None)
     )
     await db.flush()
     await append_event(
