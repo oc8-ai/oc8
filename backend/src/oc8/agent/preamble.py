@@ -352,7 +352,7 @@ async def build_run_preamble(
         query_text=task_text,
         narrowing=(pinned["narrowing"] or {}) if pinned is not None else None,
         member_id=(
-            await member_behind_run_task(db, tenant_id=tenant_id, task=task)
+            await member_behind_run_task(db, tenant_id=tenant_id, task=task, run_id=run_id)
             if agent.is_tenant_assistant
             else None
         ),

@@ -228,3 +228,105 @@ async def test_legacy_untagged_copilot_note_is_invisible(app_session: AppSession
             member_id=lisa,
         )
         assert "legacy note" not in ctx
+
+
+async def _notes_run(db: Any, tenant: uuid.UUID, cop: m.Agent, seat: Any, **ctx: Any) -> m.AgentRun:
+    run = m.AgentRun(
+        tenant_id=tenant,
+        agent_id=cop.id,
+        source="chat",
+        state="running",
+        task_id=seat.task_id,
+        context={"chat_session_id": str(seat.session_id), **ctx},
+    )
+    db.add(run)
+    await db.flush()
+    return run
+
+
+async def _memory_tool(  # type: ignore[no-untyped-def]
+    db, tenant, cop, task, run, name: str, arguments: dict[str, Any]
+) -> str:
+    from oc8.agent.control_tools import execute_control_tool
+    from oc8.authz.pdp import Decision, Effect
+    from oc8.modelrouter import ToolCall
+
+    out = await execute_control_tool(
+        db, tenant_id=tenant, agent=cop, task=task,
+        tc=ToolCall(id="1", name=name, arguments=arguments),
+        decision=Decision(Effect.ALLOW), assigned_skills=[], active_skills=[],
+        mcp_conn=None, originating_operator=None, run_id=run.id, pinned=None,
+    )  # fmt: skip
+    assert out is not None
+    return out.output
+
+
+async def test_operator_in_a_colleagues_session_neither_reads_nor_writes_notes(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.copilot.notes import member_behind_run_task
+    from tests.copilot.helpers import copilot_seat
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        cop = await get_or_create_assistant(db, tenant_id=tenant)
+        lisa = await copilot_seat(db, tenant, "lisa@example.com")
+        await write_memory(
+            db, tenant_id=tenant, agent=cop, tier="agent",
+            content="Lisa prefers updates in the morning", member_id=lisa.member_id,
+        )  # fmt: skip
+        task = await db.get(m.Task, lisa.task_id)
+        assert task is not None
+        own = await _notes_run(db, tenant, cop, lisa, door="web", originating_operator=lisa.subject)
+        oversight = await _notes_run(
+            db, tenant, cop, lisa, door="web", originating_operator="admin@example.com"
+        )
+        assert (
+            await member_behind_run_task(db, tenant_id=tenant, task=task, run_id=own.id)
+            == lisa.member_id
+        )
+        assert (
+            await member_behind_run_task(db, tenant_id=tenant, task=task, run_id=oversight.id)
+            is None
+        )
+        recalled = await _memory_tool(
+            db, tenant, cop, task, oversight, "search_memory", {"query": "updates"}
+        )
+        assert "Lisa prefers" not in recalled
+        wrote = await _memory_tool(
+            db, tenant, cop, task, oversight, "memory_write", {"tier": "agent", "content": "x"}
+        )
+        assert wrote.startswith("ERROR:")
+        notes = await list_notes(
+            db, tenant_id=tenant, member_id=lisa.member_id, assistant_id=cop.id
+        )
+        assert [n.content for n in notes] == ["Lisa prefers updates in the morning"]
+
+
+async def test_followup_cannot_write_personal_notes(app_session: AppSessionFactory) -> None:
+    from tests.copilot.helpers import copilot_seat
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        cop = await get_or_create_assistant(db, tenant_id=tenant)
+        lisa = await copilot_seat(db, tenant, "lisa@example.com")
+        task = await db.get(m.Task, lisa.task_id)
+        assert task is not None
+        carried = {"responsibility_id": str(uuid.uuid4()), "trigger_id": str(uuid.uuid4())}
+        fu = await _notes_run(
+            db, tenant, cop, lisa, door="followup", followup=carried,
+            originating_operator=lisa.subject,
+        )  # fmt: skip
+        wrote = await _memory_tool(
+            db, tenant, cop, task, fu, "memory_write", {"tier": "agent", "content": "x"}
+        )
+        assert wrote == "ERROR: a follow-up cannot write personal notes"
+        assert (
+            await list_notes(db, tenant_id=tenant, member_id=lisa.member_id, assistant_id=cop.id)
+            == []
+        )
+        web = await _notes_run(db, tenant, cop, lisa, door="web", originating_operator=lisa.subject)
+        ok = await _memory_tool(
+            db, tenant, cop, task, web, "memory_write", {"tier": "agent", "content": "y"}
+        )
+        assert ok.startswith("memory recorded")

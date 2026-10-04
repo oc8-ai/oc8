@@ -11,15 +11,32 @@ from oc8 import models as m
 
 
 async def member_behind_run_task(
-    db: AsyncSession, *, tenant_id: uuid.UUID, task: m.Task | None
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    task: m.Task | None,
+    run_id: uuid.UUID | None = None,
 ) -> uuid.UUID | None:
-    """The member whose chat session opened `task`, or None."""
+    """The member whose chat session opened `task`, or None.
+
+    None as well when `run_id` is a chat run someone OTHER than that member
+    posted (the `copilot:manage` oversight carve-out) -- the same rule as
+    `control_tools._resolve_agent_actor`: an operator replying in a
+    colleague's session neither reads nor writes that colleague's notes."""
     if task is None:
         return None
     from oc8.agent.control_tools import _member_behind_task
 
     member = await _member_behind_task(db, tenant_id=tenant_id, task=task)
-    return member.id if member is not None else None
+    if member is None:
+        return None
+    if run_id is not None:
+        run = await db.get(m.AgentRun, run_id)
+        if run is not None and run.tenant_id == tenant_id and run.source == "chat":
+            operator = (run.context or {}).get("originating_operator")
+            if isinstance(operator, str) and operator and operator != member.subject:
+                return None
+    return member.id
 
 
 async def _copilot_store_id(
