@@ -48,12 +48,13 @@ const patchers: Record<string, Patcher> = {
     // The list a state filter selects from -- a run that just parked or just
     // finished belongs in a different bucket than a moment ago.
     qc.invalidateQueries({ queryKey: ["runs"] });
+    // The copilot's status (activeCount, status field) follows runs live on every state change.
+    qc.invalidateQueries({ queryKey: ["copilot", "profile"] });
+    qc.invalidateQueries({ queryKey: ["copilot", "delegations"] });
     // terminal states free the agent -> reflect in the agents list (mirrors the
     // old useRun poll's terminal-state agents invalidation)
     if (d.state === "done" || d.state === "failed" || d.state === "interrupted") {
       qc.invalidateQueries({ queryKey: ["agents"] });
-      qc.invalidateQueries({ queryKey: ["copilot", "profile"] });
-      qc.invalidateQueries({ queryKey: ["copilot", "delegations"] });
     }
     // A run parking on a question is the only signal that a clarification
     // appeared — there is no `clarification.created` event. Narrowed to that one

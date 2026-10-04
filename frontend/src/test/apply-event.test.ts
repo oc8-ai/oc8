@@ -235,6 +235,17 @@ describe("mcp.test.log", () => {
   });
 });
 
+describe("copilot.profile", () => {
+  it("invalidates profile on copilot profile event", () => {
+    const qc = new QueryClient();
+    const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
+
+    applyEvent(qc, event("copilot.profile", { member_id: "m" }));
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["copilot", "profile"] });
+  });
+});
+
 describe("copilot.responsibility", () => {
   it("invalidates responsibilities and profile on copilot responsibility event", () => {
     const qc = new QueryClient();
@@ -244,5 +255,41 @@ describe("copilot.responsibility", () => {
 
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["copilot", "responsibilities"] });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["copilot", "profile"] });
+  });
+});
+
+describe("copilot.followup", () => {
+  it("invalidates followups on copilot followup event", () => {
+    const qc = new QueryClient();
+    const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
+
+    applyEvent(qc, event("copilot.followup", { member_id: "m" }));
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["copilot", "followups"] });
+  });
+});
+
+describe("run.status and copilot profile/delegations", () => {
+  it("invalidates copilot profile and delegations on every run.status event", () => {
+    const qc = new QueryClient();
+    const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
+
+    applyEvent(qc, event("run.status", { run_id: "r1", state: "running", phase: "execution" }));
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["copilot", "profile"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["copilot", "delegations"] });
+  });
+
+  it("invalidates copilot profile and delegations even on non-terminal states", () => {
+    const qc = new QueryClient();
+    const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
+
+    applyEvent(
+      qc,
+      event("run.status", { run_id: "r1", state: "waiting_for_input", phase: "execution" }),
+    );
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["copilot", "profile"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["copilot", "delegations"] });
   });
 });

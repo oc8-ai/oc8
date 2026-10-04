@@ -3906,3 +3906,18 @@ msgstr "Ihre Plätze"
 
 msgid "Your work is next door"
 msgstr "Deine Arbeit liegt nebenan"
+
+msgid "Paused"
+msgstr "Pausiert"
+
+msgid "Ready"
+msgstr "Bereit"
+
+msgid "Waiting for you"
+msgstr "Wartet auf dich"
+
+msgid "Working on 1 thing"
+msgstr "Arbeitet an 1 Sache"
+
+msgid "Working on {n} things"
+msgstr "Arbeitet an {n} Dingen"

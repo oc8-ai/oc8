@@ -8,10 +8,13 @@ export function statusLabel(
   switch (status) {
     case "ready":
       return t("Ready", "Bereit");
-    case "working":
-      return count === 1
-        ? t("Working on 1 thing", "Arbeitet an 1 Sache")
-        : t(`Working on ${count} things`, `Arbeitet an ${count} Dingen`);
+    case "working": {
+      if (count === 1) {
+        return t("Working on 1 thing", "Arbeitet an 1 Sache");
+      }
+      const msg = t("Working on {n} things", "Arbeitet an {n} Dingen");
+      return msg.replace("{n}", String(count));
+    }
     case "waiting":
       return t("Waiting for you", "Wartet auf dich");
     case "paused":

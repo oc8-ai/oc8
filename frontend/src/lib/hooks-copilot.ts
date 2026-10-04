@@ -9,6 +9,8 @@ import { api } from "@/lib/api";
 import type { RunDTO } from "@/lib/hooks";
 import type { CopilotStatus } from "@/lib/copilot-status";
 
+export type { CopilotStatus } from "@/lib/copilot-status";
+
 export interface CopilotAvatar {
   shape: "round" | "square" | "drop" | "star";
   color: "indigo" | "teal" | "amber" | "rose" | "slate" | "lime";
@@ -42,7 +44,7 @@ export interface FollowupDTO {
   responsibilityTitle: string;
   kind: "once" | "cron";
   cronExpression: string | null;
-  timezone: string;
+  timezone: string | null;
   nextRunAt: string | null;
   endsAt: string | null;
   enabled: boolean;
