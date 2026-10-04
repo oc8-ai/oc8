@@ -294,7 +294,7 @@ export function ChatWindow({
           </div>
         ) : !sessionId ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 py-10 text-center">
-            <MessageSquare className="h-6 w-6 text-muted-foreground/60" />
+            {emptyIntro ?? <MessageSquare className="h-6 w-6 text-muted-foreground/60" />}
             <p className="text-sm text-muted-foreground">
               {t(
                 `Start a direct chat with ${agentName}.`,

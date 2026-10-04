@@ -25,6 +25,7 @@ interface QueueRow {
   id: string;
   title: string;
   runId: string | null;
+  agentId?: string | null;
   createdAt: string;
   /** Higher blocks more work. An item holding a run outranks one that holds
    *  nothing, and a run parked with no request against it at all is the one
@@ -34,9 +35,13 @@ interface QueueRow {
 
 const PARKED_STATES = "waiting_for_approval,waiting_for_input";
 
-export function NeedsMeWidget(_props: {
+export function NeedsMeWidget({
+  agentId,
+}: {
   config: Record<string, unknown>;
   onConfigChange: (config: Record<string, unknown>) => void;
+  /** Only rows raised by this agent (the Copilot page's Waiting tab). */
+  agentId?: string;
 }) {
   const t = useT();
   const approvalsQuery = useApprovals("pending");
@@ -59,6 +64,7 @@ export function NeedsMeWidget(_props: {
         id: a.id,
         title: a.title,
         runId: a.runId ?? null,
+        agentId: a.agentId,
         createdAt: a.createdAt ?? "",
         weight: a.runId ? 2 : 1,
       });
@@ -70,6 +76,7 @@ export function NeedsMeWidget(_props: {
         id: c.id,
         title: c.question,
         runId: c.runId,
+        agentId: c.agentId,
         createdAt: c.createdAt,
         weight: 2,
       });
@@ -86,16 +93,18 @@ export function NeedsMeWidget(_props: {
           "Ein Lauf steht und niemand wurde gefragt",
         ),
         runId: run.id,
+        agentId: run.agentId,
         createdAt: "",
         weight: 3,
       });
     }
 
-    return out.sort(
+    const scoped = agentId ? out.filter((r) => r.agentId === agentId) : out;
+    return scoped.sort(
       (a, b) =>
         b.weight - a.weight || b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id),
     );
-  }, [approvalsQuery.data, clarificationsQuery.data, parkedQuery.data, t]);
+  }, [approvalsQuery.data, clarificationsQuery.data, parkedQuery.data, agentId, t]);
 
   const loading =
     approvalsQuery.isPending || clarificationsQuery.isPending || parkedQuery.isPending;

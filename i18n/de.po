@@ -3951,3 +3951,87 @@ msgstr "einmalig"
 
 msgid "Ends"
 msgstr "Endet"
+
+msgid "Copilot"
+msgstr "Copilot"
+
+msgid "My Copilot"
+msgstr "Mein Copilot"
+
+msgid "Work"
+msgstr "Arbeit"
+
+msgid "Hide work panel"
+msgstr "Arbeitsbereich ausblenden"
+
+msgid "Show work panel"
+msgstr "Arbeitsbereich einblenden"
+
+msgid "Keep an eye on something for me"
+msgstr "Behalte etwas für mich im Blick"
+
+msgid "What are you working on for me?"
+msgstr "Woran arbeitest du gerade für mich?"
+
+msgid "What is waiting on me?"
+msgstr "Was wartet auf mich?"
+
+msgid "Scheduled"
+msgstr "Geplant"
+
+msgid "Notes"
+msgstr "Notizen"
+
+msgid "Nothing in progress right now."
+msgstr "Gerade ist nichts in Arbeit."
+
+msgid "Delegated to the team"
+msgstr "An das Team delegiert"
+
+msgid "Updated"
+msgstr "Aktualisiert"
+
+msgid "Cancel this responsibility?"
+msgstr "Diese Aufgabe abbrechen?"
+
+msgid "Its scheduled follow-ups are switched off too."
+msgstr "Die geplanten Wiedervorlagen werden ebenfalls abgeschaltet."
+
+msgid "Keep it"
+msgstr "Behalten"
+
+msgid "Cancel responsibility"
+msgstr "Aufgabe abbrechen"
+
+msgid "Once"
+msgstr "Einmalig"
+
+msgid "Timezone"
+msgstr "Zeitzone"
+
+msgid "Next run"
+msgstr "Nächster Lauf"
+
+msgid "End schedule"
+msgstr "Zeitplan beenden"
+
+msgid "No follow-ups are scheduled."
+msgstr "Es sind keine Wiedervorlagen geplant."
+
+msgid "Notes your Copilot keeps about you. Only you can see them."
+msgstr "Notizen, die dein Copilot über dich führt. Nur du siehst sie."
+
+msgid "Stopping work does not undo actions already taken."
+msgstr "Stoppen macht bereits ausgeführte Aktionen nicht rückgängig."
+
+msgid "Every day at ${time}"
+msgstr "Jeden Tag um ${time}"
+
+msgid "Weekdays at ${time}"
+msgstr "Werktags um ${time}"
+
+msgid "Weekly at ${time}"
+msgstr "Wöchentlich um ${time}"
+
+msgid "I'm ${name}. Tell me what to keep an eye on and I'll take it from there."
+msgstr "Ich bin ${name}. Sag mir, was ich im Blick behalten soll, den Rest übernehme ich."

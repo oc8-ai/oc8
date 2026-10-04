@@ -49,3 +49,14 @@ describe("app-shell nav: TP3 restructuring", () => {
     expect(context).toContain('"/workspace"');
   });
 });
+
+describe("app-shell nav: Copilot entry", () => {
+  const src = readFileSync(join(process.cwd(), "src/components/app-shell.tsx"), "utf-8");
+  it("adds the Copilot entry and hides the dock on /copilot", () => {
+    expect(src).toContain('to: "/copilot"');
+    const dockAt = src.indexOf("<CopilotDock");
+    expect(src.slice(Math.max(0, dockAt - 80), dockAt)).toContain('"/workspace"');
+    expect(src).toContain('"/copilot"');
+    expect(src.slice(Math.max(0, dockAt - 80), dockAt)).toContain('"/copilot"');
+  });
+});
