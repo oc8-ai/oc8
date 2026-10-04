@@ -102,11 +102,17 @@ def _trim_to_budget(
 
 
 async def _candidates(
-    db: AsyncSession, *, store_id: uuid.UUID, query_embedding: list[float] | None
+    db: AsyncSession,
+    *,
+    store_id: uuid.UUID,
+    query_embedding: list[float] | None,
+    member_id: uuid.UUID | None = None,
 ) -> list[m.MemoryRecord]:
     stmt = select(m.MemoryRecord).where(
         m.MemoryRecord.store_id == store_id, m.MemoryRecord.status == "approved"
     )
+    if member_id is not None:
+        stmt = stmt.where(m.MemoryRecord.record_metadata["member_id"].astext == str(member_id))
     if query_embedding is not None:
         stmt = stmt.order_by(m.MemoryRecord.embedding.cosine_distance(query_embedding))
     else:
@@ -124,6 +130,7 @@ async def retrieve_context(
     query_text: str,
     token_budget_per_tier: int = 800,
     narrowing: dict[str, Any] | None = None,
+    member_id: uuid.UUID | None = None,
 ) -> str:
     """Recalled memory for `query_text`, from every tier the agent may read.
 
@@ -139,14 +146,26 @@ async def retrieve_context(
         query_embedding = None
 
     sections: list[str] = []
+    personal = agent.is_tenant_assistant
     for tier in ("agent", "department", "company"):
         if not authorize_memory_read(frame, narrowing, tier):
             continue
+        if personal and tier == "department":
+            # The Copilot's department is the synthetic Assistant department:
+            # one store for every member, i.e. a cross-member channel (§7a.5).
+            continue
+        if personal and tier == "agent" and member_id is None:
+            continue  # no member behind this turn: no personal notes at all
         owner_id = _owner_id(tier, agent=agent, tenant_id=tenant_id)
         store = await _tier_store(db, tenant_id=tenant_id, tier=tier, owner_id=owner_id)
         if store is None:
             continue
-        candidates = await _candidates(db, store_id=store.id, query_embedding=query_embedding)
+        candidates = await _candidates(
+            db,
+            store_id=store.id,
+            query_embedding=query_embedding,
+            member_id=member_id if (personal and tier == "agent") else None,
+        )
         if not candidates:
             continue
         selected = _trim_to_budget(candidates, query_embedding, token_budget_per_tier)
@@ -166,6 +185,7 @@ async def write_memory(
     tier: str,
     content: str,
     metadata: dict[str, Any] | None = None,
+    member_id: uuid.UUID | None = None,
 ) -> m.MemoryRecord:
     if tier not in ("agent", "department", "company"):
         raise MemoryWriteError(f"unknown tier '{tier}'")
@@ -173,6 +193,13 @@ async def write_memory(
         raise MemoryWriteError("content must not be empty")
     if len(content) > MAX_MEMORY_CONTENT_LENGTH:
         raise MemoryWriteError(f"content exceeds {MAX_MEMORY_CONTENT_LENGTH} characters")
+
+    if agent.is_tenant_assistant:
+        if tier != "agent":
+            raise MemoryWriteError("the Copilot keeps personal notes only (tier 'agent')")
+        if member_id is None:
+            raise MemoryWriteError("no member behind this Copilot turn -- nothing to note for")
+        metadata = {**(metadata or {}), "member_id": str(member_id)}
 
     owner_id = _owner_id(tier, agent=agent, tenant_id=tenant_id)
     store = await _get_or_create_store(db, tenant_id=tenant_id, tier=tier, owner_id=owner_id)

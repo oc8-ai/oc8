@@ -47,10 +47,11 @@ from oc8.authz.permissions import AGENT, APPROVAL, BUDGET, DEPARTMENT, STATISTIC
 from oc8.authz.scope import AgentActor, scope_for_member
 from oc8.capas.discovery import find_plugin
 from oc8.chat.modes import WRITING_CONTROL_TOOLS, ChatMode
+from oc8.copilot.notes import member_behind_run_task
 from oc8.departments.repo import visible_department, visible_departments
 from oc8.knowledge.retrieval import retrieve_kb_context
 from oc8.kpis.aggregate import compute_kpis
-from oc8.memory.router import retrieve_context, write_memory
+from oc8.memory.router import MemoryWriteError, retrieve_context, write_memory
 from oc8.metering.budget import current_month_tokens, get_budget
 from oc8.modelrouter import NeutralTool, ToolCall
 from oc8.realtime.emit import record_activity
@@ -141,9 +142,7 @@ FIND_TOOLS = NeutralTool(
             },
             "connection": {
                 "type": "string",
-                "description": (
-                    "Optional: only search tools belonging to this connection."
-                ),
+                "description": ("Optional: only search tools belonging to this connection."),
             },
         },
         "required": ["query"],
@@ -171,8 +170,7 @@ PROCEDURE_STEP_DONE = NeutralTool(
             "skill": {
                 "type": "string",
                 "description": (
-                    "Optional: skill slug when more than one active procedure "
-                    "has this step id."
+                    "Optional: skill slug when more than one active procedure has this step id."
                 ),
             },
         },
@@ -1364,9 +1362,7 @@ _MISSING_DEFERRED = "No deferred tools. Every tool is already in your list."
 _NO_MATCHES = "No matching tools."
 
 
-def _execute_find_tools(
-    tc: ToolCall, harness_state: HarnessState | None
-) -> ControlOutcome:
+def _execute_find_tools(tc: ToolCall, harness_state: HarnessState | None) -> ControlOutcome:
     """Rank the deferred catalog and pin matches for the next step."""
     from oc8.agent.offering import notice_for_find
 
@@ -1416,9 +1412,7 @@ def _execute_find_tools(
     return ControlOutcome(output="\n".join(lines))
 
 
-_PROCEDURE_AMBIGUOUS = (
-    "ERROR: procedure_step_done needs one matching active procedure."
-)
+_PROCEDURE_AMBIGUOUS = "ERROR: procedure_step_done needs one matching active procedure."
 _EVIDENCE_CAP = 500
 
 
@@ -1444,11 +1438,7 @@ def _execute_procedure_step_done(
     if skill_slug is not None:
         matches = [s for s in candidates if s.definition.slug == skill_slug]
     else:
-        matches = [
-            s
-            for s in candidates
-            if any(step.id == step_id for step in s.definition.steps)
-        ]
+        matches = [s for s in candidates if any(step.id == step_id for step in s.definition.steps)]
 
     if len(matches) != 1:
         return ControlOutcome(output=_PROCEDURE_AMBIGUOUS)
@@ -1459,10 +1449,7 @@ def _execute_procedure_step_done(
         return ControlOutcome(output=_PROCEDURE_AMBIGUOUS)
     if step.requires_kind != "manual":
         return ControlOutcome(
-            output=(
-                f"ERROR: step {step_id} is tracked by the system; "
-                "do not mark it manually."
-            )
+            output=(f"ERROR: step {step_id} is tracked by the system; do not mark it manually.")
         )
 
     mark = harness_state.procedure.get(skill.definition.slug)
@@ -1499,9 +1486,7 @@ async def _execute_read_resource(
     if row is None:
         return ControlOutcome(output=f"ERROR: no connected system named {connection}")
     cfg = row.config if isinstance(row.config, dict) else {}
-    env = await resolve_mcp_env(
-        db, tenant_id=tenant_id, cfg=cfg, connection_name=row.name
-    )
+    env = await resolve_mcp_env(db, tenant_id=tenant_id, cfg=cfg, connection_name=row.name)
     command, args = wrap_with_requirements(cfg.get("command", ""), cfg.get("args", []), cfg)
     try:
         text = await mcp_pool.read_resource(
@@ -1569,14 +1554,10 @@ async def execute_control_tool(
     if tc.name == READ_RESOURCE.name:
         if decision.effect is not Effect.ALLOW:
             return ControlOutcome(output=f"ERROR: {decision.reason or 'denied'}")
-        return await _execute_read_resource(
-            db, tenant_id=tenant_id, agent=agent, tc=tc
-        )
+        return await _execute_read_resource(db, tenant_id=tenant_id, agent=agent, tc=tc)
 
     if tc.name == PROCEDURE_STEP_DONE.name:
-        return _execute_procedure_step_done(
-            tc, harness_state, active_procedure_skills
-        )
+        return _execute_procedure_step_done(tc, harness_state, active_procedure_skills)
 
     if tc.name == SEARCH_MEMORY.name:
         query = str(tc.arguments.get("query", "")).strip()
@@ -1591,6 +1572,11 @@ async def execute_control_tool(
             frame=await _department_frame(db, agent),
             query_text=query,
             narrowing=(pinned["narrowing"] or {}) if pinned is not None else None,
+            member_id=(
+                await member_behind_run_task(db, tenant_id=tenant_id, task=task)
+                if agent.is_tenant_assistant
+                else None
+            ),
         )
         if not recalled.strip():
             return ControlOutcome(
@@ -1652,9 +1638,7 @@ async def execute_control_tool(
                 "found": bool(context.strip()),
                 "narrowed_to": sorted(
                     str(i)
-                    for i in (
-                        await _context_kb_ids(db, tenant_id=tenant_id, run_id=run_id) or ()
-                    )
+                    for i in (await _context_kb_ids(db, tenant_id=tenant_id, run_id=run_id) or ())
                 ),
             },
             originating_operator=originating_operator,
@@ -2142,14 +2126,24 @@ async def execute_control_tool(
             # its status, so a container run gains nothing by waiting -- and the
             # queue behind this agent loses. The in-process engine parks here
             # because plain text IS its answer; this runtime does not have to.
-            record = await write_memory(
-                db,
-                tenant_id=tenant_id,
-                agent=agent,
-                tier=str(tc.arguments.get("tier", "")),
-                content=str(tc.arguments.get("content", "")),
-                metadata={"task_id": str(task.id)},
-            )
+            # A Copilot company-tier request raises here, before any approval
+            # exists: it keeps personal notes only.
+            try:
+                record = await write_memory(
+                    db,
+                    tenant_id=tenant_id,
+                    agent=agent,
+                    tier=str(tc.arguments.get("tier", "")),
+                    content=str(tc.arguments.get("content", "")),
+                    metadata={"task_id": str(task.id)},
+                    member_id=(
+                        await member_behind_run_task(db, tenant_id=tenant_id, task=task)
+                        if agent.is_tenant_assistant
+                        else None
+                    ),
+                )
+            except MemoryWriteError as exc:
+                return ControlOutcome(output=f"ERROR: {exc}")
             await raise_approval(
                 db,
                 tenant_id=tenant_id,
@@ -2173,14 +2167,22 @@ async def execute_control_tool(
                     "keinem Kunden gegenueber als gesetzt."
                 )
             )
-        record = await write_memory(
-            db,
-            tenant_id=tenant_id,
-            agent=agent,
-            tier=str(tc.arguments.get("tier", "")),
-            content=str(tc.arguments.get("content", "")),
-            metadata={"task_id": str(task.id)},
-        )
+        try:
+            record = await write_memory(
+                db,
+                tenant_id=tenant_id,
+                agent=agent,
+                tier=str(tc.arguments.get("tier", "")),
+                content=str(tc.arguments.get("content", "")),
+                metadata={"task_id": str(task.id)},
+                member_id=(
+                    await member_behind_run_task(db, tenant_id=tenant_id, task=task)
+                    if agent.is_tenant_assistant
+                    else None
+                ),
+            )
+        except MemoryWriteError as exc:
+            return ControlOutcome(output=f"ERROR: {exc}")
         return ControlOutcome(output=f"memory recorded ({record.id})")
 
     if tc.name == DELEGATE_TASK.name:
@@ -2660,10 +2662,7 @@ async def execute_control_tool(
         else:
             block = instruction_block(skill)
         return ControlOutcome(
-            output=(
-                f"Skill '{skill.name}' activated. Follow this procedure:\n\n"
-                f"{block}"
-            ),
+            output=(f"Skill '{skill.name}' activated. Follow this procedure:\n\n{block}"),
             activated_skill=skill,
         )
 

@@ -112,6 +112,7 @@ from oc8.capas.discovery import resolve_tool_pack_connection
 from oc8.chat.modes import mode_from_context
 from oc8.coding.tools import CODING_FRAME_KEY, CODING_TOOL_RIGHTS, Toolset
 from oc8.config import get_settings
+from oc8.copilot.notes import member_behind_run_task
 from oc8.hooks.bus import dispatch_filter
 from oc8.hooks.executor import InProcessExecutor
 from oc8.hooks.types import HookCtx
@@ -1836,6 +1837,13 @@ async def run_agent(
                                     tier=str(tc.arguments.get("tier", "")),
                                     content=str(tc.arguments.get("content", "")),
                                     metadata={"task_id": str(task.id)},
+                                    member_id=(
+                                        await member_behind_run_task(
+                                            db, tenant_id=tenant_id, task=task
+                                        )
+                                        if agent.is_tenant_assistant
+                                        else None
+                                    ),
                                 )
                                 ar = await raise_approval(
                                     db,

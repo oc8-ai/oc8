@@ -17,6 +17,7 @@ from oc8.copilot.profile import (
     resume,
     update_profile,
 )
+from oc8.memory.router import write_memory
 from tests.conftest import AppSessionFactory
 
 
@@ -91,8 +92,18 @@ async def test_offboarding_removes_personal_layer(app_session: AppSessionFactory
         )
         db.add(trigger)
         await db.flush()
+        await write_memory(
+            db,
+            tenant_id=tenant,
+            agent=await get_or_create_assistant(db, tenant_id=tenant),
+            tier="agent",
+            content="n",
+            member_id=member,
+        )
         await offboard_member(db, tenant_id=tenant, member_id=member)
         await db.refresh(trigger)
+        notes = (await db.execute(select(m.MemoryRecord))).scalars().all()
+        assert [r for r in notes if r.record_metadata.get("member_id") == str(member)] == []
         assert trigger.enabled is False
         assert (await db.execute(select(m.CopilotProfile))).scalars().all() == []
         states = [r.state for r in (await db.execute(select(m.Responsibility))).scalars()]

@@ -43,6 +43,7 @@ from oc8.authz.permissions import (
     perm,
 )
 from oc8.authz.scope import AgentActor
+from oc8.copilot.notes import member_behind_run_task
 from oc8.knowledge.retrieval import granted_kb_ids, retrieve_kb_context
 from oc8.memory.router import retrieve_context
 from oc8.modelrouter import NeutralMessage
@@ -58,6 +59,7 @@ _ORIGIN_LABELS: dict[str, str] = {
     "manual": "manual run",
     "handoff": "handoff",
 }
+
 
 async def _origin_label(db: AsyncSession, *, run: m.AgentRun | None) -> str:
     """A2 "Origin" line. `run.source` is the ck_agent_run_source CHECK
@@ -184,8 +186,10 @@ async def roster_block(db: AsyncSession, *, agent: m.Agent) -> str | None:
             f"- {a.id}: {a.name} ({dept}" + (f", {a.role_title})" if a.role_title else ")")
             for a, dept in rows
         ]
-        return "Every agent in this tenant, by department -- delegate_task may reach any " \
+        return (
+            "Every agent in this tenant, by department -- delegate_task may reach any "
             "of them if the person you are acting for can:\n" + "\n".join(lines)
+        )
 
     mates = (
         (
@@ -246,9 +250,7 @@ async def _gated_copilot_permissions(
     # Seat-grantable: a departmental seat alone is enough (SEAT_PERMISSIONS
     # includes all three of these for both SEAT_VIEWER and SEAT_APPROVER).
     for permission in (perm(APPROVAL, VIEW), perm(DEPARTMENT, VIEW), perm(AGENT, VIEW)):
-        if permission in authority.tenant_wide or agent_actor.scope.holds_anywhere(
-            permission
-        ):
+        if permission in authority.tenant_wide or agent_actor.scope.holds_anywhere(permission):
             granted.add(permission)
     # Tenant-wide only: not in SEAT_PERMISSIONS, so no seat can ever grant
     # these -- checked against authority.tenant_wide alone.
@@ -350,6 +352,11 @@ async def build_run_preamble(
         frame=frame,
         query_text=task_text,
         narrowing=(pinned["narrowing"] or {}) if pinned is not None else None,
+        member_id=(
+            await member_behind_run_task(db, tenant_id=tenant_id, task=task)
+            if agent.is_tenant_assistant
+            else None
+        ),
     )
     if memory_ctx:
         messages.append(NeutralMessage(role="system", content=memory_ctx))
