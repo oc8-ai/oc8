@@ -16,11 +16,16 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.agent.assistant import _load_assistant
 from oc8.authz.authority import member_holds_assigned_permission
 from oc8.authz.permissions import COPILOT_USE
 from oc8.copilot.profile import get_or_create_profile
 from oc8.copilot.responsibilities import get_owned
 from oc8.copilot.schedule import MAX_ACTIVE_FOLLOWUPS, FollowupRejected, FollowupSpec, next_fire
+from oc8.modelrouter.subscription_guard import (
+    SubscriptionModelNotManualOnly,
+    assert_manual_only_compatible,
+)
 from oc8.runtime.states import RunState
 
 logger = logging.getLogger(__name__)
@@ -83,6 +88,29 @@ async def schedule_followup(
     )
     db.add(trigger)
     await db.flush()
+    # Same guard and order as triggers.service.create_trigger: checked after
+    # the flush, so this follow-up itself counts as the enabled trigger. A tool
+    # call turns the rejection into an ERROR and the run carries on, so the
+    # flushed row is removed here rather than left to a rollback.
+    assistant = await _load_assistant(db, tenant_id=tenant_id)
+    try:
+        await assert_manual_only_compatible(
+            db,
+            agent_id=assistant_id,
+            model_config_id=(
+                assistant.model_config_id
+                if assistant is not None and assistant.id == assistant_id
+                else None
+            ),
+        )
+    except SubscriptionModelNotManualOnly as exc:
+        await db.delete(trigger)
+        await db.flush()
+        raise FollowupRejected(
+            "the Copilot's model signs in with a personal ChatGPT subscription, which is "
+            "licensed for manual use only, so it cannot run follow-ups -- ask an "
+            "administrator to connect the Copilot model with an API key"
+        ) from exc
     from oc8.audit import append_event
 
     await append_event(

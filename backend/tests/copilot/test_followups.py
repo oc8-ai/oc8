@@ -559,3 +559,45 @@ async def test_a_delegated_workers_question_leaves_the_responsibility_alone(
 ) -> None:
     parked, resolved = await _park(app_session, "delegation")
     assert (parked, resolved) == ("active", "active")
+
+
+async def test_subscription_bound_copilot_cannot_schedule_followups(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import base64
+
+    from oc8 import config
+    from oc8.credentials.service import create_credential
+
+    monkeypatch.setattr(
+        config.get_settings(), "secret_kek", base64.b64encode(bytes(range(32))).decode(),
+        raising=False,
+    )  # fmt: skip
+    tenant, member_id, _, r_id, first = await _world(app_session)
+    async with app_session(tenant) as db:
+        # The first follow-up predates the binding; disable it so only the
+        # new one could make the pairing.
+        existing = await db.get(m.Trigger, first)
+        assert existing is not None
+        existing.enabled = False
+        cred = await create_credential(
+            db, tenant_id=tenant, name=f"cg-{uuid.uuid4().hex[:8]}",
+            credential_type="openai_chatgpt_subscription",
+            field_values={"oauth_connection_id": str(uuid.uuid4())},
+        )  # fmt: skip
+        mc = m.ModelConfig(
+            tenant_id=tenant, provider="openai_chatgpt", model="gpt-5", credential_id=cred.id
+        )
+        db.add(mc)
+        await db.flush()
+        assistant = await get_or_create_assistant(db, tenant_id=tenant)
+        assistant.model_config_id = mc.id
+        await db.flush()
+        with pytest.raises(FollowupRejected, match="personal ChatGPT subscription"):
+            await schedule_followup(
+                db, tenant_id=tenant, member_id=member_id, responsibility_id=r_id,
+                assistant_id=assistant.id, spec=SPEC, prompt="x",
+                member_subject="lisa@example.com",
+            )  # fmt: skip
+        enabled = await db.execute(select(m.Trigger).where(m.Trigger.enabled.is_(True)))
+        assert enabled.scalars().all() == []
