@@ -293,3 +293,17 @@ describe("run.status and copilot profile/delegations", () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["copilot", "delegations"] });
   });
 });
+
+describe("run.status and the copilot work panel", () => {
+  it("invalidates responsibilities and follow-ups on every run.status event", () => {
+    for (const state of ["running", "done"]) {
+      const qc = new QueryClient();
+      const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
+
+      applyEvent(qc, event("run.status", { run_id: "r1", state, phase: "execution" }));
+
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["copilot", "responsibilities"] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["copilot", "followups"] });
+    }
+  });
+});

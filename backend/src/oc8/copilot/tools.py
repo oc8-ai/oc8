@@ -145,7 +145,8 @@ async def execute_copilot_tool(
 
 async def _announce(tenant_id: uuid.UUID, member_id: uuid.UUID, tool_name: str) -> None:
     """Tell the member's open tabs a dot changed. Best effort: the run commits
-    later and the frontend refetches on the run's own events anyway."""
+    later, and the frontend refetches responsibilities and follow-ups on every
+    run.status event as well (lib/live/apply-event.ts)."""
     is_followup = tool_name in (SCHEDULE_FOLLOWUP.name, CANCEL_FOLLOWUP.name)
     kind = "followup" if is_followup else "responsibility"
     try:

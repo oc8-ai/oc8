@@ -51,6 +51,11 @@ const patchers: Record<string, Patcher> = {
     // The copilot's status (activeCount, status field) follows runs live on every state change.
     qc.invalidateQueries({ queryKey: ["copilot", "profile"] });
     qc.invalidateQueries({ queryKey: ["copilot", "delegations"] });
+    // A dot tool's own copilot.* event is published before its run commits, so
+    // the refetch it triggers can miss the change; the run's next status
+    // event lands after the commit and keeps the work panel current.
+    qc.invalidateQueries({ queryKey: ["copilot", "responsibilities"] });
+    qc.invalidateQueries({ queryKey: ["copilot", "followups"] });
     // terminal states free the agent -> reflect in the agents list (mirrors the
     // old useRun poll's terminal-state agents invalidation)
     if (d.state === "done" || d.state === "failed" || d.state === "interrupted") {
