@@ -407,6 +407,8 @@ async def test_ask_user_refused_on_a_messenger_door(app_session: AppSessionFacto
             assert (out.suspend == "waiting_for_input") is suspended
             if not suspended:
                 assert out.output.startswith("ERROR: you cannot ask a question")
+                # The model must still be able to tell the person what is missing.
+                assert "which?" in out.output
 
 
 async def test_followup_door_siblings_are_confined_to_its_responsibility(

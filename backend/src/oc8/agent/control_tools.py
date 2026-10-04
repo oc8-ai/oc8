@@ -2231,10 +2231,13 @@ async def execute_control_tool(
             if asking_run is not None and door_of(asking_run.context) == "telegram":
                 # offered_tools withholds it here, but a model can still name a
                 # tool it was never offered; a messenger sender cannot answer a
-                # parked run, so refuse instead of suspending.
+                # parked run, so refuse instead of suspending. The question is
+                # echoed back so the reply can still say what is missing.
+                missing = str(tc.arguments.get("question", "")).strip()
                 return ControlOutcome(
                     output="ERROR: you cannot ask a question on this channel; decide "
                     "with what you have, delegate, or say you cannot proceed"
+                    + (f" -- and name what is missing in your reply: {missing}" if missing else "")
                 )
         question = str(tc.arguments.get("question", "")).strip()
         if not question:
