@@ -292,3 +292,53 @@ async def test_delegations_lists_runs_from_my_sessions_only(
 
         bad = await c.get("/api/v1/copilot/delegations?limit=0", headers=_headers(tenant))
         assert bad.status_code == 422
+
+
+async def test_generic_agent_memory_delete_refuses_copilot_personal_notes(
+    app_session: AppSessionFactory,
+) -> None:
+    """Personal notes go only through /copilot/notes; an admin's generic
+    memory delete must not reach them, nor copy a Copilot note into the audit."""
+    tenant = uuid.uuid4()
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        await c.get("/api/v1/copilot/profile", headers=_headers(tenant, "op2"))
+        member_b = await _member_id(app_session, tenant, "op2")
+        async with app_session(tenant) as db:
+            assistant = await get_or_create_assistant(db, tenant_id=tenant)
+            store = m.MemoryStore(tenant_id=tenant, tier="agent", owner_id=assistant.id)
+            db.add(store)
+            await db.flush()
+            personal = m.MemoryRecord(
+                tenant_id=tenant, store_id=store.id, content="private of b",
+                record_metadata={"member_id": str(member_b)}, written_by=assistant.id,
+            )  # fmt: skip
+            legacy = m.MemoryRecord(
+                tenant_id=tenant, store_id=store.id, content="legacy untagged",
+                record_metadata={}, written_by=assistant.id,
+            )  # fmt: skip
+            db.add_all([personal, legacy])
+            await db.flush()
+            assistant_id, personal_id, legacy_id = assistant.id, personal.id, legacy.id
+
+        refused = await c.delete(
+            f"/api/v1/agents/{assistant_id}/memory/{personal_id}", headers=_headers(tenant)
+        )
+        assert refused.status_code == 404, refused.text
+        ok = await c.delete(
+            f"/api/v1/agents/{assistant_id}/memory/{legacy_id}", headers=_headers(tenant)
+        )
+        assert ok.status_code == 204, ok.text
+        async with app_session(tenant) as db:
+            assert await db.get(m.MemoryRecord, personal_id) is not None
+            events = (
+                (
+                    await db.execute(
+                        select(m.AuditEvent).where(m.AuditEvent.action == "agent.memory.deleted")
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert len(events) == 1
+            assert "legacy untagged" not in str(events[0].resource)

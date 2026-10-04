@@ -1007,9 +1007,21 @@ async def delete_agent_memory(
             )
         ).scalar_one_or_none()
     )
+    if (
+        record is not None
+        and agent.is_tenant_assistant
+        and "member_id" in (record.record_metadata or {})
+    ):
+        # A member's personal Copilot note (§7a.5): only that member deletes it,
+        # through /copilot/notes. An admin here gets the same 404 as a miss.
+        record = None
     if record is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "memory record not found")
-    content_snippet = record.content[:200]
+    resource = {"agent_id": str(agent_id), "record_id": str(record_id)}
+    if not agent.is_tenant_assistant:
+        # Never a Copilot note's content in the audit trail: it is personal.
+        resource["content_snippet"] = record.content[:200]
+    resource["by"] = principal.subject
     await db.delete(record)
     await db.flush()
     await append_event(
@@ -1019,12 +1031,7 @@ async def delete_agent_memory(
         actor_id=None,
         category="admin",
         action="agent.memory.deleted",
-        resource={
-            "agent_id": str(agent_id),
-            "record_id": str(record_id),
-            "content_snippet": content_snippet,
-            "by": principal.subject,
-        },
+        resource=resource,
         principal=principal,
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
