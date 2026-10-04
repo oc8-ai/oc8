@@ -112,7 +112,12 @@ async def test_paused_profile_skips_and_resume_catches_up_once(
 async def test_member_without_assigned_permission_fails_closed(
     app_session: AppSessionFactory,
 ) -> None:
-    tenant, _, _, _, t_id = await _world(app_session, with_role=False)
+    tenant, member_id, _, _, t_id = await _world(app_session)
+    async with app_session(tenant) as db:
+        # The role was taken away after the follow-up was scheduled.
+        member = await db.get(m.OrgMember, member_id)
+        assert member is not None
+        member.role_id = None
     async with app_session(tenant) as db:
         trigger = await db.get(m.Trigger, t_id)
         assert trigger is not None
@@ -601,3 +606,23 @@ async def test_subscription_bound_copilot_cannot_schedule_followups(
             )  # fmt: skip
         enabled = await db.execute(select(m.Trigger).where(m.Trigger.enabled.is_(True)))
         assert enabled.scalars().all() == []
+
+
+async def test_member_without_assigned_role_cannot_schedule(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        assistant = await get_or_create_assistant(db, tenant_id=tenant)
+        seat = await copilot_seat(db, tenant, "tom@example.com", with_role=False)
+        r = await open_responsibility(
+            db, tenant_id=tenant, member_id=seat.member_id, chat_session_id=seat.session_id,
+            title="t", goal="g", origin_channel=None, run_id=None,
+            actor_agent_id=assistant.id, member_subject=seat.subject,
+        )  # fmt: skip
+        with pytest.raises(FollowupRejected, match="assigned role with Copilot access"):
+            await schedule_followup(
+                db, tenant_id=tenant, member_id=seat.member_id, responsibility_id=r.id,
+                assistant_id=assistant.id, spec=SPEC, prompt="x", member_subject=seat.subject,
+            )  # fmt: skip
+        assert (await db.execute(select(m.Trigger))).scalars().all() == []

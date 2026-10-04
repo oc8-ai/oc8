@@ -13,6 +13,7 @@ from sqlalchemy import select
 from oc8 import models as m
 from oc8.agent.assistant import get_or_create_assistant
 from oc8.auth import get_identity_provider
+from oc8.authz.permissions import COPILOT_USE
 from oc8.copilot.followups import schedule_followup
 from oc8.copilot.responsibilities import open_responsibility
 from oc8.main import create_app
@@ -159,6 +160,16 @@ async def test_end_schedule_disables_trigger(app_session: AppSessionFactory) -> 
         member = await _member_id(app_session, tenant, "op")
         rid, _ = await _seed_responsibility(app_session, tenant, member, "op")
         async with app_session(tenant) as db:
+            # A follow-up is only saved for a member whose ASSIGNED role grants
+            # copilot:use; the token role alone is not enough.
+            role = m.Role(tenant_id=tenant, name="copilot-users", kind="human")
+            db.add(role)
+            await db.flush()
+            db.add(m.RolePermission(tenant_id=tenant, role_id=role.id, permission=COPILOT_USE))
+            row = await db.get(m.OrgMember, member)
+            assert row is not None
+            row.role_id = role.id
+            await db.flush()
             assistant = await get_or_create_assistant(db, tenant_id=tenant)
             trigger = await schedule_followup(
                 db,

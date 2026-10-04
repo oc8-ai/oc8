@@ -67,6 +67,15 @@ async def schedule_followup(
         raise FollowupRejected("responsibility not found")
     if r.state not in ("active", "waiting"):
         raise FollowupRejected(f"the responsibility is {r.state} -- resume it first")
+    # fire_followup skips a member without it; refusing here keeps a follow-up
+    # from being saved that could never fire.
+    member = await db.get(m.OrgMember, member_id)
+    if member is None or not await member_holds_assigned_permission(
+        db, member=member, permission=COPILOT_USE
+    ):
+        raise FollowupRejected(
+            "follow-ups need an assigned role with Copilot access -- ask an administrator"
+        )
     if await _active_count(db, tenant_id=tenant_id, member_id=member_id) >= MAX_ACTIVE_FOLLOWUPS:
         raise FollowupRejected(
             f"you already have {MAX_ACTIVE_FOLLOWUPS} active follow-ups -- end one first"
