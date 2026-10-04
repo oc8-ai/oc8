@@ -48,9 +48,9 @@ export function CopilotPage() {
           />
           <p className="text-sm text-foreground">
             {t(
-              `I'm ${name}. Tell me what to keep an eye on and I'll take it from there.`,
-              `Ich bin ${name}. Sag mir, was ich im Blick behalten soll, den Rest übernehme ich.`,
-            )}
+              "I'm {name}. Tell me what to keep an eye on and I'll take it from there.",
+              "Ich bin {name}. Sag mir, was ich im Blick behalten soll, den Rest übernehme ich.",
+            ).replace("{name}", name)}
           </p>
         </div>
       }

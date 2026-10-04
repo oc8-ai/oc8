@@ -488,7 +488,7 @@ export function AppShell() {
   // a count that only knew about approvals would send somebody past a question
   // an agent has been parked on for two hours.
   const workCount = approvals.length + clarifications.length;
-  const { data: copilotProfile } = useCopilotProfile();
+  const { data: copilotProfile } = useCopilotProfile(can("copilot:use"));
   const copilotAdornment = (
     <span className="inline-flex items-center gap-1" data-testid="nav-copilot-adornment">
       <CopilotAvatar

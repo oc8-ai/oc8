@@ -4024,14 +4024,39 @@ msgstr "Notizen, die dein Copilot über dich führt. Nur du siehst sie."
 msgid "Stopping work does not undo actions already taken."
 msgstr "Stoppen macht bereits ausgeführte Aktionen nicht rückgängig."
 
-msgid "Every day at ${time}"
-msgstr "Jeden Tag um ${time}"
 
-msgid "Weekdays at ${time}"
-msgstr "Werktags um ${time}"
 
-msgid "Weekly at ${time}"
-msgstr "Wöchentlich um ${time}"
 
-msgid "I'm ${name}. Tell me what to keep an eye on and I'll take it from there."
-msgstr "Ich bin ${name}. Sag mir, was ich im Blick behalten soll, den Rest übernehme ich."
+
+msgid "Every day at {time}"
+msgstr "Jeden Tag um {time}"
+
+msgid "Weekdays at {time}"
+msgstr "Werktags um {time}"
+
+msgid "Weekly at {time}"
+msgstr "Wöchentlich um {time}"
+
+msgid "I'm {name}. Tell me what to keep an eye on and I'll take it from there."
+msgstr "Ich bin {name}. Sag mir, was ich im Blick behalten soll, den Rest übernehme ich."
+
+msgid "Skipped: you were mid-conversation"
+msgstr "Übersprungen: du warst im Gespräch"
+
+msgid "Skipped: Copilot was paused"
+msgstr "Übersprungen: Copilot war pausiert"
+
+msgid "Skipped: the responsibility is not active"
+msgstr "Übersprungen: Aufgabe nicht aktiv"
+
+msgid "Skipped: no permission to use the Copilot"
+msgstr "Übersprungen: keine Berechtigung"
+
+msgid "Skipped: the member no longer exists"
+msgstr "Übersprungen: Mitglied existiert nicht mehr"
+
+msgid "Skipped: the chat session is gone"
+msgstr "Übersprungen: Chat-Sitzung fehlt"
+
+msgid "The schedule has ended"
+msgstr "Der Zeitplan ist beendet"

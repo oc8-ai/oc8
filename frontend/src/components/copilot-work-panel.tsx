@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { NeedsMeWidget } from "@/components/dashboard/widgets/needs-me-widget";
 import { RunStepTimeline } from "@/components/run-step-timeline";
@@ -17,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useCancelRun, type RunDTO } from "@/lib/hooks";
 import {
+  copilotKeys,
   useCopilotDelegations,
   useCopilotNotes,
   useCopilotProfile,
@@ -79,16 +81,57 @@ function cronWords(t: ReturnType<typeof useT>, cron: string): string {
   const m = /^(\d{1,2}) (\d{1,2}) \* \* \*$/.exec(cron.trim());
   if (m) {
     const time = `${m[2].padStart(2, "0")}:${m[1].padStart(2, "0")}`;
-    return t(`Every day at ${time}`, `Jeden Tag um ${time}`);
+    return t("Every day at {time}", "Jeden Tag um {time}").replace("{time}", time);
   }
   const w = /^(\d{1,2}) (\d{1,2}) \* \* ([0-6]|1-5)$/.exec(cron.trim());
   if (w) {
     const time = `${w[2].padStart(2, "0")}:${w[1].padStart(2, "0")}`;
     return w[3] === "1-5"
-      ? t(`Weekdays at ${time}`, `Werktags um ${time}`)
-      : t(`Weekly at ${time}`, `Wöchentlich um ${time}`);
+      ? t("Weekdays at {time}", "Werktags um {time}").replace("{time}", time)
+      : t("Weekly at {time}", "Wöchentlich um {time}").replace("{time}", time);
   }
   return cron;
+}
+
+function stateLabel(t: ReturnType<typeof useT>, state: string): string {
+  switch (state) {
+    case "active":
+      return t("active", "aktiv");
+    case "waiting":
+      return t("waiting", "wartet");
+    case "paused":
+      return t("paused", "pausiert");
+    case "done":
+      return t("done", "erledigt");
+    case "cancelled":
+      return t("cancelled", "abgebrochen");
+    default:
+      return state;
+  }
+}
+
+function skipReasonLabel(t: ReturnType<typeof useT>, reason: string): string {
+  switch (reason) {
+    case "busy":
+      return t("Skipped: you were mid-conversation", "Übersprungen: du warst im Gespräch");
+    case "paused":
+      return t("Skipped: Copilot was paused", "Übersprungen: Copilot war pausiert");
+    case "not_active":
+      return t("Skipped: the responsibility is not active", "Übersprungen: Aufgabe nicht aktiv");
+    case "no_permission":
+      return t("Skipped: no permission to use the Copilot", "Übersprungen: keine Berechtigung");
+    case "no_member":
+      return t(
+        "Skipped: the member no longer exists",
+        "Übersprungen: Mitglied existiert nicht mehr",
+      );
+    case "no_session":
+      return t("Skipped: the chat session is gone", "Übersprungen: Chat-Sitzung fehlt");
+    case "ended":
+      return t("The schedule has ended", "Der Zeitplan ist beendet");
+    default:
+      return reason;
+  }
 }
 
 function ResponsibilityRow({ r }: { r: ResponsibilityDTO }) {
@@ -101,7 +144,7 @@ function ResponsibilityRow({ r }: { r: ResponsibilityDTO }) {
     <div className="space-y-1.5 rounded-md border border-border p-3 text-sm">
       <div className="flex items-start gap-2">
         <span className="min-w-0 flex-1 font-medium">{r.title}</span>
-        <Badge variant="secondary">{r.state}</Badge>
+        <Badge variant="secondary">{stateLabel(t, r.state)}</Badge>
       </div>
       <p className="text-xs text-muted-foreground">{r.goal}</p>
       {r.nextStep && (
@@ -164,6 +207,7 @@ function ResponsibilityRow({ r }: { r: ResponsibilityDTO }) {
 function DelegatedRun({ run }: { run: RunDTO }) {
   const t = useT();
   const cancel = useCancelRun(run.id);
+  const qc = useQueryClient();
   const active = ACTIVE_RUN_STATES.has(run.state);
   return (
     <div className="space-y-1">
@@ -173,7 +217,11 @@ function DelegatedRun({ run }: { run: RunDTO }) {
           size="sm"
           variant="outline"
           disabled={cancel.isPending}
-          onClick={() => cancel.mutate()}
+          onClick={() =>
+            cancel.mutate(undefined, {
+              onSuccess: () => qc.invalidateQueries({ queryKey: copilotKeys.delegations }),
+            })
+          }
         >
           {t("Stop", "Stoppen")}
         </Button>
@@ -242,7 +290,7 @@ function FollowupRow({ f }: { f: FollowupDTO }) {
         </div>
       )}
       {!f.enabled && f.lastSkipReason && (
-        <div className="text-xs text-muted-foreground">{f.lastSkipReason}</div>
+        <div className="text-xs text-muted-foreground">{skipReasonLabel(t, f.lastSkipReason)}</div>
       )}
       <Button size="sm" variant="outline" onClick={() => end.mutate(f.id)}>
         {t("End schedule", "Zeitplan beenden")}
@@ -315,7 +363,11 @@ export function CopilotWorkPanel() {
             <ScheduledTab />
           </TabsContent>
           <TabsContent value="waiting">
-            <NeedsMeWidget config={{}} onConfigChange={() => {}} agentId={profile?.agentId} />
+            {profile?.agentId ? (
+              <NeedsMeWidget config={{}} onConfigChange={() => {}} agentId={profile.agentId} />
+            ) : (
+              <p className="p-3 text-xs text-muted-foreground">{t("Loading…", "Wird geladen…")}</p>
+            )}
           </TabsContent>
           <TabsContent value="notes">
             <NotesTab />

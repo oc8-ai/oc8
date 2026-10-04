@@ -9,9 +9,11 @@ const m = vi.hoisted(() => ({
   pause: vi.fn(),
   resume: vi.fn(),
   cancelRun: vi.fn(),
+  agentId: "agent-1" as string | undefined,
 }));
 
 vi.mock("@/lib/hooks-copilot", () => ({
+  copilotKeys: { delegations: ["copilot", "delegations"] },
   useCopilotProfile: () => ({
     data: {
       displayName: "Copilot",
@@ -19,7 +21,7 @@ vi.mock("@/lib/hooks-copilot", () => ({
       pausedAt: null,
       status: "ready",
       activeCount: 0,
-      agentId: "agent-1",
+      agentId: m.agentId,
     },
   }),
   usePauseCopilot: () => ({ mutate: m.pause, isPending: false }),
@@ -90,7 +92,10 @@ function openTab(name: RegExp) {
   fireEvent.mouseDown(screen.getByRole("tab", { name }), { button: 0 });
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  m.agentId = "agent-1";
+});
 
 describe("CopilotWorkPanel", () => {
   it("activity tab shows the responsibility and pauses / completes it", () => {
@@ -151,5 +156,34 @@ describe("CopilotWorkPanel", () => {
     expect(screen.getByText(/Only you can see them/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     expect(m.deleteNote).toHaveBeenCalledWith("n1");
+  });
+
+  it("waiting tab never renders the unscoped queue before the profile is known", () => {
+    m.agentId = undefined;
+    wrap(<CopilotWorkPanel />);
+    openTab(/waiting/i);
+    expect(screen.queryByTestId("needs-me")).toBeNull();
+  });
+
+  it("cancelling a responsibility asks first, then calls the mutation once", async () => {
+    wrap(<CopilotWorkPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(m.setState).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel responsibility" }));
+    expect(m.setState).toHaveBeenCalledTimes(1);
+    expect(m.setState).toHaveBeenCalledWith({ id: "r1", state: "cancelled" });
+  });
+
+  it("a successful run Stop refreshes the delegations list", () => {
+    const qc = new QueryClient();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    m.cancelRun.mockImplementation((_v: unknown, o: { onSuccess: () => void }) => o.onSuccess());
+    render(
+      <QueryClientProvider client={qc}>
+        <CopilotWorkPanel />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["copilot", "delegations"] });
   });
 });

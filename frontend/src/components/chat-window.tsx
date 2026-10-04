@@ -158,9 +158,28 @@ export function ChatWindow({
     if (el && typeof el.scrollTo === "function") el.scrollTo({ top: el.scrollHeight });
   }, [messages]);
 
-  function startNewSession() {
-    createSession.mutate(agentId, { onSuccess: (session) => setSessionId(session.id) });
+  function startNewSession(firstMessage?: string) {
+    createSession.mutate(agentId, {
+      onSuccess: (session) => {
+        if (firstMessage) setPendingStarter({ sessionId: session.id, message: firstMessage });
+        setSessionId(session.id);
+      },
+    });
   }
+
+  // A starter clicked before any session exists: the session is created first,
+  // and the starter goes out as its first message once `sendMessage` is bound
+  // to that session id (it is a per-session hook).
+  const [pendingStarter, setPendingStarter] = useState<{
+    sessionId: string;
+    message: string;
+  } | null>(null);
+  useEffect(() => {
+    if (!pendingStarter || pendingStarter.sessionId !== sessionId) return;
+    setPendingStarter(null);
+    sendMessage.mutate({ message: pendingStarter.message });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fire once per pending starter
+  }, [pendingStarter, sessionId]);
 
   function submit() {
     const trimmed = draft.trim();
@@ -276,7 +295,7 @@ export function ChatWindow({
             )}
             <button
               type="button"
-              onClick={startNewSession}
+              onClick={() => startNewSession()}
               disabled={createSession.isPending}
               className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition hover:text-foreground disabled:opacity-50"
             >
@@ -303,13 +322,28 @@ export function ChatWindow({
             </p>
             <button
               type="button"
-              onClick={startNewSession}
+              onClick={() => startNewSession()}
               disabled={createSession.isPending}
               className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
             >
               <Plus className="h-3.5 w-3.5" />
               {t("Start chat", "Chat starten")}
             </button>
+            {promptStarters.length > 0 && (
+              <div className="flex flex-wrap justify-center gap-1.5">
+                {promptStarters.map((starter) => (
+                  <button
+                    key={starter}
+                    type="button"
+                    disabled={createSession.isPending}
+                    onClick={() => startNewSession(starter)}
+                    className="rounded-full border border-border bg-background/40 px-2.5 py-1 text-[11px] text-muted-foreground transition hover:text-foreground disabled:opacity-50"
+                  >
+                    {starter}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         ) : messagesLoading ? (
           <div className="py-10 text-center text-xs text-muted-foreground">

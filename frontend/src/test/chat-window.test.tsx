@@ -120,6 +120,25 @@ describe("ChatWindow", () => {
     expect(createSessionMock).toHaveBeenCalledWith("agent-1", expect.anything());
   });
 
+  it("no session: shows emptyIntro and starters; a starter creates the session", () => {
+    sessionsMock.mockReturnValue({ data: [], isLoading: false });
+    messagesMock.mockReturnValue({ data: undefined, isLoading: false });
+    const qc = new QueryClient();
+    render(
+      <QueryClientProvider client={qc}>
+        <ChatWindow
+          agentId="agent-1"
+          agentName="Nora"
+          emptyIntro={<div data-testid="intro" />}
+          promptStarters={["Keep an eye on something"]}
+        />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByTestId("intro")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Keep an eye on something" }));
+    expect(createSessionMock).toHaveBeenCalledWith("agent-1", expect.anything());
+  });
+
   it("renders the transcript once a session and its messages exist", () => {
     sessionsMock.mockReturnValue({
       data: [{ id: "s1", agentId: "agent-1", title: "", createdAt: "2026-08-27T00:00:00Z" }],

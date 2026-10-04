@@ -65,9 +65,10 @@ export const copilotKeys = {
   notes: ["copilot", "notes"] as const,
 };
 
-export function useCopilotProfile(): UseQueryResult<CopilotProfileDTO> {
+export function useCopilotProfile(enabled = true): UseQueryResult<CopilotProfileDTO> {
   return useQuery({
     queryKey: copilotKeys.profile,
+    enabled,
     queryFn: () => api.get<CopilotProfileDTO>("/copilot/profile"),
   });
 }
