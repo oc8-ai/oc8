@@ -317,6 +317,7 @@ async def build_agent_export(
         narrowing=narrowing,
         max_steps=int((agent.definition or {}).get("max_steps") or 0),
         trigger=_agent_trigger(list(triggers)),
+        prompt_starters=list((agent.presentation or {}).get("prompt_starters") or []),
     )
     manifest = Manifest(
         name=capa_name,
@@ -424,6 +425,7 @@ async def build_department_export(
                 narrowing=narrowing,
                 max_steps=int((agent.definition or {}).get("max_steps") or 0),
                 trigger=_agent_trigger(triggers_by_agent.get(agent.id, [])),
+                prompt_starters=list((agent.presentation or {}).get("prompt_starters") or []),
             )
         )
 

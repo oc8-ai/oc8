@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import datetime as dt
 import zoneinfo
-from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any
 
 from oc8.agent.harness.caps import ModelCaps
 
@@ -61,21 +61,35 @@ TENANT_ASSISTANT_OPENER = (
 )
 
 
-def render_system_prompt(agent: m.Agent, *, caps: ModelCaps, tenant_name: str) -> str:
+def render_system_prompt(
+    agent: m.Agent,
+    *,
+    caps: ModelCaps,
+    tenant_name: str,
+    pinned: Mapping[str, Any] | None = None,
+) -> str:
     """A1 system prompt v2. `tenant_name` and `caps` are the only inputs
     that vary the rendered text besides the agent's own identity/mission/
     guardrails -- both are cheap, already-resolved values the caller passes
-    in, keeping this function synchronous and DB-free."""
+    in, keeping this function synchronous and DB-free.
+
+    `pinned` is the run's resolved version (`resolve_version`); when given,
+    role title and mission come from it rather than the live row, so a
+    mid-run edit never rewrites the instructions a run is working to. `name`
+    and `presentation` (guardrails) are identity/operational state, not
+    versioned, and always come from the live row."""
     presentation = agent.presentation or {}
     guardrails: Sequence[str] = presentation.get("guardrails", [])
     parallel_rule = (
         _PARALLEL_RULE_PARALLEL if caps.parallel_tool_calls else _PARALLEL_RULE_SEQUENTIAL
     )
+    role_title = pinned["role_title"] if pinned is not None else agent.role_title
+    mission = pinned["mission"] if pinned is not None else agent.mission
 
-    identity = f"You are {agent.name}" + (f", {agent.role_title}." if agent.role_title else ".")
+    identity = f"You are {agent.name}" + (f", {role_title}." if role_title else ".")
     parts = [identity]
-    if agent.mission:
-        parts.append(agent.mission)
+    if mission:
+        parts.append(mission)
     if guardrails:
         parts.append("Guardrails you must respect:\n" + "\n".join(f"- {g}" for g in guardrails))
 

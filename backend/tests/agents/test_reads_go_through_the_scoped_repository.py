@@ -77,6 +77,13 @@ ALLOWED: dict[str, str] = {
         "what a name was assigned from; the exception is meant to be a decision, not a "
         "side effect of how the query happened to be spelled"
     ),
+    "api/v1/feed.py": (
+        "GET /usage/export outer-joins Agent/Department only to NAME the agent and "
+        "department on each token-usage row -- behind budget:view via require_permission, "
+        "which admits a tenant-wide hold only (no seat reaches it), and over exactly the "
+        "rows GET /usage in the same file already aggregates tenant-wide for that "
+        "permission; not a departmental browse"
+    ),
     # --- Everything below is the disclosed remainder of the sweep's first
     # real run against Agent/Department: agent-runtime-internal reads, system
     # jobs, and two sweep false-positives on a substring match. None of these
@@ -120,6 +127,10 @@ ALLOWED: dict[str, str] = {
     ),
     "runtime/executor.py": "the agent runtime loading its OWN agent row to run or reap it",
     "runtime/reconcile.py": "background reconciliation loading its own stale agent rows",
+    "runtime/repository.py": (
+        "RunRepository.create reads only the target agent's current_version_id to pin "
+        "the run it creates; every caller has already authorized starting that agent"
+    ),
     "runtime/run_context.py": (
         "sweep false-positive: raw SQL against the agent_run table, whose name merely "
         "contains 'agent' as a substring"

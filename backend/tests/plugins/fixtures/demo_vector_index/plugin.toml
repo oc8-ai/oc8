@@ -1,0 +1,9 @@
+[plugin]
+name = "demo_vector_index"
+version = "1.0.0"
+type = "vector_index"
+trust = "first_party"
+summary = "Test fixture: contributes a demo vector index"
+
+[plugin.entry_points]
+vector_indexes = "demo_vector_index.index:register"

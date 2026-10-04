@@ -12,6 +12,7 @@ from packaging.version import Version
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oc8.agents.versioning import publish_version
 from oc8.capas.discovery import DiscoveredPlugin, find_plugin
 from oc8.capas.manifest import (
     Manifest,
@@ -477,6 +478,10 @@ async def instantiate_agent(
         status="stopped",
         narrowing=dict(spec.get("narrowing") or {}),
         definition=definition,
+        # `presentation` is the DISPLAY side of an agent (agent_to_dto reads it);
+        # `definition` is the behavioural side. A prompt starter is a UI
+        # affordance, so it belongs here.
+        presentation={"prompt_starters": list(spec.get("prompt_starters") or [])},
     )
     db.add(agent)
     await db.flush()
@@ -492,6 +497,11 @@ async def instantiate_agent(
         trigger=spec.get("trigger"),
         config=config,
     )
+    # v1 in the same transaction as the hire, after the skill assignments, so
+    # the snapshot includes them -- same create-and-publish shape as
+    # api/v1/agents_write.py::create_agent. Every run is pinned to a version;
+    # an agent without one would run off its live row.
+    await publish_version(db, agent)
     return agent
 
 
@@ -550,6 +560,7 @@ async def instantiate_department(
                 "skills": list(a.get("skills", [])),
                 **({"max_steps": int(a["max_steps"])} if a.get("max_steps") else {}),
             },
+            presentation={"prompt_starters": list(a.get("prompt_starters") or [])},
         )
         db.add(agent)
         await db.flush()
@@ -569,6 +580,8 @@ async def instantiate_department(
             agent.runtime_ref = await _runtime_ref_for_template(
                 db, tenant_id=tenant_id, plugin_name=runtime_name
             )
+        # Per agent, after its skills and runtime -- see instantiate_agent.
+        await publish_version(db, agent)
         if lead_id is None and agent.is_team_lead:
             lead_id = agent.id
 

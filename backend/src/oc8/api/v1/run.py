@@ -12,12 +12,14 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from oc8 import models as m
+from oc8.agents.versioning import pinned_version_no
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
 from oc8.audit import append_event
 from oc8.authz.permissions import RUN, RUN_CONTROL, RUN_START, VIEW, perm
 from oc8.runtime.clarification import resolve_clarification
 from oc8.runtime.intake import enqueue_run, publish_run
 from oc8.runtime.states import TERMINAL, RunState
+from oc8.runtime.step_record import step_timing_dto
 from oc8.schemas.dto import RunDTO, WorkspaceFileDTO, WorkspaceFilesDTO
 from oc8.schemas.requests import RunAgentRequest
 
@@ -33,7 +35,19 @@ class RunMessageRequest(BaseModel):
     body: str
 
 
-def run_to_dto(run: m.AgentRun) -> RunDTO:
+def run_to_dto(run: m.AgentRun, *, agent_version_no: int | None = None) -> RunDTO:
+    """`agent_version_no` is passed IN rather than resolved here.
+
+    This function is synchronous and has five callers, three of which are write
+    routes (`run`, `answer_run`, `cancel_run`) that return immediately after
+    `db.commit()` -- at which point the transaction-local `app.tenant_id`
+    binding is gone and any further query would silently return zero rows
+    under RLS. Only `get_run` (here) and
+    `get_session_run` (chat.py) read the number, via the shared
+    `versioning.pinned_version_no` helper -- both serialize a `RunDTO` for the
+    same frontend query-cache entry (`["run", runId]`), so both must fill this
+    identically or whichever refetches last would blank out the other's value.
+    """
     ctx = run.context or {}
     return RunDTO(
         id=str(run.id),
@@ -47,8 +61,69 @@ def run_to_dto(run: m.AgentRun) -> RunDTO:
         question=ctx.get("pending_question"),
         rendered_components=ctx.get("rendered_components", []),
         todos=ctx.get("todos", []),
+        agent_version_no=agent_version_no,
         updated_at=run.updated_at.isoformat(),
+        step_timings=[step_timing_dto(e) for e in ctx.get("stepTimings", [])],
     )
+
+
+#: How many runs one list request may return. Deliberately small: a RunDTO
+#: carries the run's whole toolCalls list and its stepTimings, so this is not
+#: a cheap row -- and the two consumers (the My Work activity widget, the
+#: needs-me queue) each show a handful.
+_MAX_RUNS = 20
+
+
+@router.get(
+    "/runs",
+    response_model=list[RunDTO],
+    dependencies=[Depends(require_permission(perm(RUN, VIEW)))],
+)
+async def list_runs(
+    db: DbSession,
+    principal: CurrentPrincipal,
+    state: str | None = None,
+    limit: int = 10,
+) -> list[RunDTO]:
+    """This tenant's most recently touched runs, newest first.
+
+    Why it exists: nothing else lists runs. The activity feed cannot stand in
+    for it -- `activity_event` has no `run_id` column, and `AgentDTO` carries
+    no run id either -- so "show me what my agents are doing, with the steps"
+    had no query behind it at all.
+
+    `state` is a comma-separated filter over `RunState` values; an unknown one
+    is a 400 rather than a silent empty list, because a caller that misspells
+    `waiting_for_aproval` would otherwise read the empty result as "nothing is
+    parked". Omitted means every state.
+
+    Scoping is RLS (tenant) plus `run:view`, the same pair that already gates
+    `GET /runs/{id}`: this route deliberately does not add a departmental
+    narrowing that the single-run route does not have, because two different
+    answers to "may I see this run" is how one of them ends up wrong.
+    """
+    stmt = select(m.AgentRun).where(m.AgentRun.tenant_id == principal.tenant_id)
+    if state:
+        wanted = [s.strip() for s in state.split(",") if s.strip()]
+        known = {s.value for s in RunState}
+        unknown = sorted(set(wanted) - known)
+        if unknown:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, f"unknown run state(s): {', '.join(unknown)}"
+            )
+        stmt = stmt.where(m.AgentRun.state.in_(wanted))
+    rows = (
+        (
+            await db.execute(
+                stmt.order_by(m.AgentRun.updated_at.desc(), m.AgentRun.id.desc()).limit(
+                    max(1, min(limit, _MAX_RUNS))
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [run_to_dto(row) for row in rows]
 
 
 @router.post(
@@ -148,7 +223,7 @@ async def get_run(run_id: uuid.UUID, db: DbSession, principal: CurrentPrincipal)
     run_row = await db.get(m.AgentRun, run_id)
     if run_row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
-    return run_to_dto(run_row)
+    return run_to_dto(run_row, agent_version_no=await pinned_version_no(db, run_row))
 
 
 @router.post(

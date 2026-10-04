@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { WIDGET_REGISTRY } from "./widget-registry";
 
 describe("WIDGET_REGISTRY", () => {
-  it("has exactly the six specified widget types", () => {
+  it("has exactly the seven specified widget types", () => {
     expect(Object.keys(WIDGET_REGISTRY).sort()).toEqual(
-      ["activity", "approvals", "budget", "chat", "reports", "tasks"].sort(),
+      ["activity", "approvals", "budget", "chat", "needs-me", "reports", "tasks"].sort(),
     );
   });
 

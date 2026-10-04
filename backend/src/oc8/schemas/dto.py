@@ -26,6 +26,10 @@ class AgentDTO(CamelModel):
     department_id: str | None = None
     model_config_id: str | None = None
     is_lead: bool = False
+    #: Opening questions the composer offers on an empty conversation (§5.3).
+    #: Empty for every agent whose template shipped none -- the composer then
+    #: falls back to three generic starters.
+    prompt_starters: list[str] = []
     deleted_at: str | None = None
     #: Demo-seed locale overlays (`{de: "…"}`). Empty on live agents.
     role_translations: dict[str, str] = {}
@@ -142,6 +146,13 @@ class ApprovalDTO(CamelModel):
     agent_name: str = ""
     task_id: str | None = None
     task_title: str = ""
+    #: The run this approval is holding, when there is one -- resolved from
+    #: the approval's `task_id` (an ApprovalRequest has no run_id column; the
+    #: run is what carries the task). `null` for an approval raised outside a
+    #: run (a budget incident, a `request_decision` on a task with no run
+    #: left), which is exactly the distinction the queue sorts on: an item
+    #: with a parked run behind it is blocking work, one without it is not.
+    run_id: str | None = None
     #: ISO-8601. What "vor 2 Std." on the row is computed from. There was no
     #: timestamp on this DTO at all, so the inbox could not say how long anything
     #: had been waiting.
@@ -575,6 +586,9 @@ class KnowledgeBaseDTO(CamelModel):
     deleted_at: str | None = None
     name_translations: dict[str, str] = {}
     description_translations: dict[str, str] = {}
+    index_type: str = "internal"
+    index_config: dict[str, Any] = {}
+    credential_id: str | None = None
 
 
 class GrantDTO(CamelModel):
@@ -677,6 +691,17 @@ class AgentDetailDTO(AgentDTO):
     #: ["max_steps"], a top-level key -- see engine._max_steps). None means
     #: "inherit settings.agent_max_steps", not a framework default value.
     max_steps: int | None = None
+    #: The version that actually runs. The thin shape `lib/skills.ts` already
+    #: uses for skills -- an id plus the number, and no client-side version
+    #: state machine. Whether the working copy has DRIFTED from it is a separate
+    #: question with its own endpoint (`GET /agents/{id}/draft-status`), because
+    #: it changes on a different schedule: thirteen write endpoints move it and
+    #: a publish clears it, while the rest of this payload is stable.
+    #:
+    #: Null only for a row written outside `create_agent` -- a fixture, a
+    #: restore, a psql insert. Every hired agent has a v1 from birth.
+    current_version_id: str | None = None
+    current_version_no: int | None = None
     #: Last successful Auto-router tier for this agent
     #: (``definition["auto_router_affinity"]["tier"]``): fast | balanced | strong.
     auto_router_affinity_tier: str | None = None
@@ -705,6 +730,71 @@ class AgentInstructionHistoryDTO(CamelModel):
     next_before_seq: int | None = None
 
 
+class AgentVersionSummaryDTO(CamelModel):
+    """One published agent version, as the Versions list renders it.
+
+    The list deliberately does NOT carry `payload`: a tenant with a hundred
+    versions of an agent whose `definition` is a grab-bag would ship a hundred
+    full configurations to render ten rows. `GET /agents/{id}/versions/{n}`
+    returns the payload for the one row somebody opened.
+    """
+
+    id: str
+    version_no: int
+    note: str | None = None
+    #: The `org_member.id` of whoever published it, or null for a version
+    #: written by something other than a person -- `create_agent`'s v1 when the
+    #: caller is a system principal, and the migration's backfilled v1 for
+    #: every agent that predates versioning.
+    published_by: str | None = None
+    published_at: str
+    is_current: bool = False
+    #: Set when this version was produced by a rollback, naming the version it
+    #: copied. Read out of the payload's reserved `_meta` key
+    #: (`agents.versioning.version_meta`), not out of a column -- a rollback is
+    #: rare and a column for it would be null on almost every row.
+    rolled_back_from: int | None = None
+
+
+class AgentVersionDTO(AgentVersionSummaryDTO):
+    """One version including its full configuration snapshot."""
+
+    payload: dict[str, Any] = {}
+    #: Hex, not bytes and not base64: JSON has no bytes type, and hex is the
+    #: spelling an operator can compare against `digest()` output in psql.
+    payload_hash: str = ""
+
+
+class AgentVersionFieldDiffDTO(CamelModel):
+    """One changed field. `field` is either a payload key (`mission`) or a
+    key one level inside a JSONB one (`narrowing.odoo`, `definition.max_steps`)
+    -- see `agents.versioning.diff_payloads` for why one level and no more."""
+
+    field: str
+    before: Any = None
+    after: Any = None
+
+
+class AgentVersionDiffDTO(CamelModel):
+    to_version_no: int | None = None
+    from_version_no: int
+    entries: list[AgentVersionFieldDiffDTO] = []
+
+
+class AgentDraftStatusDTO(CamelModel):
+    """The working copy versus the current version (spec §4).
+
+    `dirty` comes from the payload HASH and `changed_fields` from the diff, and
+    the boolean is the authority -- the publish endpoint's no-op 409 compares
+    hashes too, so a `dirty` derived from the field list could show a publish
+    bar for a publish the API would refuse.
+    """
+
+    dirty: bool = False
+    changed_fields: list[str] = []
+    current_version_no: int | None = None
+
+
 class MemoryRecordDTO(CamelModel):
     """One `memory_record` row, for the agent/department Memory tabs (§10).
     `status` is always "approved" for the agent/department tiers this DTO
@@ -731,6 +821,31 @@ class PrincipalUsageDTO(CamelModel):
     saved_tokens_in: int
     saved_tokens_out: int
     saved_cost_micros: int
+
+
+class TokenUsageExportRowDTO(CamelModel):
+    """One `token_usage_record` row for `GET /usage/export` -- one row per
+    metered request, unlike `PrincipalUsageDTO`'s per-day/per-group rollup.
+    `cost_micros` is computed at render time from the versioned `ModelPrice`
+    table (see `metering/pricing.py`); cost is deliberately not stored on the
+    record itself."""
+
+    ts: str
+    agent_id: str | None
+    agent_name: str | None
+    department_id: str | None
+    department_name: str | None
+    model: str
+    provider: str
+    tokens_in: int
+    tokens_out: int
+    cache_hit: bool
+    saved_tokens_in: int
+    saved_tokens_out: int
+    platform_units: int
+    cost_micros: int | None
+    skill_id: str | None
+    request_id: str
 
 
 class GuardrailPresetDTO(CamelModel):
@@ -888,6 +1003,50 @@ class ConnectionToolNamesDTO(CamelModel):
     modify: list[str] = []
 
 
+class ToolLabelDTO(CamelModel):
+    """One tool's human label, resolved for the browser.
+
+    English source strings plus every translation the pack's own `i18n/*.po`
+    catalogs carry, the same `<field>Translations` arrangement
+    `GuardrailPresetDTO` uses -- the frontend picks a locale with
+    `resolveTranslation()` and never parses a manifest or a catalog itself.
+    """
+
+    tool: str
+    verb: str
+    object: str = ""
+    running: str = ""
+    verb_translations: dict[str, str] = {}
+    object_translations: dict[str, str] = {}
+    running_translations: dict[str, str] = {}
+
+
+class ModelLabelDTO(CamelModel):
+    """One entity value's human plural, e.g. `crm.lead` -> "deals"."""
+
+    key: str
+    label: str
+    label_translations: dict[str, str] = {}
+
+
+class ConnectionToolLabelsDTO(CamelModel):
+    """Everything the step timeline needs to write one row's sentence without
+    knowing anything about the connected software.
+
+    `read`/`modify` are carried alongside the labels on purpose: they are the
+    SECOND tier of the label resolution order (a tool with no declared label
+    still becomes "Read from odoo" / "Changed something in odoo"), and
+    fetching them from a second endpoint would let a timeline render raw tool
+    names for as long as that request was in flight.
+    """
+
+    connection: str
+    labels: list[ToolLabelDTO] = []
+    model_labels: list[ModelLabelDTO] = []
+    read: list[str] = []
+    modify: list[str] = []
+
+
 class RenderedComponentDTO(CamelModel):
     """One render_component call's durable record -- the raw dict stored in
     `agent_run.context["rendered_components"]` / `chat_message.
@@ -937,6 +1096,30 @@ class RunDTO(CamelModel):
     # .py's ctx["todos"]). Empty means either the agent never called todo_write,
     # or it cleared the list on its last call -- both render as "no todos".
     todos: list[TodoDTO] = []
+    #: The version this run is pinned to (`agent_run.agent_version_id`), by
+    #: NUMBER rather than id -- that is what the Versions tab shows and what
+    #: `GET /agents/{id}/versions/{n}` is addressed by, so a transcript can link
+    #: straight to the configuration that produced it.
+    #:
+    #: Null for a run created before version pinning existed. Migration 0099
+    #: deliberately did not backfill those: inventing a version for a historical
+    #: run is a claim about the past nothing can support, and the runtimes
+    #: already treat null as "read the live row".
+    agent_version_no: int | None = None
+    # One entry per model step (oc8.runtime.step_record), in step order:
+    # {"step", "modelWaitMs", "ttftMs", "toolWaitMs", "stepWallMs"}. Unlike
+    # tool_calls above, this is NOT a verbatim pass-through: the stored JSONB
+    # (context["stepTimings"]) keeps the snake_case keys
+    # oc8.agent.harness.step_timing writes (model_wait_ms, ttft_ms, etc) --
+    # that format must never change, since the eval CLI and that module's own
+    # latency_lines() read it directly. run_to_dto translates each entry to
+    # the camelCase shape above via oc8.runtime.step_record.step_timing_dto
+    # before it ever reaches this field.
+    #
+    # Empty for a run older than this field, and for a run whose runtime
+    # never recorded one: the timeline renders a missing duration as nothing
+    # at all rather than as zero.
+    step_timings: list[dict[str, object]] = []
 
 
 class ChatSessionDTO(CamelModel):
@@ -956,6 +1139,28 @@ class FileAttachmentDTO(CamelModel):
     created_at: str
 
 
+class ChatContextRefDTO(CamelModel):
+    kind: str
+    id: str
+    label: str
+
+
+class ChatModeDTO(CamelModel):
+    """One slash command the composer may offer (§5.2). Served from
+    `oc8.chat.modes` so the picker and the enforcement cannot disagree about
+    which commands exist.
+
+    `summary` is ENGLISH -- backend strings are. The frontend translates a key
+    it knows and falls back to this text for one it does not, so a mode added
+    later is readable without a frontend release.
+    """
+
+    key: str
+    summary: str
+    allows_tools: bool
+    allows_writes: bool
+
+
 class ChatMessageDTO(CamelModel):
     id: str
     session_id: str
@@ -965,6 +1170,10 @@ class ChatMessageDTO(CamelModel):
     rendered_components: list[RenderedComponentDTO] = []
     created_at: str
     attachments: list[FileAttachmentDTO] = []
+    #: How this turn was asked -- see `oc8.chat.modes`. Null for an ordinary
+    #: message. The composer renders it as a badge on the sent turn.
+    mode: str | None = None
+    context_refs: list[ChatContextRefDTO] = []
 
 
 class ReportDTO(CamelModel):
@@ -1309,7 +1518,7 @@ class WidgetInstanceDTO(CamelModel):
     """
 
     id: str
-    type: Literal["chat", "approvals", "reports", "budget", "activity", "tasks"]
+    type: Literal["chat", "approvals", "reports", "budget", "activity", "tasks", "needs-me"]
     x: int
     y: int
     w: int

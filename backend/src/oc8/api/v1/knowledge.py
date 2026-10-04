@@ -28,6 +28,7 @@ from oc8.knowledge.connectors.base import ConnectorError
 from oc8.knowledge.connectors.context import SourceAuthContext
 from oc8.knowledge.connectors.fetcher import safe_fetch
 from oc8.knowledge.connectors.registry import available_connectors, resolve_connector
+from oc8.knowledge.external_index import ExternalIndexRejected, validate_external_index_binding
 from oc8.knowledge.ingest import (
     IngestionError,
     KnowledgeBaseNotFoundError,
@@ -44,7 +45,14 @@ from oc8.knowledge.tombstone import (
     tombstone_source,
     unlink_source_from_base,
 )
+from oc8.knowledge.vector_indexes.base import VectorIndexError
+from oc8.knowledge.vector_indexes.registry import (
+    INTERNAL_INDEX_TYPE,
+    available_vector_indexes,
+    resolve_vector_index,
+)
 from oc8.knowledge.worker import get_ingestion_queue
+from oc8.modelrouter import EmbeddingUnavailable, get_model_router
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import (
     BaseRemovalDTO,
@@ -90,6 +98,21 @@ class ConnectorCatalogDTO(CamelModel):
     requires_oauth: str | None = None
 
 
+class VectorIndexCatalogDTO(CamelModel):
+    """A tenant's usable query-only vector-index backends."""
+
+    type_id: str
+    label: str | None = None
+    description: str | None = None
+    config_schema: dict[str, object]
+    credential_type: str
+
+
+class PreviewIndexRequest(CamelModel):
+    query: str = "test"
+    limit: int = 5
+
+
 @router.get(
     "/knowledge/connectors",
     response_model=list[ConnectorCatalogDTO],
@@ -108,6 +131,27 @@ async def list_connectors(db: DbSession, principal: CurrentPrincipal) -> list[Co
         for type_id, connector in sorted(connectors.items())
         # Uploads are created by document upload, not as a configurable source.
         if type_id != "upload"
+    ]
+
+
+@router.get(
+    "/knowledge/vector-indexes",
+    response_model=list[VectorIndexCatalogDTO],
+    dependencies=[Depends(require_permission(perm(KNOWLEDGE, VIEW)))],
+)
+async def list_vector_indexes(
+    db: DbSession, principal: CurrentPrincipal
+) -> list[VectorIndexCatalogDTO]:
+    indexes = await available_vector_indexes(db, tenant_id=principal.tenant_id)
+    return [
+        VectorIndexCatalogDTO(
+            type_id=type_id,
+            label=getattr(index, "label", None),
+            description=getattr(index, "description", None),
+            config_schema=index.config_schema,
+            credential_type=index.credential_type,
+        )
+        for type_id, index in sorted(indexes.items())
     ]
 
 
@@ -217,17 +261,91 @@ async def create_base(
     db: DbSession,
     principal: CurrentPrincipal,
 ) -> KnowledgeBaseDTO:
+    index_type = (body.index_type or INTERNAL_INDEX_TYPE).strip() or INTERNAL_INDEX_TYPE
+    index_config = dict(body.index_config or {})
+    credential_id = body.credential_id
+
+    if index_type == INTERNAL_INDEX_TYPE:
+        credential_id = None
+        index_config = {}
+    else:
+        try:
+            await validate_external_index_binding(
+                db,
+                tenant_id=principal.tenant_id,
+                index_type=index_type,
+                index_config=index_config,
+                credential_id=credential_id,
+            )
+        except ExternalIndexRejected as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
     kb = m.KnowledgeBase(
         tenant_id=principal.tenant_id,
         name=body.name,
         description=body.description,
         embedding_model=body.embedding_model,
         status="current",
-        classification="internal",
+        classification=body.classification or "internal",
+        index_type=index_type,
+        index_config=index_config,
+        credential_id=credential_id,
     )
     db.add(kb)
     await db.flush()
     return kb_to_dto(kb, [], [])
+
+
+@router.post(
+    "/knowledge/bases/{kb_id}/preview-index",
+    dependencies=[Depends(require_permission(perm(KNOWLEDGE, MANAGE)))],
+)
+async def preview_index(
+    kb_id: uuid.UUID,
+    body: PreviewIndexRequest,
+    db: DbSession,
+    principal: CurrentPrincipal,
+) -> dict[str, object]:
+    """Probe-search an external index. Internal bases use the documents list."""
+    kb = await _live_base(db, kb_id)
+    if (kb.index_type or INTERNAL_INDEX_TYPE) == INTERNAL_INDEX_TYPE:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "preview-index is only for external vector indexes",
+        )
+    if kb.credential_id is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "knowledge base has no credential")
+    try:
+        index = await resolve_vector_index(
+            db, tenant_id=principal.tenant_id, type_id=kb.index_type
+        )
+        query_embedding = await get_model_router().embed(body.query, model=kb.embedding_model)
+        hits = await index.search(
+            kb.index_config or {},
+            SourceAuthContext(db, tenant_id=principal.tenant_id),
+            credential_id=str(kb.credential_id),
+            query_embedding=query_embedding,
+            query_text=body.query,
+            limit=max(1, min(body.limit, 20)),
+        )
+    except EmbeddingUnavailable as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            f"embedding unavailable for model {kb.embedding_model!r}",
+        ) from exc
+    except VectorIndexError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return {
+        "hits": [
+            {
+                "content": h.content,
+                "sourceUri": h.source_uri,
+                "score": h.score,
+                "classification": h.classification,
+            }
+            for h in hits
+        ]
+    }
 
 
 @router.patch(
@@ -466,7 +584,13 @@ async def sync_source(
     # started after the tombstones landed would re-ingest straight back into the
     # base the operator just cleared.
     ds = await _live_source(db, source_id, principal.tenant_id)
-    await _live_base(db, body.kb_id)
+    kb = await _live_base(db, body.kb_id)
+    if (kb.index_type or INTERNAL_INDEX_TYPE) != INTERNAL_INDEX_TYPE:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "this knowledge base is connected to an external vector index — "
+            "sync is not supported",
+        )
 
     job = m.IngestionJob(
         tenant_id=principal.tenant_id,

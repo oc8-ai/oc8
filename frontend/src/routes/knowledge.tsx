@@ -50,6 +50,7 @@ import {
   useDeleteSource,
   useIngestionJob,
   useKnowledgeConnectors,
+  useKnowledgeVectorIndexes,
   useOAuthConnections,
   useSyncSource,
   useUpdateSource,
@@ -1789,12 +1790,19 @@ export function BaseWizard({
   const createKnowledgeBase = useCreateKnowledgeBase();
   const syncSource = useSyncSource();
   const { data: sourcesPage } = useDataSources({ pageSize: 200 });
+  const { data: vectorIndexes = [] } = useKnowledgeVectorIndexes();
   const availableSources = (sourcesPage?.items ?? []).filter((s) => s.connected && !s.deletedAt);
   const [step, setStep] = useState(1);
   const [name, setName] = useState("");
+  const [mode, setMode] = useState<"ingest" | "connect">("ingest");
   const [model, setModel] =
     useState<(typeof LOCAL_EMBEDDING_MODELS)[number]>("local/nomic-embed-text");
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
+  const [indexType, setIndexType] = useState("");
+  const [credentialId, setCredentialId] = useState("");
+  const [indexConfig, setIndexConfig] = useState<Record<string, unknown>>({});
+
+  const selectedIndex = vectorIndexes.find((v) => v.typeId === indexType) ?? null;
 
   function toggleSource(id: string) {
     setSelectedSourceIds((prev) =>
@@ -1803,6 +1811,27 @@ export function BaseWizard({
   }
 
   function finish() {
+    if (mode === "connect") {
+      if (!selectedIndex || !credentialId) return;
+      createKnowledgeBase.mutate(
+        {
+          name: name.trim(),
+          description: "",
+          embeddingModel: model,
+          indexType: selectedIndex.typeId,
+          indexConfig,
+          credentialId,
+        },
+        {
+          onSuccess: (kb) => onCreate(kb),
+          onError: (error) =>
+            toast.error("Could not connect vector index", {
+              description: error instanceof Error ? error.message : String(error),
+            }),
+        },
+      );
+      return;
+    }
     createKnowledgeBase.mutate(
       { name: name.trim(), description: "", embeddingModel: model },
       {
@@ -1828,11 +1857,24 @@ export function BaseWizard({
     );
   }
 
+  const totalSteps = 3;
+  const canContinueStep1 = Boolean(name.trim());
+  const canContinueStep2 =
+    mode === "ingest" || (Boolean(indexType) && Boolean(credentialId) && Boolean(selectedIndex));
+  const finishLabel =
+    mode === "connect"
+      ? createKnowledgeBase.isPending
+        ? "Connecting…"
+        : "Connect index"
+      : createKnowledgeBase.isPending
+        ? "Creating…"
+        : "Create knowledge base";
+
   return (
     <Wizard
-      title="Create knowledge base"
+      title={mode === "connect" ? "Connect existing index" : "Create knowledge base"}
       step={step}
-      totalSteps={3}
+      totalSteps={totalSteps}
       onClose={onClose}
       footer={
         <>
@@ -1844,10 +1886,10 @@ export function BaseWizard({
               Back
             </button>
           )}
-          {step < 3 ? (
+          {step < totalSteps ? (
             <button
               onClick={() => setStep((s) => s + 1)}
-              disabled={step === 1 && !name}
+              disabled={step === 1 ? !canContinueStep1 : !canContinueStep2}
               className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:brightness-110 disabled:opacity-50"
             >
               Continue
@@ -1855,32 +1897,83 @@ export function BaseWizard({
           ) : (
             <button
               onClick={finish}
-              disabled={createKnowledgeBase.isPending}
+              disabled={createKnowledgeBase.isPending || (mode === "connect" && !canContinueStep2)}
               className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:brightness-110 disabled:opacity-50"
             >
-              {createKnowledgeBase.isPending ? "Creating…" : "Create knowledge base"}
+              {finishLabel}
             </button>
           )}
         </>
       }
     >
       {step === 1 && (
-        <label className="block">
-          <div className="text-xs uppercase tracking-widest text-muted-foreground">Name</div>
-          <input
-            autoFocus
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. Sales KB"
-            className="mt-1 w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
-          />
-          <p className="mt-2 text-xs text-muted-foreground">
-            A knowledge base bundles one or more data sources and exposes them to agents through
-            retrieval.
-          </p>
-        </label>
+        <div className="space-y-4">
+          <label className="block">
+            <div className="text-xs uppercase tracking-widest text-muted-foreground">Name</div>
+            <input
+              autoFocus
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Sales KB"
+              className="mt-1 w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
+            />
+          </label>
+          <div>
+            <div className="text-xs uppercase tracking-widest text-muted-foreground">
+              {t("How should this base get content?", "Wie soll diese Basis Inhalt bekommen?")}
+            </div>
+            <div className="mt-2 space-y-1.5">
+              <label className="flex cursor-pointer items-start gap-2 rounded-md border border-border bg-background/40 px-3 py-2 text-xs hover:border-primary/40">
+                <input
+                  type="radio"
+                  name="kb-mode"
+                  checked={mode === "ingest"}
+                  onChange={() => setMode("ingest")}
+                  className="mt-0.5"
+                />
+                <span>
+                  <span className="font-medium">
+                    {t("Ingest sources into oc8", "Quellen in oc8 ingestieren")}
+                  </span>
+                  <span className="mt-0.5 block text-muted-foreground">
+                    {t(
+                      "Sync connected sources or upload documents into this base.",
+                      "Verbundene Quellen syncen oder Dokumente in diese Basis laden.",
+                    )}
+                  </span>
+                </span>
+              </label>
+              <label className="flex cursor-pointer items-start gap-2 rounded-md border border-border bg-background/40 px-3 py-2 text-xs hover:border-primary/40">
+                <input
+                  type="radio"
+                  name="kb-mode"
+                  checked={mode === "connect"}
+                  onChange={() => setMode("connect")}
+                  className="mt-0.5"
+                  disabled={vectorIndexes.length === 0}
+                />
+                <span>
+                  <span className="font-medium">
+                    {t("Connect existing vector index", "Bestehenden Vector-Index verbinden")}
+                  </span>
+                  <span className="mt-0.5 block text-muted-foreground">
+                    {vectorIndexes.length === 0
+                      ? t(
+                          "Enable a vector-index capa (Qdrant, pgvector) first.",
+                          "Aktiviere zuerst eine Vector-Index-Capa (Qdrant, pgvector).",
+                        )
+                      : t(
+                          "Search an existing Qdrant or pgvector collection — query-only, no copy into oc8.",
+                          "Eine bestehende Qdrant- oder pgvector-Collection durchsuchen — nur lesen, ohne Kopie in oc8.",
+                        )}
+                  </span>
+                </span>
+              </label>
+            </div>
+          </div>
+        </div>
       )}
-      {step === 2 && (
+      {step === 2 && mode === "ingest" && (
         <div>
           <div className="text-xs uppercase tracking-widest text-muted-foreground">
             {t("Data sources (optional)", "Datenquellen (optional)")}
@@ -1918,6 +2011,81 @@ export function BaseWizard({
           </div>
         </div>
       )}
+      {step === 2 && mode === "connect" && selectedIndex === null && (
+        <div>
+          <div className="text-xs uppercase tracking-widest text-muted-foreground">
+            {t("Index type", "Index-Typ")}
+          </div>
+          <div className="mt-2 space-y-1.5">
+            {vectorIndexes.map((v) => (
+              <button
+                key={v.typeId}
+                type="button"
+                onClick={() => {
+                  setIndexType(v.typeId);
+                  setCredentialId("");
+                  const defaults: Record<string, unknown> = {};
+                  for (const [key, field] of Object.entries(v.configSchema.properties ?? {})) {
+                    if (field.default !== undefined) defaults[key] = field.default;
+                  }
+                  setIndexConfig(defaults);
+                }}
+                className={cn(
+                  "w-full rounded-md border px-3 py-2 text-left text-xs",
+                  indexType === v.typeId
+                    ? "border-primary/50 bg-primary/10"
+                    : "border-border bg-background/40 hover:border-primary/40",
+                )}
+              >
+                <div className="font-medium">{v.label ?? v.typeId}</div>
+                {v.description && (
+                  <div className="mt-0.5 text-muted-foreground">{v.description}</div>
+                )}
+              </button>
+            ))}
+          </div>
+          {indexType && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              {t("Continue to configure the selected index.", "Weiter, um den Index zu konfigurieren.")}
+            </p>
+          )}
+        </div>
+      )}
+      {step === 2 && mode === "connect" && selectedIndex !== null && (
+        <div className="space-y-3">
+          <button
+            type="button"
+            onClick={() => setIndexType("")}
+            className="text-[11px] text-muted-foreground underline"
+          >
+            {t("Change index type", "Index-Typ ändern")}
+          </button>
+          <label className="block text-xs text-muted-foreground">
+            {t("Credentials", "Zugangsdaten")}
+            <div className="mt-1">
+              <CredentialPicker
+                credentialType={selectedIndex.credentialType}
+                value={credentialId}
+                onChange={setCredentialId}
+              />
+            </div>
+          </label>
+          {Object.entries(selectedIndex.configSchema.properties ?? {}).map(([key, field]) => (
+            <label key={key} className="block text-xs text-muted-foreground">
+              {field.title ?? key}
+              <input
+                type="text"
+                value={String(indexConfig[key] ?? "")}
+                onChange={(e) => setIndexConfig((prev) => ({ ...prev, [key]: e.target.value }))}
+                className="mt-1 w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm text-foreground"
+              />
+              {field.description && (
+                <span className="mt-1 block text-[11px]">{field.description}</span>
+              )}
+            </label>
+          ))}
+        </div>
+      )}
       {step === 3 && (
         <>
           <div>
@@ -1926,14 +2094,22 @@ export function BaseWizard({
             </div>
             <div className="mt-1 rounded-md border border-border bg-background/40 p-3 text-xs">
               <div className="flex items-center justify-between">
-                <span className="font-medium">Recommended defaults</span>
+                <span className="font-medium">
+                  {mode === "connect"
+                    ? t("Must match the remote collection", "Muss zur Remote-Collection passen")
+                    : "Recommended defaults"}
+                </span>
                 <span className="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[10px] text-primary">
-                  auto
+                  {mode === "connect" ? "required" : "auto"}
                 </span>
               </div>
               <p className="mt-1 text-muted-foreground">
-                Chunk size 800 · overlap 120 · model <span className="font-mono">{model}</span>.
-                Good for most document-heavy sources.
+                {mode === "connect"
+                  ? t(
+                      "The embedding model used for queries must be the same family (and dimension) that built the remote collection — otherwise search returns noise.",
+                      "Das Embedding-Modell für Abfragen muss dieselbe Familie (und Dimension) haben wie die Remote-Collection — sonst liefert die Suche Müll.",
+                    )
+                  : `Chunk size 800 · overlap 120 · model ${model}. Good for most document-heavy sources.`}
               </p>
             </div>
           </div>

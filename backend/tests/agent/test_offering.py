@@ -102,6 +102,8 @@ def test_read_resource_needs_a_uri_and_the_connections_read_right() -> None:
         tool_policies={},
         connection_key=None,
         tool_scopes=None,
+        narrowing={},
+        is_team_lead=False,
     )
     assert missing.effect is Effect.DENY
 
@@ -116,5 +118,7 @@ def test_read_resource_needs_a_uri_and_the_connections_read_right() -> None:
         tool_policies={"odoo": ToolPolicy(enabled=True, read=True)},
         connection_key=None,
         tool_scopes=None,
+        narrowing={},
+        is_team_lead=False,
     )
     assert allowed.effect is Effect.ALLOW

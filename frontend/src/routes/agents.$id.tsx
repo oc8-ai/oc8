@@ -108,6 +108,8 @@ import {
   type Supervisor,
 } from "@/lib/mock-data";
 import { type Skill } from "@/lib/skills";
+import { AgentPublishBar } from "@/components/agent-publish-bar";
+import { AgentVersionsTab } from "@/components/agent-versions-tab";
 import { AgentRuntimePanel } from "@/components/agent-runtime-panel";
 import { ChatWindow } from "@/components/chat-window";
 import { ComponentGrantPanel } from "@/components/component-grant-panel";
@@ -157,6 +159,7 @@ const TAB_IDS = [
   "skills",
   "memory",
   "history",
+  "versions",
 ] as const;
 type TabId = (typeof TAB_IDS)[number];
 
@@ -248,6 +251,7 @@ function AgentDetail() {
     { id: "skills", label: t("Skills", "Skills") },
     { id: "memory", label: t("Memory", "Gedächtnis") },
     { id: "history", label: t("History", "Verlauf") },
+    { id: "versions", label: t("Versions", "Versionen") },
   ];
 
   function submitRun() {
@@ -354,6 +358,11 @@ function AgentDetail() {
         </div>
       </Panel>
 
+      {/* Above the tabs, not inside one: an edit made on the Guardrails tab has
+          to be publishable from wherever the operator ends up, and a bar that
+          lives inside a tab is a bar half the people who need it never see. */}
+      <AgentPublishBar agentId={agent.id} mayManage={mayManage} />
+
       {runPickerOpen && (
         <div
           className="fixed inset-0 z-40 grid place-items-center bg-black/60 p-4 backdrop-blur-sm"
@@ -440,10 +449,21 @@ function AgentDetail() {
           followed too, which is what makes a cron-driven agent watchable at
           all. */}
       {tab === "livelog" && (
-        <LiveLog agentId={agent.id} runId={runId ?? agent.currentRunId ?? null} />
+        <LiveLog
+          agentId={agent.id}
+          runId={runId ?? agent.currentRunId ?? null}
+          onOpenVersions={() => setTab("versions")}
+        />
       )}
 
-      {tab === "chat" && <ChatWindow key={agent.id} agentId={agent.id} agentName={agent.name} />}
+      {tab === "chat" && (
+        <ChatWindow
+          key={agent.id}
+          agentId={agent.id}
+          agentName={agent.name}
+          promptStarters={agent.promptStarters ?? []}
+        />
+      )}
 
       {tab === "files" && <WorkspaceFilesPanel agentId={agent.id} />}
 
@@ -532,6 +552,8 @@ function AgentDetail() {
       {tab === "skills" && (
         <AgentSkillsTab agentId={agent.id} agentName={agent.name} mayManage={mayManage} />
       )}
+
+      {tab === "versions" && <AgentVersionsTab agentId={agent.id} mayManage={mayManage} />}
     </div>
   );
 }
@@ -2438,7 +2460,48 @@ export function StalenessNotice({ updatedAt }: { updatedAt: string }) {
   );
 }
 
-function LiveLog({ agentId, runId }: { agentId: string; runId: string | null }) {
+/** The version a run executed under. Exported for its own test, like
+ *  `OverviewTab` and `AgentSkillsTab` already are in this file.
+ *
+ *  A number and nothing else. Resolving the version's payload here would mean a
+ *  second request per run to render four characters, and the operator who wants
+ *  the configuration is one click away from it in the Versions tab. */
+export function RunPinnedVersion({
+  versionNo,
+  onOpenVersions,
+}: {
+  versionNo: number | null | undefined;
+  onOpenVersions: () => void;
+}) {
+  const t = useT();
+  // Null for a run created before pinning existed (migration 0099 deliberately
+  // did not backfill those). Rendering "v?" would send somebody looking for a
+  // version that was never recorded.
+  if (versionNo === null || versionNo === undefined) return null;
+  return (
+    <button
+      type="button"
+      onClick={onOpenVersions}
+      title={t(
+        "The configuration version this run is pinned to",
+        "Die Konfigurationsversion, auf die dieser Lauf festgelegt ist",
+      )}
+      className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 font-mono text-[10px] text-muted-foreground transition hover:text-foreground"
+    >
+      {`v${versionNo}`}
+    </button>
+  );
+}
+
+function LiveLog({
+  agentId,
+  runId,
+  onOpenVersions,
+}: {
+  agentId: string;
+  runId: string | null;
+  onOpenVersions: () => void;
+}) {
   const t = useT();
   const run = useRun(runId);
   // Asked of the server for THIS agent, and raised by "show more": filtering a
@@ -2519,6 +2582,10 @@ function LiveLog({ agentId, runId }: { agentId: string; runId: string | null }) 
                   : t("Stop", "Abbrechen")}
               </button>
             )}
+            <RunPinnedVersion
+              versionNo={run.data?.agentVersionNo}
+              onOpenVersions={onOpenVersions}
+            />
             {run.data && <RunStateBadge state={run.data.state} />}
           </div>
         </div>

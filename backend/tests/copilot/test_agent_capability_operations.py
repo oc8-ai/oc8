@@ -170,3 +170,70 @@ async def test_skill_assign_rejects_an_unknown_skill_version(app_session, acme_t
         )
         with pytest.raises(ProposalRejected):
             await apply_proposal(db, proposal.id, actor)
+
+
+async def test_an_approved_change_is_published_so_the_next_run_uses_it(
+    app_session, acme_tenant
+) -> None:
+    """Runs execute the PUBLISHED version. An operator-approved Copilot change
+    written only to the live row would never take effect."""
+    from oc8.agents.versioning import draft_status, publish_version, resolve_version
+
+    actor = _actor(acme_tenant)
+    async with app_session(acme_tenant) as db:
+        agent = await _agent(db, acme_tenant)
+        await publish_version(db, agent, note="v1")
+        mc = m.ModelConfig(tenant_id=acme_tenant, provider="anthropic", model="claude-sonnet-5")
+        db.add(mc)
+        await db.flush()
+        proposal = await create_proposal(
+            db,
+            actor,
+            [
+                {"type": "agent.mission.set", "agentId": str(agent.id), "mission": "new"},
+                {
+                    "type": "agent.model.switch",
+                    "agentId": str(agent.id),
+                    "modelConfigId": str(mc.id),
+                },
+            ],
+        )
+        result = await apply_proposal(db, proposal.id, actor)
+        assert result.status == "applied"
+        await db.refresh(agent)
+        pinned = await resolve_version(db, None, agent)
+        assert pinned["mission"] == "new"
+        assert pinned["model_config_id"] == str(mc.id)
+        assert (await draft_status(db, agent)).dirty is False
+
+
+async def test_an_approved_change_does_not_publish_an_operators_pending_draft(
+    app_session, acme_tenant
+) -> None:
+    """An agent mid-edit keeps its draft unpublished: publishing the Copilot's
+    change would push the operator's unfinished edit live with it. The change
+    joins the draft and shows in the publish bar instead."""
+    from oc8.agents.versioning import draft_status, publish_version, resolve_version
+
+    actor = _actor(acme_tenant)
+    async with app_session(acme_tenant) as db:
+        agent = await _agent(db, acme_tenant)
+        agent.role_title = "published"
+        await db.flush()
+        await publish_version(db, agent, note="v1")
+        agent.role_title = "an unfinished edit"
+        await db.flush()
+        proposal = await create_proposal(
+            db,
+            actor,
+            [{"type": "agent.mission.set", "agentId": str(agent.id), "mission": "new"}],
+        )
+        result = await apply_proposal(db, proposal.id, actor)
+        assert result.status == "applied"
+        await db.refresh(agent)
+        pinned = await resolve_version(db, None, agent)
+        assert pinned["role_title"] == "published"
+        assert pinned["mission"] != "new"
+        status = await draft_status(db, agent)
+        assert status.dirty is True
+        assert set(status.changed_fields) == {"mission", "role_title"}

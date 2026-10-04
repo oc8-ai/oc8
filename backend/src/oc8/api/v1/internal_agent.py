@@ -21,12 +21,14 @@ import datetime as dt
 import json
 import logging
 import uuid
+from collections.abc import Mapping
 from dataclasses import replace
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import text
+from sqlalchemy.orm.attributes import flag_modified
 
 from oc8 import models as m
 from oc8.agent import cache_flow, mcp_pool
@@ -88,8 +90,10 @@ from oc8.agent.preamble import build_run_preamble
 from oc8.agent.tool_notes import apply_tool_notes
 from oc8.agent.tool_routing import build_routes
 from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_identity
+from oc8.agents.versioning import pinned_model_config_id, resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession, unguarded
 from oc8.approvals import raise_approval
+from oc8.approvals.record_url import record_url_for_connection
 from oc8.audit import append_event
 from oc8.authz.pdp import (
     Decision,
@@ -98,6 +102,7 @@ from oc8.authz.pdp import (
     required_right,
 )
 from oc8.capas.discovery import resolve_tool_pack_connection
+from oc8.chat.modes import mode_from_context
 from oc8.config import get_settings
 from oc8.metering import record_usage
 from oc8.modelrouter import (
@@ -113,10 +118,16 @@ from oc8.modelrouter.keys import resolve_model_base_url
 from oc8.modelrouter.sampling import bumped_for_length_retry, resolve_params
 from oc8.modelrouter.trim import overflow_tokens
 from oc8.modelrouter.types import ImagePart, ModelParams, TextPart, with_prompt_cache_key
-from oc8.realtime.emit import note_focus, publish_run_token_delta, publish_run_tool_call
+from oc8.realtime.emit import (
+    note_focus,
+    publish_run_step_timing,
+    publish_run_token_delta,
+    publish_run_tool_call,
+)
 from oc8.runtime.approval_resume import pre_decided_map
 from oc8.runtime.registry import BUILTIN_ISOLATED_RUNTIME_REF
 from oc8.runtime.run_context import append_tool_call
+from oc8.runtime.step_record import call_state_for, step_timing_dto
 from oc8.skills.runtime import LoadedSkill, instruction_block, load_assigned_skills
 from oc8.storage import s3
 
@@ -251,10 +262,21 @@ def _from_message(msg: NeutralMessage) -> dict[str, Any]:
 
 async def _load(
     db: DbSession, run: m.AgentRun
-) -> tuple[m.Agent, m.Department | None, m.McpConnection | None]:
+) -> tuple[m.Agent, m.Department | None, m.McpConnection | None, dict[str, Any]]:
+    """The run's agent, department, bound connection -- and, last, the agent
+    configuration the run executes under (`resolve_version`).
+
+    Called afresh on every /step and /tool, so every behavioural field must be
+    read off that 4th element and never off the live `agent` row: the row is
+    the operator's working draft, and reading it here is exactly how a config
+    change used to land between two tool calls of one run. Re-reading on each
+    call is fine now, because what it resolves to is immutable. The
+    department (and its frame) stays a live read on purpose -- tightening
+    the tenant's ceiling must bite mid-run."""
     agent = await db.get(m.Agent, run.agent_id)
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
+    cfg = await resolve_version(db, run, agent)
     dept = await db.get(m.Department, agent.department_id)
     conn = None
     mcp_id = run.context.get("mcp_connection_id")
@@ -274,7 +296,7 @@ async def _load(
                 .limit(1)
             )
         ).scalar_one_or_none()
-    return agent, dept, conn
+    return agent, dept, conn, cfg
 
 
 def _mcp_params(conn: m.McpConnection) -> dict[str, Any]:
@@ -311,6 +333,7 @@ async def _discover_connection_tools(
     agent: m.Agent,
     dept: m.Department | None,
     conns: list[m.McpConnection],
+    pinned: Mapping[str, Any],
 ) -> tuple[
     list[dict[str, Any]],
     dict[str, list[str]],
@@ -329,7 +352,7 @@ async def _discover_connection_tools(
     the model, and the other connections stay in the list.
     """
     frame = dept.frame if dept is not None else {}
-    policies = effective_tool_policies(frame, agent.narrowing or {})
+    policies = effective_tool_policies(frame, pinned["narrowing"] or {})
 
     async def _one(
         conn: m.McpConnection,
@@ -342,9 +365,7 @@ async def _discover_connection_tools(
         try:
             env = await _mcp_env(conn, db, run.tenant_id)
             headers = resolve_auth_header(cfg, env)
-            command, args = wrap_with_requirements(
-                cfg.get("command", ""), cfg.get("args", []), cfg
-            )
+            command, args = wrap_with_requirements(cfg.get("command", ""), cfg.get("args", []), cfg)
             listed = await mcp_pool.tools(
                 conn.id,
                 command=command,
@@ -486,7 +507,9 @@ async def _finish_elicitation(
 
     tool = str(pending.get("tool") or "")
     connection_name = str(pending.get("connection") or "")
-    arguments = arguments_with_answer(dict(pending.get("arguments") or {}), str(answers[-1]["answer"]))
+    arguments = arguments_with_answer(
+        dict(pending.get("arguments") or {}), str(answers[-1]["answer"])
+    )
     conn = next(
         (item for item in await _connections(db, run, dept) if item.name == connection_name),
         None,
@@ -498,9 +521,7 @@ async def _finish_elicitation(
             env = await _mcp_env(conn, db, run.tenant_id)
             cfg = _mcp_params(conn)
             headers = resolve_auth_header(cfg, env)
-            command, args = wrap_with_requirements(
-                cfg.get("command", ""), cfg.get("args", []), cfg
-            )
+            command, args = wrap_with_requirements(cfg.get("command", ""), cfg.get("args", []), cfg)
             output = await mcp_pool.call(
                 conn.id,
                 command=command,
@@ -582,7 +603,8 @@ async def step(
     principal: CurrentPrincipal,
 ) -> StepResult:
     run = await _run_for_token(run_id, db, principal)
-    agent, dept, conn = await _load(db, run)
+    agent, dept, conn, pinned = await _load(db, run)
+    max_steps = _max_steps(pinned["definition"])
 
     ctx = dict(run.context)
 
@@ -594,15 +616,34 @@ async def step(
     # far above any real budget and must never be the thing that actually
     # stops a run. No model call, no cost, on this path -- ctx["steps"] isn't
     # incremented here, so a resumed/retried request stays idempotent.
-    if int(ctx.get("steps", 0)) >= _max_steps(agent):
+    if int(ctx.get("steps", 0)) >= max_steps:
         # Close any open step timing left by the previous /step→/tool cycle.
         # Without this, `_t0` + step_wall_ms: 0 survive through /finish; the
         # common next-/step finish never runs on this early exit.
         step_timings = ctx.get("stepTimings") or []
         if step_timings and "_t0" in step_timings[-1]:
-            finish_step(step_timings[-1])
+            closed_step_timing = finish_step(step_timings[-1])
             run.context = ctx
+            # `finish_step` mutates `step_timings[-1]` in place, and that's
+            # the SAME dict `run.context` (pre-assignment) already holds --
+            # so by the time SQLAlchemy compares old vs. new to decide
+            # whether this attribute actually changed, both sides already
+            # reflect the closed timing and look equal, and the column is
+            # silently dropped from the UPDATE. This is the one branch where
+            # nothing else in `ctx` changes alongside the close (every other
+            # call site also touches the transcript or another key, which
+            # saves it from this), so it needs an explicit nudge here.
+            flag_modified(run, "context")
             await db.commit()
+            # Only now, after the commit that actually persists this entry in
+            # `ctx["stepTimings"]`, tell an open tab about it -- publishing
+            # any earlier (right when finish_step ran, above) could hand out
+            # a live event for a step this request then failed to commit at
+            # all, the same ordering `publish_run_tool_call`'s own call site
+            # already gets right.
+            await publish_run_step_timing(
+                run.tenant_id, run_id=run.id, timing=step_timing_dto(closed_step_timing)
+            )
         return StepResult(done=True, text="Reached step limit.", status_override="done")
 
     transcript: list[dict[str, Any]] = list(ctx.get("transcript", []))
@@ -612,9 +653,8 @@ async def step(
     # Resolved BEFORE seeding, because the preamble's KB retrieval needs the
     # locality to decide what may leave the tenant's region.
     settings = get_settings()
-    model_config = (
-        await db.get(m.ModelConfig, agent.model_config_id) if agent.model_config_id else None
-    )
+    pinned_model_id = pinned_model_config_id(pinned)
+    model_config = await db.get(m.ModelConfig, pinned_model_id) if pinned_model_id else None
     if model_config is not None:
         provider, model = model_config.provider, model_config.model
     else:
@@ -666,7 +706,7 @@ async def step(
             if conns:
                 tools_fetch = asyncio.create_task(
                     _discover_connection_tools(
-                        db, run=run, agent=agent, dept=dept, conns=conns
+                        db, run=run, agent=agent, dept=dept, conns=conns, pinned=pinned
                     )
                 )
         try:
@@ -678,11 +718,12 @@ async def step(
                 frame=frame,
                 model_locality=model_locality,
                 caps=resolve_caps(model_config.params if model_config is not None else None),
-                max_steps=_max_steps(agent),
+                max_steps=max_steps,
                 task_images=task_images,
                 supports_vision=supports_vision,
                 task=task_row,
                 run_id=run_id,
+                pinned=pinned,
             )
         except BaseException:
             if tools_fetch is not None:
@@ -707,7 +748,13 @@ async def step(
         # re-resolving org.timezone a second time on every later step.
         ctx["tz"] = preamble.tz
         if tools_fetch is not None:
-            tool_schemas_raw, ctx["tool_routes"], unavailable, resources, prompts = await tools_fetch
+            (
+                tool_schemas_raw,
+                ctx["tool_routes"],
+                unavailable,
+                resources,
+                prompts,
+            ) = await tools_fetch
             from oc8.agent.offering import prompt_sentence, resource_sentence, unavailable_sentence
 
             notes = [unavailable_sentence(item["name"], item["reason"]) for item in unavailable]
@@ -748,11 +795,11 @@ async def step(
     # engine calls offered_tools directly, never over HTTP). A real runtime
     # plugin (e.g. claude_code_runtime) has its own local file tools, so only
     # offer write_output_file -- and, for the same reason, run_shell -- for
-    # the builtin isolated shell, which has none of its own. run_program rides
-    # the same shell gate and additionally requires caps.code_mode.
-    offer_write_output_file = (
-        not agent.runtime_ref or agent.runtime_ref == BUILTIN_ISOLATED_RUNTIME_REF
-    )
+    # the builtin isolated shell, which has none of its own (using the run's
+    # PINNED runtime_ref, not the live row). run_program rides the same shell
+    # gate and additionally requires caps.code_mode.
+    runtime_ref = pinned["runtime_ref"]
+    offer_write_output_file = not runtime_ref or runtime_ref == BUILTIN_ISOLATED_RUNTIME_REF
     from oc8.agent.harness.caps import caps_for_active_skills
 
     caps = caps_for_active_skills(
@@ -761,6 +808,7 @@ async def step(
     )
     tools = offered_tools(
         agent,
+        is_team_lead=bool(pinned["is_team_lead"]),
         assigned_skills=assigned_skills,
         active_skills=active_skills,
         mcp_tools=mcp_tools,
@@ -770,6 +818,7 @@ async def step(
         offer_write_output_file=offer_write_output_file,
         offer_run_shell=offer_write_output_file,
         offer_run_program=caps.code_mode,
+        chat_mode=mode_from_context(ctx),
     )
     # Code mode (ruling 6): seed the generated SDK once tools are known so
     # every later /step can return it as sdk_py for the shell to write.
@@ -793,14 +842,10 @@ async def step(
     skill_tool_names = frozenset(s.tool_name for s in assigned_skills)
     from oc8.agent.offering import allowed_connections_for_skills, connection_by_tool
 
-    raw_notes = (_mcp_params(conn).get("tool_notes") if conn is not None else None)
+    raw_notes = _mcp_params(conn).get("tool_notes") if conn is not None else None
     tool_notes = raw_notes if isinstance(raw_notes, dict) else None
     routes = ctx.get("tool_routes") if isinstance(ctx.get("tool_routes"), dict) else {}
-    required = [
-        req.tool
-        for skill in active_skills
-        for req in skill.definition.requires_tools
-    ]
+    required = [req.tool for skill in active_skills for req in skill.definition.requires_tools]
     resolved_tools, catalog = select_completion_tools(
         tools,
         control_names=CONTROL_TOOL_NAMES,
@@ -820,7 +865,7 @@ async def step(
     harness.state.unavailable_connections = list(ctx.get("unavailable_connections") or [])
     # Shared with the in-process engine so sampling cannot drift between the
     # two runtimes -- see oc8.modelrouter.sampling.
-    resolved_params = resolve_params(model_config, agent=agent)
+    resolved_params = resolve_params(model_config, agent=agent, definition=pinned["definition"])
     # Must match what fallback.py's own base_url resolution will actually
     # send for this provider (params override, else the tenant's bound
     # credential) -- see agent/engine.py's identical comment.
@@ -904,6 +949,12 @@ async def step(
         harness.state.last_compacted_step = harness.state.step_no
         harness.state.ledger_sent_hash = ledger_fingerprint(harness.state.ledger)
 
+    # Step timings this request finishes but doesn't publish immediately --
+    # every close below shares the one commit at the bottom of this loop
+    # (`run.context = ctx; await db.commit()`), so publishing has to wait
+    # until that commit actually lands, not at the moment finish_step runs.
+    finished_step_timings: list[dict[str, Any]] = []
+
     while True:
         ledger_hash = ledger_fingerprint(harness.state.ledger)
         if ledger_hash != harness.state.ledger_sent_hash:
@@ -934,10 +985,11 @@ async def step(
         # executor.py.
         step_timings = ctx.setdefault("stepTimings", [])
         if step_timings and "_t0" in step_timings[-1]:
-            finish_step(step_timings[-1])
+            finished_step_timings.append(finish_step(step_timings[-1]))
         step_rec = start_step(harness.state.step_no)
         step_timings.append(step_rec)
         step_probe = StreamTiming()
+
         # Department prompt caching, through the SAME helper the in-process engine
         # uses (oc8.agent.cache_flow) -- an isolated deployment must not silently
         # render a settings toggle and a savings figure that do nothing.
@@ -962,14 +1014,14 @@ async def step(
         async def _complete_with_overflow_retry(
             sampling_params: ModelParams,
             req_id: uuid.UUID,
+            *,
+            step_probe: StreamTiming = step_probe,
         ) -> tuple[Any, uuid.UUID]:
             nonlocal key, resolved_messages, overflow_retried
             stamped = with_prompt_cache_key(sampling_params, str(run.id))
             try:
                 return (
-                    await _complete(
-                        resolved_messages, stamped, req_id, timing=step_probe
-                    ),
+                    await _complete(resolved_messages, stamped, req_id, timing=step_probe),
                     req_id,
                 )
             except Exception as exc:
@@ -1078,25 +1130,31 @@ async def step(
             open_todos = [t for t in ctx.get("todos", []) if t.get("status") != "completed"]
             verdict = harness.may_finish(
                 open_todos,
-                can_continue=int(ctx["steps"]) < _max_steps(agent),
+                can_continue=int(ctx["steps"]) < max_steps,
                 procedures=_active_procedures(active_skills),
             )
             if not verdict.ok:
                 note_tools(step_rec, 0)
-                finish_step(step_rec)
+                finished_step_timings.append(finish_step(step_rec))
                 transcript.append(
                     _from_message(NeutralMessage(role="user", content=verdict.reminder or ""))
                 )
                 continue
         if not result.tool_calls:
             note_tools(step_rec, 0)
-            finish_step(step_rec)
+            finished_step_timings.append(finish_step(step_rec))
         break
 
     harness.store(ctx)
     ctx["transcript"] = transcript
     run.context = ctx
     await db.commit()
+    # Only now, after the commit that actually persists these entries in
+    # `ctx["stepTimings"]`, tell an open tab about them -- publishing any
+    # earlier (right when finish_step ran, above) could hand out a live
+    # event for a step this request then failed to commit at all.
+    for timing in finished_step_timings:
+        await publish_run_step_timing(run.tenant_id, run_id=run.id, timing=step_timing_dto(timing))
 
     # Reaching here with no tool call and open todos means the round cap (or
     # the step budget) was hit, not that everything got done -- say so in the
@@ -1147,7 +1205,7 @@ async def step(
                     for g in s.definition.guardrails
                     if g.type == "value_threshold" and g.then == "require_approval"
                 ),
-                tool_policies=effective_tool_policies(frame, agent.narrowing or {}),
+                tool_policies=effective_tool_policies(frame, pinned["narrowing"] or {}),
                 connection_key=conn.name if conn is not None else None,
                 tool_scopes=scopes,
                 value_spec=value_spec,
@@ -1172,14 +1230,15 @@ async def step(
             # let two concurrent /tool POSTs both read "not yet delivered"
             # from check_outward before either commits.
             skip = cfg.get("outward_skip_spec") if isinstance(cfg, dict) else None
-            if outward_target(
-                t.name, t.arguments, focus_spec, outward_tools, skip_spec=skip
-            ) is not None:
+            if (
+                outward_target(t.name, t.arguments, focus_spec, outward_tools, skip_spec=skip)
+                is not None
+            ):
                 break
             tool_tiers[t.id] = "read"
 
     return StepResult(
-        done=not result.tool_calls and int(ctx["steps"]) <= _max_steps(agent),
+        done=not result.tool_calls and int(ctx["steps"]) <= max_steps,
         text=step_text,
         tool_calls=[
             {
@@ -1234,6 +1293,7 @@ async def _precompute_leading_reads(
     agent: m.Agent,
     dept: m.Department | None,
     conn: m.McpConnection | None,
+    pinned: Mapping[str, Any],
     db: DbSession,
     calls: list[ToolBody],
 ) -> dict[str, tuple[str, ToolError | None, int]]:
@@ -1247,9 +1307,8 @@ async def _precompute_leading_reads(
     """
     if conn is None or len(calls) < 2:
         return {}
-    model_config = (
-        await db.get(m.ModelConfig, agent.model_config_id) if agent.model_config_id else None
-    )
+    pinned_model_id = pinned_model_config_id(pinned)
+    model_config = await db.get(m.ModelConfig, pinned_model_id) if pinned_model_id else None
     caps = resolve_caps(model_config.params if model_config is not None else None)
     if not caps.parallel_tool_calls:
         return {}
@@ -1295,7 +1354,7 @@ async def _precompute_leading_reads(
                 for g in s.definition.guardrails
                 if g.type == "value_threshold" and g.then == "require_approval"
             ),
-            tool_policies=effective_tool_policies(frame, agent.narrowing or {}),
+            tool_policies=effective_tool_policies(frame, pinned["narrowing"] or {}),
             connection_key=conn.name,
             tool_scopes=scopes,
             value_spec=value_spec,
@@ -1305,11 +1364,7 @@ async def _precompute_leading_reads(
             break
         stripped, _justification = strip_justification(tc.arguments)
         schema = next(
-            (
-                raw
-                for raw in schemas
-                if isinstance(raw, dict) and raw.get("name") == call.name
-            ),
+            (raw for raw in schemas if isinstance(raw, dict) and raw.get("name") == call.name),
             None,
         )
         annotations = schema.get("annotations") if isinstance(schema, dict) else None
@@ -1326,9 +1381,10 @@ async def _precompute_leading_reads(
         ):
             break
         skip = cfg.get("outward_skip_spec") if isinstance(cfg, dict) else None
-        if outward_target(
-            call.name, stripped, focus_spec, outward_tools, skip_spec=skip
-        ) is not None:
+        if (
+            outward_target(call.name, stripped, focus_spec, outward_tools, skip_spec=skip)
+            is not None
+        ):
             break
         batch.append((call, stripped))
     if len(batch) < 2:
@@ -1386,9 +1442,16 @@ async def tool(
     principal: CurrentPrincipal,
 ) -> ToolResult:
     run = await _run_for_token(run_id, db, principal)
-    agent, dept, conn = await _load(db, run)
+    agent, dept, conn, pinned = await _load(db, run)
     return await _dispatch_one_tool(
-        run=run, agent=agent, dept=dept, conn=conn, body=body, db=db, principal=principal
+        run=run,
+        agent=agent,
+        dept=dept,
+        conn=conn,
+        pinned=pinned,
+        body=body,
+        db=db,
+        principal=principal,
     )
 
 
@@ -1406,10 +1469,10 @@ async def tools(
     if not body.calls:
         return ToolsResult(results=[])
     run = await _run_for_token(run_id, db, principal)
-    agent, dept, conn = await _load(db, run)
+    agent, dept, conn, pinned = await _load(db, run)
     try:
         prepared = await _precompute_leading_reads(
-            run=run, agent=agent, dept=dept, conn=conn, db=db, calls=body.calls
+            run=run, agent=agent, dept=dept, conn=conn, pinned=pinned, db=db, calls=body.calls
         )
     except ElicitationNeeded:
         prepared = {}
@@ -1424,12 +1487,13 @@ async def tools(
             {"tid": str(run.tenant_id)},
         )
         await db.refresh(run)
-        agent, dept, conn = await _load(db, run)
+        agent, dept, conn, pinned = await _load(db, run)
         result = await _dispatch_one_tool(
             run=run,
             agent=agent,
             dept=dept,
             conn=conn,
+            pinned=pinned,
             body=call,
             db=db,
             principal=principal,
@@ -1447,6 +1511,7 @@ async def _dispatch_one_tool(
     agent: m.Agent,
     dept: m.Department | None,
     conn: m.McpConnection | None,
+    pinned: Mapping[str, Any],
     body: ToolBody,
     db: DbSession,
     principal: CurrentPrincipal,
@@ -1515,11 +1580,14 @@ async def _dispatch_one_tool(
             for g in s.definition.guardrails
             if g.type == "value_threshold" and g.then == "require_approval"
         ),
-        tool_policies=effective_tool_policies(frame, agent.narrowing or {}),
+        tool_policies=effective_tool_policies(frame, pinned["narrowing"] or {}),
         connection_key=conn.name if conn is not None else None,
         tool_scopes=scopes,
         value_spec=value_spec,
+        narrowing=pinned["narrowing"] or {},
+        is_team_lead=bool(pinned["is_team_lead"]),
         guardrail_attribute_specs=guardrail_attribute_specs,
+        chat_mode=mode_from_context(run.context),
     )
     stripped, justification = strip_justification(tc.arguments)
     tc.arguments = stripped
@@ -1549,9 +1617,7 @@ async def _dispatch_one_tool(
     )
     annotations = tool_schema.get("annotations") if tool_schema is not None else None
     typed_annotations = annotations if isinstance(annotations, dict) else None
-    idempotent = (
-        typed_annotations is not None and typed_annotations.get("idempotentHint") is True
-    )
+    idempotent = typed_annotations is not None and typed_annotations.get("idempotentHint") is True
     gate_verdict = None
     tier = None
     if decision.effect is Effect.ALLOW:
@@ -1562,7 +1628,7 @@ async def _dispatch_one_tool(
             annotations=typed_annotations,
             arguments=tc.arguments,
         )
-        definition = agent.definition if isinstance(agent.definition, dict) else {}
+        definition = pinned["definition"] if isinstance(pinned["definition"], dict) else {}
         raw_b5_grants = definition.get("b5_grants")
         b5_grants = raw_b5_grants if isinstance(raw_b5_grants, list) else []
         gate_verdict = harness.gate(
@@ -1605,9 +1671,14 @@ async def _dispatch_one_tool(
 
     if decision.effect is Effect.REQUIRE_APPROVAL:
         step_timings = ctx.setdefault("stepTimings", [])
+        closed_step_timing: dict[str, Any] | None = None
         if step_timings and "_t0" in step_timings[-1]:
-            finish_step(step_timings[-1])
+            closed_step_timing = finish_step(step_timings[-1])
         link = await _record_url()
+        # Which record this call is about, resolved from the same pure helper
+        # the containerized gateway's equivalent branch uses -- so a held
+        # write looks identical to an operator whichever runtime raised it.
+        held_record = record_identity(tc.name, tc.arguments, focus_spec)
         ar = await raise_approval(
             db,
             tenant_id=run.tenant_id,
@@ -1623,6 +1694,11 @@ async def _dispatch_one_tool(
                 "preview": gate_verdict.preview if gate_verdict is not None else "",
                 **({"record_url": link} if link else {}),
             },
+            record_url=(
+                record_url_for_connection(conn, entity=held_record[0], ref=held_record[1])
+                if held_record is not None
+                else None
+            ),
         )
         # Record the suspend verdict so the isolated runtime maps the run to
         # waiting_for_approval after the container exits.
@@ -1630,7 +1706,31 @@ async def _dispatch_one_tool(
             **ctx,
             "isolated_result": {"status": "waiting_for_approval", "output": decision.reason or ""},
         }
+        # The parked call itself, at parity with the in-process engine's own
+        # require-approval append: without this the timeline of an isolated
+        # run simply loses the step a human is being asked about, which is
+        # the one step they most need to see. Flush before the raw-SQL
+        # append -- append_tool_call's own _adopt() would otherwise read the
+        # row back before the isolated_result assignment above landed, and
+        # silently drop it from the ORM's view -- and commit ONCE after both,
+        # since a commit in between would unbind the tenant GUC.
+        await db.flush()
+        parked_call: dict[str, Any] = {
+            "tool": tc.name,
+            "arguments": tc.arguments,
+            "decision": "require_approval",
+            "step": int(ctx.get("steps", 0)),
+            "connection": conn.name if conn is not None else None,
+            "state": "awaiting_approval",
+            "reason": decision.reason,
+        }
+        await append_tool_call(db, run, parked_call)
         await db.commit()
+        await publish_run_tool_call(run.tenant_id, run_id=run.id, call=parked_call)
+        if closed_step_timing is not None:
+            await publish_run_step_timing(
+                run.tenant_id, run_id=run.id, timing=step_timing_dto(closed_step_timing)
+            )
         from oc8.realtime.bus import get_event_bus
 
         await get_event_bus().publish_event(
@@ -1650,7 +1750,7 @@ async def _dispatch_one_tool(
         )
         return ToolResult(status="waiting_for_approval", output=decision.reason or "")
 
-    definition = agent.definition if isinstance(agent.definition, dict) else {}
+    definition = pinned["definition"] if isinstance(pinned["definition"], dict) else {}
     raw_b5_grants = definition.get("b5_grants")
     b5_grants = raw_b5_grants if isinstance(raw_b5_grants, list) else []
     # Ledger outward attribution must follow the tool that actually ran.
@@ -1691,16 +1791,15 @@ async def _dispatch_one_tool(
             call_json=call_json,
         )
         settings = get_settings()
-        model_config = (
-            await db.get(m.ModelConfig, agent.model_config_id) if agent.model_config_id else None
-        )
+        pinned_model_id = pinned_model_config_id(pinned)
+        model_config = await db.get(m.ModelConfig, pinned_model_id) if pinned_model_id else None
         if model_config is not None:
             provider, model = model_config.provider, model_config.model
         else:
             provider = (agent.presentation or {}).get("provider", settings.default_model_provider)
             model = settings.default_model
         contains_restricted = bool(ctx.get("contains_restricted", False))
-        resolved_params = resolve_params(model_config, agent=agent)
+        resolved_params = resolve_params(model_config, agent=agent, definition=pinned["definition"])
 
         async def _complete(
             msgs: list[NeutralMessage],
@@ -1751,9 +1850,7 @@ async def _dispatch_one_tool(
                 clarify_tool,
                 exc_info=True,
             )
-        tc = apply_clarification(
-            tc, reply_text, chat=run.source == "chat", state=harness.state
-        )
+        tc = apply_clarification(tc, reply_text, chat=run.source == "chat", state=harness.state)
         facts = parse_clarification(reply_text)
         logger.info(
             "clarification checkpoint tool=%s tier=%s %s",
@@ -1787,13 +1884,8 @@ async def _dispatch_one_tool(
     writes = required_right(tc.name, scopes) != "read"
     access_identity = record_identity(tc.name, tc.arguments, focus_spec)
     identity = access_identity if writes else None
-    record_label = (
-        describe_focus(tc.name, tc.arguments, focus_spec)
-        or (
-            f"{access_identity[0]} {access_identity[1]}"
-            if access_identity is not None
-            else ""
-        )
+    record_label = describe_focus(tc.name, tc.arguments, focus_spec) or (
+        f"{access_identity[0]} {access_identity[1]}" if access_identity is not None else ""
     )
     control = (
         await execute_control_tool(
@@ -1808,6 +1900,7 @@ async def _dispatch_one_tool(
             mcp_conn=conn,
             originating_operator=run.context.get("originating_operator"),
             run_id=run.id,
+            pinned=pinned,
             local_result=body.local_result,
             harness_state=harness.state,
             active_procedure_skills=[s for s in active_skills if s.definition.steps],
@@ -2033,6 +2126,12 @@ async def _dispatch_one_tool(
                 )
 
     succeeded = suspend is None and tool_error is None and not output.startswith("ERROR:")
+    # harness.shape() below prepends a "[step N/max · ...]" stamp to EVERY
+    # shaped result, so the reassigned `output` no longer starts with a
+    # literal "ERROR:" even for a genuine dispatched failure. call_state_for
+    # needs the pre-stamp text to tell "failed" from "done" -- `succeeded`
+    # just above is computed from this same unshaped value.
+    _tool_call_output_for_state = output
     procs = _active_procedures(active_skills)
     before_sat = _satisfied_map(procs, harness)
     if succeeded:
@@ -2067,9 +2166,7 @@ async def _dispatch_one_tool(
                 step=harness.state.step_no,
             )
     after_sat = _satisfied_map(procs, harness)
-    flip_lines = newly_satisfied_lines(
-        skills=procs, before=before_sat, after=after_sat
-    )
+    flip_lines = newly_satisfied_lines(skills=procs, before=before_sat, after=after_sat)
 
     # Stopped HERE, the moment the call itself returned -- not at the append
     # site far below, which is separated from it by the transcript rewrite and
@@ -2084,11 +2181,12 @@ async def _dispatch_one_tool(
     # until the next /step finishes it (tool wait = sum of /tool calls before
     # the next model step). A suspend ends the step without another /step.
     step_timings = ctx.setdefault("stepTimings", [])
+    closed_suspend_timing: dict[str, Any] | None = None
     if dispatched and step_timings and "_t0" in step_timings[-1]:
         open_rec = step_timings[-1]
         note_tools(open_rec, int(open_rec.get("tool_wait_ms", 0)) + duration_ms)
         if suspend is not None:
-            finish_step(open_rec)
+            closed_suspend_timing = finish_step(open_rec)
 
     # This tool call belongs to the completion /step just cached (see its own
     # ctx["pending_cache_key"] comment) -- a real failure here means that
@@ -2107,7 +2205,7 @@ async def _dispatch_one_tool(
     shaped = harness.shape(
         tc,
         output,
-        max_steps=_max_steps(agent),
+        max_steps=_max_steps(pinned["definition"]),
         tz=str(ctx.get("tz", "UTC")),
         source=source,
         error=tool_error,
@@ -2166,13 +2264,22 @@ async def _dispatch_one_tool(
         "tool": tc.name,
         "arguments": tc.arguments,
         "result": output[:300],
+        "step": int(ctx.get("steps", 0)),
+        "connection": conn.name if conn is not None else None,
+        "state": call_state_for(_tool_call_output_for_state, dispatched=dispatched),
     }
     if dispatched:
         live_call["startedAt"] = started_at.isoformat()
         live_call["durationMs"] = duration_ms
+    else:
+        live_call["reason"] = tool_error.message if tool_error is not None else None
     await append_tool_call(db, run, live_call)
     await db.commit()
     await publish_run_tool_call(run.tenant_id, run_id=run.id, call=live_call)
+    if closed_suspend_timing is not None:
+        await publish_run_step_timing(
+            run.tenant_id, run_id=run.id, timing=step_timing_dto(closed_suspend_timing)
+        )
 
     if suspend is not None:
         return ToolResult(status=suspend, output=output, spill=spill_payload)
@@ -2205,7 +2312,7 @@ async def finish(
     # The executor (which is driving the container) applies the state transition
     # from the RunResult it builds; here we only record the shell's verdict.
     run.context = {**run.context, "isolated_result": {"status": body.status, "output": body.output}}
-    _agent, _dept, conn = await _load(db, run)
+    _agent, _dept, conn, _pinned = await _load(db, run)
     if conn is not None:
         await mcp_pool.close(conn.id)
     await db.commit()

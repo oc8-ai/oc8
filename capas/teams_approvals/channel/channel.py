@@ -207,6 +207,11 @@ def render_actions(notice: ApprovalNotice) -> list[dict[str, Any]]:
     if notice.content_withheld:
         return []
     actions: list[dict[str, Any]] = []
+    if notice.record_url:
+        # Teams needs a title for an OpenUrl action, so this one string is
+        # English (capa code is English-only; see the plan's Global
+        # Constraints). A withheld notice returns above, before this.
+        actions.append({"type": "Action.OpenUrl", "title": "Open record", "url": notice.record_url})
     for option in notice.options:
         actions.append(
             {

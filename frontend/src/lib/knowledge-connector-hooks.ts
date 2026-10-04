@@ -81,6 +81,32 @@ export function useKnowledgeConnectors() {
   });
 }
 
+export interface VectorIndexCatalogEntry {
+  typeId: string;
+  label?: string | null;
+  description?: string | null;
+  configSchema: {
+    properties?: Record<
+      string,
+      {
+        type?: string;
+        title?: string;
+        description?: string;
+        default?: unknown;
+      }
+    >;
+    required?: string[];
+  };
+  credentialType: string;
+}
+
+export function useKnowledgeVectorIndexes() {
+  return useQuery({
+    queryKey: ["knowledge", "vector-indexes"],
+    queryFn: () => api.get<VectorIndexCatalogEntry[]>("/knowledge/vector-indexes"),
+  });
+}
+
 export function useOAuthConnections() {
   return useQuery({
     queryKey: ["oauth", "connections"],

@@ -22,12 +22,15 @@ from oc8.capas.i18n import translations_for
 from oc8.capas.manifest import ManifestError, ToolPackConnection, parse_manifest
 from oc8.realtime.emit import publish_mcp_test_log
 from oc8.schemas.dto import (
+    ConnectionToolLabelsDTO,
     ConnectionToolNamesDTO,
     GuardrailAdjustableDTO,
     GuardrailAttributeDTO,
     GuardrailDTO,
     GuardrailPresetDTO,
     McpConnectionDTO,
+    ModelLabelDTO,
+    ToolLabelDTO,
 )
 from oc8.schemas.requests import CreateMcpConnectionRequest, UpdateMcpConnectionRequest
 
@@ -245,6 +248,74 @@ async def get_connection_tool_names(name: str, db: DbSession) -> ConnectionToolN
     modify = sorted(scopes.get("modify", []))
     names = sorted({*read, *modify})
     return ConnectionToolNamesDTO(names=names, read=read, modify=modify)
+
+
+@router.get(
+    "/mcp/connections/{name}/tool-labels",
+    response_model=ConnectionToolLabelsDTO,
+    dependencies=[Depends(require_permission(perm(INTEGRATION, VIEW)))],
+)
+async def get_connection_tool_labels(name: str, db: DbSession) -> ConnectionToolLabelsDTO:
+    """How this connection's calls read to a person (see `ToolLabel`).
+
+    Keyed by connection NAME, not id, for one reason: that is what a run's
+    own call records carry (`toolCalls[].connection`, written by both
+    runtimes), so a timeline holding a call can ask about it directly. The
+    department frame keys its tool policies by the same name.
+
+    An unknown name, a connection whose plugin ships no tool pack, or a
+    plugin no longer on disk all return an EMPTY catalogue rather than 404:
+    the caller's fallback for "no label" is already the right-derived
+    sentence, and a 404 would turn a removed plugin into a red error on a
+    screen whose job is to describe what already happened.
+
+    Same `credential_id.is_(None)` filter as the sibling tool-names route --
+    `POST /mcp/logins` creates a SECOND row with the same name, and a bare
+    name match would raise MultipleResultsFound for any tenant that pinned a
+    login.
+    """
+    conn = (
+        await db.execute(
+            select(m.McpConnection)
+            .where(m.McpConnection.name == name, m.McpConnection.credential_id.is_(None))
+            .order_by(m.McpConnection.created_at)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if conn is None:
+        return ConnectionToolLabelsDTO(connection=name)
+    resolved = _manifest_connection(conn)
+    if resolved is None:
+        return ConnectionToolLabelsDTO(connection=name)
+    manifest_conn, _guardrail_library, i18n = resolved
+    scopes = manifest_conn.scopes if isinstance(manifest_conn.scopes, dict) else {}
+    return ConnectionToolLabelsDTO(
+        connection=name,
+        labels=[
+            ToolLabelDTO(
+                tool=tool,
+                verb=label.verb,
+                object=label.object,
+                running=label.running,
+                verb_translations=translations_for(i18n, label.verb),
+                object_translations=translations_for(i18n, label.object) if label.object else {},
+                running_translations=(
+                    translations_for(i18n, label.running) if label.running else {}
+                ),
+            )
+            for tool, label in sorted(manifest_conn.tool_labels.items())
+        ],
+        model_labels=[
+            ModelLabelDTO(
+                key=key,
+                label=label,
+                label_translations=translations_for(i18n, label),
+            )
+            for key, label in sorted(manifest_conn.model_labels.items())
+        ],
+        read=sorted(scopes.get("read", [])),
+        modify=sorted(scopes.get("modify", [])),
+    )
 
 
 @router.post(

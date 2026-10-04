@@ -29,6 +29,14 @@ class AgentRun(Base, PkMixin, TenantMixin, TimestampMixin):
     __tablename__ = "agent_run"
 
     agent_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    # The `AgentVersion` this run's behavioural config is pinned to, so a
+    # publish mid-run cannot change what a running agent is doing. Null for
+    # every run from before this column existed (0099 does not backfill
+    # `agent_run` -- inventing a version for a historical run would be a claim
+    # about the past nobody can support) -- a reader treats null as "read the
+    # live `agent` row", the same fallback `Agent.current_version_id` being
+    # null gets.
+    agent_version_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
     task_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
     state: Mapped[str] = mapped_column(Text, nullable=False, default="queued")
     phase: Mapped[str | None] = mapped_column(Text)

@@ -204,3 +204,120 @@ create_record = "Erstellt"
 update_record = "Bearbeitet"
 get_record = "Öffnet"
 post_message = "Notiert an"
+
+# NEUTRAL SEAM (tool_labels / model_labels): how this connection's calls read
+# to an end user in a run's step timeline. `search_records` is what the model
+# calls; "Looked up deals" is what a salesperson sees. The core cannot write
+# these -- it has never heard of a deal -- which is the same reason the
+# guardrail presets and guardrail attributes above live here.
+#
+# ENGLISH ONLY, like every other authored string in this file. The German is
+# in i18n/de.po, keyed by these exact strings, and any other locale works the
+# same way the moment somebody adds a catalog for it.
+#
+# Placeholders are filled from the CALL: {model_label} is the model_labels
+# entry for the call's own `model` argument, and any other {name} is a
+# top-level argument of that name. A placeholder that cannot be filled makes
+# the whole label fall back to the tool's right ("Read from odoo") rather
+# than printing braces at somebody.
+#
+# NOTE, deliberately unresolved: [connections.config.focus_spec] above holds a
+# SECOND, German, display mapping for the same models and verbs, used by the
+# live log and task cards. The two overlap. Merging them changes live-log text
+# for a running system, so it is not done here -- but the duplication is real
+# and this comment is where the next person finds out about it.
+
+[connections.tool_labels.search_records]
+verb = "Looked up"
+object = "{model_label}"
+running = "Looking up {model_label}"
+
+[connections.tool_labels.aggregate_records]
+verb = "Counted"
+object = "{model_label}"
+running = "Counting {model_label}"
+
+[connections.tool_labels.get_record]
+verb = "Opened"
+object = "{model_label} {id}"
+running = "Opening {model_label} {id}"
+
+[connections.tool_labels.list_models]
+verb = "Checked which data is available"
+running = "Checking which data is available"
+
+[connections.tool_labels.list_resource_templates]
+verb = "Checked which reports are available"
+running = "Checking which reports are available"
+
+[connections.tool_labels.create_record]
+verb = "Created"
+object = "a new {model_label} entry"
+running = "Creating a new {model_label} entry"
+
+[connections.tool_labels.update_record]
+verb = "Updated"
+object = "{model_label} {id}"
+running = "Updating {model_label} {id}"
+
+[connections.tool_labels.delete_record]
+verb = "Deleted"
+object = "{model_label} {id}"
+running = "Deleting {model_label} {id}"
+
+[connections.tool_labels.post_message]
+verb = "Replied on"
+object = "{model_label} {id}"
+running = "Replying on {model_label} {id}"
+
+# English plural nouns for the Odoo models this connection's agents touch,
+# keyed by the raw value a call's `model` argument carries. A model absent
+# here has no label, and a label that needs one falls back to the
+# right-derived sentence rather than printing "crm.lead" at a user.
+[connections.model_labels]
+"crm.lead" = "deals"
+"sale.order" = "quotes"
+"res.partner" = "contacts"
+"helpdesk.ticket" = "tickets"
+"mail.message" = "messages"
+
+# NEUTRAL SEAM (record_url): where one Odoo record lives, so an approval can
+# link straight to the quotation it is about instead of making the approver go
+# and find it (AI workplace design §6). Core substitutes exactly three names --
+# {base_url}, {model}, {id} -- and knows nothing else about Odoo.
+#
+# Declared HERE, at the connection's top level, and NOT under
+# [connections.config]: only the five DECLARED_SEAMS config keys are copied
+# onto an already-installed connection (capas/materialise.py), and only on a
+# re-enable. Everything at this level is read live off this file, so editing
+# the line below takes effect within the discovery cache's 5s TTL with no
+# re-install.
+#
+# `/odoo/<model>/<id>` is Odoo 17+'s web-client route. An older installation
+# wants the hash form instead:
+#   template = "{base_url}/web#id={id}&model={model}&view_type=form"
+# One line, one file, no core change -- which is the whole reason this lives
+# on the pack.
+#
+# base_url_path points at THIS connection's own env block below, which is what
+# `credential_env_fields.ODOO_URL = "url"` rewrites from an attached login --
+# so a customer's own host is used, never a literal from this file.
+[connections.record_url]
+template = "{base_url}/odoo/{model}/{id}"
+base_url_path = ["env", "ODOO_URL"]
+
+# Which entities are linkable. Deliberately the SAME set focus_spec.labels
+# names (a test asserts that): an entity the live log describes is one an
+# approval gets raised about, and a link that works for four models out of six
+# is a link an approver stops trusting. mail.message is the exception and is
+# listed anyway for symmetry -- Odoo resolves it to the record it hangs off.
+[connections.record_url.models]
+"crm.lead" = "crm.lead"
+"sale.order" = "sale.order"
+"res.partner" = "res.partner"
+"helpdesk.ticket" = "helpdesk.ticket"
+"helpdesk.stage" = "helpdesk.stage"
+"helpdesk.team" = "helpdesk.team"
+"mail.message" = "mail.message"
+"project.task" = "project.task"
+"project.project" = "project.project"

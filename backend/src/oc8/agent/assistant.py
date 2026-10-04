@@ -18,6 +18,7 @@ is inherited from that funnel, not reimplemented here.
 
 from __future__ import annotations
 
+import contextlib
 import uuid
 
 from sqlalchemy import select
@@ -25,6 +26,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.agents.versioning import NoChangesToPublish, publish_version
 
 ASSISTANT_NAME = "oc8 Assistant"
 ASSISTANT_DEPARTMENT_NAME = "oc8 Assistant"
@@ -140,6 +142,13 @@ async def _sync_model_config(db: AsyncSession, agent: m.Agent, *, tenant_id: uui
         return
     agent.model_config_id = wanted
     await db.flush()
+    # Runs execute the agent's published version, not its row -- so the switch
+    # only reaches the Assistant's next run once it is published. The Assistant
+    # has no operator-edited draft to protect, so it publishes straight away.
+    # NoChangesToPublish only if the row had drifted from its version and this
+    # switch brought it back -- then the version already says what it should.
+    with contextlib.suppress(NoChangesToPublish):
+        await publish_version(db, agent, note="model follows the copilot model setting")
 
 
 async def get_or_create_assistant(db: AsyncSession, *, tenant_id: uuid.UUID) -> m.Agent:
@@ -179,6 +188,9 @@ async def get_or_create_assistant(db: AsyncSession, *, tenant_id: uuid.UUID) -> 
             )
             db.add(agent)
             await db.flush()
+            # v1 inside the same savepoint, so a lost race (or a failed
+            # publish) unwinds the version together with the agent row.
+            await publish_version(db, agent)
 
             # Same convention as capas/service.py's department-with-a-lead
             # creation: collab/intake.py's route_to_team_lead reads

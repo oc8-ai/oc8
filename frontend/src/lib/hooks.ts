@@ -98,6 +98,11 @@ export interface Approval {
   agentName?: string;
   taskId?: string | null;
   taskTitle?: string;
+  // The run this approval is holding, when there is one (resolved backend-side
+  // from the approval's task -- ApprovalRequest has no run column). `null`/absent
+  // for an approval that blocks no run, which is what the needs-me queue sorts
+  // on: work parked mid-task outranks a standalone question.
+  runId?: string | null;
   // ISO-8601. `time` above is NOT this: it comes from payload["time"], which
   // only the demo seed writes, so it is "" on every real row. Age on a row has
   // to be computed from `createdAt` or it says nothing.
@@ -334,6 +339,13 @@ export interface RunDTO {
   // append log — same durability as toolCalls/steps, present from the initial
   // GET /runs/{id} fetch, no WS-live patcher exists for it yet).
   todos?: RunTodoDTO[];
+  // One entry per model step, in step order: {step, modelWaitMs, ttftMs,
+  // toolWaitMs, stepWallMs}. From GET /runs/{id}, and kept current by the
+  // "run.step_timing" patcher (lib/live/apply-event.ts) as each step ends.
+  // Typed loosely on purpose, exactly like toolCalls above: this is a
+  // pass-through of a JSONB list, and lib/run-steps.ts is the one place that
+  // reads a key out of it.
+  stepTimings?: Array<Record<string, unknown>>;
   // Never returned by the backend -- populated client-side only, by the
   // "run.output_delta" live-event patcher (lib/live/apply-event.ts) as chunks
   // arrive over the WS. Absent until the first delta lands, so a fresh
@@ -351,6 +363,12 @@ export interface RunDTO {
   // every runtime, in-process or isolated. Same "never from GET, WS-only"
   // rule: absent until the first fragment lands.
   liveAnswer?: string;
+  // The version this run is pinned to, by NUMBER -- what the Versions tab shows
+  // and what GET /agents/{id}/versions/{n} is addressed by. Null for a run
+  // created before pinning existed: migration 0099 deliberately did not
+  // backfill those, because inventing a version for a historical run is a claim
+  // about the past nothing supports.
+  agentVersionNo?: number | null;
   // AgentRun.updated_at -- the run's heartbeat (backend/src/oc8/runtime/reconcile.py's
   // HEARTBEAT_SECONDS/ABANDONED_AFTER). Only refreshed by the poll in useRun below:
   // the "run.status" WS event fires on state transitions, not on a plain heartbeat
@@ -784,8 +802,15 @@ export const useKnowledgeBases = (params: ListQueryParams = {}) => {
 export function useCreateKnowledgeBase() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { name: string; description?: string; embeddingModel?: string }) =>
-      api.post<KnowledgeBase>("/knowledge/bases", body),
+    mutationFn: (body: {
+      name: string;
+      description?: string;
+      embeddingModel?: string;
+      indexType?: string;
+      indexConfig?: Record<string, unknown>;
+      credentialId?: string;
+      classification?: string;
+    }) => api.post<KnowledgeBase>("/knowledge/bases", body),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.bases }),
   });
 }
@@ -1615,6 +1640,22 @@ export function useRun(runId: string | null) {
   });
 }
 
+// The tenant's most recently touched runs -- `GET /runs`. The My Work
+// activity widget shows a step timeline per run, and the needs-me queue uses
+// the state filter to find work parked with nobody's name on it. Nothing else
+// lists runs: `activity_event` carries no run id, so the activity feed cannot
+// stand in for this.
+export function useRuns(opts: { state?: string; limit?: number } = {}) {
+  const params = new URLSearchParams();
+  if (opts.state) params.set("state", opts.state);
+  params.set("limit", String(opts.limit ?? 10));
+  const query = params.toString();
+  return useQuery({
+    queryKey: ["runs", opts.state ?? "all", opts.limit ?? 10],
+    queryFn: () => api.get<RunDTO[]>(`/runs?${query}`),
+  });
+}
+
 export interface ReportDTO {
   runId: string;
   agentId: string;
@@ -1887,13 +1928,14 @@ export function useBudgets() {
   return useQuery({ queryKey: ["budgets"], queryFn: () => api.get<BudgetDTO[]>("/budgets") });
 }
 
-export function useBudgetStatus(departmentId: string | null) {
+export function useBudgetStatus(departmentId: string | null, options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: ["budget-status", departmentId ?? "tenant"],
     queryFn: () =>
       api.get<BudgetStatusDTO>(
         departmentId ? `/budgets/status?department_id=${departmentId}` : "/budgets/status",
       ),
+    enabled: options?.enabled ?? true,
   });
 }
 
@@ -2900,7 +2942,14 @@ export function useTenantKpis(params?: TenantKPIFilterParams) {
 
 // ---- Widget-based "My Work" dashboard (§ My Work Widget Dashboard plan) ----
 
-export type WidgetType = "chat" | "approvals" | "reports" | "budget" | "activity" | "tasks";
+export type WidgetType =
+  | "chat"
+  | "approvals"
+  | "reports"
+  | "budget"
+  | "activity"
+  | "tasks"
+  | "needs-me";
 
 export interface WidgetInstance {
   id: string;

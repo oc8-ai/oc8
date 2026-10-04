@@ -104,7 +104,12 @@ function ChatWidgetPanel({
           active
           sessionId={sessionId}
           onSessionChange={setSessionId}
-          assistantAgentId={assistantAgentId}
+          agentId={assistantAgentId}
+          isAssistant
+          agents={[]}
+          departments={[]}
+          mayStartRuns={false}
+          onAddressAgent={() => {}}
           draft={draft}
           onDraftChange={setDraft}
         />

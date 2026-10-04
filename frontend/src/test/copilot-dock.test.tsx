@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
@@ -17,6 +17,12 @@ const {
   rejectProposalMock,
   runActivityMock,
   liveStatusMock,
+  agentsMock,
+  departmentsMock,
+  mayMock,
+  budgetStatusMock,
+  knowledgeBasesMock,
+  chatModesMock,
 } = vi.hoisted(() => ({
   canMock: vi.fn(() => true),
   assistantMock: vi.fn(),
@@ -32,11 +38,17 @@ const {
   rejectProposalMock: vi.fn(),
   runActivityMock: vi.fn(),
   liveStatusMock: vi.fn(),
+  agentsMock: vi.fn(),
+  departmentsMock: vi.fn(),
+  mayMock: vi.fn(() => true),
+  budgetStatusMock: vi.fn(),
+  knowledgeBasesMock: vi.fn(),
+  chatModesMock: vi.fn(),
 }));
 
 vi.mock("@/lib/governance-hooks", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/governance-hooks")>();
-  return { ...actual, useCan: () => canMock };
+  return { ...actual, useCan: () => canMock, useMay: () => mayMock };
 });
 
 vi.mock("@/lib/hooks", async (importOriginal) => {
@@ -48,7 +60,17 @@ vi.mock("@/lib/hooks", async (importOriginal) => {
     useCopilotProposals: (options?: unknown) => proposalsMock(options),
     useApplyCopilotProposal: () => ({ mutate: applyProposalMock, isPending: false }),
     useRejectCopilotProposal: () => ({ mutate: rejectProposalMock, isPending: false }),
+    useAgents: (params?: unknown) => agentsMock(params),
+    useDepartments: (params?: unknown) => departmentsMock(params),
+    useBudgetStatus: (departmentId: string | null, options?: unknown) =>
+      budgetStatusMock(departmentId, options),
+    useKnowledgeBases: (params?: unknown) => knowledgeBasesMock(params),
   };
+});
+
+vi.mock("@/lib/chat-commands", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/chat-commands")>();
+  return { ...actual, useChatModes: () => chatModesMock() };
 });
 
 vi.mock("@/lib/hooks-chat", () => ({
@@ -120,6 +142,44 @@ describe("CopilotDock", () => {
     runActivityMock.mockReturnValue({ data: null });
     liveStatusMock.mockReset();
     liveStatusMock.mockReturnValue("connected");
+    agentsMock.mockReset();
+    agentsMock.mockReturnValue({
+      data: {
+        items: [{ id: "sina", name: "Sina", role: "Support Agent", departmentId: "dept-1" }],
+        totalCount: 1,
+      },
+    });
+    departmentsMock.mockReset();
+    departmentsMock.mockReturnValue({
+      data: { items: [{ id: "dept-1", name: "Support" }], totalCount: 1 },
+    });
+    mayMock.mockReset();
+    mayMock.mockImplementation(() => true);
+    budgetStatusMock.mockReset();
+    budgetStatusMock.mockReturnValue({
+      data: {
+        scope: "tenant",
+        departmentId: null,
+        softLimitTokens: null,
+        hardLimitTokens: 100000,
+        currentTokens: 4200,
+        softExceeded: false,
+        hardExceeded: false,
+      },
+    });
+    knowledgeBasesMock.mockReset();
+    knowledgeBasesMock.mockReturnValue({ data: { items: [], totalCount: 0 } });
+    chatModesMock.mockReset();
+    chatModesMock.mockReturnValue({
+      data: [
+        {
+          key: "plan",
+          summary: "Work out the steps and show them. Changes nothing.",
+          allowsTools: true,
+          allowsWrites: false,
+        },
+      ],
+    });
   });
 
   it("renders nothing for a caller without copilot:use, and never even calls the chat-pipeline hooks", () => {
@@ -156,6 +216,8 @@ describe("CopilotDock", () => {
           runId: null,
           renderedComponents: [],
           createdAt: "t",
+          mode: null,
+          contextRefs: [],
         },
         {
           id: "m2",
@@ -165,6 +227,8 @@ describe("CopilotDock", () => {
           runId: "r1",
           renderedComponents: [],
           createdAt: "t",
+          mode: null,
+          contextRefs: [],
         },
       ],
     });
@@ -195,7 +259,7 @@ describe("CopilotDock", () => {
 
     expect(createSessionMock).toHaveBeenCalledWith("assistant-1", expect.anything());
     expect(sendMessageMock).toHaveBeenCalledWith(
-      { message: "What needs approval?" },
+      { message: "What needs approval?", contextRefs: [] },
       expect.anything(),
     );
   });
@@ -215,7 +279,7 @@ describe("CopilotDock", () => {
 
     expect(createSessionMock).not.toHaveBeenCalled();
     expect(sendMessageMock).toHaveBeenCalledWith(
-      { message: "Cost this month?" },
+      { message: "Cost this month?", contextRefs: [] },
       expect.anything(),
     );
   });
@@ -269,6 +333,8 @@ describe("CopilotDock", () => {
           runId: null,
           renderedComponents: [],
           createdAt: "t",
+          mode: null,
+          contextRefs: [],
         },
       ],
     });
@@ -303,6 +369,8 @@ describe("CopilotDock", () => {
             },
           ],
           createdAt: "t",
+          mode: null,
+          contextRefs: [],
         },
       ],
     });
@@ -462,6 +530,8 @@ describe("CopilotDock", () => {
           runId: null,
           renderedComponents: [],
           createdAt: "t",
+          mode: null,
+          contextRefs: [],
         },
         {
           id: "m2",
@@ -471,6 +541,8 @@ describe("CopilotDock", () => {
           runId: "r1",
           renderedComponents: [],
           createdAt: "t",
+          mode: null,
+          contextRefs: [],
         },
       ],
     });
@@ -563,7 +635,10 @@ describe("CopilotDock", () => {
     fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
 
     expect(createSessionMock).toHaveBeenCalledWith("assistant-1", expect.anything());
-    expect(sendMessageMock).toHaveBeenCalledWith({ message: "Fresh question" }, expect.anything());
+    expect(sendMessageMock).toHaveBeenCalledWith(
+      { message: "Fresh question", contextRefs: [] },
+      expect.anything(),
+    );
   });
 
   it("a new chat button still works right after a tenant's very first session is created lazily", () => {
@@ -644,6 +719,8 @@ describe("CopilotDock", () => {
                 runId: null,
                 renderedComponents: [],
                 createdAt: "t",
+                mode: null,
+                contextRefs: [],
               },
               {
                 id: "m2",
@@ -653,6 +730,8 @@ describe("CopilotDock", () => {
                 runId: "r1",
                 renderedComponents: [],
                 createdAt: "t",
+                mode: null,
+                contextRefs: [],
               },
             ],
           }
@@ -861,6 +940,8 @@ describe("CopilotDock", () => {
           runId: "run-1",
           renderedComponents: [],
           createdAt: "t",
+          mode: null,
+          contextRefs: [],
         }),
     );
     renderDock();
@@ -885,6 +966,8 @@ describe("CopilotDock", () => {
           runId: null,
           renderedComponents: [],
           createdAt: "t",
+          mode: null,
+          contextRefs: [],
         },
       ],
     });
@@ -905,5 +988,145 @@ describe("CopilotDock", () => {
     renderDock();
     openDock();
     expect(screen.queryByText(/reconnecting/i)).not.toBeInTheDocument();
+  });
+
+  // --- Task 15: @ agent switching, / commands and /budget in the dock ------
+
+  describe("the dock composer's sigils", () => {
+    it('typing "@" lists agents with their role and department', () => {
+      renderDock();
+      openDock();
+      const textarea = screen.getByPlaceholderText(/configure or ask oc8/i);
+      fireEvent.change(textarea, { target: { value: "@", selectionStart: 1 } });
+      expect(screen.getByRole("listbox", { name: /agents/i })).toBeInTheDocument();
+      expect(screen.getByText("Sina")).toBeInTheDocument();
+      expect(screen.getByText("Support Agent · Support")).toBeInTheDocument();
+    });
+
+    it("picking an agent switches who the conversation goes to and says so", () => {
+      renderDock();
+      openDock();
+      const textarea = screen.getByPlaceholderText(/configure or ask oc8/i);
+      fireEvent.change(textarea, { target: { value: "@", selectionStart: 1 } });
+      fireEvent.click(screen.getByRole("option", { name: /Sina/i }));
+
+      expect(screen.getByText(/goes to Sina — not the copilot/i)).toBeInTheDocument();
+      expect(createSessionMock).not.toHaveBeenCalled();
+    });
+
+    it("a caller without run:start sees the agent but cannot pick it", () => {
+      mayMock.mockImplementation(() => false);
+      renderDock();
+      openDock();
+      const textarea = screen.getByPlaceholderText(/configure or ask oc8/i);
+      fireEvent.change(textarea, { target: { value: "@", selectionStart: 1 } });
+
+      const option = screen.getByRole("option", { name: /Sina/i });
+      expect(option).toHaveAttribute("aria-disabled", "true");
+      expect(screen.getByText(/you may not start runs for another agent/i)).toBeInTheDocument();
+
+      fireEvent.click(option);
+      expect(screen.queryByText(/goes to Sina/i)).not.toBeInTheDocument();
+    });
+
+    it("sending after a switch creates the session for the NEW agent", () => {
+      renderDock();
+      openDock();
+      const textarea = screen.getByPlaceholderText(/configure or ask oc8/i);
+      fireEvent.change(textarea, { target: { value: "@", selectionStart: 1 } });
+      fireEvent.click(screen.getByRole("option", { name: /Sina/i }));
+
+      fireEvent.change(textarea, { target: { value: "Can you check this ticket?" } });
+      fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
+
+      expect(createSessionMock).toHaveBeenCalledWith("sina", expect.anything());
+    });
+
+    it('"/budget" shows the budget panel without sending a message', () => {
+      sessionsMock.mockReturnValue({
+        data: [
+          { id: "s1", agentId: "assistant-1", title: "", createdAt: "t", lastMessageAt: null },
+        ],
+      });
+      messagesMock.mockReturnValue({ data: [] });
+      renderDock();
+      openDock();
+
+      const textarea = screen.getByPlaceholderText(/configure or ask oc8/i);
+      fireEvent.change(textarea, { target: { value: "/budget" } });
+      fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
+
+      expect(sendMessageMock).not.toHaveBeenCalled();
+      expect(createSessionMock).not.toHaveBeenCalled();
+      // Not asserting the exact separators toLocaleString renders (locale
+      // dependent in the test environment) -- the figure and its wording are
+      // what matters here.
+      expect(screen.getByText(/tokens used this month/i)).toHaveTextContent(/4.?200/);
+    });
+
+    it('"/plan …" is sent verbatim, command word included', () => {
+      sessionsMock.mockReturnValue({
+        data: [
+          { id: "s1", agentId: "assistant-1", title: "", createdAt: "t", lastMessageAt: null },
+        ],
+      });
+      messagesMock.mockReturnValue({ data: [] });
+      renderDock();
+      openDock();
+
+      const textarea = screen.getByPlaceholderText(/configure or ask oc8/i);
+      fireEvent.change(textarea, { target: { value: "/plan migrate the pipeline" } });
+      fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
+
+      expect(sendMessageMock).toHaveBeenCalledWith(
+        { message: "/plan migrate the pipeline", contextRefs: [] },
+        expect.anything(),
+      );
+    });
+
+    it("the hint is present in the dock too", () => {
+      renderDock();
+      openDock();
+      expect(screen.getByTestId("composer-hint")).toBeInTheDocument();
+    });
+
+    it("sending carries the context ref and then clears it", () => {
+      sessionsMock.mockReturnValue({
+        data: [
+          { id: "s1", agentId: "assistant-1", title: "", createdAt: "t", lastMessageAt: null },
+        ],
+      });
+      messagesMock.mockReturnValue({ data: [] });
+      knowledgeBasesMock.mockReturnValue({
+        data: { items: [{ id: "kb-1", name: "Preisliste", description: "Preisliste 2026" }] },
+      });
+      renderDock();
+      openDock();
+
+      const textarea = screen.getByPlaceholderText(/configure or ask oc8/i);
+      fireEvent.change(textarea, { target: { value: "#", selectionStart: 1 } });
+      fireEvent.click(screen.getByRole("option", { name: /Preisliste/i }));
+      expect(screen.getByText("Preisliste")).toBeInTheDocument();
+
+      fireEvent.change(textarea, { target: { value: "what's in here?" } });
+      fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
+
+      expect(sendMessageMock).toHaveBeenCalledWith(
+        {
+          message: "what's in here?",
+          contextRefs: [{ kind: "knowledge_base", id: "kb-1" }],
+        },
+        expect.anything(),
+      );
+
+      const [, opts] = sendMessageMock.mock.calls[0] as [
+        unknown,
+        { onSuccess?: (message: { runId: string }) => void } | undefined,
+      ];
+      act(() => {
+        opts?.onSuccess?.({ runId: "run-1" });
+      });
+      expect(screen.queryByText("Preisliste")).not.toBeInTheDocument();
+    });
   });
 });

@@ -16,6 +16,9 @@ export interface Agent {
   avatarColor: string;
   departmentId?: string;
   isLead?: boolean;
+  /** Opening questions this agent's composer offers on an empty conversation
+   *  (§5.3). Empty for an agent whose template ships none. */
+  promptStarters?: string[];
   /**
    * Team lead ("Teamleiter") supervising this agent. Reference to another
    * agent id, or `"human"` for human oversight. If omitted the department
@@ -1262,6 +1265,11 @@ export interface KnowledgeBase {
   deletedAt?: string | null;
   nameTranslations?: Record<string, string>;
   descriptionTranslations?: Record<string, string>;
+  /** ``internal`` (default) or a capa vector-index type id. */
+  indexType?: string;
+  /** Non-secret mapping for an external index. Never secrets. */
+  indexConfig?: Record<string, unknown>;
+  credentialId?: string | null;
 }
 
 export interface KnowledgeDocument {

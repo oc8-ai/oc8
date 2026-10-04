@@ -41,5 +41,18 @@ class ChatMessage(Base, PkMixin, TenantMixin, TimestampMixin):
     content: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     run_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
     rendered_components: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    #: The slash command this turn was sent in -- see `oc8.chat.modes`. NULL
+    #: for an ordinary message, which is most of them. Stored rather than
+    #: re-derived from `content`, because the command word is stripped out of
+    #: content: the transcript shows what was said, the badge shows how it was
+    #: asked. No CHECK constraint on purpose -- the mode vocabulary is
+    #: application-level and a newer release must not be refused by an older
+    #: database.
+    mode: Mapped[str | None] = mapped_column(Text)
+    #: What the operator attached to THIS turn with `#`:
+    #: `[{"kind": "knowledge_base", "id": "...", "label": "..."}]`. Resolved and
+    #: labelled at send time, so renaming or deleting a knowledge base later
+    #: leaves an old turn readable instead of showing a bare uuid.
+    context_refs: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
 
     __table_args__ = (CheckConstraint("role IN ('user','assistant')", name="ck_chat_message_role"),)

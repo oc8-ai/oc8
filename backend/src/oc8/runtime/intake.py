@@ -107,6 +107,8 @@ async def enqueue_run(
     #    only the savepoint unwinds, leaving the outer transaction -- and its
     #    transaction-local tenant binding -- alive, so the follow-up SELECT is
     #    still RLS-scoped and can see the row that won the race.
+    # `repo.create` pins the run to the agent's current version -- see its
+    # docstring; every run-creation path gets that from the same funnel.
     repo = RunRepository(db)
     try:
         async with db.begin_nested():

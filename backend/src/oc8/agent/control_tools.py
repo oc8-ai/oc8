@@ -15,7 +15,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -29,6 +29,7 @@ from oc8.agent.components import COMPONENT_CATALOG
 from oc8.agent.harness.retrieval import ToolCard, rank_tools
 from oc8.agent.harness.state import HarnessState, ProcedureMark
 from oc8.agents.repo import visible_agent, visible_agents
+from oc8.agents.versioning import pinned_model_config_id
 from oc8.approvals import (
     AlreadyDecided,
     NotYourDepartment,
@@ -45,6 +46,7 @@ from oc8.authz.pdp import Decision, Effect
 from oc8.authz.permissions import AGENT, APPROVAL, BUDGET, DEPARTMENT, STATISTICS, VIEW, perm
 from oc8.authz.scope import AgentActor, scope_for_member
 from oc8.capas.discovery import find_plugin
+from oc8.chat.modes import WRITING_CONTROL_TOOLS, ChatMode
 from oc8.departments.repo import visible_department, visible_departments
 from oc8.knowledge.retrieval import retrieve_kb_context
 from oc8.kpis.aggregate import compute_kpis
@@ -881,8 +883,10 @@ def offered_tools(
     has_instruction_files: bool = False,
     copilot_permissions: frozenset[str] = frozenset(),
     offer_write_output_file: bool = False,
+    is_team_lead: bool | None = None,
     offer_run_shell: bool = False,
     offer_run_program: bool = False,
+    chat_mode: ChatMode | None = None,
 ) -> list[NeutralTool]:
     """The full tool list to offer the model this step.
 
@@ -901,9 +905,25 @@ def offered_tools(
     second, redundant way to do the same thing. read_run_file has no such
     gate: reading a file another run produced is useful from every runtime.
 
+    `is_team_lead` is the run's PINNED flag (`resolve_version`); every runtime
+    passes it, and the live-row fallback exists only for a run-less caller.
+
     `offer_run_program` is only meaningful together with `offer_run_shell`
     (isolated shell): code mode still goes through the same local_result path.
+
+    `chat_mode` withholds what the mode would deny anyway (`oc8.chat.modes`):
+    nothing at all for /ask and /summarise, and the writing core tools for
+    /plan. This is an EFFICIENCY measure, not the enforcement -- `_authorize`
+    is. Connection tools are left in the list here because this function is
+    not given the connection's read/modify classification; `_list_tools` in
+    the MCP gateway does have it and filters them, and the PEP denies the rest.
     """
+    if chat_mode is not None and not chat_mode.allows_tools:
+        # The cheap path, and cheap for real: no tool schemas in the request at
+        # all, so /ask costs one short completion.
+        return []
+    if is_team_lead is None:
+        is_team_lead = agent.is_team_lead
     # Skill tools stay offered even once active: a model that invokes an
     # already-active skill again just hits the no-op branch in
     # execute_control_tool. Withdrawing the tool the moment it activates would
@@ -942,7 +962,7 @@ def offered_tools(
     # that door cannot answer.
     if not agent.is_tenant_assistant:
         offered.append(ASK_USER)
-    if agent.is_team_lead:
+    if is_team_lead:
         offered.append(DELEGATE_TASK)
     if agent.is_tenant_assistant:
         # Only the Assistant is the one that talks to a human about how oc8
@@ -986,6 +1006,8 @@ def offered_tools(
     # Dropping them here would make the other system unreachable for the
     # rest of the run. _authorize still checks the frame on every call.
     offered.extend(mcp_tools)
+    if chat_mode is not None and not chat_mode.allows_writes:
+        offered = [t for t in offered if t.name not in WRITING_CONTROL_TOOLS]
     return offered
 
 
@@ -1140,6 +1162,34 @@ async def _acting_token_role(
     return str(role) if isinstance(role, str) and role else None
 
 
+async def _context_kb_ids(
+    db: AsyncSession, *, tenant_id: uuid.UUID, run_id: uuid.UUID | None
+) -> frozenset[uuid.UUID] | None:
+    """Which knowledge bases the operator attached to this turn with `#`.
+
+    None means "no narrowing" -- every run that is not a chat turn, and every
+    chat turn that attached nothing. Read off the run for the same reason
+    `_acting_token_role` is: the attachment happened in an HTTP request that
+    ended long before this tool call.
+
+    A malformed id is skipped rather than raised on: the reference is a
+    convenience, and a bad one must not fail a lookup.
+    """
+    if run_id is None:
+        return None
+    run = await db.get(m.AgentRun, run_id)
+    raw = (run.context or {}).get("context_kb_ids") if run is not None else None
+    if not isinstance(raw, list) or not raw:
+        return None
+    out: set[uuid.UUID] = set()
+    for value in raw:
+        try:
+            out.add(uuid.UUID(str(value)))
+        except (ValueError, TypeError):
+            continue
+    return frozenset(out) if out else None
+
+
 async def _delegate(
     db: AsyncSession,
     *,
@@ -1251,12 +1301,22 @@ async def _department_frame(db: AsyncSession, agent: m.Agent) -> dict[str, Any]:
     return dict(dept.frame or {}) if dept is not None else {}
 
 
-async def _model_locality(db: AsyncSession, agent: m.Agent) -> str:
+async def _model_locality(
+    db: AsyncSession, agent: m.Agent, pinned: Mapping[str, Any] | None = None
+) -> str:
     """Where this agent's model runs. "cloud" when unknown -- the stricter of
-    the two, since it is what excludes restricted material from retrieval."""
-    if agent.model_config_id is None:
+    the two, since it is what excludes restricted material from retrieval.
+
+    Read off the run's PINNED model (`pinned`, from `resolve_version`), the one
+    this run's completions actually go to: a mid-run switch of the live row to
+    a local model must not unlock restricted material for a run still talking
+    to a cloud one."""
+    model_config_id = (
+        pinned_model_config_id(pinned) if pinned is not None else agent.model_config_id
+    )
+    if model_config_id is None:
         return "cloud"
-    config = await db.get(m.ModelConfig, agent.model_config_id)
+    config = await db.get(m.ModelConfig, model_config_id)
     return str(getattr(config, "locality", "cloud") or "cloud")
 
 
@@ -1470,6 +1530,7 @@ async def execute_control_tool(
     mcp_conn: m.McpConnection | None,
     originating_operator: str | None,
     run_id: uuid.UUID | None = None,
+    pinned: Mapping[str, Any] | None = None,
     local_result: dict[str, Any] | None = None,
     harness_state: HarnessState | None = None,
     active_procedure_skills: Sequence[LoadedSkill] | None = None,
@@ -1486,6 +1547,10 @@ async def execute_control_tool(
     run, and several runs share one task, so it cannot be re-derived from the
     task afterwards. It defaults to None only so a direct call with no run
     behind it (tests) stays valid -- and None fails closed, dropping the claim.
+
+    `pinned` is the run's resolved agent version (`resolve_version`); every
+    real runtime passes it so a control tool sees the same configuration the
+    rest of the run does. None (a run-less direct call) reads the live row.
 
     `harness_state` is optional until both runtimes thread it (Package 8 A4).
     find_tools needs it to read the deferred catalog and write pins;
@@ -1525,6 +1590,7 @@ async def execute_control_tool(
             tenant_id=tenant_id,
             frame=await _department_frame(db, agent),
             query_text=query,
+            narrowing=(pinned["narrowing"] or {}) if pinned is not None else None,
         )
         if not recalled.strip():
             return ControlOutcome(
@@ -1563,7 +1629,10 @@ async def execute_control_tool(
             tenant_id=tenant_id,
             query_text=query,
             frame=await _department_frame(db, agent),
-            model_locality=await _model_locality(db, agent),
+            model_locality=await _model_locality(db, agent, pinned),
+            # What the operator pointed at with `#` for this turn, intersected
+            # with this agent's grants inside retrieve_kb_context.
+            only_kb_ids=await _context_kb_ids(db, tenant_id=tenant_id, run_id=run_id),
         )
         # A trail, because "did it consult the handbook or guess?" has to be
         # answerable afterwards. Without it I drew the wrong conclusion myself:
@@ -1581,6 +1650,12 @@ async def execute_control_tool(
                 "task_id": str(task.id),
                 "query": query,
                 "found": bool(context.strip()),
+                "narrowed_to": sorted(
+                    str(i)
+                    for i in (
+                        await _context_kb_ids(db, tenant_id=tenant_id, run_id=run_id) or ()
+                    )
+                ),
             },
             originating_operator=originating_operator,
         )

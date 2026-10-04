@@ -1,0 +1,15 @@
+# Qdrant as a query-only knowledge vector index.
+#
+# Credentials are NOT stored in index_config. The KB row holds credential_id;
+# values live in the tenant's secret store and are resolved at search time.
+
+[plugin]
+name = "qdrant"
+version = "1.0.0"
+type = "vector_index"
+trust = "first_party"
+summary = "Search an existing Qdrant collection as a knowledge base (query-only)"
+permissions = ["knowledge:view"]
+
+[plugin.entry_points]
+vector_indexes = "vector_index.index:register"

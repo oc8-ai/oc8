@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import select
 
 from oc8 import models as m
+from oc8.agents.versioning import draft_status
 from oc8.capas.service import PluginError, instantiate_department
 from tests.conftest import AppSessionFactory
 
@@ -157,6 +158,10 @@ async def test_repeat_from_setup_hires_a_numbered_team_on_one_runtime(
         assert by_name["Senior 2"].definition["reports_to"] == "Senior 1"
         assert by_name["Senior 3"].mission == "Work Widgets as number 3"
         assert all(agent.runtime_ref == str(runtime.id) for agent in agents)
+        # runtime_ref is versioned: v1 must already carry it, or every hired
+        # agent opens with an unpublished change and runs without its runtime.
+        for agent in agents:
+            assert not (await draft_status(s, agent)).dirty
         triggers = (await s.execute(select(m.Trigger))).scalars().all()
         assert len(triggers) == 3
         assert {trigger.task_text for trigger in triggers} == {"Poll Widgets"}

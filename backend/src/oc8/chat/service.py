@@ -30,6 +30,7 @@ from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.chat.modes import mode_directive, parse_command
 from oc8.copilot.redaction import is_secret_request, redact_text
 from oc8.runtime.intake import enqueue_run
 from oc8.storage import s3
@@ -175,6 +176,52 @@ def _build_task_text(history: list[m.ChatMessage], new_message: str) -> str:
     return "\n".join(lines)
 
 
+async def _resolve_context_refs(
+    db: AsyncSession, *, tenant_id: uuid.UUID, refs: list[dict[str, str]] | None
+) -> list[dict[str, str]]:
+    """The `#` references that actually exist, with their labels.
+
+    Anything unresolvable is DROPPED, not passed on: an id naming another
+    tenant's knowledge base (RLS makes it invisible here), a soft-deleted one,
+    or a `kind` this version does not implement. A dropped reference is visible
+    -- the chip is gone from the sent message -- which is the honest outcome;
+    the alternative is a turn instructed to consult something nobody can read.
+
+    `knowledge_base` is the only kind in Phase 1. A document or an external
+    record is a bigger question (a record reference has to name a connection
+    too) and belongs with the room work.
+    """
+    if not refs:
+        return []
+    wanted: list[uuid.UUID] = []
+    for ref in refs:
+        if ref.get("kind") != "knowledge_base":
+            continue
+        try:
+            wanted.append(uuid.UUID(str(ref.get("id"))))
+        except (ValueError, TypeError):
+            continue
+    if not wanted:
+        return []
+    rows = (
+        await db.execute(
+            select(m.KnowledgeBase).where(
+                m.KnowledgeBase.tenant_id == tenant_id,
+                m.KnowledgeBase.id.in_(wanted),
+                m.KnowledgeBase.deleted_at.is_(None),
+            )
+        )
+    ).scalars()
+    by_id = {kb.id: kb for kb in rows}
+    # Caller order preserved, so the chips read back in the order they were
+    # attached rather than in whatever order the database returned.
+    return [
+        {"kind": "knowledge_base", "id": str(kb_id), "label": by_id[kb_id].name}
+        for kb_id in wanted
+        if kb_id in by_id
+    ]
+
+
 async def send_message(
     db: AsyncSession,
     *,
@@ -182,6 +229,7 @@ async def send_message(
     tenant_id: uuid.UUID,
     message: str,
     attachment_ids: list[uuid.UUID] | None = None,
+    context_refs: list[dict[str, str]] | None = None,
     originating_operator: str | None,
     operator_role: str | None = None,
     chat_channel: str | None = None,
@@ -204,6 +252,21 @@ async def send_message(
     From this call onward `api/v1/files.py`'s `_owned_attachment` resolves
     them through the message's session rather than the session directly.
 
+    `context_refs` is what the operator attached with `#` for this one turn.
+    Resolved here, not trusted: an id that names nothing this tenant can read
+    is DROPPED rather than passed on, so a turn is never told to consult a
+    knowledge base that does not exist. The surviving ids also NARROW this
+    turn's retrieval -- see `retrieve_kb_context`'s `only_kb_ids`, which
+    intersects them with the agent's own grants and can therefore only ever
+    shrink what is searched.
+
+    A leading slash command is parsed out of `message` here (`chat.modes`) and
+    recorded on the turn. The mode is NOT a shortcut past the run: `/ask`
+    still enqueues an ordinary `source="chat"` AgentRun on this session's one
+    shared Task -- one that has no tools. Skipping the run would skip
+    metering, the budget check, the audit trail and the department board, i.e.
+    every reason this module funnels through `enqueue_run` at all.
+
     Returns `(user_message, None)` without enqueueing a run when the tenant's
     Assistant refuses the message outright (see the secret-blindness gate
     below) -- callers must not assume a run was always started.
@@ -216,8 +279,20 @@ async def send_message(
     attachments) does not have to know the trap exists.
     """
     history = await list_messages(db, tenant_id=tenant_id, session_id=session.id)
+    # One parser for every door (web composer, Telegram free text, anything
+    # later): the command is recognised here, not in a UI. `body` is what was
+    # actually said -- an unknown command, a path, or a bare "/ask" comes back
+    # unchanged with no mode, so a message that legitimately starts with a
+    # slash is still sendable.
+    mode, body = parse_command(message)
+    resolved_refs = await _resolve_context_refs(db, tenant_id=tenant_id, refs=context_refs)
     user_message = m.ChatMessage(
-        tenant_id=tenant_id, session_id=session.id, role="user", content=message
+        tenant_id=tenant_id,
+        session_id=session.id,
+        role="user",
+        content=body,
+        mode=mode.key if mode is not None else None,
+        context_refs=resolved_refs,
     )
     db.add(user_message)
     await db.flush()
@@ -286,7 +361,23 @@ async def send_message(
         )
         return user_message, None
 
-    task_text = _build_task_text(history, message)
+    task_text = _build_task_text(history, body)
+    if resolved_refs:
+        # Quoted and attributed, never inlined as an instruction: the operator
+        # is pointing at a source, and the agent already has `search_knowledge`
+        # to read it with. Inlining a whole knowledge base here would blow the
+        # prompt and defeat the retrieval narrowing set up below.
+        named = ", ".join(f'"{ref["label"]}"' for ref in resolved_refs)
+        if mode is not None and not mode.allows_tools:
+            # /ask and /summarise offer no tool at all -- telling the model to
+            # call one would only earn a refusal.
+            task_text += f"\n\n[Context attached by the operator: knowledge base {named}.]"
+        else:
+            task_text += (
+                f"\n\n[Context attached by the operator: knowledge base {named}. "
+                "Search it with search_knowledge before answering; for this turn "
+                "that tool reads nothing else.]"
+            )
     for att in attachments:
         if att.is_image:
             continue
@@ -316,6 +407,16 @@ async def send_message(
     if chat_channel is not None and chat_channel_external_id is not None:
         context["chat_channel"] = chat_channel
         context["chat_channel_external_id"] = chat_channel_external_id
+    if mode is not None:
+        # Two consumers, deliberately: the model is TOLD (the directive below)
+        # and the PEP ENFORCES (engine._authorize reads this key back through
+        # mode_from_context). Neither is sufficient alone -- a told model can
+        # ignore it, and a silently denied tool wastes a step.
+        context["chat_mode"] = mode.key
+        task_text += "\n\n" + mode_directive(mode)
+        context["task"] = task_text
+    if resolved_refs:
+        context["context_kb_ids"] = [ref["id"] for ref in resolved_refs]
 
     # Open the session's Task HERE, on turn one, rather than letting the engine
     # open one implicitly when the run starts.

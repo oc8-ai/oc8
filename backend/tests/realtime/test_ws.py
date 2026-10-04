@@ -106,6 +106,35 @@ async def test_ws_delivers_run_tool_call(redis_url: str) -> None:
 
 
 @pytest.mark.asyncio
+async def test_ws_delivers_run_step_timing(redis_url: str) -> None:
+    """Same plumbing check as test_ws_delivers_run_tool_call, for the run step
+    timeline plan's own live event (publish_run_step_timing, called from both
+    runtimes right alongside their existing step-timing capture -- see
+    oc8.realtime.emit's own docstring for why this carries no DB write of its
+    own, unlike run.tool_call above)."""
+    from oc8.realtime.emit import publish_run_step_timing
+
+    app = create_app()
+    tenant = uuid.uuid4()
+    run_id = uuid.uuid4()
+    timing = {
+        "step": 1,
+        "model_wait_ms": 120,
+        "ttft_ms": 40,
+        "tool_wait_ms": 5,
+        "step_wall_ms": 200,
+    }
+    with TestClient(app) as client:
+        with client.websocket_connect(f"/api/v1/events/ws?token={_token(tenant)}") as ws:
+            assert ws.receive_json()["type"] == "realtime.connected"
+            await publish_run_step_timing(tenant, run_id=run_id, timing=timing)
+            got = ws.receive_json()
+            assert got["type"] == "run.step_timing"
+            assert got["tenantid"] == str(tenant)
+            assert got["data"] == {"run_id": str(run_id), "timing": timing}
+
+
+@pytest.mark.asyncio
 async def test_ws_delivers_run_token_delta(redis_url: str) -> None:
     """Same plumbing check as test_ws_delivers_run_output_delta and
     test_ws_delivers_run_tool_call, for Stage 2's model-token live event

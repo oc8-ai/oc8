@@ -12,6 +12,7 @@ code.
 | `flow_template` | A Flow + version, added on enable | no |
 | `tool_pack` | MCP connections, created *disconnected* on enable | no |
 | `connector` | A knowledge-source connector | **yes** |
+| `vector_index` | A query-only retrieval backend for an existing remote collection | **yes** |
 | `runtime_adapter` | An agent runtime implementation | **yes** |
 | `model_adapter` | An LLM provider | **yes** |
 | `approval_channel` | An approval-delivery channel (Telegram, WhatsApp, …) | **yes** |
@@ -39,6 +40,7 @@ the capa itself:
 | `type` | Code folder |
 |---|---|
 | `connector` | `connector/` |
+| `vector_index` | `vector_index/` |
 | `runtime_adapter` | `runtime/` |
 | `model_adapter` | `provider/` |
 | `approval_channel` | `channel/` |
@@ -57,13 +59,18 @@ connectors = "connector.connector:register"
 
 ```toml
 [plugin.entry_points]
+vector_indexes = "vector_index.index:register"
+```
+
+```toml
+[plugin.entry_points]
 runtime = "runtime.runtime:register"
 ```
 
-The entry-point *key* (`connectors`, `runtime`, `model_providers`,
+The entry-point *key* (`connectors`, `vector_indexes`, `runtime`, `model_providers`,
 `channels`, …) is documentation for humans reading the manifest — what you
 may actually add is whatever `PluginContributions` exposes:
-`add_connector`, `add_runtime`, `add_model_provider`, `add_hook`.
+`add_connector`, `add_vector_index`, `add_runtime`, `add_model_provider`, `add_hook`.
 `register(contrib)` is called once per process and can call more than one
 `add_*` if a single capa contributes more than one thing.
 

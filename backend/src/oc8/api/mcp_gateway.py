@@ -67,8 +67,10 @@ from oc8.agent.tool_semantics import (
     record_identity,
     record_title,
 )
+from oc8.agents.versioning import resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession
 from oc8.approvals import raise_approval
+from oc8.approvals.record_url import record_url_for_connection
 from oc8.audit import append_event
 from oc8.authz.pdp import (
     Decision,
@@ -77,6 +79,7 @@ from oc8.authz.pdp import (
     required_right,
 )
 from oc8.capas.discovery import resolve_tool_pack_connection
+from oc8.chat.modes import mode_from_context, mode_refusal
 from oc8.memory.policy import authorize_memory_write
 from oc8.realtime.emit import note_focus, record_activity
 from oc8.runtime.approval_resume import pre_decided_map
@@ -324,9 +327,20 @@ async def _list_tools(
     same reasoning as withholding delegate_task from a non-lead. The frame is
     read PER CONNECTION, so a department can grant one system and withhold
     another.
+
+    The agent's side of the intersection (narrowing, team-lead flag) is the
+    run's PINNED version, not the live row: this is called on every
+    `tools/list`, and a mid-run edit must not change what a running run is
+    offered. The frame stays live on purpose -- it is the tenant's ceiling.
     """
     frame = dept.frame if dept is not None else {}
-    policies = effective_tool_policies(frame, agent.narrowing or {})
+    pinned = await resolve_version(db, run, agent)
+    policies = effective_tool_policies(frame, pinned["narrowing"] or {})
+    chat_mode = mode_from_context(run.context)
+    if chat_mode is not None and not chat_mode.allows_tools:
+        # /ask and /summarise take no tools at all -- returning early also
+        # skips launching every MCP server just to throw the list away.
+        return []
 
     allowed: dict[str, list[Any]] = {}
     for conn in conns:
@@ -386,7 +400,11 @@ async def _list_tools(
         allowed[conn.name] = [
             t
             for t in discovered
-            if policy.offers(t.name) and policy.has_right(required_right(t.name, scopes))
+            if policy.offers(t.name)
+            and policy.has_right(required_right(t.name, scopes))
+            # Scopes are known HERE (unlike in offered_tools), so a read-only
+            # mode's writing tools are withheld rather than offered-then-denied.
+            and mode_refusal(chat_mode, t.name, tool_scopes=scopes) is None
         ]
 
     # Built from what the agent may ACTUALLY use: a tool the frame withholds on
@@ -431,7 +449,7 @@ async def _list_tools(
     # Assistant's own doors -- has no reply-to-a-clarification path at all.
     if not agent.is_tenant_assistant:
         core.append(ASK_USER)
-    if agent.is_team_lead:
+    if pinned["is_team_lead"]:
         # Same argument as REQUEST_DECISION above, one step further. delegate_task
         # was withheld here as a lifecycle tool, but it is not one: it creates a
         # run for SOMEBODY ELSE and returns a sentence -- it never suspends the
@@ -443,6 +461,7 @@ async def _list_tools(
         # tool she was told to call was not on her list. Withheld from a
         # non-lead for the reason above: every call would be denied.
         core.append(DELEGATE_TASK)
+    core = [t for t in core if mode_refusal(chat_mode, t.name, tool_scopes=None) is None]
     for core_tool in core:
         out.append(
             {
@@ -558,6 +577,12 @@ async def _call_tool(
     arguments: dict[str, Any],
 ) -> dict[str, Any]:
     frame = dept.frame if dept is not None else {}
+    # The agent's behavioural config for THIS run: the version pinned at
+    # intake, never the live row -- otherwise a narrowing tightened (or
+    # loosened) between two tool calls changes what the same run may do.
+    # Resolved once, beside the frame, which alone stays a live read.
+    pinned = await resolve_version(db, run, agent)
+    narrowing: dict[str, Any] = pinned["narrowing"] or {}
     # Which system this call belongs to, and what it is called THERE. Every
     # seam below -- the right classification, the value, the record, whether it
     # reaches a person -- belongs to that connection and to no other, which is
@@ -688,9 +713,7 @@ async def _call_tool(
         # company-tier write comes back as REQUIRE_APPROVAL.
         core_tc = _ToolCall(id=str(uuid.uuid4()), name=name, arguments=arguments)
         if name == MEMORY_WRITE.name:
-            core_decision = authorize_memory_write(
-                frame, agent.narrowing or {}, str(arguments.get("tier", ""))
-            )
+            core_decision = authorize_memory_write(frame, narrowing, str(arguments.get("tier", "")))
         elif name == DELEGATE_TASK.name:
             # Not waved through: _authorize is where "not yourself", "a real
             # agent id" and the depth limit live, and the limit is the only thing
@@ -702,15 +725,27 @@ async def _call_tool(
                 skill_tool_names=skill_tool_names,
                 delegation_depth=int(run.context.get("delegation_depth", 0)),
                 skill_thresholds=(),
-                tool_policies=effective_tool_policies(frame, agent.narrowing or {}),
+                tool_policies=effective_tool_policies(frame, narrowing),
+                narrowing=narrowing,
+                is_team_lead=bool(pinned["is_team_lead"]),
                 # A core tool belongs to no connection, so it has neither scopes
                 # nor a connection key -- the checks that matter for it (self,
                 # real id, depth) are inside _authorize.
                 tool_scopes=None,
                 connection_key=None,
+                chat_mode=mode_from_context(run.context),
             )
         else:
-            core_decision = Decision(Effect.ALLOW)
+            mode_denial = mode_refusal(mode_from_context(run.context), name, tool_scopes=None)
+            core_decision = (
+                Decision(Effect.DENY, mode_denial)
+                if mode_denial is not None
+                else Decision(Effect.ALLOW)
+            )
+        if core_decision.effect is Effect.DENY:
+            # Defence in depth: the tool was withheld from tools/list above, so
+            # a call arriving here means a harness cached an older list.
+            return _tool_result(f"ERROR: {core_decision.reason or 'denied'}", is_error=True)
         outcome = await execute_control_tool(
             db,
             tenant_id=run.tenant_id,
@@ -723,6 +758,7 @@ async def _call_tool(
             mcp_conn=conn,
             originating_operator=run.context.get("originating_operator"),
             run_id=run.id,
+            pinned=pinned,
         )
         assert outcome is not None
         if outcome.pending_run is not None:
@@ -787,11 +823,14 @@ async def _call_tool(
             for g in s.definition.guardrails
             if g.type == "value_threshold" and g.then == "require_approval"
         ),
-        tool_policies=effective_tool_policies(frame, agent.narrowing or {}),
+        tool_policies=effective_tool_policies(frame, narrowing),
+        narrowing=narrowing,
+        is_team_lead=bool(pinned["is_team_lead"]),
         connection_key=conn.name if conn is not None else None,
         tool_scopes=scopes,
         value_spec=value_spec,
         guardrail_attribute_specs=_manifest_guardrail_attributes(conn),
+        chat_mode=mode_from_context(run.context),
     )
     # Honour an operator's earlier decision on this exact call (resume).
     if decision.effect is Effect.REQUIRE_APPROVAL:
@@ -815,6 +854,12 @@ async def _call_tool(
     )
 
     if decision.effect is Effect.REQUIRE_APPROVAL:
+        # Which record this call is about, resolved from the SAME pure helper
+        # the blast-radius and claim machinery below already uses -- so the
+        # link on the approval and the record the run is reaching for can
+        # never disagree. A search names a kind of record rather than one and
+        # gets None here, which resolves to no link.
+        held_record = record_identity(tc.name, tc.arguments, focus_spec)
         ar = await raise_approval(
             db,
             tenant_id=run.tenant_id,
@@ -826,6 +871,11 @@ async def _call_tool(
             payload={"tool": tc.name, "arguments": tc.arguments},
             reason_code=decision.reason_code,
             reason_context=decision.context,
+            record_url=(
+                record_url_for_connection(conn, entity=held_record[0], ref=held_record[1])
+                if held_record is not None
+                else None
+            ),
         )
         # Park the run and return immediately -- no bounded wait. The adapter
         # polls for the park marker every couple of seconds (runtime.py's

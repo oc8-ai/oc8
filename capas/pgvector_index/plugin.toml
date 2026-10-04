@@ -1,0 +1,15 @@
+# External Postgres/pgvector as a query-only knowledge vector index.
+#
+# Connects to a customer's database (not oc8's own kb_chunk table). Credentials
+# live in the unified Credential store; index_config holds only table/column mapping.
+
+[plugin]
+name = "pgvector_index"
+version = "1.0.0"
+type = "vector_index"
+trust = "first_party"
+summary = "Search an existing Postgres/pgvector table as a knowledge base (query-only)"
+permissions = ["knowledge:view"]
+
+[plugin.entry_points]
+vector_indexes = "vector_index.index:register"
