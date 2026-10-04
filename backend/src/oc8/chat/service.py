@@ -494,6 +494,14 @@ async def send_message(
     await db.execute(
         text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": str(tenant_id)}
     )
+    if role == "followup":
+        # Linked so a quiet outcome can take its own prompt back out of the
+        # transcript (record_assistant_reply). A user turn's run_id stays NULL.
+        user_message.run_id = run.id
+        await db.commit()
+        await db.execute(
+            text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": str(tenant_id)}
+        )
     return user_message, run
 
 
@@ -525,6 +533,15 @@ async def record_assistant_reply(db: AsyncSession, *, run: m.AgentRun, output: s
         if is_quiet_followup(run, resp):
             # Nothing to report under notify_rule (§7a.3): the turn did its
             # work silently. last_update_at was already touched by the tool.
+            # Its prompt goes too, or every quiet check would pile up an
+            # unanswered "Follow-up for ..." line in the history.
+            await db.execute(
+                delete(m.ChatMessage).where(
+                    m.ChatMessage.session_id == session.id,
+                    m.ChatMessage.role == "followup",
+                    m.ChatMessage.run_id == run.id,
+                )
+            )
             session.last_message_at = session.last_message_at or dt.datetime.now(tz=dt.UTC)
             return
     rendered_components = (run.context or {}).get("rendered_components", [])

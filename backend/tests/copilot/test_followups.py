@@ -626,3 +626,68 @@ async def test_member_without_assigned_role_cannot_schedule(
                 assistant_id=assistant.id, spec=SPEC, prompt="x", member_subject=seat.subject,
             )  # fmt: skip
         assert (await db.execute(select(m.Trigger))).scalars().all() == []
+
+
+async def test_quiet_followup_leaves_no_prompt_but_reporting_and_failed_keep_it(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    from oc8.chat.service import record_assistant_reply
+
+    tenant, _member_id, session_id, r_id, t_id = await _world(app_session)
+    outcomes: dict[str, list[str]] = {}
+    for label, state, reported in (
+        ("quiet", "done", False),
+        ("reporting", "done", True),
+        ("failed", "failed", False),
+    ):
+        async with app_session(tenant) as db:
+            trigger = await db.get(m.Trigger, t_id)
+            assert trigger is not None
+            trigger.enabled = True
+            for old in (
+                await db.execute(select(m.AgentRun).where(m.AgentRun.source == "chat"))
+            ).scalars():
+                old.state = "done"
+            await db.flush()
+            assert await fire_followup(db, trigger, tenant_id=tenant) == "fired"
+        async with app_session(tenant) as db:
+            run = (
+                await db.execute(
+                    select(m.AgentRun)
+                    .where(m.AgentRun.source == "chat")
+                    .order_by(m.AgentRun.created_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one()
+            prompt = (
+                await db.execute(
+                    select(m.ChatMessage).where(
+                        m.ChatMessage.session_id == session_id,
+                        m.ChatMessage.role == "followup",
+                        m.ChatMessage.run_id == run.id,
+                    )
+                )
+            ).scalar_one()
+            assert prompt.content.startswith("Follow-up for")
+            run.state = state
+            resp = await db.get(m.Responsibility, r_id)
+            assert resp is not None
+            resp.last_report_run_id = run.id if reported else None
+            await db.flush()
+            await record_assistant_reply(db, run=run, output="out")
+            await db.flush()
+            outcomes[label] = [
+                msg.role
+                for msg in (
+                    await db.execute(
+                        select(m.ChatMessage)
+                        .where(m.ChatMessage.session_id == session_id)
+                        .where(m.ChatMessage.run_id == run.id)
+                        .order_by(m.ChatMessage.created_at)
+                    )
+                ).scalars()
+            ]
+            await db.commit()
+    assert outcomes["quiet"] == []
+    assert sorted(outcomes["reporting"]) == ["assistant", "followup"]
+    assert sorted(outcomes["failed"]) == ["assistant", "followup"]
