@@ -797,3 +797,13 @@ class CreateDashboardPresetRequest(CamelModel):
         if not value:
             raise ValueError("must not be blank")
         return value
+
+
+class UpdateCopilotProfileRequest(CamelModel):
+    display_name: str | None = None
+    avatar: dict[str, Any] | None = None
+
+
+class UpdateResponsibilityRequest(CamelModel):
+    state: Literal["active", "paused", "done", "cancelled"]
+    reason: str = ""

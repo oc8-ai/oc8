@@ -5,6 +5,7 @@ another member's responsibility gets "not found"."""
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import uuid
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
@@ -34,6 +35,9 @@ from oc8.copilot.responsibilities import (
 )
 from oc8.copilot.schedule import FollowupRejected, validate_followup
 from oc8.modelrouter import ToolCall
+from oc8.realtime.emit import publish_copilot_changed
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["COPILOT_TOOLS", "execute_copilot_tool"]
 
@@ -119,7 +123,7 @@ async def execute_copilot_tool(
     context: dict[str, Any] = (run.context or {}) if run is not None else {}
     door = door_of(context)
     try:
-        return await _dispatch(
+        outcome = await _dispatch(
             db,
             tenant_id=tenant_id,
             agent=agent,
@@ -130,10 +134,24 @@ async def execute_copilot_tool(
             door=door,
             run_id=run_id,
         )
+        if not outcome.output.startswith("ERROR"):
+            await _announce(tenant_id, member.id, tc.name)
+        return outcome
     except _BadArgument as exc:
         return ControlOutcome(output=f"ERROR: {exc}")
     except (ResponsibilityError, FollowupRejected) as exc:
         return ControlOutcome(output=f"ERROR: {exc}")
+
+
+async def _announce(tenant_id: uuid.UUID, member_id: uuid.UUID, tool_name: str) -> None:
+    """Tell the member's open tabs a dot changed. Best effort: the run commits
+    later and the frontend refetches on the run's own events anyway."""
+    is_followup = tool_name in (SCHEDULE_FOLLOWUP.name, CANCEL_FOLLOWUP.name)
+    kind = "followup" if is_followup else "responsibility"
+    try:
+        await publish_copilot_changed(tenant_id, member_id=member_id, kind=kind)
+    except Exception:
+        logger.warning("could not publish copilot.%s for member %s", kind, member_id)
 
 
 async def _dispatch(
