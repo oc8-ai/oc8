@@ -2215,6 +2215,18 @@ async def execute_control_tool(
         )
 
     if tc.name == ASK_USER.name:
+        if agent.is_tenant_assistant and run_id is not None:
+            from oc8.copilot.door import door_of
+
+            asking_run = await db.get(m.AgentRun, run_id)
+            if asking_run is not None and door_of(asking_run.context) == "telegram":
+                # offered_tools withholds it here, but a model can still name a
+                # tool it was never offered; a messenger sender cannot answer a
+                # parked run, so refuse instead of suspending.
+                return ControlOutcome(
+                    output="ERROR: you cannot ask a question on this channel; decide "
+                    "with what you have, delegate, or say you cannot proceed"
+                )
         question = str(tc.arguments.get("question", "")).strip()
         if not question:
             # An empty question is a model error, not a suspend: parking the run

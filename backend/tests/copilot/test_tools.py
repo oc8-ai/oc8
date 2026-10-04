@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from collections.abc import Iterable
 from typing import Any
@@ -16,6 +17,8 @@ from oc8.copilot.tools import COPILOT_TOOLS, execute_copilot_tool
 from oc8.modelrouter import NeutralTool, ToolCall
 from tests.conftest import AppSessionFactory
 from tests.copilot.helpers import Seat
+
+_SOON = dt.datetime.now(tz=dt.UTC) + dt.timedelta(days=30)
 
 
 def _names(tools: Iterable[NeutralTool]) -> set[str]:
@@ -90,8 +93,6 @@ async def _chat_run(
 
 
 async def test_open_then_schedule_renders_cards(app_session: AppSessionFactory) -> None:
-    import datetime as dt
-
     from oc8.agent.assistant import get_or_create_assistant
     from tests.copilot.helpers import copilot_seat
 
@@ -216,3 +217,193 @@ async def test_messenger_turn_records_origin_channel(app_session: AppSessionFact
         )
         r = (await db.execute(select(m.Responsibility))).scalar_one()
         assert r.origin_channel == "telegram"
+
+
+async def _setup(db: AsyncSession, tenant: uuid.UUID, **ctx: Any):  # type: ignore[no-untyped-def]
+    from oc8.agent.assistant import get_or_create_assistant
+    from tests.copilot.helpers import copilot_seat
+
+    cop = await get_or_create_assistant(db, tenant_id=tenant)
+    seat = await copilot_seat(db, tenant, "lisa@example.com")
+    task = await db.get(m.Task, seat.task_id)
+    assert task is not None
+    run = await _chat_run(db, tenant, cop, seat, **ctx)
+    return cop, seat, task, run
+
+
+async def _call(db, tenant, cop, task, run, name: str, **arguments: Any):  # type: ignore[no-untyped-def]
+    return await execute_copilot_tool(
+        db,
+        tenant_id=tenant,
+        agent=cop,
+        task=task,
+        run_id=run.id,
+        tc=ToolCall(id="x", name=name, arguments=arguments),
+    )
+
+
+async def test_operator_posting_in_a_colleagues_session_cannot_open_dots(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        cop, _seat, task, run = await _setup(
+            db, tenant, door="web", originating_operator="admin@example.com"
+        )
+        out = await _call(db, tenant, cop, task, run, "responsibility_open", title="t", goal="g")
+        assert out is not None and out.output.startswith("ERROR: only the person")
+        assert (await db.execute(select(m.Responsibility))).scalars().all() == []
+
+
+async def test_non_copilot_agent_is_refused_by_name(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        _cop, _seat, task, run = await _setup(db, tenant, door="web")
+        plain = _copilot()
+        plain.is_tenant_assistant = False
+        out = await execute_copilot_tool(
+            db,
+            tenant_id=tenant,
+            agent=plain,
+            task=task,
+            run_id=run.id,
+            tc=ToolCall(id="1", name="responsibility_open", arguments={"title": "t", "goal": "g"}),
+        )
+        assert out is not None and out.output == "ERROR: only the Copilot keeps responsibilities"
+        assert (await db.execute(select(m.Responsibility))).scalars().all() == []
+
+
+async def test_malformed_arguments_are_errors_not_raises(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        cop, _seat, task, run = await _setup(db, tenant, door="web")
+        bad = await _call(db, tenant, cop, task, run, "responsibility_open", title=5, goal="g")
+        assert bad is not None and bad.output == "ERROR: title must be a string"
+        opened = await _call(db, tenant, cop, task, run, "responsibility_open", title="t", goal="g")
+        assert opened is not None
+        r = (await db.execute(select(m.Responsibility))).scalar_one()
+        rid = str(r.id)
+        cases: list[tuple[str, dict[str, Any]]] = [
+            ("responsibility_update", {"next_step": ["a"]}),
+            ("responsibility_update", {"report": "maybe"}),
+            ("responsibility_update", {"state": ["active"]}),
+            ("responsibility_update", {"state": "waiting"}),
+            ("responsibility_update", {"state": "done"}),
+            ("responsibility_close", {"state": ["done"], "reason": "r"}),
+            ("responsibility_close", {"state": "done", "reason": 3}),
+            ("schedule_followup", {"kind": "once", "timezone": 5, "run_at": "x", "prompt": "p"}),
+            ("schedule_followup", {"kind": "once", "timezone": "UTC", "run_at": 5, "prompt": "p"}),
+            ("schedule_followup", {"kind": "once", "timezone": "UTC", "prompt": {"a": 1}}),
+        ]
+        for name, kw in cases:
+            out = await _call(db, tenant, cop, task, run, name, responsibility_id=rid, **kw)
+            assert out is not None and out.output.startswith("ERROR:"), (name, kw, out)
+        ok = await _call(
+            db, tenant, cop, task, run, "responsibility_update", responsibility_id=rid,
+            report="TRUE", state="paused",
+        )  # fmt: skip
+        assert ok is not None and not ok.output.startswith("ERROR:")
+
+
+async def test_close_and_cancel_via_tool_path(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        cop, _seat, task, run = await _setup(db, tenant, door="web")
+        await _call(db, tenant, cop, task, run, "responsibility_open", title="t", goal="g")
+        r = (await db.execute(select(m.Responsibility))).scalar_one()
+        saved = await _call(
+            db, tenant, cop, task, run, "schedule_followup", responsibility_id=str(r.id),
+            kind="once", run_at=_SOON.replace(hour=9).isoformat(), timezone="Europe/Berlin",
+            prompt="p",
+        )  # fmt: skip
+        assert saved is not None and saved.rendered_component is not None
+        fid = saved.rendered_component["props"]["id"]
+        gone = await _call(db, tenant, cop, task, run, "cancel_followup", followup_id=fid)
+        assert gone is not None and gone.output == "Follow-up ended."
+        again = await _call(
+            db, tenant, cop, task, run, "cancel_followup", followup_id=str(uuid.uuid4())
+        )
+        assert again is not None and again.output == "ERROR: follow-up not found"
+        closed = await _call(
+            db, tenant, cop, task, run, "responsibility_close", responsibility_id=str(r.id),
+            state="done", reason="finished",
+        )  # fmt: skip
+        assert closed is not None and closed.rendered_component is not None
+        assert closed.rendered_component["props"]["state"] == "done"
+
+
+async def test_followup_door_cannot_persist_new_dots(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        cop, seat, task, run = await _setup(db, tenant, door="web")
+        await _call(db, tenant, cop, task, run, "responsibility_open", title="a", goal="g")
+        await _call(db, tenant, cop, task, run, "responsibility_open", title="b", goal="g")
+        a, b = (
+            (await db.execute(select(m.Responsibility).order_by(m.Responsibility.title)))
+            .scalars()
+            .all()
+        )
+        fu_run = await _chat_run(
+            db, tenant, cop, seat, door="followup",
+            followup={"responsibility_id": str(a.id), "trigger_id": str(uuid.uuid4())},
+        )  # fmt: skip
+        opened = await _call(
+            db, tenant, cop, task, fu_run, "responsibility_open", title="x", goal="y"
+        )
+        assert opened is not None and "cannot start new responsibilities" in opened.output
+        ends = (dt.datetime.now(tz=dt.UTC) + dt.timedelta(days=5)).isoformat()
+        cron = await _call(
+            db, tenant, cop, task, fu_run, "schedule_followup", responsibility_id=str(a.id),
+            kind="cron", cron_expression="0 9 * * 1", timezone="UTC", ends_at=ends, prompt="p",
+        )  # fmt: skip
+        assert cron is not None and cron.output.startswith("ERROR:")
+        other = await _call(
+            db, tenant, cop, task, fu_run, "schedule_followup", responsibility_id=str(b.id),
+            kind="once", run_at=_SOON.isoformat(),
+            timezone="UTC", prompt="p",
+        )  # fmt: skip
+        assert other is not None and "its own responsibility" in other.output
+        assert (await db.execute(select(m.Trigger))).scalars().all() == []
+
+        same = await _call(
+            db, tenant, cop, task, fu_run, "schedule_followup", responsibility_id=str(a.id),
+            kind="once", run_at=_SOON.isoformat(),
+            timezone="UTC", prompt="p",
+        )  # fmt: skip
+        assert same is not None and same.rendered_component is not None
+
+        # With another enabled follow-up on it, a second once is refused.
+        again = await _call(
+            db, tenant, cop, task, fu_run, "schedule_followup", responsibility_id=str(a.id),
+            kind="once", run_at=(_SOON + dt.timedelta(days=1)).isoformat(),
+            timezone="UTC", prompt="p",
+        )  # fmt: skip
+        assert again is not None and "already has another follow-up" in again.output
+
+
+def test_unknown_door_offers_no_ask_user_for_the_copilot() -> None:
+    common: dict[str, Any] = {"assigned_skills": [], "active_skills": [], "mcp_tools": []}
+    assert ASK_USER.name not in _names(offered_tools(_copilot(), copilot_door=None, **common))
+
+
+async def test_ask_user_refused_on_a_messenger_door(app_session: AppSessionFactory) -> None:
+    from oc8.agent.control_tools import execute_control_tool
+    from oc8.authz.pdp import Decision
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        cop, _seat, task, run = await _setup(
+            db, tenant, door="telegram", chat_channel="telegram", chat_channel_external_id="1"
+        )
+        web = await _chat_run(db, tenant, cop, _seat, door="web")
+        for r, suspended in ((run, False), (web, True)):
+            out = await execute_control_tool(
+                db, tenant_id=tenant, agent=cop, task=task,
+                tc=ToolCall(id="q", name="ask_user", arguments={"question": "which?"}),
+                decision=Decision(Effect.ALLOW), assigned_skills=[], active_skills=[],
+                mcp_conn=None, originating_operator=None, run_id=r.id,
+            )  # fmt: skip
+            assert out is not None
+            assert (out.suspend == "waiting_for_input") is suspended
+            if not suspended:
+                assert out.output.startswith("ERROR: you cannot ask a question")

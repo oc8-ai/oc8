@@ -786,8 +786,8 @@ async def run_agent(
                     offer_write_output_file=True,
                     chat_mode=chat_mode,
                     copilot_door=(
-                        door_of(run_row.context if run_row is not None else None)
-                        if agent.is_tenant_assistant
+                        door_of(run_row.context)
+                        if agent.is_tenant_assistant and run_row is not None
                         else None
                     ),
                 )
