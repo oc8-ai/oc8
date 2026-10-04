@@ -2,9 +2,9 @@
 copilot_profile, responsibility, follow-up columns on trigger, kind='once',
 chat_message.role='followup'.
 
-IF NOT EXISTS / DROP ... IF EXISTS throughout: trigger and chat_message are in
-0001's frozen create_all set, so on a fresh database their new columns and
-constraints already exist when this runs.
+IF NOT EXISTS / DROP ... IF EXISTS throughout, for idempotency: trigger and
+chat_message are not in 0001's frozen set (0012 and 0077 create them with
+explicit columns), but a re-run or a partially applied upgrade must not fail.
 
 Revision ID: 0103
 Revises: 0102
