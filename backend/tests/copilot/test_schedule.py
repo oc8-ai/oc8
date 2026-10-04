@@ -111,3 +111,20 @@ def test_valid_recurring_spec() -> None:
         now=NOW,
     )
     assert spec.kind == "cron" and spec.ends_at is not None and spec.ends_at.tzinfo is not None
+
+
+def test_once_sooner_than_fifteen_minutes_rejected() -> None:
+    # A chain of single re-checks must not tick faster than a recurring one.
+    def once(at: dt.datetime) -> None:
+        validate_followup(
+            kind="once",
+            timezone="UTC",
+            run_at=at.isoformat(),
+            cron_expression=None,
+            ends_at=None,
+            now=NOW,
+        )
+
+    with pytest.raises(FollowupRejected, match="15 minutes"):
+        once(NOW + dt.timedelta(minutes=14, seconds=59))
+    once(NOW + dt.timedelta(minutes=15))

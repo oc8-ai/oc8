@@ -79,6 +79,10 @@ def validate_followup(
         at = _instant(run_at, "run_at")
         if at <= now:
             raise FollowupRejected("run_at must be in the future")
+        # Same floor as a recurring one: a follow-up rescheduling itself must
+        # not become a faster loop than cron is allowed to be.
+        if at < now + MIN_INTERVAL:
+            raise FollowupRejected("a follow-up must be at least 15 minutes from now")
         if at - now > MAX_HORIZON:
             raise FollowupRejected("a follow-up can be at most one year out")
         return FollowupSpec("once", zone.key, at, None, None)
