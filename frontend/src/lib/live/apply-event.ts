@@ -15,6 +15,11 @@ export const liveQueryKeys: readonly unknown[][] = [
   ["runs"],
   ["supervision-interventions"],
   ["departments"],
+  ["copilot", "profile"],
+  ["copilot", "responsibilities"],
+  ["copilot", "followups"],
+  ["copilot", "delegations"],
+  ["copilot", "notes"],
 ];
 
 export interface McpTestLogLine {
@@ -47,6 +52,8 @@ const patchers: Record<string, Patcher> = {
     // old useRun poll's terminal-state agents invalidation)
     if (d.state === "done" || d.state === "failed" || d.state === "interrupted") {
       qc.invalidateQueries({ queryKey: ["agents"] });
+      qc.invalidateQueries({ queryKey: ["copilot", "profile"] });
+      qc.invalidateQueries({ queryKey: ["copilot", "delegations"] });
     }
     // A run parking on a question is the only signal that a clarification
     // appeared — there is no `clarification.created` event. Narrowed to that one
@@ -215,6 +222,12 @@ const patchers: Record<string, Patcher> = {
       { step, message },
     ]);
   },
+  "copilot.profile": (qc) => qc.invalidateQueries({ queryKey: ["copilot", "profile"] }),
+  "copilot.responsibility": (qc) => {
+    qc.invalidateQueries({ queryKey: ["copilot", "responsibilities"] });
+    qc.invalidateQueries({ queryKey: ["copilot", "profile"] });
+  },
+  "copilot.followup": (qc) => qc.invalidateQueries({ queryKey: ["copilot", "followups"] }),
 };
 
 // backend agent.status -> mock UI AgentStatus (running|warning|error|paused|waiting_for_task)

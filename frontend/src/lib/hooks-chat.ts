@@ -27,7 +27,7 @@ export interface ChatContextRefDTO {
 export interface ChatMessageDTO {
   id: string;
   sessionId: string;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "followup";
   content: string;
   runId: string | null;
   renderedComponents: RunComponentDTO[];

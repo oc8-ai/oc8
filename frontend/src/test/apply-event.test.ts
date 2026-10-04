@@ -1,5 +1,5 @@
 import { QueryClient } from "@tanstack/react-query";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { applyEvent, mcpTestLogKey } from "@/lib/live/apply-event";
 import type { RealtimeEvent } from "@/lib/live/types";
 
@@ -232,5 +232,17 @@ describe("mcp.test.log", () => {
 
     expect(qc.getQueryData(mcpTestLogKey("c1"))).toHaveLength(1);
     expect(qc.getQueryData(mcpTestLogKey("c2"))).toHaveLength(1);
+  });
+});
+
+describe("copilot.responsibility", () => {
+  it("invalidates responsibilities and profile on copilot responsibility event", () => {
+    const qc = new QueryClient();
+    const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
+
+    applyEvent(qc, event("copilot.responsibility", { member_id: "m" }));
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["copilot", "responsibilities"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["copilot", "profile"] });
   });
 });
