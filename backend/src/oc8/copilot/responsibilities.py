@@ -121,6 +121,8 @@ async def update_responsibility(
     r = await _require(
         db, tenant_id=tenant_id, member_id=member_id, responsibility_id=responsibility_id
     )
+    if r.state in ("done", "cancelled"):
+        raise ResponsibilityError(f"the responsibility is {r.state}")
     if state is not None and state != r.state:
         if state in ("done", "cancelled"):
             raise ResponsibilityError("use close_responsibility to finish a responsibility")

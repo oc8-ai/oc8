@@ -18,8 +18,6 @@ from oc8.copilot.responsibilities import (
 )
 from tests.conftest import AppSessionFactory
 
-pytestmark = pytest.mark.asyncio
-
 
 async def _open(
     db: AsyncSession,
@@ -49,6 +47,7 @@ def test_transitions() -> None:
     assert not can_transition("paused", "waiting")
 
 
+@pytest.mark.asyncio
 async def test_open_requires_goal(app_session: AppSessionFactory) -> None:
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
@@ -67,6 +66,7 @@ async def test_open_requires_goal(app_session: AppSessionFactory) -> None:
             )
 
 
+@pytest.mark.asyncio
 async def test_open_writes_audit_event(app_session: AppSessionFactory) -> None:
     tenant, member, agent_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     async with app_session(tenant) as db:
@@ -85,6 +85,7 @@ async def test_open_writes_audit_event(app_session: AppSessionFactory) -> None:
         assert [e.resource["responsibility_id"] for e in events] == [str(r.id)]
 
 
+@pytest.mark.asyncio
 async def test_other_member_cannot_update(app_session: AppSessionFactory) -> None:
     tenant, member = uuid.uuid4(), uuid.uuid4()
     async with app_session(tenant) as db:
@@ -95,6 +96,7 @@ async def test_other_member_cannot_update(app_session: AppSessionFactory) -> Non
             )
 
 
+@pytest.mark.asyncio
 async def test_report_records_run(app_session: AppSessionFactory) -> None:
     tenant, member, run_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     async with app_session(tenant) as db:
@@ -112,6 +114,7 @@ async def test_report_records_run(app_session: AppSessionFactory) -> None:
         assert r.last_update_at is not None
 
 
+@pytest.mark.asyncio
 async def test_closing_disables_followups(app_session: AppSessionFactory) -> None:
     tenant, member, agent_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     session_id = uuid.uuid4()
@@ -147,3 +150,28 @@ async def test_closing_disables_followups(app_session: AppSessionFactory) -> Non
                 db, tenant_id=tenant, member_id=member, states=["active"]
             )
         ] == []
+
+
+@pytest.mark.asyncio
+async def test_cannot_update_terminal_responsibility(app_session: AppSessionFactory) -> None:
+    tenant, member = uuid.uuid4(), uuid.uuid4()
+    async with app_session(tenant) as db:
+        r = await _open(db, tenant, member, uuid.uuid4(), uuid.uuid4())
+        await close_responsibility(
+            db,
+            tenant_id=tenant,
+            member_id=member,
+            responsibility_id=r.id,
+            state="done",
+            reason="test",
+            actor_agent_id=None,
+            member_subject="op",
+        )
+        with pytest.raises(ResponsibilityError, match="the responsibility is done"):
+            await update_responsibility(
+                db,
+                tenant_id=tenant,
+                member_id=member,
+                responsibility_id=r.id,
+                next_step="x",
+            )
