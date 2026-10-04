@@ -116,7 +116,12 @@ async def create_trigger(
 
 
 async def get_trigger(db: AsyncSession, *, trigger_id: uuid.UUID) -> Trigger | None:
-    return await db.get(Trigger, trigger_id)
+    """None for a Copilot follow-up (chat_session_id set): those belong to one
+    member and are managed only through /copilot/followups."""
+    trigger = await db.get(Trigger, trigger_id)
+    if trigger is None or trigger.chat_session_id is not None:
+        return None
+    return trigger
 
 
 async def get_trigger_by_webhook_token(db: AsyncSession, *, token: str) -> Trigger | None:
@@ -132,7 +137,10 @@ async def get_trigger_by_webhook_token(db: AsyncSession, *, token: str) -> Trigg
 
 
 async def list_triggers_for_agent(db: AsyncSession, *, agent_id: uuid.UUID) -> list[Trigger]:
-    result = await db.execute(select(Trigger).where(Trigger.agent_id == agent_id))
+    # Copilot follow-ups are a member's own and never listed here (get_trigger).
+    result = await db.execute(
+        select(Trigger).where(Trigger.agent_id == agent_id, Trigger.chat_session_id.is_(None))
+    )
     return list(result.scalars().all())
 
 

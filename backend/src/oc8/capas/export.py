@@ -301,7 +301,13 @@ async def build_agent_export(
     narrowing = {"tools": kept_tools} if kept_tools else {}
 
     triggers = (
-        (await db.execute(select(m.Trigger).where(m.Trigger.agent_id == agent.id)))
+        (
+            await db.execute(
+                select(m.Trigger).where(
+                    m.Trigger.agent_id == agent.id, m.Trigger.chat_session_id.is_(None)
+                )
+            )
+        )
         .scalars()
         .all()
     )
@@ -392,7 +398,13 @@ async def build_department_export(
 
     triggers_by_agent: dict[uuid.UUID, list[m.Trigger]] = {}
     all_triggers = (
-        (await db.execute(select(m.Trigger).where(m.Trigger.agent_id.in_(agent_ids))))
+        (
+            await db.execute(
+                select(m.Trigger).where(
+                    m.Trigger.agent_id.in_(agent_ids), m.Trigger.chat_session_id.is_(None)
+                )
+            )
+        )
         .scalars()
         .all()
     )

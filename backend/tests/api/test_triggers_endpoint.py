@@ -458,3 +458,47 @@ async def test_updating_other_fields_never_blocked_by_leaving_enabled_untouched(
             assert edited.status_code == 200, edited.text
             assert edited.json()["taskText"] == "y"
             assert edited.json()["enabled"] is True
+
+
+async def test_followup_triggers_are_invisible_to_the_trigger_api(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.copilot.followups import schedule_followup
+    from oc8.copilot.responsibilities import open_responsibility
+    from tests.copilot.helpers import copilot_seat, once_in_an_hour
+
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    async with app_session(tenant) as s:
+        seat = await copilot_seat(s, tenant, f"fu-{uuid.uuid4().hex[:8]}@example.com")
+        session = await s.get(m.ChatSession, seat.session_id)
+        assert session is not None
+        r = await open_responsibility(
+            s, tenant_id=tenant, member_id=seat.member_id, chat_session_id=seat.session_id,
+            title="t", goal="g", notify_rule="risks_and_decisions", origin_channel=None,
+            run_id=None, actor_agent_id=session.agent_id, member_subject=seat.subject,
+        )  # fmt: skip
+        fu = await schedule_followup(
+            s, tenant_id=tenant, member_id=seat.member_id, responsibility_id=r.id,
+            assistant_id=session.agent_id, spec=once_in_an_hour(), prompt="p",
+            member_subject=seat.subject,
+        )  # fmt: skip
+        copilot_id, followup_id = session.agent_id, fu.id
+    token = get_identity_provider().mint(tenant_id=tenant, subject="dev-user", role="org_admin")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    app = create_app()
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as client:
+            listed = await client.get(f"/api/v1/agents/{copilot_id}/triggers", headers=headers)
+            assert listed.status_code == 200
+            assert all(t["id"] != str(followup_id) for t in listed.json())
+            patched = await client.patch(
+                f"/api/v1/triggers/{followup_id}", json={"enabled": False}, headers=headers
+            )
+            assert patched.status_code == 404
+            deleted = await client.delete(f"/api/v1/triggers/{followup_id}", headers=headers)
+            assert deleted.status_code == 404
+    async with app_session(tenant) as s:
+        still = await s.get(m.Trigger, followup_id)
+        assert still is not None and still.enabled

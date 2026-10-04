@@ -482,3 +482,35 @@ async def test_build_agent_export_standalone_drops_reports_to(
         parsed = parse_manifest(__import__("tomllib").loads(exported.manifest_toml)["plugin"])
         assert parsed.agent_template is not None
         assert parsed.agent_template.reports_to is None
+
+
+async def test_build_agent_export_skips_copilot_followup_triggers(
+    app_session: AppSessionFactory,
+) -> None:
+    import datetime as dt
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as s:
+        dept = m.Department(tenant_id=tenant, name="Vertrieb", frame={})
+        s.add(dept)
+        await s.flush()
+        agent = m.Agent(tenant_id=tenant, department_id=dept.id, name="Rep A", status="stopped")
+        s.add(agent)
+        await s.flush()
+        s.add(
+            m.Trigger(
+                tenant_id=tenant, agent_id=agent.id, kind="cron", cron_expression="0 9 * * 1",
+                task_text="a member's private follow-up", enabled=True,
+                chat_session_id=uuid.uuid4(), responsibility_id=uuid.uuid4(), timezone="UTC",
+                ends_at=dt.datetime.now(tz=dt.UTC) + dt.timedelta(days=30),
+            )
+        )  # fmt: skip
+        await s.flush()
+
+        exported = await build_agent_export(
+            s, tenant_id=tenant, agent_id=agent.id, capa_name="rep_a", version="1.0.0", summary=""
+        )
+        assert "private follow-up" not in exported.manifest_toml
+        parsed = parse_manifest(__import__("tomllib").loads(exported.manifest_toml)["plugin"])
+        assert parsed.agent_template is not None
+        assert parsed.agent_template.trigger is None
