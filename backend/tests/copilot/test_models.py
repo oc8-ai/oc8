@@ -36,8 +36,11 @@ async def test_responsibility_is_tenant_isolated(app_session: AppSessionFactory)
     async with app_session(a) as db:
         db.add(
             m.Responsibility(
-                tenant_id=a, member_id=member_id, chat_session_id=session_id,
-                title="Offsite", goal="Keep the offsite on track",
+                tenant_id=a,
+                member_id=member_id,
+                chat_session_id=session_id,
+                title="Offsite",
+                goal="Keep the offsite on track",
             )
         )
     async with app_session(b) as db:
@@ -63,9 +66,14 @@ async def test_followup_trigger_requires_timezone(app_session: AppSessionFactory
         async with app_session(tenant) as db:
             db.add(
                 m.Trigger(
-                    tenant_id=tenant, agent_id=uuid.uuid4(), kind="once", task_text="x",
-                    next_run_at=dt.datetime.now(tz=dt.UTC), chat_session_id=session_id,
-                    responsibility_id=uuid.uuid4(), timezone=None,
+                    tenant_id=tenant,
+                    agent_id=uuid.uuid4(),
+                    kind="once",
+                    task_text="x",
+                    next_run_at=dt.datetime.now(tz=dt.UTC),
+                    chat_session_id=session_id,
+                    responsibility_id=uuid.uuid4(),
+                    timezone=None,
                 )
             )
             await db.flush()
@@ -78,9 +86,15 @@ async def test_recurring_followup_requires_end(app_session: AppSessionFactory) -
         async with app_session(tenant) as db:
             db.add(
                 m.Trigger(
-                    tenant_id=tenant, agent_id=uuid.uuid4(), kind="cron", task_text="x",
-                    cron_expression="0 9 * * 1-5", chat_session_id=session_id,
-                    responsibility_id=uuid.uuid4(), timezone="Europe/Berlin", ends_at=None,
+                    tenant_id=tenant,
+                    agent_id=uuid.uuid4(),
+                    kind="cron",
+                    task_text="x",
+                    cron_expression="0 9 * * 1-5",
+                    chat_session_id=session_id,
+                    responsibility_id=uuid.uuid4(),
+                    timezone="Europe/Berlin",
+                    ends_at=None,
                 )
             )
             await db.flush()
@@ -92,9 +106,14 @@ async def test_once_trigger_and_followup_role_are_accepted(app_session: AppSessi
     async with app_session(tenant) as db:
         db.add(
             m.Trigger(
-                tenant_id=tenant, agent_id=uuid.uuid4(), kind="once", task_text="x",
-                next_run_at=dt.datetime.now(tz=dt.UTC), chat_session_id=session_id,
-                responsibility_id=uuid.uuid4(), timezone="Europe/Berlin",
+                tenant_id=tenant,
+                agent_id=uuid.uuid4(),
+                kind="once",
+                task_text="x",
+                next_run_at=dt.datetime.now(tz=dt.UTC),
+                chat_session_id=session_id,
+                responsibility_id=uuid.uuid4(),
+                timezone="Europe/Berlin",
             )
         )
         db.add(m.ChatMessage(tenant_id=tenant, session_id=session_id, role="followup", content="x"))

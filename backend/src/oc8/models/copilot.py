@@ -35,9 +35,7 @@ class CopilotProfile(Base, PkMixin, TenantMixin, TimestampMixin):
     paused_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "member_id", name="uq_copilot_profile_member"
-        ),
+        UniqueConstraint("tenant_id", "member_id", name="uq_copilot_profile_member"),
         CheckConstraint(
             "char_length(display_name) BETWEEN 1 AND 40",
             name="ck_copilot_profile_name",
@@ -55,9 +53,7 @@ class Responsibility(Base, PkMixin, TenantMixin, TimestampMixin):
     state: Mapped[str] = mapped_column(
         Text, nullable=False, default="active", server_default="active"
     )
-    next_step: Mapped[str] = mapped_column(
-        Text, nullable=False, default="", server_default=""
-    )
+    next_step: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
     notify_rule: Mapped[str] = mapped_column(
         Text, nullable=False, default="risks_and_decisions", server_default="risks_and_decisions"
     )

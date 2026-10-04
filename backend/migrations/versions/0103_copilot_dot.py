@@ -50,8 +50,7 @@ def upgrade() -> None:
         )
     """)
     op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_copilot_profile_tenant_id "
-        "ON copilot_profile (tenant_id)"
+        "CREATE INDEX IF NOT EXISTS ix_copilot_profile_tenant_id ON copilot_profile (tenant_id)"
     )
     _rls("copilot_profile")
 
@@ -98,12 +97,9 @@ def upgrade() -> None:
         ("last_skip_reason", "text"),
     ):
         op.execute(f"ALTER TABLE trigger ADD COLUMN IF NOT EXISTS {col} {typ}")
+    op.execute("CREATE INDEX IF NOT EXISTS ix_trigger_chat_session_id ON trigger (chat_session_id)")
     op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_trigger_chat_session_id ON trigger (chat_session_id)"
-    )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_trigger_responsibility_id "
-        "ON trigger (responsibility_id)"
+        "CREATE INDEX IF NOT EXISTS ix_trigger_responsibility_id ON trigger (responsibility_id)"
     )
     op.execute("ALTER TABLE trigger DROP CONSTRAINT IF EXISTS ck_trigger_kind")
     op.execute(
