@@ -3921,3 +3921,33 @@ msgstr "Arbeitet an 1 Sache"
 
 msgid "Working on {n} things"
 msgstr "Arbeitet an {n} Dingen"
+
+msgid "Follow-up"
+msgstr "Wiedervorlage"
+
+msgid "Open Copilot"
+msgstr "Copilot öffnen"
+
+msgid "Resume"
+msgstr "Fortsetzen"
+
+msgid "Pause"
+msgstr "Pausieren"
+
+msgid "done"
+msgstr "erledigt"
+
+msgid "cancelled"
+msgstr "abgebrochen"
+
+msgid "Next step"
+msgstr "Nächster Schritt"
+
+msgid "recurring"
+msgstr "wiederkehrend"
+
+msgid "once"
+msgstr "einmalig"
+
+msgid "Ends"
+msgstr "Endet"

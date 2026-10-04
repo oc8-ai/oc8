@@ -157,6 +157,79 @@ describe("ChatWindow", () => {
     expect(screen.getByText("Hi, wie kann ich helfen?")).toBeInTheDocument();
   });
 
+  it("renders a follow-up message left-aligned with a label and no user bubble", () => {
+    sessionsMock.mockReturnValue({
+      data: [{ id: "s1", agentId: "agent-1", title: "", createdAt: "2026-08-27T00:00:00Z" }],
+      isLoading: false,
+    });
+    messagesMock.mockReturnValue({
+      data: [
+        {
+          id: "m9",
+          sessionId: "s1",
+          role: "followup",
+          content: "Check the invoice status",
+          runId: null,
+          renderedComponents: [],
+          createdAt: "2026-08-27T00:00:00Z",
+          mode: null,
+          contextRefs: [],
+        },
+      ],
+      isLoading: false,
+    });
+    renderChat();
+    expect(screen.getByText("Follow-up")).toBeInTheDocument();
+    const text = screen.getByText("Check the invoice status");
+    const row = text.closest("div.flex") as HTMLElement;
+    expect(row.className).toContain("justify-start");
+    expect(row.className).not.toContain("justify-end");
+    expect(row.innerHTML).not.toContain("bg-primary text-primary-foreground");
+  });
+
+  it("hideHeader drops the header, className replaces the fixed height, emptyIntro shows on an empty transcript", () => {
+    sessionsMock.mockReturnValue({
+      data: [{ id: "s1", agentId: "agent-1", title: "", createdAt: "2026-08-27T00:00:00Z" }],
+      isLoading: false,
+    });
+    messagesMock.mockReturnValue({ data: [], isLoading: false });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { container } = render(
+      <QueryClientProvider client={qc}>
+        <ChatWindow
+          agentId="agent-1"
+          agentName="Nora"
+          hideHeader
+          className="h-full"
+          emptyIntro={<p>intro-slot</p>}
+        />
+      </QueryClientProvider>,
+    );
+    expect(screen.queryByText(/chat with nora/i)).not.toBeInTheDocument();
+    expect(screen.getByText("intro-slot")).toBeInTheDocument();
+    expect(container.innerHTML).not.toContain("h-[560px]");
+  });
+
+  it("is controlled when sessionId is given", () => {
+    sessionsMock.mockReturnValue({
+      data: [
+        { id: "s1", agentId: "agent-1", title: "", createdAt: "2026-08-27T00:00:00Z" },
+        { id: "s2", agentId: "agent-1", title: "", createdAt: "2026-08-26T00:00:00Z" },
+      ],
+      isLoading: false,
+    });
+    messagesMock.mockReturnValue({ data: [], isLoading: false });
+    const onChange = vi.fn();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <ChatWindow agentId="agent-1" agentName="Nora" sessionId="s2" onSessionChange={onChange} />
+      </QueryClientProvider>,
+    );
+    // The auto-select of the newest session must not override a controlled id.
+    expect(onChange).not.toHaveBeenCalledWith("s1");
+  });
+
   it("shows a thinking indicator and disables sending while the last turn is the user's own", () => {
     sessionsMock.mockReturnValue({
       data: [{ id: "s1", agentId: "agent-1", title: "", createdAt: "2026-08-27T00:00:00Z" }],

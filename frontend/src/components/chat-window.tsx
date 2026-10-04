@@ -5,7 +5,7 @@
 // (source="chat"), so guardrails/approvals apply exactly as they do to an
 // autonomous run.
 
-import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 import {
   BookOpen,
   ChevronDown,
@@ -65,6 +65,11 @@ export function ChatWindow({
   agentId,
   agentName,
   promptStarters = [],
+  className,
+  hideHeader = false,
+  sessionId: controlledSessionId,
+  onSessionChange,
+  emptyIntro,
 }: {
   agentId: string;
   agentName: string;
@@ -73,11 +78,21 @@ export function ChatWindow({
    *  that already holds the full agent object (routes/agents.$id.tsx)
    *  rather than fetched again here. */
   promptStarters?: string[];
+  /** Replaces the default fixed height (h-[560px]) of the panel. */
+  className?: string;
+  hideHeader?: boolean;
+  /** Controlled session id; without it the window keeps its own state. */
+  sessionId?: string | null;
+  onSessionChange?: (sessionId: string | null) => void;
+  /** Shown above the starters, only on an empty transcript. */
+  emptyIntro?: ReactNode;
 }) {
   const t = useT();
   const { data: sessions, isLoading: sessionsLoading } = useChatSessions(agentId);
   const createSession = useCreateChatSession();
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [innerSessionId, setInnerSessionId] = useState<string | null>(null);
+  const sessionId = controlledSessionId !== undefined ? controlledSessionId : innerSessionId;
+  const setSessionId = onSessionChange ?? setInnerSessionId;
 
   // Default to the most recent session once sessions load. Never runs again
   // once the reader has one selected -- including a brand new one just
@@ -85,6 +100,7 @@ export function ChatWindow({
   useEffect(() => {
     if (sessionId !== null) return;
     if (sessions && sessions.length > 0) setSessionId(sessions[0].id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- setSessionId is a stable choice per render
   }, [sessions, sessionId]);
 
   const { data: messages, isLoading: messagesLoading } = useChatMessages(sessionId);
@@ -243,31 +259,33 @@ export function ChatWindow({
   );
 
   return (
-    <Panel className="flex h-[560px] flex-col overflow-hidden">
-      <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        <div className="text-sm font-medium">
-          {t(`Chat with ${agentName}`, `Chat mit ${agentName}`)}
+    <Panel className={cn("flex flex-col overflow-hidden", className ?? "h-[560px]")}>
+      {!hideHeader && (
+        <div className="flex items-center justify-between border-b border-border px-4 py-3">
+          <div className="text-sm font-medium">
+            {t(`Chat with ${agentName}`, `Chat mit ${agentName}`)}
+          </div>
+          <div className="flex items-center gap-2">
+            {sessions && sessions.length > 0 && (
+              <ChatSessionPicker
+                agentId={agentId}
+                sessions={sessions}
+                sessionId={sessionId}
+                onSelect={setSessionId}
+              />
+            )}
+            <button
+              type="button"
+              onClick={startNewSession}
+              disabled={createSession.isPending}
+              className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition hover:text-foreground disabled:opacity-50"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              {t("New chat", "Neuer Chat")}
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          {sessions && sessions.length > 0 && (
-            <ChatSessionPicker
-              agentId={agentId}
-              sessions={sessions}
-              sessionId={sessionId}
-              onSelect={setSessionId}
-            />
-          )}
-          <button
-            type="button"
-            onClick={startNewSession}
-            disabled={createSession.isPending}
-            className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition hover:text-foreground disabled:opacity-50"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            {t("New chat", "Neuer Chat")}
-          </button>
-        </div>
-      </div>
+      )}
 
       <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto px-4 py-3">
         {sessionsLoading ? (
@@ -299,6 +317,7 @@ export function ChatWindow({
           </div>
         ) : !messages || messages.length === 0 ? (
           <div className="py-10 text-center text-xs text-muted-foreground">
+            {emptyIntro}
             {t("Say hello to get started.", "Sag Hallo, um loszulegen.")}
           </div>
         ) : (
@@ -312,10 +331,19 @@ export function ChatWindow({
                   "max-w-[80%] space-y-2 rounded-lg px-3 py-2 text-sm",
                   m.role === "user"
                     ? "bg-primary text-primary-foreground"
-                    : "border border-border bg-background/60",
+                    : m.role === "followup"
+                      ? "border border-dashed border-border bg-muted/40 text-muted-foreground"
+                      : "border border-border bg-background/60",
                 )}
               >
-                {m.role === "user" ? (
+                {m.role === "followup" ? (
+                  <div className="space-y-1">
+                    <div className="text-[10px] font-medium uppercase tracking-wide">
+                      {t("Follow-up", "Wiedervorlage")}
+                    </div>
+                    <div className="whitespace-pre-wrap">{m.content}</div>
+                  </div>
+                ) : m.role === "user" ? (
                   <div className="space-y-1">
                     {m.mode && (
                       <span className="inline-block rounded-full bg-primary-foreground/20 px-1.5 py-0.5 font-mono text-[10px]">

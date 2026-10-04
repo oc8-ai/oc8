@@ -94,6 +94,27 @@ vi.mock("@/lib/live/provider", async (importOriginal) => {
   return { ...actual, useLiveConnectionStatus: () => liveStatusMock() };
 });
 
+// The header's "Open Copilot" link needs a router; the dock tests mount no router.
+vi.mock("@tanstack/react-router", () => ({
+  Link: ({ children, to }: { children: React.ReactNode; to: string }) => (
+    <a href={to}>{children}</a>
+  ),
+}));
+vi.mock("@/lib/hooks-copilot", () => ({
+  useCopilotProfile: () => ({
+    data: {
+      displayName: "Copilot",
+      avatar: { shape: "round", color: "indigo" },
+      pausedAt: null,
+      status: "ready",
+      activeCount: 0,
+      agentId: "a",
+    },
+  }),
+  usePauseCopilot: () => ({ mutate: vi.fn(), isPending: false }),
+  useResumeCopilot: () => ({ mutate: vi.fn(), isPending: false }),
+}));
+
 import { CopilotDock } from "@/components/copilot-dock";
 
 function renderDock() {
