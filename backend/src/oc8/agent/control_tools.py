@@ -1368,9 +1368,11 @@ async def _delegate(
                 if chat_channel and chat_channel_external_id:
                     context["chat_channel"] = chat_channel
                     context["chat_channel_external_id"] = chat_channel_external_id
-            # The Copilot's follow-up guards read these off the run context;
-            # a delegated chain must keep them (executor._maybe_wake_parent).
-            for carried in ("door", "followup"):
+            # The Copilot's follow-up and oversight guards read these off the
+            # run context; a delegated chain must keep them
+            # (executor._maybe_wake_parent). Never operator_role: a token claim
+            # belongs to the run it was recorded on (_acting_token_role).
+            for carried in ("door", "followup", "originating_operator"):
                 if executing_run.context.get(carried) is not None:
                     context[carried] = executing_run.context[carried]
     # Deferred import: oc8.runtime.executor reaches oc8.runtime.adapter, which

@@ -572,3 +572,44 @@ async def test_decide_approval_refused_in_followup_and_its_wake_up(
                 "ERROR: approvals wait for the person in 'Waiting on me' "
                 "— do not decide them in a follow-up"
             )
+
+
+async def test_oversight_survives_delegation_and_wake_up(app_session: AppSessionFactory) -> None:
+    from oc8.agent.control_tools import _delegate
+    from oc8.runtime.executor import _maybe_wake_parent
+    from oc8.runtime.repository import RunRepository
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        cop, _seat, task, run = await _setup(
+            db, tenant, door="web", originating_operator="admin@example.com"
+        )
+        worker = m.Agent(
+            id=uuid.uuid4(), tenant_id=tenant, department_id=cop.department_id, name="Worker"
+        )
+        db.add(worker)
+        await db.flush()
+        _out, sub_id = await _delegate(
+            db, tenant_id=tenant, agent=cop, task=task, mcp_conn=None, run_id=run.id,
+            tc=ToolCall(
+                id="d", name="delegate_task",
+                arguments={"agent_id": str(worker.id), "task_text": "job"},
+            ),
+        )  # fmt: skip
+        assert sub_id is not None
+        sub = await db.get(m.AgentRun, sub_id)
+        assert sub is not None and sub.context["originating_operator"] == "admin@example.com"
+        ctx = sub.context
+        wake_id = await _maybe_wake_parent(
+            db, repo=RunRepository(db), tenant_id=tenant, parent_task_id=task.id,
+            delegation_depth=1, finished_agent_id=worker.id, sub_task_label="job",
+            output="done", succeeded=True, mcp_conn=None,
+            chat_session_id=ctx.get("chat_session_id"), door=ctx.get("door"),
+            followup=ctx.get("followup"), originating_operator=ctx.get("originating_operator"),
+        )  # fmt: skip
+        assert wake_id is not None
+        wake = await db.get(m.AgentRun, wake_id)
+        assert wake is not None and wake.context["originating_operator"] == "admin@example.com"
+        out = await _call(db, tenant, cop, task, wake, "responsibility_open", title="t", goal="g")
+        assert out is not None and out.output.startswith("ERROR: only the person")
+        assert (await db.execute(select(m.Responsibility))).scalars().all() == []

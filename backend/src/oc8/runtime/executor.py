@@ -253,6 +253,7 @@ async def _maybe_wake_parent(
     chat_channel_external_id: str | None = None,
     door: str | None = None,
     followup: dict[str, Any] | None = None,
+    originating_operator: str | None = None,
 ) -> uuid.UUID | None:
     """Create a follow-up run for the team lead that delegated this sub-run, so
     it can react to the outcome (§7). Returns the new run's id for the caller to
@@ -339,6 +340,10 @@ async def _maybe_wake_parent(
             context["door"] = door
         if followup is not None:
             context["followup"] = followup
+        # So the Copilot's oversight check (_resolve_agent_actor) still sees
+        # an operator posting in a colleague's session. Never operator_role.
+        if originating_operator is not None:
+            context["originating_operator"] = originating_operator
     wake = await repo.create(
         tenant_id=tenant_id,
         agent_id=parent.assigned_agent_id,
@@ -898,6 +903,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         ),
                         door=(run.context or {}).get("door"),
                         followup=(run.context or {}).get("followup"),
+                        originating_operator=(run.context or {}).get("originating_operator"),
                     )
                     if wake_id is not None:
                         pending_runs.append(wake_id)
@@ -1029,6 +1035,9 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                                 ),
                                 door=(run.context or {}).get("door"),
                                 followup=(run.context or {}).get("followup"),
+                                originating_operator=(run.context or {}).get(
+                                    "originating_operator"
+                                ),
                             )
                             if wake_id is not None:
                                 pending_runs.append(wake_id)
@@ -1111,6 +1120,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             ),
                             door=(run.context or {}).get("door"),
                             followup=(run.context or {}).get("followup"),
+                            originating_operator=(run.context or {}).get("originating_operator"),
                         )
                         if wake_id is not None:
                             pending_runs.append(wake_id)
