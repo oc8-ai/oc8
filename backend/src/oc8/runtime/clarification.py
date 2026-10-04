@@ -92,7 +92,7 @@ async def resolve_clarification(db: AsyncSession, *, run: AgentRun, answer: str)
     new_ctx.pop("pending_question", None)
     run.context = new_ctx
     followup = (run.context or {}).get("followup")
-    if isinstance(followup, dict) and followup.get("responsibility_id"):
+    if run.source == "chat" and isinstance(followup, dict) and followup.get("responsibility_id"):
         resp = await db.get(m.Responsibility, uuid.UUID(str(followup["responsibility_id"])))
         if resp is not None and resp.state == "waiting":
             resp.state = "active"

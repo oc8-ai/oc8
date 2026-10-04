@@ -970,7 +970,13 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         await request_clarification(db, run=run, question=result.output)
                         from oc8.copilot.followups import load_responsibility_for_run
 
-                        parked_resp = await load_responsibility_for_run(db, run=run)
+                        # Only the Copilot's own turns (source chat) wait on the
+                        # person; a delegated worker's question is not theirs.
+                        parked_resp = (
+                            await load_responsibility_for_run(db, run=run)
+                            if run.source == "chat"
+                            else None
+                        )
                         if parked_resp is not None and parked_resp.state == "active":
                             parked_resp.state = "waiting"
                         logger.info("run %s waiting for input", run_id)

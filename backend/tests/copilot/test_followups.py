@@ -490,3 +490,72 @@ async def test_executor_sender_uses_current_binding(app_session: AppSessionFacto
         binding.revoked_at = dt.datetime.now(tz=dt.UTC)
         await db.flush()
         assert await _current_chat_sender(db, run) is None
+
+
+class _ParkingRuntime:
+    """A runtime whose run always parks on a question (ask_user)."""
+
+    async def execute(self, db, **kw):  # type: ignore[no-untyped-def]
+        from oc8.agent.engine import RunResult
+
+        return RunResult(
+            task_id=uuid.uuid4(),
+            agent_id=kw["agent"].id,
+            status="waiting_for_input",
+            output="Which venue?",
+            tool_calls=[],
+            steps=1,
+        )
+
+
+async def _park(app_session: AppSessionFactory, source: str) -> tuple[str, str]:
+    """Park a run with a followup context; returns the responsibility's state after
+    the park and after the question is resolved."""
+    from oc8.runtime.clarification import resolve_clarification
+    from oc8.runtime.executor import execute_run
+    from oc8.runtime.queue import RunMessage
+
+    tenant, _member, session_id, r_id, _t = await _world(app_session)
+    async with app_session(tenant) as db:
+        assistant = await get_or_create_assistant(db, tenant_id=tenant)
+        run = m.AgentRun(
+            tenant_id=tenant,
+            agent_id=assistant.id,
+            source=source,
+            state="queued",
+            context={
+                "task": "x",
+                "chat_session_id": str(session_id),
+                "followup": {"responsibility_id": str(r_id)},
+            },
+        )
+        db.add(run)
+        await db.flush()
+        run_id = run.id
+        await db.commit()
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=_ParkingRuntime(),
+    )
+    async with app_session(tenant) as db:
+        parked = (await db.get(m.Responsibility, r_id)).state  # type: ignore[union-attr]
+    async with app_session(tenant) as db:
+        parked_run = await db.get(m.AgentRun, run_id)
+        assert parked_run is not None
+        await resolve_clarification(db, run=parked_run, answer="the lake")
+        resolved = (await db.get(m.Responsibility, r_id)).state  # type: ignore[union-attr]
+    return parked, resolved
+
+
+async def test_a_chat_followup_park_flips_waiting_and_back(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    parked, resolved = await _park(app_session, "chat")
+    assert (parked, resolved) == ("waiting", "active")
+
+
+async def test_a_delegated_workers_question_leaves_the_responsibility_alone(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    parked, resolved = await _park(app_session, "delegation")
+    assert (parked, resolved) == ("active", "active")
