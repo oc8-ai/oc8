@@ -713,7 +713,12 @@ async def _call_tool(
         # company-tier write comes back as REQUIRE_APPROVAL.
         core_tc = _ToolCall(id=str(uuid.uuid4()), name=name, arguments=arguments)
         if name == MEMORY_WRITE.name:
-            core_decision = authorize_memory_write(frame, narrowing, str(arguments.get("tier", "")))
+            core_decision = authorize_memory_write(
+                frame,
+                narrowing,
+                str(arguments.get("tier", "")),
+                personal_only=agent.is_tenant_assistant,
+            )
         elif name == DELEGATE_TASK.name:
             # Not waved through: _authorize is where "not yourself", "a real
             # agent id" and the depth limit live, and the limit is the only thing

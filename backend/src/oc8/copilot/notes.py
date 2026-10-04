@@ -73,9 +73,15 @@ async def delete_note(
 async def delete_member_notes(
     db: AsyncSession, *, tenant_id: uuid.UUID, member_id: uuid.UUID
 ) -> None:
+    from oc8.agent.assistant import get_or_create_assistant
+
+    assistant = await get_or_create_assistant(db, tenant_id=tenant_id)
+    store_id = await _copilot_store_id(db, tenant_id=tenant_id, assistant_id=assistant.id)
+    if store_id is None:
+        return
     await db.execute(
         delete(m.MemoryRecord).where(
-            m.MemoryRecord.tenant_id == tenant_id,
+            m.MemoryRecord.store_id == store_id,
             m.MemoryRecord.record_metadata["member_id"].astext == str(member_id),
         )
     )

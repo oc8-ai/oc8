@@ -141,6 +141,38 @@ async def test_search_memory_is_member_scoped(app_session: AppSessionFactory) ->
         assert "Lisa prefers" in await recall(lisa_task, lisa.subject)
 
 
+async def test_copilot_company_write_is_denied_at_authorization(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.agent.harness.stages.b_authorize import authorize
+    from oc8.authz.pdp import Decision, Effect
+    from oc8.memory.policy import authorize_memory_write
+    from oc8.modelrouter import ToolCall
+
+    assert authorize_memory_write({}, {}, "company").effect is Effect.REQUIRE_APPROVAL
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        cop = await get_or_create_assistant(db, tenant_id=tenant)
+        other = m.Agent(tenant_id=tenant, name="Other", is_tenant_assistant=False)
+
+        def decide(agent: m.Agent, tier: str) -> Decision:
+            return authorize(
+                agent,
+                ToolCall(id="1", name="memory_write", arguments={"tier": tier, "content": "x"}),
+                frame={},
+                tool_policies={},
+                connection_key=None,
+                tool_scopes=None,
+            )
+
+        denied = decide(cop, "company")
+        assert denied.effect is Effect.DENY
+        assert denied.reason == "the Copilot keeps personal notes only (tier 'agent')"
+        assert decide(cop, "department").effect is Effect.DENY
+        assert decide(cop, "agent").effect is Effect.ALLOW
+        assert decide(other, "company").effect is Effect.REQUIRE_APPROVAL
+
+
 async def test_copilot_company_write_returns_error_not_approval(
     app_session: AppSessionFactory,
 ) -> None:
@@ -155,7 +187,9 @@ async def test_copilot_company_write_returns_error_not_approval(
         seat = await copilot_seat(db, tenant, "lisa@example.com")
         task = await db.get(m.Task, seat.task_id)
         assert task is not None
-        for effect in (Effect.REQUIRE_APPROVAL, Effect.ALLOW):
+        # Defence in depth: authorization now denies, but a stray ALLOW or
+        # REQUIRE_APPROVAL must still come back as ERROR, never raise.
+        for effect in (Effect.DENY, Effect.REQUIRE_APPROVAL, Effect.ALLOW):
             out = await execute_control_tool(
                 db,
                 tenant_id=tenant,
@@ -173,3 +207,24 @@ async def test_copilot_company_write_returns_error_not_approval(
                 pinned=None,
             )
             assert out is not None and out.output.startswith("ERROR:")
+
+
+async def test_legacy_untagged_copilot_note_is_invisible(app_session: AppSessionFactory) -> None:
+    tenant, lisa = uuid.uuid4(), uuid.uuid4()
+    async with app_session(tenant) as db:
+        cop = await get_or_create_assistant(db, tenant_id=tenant)
+        # A record written before member scoping existed: no member_id tag.
+        rec = await write_memory(
+            db, tenant_id=tenant, agent=cop, tier="agent", content="legacy note", member_id=lisa
+        )
+        rec.record_metadata = {}
+        await db.flush()
+        ctx = await retrieve_context(
+            db,
+            agent=cop,
+            tenant_id=tenant,
+            frame=FRAME,
+            query_text="legacy",
+            member_id=lisa,
+        )
+        assert "legacy note" not in ctx

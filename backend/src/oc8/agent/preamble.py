@@ -60,7 +60,6 @@ _ORIGIN_LABELS: dict[str, str] = {
     "handoff": "handoff",
 }
 
-
 async def _origin_label(db: AsyncSession, *, run: m.AgentRun | None) -> str:
     """A2 "Origin" line. `run.source` is the ck_agent_run_source CHECK
     constraint's enum (manual/cron/event/webhook/delegation/decision/
@@ -186,10 +185,8 @@ async def roster_block(db: AsyncSession, *, agent: m.Agent) -> str | None:
             f"- {a.id}: {a.name} ({dept}" + (f", {a.role_title})" if a.role_title else ")")
             for a, dept in rows
         ]
-        return (
-            "Every agent in this tenant, by department -- delegate_task may reach any "
+        return "Every agent in this tenant, by department -- delegate_task may reach any " \
             "of them if the person you are acting for can:\n" + "\n".join(lines)
-        )
 
     mates = (
         (
@@ -250,7 +247,9 @@ async def _gated_copilot_permissions(
     # Seat-grantable: a departmental seat alone is enough (SEAT_PERMISSIONS
     # includes all three of these for both SEAT_VIEWER and SEAT_APPROVER).
     for permission in (perm(APPROVAL, VIEW), perm(DEPARTMENT, VIEW), perm(AGENT, VIEW)):
-        if permission in authority.tenant_wide or agent_actor.scope.holds_anywhere(permission):
+        if permission in authority.tenant_wide or agent_actor.scope.holds_anywhere(
+            permission
+        ):
             granted.add(permission)
     # Tenant-wide only: not in SEAT_PERMISSIONS, so no seat can ever grant
     # these -- checked against authority.tenant_wide alone.

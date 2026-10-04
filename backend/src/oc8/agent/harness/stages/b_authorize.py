@@ -158,7 +158,9 @@ def authorize(
             return Decision(Effect.DENY, "content must not be empty")
         if len(content) > MAX_MEMORY_CONTENT_LENGTH:
             return Decision(Effect.DENY, f"content exceeds {MAX_MEMORY_CONTENT_LENGTH} characters")
-        return authorize_memory_write(frame, narrowing, tier)
+        return authorize_memory_write(
+            frame, narrowing, tier, personal_only=agent.is_tenant_assistant
+        )
     agent_threshold = (agent.presentation or {}).get("approval_value_eur")
     applicable_attributes = [
         spec
