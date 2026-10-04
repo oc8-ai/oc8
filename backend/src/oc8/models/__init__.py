@@ -9,6 +9,7 @@ from oc8.models.channels import ApprovalChannelBinding, ChannelPollCursor
 from oc8.models.chat import ChatMessage, ChatSession
 from oc8.models.collab import ContractBinding, Handoff, HandoffType
 from oc8.models.components import ComponentGrant
+from oc8.models.copilot import CopilotProfile, Responsibility
 from oc8.models.core import (
     Agent,
     AgentVersion,
@@ -94,6 +95,7 @@ __all__ = [
     "ComponentGrant",
     "ContractBinding",
     "CopilotOperation",
+    "CopilotProfile",
     "CopilotProposal",
     "Credential",
     "DashboardPreset",
@@ -125,6 +127,7 @@ __all__ = [
     "Permission",
     "PushSubscription",
     "RecordClaim",
+    "Responsibility",
     "Role",
     "RolePermission",
     "RunCancellation",

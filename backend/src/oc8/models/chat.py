@@ -55,4 +55,8 @@ class ChatMessage(Base, PkMixin, TenantMixin, TimestampMixin):
     #: leaves an old turn readable instead of showing a bare uuid.
     context_refs: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
 
-    __table_args__ = (CheckConstraint("role IN ('user','assistant')", name="ck_chat_message_role"),)
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('user','assistant','followup')", name="ck_chat_message_role"
+        ),
+    )
