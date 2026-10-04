@@ -33,9 +33,7 @@ class RegistryAuthDTO(_TransportModel):
     registry: str = ""
 
     def to_domain(self) -> RegistryAuth:
-        return RegistryAuth(
-            username=self.username, password=self.password, registry=self.registry
-        )
+        return RegistryAuth(username=self.username, password=self.password, registry=self.registry)
 
     @classmethod
     def from_domain(cls, auth: RegistryAuth) -> RegistryAuthDTO:

@@ -246,9 +246,7 @@ class Harness:
             self.state.procedure_rounds += 1
             return FinishVerdict(
                 ok=False,
-                reminder=procedure_continuation_reminder(
-                    open_proc, self.state.procedure_rounds
-                ),
+                reminder=procedure_continuation_reminder(open_proc, self.state.procedure_rounds),
             )
         d2_note = procedure_exhausted_note(open_proc) if open_proc else None
 
@@ -258,9 +256,7 @@ class Harness:
             if key in self.state.ledger.entities
         ]
         self.state.ledger.writes_unverified = [
-            key
-            for key in self.state.ledger.writes_unverified
-            if key in self.state.ledger.entities
+            key for key in self.state.ledger.writes_unverified if key in self.state.ledger.entities
         ]
         d3_note = None
         if pending and can_continue and self.state.verify_rounds < VERIFY_MAX_ROUNDS:

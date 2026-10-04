@@ -32,6 +32,7 @@ def _labels(extra: dict[str, str]) -> dict[str, str]:
     # belong to.
     return {**extra, "oc8.sandbox": "1", NAMESPACE_LABEL: get_settings().deployment_namespace}
 
+
 #: Sensible default per-call exec timeout (seconds) for callers that want one
 #: (e.g. the Slice 3 coding loop). ``exec`` itself defaults its ``timeout``
 #: kwarg to ``None`` (no timeout) to keep existing callers/tests unchanged;
@@ -232,6 +233,7 @@ class DockerSandboxDriver:
         executor's `except Exception` turns it into a failed run that says why.
         -1 is returned for docker-level faults (container gone, daemon error).
         """
+
         def _run() -> int:
             try:
                 container = self._client.containers.get(handle.container_id)

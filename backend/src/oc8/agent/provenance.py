@@ -72,12 +72,12 @@ def _shorten(value: object, limit: int) -> tuple[object, bool]:
         return items, changed
     if isinstance(value, dict):
         changed = False
-        items = {}
+        mapped: dict[object, object] = {}
         for key, item in value.items():
             shortened, item_changed = _shorten(item, limit)
-            items[key] = shortened
+            mapped[key] = shortened
             changed = changed or item_changed
-        return items, changed
+        return mapped, changed
     return value, False
 
 

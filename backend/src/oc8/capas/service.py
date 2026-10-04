@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import uuid
+from typing import Any, cast
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import Version
@@ -112,9 +113,7 @@ def _artifact_hash(manifest: Manifest) -> bytes:
     return hashlib.sha256(canonical).digest()
 
 
-async def _load_installation_config(
-    db: AsyncSession, *, capa_id: uuid.UUID
-) -> dict[str, str]:
+async def _load_installation_config(db: AsyncSession, *, capa_id: uuid.UUID) -> dict[str, str]:
     """The tenant-submitted, non-secret setup values for this capa, if any
     setup was ever run -- the same dict `_configure_without_connection`
     (api/v1/capas.py) writes to. `{}` both when no CapaInstallation row
@@ -123,9 +122,7 @@ async def _load_installation_config(
     empty config -- both mean "no substitution values available", handled
     identically by `_substitute_template_values` leaving every token as-is."""
     installation = (
-        await db.execute(
-            select(CapaInstallation).where(CapaInstallation.capa_id == capa_id)
-        )
+        await db.execute(select(CapaInstallation).where(CapaInstallation.capa_id == capa_id))
     ).scalar_one_or_none()
     return dict(installation.config) if installation is not None else {}
 
@@ -152,9 +149,7 @@ def _repeat_count(raw: str, key: str) -> int:
     try:
         count = int(text)
     except ValueError as exc:
-        raise PluginError(
-            f"setup field {key!r} must be a whole number, got {raw!r}"
-        ) from exc
+        raise PluginError(f"setup field {key!r} must be a whole number, got {raw!r}") from exc
     if count < 1 or count > MAX_TEMPLATE_REPEAT:
         raise PluginError(
             f"setup field {key!r} must be between 1 and {MAX_TEMPLATE_REPEAT}, got {count}"
@@ -174,21 +169,21 @@ def _with_copy_index(value: object, index: int) -> object:
 
 
 def _expand_agent_defs(
-    agent_defs: list[dict[str, object]], config: dict[str, str]
-) -> list[dict[str, object]]:
+    agent_defs: list[dict[str, Any]], config: dict[str, str]
+) -> list[dict[str, Any]]:
     """One template row becomes `repeat_from_setup` copies.
 
     A blank or missing setup value means one copy. The first copy keeps
     `is_team_lead`. Later copies report to that first copy when the template
     itself was the lead and named nobody else. `{{n}}` is the copy index.
     """
-    expanded: list[dict[str, object]] = []
+    expanded: list[dict[str, Any]] = []
     for agent in agent_defs:
         key = str(agent.get("repeat_from_setup") or "").strip()
         count = _repeat_count(str(config.get(key, "") if key else ""), key) if key else 1
         first_name = ""
         for index in range(1, count + 1):
-            copy = dict(_with_copy_index(agent, index))  # type: ignore[arg-type]
+            copy = dict(cast(dict[str, Any], _with_copy_index(agent, index)))
             template_name = str(agent.get("name") or "")
             if "{{n}}" in template_name:
                 copy["name"] = template_name.replace("{{n}}", str(index))
@@ -212,9 +207,7 @@ async def _runtime_ref_for_template(
 ) -> str:
     """The installed, enabled runtime capa id a template agent named."""
     plugin = (
-        await db.execute(
-            select(Capa).where(Capa.tenant_id == tenant_id, Capa.name == plugin_name)
-        )
+        await db.execute(select(Capa).where(Capa.tenant_id == tenant_id, Capa.name == plugin_name))
     ).scalar_one_or_none()
     if plugin is None or plugin.type != "runtime_adapter":
         raise PluginError(f"runtime {plugin_name!r} is not an installed runtime")

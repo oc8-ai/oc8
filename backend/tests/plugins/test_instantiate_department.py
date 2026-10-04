@@ -204,9 +204,7 @@ async def test_repeat_count_and_missing_runtime_are_refused(
         with pytest.raises(PluginError, match="between 1 and 32"):
             await instantiate_department(s, tenant_id=tenant, version=version, name="X")
         installation = (
-            await s.execute(
-                select(m.CapaInstallation).where(m.CapaInstallation.capa_id == capa.id)
-            )
+            await s.execute(select(m.CapaInstallation).where(m.CapaInstallation.capa_id == capa.id))
         ).scalar_one()
         installation.config = {"team_size": "several"}
         version.manifest = {
@@ -355,6 +353,12 @@ async def test_instantiate_skips_missing_skill_silently(app_session: AppSessionF
             await s.execute(select(m.Agent).where(m.Agent.department_id == dept.id))
         ).scalar_one()
         assignments = (
-            await s.execute(select(m.SkillAssignment).where(m.SkillAssignment.agent_id == agent.id))
-        ).scalars().all()
+            (
+                await s.execute(
+                    select(m.SkillAssignment).where(m.SkillAssignment.agent_id == agent.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
         assert assignments == []

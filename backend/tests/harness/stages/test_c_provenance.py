@@ -6,9 +6,7 @@ from oc8.agent.provenance import TEXT_PIECE, shorten_long_strings
 
 def test_fence_external_preserves_source_and_output() -> None:
     assert fence_external("customer text", source="things:get_record") == (
-        '<external source="things:get_record">\n'
-        "customer text\n"
-        "</external>"
+        '<external source="things:get_record">\ncustomer text\n</external>'
     )
 
 

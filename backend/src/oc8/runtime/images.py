@@ -36,9 +36,7 @@ def declared_runtime_images(paths: Sequence[str] | None = None) -> set[str]:
     return images
 
 
-def runtime_image(
-    plugin_name: str, fallback: str, paths: Sequence[str] | None = None
-) -> str:
+def runtime_image(plugin_name: str, fallback: str, paths: Sequence[str] | None = None) -> str:
     """The capa's `sandbox.image` when it set one, otherwise `fallback`."""
     found = find_plugin(plugin_name, paths)
     if found is None or not found.manifest:
@@ -49,9 +47,7 @@ def runtime_image(
     return fallback
 
 
-def _registry_credential_key(
-    plugin_name: str, paths: Sequence[str] | None
-) -> str:
+def _registry_credential_key(plugin_name: str, paths: Sequence[str] | None) -> str:
     found = find_plugin(plugin_name, paths)
     if found is None or not found.manifest:
         return ""
@@ -94,9 +90,7 @@ async def registry_auth_for_runtime(
     if not username:
         return None
     try:
-        password = await resolve_secret(
-            db, tenant_id=tenant_id, ref=f"plugin:{plugin_name}:{key}"
-        )
+        password = await resolve_secret(db, tenant_id=tenant_id, ref=f"plugin:{plugin_name}:{key}")
     except SecretNotFound as exc:
         raise RegistryLoginError(
             f"runtime {plugin_name!r} has a registry username but no stored token; "

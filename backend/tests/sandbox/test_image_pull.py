@@ -64,7 +64,7 @@ def test_registry_host_ignores_the_tag_colon() -> None:
 async def test_a_local_image_is_not_pulled_and_the_token_stays_out_of_the_container() -> None:
     client = _Client()
     client.images.have.add("ghcr.io/acme/runtime:1")
-    driver = DockerSandboxDriver(client)  # type: ignore[arg-type]
+    driver = DockerSandboxDriver(client)
     auth = RegistryAuth(username="acme", password="token-value", registry="ghcr.io")
     await driver.provision(
         SandboxSpec(image="ghcr.io/acme/runtime:1", env={"HOME": "/home/node"}, registry_auth=auth)
@@ -78,7 +78,7 @@ async def test_a_local_image_is_not_pulled_and_the_token_stays_out_of_the_contai
 @pytest.mark.asyncio
 async def test_a_missing_private_image_is_pulled_with_the_registry_login() -> None:
     client = _Client()
-    driver = DockerSandboxDriver(client)  # type: ignore[arg-type]
+    driver = DockerSandboxDriver(client)
     auth = RegistryAuth(username="acme", password="token-value", registry="ghcr.io")
     await driver.provision(SandboxSpec(image="ghcr.io/acme/runtime:1", registry_auth=auth))
     assert client.images.pulls == [
@@ -91,7 +91,7 @@ async def test_a_missing_private_image_is_pulled_with_the_registry_login() -> No
 async def test_a_missing_private_image_without_a_login_fails_before_a_container_starts() -> None:
     client = _Client()
     client.images.fail = docker.errors.APIError("unauthorized: authentication required")
-    driver = DockerSandboxDriver(client)  # type: ignore[arg-type]
+    driver = DockerSandboxDriver(client)
     with pytest.raises(SandboxError, match="registry login"):
         await driver.provision(SandboxSpec(image="ghcr.io/acme/runtime:1"))
     assert client.containers.calls == []
@@ -100,7 +100,7 @@ async def test_a_missing_private_image_without_a_login_fails_before_a_container_
 @pytest.mark.asyncio
 async def test_a_login_for_a_different_registry_is_not_sent() -> None:
     client = _Client()
-    driver = DockerSandboxDriver(client)  # type: ignore[arg-type]
+    driver = DockerSandboxDriver(client)
     auth = RegistryAuth(username="acme", password="token-value", registry="ghcr.io")
     with pytest.raises(SandboxError, match=r"registry\.example:5000"):
         await driver.provision(

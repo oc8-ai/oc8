@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from oc8 import models as m
-from oc8.credentials.core_types import CORE_CREDENTIAL_TYPES
+from oc8.credentials.registry import CORE_CREDENTIAL_TYPES
 from oc8.runtime.images import (
     RegistryLoginError,
     declared_runtime_images,
