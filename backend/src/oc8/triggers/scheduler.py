@@ -98,7 +98,7 @@ async def run_scheduler_tick() -> int:
                 now = datetime.now(tz=UTC)
                 result = await db.execute(
                     select(m.Trigger.id).where(
-                        m.Trigger.kind == "cron",
+                        m.Trigger.kind.in_(("cron", "once")),
                         m.Trigger.enabled.is_(True),
                         m.Trigger.next_run_at <= now,
                     )
@@ -131,7 +131,17 @@ async def run_scheduler_tick() -> int:
                     ).scalar_one_or_none()
                     if trigger is None:
                         continue  # another scheduler took it, or it is no longer due
-                    await fire_trigger(db, trigger, tenant_id=tenant_id)
+                    if trigger.chat_session_id is not None:
+                        from oc8.copilot.followups import fire_followup
+
+                        await fire_followup(db, trigger, tenant_id=tenant_id)
+                    elif trigger.kind == "once":
+                        # A one-shot only ever exists as a follow-up in a chat
+                        # session; without one there is nothing to fire into.
+                        trigger.enabled = False
+                        continue
+                    else:
+                        await fire_trigger(db, trigger, tenant_id=tenant_id)
                     fired += 1
             except Exception:
                 logger.exception(

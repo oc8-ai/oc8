@@ -938,6 +938,11 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         # ask_user path doesn't set agent.status itself either
                         # -- it's simply left as "running".)
                         await request_clarification(db, run=run, question=result.output)
+                        from oc8.copilot.followups import load_responsibility_for_run
+
+                        parked_resp = await load_responsibility_for_run(db, run=run)
+                        if parked_resp is not None and parked_resp.state == "active":
+                            parked_resp.state = "waiting"
                         logger.info("run %s waiting for input", run_id)
                         record_run_outcome(RunState.WAITING_FOR_INPUT.value)
                         # A park is not an outcome, so `record_assistant_reply`
@@ -1079,9 +1084,19 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         # is the one place that turns its outcome back into the
                         # durable transcript message the Chat UI actually reads.
                         from oc8.chat.service import record_assistant_reply
+                        from oc8.copilot.followups import (
+                            is_quiet_followup,
+                            load_responsibility_for_run,
+                        )
 
                         await record_assistant_reply(db, run=run, output=result.output)
                         done_sender = _chat_channel_sender_of(run)
+                        if done_sender is not None and is_quiet_followup(
+                            run, await load_responsibility_for_run(db, run=run)
+                        ):
+                            # A follow-up with nothing to report stays silent on
+                            # the messenger too (design §7a.3).
+                            done_sender = None
                         if done_sender is not None:
                             done_channel, done_external_id = done_sender
                             channel_replies.append(
