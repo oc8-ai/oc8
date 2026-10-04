@@ -5,9 +5,14 @@ cron follow-up with a timezone that ends this month -- or, when the zone cannot
 be inferred, a parked `ask_user` run that asks for it. Either way the Copilot
 must not have called any connection tool (only control tools / delegations).
 
-Needs a Copilot chat session for a member; this harness drives a fixture agent,
-so `setup` has nothing to seed and `expect`/`forbid` read the tenant's
-Responsibility and Trigger rows plus the run's tool-call trace.
+NOT YET RUNNABLE: the harness starts runs on a fixture agent straight in the DB
+(`stack.start_run`), but this scenario needs a Copilot chat turn for a seeded
+member who holds `copilot:use` through an assigned role. The harness has no HTTP
+path or member auth to open one, so `setup` fails loudly rather than letting a
+fixture-agent run score against the wrong thing. It lives in its own `copilot`
+suite, so the default `office` suite never picks it up. Once the harness can
+start a member's chat turn, `setup` returns `{"member_id": ..., "started_at": ...}`
+and `expect`/`forbid` below work unchanged.
 """
 
 from __future__ import annotations
@@ -28,7 +33,10 @@ _QUESTION_WORDS = ("zeitzone", "time zone", "timezone")
 
 
 async def setup(ctx: ScenarioContext) -> dict[str, Any]:
-    return {"started_at": dt.datetime.now(tz=dt.UTC)}
+    raise RuntimeError(
+        "copilot_keep_track is not runnable yet: the eval harness cannot start a "
+        "Copilot chat turn for a member (see the module docstring)"
+    )
 
 
 def _asked_for_timezone(ctx: ScenarioContext) -> bool:
@@ -53,13 +61,20 @@ def _within_this_month(ends_at: dt.datetime | None, now: dt.datetime) -> bool:
 async def expect(ctx: ScenarioContext, seeded: dict[str, Any]) -> list[Check]:
     since: dt.datetime = seeded["started_at"]
     if _asked_for_timezone(ctx):
-        return [Check("asked for the time zone instead of guessing", True, "waiting_for_input")]
+        return [
+            Check(
+                "asked for the time zone instead of guessing",
+                True,
+                "waiting_for_input",
+            )
+        ]
     async with tenant_session(ctx.tenant_id) as db:
         responsibilities = (
             (
                 await db.execute(
                     select(m.Responsibility).where(
                         m.Responsibility.tenant_id == ctx.tenant_id,
+                        m.Responsibility.member_id == seeded["member_id"],
                         m.Responsibility.created_at >= since,
                     )
                 )
