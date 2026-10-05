@@ -72,6 +72,24 @@ async def test_a_withheld_call_is_refused_rather_than_forwarded(
     assert _FakeMcp.calls == [], "nothing may reach the tool server"
 
 
+async def test_gateway_memory_write_honours_the_mode(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A harness that cached an older tool list must be refused, not obeyed."""
+    _FakeMcp.calls = []
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    tenant = uuid.uuid4()
+    agent_id, run_id = await _run_in_mode(app_session, tenant, "research_delegate")
+    _code, body = await _rpc(
+        _token(tenant, agent_id, run_id),
+        "tools/call",
+        {"name": "memory_write", "arguments": {"tier": "agent", "content": "x"}},
+    )
+    assert body["result"]["isError"] is True
+    assert "research follow-up only reads" in body["result"]["content"][0]["text"]
+    assert _FakeMcp.calls == [], "nothing may reach the tool server"
+
+
 async def test_a_withheld_call_is_audited_as_a_denial(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

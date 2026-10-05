@@ -76,6 +76,24 @@ def test_plan_withholds_the_dot_tools_and_authorize_agrees() -> None:
     assert decide("plan") is Effect.DENY
 
 
+def test_research_offers_the_copilot_only_its_three_writing_exceptions() -> None:
+    from oc8.chat.modes import RESEARCH, RESEARCH_DELEGATE, WRITING_CONTROL_TOOLS
+
+    common: dict[str, Any] = {"assigned_skills": [], "active_skills": [], "mcp_tools": []}
+    offered = _names(
+        offered_tools(_copilot(), copilot_door="followup", chat_mode=RESEARCH, **common)
+    )
+    assert offered & WRITING_CONTROL_TOOLS == {
+        "memory_write",
+        "responsibility_update",
+        "delegate_task",
+    }
+    delegate = _names(
+        offered_tools(_copilot(), copilot_door="followup", chat_mode=RESEARCH_DELEGATE, **common)
+    )
+    assert delegate & WRITING_CONTROL_TOOLS == set()
+
+
 async def _chat_run(
     db: AsyncSession, tenant: uuid.UUID, cop: m.Agent, seat: Seat, **ctx: Any
 ) -> m.AgentRun:

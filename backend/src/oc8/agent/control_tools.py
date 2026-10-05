@@ -1114,7 +1114,12 @@ def offered_tools(
     # rest of the run. _authorize still checks the frame on every call.
     offered.extend(mcp_tools)
     if chat_mode is not None and not chat_mode.allows_writes:
-        offered = [t for t in offered if t.name not in WRITING_CONTROL_TOOLS]
+        offered = [
+            t
+            for t in offered
+            if t.name not in WRITING_CONTROL_TOOLS
+            or (agent.is_tenant_assistant and t.name in chat_mode.copilot_exceptions)
+        ]
     return offered
 
 

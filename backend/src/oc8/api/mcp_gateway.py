@@ -404,7 +404,13 @@ async def _list_tools(
             and policy.has_right(required_right(t.name, scopes))
             # Scopes are known HERE (unlike in offered_tools), so a read-only
             # mode's writing tools are withheld rather than offered-then-denied.
-            and mode_refusal(chat_mode, t.name, tool_scopes=scopes) is None
+            and mode_refusal(
+                chat_mode,
+                t.name,
+                tool_scopes=scopes,
+                is_tenant_assistant=agent.is_tenant_assistant,
+            )
+            is None
         ]
 
     # Built from what the agent may ACTUALLY use: a tool the frame withholds on
@@ -461,7 +467,14 @@ async def _list_tools(
         # tool she was told to call was not on her list. Withheld from a
         # non-lead for the reason above: every call would be denied.
         core.append(DELEGATE_TASK)
-    core = [t for t in core if mode_refusal(chat_mode, t.name, tool_scopes=None) is None]
+    core = [
+        t
+        for t in core
+        if mode_refusal(
+            chat_mode, t.name, tool_scopes=None, is_tenant_assistant=agent.is_tenant_assistant
+        )
+        is None
+    ]
     for core_tool in core:
         out.append(
             {
@@ -713,11 +726,21 @@ async def _call_tool(
         # company-tier write comes back as REQUIRE_APPROVAL.
         core_tc = _ToolCall(id=str(uuid.uuid4()), name=name, arguments=arguments)
         if name == MEMORY_WRITE.name:
-            core_decision = authorize_memory_write(
-                frame,
-                narrowing,
-                str(arguments.get("tier", "")),
-                personal_only=agent.is_tenant_assistant,
+            mode_denial = mode_refusal(
+                mode_from_context(run.context),
+                name,
+                tool_scopes=None,
+                is_tenant_assistant=agent.is_tenant_assistant,
+            )
+            core_decision = (
+                Decision(Effect.DENY, mode_denial)
+                if mode_denial is not None
+                else authorize_memory_write(
+                    frame,
+                    narrowing,
+                    str(arguments.get("tier", "")),
+                    personal_only=agent.is_tenant_assistant,
+                )
             )
         elif name == DELEGATE_TASK.name:
             # Not waved through: _authorize is where "not yourself", "a real
@@ -741,7 +764,12 @@ async def _call_tool(
                 chat_mode=mode_from_context(run.context),
             )
         else:
-            mode_denial = mode_refusal(mode_from_context(run.context), name, tool_scopes=None)
+            mode_denial = mode_refusal(
+                mode_from_context(run.context),
+                name,
+                tool_scopes=None,
+                is_tenant_assistant=agent.is_tenant_assistant,
+            )
             core_decision = (
                 Decision(Effect.DENY, mode_denial)
                 if mode_denial is not None
