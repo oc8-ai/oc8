@@ -76,12 +76,17 @@ def authorize(
     # FIRST, above every early ALLOW below: a mode narrows the whole turn, not
     # just the connection tools. Denying here also means the existing
     # append_event at all three call sites records it -- "denied because /plan"
-    # is in the audit trail without a fourth writer.
-    refused = mode_refusal(
-        chat_mode, tc.name, tool_scopes=tool_scopes, is_tenant_assistant=agent.is_tenant_assistant
-    )
-    if refused is not None:
-        return Decision(Effect.DENY, refused)
+    # is in the audit trail without a fourth writer. Only with a mode is the
+    # agent consulted at all: without one there is nothing to refuse.
+    if chat_mode is not None:
+        refused = mode_refusal(
+            chat_mode,
+            tc.name,
+            tool_scopes=tool_scopes,
+            is_tenant_assistant=agent.is_tenant_assistant,
+        )
+        if refused is not None:
+            return Decision(Effect.DENY, refused)
     if tc.name in skill_tool_names:
         return Decision(Effect.ALLOW)
     if tc.name == "ask_user":
