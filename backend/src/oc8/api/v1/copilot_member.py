@@ -197,7 +197,9 @@ async def list_followups(db: DbSession, actor: Actor) -> list[FollowupDTO]:
             ends_at=t.ends_at,
             enabled=t.enabled,
             last_skip_reason=t.last_skip_reason,
-            purpose=t.followup_purpose or "check_in",
+            # Shown the way it fires (copilot.followups): anything that is not
+            # a plain check-in runs in the research mode.
+            purpose="check_in" if t.followup_purpose in (None, "check_in") else "research",
         )
         for t in triggers
     ]

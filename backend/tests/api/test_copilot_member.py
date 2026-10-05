@@ -189,6 +189,22 @@ async def test_end_schedule_disables_trigger(app_session: AppSessionFactory) -> 
         assert listed.json()[0]["responsibilityTitle"] == "Watch the invoice"
         assert listed.json()[0]["purpose"] == "check_in"
 
+        # Shown the way it fires (copilot.followups): only NULL / "check_in" is
+        # a check-in, every other stored value fires as research.
+        for stored, shown in (
+            (None, "check_in"),
+            ("check_in", "check_in"),
+            ("research", "research"),
+            ("deep_dive", "research"),
+        ):
+            async with app_session(tenant) as db:
+                trig = await db.get(m.Trigger, trigger_id)
+                assert trig is not None
+                trig.followup_purpose = stored
+                await db.flush()
+            listed = await c.get("/api/v1/copilot/followups", headers=_headers(tenant))
+            assert listed.json()[0]["purpose"] == shown, stored
+
         foreign = await c.delete(
             f"/api/v1/copilot/followups/{trigger_id}", headers=_headers(tenant, "op2")
         )
