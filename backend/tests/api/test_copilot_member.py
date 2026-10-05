@@ -214,11 +214,36 @@ async def test_notes_list_and_delete(app_session: AppSessionFactory) -> None:
         await c.get("/api/v1/copilot/profile", headers=_headers(tenant, "op2"))
         member_a = await _member_id(app_session, tenant, "op")
         member_b = await _member_id(app_session, tenant, "op2")
+        r_id, _ = await _seed_responsibility(app_session, tenant, member_a, "op")
         async with app_session(tenant) as db:
             assistant = await get_or_create_assistant(db, tenant_id=tenant)
             store = m.MemoryStore(tenant_id=tenant, tier="agent", owner_id=assistant.id)
             db.add(store)
             await db.flush()
+            db.add(
+                m.MemoryRecord(
+                    tenant_id=tenant,
+                    store_id=store.id,
+                    content="research note",
+                    record_metadata={
+                        "member_id": str(member_a),
+                        "responsibility_id": str(r_id),
+                    },
+                    written_by=assistant.id,
+                )
+            )
+            db.add(
+                m.MemoryRecord(
+                    tenant_id=tenant,
+                    store_id=store.id,
+                    content="foreign-tagged note",
+                    record_metadata={
+                        "member_id": str(member_a),
+                        "responsibility_id": str(uuid.uuid4()),
+                    },
+                    written_by=assistant.id,
+                )
+            )
             note_ids = {}
             for who, mid in (("a", member_a), ("b", member_b)):
                 note = m.MemoryRecord(
@@ -234,7 +259,13 @@ async def test_notes_list_and_delete(app_session: AppSessionFactory) -> None:
 
         mine = await c.get("/api/v1/copilot/notes", headers=_headers(tenant, "op"))
         assert mine.status_code == 200, mine.text
-        assert [n["content"] for n in mine.json()] == ["note of a"]
+        by_content = {n["content"]: n for n in mine.json()}
+        assert set(by_content) == {"note of a", "research note", "foreign-tagged note"}
+        assert by_content["note of a"]["responsibilityId"] is None
+        assert by_content["note of a"]["responsibilityTitle"] is None
+        assert by_content["research note"]["responsibilityId"] == str(r_id)
+        assert by_content["research note"]["responsibilityTitle"] == "Watch the invoice"
+        assert by_content["foreign-tagged note"]["responsibilityTitle"] is None
 
         foreign = await c.delete(
             f"/api/v1/copilot/notes/{note_ids['b']}", headers=_headers(tenant, "op")
@@ -243,7 +274,7 @@ async def test_notes_list_and_delete(app_session: AppSessionFactory) -> None:
         ok = await c.delete(f"/api/v1/copilot/notes/{note_ids['a']}", headers=_headers(tenant))
         assert ok.status_code == 204, ok.text
         after = await c.get("/api/v1/copilot/notes", headers=_headers(tenant, "op"))
-        assert after.json() == []
+        assert {n["content"] for n in after.json()} == {"research note", "foreign-tagged note"}
         theirs = await c.get("/api/v1/copilot/notes", headers=_headers(tenant, "op2"))
         assert [n["content"] for n in theirs.json()] == ["note of b"]
 

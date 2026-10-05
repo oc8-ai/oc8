@@ -2333,14 +2333,20 @@ async def execute_control_tool(
     if tc.name == MEMORY_WRITE.name:
         if decision.effect is Effect.DENY:
             return ControlOutcome(output=f"ERROR: {decision.reason or 'memory write denied'}")
+        note_metadata: dict[str, Any] = {"task_id": str(task.id)}
         if agent.is_tenant_assistant and run_id is not None:
             from oc8.copilot.door import door_of
 
             writing_run = await db.get(m.AgentRun, run_id)
             if writing_run is not None and door_of(writing_run.context) == "followup":
-                # Nobody is present in a follow-up (or its wake-up) to have
-                # said anything worth keeping about themselves.
-                return ControlOutcome(output="ERROR: a follow-up cannot write personal notes")
+                # Nobody is present in a check-in follow-up (or its wake-up) to
+                # have said anything worth keeping about themselves. A research
+                # turn exists to keep what it found, tied to its responsibility.
+                if mode_from_context(writing_run.context) is not RESEARCH:
+                    return ControlOutcome(output="ERROR: a follow-up cannot write personal notes")
+                followup = writing_run.context.get("followup")
+                if isinstance(followup, dict) and followup.get("responsibility_id"):
+                    note_metadata["responsibility_id"] = str(followup["responsibility_id"])
         if decision.effect is Effect.REQUIRE_APPROVAL:
             # Company memory always needs a human (§10.1) and no frame waives it.
             # The record is stored PENDING either way and the approval only flips
@@ -2354,7 +2360,7 @@ async def execute_control_tool(
                     agent=agent,
                     tier=str(tc.arguments.get("tier", "")),
                     content=str(tc.arguments.get("content", "")),
-                    metadata={"task_id": str(task.id)},
+                    metadata=note_metadata,
                     member_id=(
                         await member_behind_run_task(
                             db, tenant_id=tenant_id, task=task, run_id=run_id
@@ -2395,7 +2401,7 @@ async def execute_control_tool(
                 agent=agent,
                 tier=str(tc.arguments.get("tier", "")),
                 content=str(tc.arguments.get("content", "")),
-                metadata={"task_id": str(task.id)},
+                metadata=note_metadata,
                 member_id=(
                     await member_behind_run_task(db, tenant_id=tenant_id, task=task, run_id=run_id)
                     if agent.is_tenant_assistant
