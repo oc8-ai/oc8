@@ -50,6 +50,7 @@ vi.mock("@/lib/hooks-copilot", () => ({
         id: "f1",
         responsibilityId: "r1",
         responsibilityTitle: "Watch the invoice",
+        purpose: "research",
         kind: "cron",
         cronExpression: m.cron,
         timezone: "Europe/Berlin",
@@ -65,7 +66,22 @@ vi.mock("@/lib/hooks-copilot", () => ({
     data: [{ id: "run-1", agentId: "x", state: "running", steps: 1, toolCalls: [] }],
   }),
   useCopilotNotes: () => ({
-    data: [{ id: "n1", content: "Prefers short answers", createdAt: "2026-10-01T00:00:00Z" }],
+    data: [
+      {
+        id: "n1",
+        content: "Prefers short answers",
+        createdAt: "2026-10-01T00:00:00Z",
+        responsibilityId: null,
+        responsibilityTitle: null,
+      },
+      {
+        id: "n2",
+        content: "Invoice is 30 days net",
+        createdAt: "2026-10-02T00:00:00Z",
+        responsibilityId: "r1",
+        responsibilityTitle: "Watch the invoice",
+      },
+    ],
   }),
   useDeleteCopilotNote: () => ({ mutate: m.deleteNote, isPending: false }),
 }));
@@ -120,6 +136,14 @@ describe("CopilotWorkPanel", () => {
     expect(m.endFollowup).toHaveBeenCalledWith("f1");
   });
 
+  it("marks research follow-ups and shows which responsibility a note is for", () => {
+    wrap(<CopilotWorkPanel />);
+    openTab(/scheduled/i);
+    expect(screen.getByText(/Research · read-only/)).toBeInTheDocument();
+    openTab(/notes/i);
+    expect(screen.getByTestId("note-responsibility")).toHaveTextContent("Watch the invoice");
+  });
+
   it("names the weekday of a weekly schedule, and falls back to the raw cron", () => {
     m.cron = "30 8 * * 1";
     const { unmount } = wrap(<CopilotWorkPanel />);
@@ -168,7 +192,7 @@ describe("CopilotWorkPanel", () => {
     wrap(<CopilotWorkPanel />);
     openTab(/notes/i);
     expect(screen.getByText(/Only you can see them/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Delete" })[0]);
     expect(m.deleteNote).toHaveBeenCalledWith("n1");
   });
 
