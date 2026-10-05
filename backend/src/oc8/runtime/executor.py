@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agents.versioning import resolve_version
+from oc8.chat.modes import RESEARCH, RESEARCH_DELEGATE
 from oc8.db.session import tenant_session
 from oc8.observability import get_tracer, record_run_outcome
 from oc8.realtime.emit import publish_agent_status, record_activity
@@ -254,6 +255,7 @@ async def _maybe_wake_parent(
     door: str | None = None,
     followup: dict[str, Any] | None = None,
     originating_operator: str | None = None,
+    chat_mode: str | None = None,
 ) -> uuid.UUID | None:
     """Create a follow-up run for the team lead that delegated this sub-run, so
     it can react to the outcome (§7). Returns the new run's id for the caller to
@@ -344,6 +346,11 @@ async def _maybe_wake_parent(
         # an operator posting in a colleague's session. Never operator_role.
         if originating_operator is not None:
             context["originating_operator"] = originating_operator
+    # The Copilot woken by a research delegate is still in its research turn:
+    # it must not get its ordinary authority back to act on what a read-only
+    # delegate brought in (which may be injected content).
+    if chat_mode in (RESEARCH.key, RESEARCH_DELEGATE.key):
+        context["chat_mode"] = RESEARCH.key
     wake = await repo.create(
         tenant_id=tenant_id,
         agent_id=parent.assigned_agent_id,
@@ -903,6 +910,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         ),
                         door=(run.context or {}).get("door"),
                         followup=(run.context or {}).get("followup"),
+                        chat_mode=(run.context or {}).get("chat_mode"),
                         originating_operator=(run.context or {}).get("originating_operator"),
                     )
                     if wake_id is not None:
@@ -1035,6 +1043,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                                 ),
                                 door=(run.context or {}).get("door"),
                                 followup=(run.context or {}).get("followup"),
+                                chat_mode=(run.context or {}).get("chat_mode"),
                                 originating_operator=(run.context or {}).get(
                                     "originating_operator"
                                 ),
@@ -1120,6 +1129,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             ),
                             door=(run.context or {}).get("door"),
                             followup=(run.context or {}).get("followup"),
+                            chat_mode=(run.context or {}).get("chat_mode"),
                             originating_operator=(run.context or {}).get("originating_operator"),
                         )
                         if wake_id is not None:
