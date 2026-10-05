@@ -104,6 +104,7 @@ async def schedule_followup(
         responsibility_id=r.id,
         timezone=spec.timezone,
         ends_at=spec.ends_at,
+        followup_purpose=spec.purpose,
     )
     db.add(trigger)
     await db.flush()

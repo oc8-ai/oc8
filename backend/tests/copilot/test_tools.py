@@ -633,3 +633,55 @@ async def test_oversight_survives_delegation_and_wake_up(app_session: AppSession
         out = await _call(db, tenant, cop, task, wake, "responsibility_open", title="t", goal="g")
         assert out is not None and out.output.startswith("ERROR: only the person")
         assert (await db.execute(select(m.Responsibility))).scalars().all() == []
+
+
+async def test_schedule_research_followup_is_stored_and_carded(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.agent.assistant import get_or_create_assistant
+    from tests.copilot.helpers import copilot_seat
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        cop = await get_or_create_assistant(db, tenant_id=tenant)
+        lisa = await copilot_seat(db, tenant, "lisa@example.com")
+        task = await db.get(m.Task, lisa.task_id)
+        assert task is not None
+        run = await _chat_run(db, tenant, cop, lisa, door="web")
+        opened = await execute_copilot_tool(
+            db,
+            tenant_id=tenant,
+            agent=cop,
+            task=task,
+            run_id=run.id,
+            tc=ToolCall(
+                id="1", name="responsibility_open", arguments={"title": "Kunde X", "goal": "g"}
+            ),
+        )
+        assert opened is not None
+        r = (await db.execute(select(m.Responsibility))).scalar_one()
+        run_at = (dt.datetime.now(tz=dt.UTC) + dt.timedelta(hours=2)).isoformat()
+        out = await execute_copilot_tool(
+            db,
+            tenant_id=tenant,
+            agent=cop,
+            task=task,
+            run_id=run.id,
+            tc=ToolCall(
+                id="2",
+                name="schedule_followup",
+                arguments={
+                    "responsibility_id": str(r.id),
+                    "kind": "once",
+                    "run_at": run_at,
+                    "timezone": "Europe/Berlin",
+                    "prompt": "Neues zu Kunde X?",
+                    "purpose": "research",
+                },
+            ),
+        )
+        assert out is not None and not out.output.startswith("ERROR"), out
+        assert out.rendered_component is not None
+        assert out.rendered_component["props"]["purpose"] == "research"
+        t = (await db.execute(select(m.Trigger))).scalar_one()
+        assert t.followup_purpose == "research"

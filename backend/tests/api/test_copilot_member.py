@@ -187,6 +187,7 @@ async def test_end_schedule_disables_trigger(app_session: AppSessionFactory) -> 
         assert listed.status_code == 200, listed.text
         assert listed.json()[0]["id"] == str(trigger_id)
         assert listed.json()[0]["responsibilityTitle"] == "Watch the invoice"
+        assert listed.json()[0]["purpose"] == "check_in"
 
         foreign = await c.delete(
             f"/api/v1/copilot/followups/{trigger_id}", headers=_headers(tenant, "op2")

@@ -288,6 +288,7 @@ async def _dispatch(
         cron_expression=_text(args, "cron_expression"),
         ends_at=_text(args, "ends_at"),
         now=dt.datetime.now(tz=dt.UTC),
+        purpose=_text(args, "purpose"),
     )
     t = await schedule_followup(
         db,
@@ -313,6 +314,7 @@ async def _dispatch(
                 "when": when,
                 "timezone": t.timezone,
                 "endsAt": t.ends_at.isoformat() if t.ends_at else None,
+                "purpose": spec.purpose,
             },
         },
     )

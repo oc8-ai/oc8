@@ -896,7 +896,9 @@ SCHEDULE_FOLLOWUP = NeutralTool(
         "(ISO-8601 with UTC offset); kind 'cron' needs cron_expression AND ends_at. "
         "timezone (IANA, e.g. Europe/Berlin) is always required -- ask if you do not "
         "know it. Minimum spacing 15 minutes, at most one year out. Tell the person "
-        "what you scheduled."
+        "what you scheduled. purpose 'research' makes it a read-only research turn that "
+        "writes notes and reports only under the notify_rule; research needs at least "
+        "one hour between runs."
     ),
     parameters={
         "type": "object",
@@ -908,6 +910,7 @@ SCHEDULE_FOLLOWUP = NeutralTool(
             "timezone": {"type": "string"},
             "ends_at": {"type": "string"},
             "prompt": {"type": "string", "description": "What to do when it fires."},
+            "purpose": {"type": "string", "enum": ["check_in", "research"]},
         },
         "required": ["responsibility_id", "kind", "timezone", "prompt"],
     },

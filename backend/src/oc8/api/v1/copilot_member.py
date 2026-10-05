@@ -197,6 +197,7 @@ async def list_followups(db: DbSession, actor: Actor) -> list[FollowupDTO]:
             ends_at=t.ends_at,
             enabled=t.enabled,
             last_skip_reason=t.last_skip_reason,
+            purpose=t.followup_purpose or "check_in",
         )
         for t in triggers
     ]

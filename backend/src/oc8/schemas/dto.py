@@ -1618,6 +1618,7 @@ class FollowupDTO(CamelModel):
     ends_at: datetime | None = None
     enabled: bool
     last_skip_reason: str | None = None
+    purpose: str = "check_in"
 
 
 class CopilotNoteDTO(CamelModel):

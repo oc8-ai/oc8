@@ -273,6 +273,7 @@ EXEMPT: dict[str, str] = {
     "tool_invocation.tool": "already a one-way hash or part of a uniqueness constraint, not raw content, design spec §6c",
     "tool_invocation.args_hash": "already a one-way hash or part of a uniqueness constraint, not raw content, design spec §6c",
     "tool_invocation.result": "content column to encrypt as-is, not yet migrated, design spec §6a",
+    "trigger.followup_purpose": "structural enum-like column (check_in/research), not content, design spec §6c",
     "trigger.kind": "structural enum-like column (status/state/kind/classification/...), CHECK-constrained, not content, design spec §6c",
     "trigger.last_skip_reason": "structural enum-like column (status/state/kind/classification/...), not content, design spec §6c",
     "trigger.task_text": "content column to encrypt as-is, not yet migrated, design spec §6a",
