@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.chat.modes import mode_directive, parse_command
 from oc8.copilot.redaction import is_secret_request, redact_text
+from oc8.copilot.responsibilities import close_responsibility
 from oc8.runtime.intake import enqueue_run
 from oc8.storage import s3
 
@@ -113,6 +114,32 @@ async def delete_session(db: AsyncSession, *, tenant_id: uuid.UUID, session: m.C
     blob is recoverable later from the bucket; a chat that refuses to delete
     is not.
     """
+    # A deleted conversation can no longer receive the responsibilities opened
+    # in it: close them (which also disables their follow-ups) in this same
+    # transaction, so no follow-up fires into a session that is gone.
+    member = await db.get(m.OrgMember, session.member_id)
+    open_responsibilities = list(
+        (
+            await db.execute(
+                select(m.Responsibility).where(
+                    m.Responsibility.tenant_id == tenant_id,
+                    m.Responsibility.chat_session_id == session.id,
+                    m.Responsibility.state.in_(("active", "waiting", "paused")),
+                )
+            )
+        ).scalars()
+    )
+    for responsibility in open_responsibilities:
+        await close_responsibility(
+            db,
+            tenant_id=tenant_id,
+            member_id=responsibility.member_id,
+            responsibility_id=responsibility.id,
+            state="cancelled",
+            reason="conversation deleted",
+            actor_agent_id=None,
+            member_subject=member.subject if member is not None else "",
+        )
     message_ids = list(
         (
             await db.execute(
