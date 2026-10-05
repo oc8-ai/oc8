@@ -757,6 +757,26 @@ export function useUpdateOrganizationSettings() {
   });
 }
 
+export interface CopilotSettingsDTO {
+  maxActiveFollowups: number;
+}
+
+export function useCopilotSettings() {
+  return useQuery({
+    queryKey: ["settings", "copilot"],
+    queryFn: () => api.get<CopilotSettingsDTO>("/settings/copilot"),
+  });
+}
+
+export function useUpdateCopilotSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: CopilotSettingsDTO) =>
+      api.put<CopilotSettingsDTO>("/settings/copilot", body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["settings", "copilot"] }),
+  });
+}
+
 export const useModels = () =>
   useQuery({ queryKey: keys.models, queryFn: () => api.get<ModelDTO[]>("/models") });
 

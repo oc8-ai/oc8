@@ -1,12 +1,22 @@
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { MailServerSetting } from "@/routes/settings";
+import { CopilotSettingsPanel, MailServerSetting } from "@/routes/settings";
+vi.mock("@/lib/governance-hooks", () => ({ useMay: () => () => true }));
 import type { CredentialDTO, OrganizationSettingsDTO } from "@/lib/hooks";
 
 // vi.hoisted: `vi.mock` factories are hoisted above ordinary `const`s by
 // vitest -- see the identical pattern in profile.test.tsx/backup-panel.test.tsx.
-const { getOrgMock, putOrgMock, getCredentialsMock, testCredentialMock } = vi.hoisted(() => ({
+const {
+  getOrgMock,
+  putOrgMock,
+  getCredentialsMock,
+  testCredentialMock,
+  getCopilotMock,
+  putCopilotMock,
+} = vi.hoisted(() => ({
+  getCopilotMock: vi.fn(),
+  putCopilotMock: vi.fn(),
   getOrgMock: vi.fn(),
   putOrgMock: vi.fn(),
   getCredentialsMock: vi.fn(),
@@ -17,6 +27,7 @@ vi.mock("@/lib/api", () => ({
   api: {
     get: (path: string) => {
       if (path === "/settings/organization") return getOrgMock();
+      if (path === "/settings/copilot") return getCopilotMock();
       if (path.startsWith("/credentials?type=")) return getCredentialsMock();
       // <CredentialPicker>'s own useCredentialTypes() call -- unused by these
       // tests (none of them open its inline "Create new" form), but it must
@@ -31,6 +42,7 @@ vi.mock("@/lib/api", () => ({
     },
     put: (path: string, body: unknown) => {
       if (path === "/settings/organization") return putOrgMock(body);
+      if (path === "/settings/copilot") return putCopilotMock(body);
       return Promise.reject(new Error(`unexpected PUT ${path}`));
     },
   },
@@ -198,5 +210,23 @@ describe("MailServerSetting", () => {
         expect.objectContaining({ description: "connection refused" }),
       ),
     );
+  });
+});
+
+describe("CopilotSettingsPanel", () => {
+  it("shows the cap and PUTs a new one", async () => {
+    getCopilotMock.mockResolvedValue({ maxActiveFollowups: 20 });
+    putCopilotMock.mockResolvedValue({ maxActiveFollowups: 7 });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <CopilotSettingsPanel />
+      </QueryClientProvider>,
+    );
+    const input = await screen.findByLabelText(/max\. active follow-ups per person/i);
+    await waitFor(() => expect(input).toHaveValue(20));
+    fireEvent.change(input, { target: { value: "7" } });
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+    await waitFor(() => expect(putCopilotMock).toHaveBeenCalledWith({ maxActiveFollowups: 7 }));
   });
 });

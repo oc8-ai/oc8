@@ -8,10 +8,16 @@ from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.agent.assistant import get_or_create_assistant
-from oc8.copilot.followups import cancel_followup, catch_up, fire_followup, schedule_followup
+from oc8.copilot.followups import (
+    cancel_followup,
+    catch_up,
+    fire_followup,
+    max_active_followups,
+    schedule_followup,
+)
 from oc8.copilot.profile import pause, resume
 from oc8.copilot.responsibilities import close_responsibility, open_responsibility
-from oc8.copilot.schedule import FollowupRejected, FollowupSpec
+from oc8.copilot.schedule import MAX_ACTIVE_FOLLOWUPS, FollowupRejected, FollowupSpec
 from tests.conftest import AppSessionFactory
 from tests.copilot.helpers import copilot_seat, once_in_an_hour
 
@@ -691,3 +697,69 @@ async def test_quiet_followup_leaves_no_prompt_but_reporting_and_failed_keep_it(
     assert outcomes["quiet"] == []
     assert sorted(outcomes["reporting"]) == ["assistant", "followup"]
     assert sorted(outcomes["failed"]) == ["assistant", "followup"]
+
+
+async def test_the_tenant_cap_is_enforced(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        db.add(
+            m.Organization(
+                id=tenant,
+                slug=f"t{tenant.hex[:6]}",
+                name="T",
+                tier="standard",
+                region="eu",
+                settings={"copilot_max_active_followups": 2},
+            )
+        )
+        assistant = await get_or_create_assistant(db, tenant_id=tenant)
+        seat = await copilot_seat(db, tenant, "lisa@example.com")
+        assert await max_active_followups(db, tenant_id=tenant) == 2
+        for i in range(3):
+            r = await open_responsibility(
+                db,
+                tenant_id=tenant,
+                member_id=seat.member_id,
+                chat_session_id=seat.session_id,
+                title=f"R{i}",
+                goal="Keep it on track",
+                origin_channel=None,
+                run_id=None,
+                actor_agent_id=assistant.id,
+                member_subject=seat.subject,
+            )
+            call = schedule_followup(
+                db,
+                tenant_id=tenant,
+                member_id=seat.member_id,
+                responsibility_id=r.id,
+                assistant_id=assistant.id,
+                spec=SPEC,
+                prompt="check",
+                member_subject=seat.subject,
+            )
+            if i < 2:
+                await call
+            else:
+                with pytest.raises(FollowupRejected, match="2 active"):
+                    await call
+
+
+async def test_an_invalid_stored_cap_falls_back_to_the_default(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        assert await max_active_followups(db, tenant_id=tenant) == MAX_ACTIVE_FOLLOWUPS
+        db.add(
+            m.Organization(
+                id=tenant,
+                slug=f"t{tenant.hex[:6]}",
+                name="T",
+                tier="standard",
+                region="eu",
+                settings={"copilot_max_active_followups": 500},
+            )
+        )
+        await db.flush()
+        assert await max_active_followups(db, tenant_id=tenant) == MAX_ACTIVE_FOLLOWUPS

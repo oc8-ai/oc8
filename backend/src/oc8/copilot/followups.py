@@ -31,6 +31,17 @@ from oc8.runtime.states import RunState
 logger = logging.getLogger(__name__)
 
 
+async def max_active_followups(db: AsyncSession, *, tenant_id: uuid.UUID) -> int:
+    """The tenant's per-member cap on active follow-ups: the admin-set
+    `organization.settings["copilot_max_active_followups"]` (1..100), else the
+    default. A missing org row or an invalid stored value reads as the default."""
+    org = await db.get(m.Organization, tenant_id)
+    stored = org.settings.get("copilot_max_active_followups") if org is not None else None
+    if isinstance(stored, int) and not isinstance(stored, bool) and 1 <= stored <= 100:
+        return stored
+    return MAX_ACTIVE_FOLLOWUPS
+
+
 async def _active_count(db: AsyncSession, *, tenant_id: uuid.UUID, member_id: uuid.UUID) -> int:
     owned = select(m.Responsibility.id).where(
         m.Responsibility.tenant_id == tenant_id, m.Responsibility.member_id == member_id
@@ -76,10 +87,9 @@ async def schedule_followup(
         raise FollowupRejected(
             "follow-ups need an assigned role with Copilot access -- ask an administrator"
         )
-    if await _active_count(db, tenant_id=tenant_id, member_id=member_id) >= MAX_ACTIVE_FOLLOWUPS:
-        raise FollowupRejected(
-            f"you already have {MAX_ACTIVE_FOLLOWUPS} active follow-ups -- end one first"
-        )
+    cap = await max_active_followups(db, tenant_id=tenant_id)
+    if await _active_count(db, tenant_id=tenant_id, member_id=member_id) >= cap:
+        raise FollowupRejected(f"you already have {cap} active follow-ups -- end one first")
     now = dt.datetime.now(tz=dt.UTC)
     trigger = m.Trigger(
         tenant_id=tenant_id,

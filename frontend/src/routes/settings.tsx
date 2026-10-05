@@ -16,14 +16,17 @@ import { Panel } from "@/components/app-shell";
 import { BackupPanel } from "@/components/backup-panel";
 import { CredentialPicker } from "@/components/credential-picker";
 import { OnboardingWizard } from "@/components/onboarding/onboarding-wizard";
+import { useMay } from "@/lib/governance-hooks";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import {
+  useCopilotSettings,
   useCredentials,
   useMcpConnections,
   useModels,
   useOrganizationSettings,
   useTestCredential,
+  useUpdateCopilotSettings,
   useUpdateOrganizationSettings,
   type CredentialDTO,
 } from "@/lib/hooks";
@@ -41,6 +44,7 @@ function SettingsPage() {
         <PilotSetup onOpenWizard={() => setSetupOpen(true)} />
         <OrganizationPanel />
         <MailServerSetting />
+        <CopilotSettingsPanel />
         <BackupPanel />
       </div>
       {setupOpen && (
@@ -395,6 +399,80 @@ export function MailServerSetting() {
           </ul>
         )}
       </div>
+    </Panel>
+  );
+}
+
+// ---------- Copilot (per-person follow-up cap) ----------
+const MIN_FOLLOWUPS = 1;
+const MAX_FOLLOWUPS = 100;
+
+export function CopilotSettingsPanel() {
+  const t = useT();
+  const may = useMay();
+  const { data } = useCopilotSettings();
+  const update = useUpdateCopilotSettings();
+  const [draft, setDraft] = useState("");
+  useEffect(() => {
+    if (data) setDraft(String(data.maxActiveFollowups));
+  }, [data]);
+
+  const value = Number(draft);
+  const valid = Number.isInteger(value) && value >= MIN_FOLLOWUPS && value <= MAX_FOLLOWUPS;
+  const canManage = may("settings:manage");
+
+  const save = async () => {
+    try {
+      await update.mutateAsync({ maxActiveFollowups: value });
+      toast.success(t("Copilot settings updated", "Copilot-Einstellungen aktualisiert"));
+    } catch (err) {
+      toast.error(
+        err instanceof Error
+          ? err.message
+          : t(
+              "Could not update the Copilot settings.",
+              "Copilot-Einstellungen konnten nicht aktualisiert werden.",
+            ),
+      );
+    }
+  };
+
+  return (
+    <Panel id="copilot" className="p-5">
+      <h3 className="font-serif text-lg">Copilot</h3>
+      <label className="mt-3 block text-xs text-muted-foreground">
+        {t("Max. active follow-ups per person", "Max. aktive Wiedervorlagen pro Person")}
+        <input
+          type="number"
+          min={MIN_FOLLOWUPS}
+          max={MAX_FOLLOWUPS}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          disabled={!canManage}
+          className="mt-1 block w-24 rounded-md border border-border bg-background/40 px-2 py-1 text-sm text-foreground"
+        />
+      </label>
+      <p className="mt-1 text-[11px] text-muted-foreground">
+        {t(
+          "Between 1 and 100. Lowering it keeps existing follow-ups but blocks new ones above the limit.",
+          "Zwischen 1 und 100. Ein niedrigerer Wert behält bestehende Wiedervorlagen, blockiert aber neue über dem Limit.",
+        )}
+      </p>
+      {canManage && (
+        <button
+          type="button"
+          onClick={save}
+          disabled={!valid || update.isPending || value === data?.maxActiveFollowups}
+          className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-40"
+        >
+          {update.isPending ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <Save className="h-3 w-3" />
+          )}
+          {t("Save", "Speichern")}
+        </button>
+      )}
     </Panel>
   );
 }

@@ -4060,3 +4060,15 @@ msgstr "Übersprungen: Chat-Sitzung fehlt"
 
 msgid "The schedule has ended"
 msgstr "Der Zeitplan ist beendet"
+
+msgid "Max. active follow-ups per person"
+msgstr "Max. aktive Wiedervorlagen pro Person"
+
+msgid "Between 1 and 100. Lowering it keeps existing follow-ups but blocks new ones above the limit."
+msgstr "Zwischen 1 und 100. Ein niedrigerer Wert behält bestehende Wiedervorlagen, blockiert aber neue über dem Limit."
+
+msgid "Copilot settings updated"
+msgstr "Copilot-Einstellungen aktualisiert"
+
+msgid "Could not update the Copilot settings."
+msgstr "Copilot-Einstellungen konnten nicht aktualisiert werden."
