@@ -763,3 +763,63 @@ async def test_an_invalid_stored_cap_falls_back_to_the_default(
         )
         await db.flush()
         assert await max_active_followups(db, tenant_id=tenant) == MAX_ACTIVE_FOLLOWUPS
+
+
+async def _fire_with_purpose(
+    app_session: AppSessionFactory, purpose: str | None
+) -> dict[str, object]:
+    tenant, _member_id, _session_id, _r_id, t_id = await _world(app_session)
+    async with app_session(tenant) as db:
+        trigger = await db.get(m.Trigger, t_id)
+        assert trigger is not None
+        trigger.followup_purpose = purpose
+        await db.flush()
+        assert await fire_followup(db, trigger, tenant_id=tenant) == "fired"
+    async with app_session(tenant) as db:
+        run = (await db.execute(select(m.AgentRun).where(m.AgentRun.source == "chat"))).scalar_one()
+        return dict(run.context)
+
+
+async def test_research_followup_fires_in_research_mode(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    ctx = await _fire_with_purpose(app_session, "research")
+    assert ctx["chat_mode"] == "research"
+    assert "[Mode: research]" in str(ctx["task"])
+    assert ctx["door"] == "followup"
+    assert isinstance(ctx["followup"], dict) and ctx["followup"]["turn_id"]
+
+
+async def test_check_in_followup_fires_without_a_mode(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    for purpose in (None, "check_in"):
+        ctx = await _fire_with_purpose(app_session, purpose)
+        assert "chat_mode" not in ctx
+
+
+async def test_unknown_purpose_fails_closed_to_research(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    ctx = await _fire_with_purpose(app_session, "act_freely")
+    assert ctx["chat_mode"] == "research"
+
+
+async def test_extra_context_cannot_set_chat_mode(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    from oc8.chat.service import send_message
+
+    tenant, _member_id, session_id, _r_id, _t_id = await _world(app_session)
+    async with app_session(tenant) as db:
+        session = await db.get(m.ChatSession, session_id)
+        assert session is not None
+        _msg, run = await send_message(
+            db,
+            session=session,
+            tenant_id=tenant,
+            message="hello",
+            originating_operator="lisa@example.com",
+            extra_context={"chat_mode": "research"},
+        )
+        assert run is not None and "chat_mode" not in (run.context or {})
