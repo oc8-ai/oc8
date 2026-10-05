@@ -658,6 +658,17 @@ async def _call_tool(
         )
 
     if name == ASK_USER.name:
+        # The mode first, before anything can park the run: a read-only mode
+        # withholds ask_user from tools/list, so a call arriving here means a
+        # harness cached an older list -- refused like the core tools below.
+        mode_denial = mode_refusal(
+            mode_from_context(run.context),
+            name,
+            tool_scopes=None,
+            is_tenant_assistant=agent.is_tenant_assistant,
+        )
+        if mode_denial is not None:
+            return _tool_result(f"ERROR: {mode_denial}", is_error=True)
         question = str(arguments.get("question", "")).strip()
         if not question:
             return _tool_result("ERROR: ask_user requires a non-empty question", is_error=True)
