@@ -183,13 +183,61 @@ async def test_an_existing_assistant_keeps_its_model_when_nothing_is_configured(
 async def test_existing_assistant_gets_the_current_mission(
     app_session: AppSessionFactory,
 ) -> None:
-    from oc8.agent.assistant import _MISSION
+    from oc8.agent.assistant import _LEGACY_MISSIONS, _MISSION
 
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent = await get_or_create_assistant(db, tenant_id=tenant)
-        agent.mission = "old mission"
+        # A pre-provenance Assistant: legacy text, no stored sha.
+        agent.mission = _LEGACY_MISSIONS[0]
+        agent.definition = {}
         await db.flush()
         again = await get_or_create_assistant(db, tenant_id=tenant)
         assert again.mission == _MISSION
         assert "responsibility_open" in _MISSION and "schedule_followup" in _MISSION
+
+
+async def test_a_manual_mission_edit_survives_later_calls(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent = await get_or_create_assistant(db, tenant_id=tenant)
+        agent.mission = "Custom admin mission"
+        await db.flush()
+        again = await get_or_create_assistant(db, tenant_id=tenant)
+        assert again.mission == "Custom admin mission"
+
+
+async def test_an_unedited_mission_follows_a_new_shipped_text(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8.agent import assistant as mod
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent = await get_or_create_assistant(db, tenant_id=tenant)
+        version_before = agent.current_version_id
+        monkeypatch.setattr(mod, "_MISSION", "A newer shipped mission")
+        again = await get_or_create_assistant(db, tenant_id=tenant)
+        assert again.mission == "A newer shipped mission"
+        assert again.current_version_id != version_before
+        # Now an admin edit is kept even though the shipped text moves again.
+        again.mission = "Admin text"
+        await db.flush()
+        monkeypatch.setattr(mod, "_MISSION", "An even newer mission")
+        kept = await get_or_create_assistant(db, tenant_id=tenant)
+        assert kept.mission == "Admin text"
+
+
+async def test_the_mission_sha_does_not_make_the_draft_dirty(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.agents.versioning import draft_status
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent = await get_or_create_assistant(db, tenant_id=tenant)
+        assert "builtin_mission_sha" in (agent.definition or {})
+        again = await get_or_create_assistant(db, tenant_id=tenant)
+        assert not (await draft_status(db, again)).dirty
