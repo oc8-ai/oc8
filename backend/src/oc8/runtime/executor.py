@@ -6,6 +6,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import uuid
+from collections.abc import Mapping
 from typing import Any, NamedTuple
 
 from sqlalchemy import select
@@ -13,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agents.versioning import resolve_version
-from oc8.chat.modes import RESEARCH, RESEARCH_DELEGATE
+from oc8.chat.modes import RESEARCH, RESEARCH_DELEGATE, mode_directive
 from oc8.db.session import tenant_session
 from oc8.observability import get_tracer, record_run_outcome
 from oc8.realtime.emit import publish_agent_status, record_activity
@@ -249,13 +250,7 @@ async def _maybe_wake_parent(
     output: str,
     succeeded: bool,
     mcp_conn: m.McpConnection | None,
-    chat_session_id: str | None = None,
-    chat_channel: str | None = None,
-    chat_channel_external_id: str | None = None,
-    door: str | None = None,
-    followup: dict[str, Any] | None = None,
-    originating_operator: str | None = None,
-    chat_mode: str | None = None,
+    run_context: Mapping[str, Any] | None,
 ) -> uuid.UUID | None:
     """Create a follow-up run for the team lead that delegated this sub-run, so
     it can react to the outcome (§7). Returns the new run's id for the caller to
@@ -268,7 +263,20 @@ async def _maybe_wake_parent(
     raising, never via status="failed"). A failed sub-task wakes the lead with
     the failure text, so the lead's model decides whether to re-delegate -- that
     is spec §7 reassignment, with no dedicated mechanism.
+
+    `run_context` is the finishing sub-run's whole context, passed once and
+    required: every field the wake-up carries forward (the chat origin, the
+    Copilot's follow-up door, the oversight operator, the research mode) is
+    read from it HERE, so no call site can forget one of them.
     """
+    ctx: Mapping[str, Any] = run_context or {}
+    chat_session_id = ctx.get("chat_session_id")
+    chat_channel = ctx.get("chat_channel")
+    chat_channel_external_id = ctx.get("chat_channel_external_id")
+    door = ctx.get("door")
+    followup = ctx.get("followup")
+    originating_operator = ctx.get("originating_operator")
+    chat_mode = ctx.get("chat_mode")
     if parent_task_id is None:
         return None
     parent = await db.get(m.Task, parent_task_id)
@@ -348,9 +356,11 @@ async def _maybe_wake_parent(
             context["originating_operator"] = originating_operator
     # The Copilot woken by a research delegate is still in its research turn:
     # it must not get its ordinary authority back to act on what a read-only
-    # delegate brought in (which may be injected content).
+    # delegate brought in (which may be injected content). Told so as well as
+    # enforced, the same way the follow-up's own turn was.
     if chat_mode in (RESEARCH.key, RESEARCH_DELEGATE.key):
         context["chat_mode"] = RESEARCH.key
+        context["task"] = f"{context['task']}\n\n{mode_directive(RESEARCH)}"
     wake = await repo.create(
         tenant_id=tenant_id,
         agent_id=parent.assigned_agent_id,
@@ -903,15 +913,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         output=run_error,
                         succeeded=False,
                         mcp_conn=mcp_conn,
-                        chat_session_id=(run.context or {}).get("chat_session_id"),
-                        chat_channel=(run.context or {}).get("chat_channel"),
-                        chat_channel_external_id=(run.context or {}).get(
-                            "chat_channel_external_id"
-                        ),
-                        door=(run.context or {}).get("door"),
-                        followup=(run.context or {}).get("followup"),
-                        chat_mode=(run.context or {}).get("chat_mode"),
-                        originating_operator=(run.context or {}).get("originating_operator"),
+                        run_context=run.context,
                     )
                     if wake_id is not None:
                         pending_runs.append(wake_id)
@@ -1036,17 +1038,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                                 output=run_error,
                                 succeeded=False,
                                 mcp_conn=mcp_conn,
-                                chat_session_id=(run.context or {}).get("chat_session_id"),
-                                chat_channel=(run.context or {}).get("chat_channel"),
-                                chat_channel_external_id=(run.context or {}).get(
-                                    "chat_channel_external_id"
-                                ),
-                                door=(run.context or {}).get("door"),
-                                followup=(run.context or {}).get("followup"),
-                                chat_mode=(run.context or {}).get("chat_mode"),
-                                originating_operator=(run.context or {}).get(
-                                    "originating_operator"
-                                ),
+                                run_context=run.context,
                             )
                             if wake_id is not None:
                                 pending_runs.append(wake_id)
@@ -1122,15 +1114,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             output=result.output,
                             succeeded=new_state is RunState.DONE,
                             mcp_conn=mcp_conn,
-                            chat_session_id=(run.context or {}).get("chat_session_id"),
-                            chat_channel=(run.context or {}).get("chat_channel"),
-                            chat_channel_external_id=(run.context or {}).get(
-                                "chat_channel_external_id"
-                            ),
-                            door=(run.context or {}).get("door"),
-                            followup=(run.context or {}).get("followup"),
-                            chat_mode=(run.context or {}).get("chat_mode"),
-                            originating_operator=(run.context or {}).get("originating_operator"),
+                            run_context=run.context,
                         )
                         if wake_id is not None:
                             pending_runs.append(wake_id)
