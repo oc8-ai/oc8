@@ -25,6 +25,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import uuid
+from typing import Literal
 
 from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.chat.modes import mode_directive, parse_command
 from oc8.copilot.redaction import is_secret_request, redact_text
+from oc8.copilot.responsibilities import close_responsibility
 from oc8.runtime.intake import enqueue_run
 from oc8.storage import s3
 
@@ -112,6 +114,32 @@ async def delete_session(db: AsyncSession, *, tenant_id: uuid.UUID, session: m.C
     blob is recoverable later from the bucket; a chat that refuses to delete
     is not.
     """
+    # A deleted conversation can no longer receive the responsibilities opened
+    # in it: close them (which also disables their follow-ups) in this same
+    # transaction, so no follow-up fires into a session that is gone.
+    member = await db.get(m.OrgMember, session.member_id)
+    open_responsibilities = list(
+        (
+            await db.execute(
+                select(m.Responsibility).where(
+                    m.Responsibility.tenant_id == tenant_id,
+                    m.Responsibility.chat_session_id == session.id,
+                    m.Responsibility.state.in_(("active", "waiting", "paused")),
+                )
+            )
+        ).scalars()
+    )
+    for responsibility in open_responsibilities:
+        await close_responsibility(
+            db,
+            tenant_id=tenant_id,
+            member_id=responsibility.member_id,
+            responsibility_id=responsibility.id,
+            state="cancelled",
+            reason="conversation deleted",
+            actor_agent_id=None,
+            member_subject=member.subject if member is not None else "",
+        )
     message_ids = list(
         (
             await db.execute(
@@ -162,7 +190,15 @@ async def list_messages(
     return list((await db.execute(stmt)).scalars())
 
 
-def _build_task_text(history: list[m.ChatMessage], new_message: str) -> str:
+def _speaker(role: str) -> str:
+    if role == "user":
+        return "User"
+    if role == "followup":
+        return "Follow-up (scheduled by you, not typed by the user)"
+    return "You (assistant)"
+
+
+def _build_task_text(history: list[m.ChatMessage], new_message: str, new_role: str = "user") -> str:
     """The run's `task` text: the whole visible conversation, plain-labelled,
     ending in the new turn. `run_agent`/`internal_agent.py` know nothing of
     "chat" -- from their side this is just one more task instruction, so any
@@ -170,9 +206,8 @@ def _build_task_text(history: list[m.ChatMessage], new_message: str) -> str:
     on native multi-turn state that does not exist on that path."""
     lines = []
     for msg in history[-_TRANSCRIPT_TURNS:]:
-        speaker = "User" if msg.role == "user" else "You (assistant)"
-        lines.append(f"{speaker}: {msg.content}")
-    lines.append(f"User: {new_message}")
+        lines.append(f"{_speaker(msg.role)}: {msg.content}")
+    lines.append(f"{_speaker(new_role)}: {new_message}")
     return "\n".join(lines)
 
 
@@ -234,6 +269,8 @@ async def send_message(
     operator_role: str | None = None,
     chat_channel: str | None = None,
     chat_channel_external_id: str | None = None,
+    role: Literal["user", "followup"] = "user",
+    extra_context: dict[str, object] | None = None,
 ) -> tuple[m.ChatMessage, m.AgentRun | None]:
     """Record the user's turn and enqueue the run that answers it.
 
@@ -284,12 +321,16 @@ async def send_message(
     # actually said -- an unknown command, a path, or a bare "/ask" comes back
     # unchanged with no mode, so a message that legitimately starts with a
     # slash is still sendable.
-    mode, body = parse_command(message)
+    if role == "followup":
+        # A follow-up's text is ours, not a member's command.
+        mode, body = None, message
+    else:
+        mode, body = parse_command(message)
     resolved_refs = await _resolve_context_refs(db, tenant_id=tenant_id, refs=context_refs)
     user_message = m.ChatMessage(
         tenant_id=tenant_id,
         session_id=session.id,
-        role="user",
+        role=role,
         content=body,
         mode=mode.key if mode is not None else None,
         context_refs=resolved_refs,
@@ -361,7 +402,7 @@ async def send_message(
         )
         return user_message, None
 
-    task_text = _build_task_text(history, body)
+    task_text = _build_task_text(history, body, new_role=role)
     if resolved_refs:
         # Quoted and attributed, never inlined as an instruction: the operator
         # is pointing at a source, and the agent already has `search_knowledge`
@@ -407,6 +448,26 @@ async def send_message(
     if chat_channel is not None and chat_channel_external_id is not None:
         context["chat_channel"] = chat_channel
         context["chat_channel_external_id"] = chat_channel_external_id
+    # Which door this turn came through (design §7a.6). Read back by
+    # `oc8.copilot.door` to decide whether `ask_user` may be offered.
+    if role == "followup":
+        context["door"] = "followup"
+    elif chat_channel is not None and chat_channel_external_id is not None:
+        context["door"] = "telegram"
+    else:
+        context["door"] = "web"
+    if extra_context:
+        # Never lets a caller overwrite who is acting or where the turn goes.
+        reserved = {
+            "originating_operator",
+            "operator_role",
+            "door",
+            "chat_channel",
+            "chat_channel_external_id",
+            "chat_session_id",
+            "task",
+        }
+        context.update({k: v for k, v in extra_context.items() if k not in reserved})
     if mode is not None:
         # Two consumers, deliberately: the model is TOLD (the directive below)
         # and the PEP ENFORCES (engine._authorize reads this key back through
@@ -460,6 +521,14 @@ async def send_message(
     await db.execute(
         text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": str(tenant_id)}
     )
+    if role == "followup":
+        # Linked so a quiet outcome can take its own prompt back out of the
+        # transcript (record_assistant_reply). A user turn's run_id stays NULL.
+        user_message.run_id = run.id
+        await db.commit()
+        await db.execute(
+            text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": str(tenant_id)}
+        )
     return user_message, run
 
 
@@ -483,6 +552,25 @@ async def record_assistant_reply(db: AsyncSession, *, run: m.AgentRun, output: s
     # session linked rather than staying task-less for ever.
     if session.task_id is None and run.task_id is not None:
         session.task_id = run.task_id
+    followup = (run.context or {}).get("followup")
+    if isinstance(followup, dict):
+        from oc8.copilot.followups import is_quiet_followup, load_responsibility_for_run
+
+        resp = await load_responsibility_for_run(db, run=run)
+        if is_quiet_followup(run, resp):
+            # Nothing to report under notify_rule (§7a.3): the turn did its
+            # work silently. last_update_at was already touched by the tool.
+            # Its prompt goes too, or every quiet check would pile up an
+            # unanswered "Follow-up for ..." line in the history.
+            await db.execute(
+                delete(m.ChatMessage).where(
+                    m.ChatMessage.session_id == session.id,
+                    m.ChatMessage.role == "followup",
+                    m.ChatMessage.run_id == run.id,
+                )
+            )
+            session.last_message_at = session.last_message_at or dt.datetime.now(tz=dt.UTC)
+            return
     rendered_components = (run.context or {}).get("rendered_components", [])
     db.add(
         m.ChatMessage(

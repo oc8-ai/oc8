@@ -15,6 +15,11 @@ export const liveQueryKeys: readonly unknown[][] = [
   ["runs"],
   ["supervision-interventions"],
   ["departments"],
+  ["copilot", "profile"],
+  ["copilot", "responsibilities"],
+  ["copilot", "followups"],
+  ["copilot", "delegations"],
+  ["copilot", "notes"],
 ];
 
 export interface McpTestLogLine {
@@ -43,6 +48,14 @@ const patchers: Record<string, Patcher> = {
     // The list a state filter selects from -- a run that just parked or just
     // finished belongs in a different bucket than a moment ago.
     qc.invalidateQueries({ queryKey: ["runs"] });
+    // The copilot's status (activeCount, status field) follows runs live on every state change.
+    qc.invalidateQueries({ queryKey: ["copilot", "profile"] });
+    qc.invalidateQueries({ queryKey: ["copilot", "delegations"] });
+    // A dot tool's own copilot.* event is published before its run commits, so
+    // the refetch it triggers can miss the change; the run's next status
+    // event lands after the commit and keeps the work panel current.
+    qc.invalidateQueries({ queryKey: ["copilot", "responsibilities"] });
+    qc.invalidateQueries({ queryKey: ["copilot", "followups"] });
     // terminal states free the agent -> reflect in the agents list (mirrors the
     // old useRun poll's terminal-state agents invalidation)
     if (d.state === "done" || d.state === "failed" || d.state === "interrupted") {
@@ -215,6 +228,12 @@ const patchers: Record<string, Patcher> = {
       { step, message },
     ]);
   },
+  "copilot.profile": (qc) => qc.invalidateQueries({ queryKey: ["copilot", "profile"] }),
+  "copilot.responsibility": (qc) => {
+    qc.invalidateQueries({ queryKey: ["copilot", "responsibilities"] });
+    qc.invalidateQueries({ queryKey: ["copilot", "profile"] });
+  },
+  "copilot.followup": (qc) => qc.invalidateQueries({ queryKey: ["copilot", "followups"] }),
 };
 
 // backend agent.status -> mock UI AgentStatus (running|warning|error|paused|waiting_for_task)

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import uuid
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oc8 import models as m
 from oc8.agent.harness.stages.c_ledger import mark_decision_answered
 from oc8.agent.harness.state import CONTEXT_KEY, HarnessState
 from oc8.models.run import AgentRun, Clarification
@@ -88,5 +91,10 @@ async def resolve_clarification(db: AsyncSession, *, run: AgentRun, answer: str)
     new_ctx = {**run.context, "clarifications": entries}
     new_ctx.pop("pending_question", None)
     run.context = new_ctx
+    followup = (run.context or {}).get("followup")
+    if run.source == "chat" and isinstance(followup, dict) and followup.get("responsibility_id"):
+        resp = await db.get(m.Responsibility, uuid.UUID(str(followup["responsibility_id"])))
+        if resp is not None and resp.state == "waiting":
+            resp.state = "active"
     await RunRepository(db).transition(run, RunState.QUEUED)
     await db.flush()

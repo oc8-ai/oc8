@@ -29,6 +29,7 @@ import { Route as FlowsRouteImport } from './routes/flows'
 import { Route as DepartmentsRouteImport } from './routes/departments'
 import { Route as CredentialsRouteImport } from './routes/credentials'
 import { Route as CostsRouteImport } from './routes/costs'
+import { Route as CopilotRouteImport } from './routes/copilot'
 import { Route as ConfirmEmailRouteImport } from './routes/confirm-email'
 import { Route as CapasRouteImport } from './routes/capas'
 import { Route as AuditRouteImport } from './routes/audit'
@@ -144,6 +145,11 @@ const CostsRoute = CostsRouteImport.update({
   path: '/costs',
   getParentRoute: () => rootRouteImport,
 } as any)
+const CopilotRoute = CopilotRouteImport.update({
+  id: '/copilot',
+  path: '/copilot',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ConfirmEmailRoute = ConfirmEmailRouteImport.update({
   id: '/confirm-email',
   path: '/confirm-email',
@@ -224,6 +230,7 @@ export interface FileRoutesByFullPath {
   '/audit': typeof AuditRoute
   '/capas': typeof CapasRoute
   '/confirm-email': typeof ConfirmEmailRoute
+  '/copilot': typeof CopilotRoute
   '/costs': typeof CostsRoute
   '/credentials': typeof CredentialsRoute
   '/departments': typeof DepartmentsRouteWithChildren
@@ -259,6 +266,7 @@ export interface FileRoutesByTo {
   '/audit': typeof AuditRoute
   '/capas': typeof CapasRoute
   '/confirm-email': typeof ConfirmEmailRoute
+  '/copilot': typeof CopilotRoute
   '/costs': typeof CostsRoute
   '/credentials': typeof CredentialsRoute
   '/flows': typeof FlowsRoute
@@ -294,6 +302,7 @@ export interface FileRoutesById {
   '/audit': typeof AuditRoute
   '/capas': typeof CapasRoute
   '/confirm-email': typeof ConfirmEmailRoute
+  '/copilot': typeof CopilotRoute
   '/costs': typeof CostsRoute
   '/credentials': typeof CredentialsRoute
   '/departments': typeof DepartmentsRouteWithChildren
@@ -332,6 +341,7 @@ export interface FileRouteTypes {
     | '/audit'
     | '/capas'
     | '/confirm-email'
+    | '/copilot'
     | '/costs'
     | '/credentials'
     | '/departments'
@@ -367,6 +377,7 @@ export interface FileRouteTypes {
     | '/audit'
     | '/capas'
     | '/confirm-email'
+    | '/copilot'
     | '/costs'
     | '/credentials'
     | '/flows'
@@ -401,6 +412,7 @@ export interface FileRouteTypes {
     | '/audit'
     | '/capas'
     | '/confirm-email'
+    | '/copilot'
     | '/costs'
     | '/credentials'
     | '/departments'
@@ -438,6 +450,7 @@ export interface RootRouteChildren {
   AuditRoute: typeof AuditRoute
   CapasRoute: typeof CapasRoute
   ConfirmEmailRoute: typeof ConfirmEmailRoute
+  CopilotRoute: typeof CopilotRoute
   CostsRoute: typeof CostsRoute
   CredentialsRoute: typeof CredentialsRoute
   DepartmentsRoute: typeof DepartmentsRouteWithChildren
@@ -603,6 +616,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CostsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/copilot': {
+      id: '/copilot'
+      path: '/copilot'
+      fullPath: '/copilot'
+      preLoaderRoute: typeof CopilotRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/confirm-email': {
       id: '/confirm-email'
       path: '/confirm-email'
@@ -752,6 +772,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuditRoute: AuditRoute,
   CapasRoute: CapasRoute,
   ConfirmEmailRoute: ConfirmEmailRoute,
+  CopilotRoute: CopilotRoute,
   CostsRoute: CostsRoute,
   CredentialsRoute: CredentialsRoute,
   DepartmentsRoute: DepartmentsRouteWithChildren,

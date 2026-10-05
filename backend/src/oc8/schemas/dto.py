@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import Field
@@ -1582,3 +1583,44 @@ class CoreI18nCatalogDTO(CamelModel):
     #: is never a key here -- it is the `msgid` source text the frontend
     #: already has inline, needing no lookup at all.
     locales: list[CoreLocaleDTO]
+
+
+class CopilotProfileDTO(CamelModel):
+    display_name: str
+    avatar: dict[str, Any]
+    paused_at: datetime | None = None
+    status: str
+    active_count: int
+    agent_id: str
+
+
+class ResponsibilityDTO(CamelModel):
+    id: str
+    title: str
+    goal: str
+    state: str
+    next_step: str
+    notify_rule: str
+    origin_channel: str | None = None
+    last_update_at: datetime | None = None
+    created_at: datetime
+    chat_session_id: str
+
+
+class FollowupDTO(CamelModel):
+    id: str
+    responsibility_id: str
+    responsibility_title: str
+    kind: str
+    cron_expression: str | None = None
+    timezone: str | None = None
+    next_run_at: datetime | None = None
+    ends_at: datetime | None = None
+    enabled: bool
+    last_skip_reason: str | None = None
+
+
+class CopilotNoteDTO(CamelModel):
+    id: str
+    content: str
+    created_at: datetime

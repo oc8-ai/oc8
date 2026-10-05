@@ -1,5 +1,5 @@
 import { QueryClient } from "@tanstack/react-query";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { applyEvent, mcpTestLogKey } from "@/lib/live/apply-event";
 import type { RealtimeEvent } from "@/lib/live/types";
 
@@ -232,5 +232,78 @@ describe("mcp.test.log", () => {
 
     expect(qc.getQueryData(mcpTestLogKey("c1"))).toHaveLength(1);
     expect(qc.getQueryData(mcpTestLogKey("c2"))).toHaveLength(1);
+  });
+});
+
+describe("copilot.profile", () => {
+  it("invalidates profile on copilot profile event", () => {
+    const qc = new QueryClient();
+    const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
+
+    applyEvent(qc, event("copilot.profile", { member_id: "m" }));
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["copilot", "profile"] });
+  });
+});
+
+describe("copilot.responsibility", () => {
+  it("invalidates responsibilities and profile on copilot responsibility event", () => {
+    const qc = new QueryClient();
+    const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
+
+    applyEvent(qc, event("copilot.responsibility", { member_id: "m" }));
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["copilot", "responsibilities"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["copilot", "profile"] });
+  });
+});
+
+describe("copilot.followup", () => {
+  it("invalidates followups on copilot followup event", () => {
+    const qc = new QueryClient();
+    const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
+
+    applyEvent(qc, event("copilot.followup", { member_id: "m" }));
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["copilot", "followups"] });
+  });
+});
+
+describe("run.status and copilot profile/delegations", () => {
+  it("invalidates copilot profile and delegations on every run.status event", () => {
+    const qc = new QueryClient();
+    const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
+
+    applyEvent(qc, event("run.status", { run_id: "r1", state: "running", phase: "execution" }));
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["copilot", "profile"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["copilot", "delegations"] });
+  });
+
+  it("invalidates copilot profile and delegations even on non-terminal states", () => {
+    const qc = new QueryClient();
+    const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
+
+    applyEvent(
+      qc,
+      event("run.status", { run_id: "r1", state: "waiting_for_input", phase: "execution" }),
+    );
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["copilot", "profile"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["copilot", "delegations"] });
+  });
+});
+
+describe("run.status and the copilot work panel", () => {
+  it("invalidates responsibilities and follow-ups on every run.status event", () => {
+    for (const state of ["running", "done"]) {
+      const qc = new QueryClient();
+      const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
+
+      applyEvent(qc, event("run.status", { run_id: "r1", state, phase: "execution" }));
+
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["copilot", "responsibilities"] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["copilot", "followups"] });
+    }
   });
 });

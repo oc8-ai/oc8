@@ -136,6 +136,11 @@ WRITING_CONTROL_TOOLS: frozenset[str] = frozenset(
         "ask_user",
         "run_shell",
         "run_program",
+        "responsibility_open",
+        "responsibility_update",
+        "responsibility_close",
+        "schedule_followup",
+        "cancel_followup",
     }
 )
 

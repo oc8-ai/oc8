@@ -32,6 +32,7 @@ from oc8.auth.password import PasswordHashingError, hash_password
 from oc8.authz.permissions import MANAGE, MEMBER, VIEW, perm
 from oc8.authz.scope import scope_for_principal, subject_uuid_for
 from oc8.config import get_settings
+from oc8.copilot.profile import offboard_member
 from oc8.mail.send import SmtpConfig, deliver, resolve_smtp_config
 from oc8.schemas.dto import MemberDTO, MemberPasswordResetDTO
 from oc8.schemas.paging import Page
@@ -675,6 +676,7 @@ async def delete_member_route(
     if gone is None:  # pragma: no cover - get_member already 404'd
         raise HTTPException(status.HTTP_404_NOT_FOUND, "member not found")
 
+    await offboard_member(db, tenant_id=principal.tenant_id, member_id=member.id)
     await _spend_unused_tokens(db, tenant_id=principal.tenant_id, member_id=member.id)
     await append_event(
         db,

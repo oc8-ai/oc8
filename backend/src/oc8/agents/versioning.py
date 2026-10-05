@@ -62,6 +62,9 @@ _VERSIONED_COLUMNS = (
 #: configuration key it has no meaning for.
 META_KEY: Final = "_meta"
 
+#: `builtin_mission_sha` is the built-in Assistant's mission-sync provenance
+#: (`oc8.agent.assistant._sync_mission`): which shipped text it last applied.
+#:
 #: Keys inside `definition` that are OPERATIONAL state a runtime writes back
 #: onto the live row, never configuration an operator authored.
 #:
@@ -72,7 +75,9 @@ META_KEY: Final = "_meta"
 #: by a rollback. So, like `_meta`: stripped from every snapshot and every
 #: stored payload read back through `version_payload`, and carried across a
 #: rollback by `apply_payload`.
-OPERATIONAL_DEFINITION_KEYS: Final[frozenset[str]] = frozenset({"auto_router_affinity"})
+OPERATIONAL_DEFINITION_KEYS: Final[frozenset[str]] = frozenset(
+    {"auto_router_affinity", "builtin_mission_sha"}
+)
 
 #: Payload fields recorded in a version for history and rollback but applied
 #: LIVE: runs read `skill_assignment` (`skills.runtime.load_assigned_skills`)

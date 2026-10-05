@@ -1,6 +1,8 @@
 import { BookOpen, ChevronDown, Plus, Send, Sparkles, WifiOff, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { cn } from "@/lib/utils";
+import { CopilotPersonaHeader } from "@/components/copilot-persona";
 import { ChatMarkdown } from "@/components/chat-markdown";
 import { CopilotRunActivity, CopilotStreamingAnswer } from "@/components/copilot-run-activity";
 import { RUN_COMPONENT_REGISTRY } from "@/components/run-record-card";
@@ -397,44 +399,36 @@ function CopilotDockPanel() {
       {open && (
         <div className="fixed bottom-24 right-5 z-50 flex h-[min(72vh,600px)] w-[min(94vw,400px)] flex-col overflow-hidden rounded-2xl border border-border bg-panel shadow-[0_30px_80px_-30px_oklch(0_0_0/80%)]">
           <header className="flex items-center gap-2.5 border-b border-border px-4 py-3">
-            <img
-              src="/octopus_oc8.svg"
-              alt=""
-              className="h-8 w-8 shrink-0 select-none"
-              draggable={false}
-            />
-            <div className="min-w-0 flex-1 leading-tight">
-              <div className="font-serif text-base lowercase">oc8 copilot</div>
-              <div className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                <span className="h-1.5 w-1.5 rounded-full bg-[color:var(--status-running)] shadow-[0_0_8px_var(--status-running)]" />
-                {de ? "bereit" : "ready"}
-              </div>
-            </div>
-            {assistantAgentId && (
+            <CopilotPersonaHeader variant="dock">
+              {assistantAgentId && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    // Resets the ACTIVE tab back to a blank, not-yet-created
+                    // session -- same affordance as the old single-session
+                    // dock's "New chat" button, just aimed at whichever tab is
+                    // currently focused instead of the dock's only session.
+                    if (activeUiId) setTabSession(activeUiId, null);
+                  }}
+                  aria-label={de ? "Neuer Chat" : "New chat"}
+                  title={de ? "Neuer Chat" : "New chat"}
+                  className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted-foreground transition hover:bg-muted/40 hover:text-foreground"
+                >
+                  <Plus className="h-4 w-4" />
+                </button>
+              )}
               <button
                 type="button"
-                onClick={() => {
-                  // Resets the ACTIVE tab back to a blank, not-yet-created
-                  // session -- same affordance as the old single-session
-                  // dock's "New chat" button, just aimed at whichever tab is
-                  // currently focused instead of the dock's only session.
-                  if (activeUiId) setTabSession(activeUiId, null);
-                }}
-                aria-label={de ? "Neuer Chat" : "New chat"}
-                title={de ? "Neuer Chat" : "New chat"}
-                className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted-foreground transition hover:bg-muted/40 hover:text-foreground"
+                onClick={() => setOpen(false)}
+                aria-label={de ? "Copilot schließen" : "Close copilot"}
+                className="grid h-8 w-8 place-items-center rounded-md text-muted-foreground transition hover:bg-muted/40 hover:text-foreground"
               >
-                <Plus className="h-4 w-4" />
+                <ChevronDown className="h-4 w-4" />
               </button>
-            )}
-            <button
-              type="button"
-              onClick={() => setOpen(false)}
-              aria-label={de ? "Copilot schließen" : "Close copilot"}
-              className="grid h-8 w-8 place-items-center rounded-md text-muted-foreground transition hover:bg-muted/40 hover:text-foreground"
-            >
-              <ChevronDown className="h-4 w-4" />
-            </button>
+              <Link to="/copilot" className="text-xs underline-offset-2 hover:underline">
+                {de ? "Copilot öffnen" : "Open Copilot"}
+              </Link>
+            </CopilotPersonaHeader>
           </header>
 
           <div className="flex items-center gap-1 overflow-x-auto border-b border-border px-2 py-1">

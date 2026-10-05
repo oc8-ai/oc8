@@ -45,6 +45,17 @@ async def publish_run_output_delta(
     )
 
 
+async def publish_copilot_changed(tenant_id: uuid.UUID, *, member_id: uuid.UUID, kind: str) -> None:
+    """Ids only: the event bus is tenant-wide, so a colleague's browser receives
+    this too -- it must say nothing but "something of member X changed"."""
+    await get_event_bus().publish_event(
+        tenant_id,
+        f"copilot.{kind}",
+        {"member_id": str(member_id)},
+        source=f"oc8/copilot/{member_id}",
+    )
+
+
 async def publish_mcp_test_log(
     tenant_id: uuid.UUID, *, connection_id: uuid.UUID, step: str, message: str
 ) -> None:

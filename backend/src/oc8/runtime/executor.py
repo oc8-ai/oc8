@@ -92,6 +92,25 @@ _CHAT_WAITING_FOR_APPROVAL = "This needs an approval before I can continue -- se
 _CHAT_RUN_FAILED = "That didn't work out -- see the run in oc8 for what happened."
 
 
+async def _current_chat_sender(db: AsyncSession, run: m.AgentRun) -> tuple[str, str] | None:
+    """`_chat_channel_sender_of`, but for a follow-up re-resolved against the
+    member's CURRENT binding at send time (invariant 12): a binding revoked
+    since firing means web only; a re-linked one means the new chat id."""
+    sender = _chat_channel_sender_of(run)
+    if sender is None or not isinstance((run.context or {}).get("followup"), dict):
+        return sender
+    from oc8.copilot.followups import live_binding_external_id
+
+    session_raw = (run.context or {}).get("chat_session_id")
+    session = await db.get(m.ChatSession, uuid.UUID(str(session_raw))) if session_raw else None
+    if session is None:
+        return None
+    current = await live_binding_external_id(
+        db, tenant_id=run.tenant_id, member_id=session.member_id, channel=sender[0]
+    )
+    return (sender[0], current) if current else None
+
+
 def _chat_channel_sender_of(run: m.AgentRun) -> tuple[str, str] | None:
     """The (channel id, external id) a `source="chat"` run should reply on,
     if it was started from a channel at all. None for a web chat turn and
@@ -232,6 +251,9 @@ async def _maybe_wake_parent(
     chat_session_id: str | None = None,
     chat_channel: str | None = None,
     chat_channel_external_id: str | None = None,
+    door: str | None = None,
+    followup: dict[str, Any] | None = None,
+    originating_operator: str | None = None,
 ) -> uuid.UUID | None:
     """Create a follow-up run for the team lead that delegated this sub-run, so
     it can react to the outcome (§7). Returns the new run's id for the caller to
@@ -311,6 +333,17 @@ async def _maybe_wake_parent(
         if chat_channel and chat_channel_external_id:
             context["chat_channel"] = chat_channel
             context["chat_channel_external_id"] = chat_channel_external_id
+        # The Copilot's follow-up restrictions key off these two; a wake-up that
+        # processes a delegated result must not shed them (it may be reading
+        # injected content), so they ride along like the channel does.
+        if door is not None:
+            context["door"] = door
+        if followup is not None:
+            context["followup"] = followup
+        # So the Copilot's oversight check (_resolve_agent_actor) still sees
+        # an operator posting in a colleague's session. Never operator_role.
+        if originating_operator is not None:
+            context["originating_operator"] = originating_operator
     wake = await repo.create(
         tenant_id=tenant_id,
         agent_id=parent.assigned_agent_id,
@@ -868,6 +901,9 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         chat_channel_external_id=(run.context or {}).get(
                             "chat_channel_external_id"
                         ),
+                        door=(run.context or {}).get("door"),
+                        followup=(run.context or {}).get("followup"),
+                        originating_operator=(run.context or {}).get("originating_operator"),
                     )
                     if wake_id is not None:
                         pending_runs.append(wake_id)
@@ -896,7 +932,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                     from oc8.chat.service import record_assistant_reply
 
                     await record_assistant_reply(db, run=run, output=_CHAT_RUN_FAILED)
-                    failed_sender = _chat_channel_sender_of(run)
+                    failed_sender = await _current_chat_sender(db, run)
                     if failed_sender is not None:
                         failed_channel, failed_external_id = failed_sender
                         channel_replies.append(
@@ -938,6 +974,17 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         # ask_user path doesn't set agent.status itself either
                         # -- it's simply left as "running".)
                         await request_clarification(db, run=run, question=result.output)
+                        from oc8.copilot.followups import load_responsibility_for_run
+
+                        # Only the Copilot's own turns (source chat) wait on the
+                        # person; a delegated worker's question is not theirs.
+                        parked_resp = (
+                            await load_responsibility_for_run(db, run=run)
+                            if run.source == "chat"
+                            else None
+                        )
+                        if parked_resp is not None and parked_resp.state == "active":
+                            parked_resp.state = "waiting"
                         logger.info("run %s waiting for input", run_id)
                         record_run_outcome(RunState.WAITING_FOR_INPUT.value)
                         # A park is not an outcome, so `record_assistant_reply`
@@ -947,7 +994,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         # them, though, so without a word here their last
                         # message is answered by "Bin dran" and then silence,
                         # for ever.
-                        parked_sender = _chat_channel_sender_of(run)
+                        parked_sender = await _current_chat_sender(db, run)
                         if parked_sender is not None:
                             parked_channel, parked_external_id = parked_sender
                             channel_replies.append(
@@ -985,6 +1032,11 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                                 chat_channel=(run.context or {}).get("chat_channel"),
                                 chat_channel_external_id=(run.context or {}).get(
                                     "chat_channel_external_id"
+                                ),
+                                door=(run.context or {}).get("door"),
+                                followup=(run.context or {}).get("followup"),
+                                originating_operator=(run.context or {}).get(
+                                    "originating_operator"
                                 ),
                             )
                             if wake_id is not None:
@@ -1066,6 +1118,9 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             chat_channel_external_id=(run.context or {}).get(
                                 "chat_channel_external_id"
                             ),
+                            door=(run.context or {}).get("door"),
+                            followup=(run.context or {}).get("followup"),
+                            originating_operator=(run.context or {}).get("originating_operator"),
                         )
                         if wake_id is not None:
                             pending_runs.append(wake_id)
@@ -1079,9 +1134,19 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         # is the one place that turns its outcome back into the
                         # durable transcript message the Chat UI actually reads.
                         from oc8.chat.service import record_assistant_reply
+                        from oc8.copilot.followups import (
+                            is_quiet_followup,
+                            load_responsibility_for_run,
+                        )
 
                         await record_assistant_reply(db, run=run, output=result.output)
-                        done_sender = _chat_channel_sender_of(run)
+                        done_sender = await _current_chat_sender(db, run)
+                        if done_sender is not None and is_quiet_followup(
+                            run, await load_responsibility_for_run(db, run=run)
+                        ):
+                            # A follow-up with nothing to report stays silent on
+                            # the messenger too (design §7a.3).
+                            done_sender = None
                         if done_sender is not None:
                             done_channel, done_external_id = done_sender
                             channel_replies.append(
@@ -1092,7 +1157,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         # run is suspended, not finished, so nothing else tells
                         # the Telegram sender that their request is now sitting
                         # in somebody's approval queue.
-                        held_sender = _chat_channel_sender_of(run)
+                        held_sender = await _current_chat_sender(db, run)
                         if held_sender is not None:
                             held_channel, held_external_id = held_sender
                             channel_replies.append(

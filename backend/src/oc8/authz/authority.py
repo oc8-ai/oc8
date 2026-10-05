@@ -435,3 +435,22 @@ def tenant_wide_read(authority: Authority, permission: str) -> bool:
     if authority.source == "token":
         return True
     return authority.role is not None and authority.role.builtin
+
+
+async def member_holds_assigned_permission(
+    db: AsyncSession, *, member: OrgMember, permission: str
+) -> bool:
+    """Whether a channel-bound member (no token, no Principal -- see
+    decision_from's own comment on why a ChannelActor holds no tenant-wide
+    permission today) holds a given ASSIGNED-ROLE permission directly.
+
+    Deliberately does not fall back to a token-derived default the way
+    authz.authority._authority_of_member does for an authenticated operator:
+    there is no token here to derive one from, so a member with no role_id
+    gets nothing (fail closed) rather than inheriting some default role's
+    grants.
+    """
+    if member.role_id is None:
+        return False
+    _role, granted = await _role_and_permissions(db, member.role_id)
+    return permission in granted

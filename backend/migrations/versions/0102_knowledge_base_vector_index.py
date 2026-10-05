@@ -6,8 +6,8 @@ External vector indexes (query-only) attach an existing Qdrant or pgvector
 collection as a Knowledge Base without copying chunks into oc8. Secrets stay
 on the unified Credential row; index_config holds only non-secret mapping.
 
-Revision ID: 0098
-Revises: 0097
+Revision ID: 0102
+Revises: 0101
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0098"
-down_revision: str | None = "0097"
+revision: str = "0102"
+down_revision: str | None = "0101"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

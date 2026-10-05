@@ -177,6 +177,11 @@ def test_without_an_active_skill_all_connection_tools_are_offered() -> None:
 
 def test_control_tool_names_matches_the_schemas() -> None:
     assert CONTROL_TOOL_NAMES == {
+        "responsibility_open",
+        "responsibility_update",
+        "responsibility_close",
+        "schedule_followup",
+        "cancel_followup",
         "memory_write",
         "ask_user",
         "delegate_task",

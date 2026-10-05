@@ -20,7 +20,7 @@ export interface SuggestionChip {
 
 export interface ChipInputs {
   hasMessages: boolean;
-  lastTurnRole: "user" | "assistant" | null;
+  lastTurnRole: "user" | "assistant" | "followup" | null;
   /** The mode of the most recent USER turn, or null. */
   lastUserMode: string | null;
   pendingApprovals: number;

@@ -10,13 +10,19 @@ from oc8.agents.hire import require_hire_approval, set_require_hire_approval
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
 from oc8.audit import append_event
 from oc8.authz.permissions import MANAGE, SETTINGS, VIEW, perm
+from oc8.copilot.followups import max_active_followups
 from oc8.credentials.service import list_credentials
+from oc8.schemas.base import CamelModel
 
 router = APIRouter()
 
 
 class HireApprovalSetting(BaseModel):
     enabled: bool
+
+
+class CopilotSettings(CamelModel):
+    max_active_followups: int = Field(ge=1, le=100)
 
 
 class OrganizationSettings(BaseModel):
@@ -143,3 +149,43 @@ async def put_hire_approval(
     await set_require_hire_approval(db, tenant_id=principal.tenant_id, enabled=body.enabled)
     await db.commit()
     return HireApprovalSetting(enabled=body.enabled)
+
+
+@router.get(
+    "/settings/copilot",
+    response_model=CopilotSettings,
+    dependencies=[Depends(require_permission(perm(SETTINGS, VIEW)))],
+)
+async def get_copilot_settings(db: DbSession, principal: CurrentPrincipal) -> CopilotSettings:
+    return CopilotSettings(
+        max_active_followups=await max_active_followups(db, tenant_id=principal.tenant_id)
+    )
+
+
+@router.put(
+    "/settings/copilot",
+    response_model=CopilotSettings,
+    dependencies=[Depends(require_permission(perm(SETTINGS, MANAGE)))],
+)
+async def put_copilot_settings(
+    body: CopilotSettings, db: DbSession, principal: CurrentPrincipal
+) -> CopilotSettings:
+    organization = await db.get(m.Organization, principal.tenant_id)
+    if organization is None:
+        raise HTTPException(status_code=404, detail="organization not found")
+    organization.settings = {
+        **organization.settings,
+        "copilot_max_active_followups": body.max_active_followups,
+    }
+    await append_event(
+        db,
+        tenant_id=principal.tenant_id,
+        actor_type="operator",
+        actor_id=None,
+        category="admin",
+        action="organization.settings.updated",
+        resource={"organization_id": str(organization.id), "by": principal.subject},
+        principal=principal,
+    )
+    await db.commit()
+    return body

@@ -42,11 +42,21 @@ def authorize_memory_read(frame: dict[str, Any], narrowing: dict[str, Any], tier
 
 
 def authorize_memory_write(
-    frame: dict[str, Any], narrowing: dict[str, Any], tier: str
+    frame: dict[str, Any],
+    narrowing: dict[str, Any],
+    tier: str,
+    *,
+    personal_only: bool = False,
 ) -> Decision:
     """Agent/department writes are RBAC-gated; company writes always require
     human approval (§10.1) — that gate is not something a frame grant can
-    bypass or a missing grant can escape."""
+    bypass or a missing grant can escape.
+
+    `personal_only` is the Copilot: it keeps personal notes (tier 'agent')
+    and nothing shared, so any other tier is denied before the company
+    approval path can park a run on a write that cannot happen (§7a.5)."""
+    if personal_only and tier != "agent":
+        return Decision(Effect.DENY, "the Copilot keeps personal notes only (tier 'agent')")
     if tier == "company":
         return Decision(Effect.REQUIRE_APPROVAL, "company memory writes always require approval")
     if tier not in ("agent", "department"):

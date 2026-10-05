@@ -28,7 +28,7 @@ import {
   TrendingUp,
   Users,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import {
   DropdownMenu,
@@ -41,6 +41,9 @@ import {
 import { NotificationsSheet, OPEN_NOTIFICATIONS_EVENT } from "@/components/inbox-sheets";
 import { GlobalSearch } from "@/components/global-search";
 import { CopilotDock } from "@/components/copilot-dock";
+import { CopilotAvatar } from "@/components/copilot-persona";
+import { useCopilotProfile } from "@/lib/hooks-copilot";
+import { mascotState } from "@/lib/copilot-status";
 import { cn } from "@/lib/utils";
 import { useAgents, useApprovals, useClarifications, useStanding } from "@/lib/hooks";
 import { useAssignedRoleName, useCan, useMay } from "@/lib/governance-hooks";
@@ -112,6 +115,8 @@ interface NavLink {
   to: string;
   label: string;
   icon: typeof Building2;
+  /** Optional element drawn right after the label (the Copilot's avatar). */
+  adornment?: ReactNode;
   exact?: boolean;
   /** The tenant-wide permission the screen's data sits behind. A screen he may
    *  not open is a screen he is not shown — an employee's role is `member`,
@@ -285,6 +290,7 @@ function NavItemLink({
       {!collapsed && (
         <>
           <span className="truncate">{item.label}</span>
+          {item.adornment}
           {hasBadge && (
             <span className="ml-auto grid h-5 min-w-5 place-items-center rounded-full bg-[color:var(--status-warning)] px-1 text-[10px] font-semibold text-black">
               {item.badge}
@@ -482,6 +488,22 @@ export function AppShell() {
   // a count that only knew about approvals would send somebody past a question
   // an agent has been parked on for two hours.
   const workCount = approvals.length + clarifications.length;
+  const { data: copilotProfile } = useCopilotProfile(can("copilot:use"));
+  const copilotAdornment = (
+    <span className="inline-flex items-center gap-1" data-testid="nav-copilot-adornment">
+      <CopilotAvatar
+        avatar={copilotProfile?.avatar ?? { shape: "round", color: "indigo" }}
+        state={mascotState(copilotProfile?.status ?? "ready")}
+        size={16}
+      />
+      {copilotProfile?.status === "working" && (
+        <span className="h-1.5 w-1.5 rounded-full bg-[color:var(--status-running)]" />
+      )}
+      {copilotProfile?.status === "waiting" && (
+        <span className="h-1.5 w-1.5 rounded-full bg-[color:var(--status-warning)]" />
+      )}
+    </span>
+  );
   const notifCount = agents.filter((a) => a.status === "warning" || a.status === "error").length;
   const edition = useFrontendEdition();
 
@@ -498,6 +520,13 @@ export function AppShell() {
       label: t("My work", "Meine Arbeit"),
       icon: Inbox,
       badge: workCount,
+    },
+    {
+      to: "/copilot",
+      label: t("Copilot", "Copilot"),
+      icon: Sparkles,
+      needs: "copilot:use",
+      adornment: copilotAdornment,
     },
     {
       to: "/departments",
@@ -642,6 +671,7 @@ export function AppShell() {
   const pageTitle = (p: string) => {
     if (p === "/") return t("Office", "Büro");
     if (p.startsWith("/workspace")) return t("My work", "Meine Arbeit");
+    if (p.startsWith("/copilot")) return t("My Copilot", "Mein Copilot");
     if (p.startsWith("/departments")) return t("Departments", "Abteilungen");
     if (p.startsWith("/agents")) return t("Agents", "Agenten");
     if (p.startsWith("/skills")) return t("Skills", "Skills");
@@ -883,7 +913,7 @@ export function AppShell() {
         </div>
       </aside>
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className={cn("flex min-w-0 flex-1 flex-col", pathname === "/copilot" && "h-screen")}>
         <header className="sticky top-0 z-20 flex flex-wrap items-center gap-x-4 gap-y-3 border-b border-border bg-background/85 px-4 py-4 backdrop-blur md:px-8">
           {/* `min-w-[12rem]` (not `min-w-0`) on purpose: `flex-1` alone lets this
               shrink to nothing before the fixed-width controls to its right ever
@@ -1035,7 +1065,14 @@ export function AppShell() {
           </div>
         </header>
 
-        <main className="min-w-0 flex-1 px-4 py-6 md:px-8 md:py-8">
+        <main
+          className={cn(
+            "min-w-0 flex-1",
+            // The Copilot page owns its own scrolling: a bounded flex column
+            // lets the chat fill the height under the header.
+            pathname === "/copilot" ? "flex min-h-0 flex-col" : "px-4 py-6 md:px-8 md:py-8",
+          )}
+        >
           <Outlet />
         </main>
       </div>
@@ -1050,7 +1087,7 @@ export function AppShell() {
         and `sonner` does not replay toasts raised before a Toaster mounted. It
         still follows this theme -- root reads the same persisted "bf-theme".
       */}
-      {pathname !== "/workspace" && <CopilotDock />}
+      {pathname !== "/workspace" && pathname !== "/copilot" && <CopilotDock />}
     </div>
   );
 }

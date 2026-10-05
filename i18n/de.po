@@ -3906,3 +3906,169 @@ msgstr "Ihre Plätze"
 
 msgid "Your work is next door"
 msgstr "Deine Arbeit liegt nebenan"
+
+msgid "Paused"
+msgstr "Pausiert"
+
+msgid "Ready"
+msgstr "Bereit"
+
+msgid "Waiting for you"
+msgstr "Wartet auf dich"
+
+msgid "Working on 1 thing"
+msgstr "Arbeitet an 1 Sache"
+
+msgid "Working on {n} things"
+msgstr "Arbeitet an {n} Dingen"
+
+msgid "Follow-up"
+msgstr "Wiedervorlage"
+
+msgid "Open Copilot"
+msgstr "Copilot öffnen"
+
+msgid "Resume"
+msgstr "Fortsetzen"
+
+msgid "Pause"
+msgstr "Pausieren"
+
+msgid "done"
+msgstr "erledigt"
+
+msgid "cancelled"
+msgstr "abgebrochen"
+
+msgid "Next step"
+msgstr "Nächster Schritt"
+
+msgid "recurring"
+msgstr "wiederkehrend"
+
+msgid "once"
+msgstr "einmalig"
+
+msgid "Ends"
+msgstr "Endet"
+
+msgid "Copilot"
+msgstr "Copilot"
+
+msgid "My Copilot"
+msgstr "Mein Copilot"
+
+msgid "Work"
+msgstr "Arbeit"
+
+msgid "Hide work panel"
+msgstr "Arbeitsbereich ausblenden"
+
+msgid "Show work panel"
+msgstr "Arbeitsbereich einblenden"
+
+msgid "Keep an eye on something for me"
+msgstr "Behalte etwas für mich im Blick"
+
+msgid "What are you working on for me?"
+msgstr "Woran arbeitest du gerade für mich?"
+
+msgid "What is waiting on me?"
+msgstr "Was wartet auf mich?"
+
+msgid "Scheduled"
+msgstr "Geplant"
+
+msgid "Notes"
+msgstr "Notizen"
+
+msgid "Nothing in progress right now."
+msgstr "Gerade ist nichts in Arbeit."
+
+msgid "Delegated to the team"
+msgstr "An das Team delegiert"
+
+msgid "Updated"
+msgstr "Aktualisiert"
+
+msgid "Cancel this responsibility?"
+msgstr "Diese Aufgabe abbrechen?"
+
+msgid "Its scheduled follow-ups are switched off too."
+msgstr "Die geplanten Wiedervorlagen werden ebenfalls abgeschaltet."
+
+msgid "Keep it"
+msgstr "Behalten"
+
+msgid "Cancel responsibility"
+msgstr "Aufgabe abbrechen"
+
+msgid "Once"
+msgstr "Einmalig"
+
+msgid "Timezone"
+msgstr "Zeitzone"
+
+msgid "Next run"
+msgstr "Nächster Lauf"
+
+msgid "End schedule"
+msgstr "Zeitplan beenden"
+
+msgid "No follow-ups are scheduled."
+msgstr "Es sind keine Wiedervorlagen geplant."
+
+msgid "Notes your Copilot keeps about you. Only you can see them."
+msgstr "Notizen, die dein Copilot über dich führt. Nur du siehst sie."
+
+msgid "Stopping work does not undo actions already taken."
+msgstr "Stoppen macht bereits ausgeführte Aktionen nicht rückgängig."
+
+
+
+
+
+msgid "Every day at {time}"
+msgstr "Jeden Tag um {time}"
+
+msgid "Weekdays at {time}"
+msgstr "Werktags um {time}"
+
+msgid "Weekly on {day} at {time}"
+msgstr "Wöchentlich am {day} um {time}"
+
+msgid "I'm {name}. Tell me what to keep an eye on and I'll take it from there."
+msgstr "Ich bin {name}. Sag mir, was ich im Blick behalten soll, den Rest übernehme ich."
+
+msgid "Skipped: you were mid-conversation"
+msgstr "Übersprungen: du warst im Gespräch"
+
+msgid "Skipped: Copilot was paused"
+msgstr "Übersprungen: Copilot war pausiert"
+
+msgid "Skipped: the responsibility is not active"
+msgstr "Übersprungen: Aufgabe nicht aktiv"
+
+msgid "Skipped: no permission to use the Copilot"
+msgstr "Übersprungen: keine Berechtigung"
+
+msgid "Skipped: the member no longer exists"
+msgstr "Übersprungen: Mitglied existiert nicht mehr"
+
+msgid "Skipped: the chat session is gone"
+msgstr "Übersprungen: Chat-Sitzung fehlt"
+
+msgid "The schedule has ended"
+msgstr "Der Zeitplan ist beendet"
+
+msgid "Max. active follow-ups per person"
+msgstr "Max. aktive Wiedervorlagen pro Person"
+
+msgid "Between 1 and 100. Lowering it keeps existing follow-ups but blocks new ones above the limit."
+msgstr "Zwischen 1 und 100. Ein niedrigerer Wert behält bestehende Wiedervorlagen, blockiert aber neue über dem Limit."
+
+msgid "Copilot settings updated"
+msgstr "Copilot-Einstellungen aktualisiert"
+
+msgid "Could not update the Copilot settings."
+msgstr "Copilot-Einstellungen konnten nicht aktualisiert werden."

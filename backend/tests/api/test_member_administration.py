@@ -693,6 +693,42 @@ async def test_deleting_a_member_soft_deletes_them_and_drops_them_from_the_list(
         assert row.deleted_at is not None, "offboarding must stamp deleted_at, not vaporise the row"
 
 
+async def test_deleting_a_member_removes_their_copilot_profile(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.copilot.profile import get_or_create_profile
+
+    office = await _office(app_session)
+    admin = _headers(office.tenant, "boss", "org_admin")
+
+    async with _http() as http:
+        created = await http.post(
+            "/api/v1/members",
+            json={"subject": "leaver2@example.com", "displayName": "Leaver"},
+            headers=admin,
+        )
+        assert created.status_code == 201, created.text
+        member_id = uuid.UUID(created.json()["id"])
+        async with app_session(office.tenant) as db:
+            await get_or_create_profile(db, tenant_id=office.tenant, member_id=member_id)
+            await db.commit()
+
+        deleted = await http.delete(f"/api/v1/members/{member_id}", headers=admin)
+        assert deleted.status_code == 204, deleted.text
+
+    async with app_session(office.tenant) as db:
+        rows = (
+            (
+                await db.execute(
+                    select(m.CopilotProfile).where(m.CopilotProfile.member_id == member_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert rows == []
+
+
 async def test_deleting_yourself_is_refused(
     app_session: AppSessionFactory,
 ) -> None:

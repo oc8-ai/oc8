@@ -12,7 +12,11 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from oc8 import models as m
-from oc8.agent.control_tools import DEPTH_LIMIT_REASON, MAX_DELEGATION_DEPTH
+from oc8.agent.control_tools import (
+    COPILOT_TOOL_NAMES,
+    DEPTH_LIMIT_REASON,
+    MAX_DELEGATION_DEPTH,
+)
 from oc8.agent.tool_semantics import extract_attributes, extract_value
 from oc8.authz.pdp import Decision, Effect, ToolPolicy, authorize_tool_call, required_right
 from oc8.chat.modes import ChatMode, mode_refusal
@@ -136,6 +140,12 @@ def authorize(
         # would audit and return status=denied (which the SDK treats as
         # ToolDenied).
         return Decision(Effect.ALLOW)
+    if tc.name in COPILOT_TOOL_NAMES:
+        # Belongs to no connection, like propose_change: the dispatch
+        # (oc8.copilot.tools) is the gate -- Copilot only, and scoped to the
+        # member behind the task. Without this ALLOW every call would be
+        # audited as a denial by the frame check below.
+        return Decision(Effect.ALLOW)
     if tc.name == "delegate_task":
         if not is_team_lead:
             return Decision(Effect.DENY, "only a team lead can delegate tasks")
@@ -158,7 +168,9 @@ def authorize(
             return Decision(Effect.DENY, "content must not be empty")
         if len(content) > MAX_MEMORY_CONTENT_LENGTH:
             return Decision(Effect.DENY, f"content exceeds {MAX_MEMORY_CONTENT_LENGTH} characters")
-        return authorize_memory_write(frame, narrowing, tier)
+        return authorize_memory_write(
+            frame, narrowing, tier, personal_only=agent.is_tenant_assistant
+        )
     agent_threshold = (agent.presentation or {}).get("approval_value_eur")
     applicable_attributes = [
         spec

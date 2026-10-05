@@ -43,6 +43,7 @@ from oc8.authz.permissions import (
     perm,
 )
 from oc8.authz.scope import AgentActor
+from oc8.copilot.notes import member_behind_run_task
 from oc8.knowledge.retrieval import granted_kb_ids, retrieve_kb_context
 from oc8.memory.router import retrieve_context
 from oc8.modelrouter import NeutralMessage
@@ -350,6 +351,11 @@ async def build_run_preamble(
         frame=frame,
         query_text=task_text,
         narrowing=(pinned["narrowing"] or {}) if pinned is not None else None,
+        member_id=(
+            await member_behind_run_task(db, tenant_id=tenant_id, task=task, run_id=run_id)
+            if agent.is_tenant_assistant
+            else None
+        ),
     )
     if memory_ctx:
         messages.append(NeutralMessage(role="system", content=memory_ctx))
