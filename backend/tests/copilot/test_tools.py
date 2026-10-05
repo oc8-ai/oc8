@@ -815,3 +815,46 @@ async def test_ordinary_wake_up_carries_no_mode(app_session: AppSessionFactory) 
         wake = await db.get(m.AgentRun, wake_id)
         assert wake is not None and "chat_mode" not in wake.context
         assert "[Mode:" not in wake.context["task"]
+
+
+async def test_research_turn_cannot_change_a_responsibilitys_state(
+    app_session: AppSessionFactory,
+) -> None:
+    """A research follow-up may keep next_step current and report, nothing more:
+    pausing or resuming the responsibility is the person's call."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        cop, seat, task, run = await _setup(db, tenant, door="web")
+        await _call(db, tenant, cop, task, run, "responsibility_open", title="a", goal="g")
+        r = (await db.execute(select(m.Responsibility))).scalar_one()
+        ctx = _research_ctx("turn-1")
+        ctx["followup"]["responsibility_id"] = str(r.id)
+        research = await _chat_run(db, tenant, cop, seat, **ctx)
+        out = await _call(
+            db, tenant, cop, task, research, "responsibility_update",
+            responsibility_id=str(r.id), state="paused", next_step="x",
+        )  # fmt: skip
+        assert out is not None
+        assert out.output == (
+            "ERROR: a research follow-up cannot change the responsibility's state "
+            "-- report it instead"
+        )
+        await db.refresh(r)
+        assert (r.state, r.next_step or None) == ("active", None)
+        ok = await _call(
+            db, tenant, cop, task, research, "responsibility_update",
+            responsibility_id=str(r.id), next_step="check the reply", report=True,
+        )  # fmt: skip
+        assert ok is not None and not ok.output.startswith("ERROR"), ok.output
+        await db.refresh(r)
+        assert r.state == "active" and r.next_step == "check the reply"
+        # An ordinary follow-up turn keeps its existing right to pause.
+        plain = await _chat_run(
+            db, tenant, cop, seat, door="followup",
+            followup={"responsibility_id": str(r.id), "trigger_id": str(uuid.uuid4())},
+        )  # fmt: skip
+        paused = await _call(
+            db, tenant, cop, task, plain, "responsibility_update",
+            responsibility_id=str(r.id), state="paused",
+        )  # fmt: skip
+        assert paused is not None and not paused.output.startswith("ERROR"), paused.output
