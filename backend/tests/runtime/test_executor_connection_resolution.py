@@ -1214,3 +1214,84 @@ async def test_department_default_that_no_longer_exists_is_a_hard_error(
         assert resolved is None
         assert error is not None
         assert "Odoo" in error
+
+
+# ------------------- A pin no longer drops the agent's enabled department tools
+
+
+async def test_a_pin_keeps_an_enabled_department_connection(
+    app_session: AppSessionFactory,
+) -> None:
+    """An agent with a pinned `Odoo` login that ALSO enabled a department-scoped
+    `microsoft365` connection must reach both. It used to get only the pin:
+    the run was stamped "exactly these", and the department tool vanished."""
+    tenant = uuid.uuid4()
+    dept_id = uuid.uuid4()
+    async with app_session(tenant) as db:
+        odoo = await _pin(db, tenant, "Odoo")
+        shared = _legacy_connection(tenant, dept_id, "microsoft365")
+        db.add(shared)
+        await db.flush()
+        agent = await _agent(
+            db,
+            tenant,
+            dept_id=dept_id,
+            narrowing={
+                "tools": {
+                    "Odoo": {"enabled": True, "connection_id": str(odoo.id)},
+                    "microsoft365": {"enabled": True},
+                }
+            },
+        )
+
+        choice = await _resolve_mcp_connection(db, agent=agent, run_context={})
+        assert choice.error is None
+        assert choice.pinned is True
+        assert {c.id for c in choice.connections} == {odoo.id, shared.id}
+        assert choice.connection is not None
+        assert choice.connection.id == odoo.id
+
+
+async def test_a_pin_does_not_pull_in_a_department_connection_the_agent_did_not_enable(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    dept_id = uuid.uuid4()
+    async with app_session(tenant) as db:
+        odoo = await _pin(db, tenant, "Odoo")
+        db.add(_legacy_connection(tenant, dept_id, "microsoft365"))
+        await db.flush()
+        agent = await _agent(
+            db,
+            tenant,
+            dept_id=dept_id,
+            narrowing={"tools": {"Odoo": {"enabled": True, "connection_id": str(odoo.id)}}},
+        )
+
+        choice = await _resolve_mcp_connection(db, agent=agent, run_context={})
+        assert [c.id for c in choice.connections] == [odoo.id]
+
+
+async def test_a_pin_does_not_pull_in_another_departments_connection(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    dept_id = uuid.uuid4()
+    async with app_session(tenant) as db:
+        odoo = await _pin(db, tenant, "Odoo")
+        db.add(_legacy_connection(tenant, uuid.uuid4(), "microsoft365"))
+        await db.flush()
+        agent = await _agent(
+            db,
+            tenant,
+            dept_id=dept_id,
+            narrowing={
+                "tools": {
+                    "Odoo": {"enabled": True, "connection_id": str(odoo.id)},
+                    "microsoft365": {"enabled": True},
+                }
+            },
+        )
+
+        choice = await _resolve_mcp_connection(db, agent=agent, run_context={})
+        assert [c.id for c in choice.connections] == [odoo.id]

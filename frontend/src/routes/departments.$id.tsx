@@ -829,7 +829,9 @@ export function DepartmentGuardrailsPanel({ departmentId }: { departmentId: stri
   const agentCount = existing?.agentCount ?? 0;
   const toolKeys = Object.keys(tools);
   const connectionByName = new Map(connections.map((c) => [c.name, c] as const));
-  const addableNames = connections.map((c) => c.name).filter((n) => !toolKeys.includes(n));
+  // A key that exists but is disabled is not a row above, so it must stay
+  // addable here -- otherwise a once-disabled tool can never come back.
+  const addableNames = connections.map((c) => c.name).filter((n) => !tools[n]?.enabled);
 
   function toGuardrailValue(key: string): GuardrailValue {
     const raw = (tools[key] ?? {}) as Record<string, unknown>;
@@ -910,23 +912,25 @@ export function DepartmentGuardrailsPanel({ departmentId }: { departmentId: stri
         hint={t("tool access and guardrails", "Tool-Zugriff und Guardrails")}
         title={t("Guardrails", "Guardrails")}
       />
-      {rows.length === 0 ? (
+      {/* The table carries the "Add tool" button, so it must render even with
+          zero rows -- otherwise a fresh department can never get its first
+          tool, and every connection assigned to it stays unusable. */}
+      {rows.length === 0 && (
         <p className="mt-3 rounded-md border border-dashed border-border/70 bg-background/30 p-4 text-center text-xs text-muted-foreground">
           {t("No tools enabled yet.", "Noch keine Tools aktiviert.")}
         </p>
-      ) : (
-        <div className="mt-3">
-          <ToolGuardrailTable
-            level="department"
-            rows={rows}
-            addableNames={addableNames}
-            connections={connections}
-            onSave={persistOne}
-            onAdd={addTool}
-            saving={setTools.isPending}
-          />
-        </div>
       )}
+      <div className="mt-3">
+        <ToolGuardrailTable
+          level="department"
+          rows={rows}
+          addableNames={addableNames}
+          connections={connections}
+          onSave={persistOne}
+          onAdd={addTool}
+          saving={setTools.isPending}
+        />
+      </div>
     </Panel>
   );
 }
