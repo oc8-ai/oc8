@@ -559,6 +559,42 @@ async def _resolve_mcp_connection(
             )
         pinned_conns.append(conn)
     if pinned_conns:
+        # A pin must not silently drop the agent's OTHER enabled tools. Before
+        # this, an agent that pinned one login (say `odoo`) and also enabled a
+        # department-scoped connection (say `microsoft365`, configured once for
+        # the department through its capa form) got only the pinned login: the
+        # stamp below is "use exactly these", so the department connection never
+        # reached the gateway, and the operator's UI showed it enabled.
+        #
+        # Only keys the agent itself ENABLED, only keys that need no login
+        # (those were already forced to resolve to a pin or a department default
+        # above), and only connections of the agent's own department -- the
+        # same three filters the legacy lookup below applies, so nothing is
+        # reachable here that an unpinned agent would not already have reached.
+        pinned_names = {c.name for c in pinned_conns}
+        shared_keys = [k for k in enabled if k not in pinned_names and k not in needs_login]
+        if shared_keys and agent.department_id is not None:
+            shared_rows = (
+                (
+                    await db.execute(
+                        select(m.McpConnection)
+                        .where(
+                            m.McpConnection.department_id == agent.department_id,
+                            m.McpConnection.connected.is_(True),
+                            m.McpConnection.credential_id.is_(None),
+                            m.McpConnection.name.in_(shared_keys),
+                        )
+                        .order_by(m.McpConnection.created_at)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            seen: set[str] = set()
+            for row in shared_rows:
+                if row.name not in seen:
+                    seen.add(row.name)
+                    pinned_conns.append(row)
         return _ConnectionChoice(
             pinned_conns[0], None, pinned=True, connections=tuple(pinned_conns)
         )
