@@ -1618,9 +1618,13 @@ class FollowupDTO(CamelModel):
     ends_at: datetime | None = None
     enabled: bool
     last_skip_reason: str | None = None
+    purpose: str = "check_in"
 
 
 class CopilotNoteDTO(CamelModel):
     id: str
     content: str
     created_at: datetime
+    #: Set on a note a research follow-up wrote: which responsibility it is for.
+    responsibility_id: str | None = None
+    responsibility_title: str | None = None

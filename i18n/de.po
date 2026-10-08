@@ -3946,6 +3946,9 @@ msgstr "Nächster Schritt"
 msgid "recurring"
 msgstr "wiederkehrend"
 
+msgid "Research · read-only"
+msgstr "Recherche · nur lesend"
+
 msgid "once"
 msgstr "einmalig"
 

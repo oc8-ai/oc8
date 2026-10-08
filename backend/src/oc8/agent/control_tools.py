@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
-from sqlalchemy import case, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -46,7 +46,15 @@ from oc8.authz.pdp import Decision, Effect
 from oc8.authz.permissions import AGENT, APPROVAL, BUDGET, DEPARTMENT, STATISTICS, VIEW, perm
 from oc8.authz.scope import AgentActor, scope_for_member
 from oc8.capas.discovery import find_plugin
-from oc8.chat.modes import WRITING_CONTROL_TOOLS, ChatMode
+from oc8.chat.modes import (
+    RESEARCH,
+    RESEARCH_DELEGATE,
+    RESEARCH_MAX_DELEGATIONS,
+    WRITING_CONTROL_TOOLS,
+    ChatMode,
+    mode_directive,
+    mode_from_context,
+)
 from oc8.copilot.notes import member_behind_run_task
 from oc8.departments.repo import visible_department, visible_departments
 from oc8.knowledge.retrieval import retrieve_kb_context
@@ -896,7 +904,9 @@ SCHEDULE_FOLLOWUP = NeutralTool(
         "(ISO-8601 with UTC offset); kind 'cron' needs cron_expression AND ends_at. "
         "timezone (IANA, e.g. Europe/Berlin) is always required -- ask if you do not "
         "know it. Minimum spacing 15 minutes, at most one year out. Tell the person "
-        "what you scheduled."
+        "what you scheduled. purpose 'research' makes it a read-only research turn that "
+        "writes notes and reports only under the notify_rule; research needs at least "
+        "one hour between runs."
     ),
     parameters={
         "type": "object",
@@ -908,6 +918,7 @@ SCHEDULE_FOLLOWUP = NeutralTool(
             "timezone": {"type": "string"},
             "ends_at": {"type": "string"},
             "prompt": {"type": "string", "description": "What to do when it fires."},
+            "purpose": {"type": "string", "enum": ["check_in", "research"]},
         },
         "required": ["responsibility_id", "kind", "timezone", "prompt"],
     },
@@ -1114,7 +1125,12 @@ def offered_tools(
     # rest of the run. _authorize still checks the frame on every call.
     offered.extend(mcp_tools)
     if chat_mode is not None and not chat_mode.allows_writes:
-        offered = [t for t in offered if t.name not in WRITING_CONTROL_TOOLS]
+        offered = [
+            t
+            for t in offered
+            if t.name not in WRITING_CONTROL_TOOLS
+            or (agent.is_tenant_assistant and t.name in chat_mode.copilot_exceptions)
+        ]
     return offered
 
 
@@ -1297,6 +1313,23 @@ async def _context_kb_ids(
     return frozenset(out) if out else None
 
 
+async def _research_delegations(db: AsyncSession, *, tenant_id: uuid.UUID, turn_id: str) -> int:
+    """Delegated runs already started by one research turn (all its runs share
+    `followup.turn_id`; children carry it too, see `_delegate`)."""
+    return int(
+        await db.scalar(
+            select(func.count())
+            .select_from(m.AgentRun)
+            .where(
+                m.AgentRun.tenant_id == tenant_id,
+                m.AgentRun.source == "delegation",
+                m.AgentRun.context["followup"]["turn_id"].astext == turn_id,
+            )
+        )
+        or 0
+    )
+
+
 async def _delegate(
     db: AsyncSession,
     *,
@@ -1322,6 +1355,22 @@ async def _delegate(
     _authorize has already checked that agent_id parses, isn't self, and is
     within the depth limit; the DB-dependent checks live here.
     """
+    executing_run = await db.get(m.AgentRun, run_id) if run_id is not None else None
+    parent_mode = mode_from_context(executing_run.context if executing_run is not None else None)
+    if parent_mode is RESEARCH:
+        assert executing_run is not None
+        followup = (executing_run.context or {}).get("followup")
+        turn_id = followup.get("turn_id") if isinstance(followup, dict) else None
+        # No turn id cannot be counted, so it gets nothing (fail closed).
+        if not turn_id or (
+            await _research_delegations(db, tenant_id=tenant_id, turn_id=str(turn_id))
+            >= RESEARCH_MAX_DELEGATIONS
+        ):
+            return (
+                f"ERROR: a research follow-up may ask at most {RESEARCH_MAX_DELEGATIONS} "
+                "colleagues -- work with what you have and note what is still open",
+                None,
+            )
     target = await db.get(m.Agent, uuid.UUID(str(tc.arguments["agent_id"])))
     if target is None or target.deleted_at is not None:
         return "ERROR: no such agent in your department", None
@@ -1357,24 +1406,27 @@ async def _delegate(
     # record_assistant_reply's `if run.source == "chat"` gate at all -- the
     # lead's real conclusion sat in the run row forever, unseen on web or on
     # whichever channel the human was using.
-    if run_id is not None:
-        executing_run = await db.get(m.AgentRun, run_id)
-        if executing_run is not None and executing_run.context:
-            chat_session_id = executing_run.context.get("chat_session_id")
-            if chat_session_id:
-                context["chat_session_id"] = chat_session_id
-                chat_channel = executing_run.context.get("chat_channel")
-                chat_channel_external_id = executing_run.context.get("chat_channel_external_id")
-                if chat_channel and chat_channel_external_id:
-                    context["chat_channel"] = chat_channel
-                    context["chat_channel_external_id"] = chat_channel_external_id
-            # The Copilot's follow-up and oversight guards read these off the
-            # run context; a delegated chain must keep them
-            # (executor._maybe_wake_parent). Never operator_role: a token claim
-            # belongs to the run it was recorded on (_acting_token_role).
-            for carried in ("door", "followup", "originating_operator"):
-                if executing_run.context.get(carried) is not None:
-                    context[carried] = executing_run.context[carried]
+    if executing_run is not None and executing_run.context:
+        chat_session_id = executing_run.context.get("chat_session_id")
+        if chat_session_id:
+            context["chat_session_id"] = chat_session_id
+            chat_channel = executing_run.context.get("chat_channel")
+            chat_channel_external_id = executing_run.context.get("chat_channel_external_id")
+            if chat_channel and chat_channel_external_id:
+                context["chat_channel"] = chat_channel
+                context["chat_channel_external_id"] = chat_channel_external_id
+        # The Copilot's follow-up and oversight guards read these off the
+        # run context; a delegated chain must keep them
+        # (executor._maybe_wake_parent). Never operator_role: a token claim
+        # belongs to the run it was recorded on (_acting_token_role).
+        for carried in ("door", "followup", "originating_operator"):
+            if executing_run.context.get(carried) is not None:
+                context[carried] = executing_run.context[carried]
+        # A research turn's delegates read and nothing else, at every depth;
+        # RESEARCH_DELEGATE has no exceptions, so it also ends the chain.
+        if parent_mode in (RESEARCH, RESEARCH_DELEGATE):
+            context["chat_mode"] = RESEARCH_DELEGATE.key
+            context["task"] = f"{context['task']}\n\n{mode_directive(RESEARCH_DELEGATE)}"
     # Deferred import: oc8.runtime.executor reaches oc8.runtime.adapter, which
     # imports this module's own importer (oc8.agent.engine) at module level, so
     # importing it at the top would be a cycle. Resolved once, at first call.
@@ -2281,14 +2333,20 @@ async def execute_control_tool(
     if tc.name == MEMORY_WRITE.name:
         if decision.effect is Effect.DENY:
             return ControlOutcome(output=f"ERROR: {decision.reason or 'memory write denied'}")
+        note_metadata: dict[str, Any] = {"task_id": str(task.id)}
         if agent.is_tenant_assistant and run_id is not None:
             from oc8.copilot.door import door_of
 
             writing_run = await db.get(m.AgentRun, run_id)
             if writing_run is not None and door_of(writing_run.context) == "followup":
-                # Nobody is present in a follow-up (or its wake-up) to have
-                # said anything worth keeping about themselves.
-                return ControlOutcome(output="ERROR: a follow-up cannot write personal notes")
+                # Nobody is present in a check-in follow-up (or its wake-up) to
+                # have said anything worth keeping about themselves. A research
+                # turn exists to keep what it found, tied to its responsibility.
+                if mode_from_context(writing_run.context) is not RESEARCH:
+                    return ControlOutcome(output="ERROR: a follow-up cannot write personal notes")
+                followup = writing_run.context.get("followup")
+                if isinstance(followup, dict) and followup.get("responsibility_id"):
+                    note_metadata["responsibility_id"] = str(followup["responsibility_id"])
         if decision.effect is Effect.REQUIRE_APPROVAL:
             # Company memory always needs a human (§10.1) and no frame waives it.
             # The record is stored PENDING either way and the approval only flips
@@ -2302,7 +2360,7 @@ async def execute_control_tool(
                     agent=agent,
                     tier=str(tc.arguments.get("tier", "")),
                     content=str(tc.arguments.get("content", "")),
-                    metadata={"task_id": str(task.id)},
+                    metadata=note_metadata,
                     member_id=(
                         await member_behind_run_task(
                             db, tenant_id=tenant_id, task=task, run_id=run_id
@@ -2343,7 +2401,7 @@ async def execute_control_tool(
                 agent=agent,
                 tier=str(tc.arguments.get("tier", "")),
                 content=str(tc.arguments.get("content", "")),
-                metadata={"task_id": str(task.id)},
+                metadata=note_metadata,
                 member_id=(
                     await member_behind_run_task(db, tenant_id=tenant_id, task=task, run_id=run_id)
                     if agent.is_tenant_assistant

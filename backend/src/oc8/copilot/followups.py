@@ -19,6 +19,7 @@ from oc8 import models as m
 from oc8.agent.assistant import _load_assistant
 from oc8.authz.authority import member_holds_assigned_permission
 from oc8.authz.permissions import COPILOT_USE
+from oc8.chat.modes import RESEARCH
 from oc8.copilot.profile import get_or_create_profile
 from oc8.copilot.responsibilities import get_owned
 from oc8.copilot.schedule import MAX_ACTIVE_FOLLOWUPS, FollowupRejected, FollowupSpec, next_fire
@@ -104,6 +105,7 @@ async def schedule_followup(
         responsibility_id=r.id,
         timezone=spec.timezone,
         ends_at=spec.ends_at,
+        followup_purpose=spec.purpose,
     )
     db.add(trigger)
     await db.flush()
@@ -302,7 +304,19 @@ async def fire_followup(db: AsyncSession, trigger: m.Trigger, *, tenant_id: uuid
         chat_channel=channel,
         chat_channel_external_id=external_id,
         role="followup",
-        extra_context={"followup": {"responsibility_id": str(r.id), "trigger_id": str(trigger.id)}},
+        extra_context={
+            "followup": {
+                "responsibility_id": str(r.id),
+                "trigger_id": str(trigger.id),
+                # Shared by this turn and every wake-up after it (it rides
+                # along with "followup"): the research delegation cap counts
+                # per turn, not per run.
+                "turn_id": str(uuid.uuid4()),
+            }
+        },
+        # NULL and "check_in" are ordinary follow-ups; anything else -- research
+        # or a value this release does not know -- fires read-only.
+        followup_mode=None if trigger.followup_purpose in (None, "check_in") else RESEARCH,
     )  # commits via enqueue_run
     return "fired"
 

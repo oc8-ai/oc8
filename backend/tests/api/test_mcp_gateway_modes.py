@@ -72,6 +72,24 @@ async def test_a_withheld_call_is_refused_rather_than_forwarded(
     assert _FakeMcp.calls == [], "nothing may reach the tool server"
 
 
+async def test_gateway_memory_write_honours_the_mode(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A harness that cached an older tool list must be refused, not obeyed."""
+    _FakeMcp.calls = []
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    tenant = uuid.uuid4()
+    agent_id, run_id = await _run_in_mode(app_session, tenant, "research_delegate")
+    _code, body = await _rpc(
+        _token(tenant, agent_id, run_id),
+        "tools/call",
+        {"name": "memory_write", "arguments": {"tier": "agent", "content": "x"}},
+    )
+    assert body["result"]["isError"] is True
+    assert "research follow-up only reads" in body["result"]["content"][0]["text"]
+    assert _FakeMcp.calls == [], "nothing may reach the tool server"
+
+
 async def test_a_withheld_call_is_audited_as_a_denial(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -107,3 +125,26 @@ async def test_no_mode_behaves_exactly_as_before(
     _code, body = await _rpc(_token(tenant, agent_id, run_id), "tools/list")
     names = {t["name"] for t in body["result"]["tools"]}
     assert "create_record" in names
+
+
+async def test_gateway_ask_user_honours_the_mode_and_does_not_park(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ask_user has its own branch that parks the run; a read-only research
+    delegate calling it from a cached tool list must be refused before that."""
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    tenant = uuid.uuid4()
+    agent_id, run_id = await _run_in_mode(app_session, tenant, "research_delegate")
+    _code, body = await _rpc(
+        _token(tenant, agent_id, run_id),
+        "tools/call",
+        {"name": "ask_user", "arguments": {"question": "may I send the offer?"}},
+    )
+    assert body["result"]["isError"] is True
+    text = body["result"]["content"][0]["text"]
+    assert text.startswith("ERROR: ")
+    assert "research follow-up only reads" in text
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        assert "isolated_result" not in run.context, "the run must not be parked"

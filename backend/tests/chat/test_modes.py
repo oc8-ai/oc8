@@ -185,7 +185,7 @@ def test_a_mode_can_only_ever_remove_authority() -> None:
         *sorted(WRITING_CONTROL_TOOLS),
         "search_knowledge",
     ]
-    for mode in MODES.values():
+    for mode in (*MODES.values(), *INTERNAL_MODES.values()):
         for name in tools:
             baseline = mode_refusal(None, name, tool_scopes=SCOPES)
             assert baseline is None
@@ -223,3 +223,58 @@ def test_the_phase_one_command_set_is_exactly_four() -> None:
 @pytest.mark.parametrize("key", ["ask", "summarise"])
 def test_the_cheap_modes_take_no_tools_at_all(key: str) -> None:
     assert MODES[key].allows_tools is False
+
+
+# --------------------------------------------------------- research (D2)
+
+from oc8.chat.modes import INTERNAL_MODES, RESEARCH, RESEARCH_DELEGATE  # noqa: E402
+
+_EXCEPTIONS = {"memory_write", "responsibility_update", "delegate_task"}
+
+
+def test_research_modes_are_not_slash_commands() -> None:
+    assert parse_command("/research look at customer X") == (
+        None,
+        "/research look at customer X",
+    )
+    assert "research" not in MODES and "research_delegate" not in MODES
+
+
+def test_research_modes_resolve_from_context() -> None:
+    assert mode_from_context({"chat_mode": "research"}) is RESEARCH
+    assert mode_from_context({"chat_mode": "research_delegate"}) is RESEARCH_DELEGATE
+    assert set(INTERNAL_MODES) == {"research", "research_delegate"}
+
+
+def test_research_lets_only_the_copilot_through_its_three_exceptions() -> None:
+    for name in sorted(WRITING_CONTROL_TOOLS):
+        copilot = mode_refusal(RESEARCH, name, tool_scopes=None, is_tenant_assistant=True)
+        other = mode_refusal(RESEARCH, name, tool_scopes=None, is_tenant_assistant=False)
+        assert other is not None, name
+        if name in _EXCEPTIONS:
+            assert copilot is None, name
+        else:
+            assert copilot is not None, name
+
+
+def test_research_refuses_modifying_connection_tools_even_for_the_copilot() -> None:
+    assert mode_refusal(RESEARCH, "create_record", tool_scopes=SCOPES, is_tenant_assistant=True)
+    assert (
+        mode_refusal(RESEARCH, "search_records", tool_scopes=SCOPES, is_tenant_assistant=True)
+        is None
+    )
+
+
+def test_research_delegate_has_no_exceptions() -> None:
+    for name in sorted(WRITING_CONTROL_TOOLS):
+        assert (
+            mode_refusal(RESEARCH_DELEGATE, name, tool_scopes=None, is_tenant_assistant=True)
+            is not None
+        ), name
+    assert mode_refusal(RESEARCH_DELEGATE, "create_record", tool_scopes=SCOPES) is not None
+    assert mode_refusal(RESEARCH_DELEGATE, "search_records", tool_scopes=SCOPES) is None
+
+
+def test_research_refusal_does_not_point_at_slash_do() -> None:
+    reason = mode_refusal(RESEARCH, "ask_user", tool_scopes=None, is_tenant_assistant=True)
+    assert reason is not None and "/do" not in reason and "research" in reason

@@ -24,6 +24,7 @@ from oc8.agent.control_tools import (
     ControlOutcome,
     _resolve_agent_actor,
 )
+from oc8.chat.modes import RESEARCH, mode_from_context
 from oc8.copilot.door import door_of
 from oc8.copilot.followups import cancel_followup, list_followups, schedule_followup
 from oc8.copilot.responsibilities import (
@@ -220,6 +221,14 @@ async def _dispatch(
         return ControlOutcome(output="ERROR: a follow-up can only change its own responsibility")
     if tc.name == RESPONSIBILITY_UPDATE.name:
         state = _text(args, "state")
+        if state is not None and mode_from_context(context) is RESEARCH:
+            # The mode's Copilot exception covers keeping next_step current and
+            # reporting -- not pausing or resuming the person's responsibility
+            # on the strength of what a read-only turn just read.
+            return ControlOutcome(
+                output="ERROR: a research follow-up cannot change the responsibility's state "
+                "-- report it instead"
+            )
         if state is not None and state not in ("active", "paused"):
             return ControlOutcome(output="ERROR: state must be active or paused")
         r = await update_responsibility(
@@ -288,6 +297,7 @@ async def _dispatch(
         cron_expression=_text(args, "cron_expression"),
         ends_at=_text(args, "ends_at"),
         now=dt.datetime.now(tz=dt.UTC),
+        purpose=_text(args, "purpose"),
     )
     t = await schedule_followup(
         db,
@@ -313,6 +323,7 @@ async def _dispatch(
                 "when": when,
                 "timezone": t.timezone,
                 "endsAt": t.ends_at.isoformat() if t.ends_at else None,
+                "purpose": spec.purpose,
             },
         },
     )

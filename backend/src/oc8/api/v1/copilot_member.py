@@ -197,6 +197,9 @@ async def list_followups(db: DbSession, actor: Actor) -> list[FollowupDTO]:
             ends_at=t.ends_at,
             enabled=t.enabled,
             last_skip_reason=t.last_skip_reason,
+            # Shown the way it fires (copilot.followups): anything that is not
+            # a plain check-in runs in the research mode.
+            purpose="check_in" if t.followup_purpose in (None, "check_in") else "research",
         )
         for t in triggers
     ]
@@ -256,7 +259,23 @@ async def list_notes(db: DbSession, actor: Actor) -> list[CopilotNoteDTO]:
     rows = await nt.list_notes(
         db, tenant_id=tenant, member_id=actor.member.id, assistant_id=assistant.id
     )
-    return [CopilotNoteDTO(id=str(n.id), content=n.content, created_at=n.created_at) for n in rows]
+    titles = {
+        str(r.id): r.title
+        for r in await rs.list_responsibilities(db, tenant_id=tenant, member_id=actor.member.id)
+    }
+
+    def _dto(n: m.MemoryRecord) -> CopilotNoteDTO:
+        rid = (n.record_metadata or {}).get("responsibility_id")
+        return CopilotNoteDTO(
+            id=str(n.id),
+            content=n.content,
+            created_at=n.created_at,
+            responsibility_id=str(rid) if rid else None,
+            # Only the member's OWN responsibilities resolve to a title.
+            responsibility_title=titles.get(str(rid)) if rid else None,
+        )
+
+    return [_dto(n) for n in rows]
 
 
 @router.delete("/copilot/notes/{note_id}", status_code=status.HTTP_204_NO_CONTENT)
