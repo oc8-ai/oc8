@@ -67,8 +67,32 @@ def _content_blocks(content: str | list[Any]) -> list[dict[str, Any]] | str:
     return blocks
 
 
+def _content_text(content: str | list[Any]) -> str:
+    """Plain text view of content for merged system prompts.
+
+    System turns should not carry images, but if a list-shaped content ever
+    appears here, preserve the text parts and drop non-text parts rather than
+    sending a non-string system prompt to stricter OpenAI-compatible gateways.
+    """
+    if isinstance(content, str):
+        return content
+    return "\n".join(part.text for part in content if isinstance(part, TextPart))
+
+
 def to_openai_messages(messages: list[NeutralMessage]) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
+    # Some OpenAI-compatible gateways enforce the stricter chat-template rule
+    # that the system prompt must be the single first message. oc8 may create
+    # several system messages -- base instructions, provenance, memory/knowledge
+    # context, trim notices -- so merge and hoist them into the only shape every
+    # provider accepts.
+    system_parts = [
+        _content_text(msg.content)
+        for msg in messages
+        if msg.role == "system" and _content_text(msg.content).strip()
+    ]
+    out: list[dict[str, Any]] = (
+        [{"role": "system", "content": "\n\n".join(system_parts)}] if system_parts else []
+    )
     # A call with no name cannot be dispatched by anyone, and providers reject the
     # whole request over it ("Function name was  but must be a-z…"). One such call
     # from the model poisons the transcript for good: it is replayed on every
@@ -77,8 +101,10 @@ def to_openai_messages(messages: list[NeutralMessage]) -> list[dict[str, Any]]:
     # that is ALREADY carrying one can still be continued.
     dropped_call_ids: set[str] = set()
     for msg in messages:
-        if msg.role in ("system", "user"):
-            if msg.role == "user" and out and out[-1]["role"] == "tool":
+        if msg.role == "system":
+            continue
+        if msg.role == "user":
+            if out and out[-1]["role"] == "tool":
                 out.append({"role": "assistant", "content": TOOL_BRIDGE_CONTENT})
             out.append({"role": msg.role, "content": _content_blocks(msg.content)})
         elif msg.role == "assistant":
