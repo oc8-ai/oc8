@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
+import { AgentAvatar } from "@/components/agent-avatar";
 import { Panel } from "@/components/app-shell";
 import { ListToolbar, type ListQueryState } from "@/components/list-toolbar";
 import { useAgents, useCreateDepartment, useDepartments, useRestoreDepartment } from "@/lib/hooks";
@@ -161,13 +162,12 @@ export function DepartmentsPage() {
               <div className="mt-4 flex items-center gap-2">
                 {members.map((m) => (
                   <div key={m.id} className="relative">
-                    <div
-                      className="grid h-7 w-7 place-items-center rounded-full font-serif text-xs text-black ring-2 ring-panel"
-                      style={{ background: m.avatarColor }}
+                    <AgentAvatar
+                      seed={m.id}
+                      size={28}
+                      className="ring-2 ring-panel"
                       title={m.name}
-                    >
-                      {m.name[0]}
-                    </div>
+                    />
                     {lead?.id === m.id && (
                       <Crown className="absolute -top-1.5 -right-1 h-3 w-3 text-[color:var(--status-warning)]" fill="currentColor" />
                     )}

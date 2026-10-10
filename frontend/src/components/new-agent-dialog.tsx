@@ -22,6 +22,7 @@ import {
   Field,
   type AgentIdentity,
 } from "@/components/agent-identity-fields";
+import { AgentAvatar, hueFromOklch } from "@/components/agent-avatar";
 import { AddToolPicker } from "@/components/add-tool-picker";
 import { ModelPicker } from "@/components/model-picker";
 import { CronBuilder } from "@/components/cron-builder";
@@ -700,12 +701,12 @@ function ProfileCard({
       </div>
 
       <div className="flex items-center gap-3">
-        <div
-          className="grid h-14 w-14 shrink-0 place-items-center rounded-xl font-serif text-3xl text-black shadow-lg"
-          style={{ background: avatarColor }}
-        >
-          {name.trim()[0]?.toUpperCase() ?? "?"}
-        </div>
+        <AgentAvatar
+          seed={name.trim() || "agent"}
+          size={56}
+          background="squircle"
+          hue={hueFromOklch(avatarColor)}
+        />
         <div className="min-w-0">
           <div className="truncate font-serif text-2xl leading-none">{name || "New agent"}</div>
           <div className="mt-1 truncate text-xs text-muted-foreground">{role || "Role …"}</div>
