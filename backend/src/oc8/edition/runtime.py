@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import AbstractContextManager
 from typing import Protocol
 
 from oc8.runtime.supervision_hook import (
     NOOP_SUPERVISION_QUERY_PORT,
+    NOOP_SUPERVISION_RUN_HOOK,
     SupervisionQueryPort,
     SupervisionRunHook,
     use_supervision_runtime,
@@ -30,21 +32,8 @@ class RuntimeComposition:
         self._supervision_hook = supervision_hook
         self._query_port = query_port
 
-    def activate(self) -> AbstractContextManager[None]:
+    def activate(self) -> Iterator[None]:
         return use_supervision_runtime(self._supervision_hook, self._query_port)
 
 
-def _default_runtime_composition() -> RuntimeComposition:
-    from oc8.supervision.runtime import SUPERVISION_QUERY_PORT, SUPERVISION_RUN_HOOK
-
-    return RuntimeComposition(SUPERVISION_RUN_HOOK, SUPERVISION_QUERY_PORT)
-
-
-class _DefaultRuntimeComposition:
-    """Lazily bind the supervision hook so importing this module stays cheap."""
-
-    def activate(self) -> AbstractContextManager[None]:
-        return _default_runtime_composition().activate()
-
-
-COMMUNITY_RUNTIME_COMPOSITION: EditionRuntimeComposition = _DefaultRuntimeComposition()
+COMMUNITY_RUNTIME_COMPOSITION = RuntimeComposition(NOOP_SUPERVISION_RUN_HOOK)
