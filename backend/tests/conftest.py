@@ -197,9 +197,9 @@ def minio_url() -> Iterator[str]:
     testcontainers ships no first-class MinIO container usable here:
     `testcontainers.community.minio.MinioContainer` needs the separate `minio`
     SDK, which oc8 does not depend on (oc8.storage.s3 talks to S3-compatible
-    storage purely through boto3) -- so this runs the official `minio/minio`
-    image directly via the low-level `DockerContainer`, the same primitive
-    `redis_url`/`_pg` build on above.
+    storage purely through boto3) -- so this runs the same public MinIO
+    image docker-compose.yml uses, via the low-level `DockerContainer`, the
+    same primitive `redis_url`/`_pg` build on above.
 
     Creates the test bucket and points `get_settings()` at the container for
     the whole session (same pattern as `redis_url`), then clears
@@ -217,7 +217,7 @@ def minio_url() -> Iterator[str]:
     bucket = "oc8-test-bucket"
 
     container = (
-        DockerContainer("minio/minio:latest")
+        DockerContainer("cgr.dev/chainguard/minio:latest")
         .with_exposed_ports(9000)
         .with_env("MINIO_ROOT_USER", access_key)
         .with_env("MINIO_ROOT_PASSWORD", secret_key)

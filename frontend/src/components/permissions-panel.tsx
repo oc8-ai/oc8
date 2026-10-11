@@ -1,6 +1,7 @@
 import { ArrowDown, Lock, Plus, Search, ShieldCheck, Sparkles, Trash2, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
+import { AgentAvatar } from "@/components/agent-avatar";
 import { Panel } from "@/components/app-shell";
 import { CredentialPicker } from "@/components/credential-picker";
 import { useConfirm } from "@/hooks/use-confirm";
@@ -740,12 +741,7 @@ function InheritanceHeader({
                       : "border-border text-muted-foreground",
                   )}
                 >
-                  <div
-                    className="grid h-5 w-5 place-items-center rounded-full font-serif text-[10px] text-black"
-                    style={{ background: m.avatarColor }}
-                  >
-                    {m.name[0]}
-                  </div>
+                  <AgentAvatar seed={m.id} size={20} title={m.name} />
                   <span className="font-medium text-foreground">{m.name}</span>
                   {restricted ? (
                     <span className="rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[9px] uppercase tracking-widest text-primary">

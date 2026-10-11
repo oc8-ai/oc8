@@ -1,3 +1,4 @@
+import { AgentAvatar, hueFromOklch } from "@/components/agent-avatar";
 import { useT } from "@/lib/i18n";
 
 export const AVATAR_COLORS = [
@@ -31,12 +32,12 @@ export function AgentIdentityFields({
   return (
     <div className="grid gap-4 md:grid-cols-[auto_minmax(0,1fr)]">
       <div className="flex flex-col items-center gap-3">
-        <div
-          className="grid h-20 w-20 place-items-center rounded-2xl font-serif text-4xl text-black shadow-lg"
-          style={{ background: AVATAR_COLORS[value.avatarIdx] }}
-        >
-          {value.name.trim()[0]?.toUpperCase() ?? "?"}
-        </div>
+        <AgentAvatar
+          seed={value.name.trim() || "agent"}
+          size={80}
+          background="squircle"
+          hue={hueFromOklch(AVATAR_COLORS[value.avatarIdx])}
+        />
         <button
           type="button"
           onClick={() =>
