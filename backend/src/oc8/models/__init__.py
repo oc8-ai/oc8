@@ -63,20 +63,12 @@ from oc8.models.run import (
 )
 from oc8.models.secrets import Secret, TenantDek
 from oc8.models.skills import ImportedSkillFile, Skill, SkillAssignment, SkillVersion
-from oc8.models.supervision import (
-    AgentCheckpoint,
-    SupervisionAssignment,
-    SupervisionIntervention,
-    SupervisionPolicy,
-    TaskAnchor,
-)
 from oc8.models.triggers import Trigger
 
 __all__ = [
     "AccountVerificationToken",
     "ActivityEvent",
     "Agent",
-    "AgentCheckpoint",
     "AgentRun",
     "AgentVersion",
     "ApiKey",
@@ -137,11 +129,7 @@ __all__ = [
     "Skill",
     "SkillAssignment",
     "SkillVersion",
-    "SupervisionAssignment",
-    "SupervisionIntervention",
-    "SupervisionPolicy",
     "Task",
-    "TaskAnchor",
     "TenantDek",
     "TokenUsageRecord",
     "ToolInvocation",
