@@ -284,6 +284,20 @@ class Budget(Base, PkMixin, TenantMixin, TimestampMixin):
     )
 
 
+class ProviderBudget(Base, PkMixin, TenantMixin, TimestampMixin):
+    """Monthly token limit for one model provider (its canonical name),
+    counted from token_usage_record over the calendar month in UTC, the same
+    window as Budget. NULL means no limit."""
+
+    __tablename__ = "provider_budget"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "provider", name="uq_provider_budget_tenant_provider"),
+    )
+
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    monthly_token_limit: Mapped[int | None] = mapped_column(BigInteger)
+
+
 class ActivityEvent(Base, PkMixin, TenantMixin):
     __tablename__ = "activity_event"
 
