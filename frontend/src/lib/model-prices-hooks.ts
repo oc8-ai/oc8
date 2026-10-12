@@ -37,6 +37,14 @@ export const useModelPrices = () =>
     queryFn: () => api.get<ModelPrice[]>("/model-prices"),
   });
 
+// Whether this deployment lets tenants edit the global prices; a shared
+// deployment turns it off (OC8_MODEL_PRICES_READ_ONLY on the backend).
+export const useModelPricesPolicy = () =>
+  useQuery({
+    queryKey: [...keys.modelPrices, "policy"],
+    queryFn: () => api.get<{ readOnly: boolean }>("/model-prices/policy"),
+  });
+
 export function useCreateModelPrice() {
   const qc = useQueryClient();
   return useMutation({

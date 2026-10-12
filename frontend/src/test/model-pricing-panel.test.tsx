@@ -13,7 +13,7 @@ const { getPrices, getGovernance, postPrice, deletePrice } = vi.hoisted(() => ({
   deletePrice: vi.fn(),
 }));
 
-const { getModels } = vi.hoisted(() => ({ getModels: vi.fn() }));
+const { getModels, getPolicy } = vi.hoisted(() => ({ getModels: vi.fn(), getPolicy: vi.fn() }));
 
 vi.mock("@/lib/api", () => ({
   api: {
@@ -21,6 +21,7 @@ vi.mock("@/lib/api", () => ({
       if (path === "/model-prices") return getPrices();
       if (path === "/governance") return getGovernance();
       if (path === "/models") return getModels();
+      if (path === "/model-prices/policy") return getPolicy();
       return Promise.reject(new Error(`unexpected GET ${path}`));
     },
     post: (path: string, body: unknown) => {
@@ -109,6 +110,19 @@ describe("ModelPricingPanel", () => {
     getModels.mockReset();
     getGovernance.mockResolvedValue(GOVERNANCE);
     getModels.mockResolvedValue([]);
+    getPolicy.mockReset().mockResolvedValue({ readOnly: false });
+  });
+
+  it("offers no editing when the operator manages the prices", async () => {
+    getPrices.mockResolvedValue(PRICES);
+    getPolicy.mockResolvedValue({ readOnly: true });
+    renderPanel();
+
+    expect(await screen.findByText(/managed by your platform operator/i)).toBeInTheDocument();
+    expect(screen.getByText("claudesonnet45")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /add model/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /edit/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /remove/i })).toBeNull();
   });
 
   it("renders rows from useModelPrices(), not from usePricing()", async () => {
