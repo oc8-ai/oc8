@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
@@ -23,6 +24,26 @@ from oc8.modelrouter.types import (
     NeutralTool,
 )
 from oc8.observability import get_tracer
+
+
+class ProviderBudgetExceeded(RuntimeError):
+    """The tenant used its monthly token quota for this provider."""
+
+    def __init__(self, provider: str, resets_at: dt.datetime) -> None:
+        self.provider = provider
+        self.resets_at = resets_at
+        super().__init__(f"{provider} monthly token quota used up until {resets_at:%Y-%m-%d}")
+
+
+async def _budget_blocks(
+    db: AsyncSession, *, tenant_id: uuid.UUID, provider: str
+) -> ProviderBudgetExceeded | None:
+    """The quota error for `provider`, or None while it still has budget.
+    Imported lazily: oc8.metering imports the model registry."""
+    from oc8.metering.provider_budget import check_provider_budget
+
+    check = await check_provider_budget(db, tenant_id=tenant_id, provider=provider)
+    return ProviderBudgetExceeded(check.provider, check.resets_at) if check.exhausted else None
 
 
 def is_retryable(exc: Exception) -> bool:
@@ -60,6 +81,9 @@ async def complete_with_fallback(
         )
         span.set_attribute("model", no_config_model if primary is None else primary.model)
         if primary is None:
+            blocked = await _budget_blocks(db, tenant_id=tenant_id, provider=no_config_provider)
+            if blocked is not None:
+                raise blocked
             api_key = await resolve_model_key(
                 db, tenant_id=tenant_id, provider=no_config_provider
             )
@@ -88,6 +112,27 @@ async def complete_with_fallback(
                 chain.append(fb)
 
         for i, config in enumerate(chain):
+            is_last = i == len(chain) - 1
+            blocked = await _budget_blocks(db, tenant_id=tenant_id, provider=config.provider)
+            if blocked is not None:
+                if is_last:
+                    raise blocked
+                next_config = chain[i + 1]
+                await append_event(
+                    db,
+                    tenant_id=tenant_id,
+                    actor_type="agent",
+                    actor_id=agent_id,
+                    category="model_router",
+                    action="fallback",
+                    resource={
+                        "from": f"{config.provider}:{config.model}",
+                        "to": f"{next_config.provider}:{next_config.model}",
+                        "reason": type(blocked).__name__,
+                    },
+                    decision="fallback",
+                )
+                continue
             api_key = await resolve_model_key(
                 db,
                 tenant_id=tenant_id,
@@ -118,7 +163,6 @@ async def complete_with_fallback(
                 base_url=base_url,
                 api_key=api_key,
             )
-            is_last = i == len(chain) - 1
             try:
                 return await router.complete(req)
             except Exception as exc:
@@ -188,6 +232,27 @@ async def stream_completion_with_fallback(
         )
 
         for i, (provider, model, cfg_params, credential_id) in enumerate(attempts):
+            is_last = i == len(attempts) - 1
+            blocked = await _budget_blocks(db, tenant_id=tenant_id, provider=provider)
+            if blocked is not None:
+                if is_last:
+                    raise blocked
+                nxt = attempts[i + 1]
+                await append_event(
+                    db,
+                    tenant_id=tenant_id,
+                    actor_type="agent",
+                    actor_id=agent_id,
+                    category="model_router",
+                    action="fallback",
+                    resource={
+                        "from": f"{provider}:{model}",
+                        "to": f"{nxt[0]}:{nxt[1]}",
+                        "reason": type(blocked).__name__,
+                        "streaming": True,
+                    },
+                )
+                continue
             api_key = await resolve_model_key(
                 db, tenant_id=tenant_id, provider=provider, credential_id=credential_id
             )
@@ -207,7 +272,6 @@ async def stream_completion_with_fallback(
                 base_url=base_url,
                 api_key=api_key,
             )
-            is_last = i == len(attempts) - 1
             emitted = False
             try:
                 async for chunk in router.stream(req):
