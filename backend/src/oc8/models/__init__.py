@@ -49,6 +49,7 @@ from oc8.models.ops import (
     AuditEvent,
     Budget,
     Integration,
+    ProviderBudget,
     Task,
     TokenUsageRecord,
 )
@@ -117,6 +118,7 @@ __all__ = [
     "OrgMemberDepartment",
     "Organization",
     "Permission",
+    "ProviderBudget",
     "PushSubscription",
     "RecordClaim",
     "Responsibility",

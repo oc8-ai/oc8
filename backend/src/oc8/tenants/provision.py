@@ -29,6 +29,7 @@ from oc8.audit import append_event
 from oc8.authz.permissions import role_kind
 from oc8.seed import BUILTIN_ROLES, det
 from oc8.seed.department_templates import seed_department_templates
+from oc8.seed.model_providers import seed_builtin_model_providers
 
 VALID_TIERS = ("standard", "enterprise", "onprem")
 
@@ -158,6 +159,9 @@ async def create_tenant(
     # a department is POST /plugins/{id}/instantiate-department, which needs an
     # installed department_template plugin version in this tenant.
     await seed_department_templates(db, tenant_id=tid)
+    # Every tenant can use oc8 AI; it still needs a key (a self-hoster's own,
+    # or the one oc8 Cloud sets) before it answers.
+    await seed_builtin_model_providers(db, tenant_id=tid)
 
     await db.flush()
     await append_event(

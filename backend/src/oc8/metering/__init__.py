@@ -1,5 +1,13 @@
 """Token metering (tech-spec §15). Idempotent, append-only usage records."""
 
+from oc8.metering.provider_budget import (
+    ProviderBudgetCheck,
+    check_provider_budget,
+    get_provider_budget,
+    provider_month_tokens,
+    provider_tokens_this_month,
+    set_provider_budget,
+)
 from oc8.metering.budget import (
     BudgetCheck,
     check_budget,
@@ -14,6 +22,12 @@ from oc8.metering.budget import (
 from oc8.metering.usage import record_usage
 
 __all__ = [
+    "ProviderBudgetCheck",
+    "check_provider_budget",
+    "get_provider_budget",
+    "provider_month_tokens",
+    "provider_tokens_this_month",
+    "set_provider_budget",
     "BudgetCheck",
     "check_budget",
     "current_month_tokens",
