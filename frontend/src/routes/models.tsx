@@ -61,6 +61,7 @@ interface ProviderGroup {
   canonical: string;
   locality: string;
   available: boolean;
+  connected: boolean;
   configs: ModelDTO[];
 }
 
@@ -196,13 +197,15 @@ export function ModelsPage() {
           canonical,
           locality: meta?.locality ?? configs[0]?.locality ?? "cloud",
           available: meta?.available ?? false,
+          // An older backend without `connected` keeps the old rule.
+          connected: meta?.connected ?? meta?.available ?? false,
           configs,
         };
       })
       .filter(
-        // Only providers actually connected -- a completion key set (or a
-        // local provider, always "available"), or at least one model still
-        // registered under it. Every OTHER built-in/plugin provider the
+        // Only providers actually connected -- a completion key set, or at
+        // least one model still registered under it. Ollama and the ChatGPT
+        // subscription are always "available" but not `connected` until set up. Every OTHER built-in/plugin provider the
         // tenant could theoretically use (available_provider_entries on the
         // backend) shows up in useModelProviders() regardless of whether
         // anyone ever configured it -- without this filter, an untouched
@@ -216,7 +219,7 @@ export function ModelsPage() {
         (g) =>
           g.canonical === AUTO_PROVIDER
             ? g.configs.length > 0
-            : g.available || g.configs.length > 0,
+            : g.connected || g.configs.length > 0,
       );
   }, [models, providers]);
 

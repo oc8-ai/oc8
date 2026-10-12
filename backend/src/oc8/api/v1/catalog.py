@@ -92,6 +92,15 @@ async def list_providers(db: DbSession, _p: CurrentPrincipal) -> list[dict[str, 
             get_settings(), tenant_keys=tenant_keys, entries=entries
         )
     )
+    # `connected`: the tenant has set this provider up (its own key, or a
+    # platform key that makes it usable). The Connected LLMs page shows these
+    # plus any provider with a model, not every provider that is `available`.
+    always = {e.canonical for e in entries if e.always_available}
+    for info in infos:
+        canonical = info["canonical"]
+        info["connected"] = canonical in tenant_keys or (
+            bool(info["available"]) and canonical not in always
+        )
     # Virtual auto-router: always offered. It has no completion key of its own;
     # concrete tiers carry credentials / BYOK.
     infos.append(
@@ -99,6 +108,7 @@ async def list_providers(db: DbSession, _p: CurrentPrincipal) -> list[dict[str, 
             "canonical": AUTO_PROVIDER,
             "locality": "cloud",
             "available": True,
+            "connected": False,
             "label": "Auto (complexity router)",
         }
     )

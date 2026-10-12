@@ -276,6 +276,10 @@ export interface ModelProviderDTO {
   canonical: string;
   locality: string;
   available: boolean;
+  /** Set up by this tenant (its own key, or a platform key). Ollama and the
+   * ChatGPT subscription are always `available` but only `connected` once
+   * the tenant has a key for them. */
+  connected?: boolean;
   /** Optional display label (e.g. Auto's "Auto (complexity router)"). */
   label?: string;
 }
