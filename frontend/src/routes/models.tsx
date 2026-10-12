@@ -50,6 +50,7 @@ import {
   useCreateModelPrice,
   useDeactivateModelPrice,
   useModelPrices,
+  useModelPricesPolicy,
   type ModelPrice,
 } from "@/lib/model-prices-hooks";
 
@@ -1893,7 +1894,9 @@ const EMPTY_NEW_PRICE: NewPriceDraft = {
 export function ModelPricingPanel() {
   const t = useT();
   const may = useMay();
-  const mayManage = may("model:manage");
+  const { data: policy } = useModelPricesPolicy();
+  const readOnly = policy?.readOnly ?? false;
+  const mayManage = may("model:manage") && !readOnly;
   const { data: prices = [] } = useModelPrices();
   // Shares the ["models"] query cache with ModelsPage's own useModels() call
   // (same key, react-query dedupes) -- this panel is exported standalone
@@ -2028,7 +2031,12 @@ export function ModelPricingPanel() {
             {t("Model pricing", "Modellpreise")}
           </div>
           <div className="font-serif text-base">
-            {t("USD per 1M tokens — editable", "USD pro 1 Mio. Token — bearbeitbar")}
+            {readOnly
+              ? t(
+                  "USD per 1M tokens — managed by your platform operator",
+                  "USD pro 1 Mio. Token — vom Plattformbetreiber gepflegt",
+                )
+              : t("USD per 1M tokens — editable", "USD pro 1 Mio. Token — bearbeitbar")}
           </div>
         </div>
         {mayManage && (

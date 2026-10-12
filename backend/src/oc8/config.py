@@ -260,6 +260,12 @@ class Settings(BaseSettings):
     # Secret store (§12.3): base64-encoded 256-bit root KEK for envelope encryption.
     secret_kek: str = ""
 
+    #: Model prices are global (oc8.api.v1.model_prices): on a deployment
+    #: shared by several tenants, one tenant's admin would change every
+    #: tenant's prices. True keeps the reads and refuses tenant writes; the
+    #: operator maintains prices outside the tenant API.
+    model_prices_read_only: bool = False
+
     # Third-party OAuth (§11.2). Tenant-supplied credentials take precedence;
     # these are the platform-wide fallback (design decision 2).
     google_oauth_client_id: str = ""
