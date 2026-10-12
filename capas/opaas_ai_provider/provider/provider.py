@@ -15,7 +15,7 @@ from typing import Any
 
 from oc8.modelrouter.adapters.openai_compatible import OpenAICompatibleAdapter
 
-# The OPaaS AI OpenAI-compatible base URL. A per-config base_url still wins.
+# The oc8 AI (powered by opaas) OpenAI-compatible base URL. A per-config base_url still wins.
 DEFAULT_BASE_URL = "https://ai.opaas.online/v1"
 
 

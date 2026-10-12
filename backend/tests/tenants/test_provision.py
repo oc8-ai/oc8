@@ -216,3 +216,27 @@ async def test_invalid_tier_is_rejected(owner_session: OwnerSessionFactory) -> N
     async with owner_session() as db:
         with pytest.raises(ValueError, match="tier"):
             await create_tenant(db, slug=_slug(), name="Bad", tier="platinum")
+
+
+async def test_new_tenant_has_oc8_ai_installed(
+    owner_session: OwnerSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pathlib import Path
+
+    from oc8.config import get_settings
+
+    # oc8 AI ships in the repo's top-level capas/, like in the seed test.
+    monkeypatch.setenv("OC8_CAPAS_PATH", str(Path(__file__).resolve().parents[3] / "capas"))
+    get_settings.cache_clear()
+    slug = f"ai-{uuid.uuid4().hex[:8]}"
+    async with owner_session() as db:
+        created = await create_tenant(db, slug=slug, name="AI GmbH")
+        capa = (
+            await db.execute(
+                select(m.Capa).where(
+                    m.Capa.tenant_id == created.tenant_id, m.Capa.name == "opaas_ai_provider"
+                )
+            )
+        ).scalar_one_or_none()
+    get_settings.cache_clear()
+    assert capa is not None
