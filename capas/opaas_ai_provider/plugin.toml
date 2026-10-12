@@ -9,7 +9,7 @@
 
 [plugin]
 name = "opaas_ai_provider"
-version = "1.0.0"
+version = "1.0.1"
 type = "model_adapter"
 trust = "first_party"
 summary = "oc8 AI – powered by opaas: hosted models over an OpenAI-compatible endpoint"
