@@ -104,6 +104,33 @@ async def test_list_providers_honors_a_tenant_byok_key(
             assert anthropic_after["available"] is True
 
 
+async def test_list_providers_marks_only_set_up_providers_connected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Ollama and the ChatGPT subscription are always `available` (nothing to
+    # check up front), but a fresh tenant has set up neither: they must not
+    # show as connected. A platform env key does connect its provider.
+    monkeypatch.setattr(config.get_settings(), "anthropic_api_key", "sk-platform", raising=False)
+    monkeypatch.setattr(config.get_settings(), "openai_api_key", "", raising=False)
+    tenant = uuid.uuid4()
+
+    app = create_app()
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as client:
+            r = await client.get(
+                "/api/v1/models/providers",
+                headers={"Authorization": f"Bearer {_token(tenant)}"},
+            )
+    by_canonical = {p["canonical"]: p for p in r.json()}
+    assert by_canonical["ollama"]["available"] is True
+    assert by_canonical["ollama"]["connected"] is False
+    assert by_canonical["openai_chatgpt"]["available"] is True
+    assert by_canonical["openai_chatgpt"]["connected"] is False
+    assert by_canonical["anthropic"]["connected"] is True
+    assert by_canonical["openai"]["connected"] is False
+
+
 async def test_create_and_patch_model_config() -> None:
     tenant = uuid.UUID(str(ACME_TENANT_ID))
     app = create_app()

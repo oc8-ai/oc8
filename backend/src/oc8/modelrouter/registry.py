@@ -45,6 +45,10 @@ class ProviderEntry:
     locality: str
     factory: Callable[[Settings, str | None, str | None], ModelAdapter]
     available: Callable[[Settings, str | None], bool]
+    #: Always `available` because there is nothing to check up front (a local
+    #: server, a per-connection login), so only a tenant key or a model set up
+    #: against it means the tenant actually uses it.
+    always_available: bool = False
 
 
 _PROVIDERS: tuple[ProviderEntry, ...] = (
@@ -82,6 +86,7 @@ _PROVIDERS: tuple[ProviderEntry, ...] = (
         # check: this one is authorised per connection by a ChatGPT login, so
         # it is offered to every tenant and the login decides whether it works.
         lambda _s, _key: True,
+        always_available=True,
     ),
     ProviderEntry(
         "ollama",
@@ -89,6 +94,7 @@ _PROVIDERS: tuple[ProviderEntry, ...] = (
         "local",
         lambda s, _b, _key: OllamaAdapter(s.ollama_base_url),
         lambda s, _key: True,
+        always_available=True,
     ),
 )
 
