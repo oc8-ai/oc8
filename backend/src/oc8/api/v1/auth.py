@@ -50,6 +50,7 @@ from oc8.tenants.provision import (
     get_singleton_organization,
     list_tenants,
 )
+from oc8.workspace.inviter import get_member_inviter
 from oc8.workspace.members import list_members, seats_for
 
 router = APIRouter()
@@ -743,6 +744,10 @@ async def change_own_email(
     return EmailChangeResponse(verification_required=True, sent_to=new_email)
 
 
+def _member_invites() -> str:
+    return "external" if get_member_inviter() is not None else "local"
+
+
 @router.get(
     "/auth/config",
     response_model=AuthConfig,
@@ -771,6 +776,7 @@ async def auth_config() -> AuthConfig:
             client_id="",
             demo=s.is_demo,
             sso_logout_url=sso_logout_url,
+            member_invites=_member_invites(),
         )
     return AuthConfig(
         mode="community",
@@ -780,6 +786,7 @@ async def auth_config() -> AuthConfig:
         initialized=await _instance_has_an_administrator(),
         demo=s.is_demo,
         sso_logout_url=sso_logout_url,
+        member_invites=_member_invites(),
     )
 
 

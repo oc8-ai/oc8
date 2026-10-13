@@ -135,7 +135,9 @@ export function MemberDetailForm({ member }: { member: Member }) {
 
   // Only Community's local-password login actually offers a password form to
   // USE a password set here.
-  const localAuth = authConfig?.mode === "community";
+  // With an external inviter the deployment's sign-in service owns
+  // passwords and sign-in emails; core refuses to set either locally.
+  const localAuth = authConfig?.mode === "community" && authConfig?.memberInvites !== "external";
 
   const [displayName, setDisplayName] = useState(member.displayName ?? "");
   useEffect(() => setDisplayName(member.displayName ?? ""), [member.displayName]);

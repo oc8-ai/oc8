@@ -29,7 +29,7 @@ from oc8.api.v1._serializers import member_to_dto
 from oc8.audit import append_event
 from oc8.auth import Principal
 from oc8.auth.password import PasswordHashingError, hash_password
-from oc8.authz.permissions import MANAGE, MEMBER, VIEW, perm
+from oc8.authz.permissions import MANAGE, MEMBER, MEMBER_ROLE, VIEW, perm
 from oc8.authz.scope import scope_for_principal, subject_uuid_for
 from oc8.config import get_settings
 from oc8.copilot.profile import offboard_member
@@ -42,6 +42,7 @@ from oc8.schemas.requests import (
     RenameMemberSubjectRequest,
     SetMemberPasswordRequest,
 )
+from oc8.workspace.inviter import InviteRefused, get_member_inviter
 from oc8.workspace.members import (
     MemberRow,
     UnknownSeatRole,
@@ -191,6 +192,18 @@ async def list_members_route(
     return Page(items=[member_to_dto(r) for r in rows], total_count=total)
 
 
+def _refuse_local_password_with_external_inviter() -> None:
+    """With a member inviter registered, people sign in through the
+    deployment's identity service only: a local password, or a sign-in
+    identity changed here, would be a way in that skips it and whatever it
+    enforces."""
+    if get_member_inviter() is not None:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "Passwords are managed by this deployment's sign-in service.",
+        )
+
+
 @router.post(
     "/members",
     response_model=MemberDTO,
@@ -234,13 +247,51 @@ async def create_member(
     passwords are meaningless (the dev-login/dev-tenants flow is how everybody
     signs in there) and `GET /auth/config` reports that same flag as `mode`.
     """
+    inviter = get_member_inviter()
+    subject = body.subject
+    if inviter is not None and body.password is not None:
+        _refuse_local_password_with_external_inviter()
+    if inviter is not None:
+        # The deployment invites people itself (e.g. through its identity
+        # service); `subject` is then the email, and the inviter answers with
+        # the subject that person will sign in as.
+        try:
+            result = await inviter.invite(
+                tenant_id=principal.tenant_id,
+                email=body.subject,
+                role=body.role or MEMBER_ROLE,
+                display_name=body.display_name,
+                invited_by=principal,
+            )
+        except InviteRefused as exc:
+            raise HTTPException(
+                exc.status_code, {"code": exc.code, "message": exc.message, **exc.extra}
+            ) from exc
+        subject = result.subject
     member, created = await upsert_member(
         db,
         tenant_id=principal.tenant_id,
-        subject=body.subject,
+        subject=subject,
         display_name=body.display_name,
         all_departments=body.all_departments,
     )
+    if inviter is not None:
+        # Same audit trail as a local invitation: who invited whom, as what.
+        await append_event(
+            db,
+            tenant_id=principal.tenant_id,
+            actor_type="operator",
+            actor_id=await _acting_member_id(db, principal),
+            category="member",
+            action="member.invited",
+            resource={
+                "member_id": str(member.id),
+                "subject": member.subject,
+                "role": body.role or MEMBER_ROLE,
+            },
+            reason="invited through the deployment's member inviter (POST /members)",
+            principal=principal,
+        )
     invite_link: str | None = None
     invite_smtp: SmtpConfig | None = None
     invite_recipient: str | None = None
@@ -262,7 +313,7 @@ async def create_member(
             reason="password set through POST /members",
             principal=principal,
         )
-    elif not get_settings().is_dev and member.password_hash is None:
+    elif inviter is None and not get_settings().is_dev and member.password_hash is None:
         # A re-invite (this same branch, reached again for a subject whose
         # first link leaked, went to the wrong inbox, or simply expired
         # unused) must not leave that earlier link live for the rest of its
@@ -363,6 +414,7 @@ async def set_member_password(
     deployment. Never returns the hash or echoes the plaintext: a 204 says
     only that it happened, the way a "password changed" screen should.
     """
+    _refuse_local_password_with_external_inviter()
     member = await get_member(db, tenant_id=principal.tenant_id, member_id=member_id)
     if member is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "member not found")
@@ -407,6 +459,7 @@ async def rename_member_subject(
     the target subject -- `(tenant_id, subject)` is unique, and the row that
     lost the race would otherwise look like it simply vanished.
     """
+    _refuse_local_password_with_external_inviter()
     member = await get_member(db, tenant_id=principal.tenant_id, member_id=member_id)
     if member is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "member not found")
@@ -590,6 +643,7 @@ async def mint_member_password_reset(
     previous unused token of that purpose is spent first, and the link is
     always returned so a missing mail server is not a dead end.
     """
+    _refuse_local_password_with_external_inviter()
     member = await get_member(db, tenant_id=principal.tenant_id, member_id=member_id)
     if member is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "member not found")
@@ -675,6 +729,16 @@ async def delete_member_route(
     gone = await delete_member(db, tenant_id=principal.tenant_id, member_id=member.id)
     if gone is None:  # pragma: no cover - get_member already 404'd
         raise HTTPException(status.HTTP_404_NOT_FOUND, "member not found")
+    inviter = get_member_inviter()
+    if inviter is not None:
+        # Before the commit: if the deployment cannot lock the person out,
+        # the row stays and the administrator sees why.
+        try:
+            await inviter.remove(tenant_id=principal.tenant_id, subject=member.subject)
+        except InviteRefused as exc:
+            raise HTTPException(
+                exc.status_code, {"code": exc.code, "message": exc.message}
+            ) from exc
 
     await offboard_member(db, tenant_id=principal.tenant_id, member_id=member.id)
     await _spend_unused_tokens(db, tenant_id=principal.tenant_id, member_id=member.id)

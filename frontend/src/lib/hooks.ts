@@ -468,12 +468,19 @@ export const useDepartments = (params: ListQueryParams = {}) => {
 /** "dev" | "community" -- which login mode this instance runs. The user
  *  detail page reads this to decide whether to show password controls: they
  *  render only in "community" mode, this edition's one real login door.
- *  `demo` is true when `OC8_DEMO=true` (ACME showcase seed). */
+ *  `demo` is true when `OC8_DEMO=true` (ACME showcase seed). `memberInvites`
+ *  is "external" when the deployment invites people itself (a role, no
+ *  password; it may refuse with its own message). */
 export const useAuthConfig = () =>
   useQuery({
     queryKey: ["auth", "config"] as const,
     queryFn: () =>
-      api.get<{ mode: "dev" | "community"; demo?: boolean; initialized?: boolean }>("/auth/config"),
+      api.get<{
+        mode: "dev" | "community";
+        demo?: boolean;
+        initialized?: boolean;
+        memberInvites?: "local" | "external";
+      }>("/auth/config"),
     staleTime: Infinity,
   });
 

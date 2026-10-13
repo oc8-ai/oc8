@@ -12,6 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useAssignees, useCreateMember, type RoleAssignee } from "@/lib/roles-hooks";
+import { ApiError } from "@/lib/api";
 import { useAuthConfig } from "@/lib/hooks";
 import { useMay } from "@/lib/governance-hooks";
 import { useT } from "@/lib/i18n";
@@ -166,6 +167,34 @@ function InviteLinkDialog({
   );
 }
 
+/** Roles an invitation can carry, least to most; the deployment refuses one
+ *  above the inviter's own. */
+const INVITE_ROLES = ["member", "auditor", "operator", "dept_manager", "org_admin"];
+
+interface InviteRefusal {
+  message: string;
+  /** Where the deployment suggests going next; only same-app paths are kept. */
+  action: { label: string; url: string } | null;
+}
+
+/** A structured refusal from the deployment's inviter, else null. */
+function inviteRefusal(err: unknown): InviteRefusal | null {
+  if (!(err instanceof ApiError)) return null;
+  let detail: { code?: string; message?: string; actionLabel?: string; actionUrl?: string };
+  try {
+    detail = JSON.parse(err.message);
+  } catch {
+    return null;
+  }
+  if (!detail || typeof detail.code !== "string" || typeof detail.message !== "string") return null;
+  const url = detail.actionUrl;
+  const sameApp = typeof url === "string" && url.startsWith("/") && !url.startsWith("//") && !url.startsWith("/\\");
+  return {
+    message: detail.message,
+    action: sameApp && detail.actionLabel ? { label: detail.actionLabel, url } : null,
+  };
+}
+
 function CreateMemberDialog({
   open,
   onOpenChange,
@@ -182,15 +211,22 @@ function CreateMemberDialog({
   const t = useT();
   const createMember = useCreateMember();
   const { data: authConfig } = useAuthConfig();
-  const localAuth = authConfig?.mode === "community";
+  // The deployment invites people itself: they get a role, no password,
+  // and it may refuse with its own message.
+  const externalInvites = authConfig?.memberInvites === "external";
+  const localAuth = authConfig?.mode === "community" && !externalInvites;
   const [subject, setSubject] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
+  const [role, setRole] = useState("member");
+  const [refusal, setRefusal] = useState<InviteRefusal | null>(null);
 
   const reset = () => {
     setSubject("");
     setDisplayName("");
     setPassword("");
+    setRole("member");
+    setRefusal(null);
   };
 
   const submit = () => {
@@ -208,6 +244,7 @@ function CreateMemberDialog({
         subject: trimmed,
         displayName: displayName.trim(),
         ...(localAuth && password.length > 0 ? { password } : {}),
+        ...(externalInvites ? { role } : {}),
       },
       {
         onSuccess: (created) => {
@@ -225,12 +262,18 @@ function CreateMemberDialog({
           reset();
           onOpenChange(false);
         },
-        onError: (err) =>
+        onError: (err) => {
+          const refused = externalInvites ? inviteRefusal(err) : null;
+          if (refused) {
+            setRefusal(refused);
+            return;
+          }
           toast.error(
             err instanceof Error
               ? err.message
               : t("Could not create user. Try again.", "Benutzer konnte nicht angelegt werden. Versuchen Sie es erneut."),
-          ),
+          );
+        },
       },
     );
   };
@@ -273,6 +316,36 @@ function CreateMemberDialog({
               className="rounded-md border border-input bg-background px-3 py-2"
             />
           </label>
+          {externalInvites && (
+            <label className="grid gap-1.5">
+              <span>{t("Role", "Rolle")}</span>
+              <select
+                aria-label={t("Role", "Rolle")}
+                value={role}
+                onChange={(e) => setRole(e.target.value)}
+                className="rounded-md border border-input bg-background px-3 py-2"
+              >
+                {INVITE_ROLES.map((name) => (
+                  <option key={name} value={name}>
+                    {roleLabel(name, t)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {refusal && (
+            <p role="alert" className="text-xs text-destructive">
+              {refusal.message}
+              {refusal.action && (
+                <>
+                  {" "}
+                  <a href={refusal.action.url} className="underline">
+                    {refusal.action.label}
+                  </a>
+                </>
+              )}
+            </p>
+          )}
           {localAuth && (
             <label className="grid gap-1.5">
               <span>{t("Password (optional)", "Passwort (optional)")}</span>
@@ -304,7 +377,11 @@ function CreateMemberDialog({
             disabled={createMember.isPending}
             className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
           >
-            {createMember.isPending ? t("Creating…", "Wird angelegt…") : t("Create user", "Benutzer anlegen")}
+            {createMember.isPending
+              ? t("Creating…", "Wird angelegt…")
+              : externalInvites
+                ? t("Invite", "Einladen")
+                : t("Create user", "Benutzer anlegen")}
           </button>
         </div>
       </DialogContent>

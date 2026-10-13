@@ -265,12 +265,15 @@ export function useCreateMember() {
       displayName?: string;
       allDepartments?: boolean;
       password?: string;
+      /** Only with an external inviter (`memberInvites: "external"`). */
+      role?: string;
     }) =>
       api.post<CreatedMember>("/members", {
         subject: body.subject,
         displayName: body.displayName ?? "",
         ...(body.allDepartments === undefined ? {} : { allDepartments: body.allDepartments }),
         ...(body.password ? { password: body.password } : {}),
+        ...(body.role ? { role: body.role } : {}),
       }),
     onSuccess: invalidate,
   });
