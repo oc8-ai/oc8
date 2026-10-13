@@ -55,6 +55,7 @@ import {
   unsubscribeFromPush,
 } from "@/lib/push-notifications";
 import { useFrontendEdition } from "@/edition/composition";
+import type { EditionNavigationItem } from "@/edition/contracts";
 
 /** Hand this device's push subscription back before the session ends.
  *
@@ -440,6 +441,16 @@ function NavItemSection({
   );
 }
 
+/** The label of the edition navigation item a path belongs to, if any. */
+export function editionPageTitle(
+  items: readonly EditionNavigationItem[],
+  path: string,
+  t: (en: string, de: string) => string,
+): string | undefined {
+  const item = items.find((i) => path === i.to || path.startsWith(`${i.to}/`));
+  return item ? t(item.label.en, item.label.de) : undefined;
+}
+
 /** Notices an edition shows above every page, in the order it lists them. */
 export function EditionBanners() {
   const { banners } = useFrontendEdition();
@@ -699,7 +710,7 @@ export function AppShell() {
     if (p.startsWith("/costs")) return t("Costs", "Kosten");
     if (p.startsWith("/statistics")) return t("Statistics", "Statistiken");
     if (p.startsWith("/settings")) return t("Settings", "Einstellungen");
-    return "oc8";
+    return editionPageTitle(edition.navigation, p, t) ?? "oc8";
   };
   const pageSubtitle = (p: string) => {
     if (p === "/")
