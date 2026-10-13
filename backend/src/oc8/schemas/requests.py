@@ -503,6 +503,10 @@ class CreateMemberRequest(CamelModel):
 
     subject: str = Field(min_length=1)
     display_name: str = ""
+    #: Built-in role for an invitation through an external inviter (see
+    #: oc8.workspace.inviter). Ignored for local invitations, whose role is set
+    #: afterwards with PUT /members/{id}/role.
+    role: str | None = None
     #: TRI-STATE, and that is the fix for a silent 200: `None` means "leave it as
     #: it is", `true` grants, `false` REVOKES.
     #:

@@ -1243,6 +1243,9 @@ class TriggerDTO(CamelModel):
 
 class AuthConfig(CamelModel):
     mode: str  # "dev" | "community"
+    #: "external" when the deployment registered a member inviter
+    #: (oc8.workspace.inviter): invitations then ask for a role and no password.
+    member_invites: str = "local"
     auth_server_url: str
     realm: str
     client_id: str

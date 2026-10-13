@@ -16,6 +16,10 @@ const { toastSuccess, toastError } = vi.hoisted(() => ({
   toastError: vi.fn(),
 }));
 
+const { authConfigMock } = vi.hoisted(() => ({
+  authConfigMock: vi.fn(() => ({ mode: "community" }) as { mode: string; memberInvites?: string }),
+}));
+
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-router")>();
   return {
@@ -47,7 +51,7 @@ vi.mock("@/lib/hooks", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/hooks")>();
   return {
     ...actual,
-    useAuthConfig: () => ({ data: { mode: "community" } }),
+    useAuthConfig: () => ({ data: authConfigMock() }),
     useDepartments: () => ({ data: { items: [] } }),
     useAuth: () => ({ data: { subject: "admin@example.com", memberId: "m-admin" } }),
   };
@@ -93,6 +97,15 @@ describe("Member detail: password-reset link", () => {
     toastSuccess.mockReset();
     toastError.mockReset();
     Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } });
+  });
+
+  it("offers no local password tools when the deployment invites people itself", () => {
+    authConfigMock.mockReturnValueOnce({ mode: "community", memberInvites: "external" });
+    renderForm();
+
+    expect(screen.queryByRole("button", { name: /send reset link/i })).toBeNull();
+    expect(screen.queryByRole("heading", { name: /^password$/i })).toBeNull();
+    expect(screen.getByText(/managed by your identity provider/i)).toBeInTheDocument();
   });
 
   it("lets an admin mint a reset link from the user screen", () => {
