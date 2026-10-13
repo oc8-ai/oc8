@@ -440,6 +440,18 @@ function NavItemSection({
   );
 }
 
+/** Notices an edition shows above every page, in the order it lists them. */
+export function EditionBanners() {
+  const { banners } = useFrontendEdition();
+  return (
+    <>
+      {banners.map(({ id, component: Banner }) => (
+        <Banner key={id} />
+      ))}
+    </>
+  );
+}
+
 export function AppShell() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
@@ -1073,6 +1085,7 @@ export function AppShell() {
             pathname === "/copilot" ? "flex min-h-0 flex-col" : "px-4 py-6 md:px-8 md:py-8",
           )}
         >
+          <EditionBanners />
           <Outlet />
         </main>
       </div>
