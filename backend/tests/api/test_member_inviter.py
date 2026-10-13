@@ -42,9 +42,8 @@ def inviter():
 def _headers(
     tenant: uuid.UUID, subject: str = "admin-sub", role: str = "org_admin"
 ) -> dict[str, str]:
-    return {
-        "Authorization": f"Bearer {get_identity_provider().mint(tenant_id=tenant, subject=subject, role=role)}"
-    }
+    token = get_identity_provider().mint(tenant_id=tenant, subject=subject, role=role)
+    return {"Authorization": f"Bearer {token}"}
 
 
 async def _post(tenant, body, headers=None):
