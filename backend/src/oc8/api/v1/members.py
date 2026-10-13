@@ -275,6 +275,23 @@ async def create_member(
         display_name=body.display_name,
         all_departments=body.all_departments,
     )
+    if inviter is not None:
+        # Same audit trail as a local invitation: who invited whom, as what.
+        await append_event(
+            db,
+            tenant_id=principal.tenant_id,
+            actor_type="operator",
+            actor_id=await _acting_member_id(db, principal),
+            category="member",
+            action="member.invited",
+            resource={
+                "member_id": str(member.id),
+                "subject": member.subject,
+                "role": body.role or MEMBER_ROLE,
+            },
+            reason="invited through the deployment's member inviter (POST /members)",
+            principal=principal,
+        )
     invite_link: str | None = None
     invite_smtp: SmtpConfig | None = None
     invite_recipient: str | None = None

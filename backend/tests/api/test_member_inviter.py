@@ -39,23 +39,35 @@ def inviter():
     set_member_inviter(None)
 
 
-def _headers(tenant: uuid.UUID, subject: str = "admin-sub", role: str = "org_admin") -> dict[str, str]:
-    return {"Authorization": f"Bearer {get_identity_provider().mint(tenant_id=tenant, subject=subject, role=role)}"}
+def _headers(
+    tenant: uuid.UUID, subject: str = "admin-sub", role: str = "org_admin"
+) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {get_identity_provider().mint(tenant_id=tenant, subject=subject, role=role)}"
+    }
 
 
 async def _post(tenant, body, headers=None):
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://t") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=create_app()), base_url="http://t"
+    ) as client:
         return await client.post("/api/v1/members", json=body, headers=headers or _headers(tenant))
 
 
-async def test_an_external_inviter_receives_the_email_and_role(inviter, app_session: AppSessionFactory) -> None:
+async def test_an_external_inviter_receives_the_email_and_role(
+    inviter, app_session: AppSessionFactory
+) -> None:
     tenant = uuid.uuid4()
-    response = await _post(tenant, {"subject": "kim@acme.test", "displayName": "Kim", "role": "operator"})
+    response = await _post(
+        tenant, {"subject": "kim@acme.test", "displayName": "Kim", "role": "operator"}
+    )
 
     assert response.status_code == 201
     assert inviter.invites == [{"email": "kim@acme.test", "role": "operator", "by": "admin-sub"}]
     async with app_session(tenant) as db:
-        member = (await db.execute(select(m.OrgMember).where(m.OrgMember.subject == "kc-kim@acme.test"))).scalar_one()
+        member = (
+            await db.execute(select(m.OrgMember).where(m.OrgMember.subject == "kc-kim@acme.test"))
+        ).scalar_one()
     assert member.password_hash is None
 
 
@@ -63,7 +75,10 @@ async def test_a_refusal_comes_back_as_409_with_its_reason() -> None:
     set_member_inviter(
         _Recorder(
             InviteRefused(
-                409, "limit_reached", "This team is full.", {"actionLabel": "Upgrade", "actionUrl": "/upgrade"}
+                409,
+                "limit_reached",
+                "This team is full.",
+                {"actionLabel": "Upgrade", "actionUrl": "/upgrade"},
             )
         )
     )
@@ -73,7 +88,10 @@ async def test_a_refusal_comes_back_as_409_with_its_reason() -> None:
         set_member_inviter(None)
     assert response.status_code == 409
     assert response.json()["detail"] == {
-        "code": "limit_reached", "message": "This team is full.", "actionLabel": "Upgrade", "actionUrl": "/upgrade",
+        "code": "limit_reached",
+        "message": "This team is full.",
+        "actionLabel": "Upgrade",
+        "actionUrl": "/upgrade",
     }
 
 
@@ -84,10 +102,14 @@ async def test_without_an_inviter_members_are_created_as_before() -> None:
 
 
 async def test_auth_config_says_how_members_are_invited(inviter) -> None:
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://t") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=create_app()), base_url="http://t"
+    ) as client:
         assert (await client.get("/api/v1/auth/config")).json()["memberInvites"] == "external"
     set_member_inviter(None)
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://t") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=create_app()), base_url="http://t"
+    ) as client:
         assert (await client.get("/api/v1/auth/config")).json()["memberInvites"] == "local"
 
 
@@ -109,7 +131,9 @@ async def test_deleting_a_member_asks_the_inviter_to_remove_them(
         await db.flush()
         member_id = member.id
 
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://t") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=create_app()), base_url="http://t"
+    ) as client:
         response = await client.delete(f"/api/v1/members/{member_id}", headers=_headers(tenant))
 
     assert response.status_code == 204
@@ -119,13 +143,17 @@ async def test_deleting_a_member_asks_the_inviter_to_remove_them(
 async def test_with_an_inviter_no_local_password_is_created(inviter) -> None:
     # A password would make a local login past the deployment's own sign-in
     # service; with an inviter registered, people sign in only there.
-    response = await _post(uuid.uuid4(), {"subject": "kim@acme.test", "password": "a long password"})
+    response = await _post(
+        uuid.uuid4(), {"subject": "kim@acme.test", "password": "a long password"}
+    )
 
     assert response.status_code == 422
     assert inviter.invites == []
 
 
-async def test_with_an_inviter_no_member_gets_a_local_password(inviter, app_session: AppSessionFactory) -> None:
+async def test_with_an_inviter_no_member_gets_a_local_password(
+    inviter, app_session: AppSessionFactory
+) -> None:
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         member = m.OrgMember(
@@ -135,13 +163,17 @@ async def test_with_an_inviter_no_member_gets_a_local_password(inviter, app_sess
         await db.flush()
         member_id = member.id
 
-    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://t") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=create_app()), base_url="http://t"
+    ) as client:
         set_password = await client.put(
             f"/api/v1/members/{member_id}/password",
             json={"password": "a long password"},
             headers=_headers(tenant),
         )
-        reset_link = await client.post(f"/api/v1/members/{member_id}/password-reset", headers=_headers(tenant))
+        reset_link = await client.post(
+            f"/api/v1/members/{member_id}/password-reset", headers=_headers(tenant)
+        )
         rename = await client.put(
             f"/api/v1/members/{member_id}/subject",
             json={"subject": "someone-else@acme.test"},
@@ -152,5 +184,25 @@ async def test_with_an_inviter_no_member_gets_a_local_password(inviter, app_sess
     assert reset_link.status_code == 422
     assert rename.status_code == 422
     async with app_session(tenant) as db:
-        row = (await db.execute(select(m.OrgMember).where(m.OrgMember.id == member_id))).scalar_one()
+        row = (
+            await db.execute(select(m.OrgMember).where(m.OrgMember.id == member_id))
+        ).scalar_one()
     assert row.password_hash is None
+
+
+async def test_an_external_invitation_is_audited(inviter, app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    response = await _post(tenant, {"subject": "kim@acme.test", "role": "operator"})
+    assert response.status_code == 201
+
+    async with app_session(tenant) as db:
+        events = (
+            await db.execute(
+                select(m.AuditEvent.action, m.AuditEvent.resource).where(
+                    m.AuditEvent.tenant_id == tenant
+                )
+            )
+        ).all()
+    invited = [resource for action, resource in events if action == "member.invited"]
+    assert invited and invited[0]["subject"] == "kc-kim@acme.test"
+    assert invited[0]["role"] == "operator"
