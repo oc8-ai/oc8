@@ -4,3 +4,7 @@ type Capability = str
 
 ENTERPRISE_SUPERVISION_ADVANCED: Capability = "enterprise.supervision.advanced"
 ENTERPRISE_SSO_SAML: Capability = "enterprise.sso.saml"
+
+ALL_CAPABILITIES: frozenset[Capability] = frozenset(
+    {ENTERPRISE_SUPERVISION_ADVANCED, ENTERPRISE_SSO_SAML}
+)

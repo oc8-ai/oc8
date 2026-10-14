@@ -46,7 +46,7 @@ import { useCopilotProfile } from "@/lib/hooks-copilot";
 import { mascotState } from "@/lib/copilot-status";
 import { cn } from "@/lib/utils";
 import { useAgents, useApprovals, useClarifications, useStanding } from "@/lib/hooks";
-import { useAssignedRoleName, useCan, useMay } from "@/lib/governance-hooks";
+import { useAssignedRoleName, useCallerCapabilities, useCan, useMay } from "@/lib/governance-hooks";
 import { useLang, useT } from "@/lib/i18n";
 import { hasCommunitySession, logoutCommunity, logoutDev } from "@/lib/api";
 import {
@@ -54,7 +54,7 @@ import {
   listenForPushSubscriptionChanges,
   unsubscribeFromPush,
 } from "@/lib/push-notifications";
-import { useFrontendEdition } from "@/edition/composition";
+import { isPathBlocked, useFrontendEdition, visibleEditionNavigation } from "@/edition/composition";
 import type { EditionNavigationItem } from "@/edition/contracts";
 
 /** Hand this device's push subscription back before the session ends.
@@ -463,6 +463,23 @@ export function EditionBanners() {
   );
 }
 
+/** Renders the page, or a neutral panel when the path is an edition feature the
+ *  caller's organisation cannot use. */
+export function EditionCapabilityGate({ path, children }: { path: string; children: ReactNode }) {
+  const { gates } = useFrontendEdition();
+  const callerCapabilities = useCallerCapabilities();
+  const t = useT();
+  if (!isPathBlocked(gates, path, callerCapabilities)) return <>{children}</>;
+  return (
+    <div role="alert" className="mx-auto max-w-md py-16 text-center text-sm text-muted-foreground">
+      {t(
+        "This feature is not available for your organisation.",
+        "Diese Funktion ist für Ihre Organisation nicht verfügbar.",
+      )}
+    </div>
+  );
+}
+
 export function AppShell() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
@@ -529,6 +546,7 @@ export function AppShell() {
   );
   const notifCount = agents.filter((a) => a.status === "warning" || a.status === "error").length;
   const edition = useFrontendEdition();
+  const callerCapabilities = useCallerCapabilities();
 
   const nav: NavEntry[] = [
     { to: "/", label: t("Office", "Büro"), icon: Building2, exact: true, needs: "department:view" },
@@ -661,7 +679,7 @@ export function AppShell() {
         },
       ],
     },
-    ...edition.navigation.map(
+    ...visibleEditionNavigation(edition.navigation, edition.gates, callerCapabilities).map(
       (item): NavLink => ({
         to: item.to,
         label: t(item.label.en, item.label.de),
@@ -1097,7 +1115,9 @@ export function AppShell() {
           )}
         >
           <EditionBanners />
-          <Outlet />
+          <EditionCapabilityGate path={pathname}>
+            <Outlet />
+          </EditionCapabilityGate>
         </main>
       </div>
       <NotificationsSheet
