@@ -60,6 +60,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from oc8.api.deps import CurrentPrincipal, DbSession, unguarded
 from oc8.api.v1._serializers import seat_to_dto
+from oc8.auth import Principal
 from oc8.authz.authority import Authority, authority_for_principal
 from oc8.authz.permissions import (
     ALL_PERMISSIONS,
@@ -68,6 +69,7 @@ from oc8.authz.permissions import (
     permissions_for,
     role_kind,
 )
+from oc8.licensing import ALL_CAPABILITIES, get_entitlements_resolver
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import SeatDTO
 from oc8.workspace.members import Seat, seats_for
@@ -121,6 +123,10 @@ class GovernanceDTO(CamelModel):
     #: own -- a demoted administrator's own diagnostic screen would otherwise
     #: tell him he holds all 52 while every gate refuses him.
     callerPermissions: list[str]
+    #: The capabilities the caller's organisation holds, when the deployment
+    #: resolves entitlements per organisation; null when it does not (unknown).
+    #: A resolver that fails yields an empty list.
+    callerCapabilities: list[str] | None = None
     #: `token` when nobody has assigned them anything (which is every caller on
     #: every tenant that has configured nothing), `assigned` when a row decides.
     callerRoleSource: str
@@ -189,6 +195,18 @@ def _builtin_roles(kind: str) -> list[RoleDTO]:
     ]
 
 
+async def _caller_capabilities(principal: Principal) -> list[str] | None:
+    resolver = get_entitlements_resolver()
+    if resolver is None:
+        return None
+    try:
+        entitlements = await resolver(principal)
+        return sorted(c for c in ALL_CAPABILITIES if entitlements.has(c))
+    except Exception:
+        logger.warning("governance could not resolve the caller's capabilities", exc_info=True)
+        return []
+
+
 @router.get(
     "/governance",
     response_model=GovernanceDTO,
@@ -247,6 +265,7 @@ async def governance(request: Request, principal: CurrentPrincipal, db: DbSessio
     unusable = authority is not None and authority.source == "assigned" and assigned is None
 
     return GovernanceDTO(
+        callerCapabilities=await _caller_capabilities(principal),
         permissions=sorted(ALL_PERMISSIONS),
         roles=_builtin_roles(HUMAN),
         agentRoles=_builtin_roles(AGENT),
