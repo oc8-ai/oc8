@@ -100,6 +100,14 @@ export function useGovernance() {
   });
 }
 
+/** The capabilities the caller's organisation may use, or null when unknown
+ *  (not yet loaded, failed, or not resolved per organisation). Null means
+ *  "change nothing". */
+export function useCallerCapabilities(): string[] | null {
+  const { data } = useGovernance();
+  return data?.callerCapabilities ?? null;
+}
+
 /** "May the caller's ROLE do this, tenant-wide?"
  *
  * Backed by `callerPermissions`, which is exactly what the role grants and

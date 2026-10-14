@@ -66,6 +66,7 @@ vi.mock("@/lib/governance-hooks", () => ({
   useCan: () => () => true,
   useMay: () => () => true,
   useAssignedRoleName: () => null,
+  useCallerCapabilities: () => null,
 }));
 
 // Out of scope for this feature (brief: "Do not touch CopilotDock,
