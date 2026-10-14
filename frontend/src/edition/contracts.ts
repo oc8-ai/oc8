@@ -1,4 +1,5 @@
 import type { LucideIcon } from "lucide-react";
+import type { ComponentType } from "react";
 
 /**
  * Build-time contribution from a trusted product edition. This is deliberately
@@ -9,6 +10,14 @@ export interface FrontendEditionExtension {
   readonly id: string;
   readonly navigation?: readonly EditionNavigationItem[];
   readonly capabilities?: readonly string[];
+  readonly banners?: readonly EditionBanner[];
+}
+
+/** A notice an edition shows above every page. */
+export interface EditionBanner {
+  readonly id: string;
+  /** Rendered above every page; return null to show nothing. */
+  readonly component: ComponentType;
 }
 
 /** A sidebar entry that an edition adds to the shared Community shell. */
