@@ -31,7 +31,7 @@ from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.chat.modes import mode_directive, parse_command
+from oc8.chat.modes import ChatMode, mode_directive, parse_command
 from oc8.copilot.redaction import is_secret_request, redact_text
 from oc8.copilot.responsibilities import close_responsibility
 from oc8.runtime.intake import enqueue_run
@@ -271,6 +271,7 @@ async def send_message(
     chat_channel_external_id: str | None = None,
     role: Literal["user", "followup"] = "user",
     extra_context: dict[str, object] | None = None,
+    followup_mode: ChatMode | None = None,
 ) -> tuple[m.ChatMessage, m.AgentRun | None]:
     """Record the user's turn and enqueue the run that answers it.
 
@@ -322,8 +323,9 @@ async def send_message(
     # unchanged with no mode, so a message that legitimately starts with a
     # slash is still sendable.
     if role == "followup":
-        # A follow-up's text is ours, not a member's command.
-        mode, body = None, message
+        # A follow-up's text is ours, not a member's command; its mode, if any,
+        # is the trigger's purpose (a research follow-up), never parsed.
+        mode, body = followup_mode, message
     else:
         mode, body = parse_command(message)
     resolved_refs = await _resolve_context_refs(db, tenant_id=tenant_id, refs=context_refs)
@@ -466,6 +468,9 @@ async def send_message(
             "chat_channel_external_id",
             "chat_session_id",
             "task",
+            # The mode decides what the turn may do; only the parser or a
+            # follow-up's purpose sets it.
+            "chat_mode",
         }
         context.update({k: v for k, v in extra_context.items() if k not in reserved})
     if mode is not None:

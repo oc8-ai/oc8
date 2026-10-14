@@ -330,3 +330,92 @@ async def test_followup_cannot_write_personal_notes(app_session: AppSessionFacto
             db, tenant, cop, task, web, "memory_write", {"tier": "agent", "content": "y"}
         )
         assert ok.startswith("memory recorded")
+
+
+async def _research_setup(db: Any, tenant: uuid.UUID, **ctx: Any) -> Any:
+    from tests.copilot.test_tools import _setup
+
+    return await _setup(db, tenant, **ctx)
+
+
+async def _memory_write(
+    db: Any, tenant: uuid.UUID, cop: m.Agent, task: m.Task, run: m.AgentRun, content: str
+) -> Any:
+    from oc8.agent.control_tools import execute_control_tool
+    from oc8.authz.pdp import Decision, Effect
+    from oc8.modelrouter import ToolCall
+
+    out = await execute_control_tool(
+        db,
+        tenant_id=tenant,
+        agent=cop,
+        task=task,
+        tc=ToolCall(id="1", name="memory_write", arguments={"tier": "agent", "content": content}),
+        decision=Decision(Effect.ALLOW),
+        assigned_skills=[],
+        active_skills=[],
+        mcp_conn=None,
+        originating_operator=None,
+        run_id=run.id,
+        pinned=None,
+    )
+    assert out is not None
+    return out
+
+
+async def test_research_followup_writes_a_tagged_note(app_session: AppSessionFactory) -> None:
+    from sqlalchemy import select
+
+    from tests.copilot.test_tools import _chat_run
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        cop, seat, task, _ = await _research_setup(db, tenant, door="web")
+        r_id = str(uuid.uuid4())
+        run = await _chat_run(
+            db, tenant, cop, seat, door="followup", chat_mode="research",
+            followup={"responsibility_id": r_id, "trigger_id": "t", "turn_id": "turn-1"},
+        )  # fmt: skip
+        out = await _memory_write(db, tenant, cop, task, run, "Kunde X: neue Bestellung 12.10.")
+        assert not out.output.startswith("ERROR"), out.output
+        rec = (await db.execute(select(m.MemoryRecord))).scalar_one()
+        assert rec.record_metadata["member_id"] == str(seat.member_id)
+        assert rec.record_metadata["responsibility_id"] == r_id
+
+
+async def test_check_in_followup_still_cannot_write_notes(app_session: AppSessionFactory) -> None:
+    from tests.copilot.test_tools import _chat_run
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        cop, seat, task, _ = await _research_setup(db, tenant, door="web")
+        run = await _chat_run(
+            db, tenant, cop, seat, door="followup",
+            followup={"responsibility_id": str(uuid.uuid4()), "trigger_id": "t", "turn_id": "x"},
+        )  # fmt: skip
+        out = await _memory_write(db, tenant, cop, task, run, "anything")
+        assert out.output == "ERROR: a follow-up cannot write personal notes"
+
+
+async def test_research_note_is_invisible_to_another_member(
+    app_session: AppSessionFactory,
+) -> None:
+    from tests.copilot.helpers import copilot_seat
+    from tests.copilot.test_tools import _chat_run
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        cop, seat, task, _ = await _research_setup(db, tenant, door="web")
+        tom = await copilot_seat(db, tenant, "tom@example.com")
+        run = await _chat_run(
+            db, tenant, cop, seat, door="followup", chat_mode="research",
+            followup={"responsibility_id": str(uuid.uuid4()), "trigger_id": "t", "turn_id": "t1"},
+        )  # fmt: skip
+        out = await _memory_write(db, tenant, cop, task, run, "private finding")
+        assert not out.output.startswith("ERROR"), out.output
+        assert (
+            await list_notes(db, tenant_id=tenant, member_id=tom.member_id, assistant_id=cop.id)
+            == []
+        )
+        mine = await list_notes(db, tenant_id=tenant, member_id=seat.member_id, assistant_id=cop.id)
+        assert [n.content for n in mine] == ["private finding"]

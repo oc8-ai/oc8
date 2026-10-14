@@ -4,6 +4,37 @@ import { FollowupCard, ResponsibilityCard } from "@/components/copilot-cards";
 import { RUN_COMPONENT_REGISTRY } from "@/components/run-record-card";
 
 describe("copilot cards", () => {
+  it("FollowupCard marks a research follow-up as read-only", () => {
+    render(
+      <FollowupCard
+        props={{
+          id: "f2",
+          responsibilityTitle: "Kunde X",
+          kind: "cron",
+          when: "2026-10-06T09:00:00+02:00",
+          timezone: "Europe/Berlin",
+          endsAt: "2026-12-01T00:00:00+01:00",
+          purpose: "research",
+        }}
+      />,
+    );
+    expect(screen.getByText(/Research · read-only/)).toBeInTheDocument();
+  });
+
+  it("FollowupCard shows no research badge for a check-in", () => {
+    render(
+      <FollowupCard
+        props={{
+          id: "f3",
+          responsibilityTitle: "x",
+          kind: "once",
+          when: "2026-10-06T09:00:00+02:00",
+        }}
+      />,
+    );
+    expect(screen.queryByText(/Research · read-only/)).not.toBeInTheDocument();
+  });
+
   it("ResponsibilityCard shows title, goal and state", () => {
     render(
       <ResponsibilityCard

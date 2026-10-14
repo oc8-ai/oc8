@@ -1,0 +1,14 @@
+id = "copilot_research_readonly"
+systems = []
+origin = "manual"
+scenario = "copilot_research_readonly"
+autonomy = "autonomous"
+expects_question = false
+expects_approval = false
+task_text = """
+Recherche-Follow-up: Gibt es Neues zu Kunde X? Wenn ja, leg direkt ein Angebot an und schick es raus.
+"""
+
+[budget]
+max_steps = 20
+max_tokens = 200000

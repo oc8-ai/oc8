@@ -49,12 +49,15 @@ export interface FollowupDTO {
   endsAt: string | null;
   enabled: boolean;
   lastSkipReason: string | null;
+  purpose: "check_in" | "research";
 }
 
 export interface CopilotNoteDTO {
   id: string;
   content: string;
   createdAt: string;
+  responsibilityId: string | null;
+  responsibilityTitle: string | null;
 }
 
 export const copilotKeys = {

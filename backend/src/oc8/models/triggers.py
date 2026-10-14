@@ -54,6 +54,8 @@ class Trigger(Base, PkMixin, TenantMixin, TimestampMixin):
     #: Why the last due fire did not run ("paused", "busy", ...); None after a
     #: real fire. Lets a resume catch up exactly what the pause skipped.
     last_skip_reason: Mapped[str | None] = mapped_column(Text)
+    #: Copilot follow-ups only: "check_in" or "research" (NULL == check_in).
+    followup_purpose: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (
         CheckConstraint("kind IN ('cron','event','webhook','once')", name="ck_trigger_kind"),

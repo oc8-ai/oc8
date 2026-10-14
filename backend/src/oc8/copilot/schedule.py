@@ -15,12 +15,18 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from croniter import CroniterBadCronError, croniter
 
 MIN_INTERVAL = dt.timedelta(minutes=15)
+#: Research may delegate, so it costs more than a check-in; an hour bounds the
+#: worst case per responsibility (D2 design section 1).
+RESEARCH_MIN_INTERVAL = dt.timedelta(hours=1)
 MAX_HORIZON = dt.timedelta(days=366)
 MAX_ACTIVE_FOLLOWUPS = 20
 
 
 class FollowupRejected(ValueError):
     """A follow-up the tool refuses, with a sentence the model can act on."""
+
+
+FollowupPurpose = Literal["check_in", "research"]
 
 
 @dataclass(frozen=True)
@@ -30,6 +36,7 @@ class FollowupSpec:
     run_at: dt.datetime | None
     cron_expression: str | None
     ends_at: dt.datetime | None
+    purpose: FollowupPurpose = "check_in"
 
 
 def _zone(name: str | None) -> ZoneInfo:
@@ -73,19 +80,27 @@ def validate_followup(
     cron_expression: str | None,
     ends_at: str | None,
     now: dt.datetime,
+    purpose: str | None = None,
 ) -> FollowupSpec:
     zone = _zone(timezone)
+    if purpose not in (None, "check_in", "research"):
+        raise FollowupRejected("purpose must be 'check_in' or 'research'")
+    research = purpose == "research"
+    floor = RESEARCH_MIN_INTERVAL if research else MIN_INTERVAL
+    gap = "an hour" if research else "15 minutes"
+    what = "research follow-up" if research else "follow-up"
+    chosen: FollowupPurpose = "research" if research else "check_in"
     if kind == "once":
         at = _instant(run_at, "run_at")
         if at <= now:
             raise FollowupRejected("run_at must be in the future")
         # Same floor as a recurring one: a follow-up rescheduling itself must
         # not become a faster loop than cron is allowed to be.
-        if at < now + MIN_INTERVAL:
-            raise FollowupRejected("a follow-up must be at least 15 minutes from now")
+        if at < now + floor:
+            raise FollowupRejected(f"a {what} must be at least {gap} from now")
         if at - now > MAX_HORIZON:
             raise FollowupRejected("a follow-up can be at most one year out")
-        return FollowupSpec("once", zone.key, at, None, None)
+        return FollowupSpec("once", zone.key, at, None, None, chosen)
     if kind != "cron":
         raise FollowupRejected("kind must be 'once' or 'cron'")
     if not cron_expression:
@@ -104,7 +119,7 @@ def validate_followup(
     fire = next_fire(cron_expression, timezone=zone.key, after=now)
     for _ in range(5):
         following = next_fire(cron_expression, timezone=zone.key, after=fire)
-        if following - fire < MIN_INTERVAL:
-            raise FollowupRejected("a recurring follow-up must be at least 15 minutes apart")
+        if following - fire < floor:
+            raise FollowupRejected(f"a recurring {what} must be at least {gap} apart")
         fire = following
-    return FollowupSpec("cron", zone.key, None, cron_expression, end)
+    return FollowupSpec("cron", zone.key, None, cron_expression, end, chosen)

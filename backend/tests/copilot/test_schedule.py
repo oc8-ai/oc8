@@ -128,3 +128,67 @@ def test_once_sooner_than_fifteen_minutes_rejected() -> None:
     with pytest.raises(FollowupRejected, match="15 minutes"):
         once(NOW + dt.timedelta(minutes=14, seconds=59))
     once(NOW + dt.timedelta(minutes=15))
+
+
+def test_research_once_needs_an_hour() -> None:
+    with pytest.raises(FollowupRejected, match="at least an hour"):
+        validate_followup(
+            kind="once",
+            timezone="Europe/Berlin",
+            run_at=(NOW + dt.timedelta(minutes=30)).isoformat(),
+            cron_expression=None,
+            ends_at=None,
+            now=NOW,
+            purpose="research",
+        )
+
+
+def test_research_cron_needs_an_hour_apart() -> None:
+    with pytest.raises(FollowupRejected, match="at least an hour apart"):
+        validate_followup(
+            kind="cron",
+            timezone="Europe/Berlin",
+            run_at=None,
+            cron_expression="*/30 * * * *",
+            ends_at="2026-10-31T00:00:00+01:00",
+            now=NOW,
+            purpose="research",
+        )
+
+
+def test_check_in_keeps_fifteen_minutes() -> None:
+    spec = validate_followup(
+        kind="cron",
+        timezone="Europe/Berlin",
+        run_at=None,
+        cron_expression="*/30 * * * *",
+        ends_at="2026-10-31T00:00:00+01:00",
+        now=NOW,
+    )
+    assert spec.purpose == "check_in"
+
+
+def test_hourly_research_is_accepted() -> None:
+    spec = validate_followup(
+        kind="cron",
+        timezone="Europe/Berlin",
+        run_at=None,
+        cron_expression="0 * * * *",
+        ends_at="2026-10-31T00:00:00+01:00",
+        now=NOW,
+        purpose="research",
+    )
+    assert spec.purpose == "research"
+
+
+def test_unknown_purpose_is_rejected() -> None:
+    with pytest.raises(FollowupRejected, match="purpose"):
+        validate_followup(
+            kind="once",
+            timezone="Europe/Berlin",
+            run_at=(NOW + dt.timedelta(hours=2)).isoformat(),
+            cron_expression=None,
+            ends_at=None,
+            now=NOW,
+            purpose="act",
+        )

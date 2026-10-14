@@ -241,3 +241,10 @@ async def test_the_mission_sha_does_not_make_the_draft_dirty(
         assert "builtin_mission_sha" in (agent.definition or {})
         again = await get_or_create_assistant(db, tenant_id=tenant)
         assert not (await draft_status(db, again)).dirty
+
+
+def test_mission_explains_research_followups() -> None:
+    from oc8.agent.assistant import _MISSION
+
+    assert 'purpose="research"' in _MISSION
+    assert "höchstens drei" in _MISSION

@@ -55,6 +55,11 @@ class ChatMode:
     instruction: str
     allows_tools: bool = True
     allows_writes: bool = True
+    #: Writing core tools this mode still lets the tenant Copilot call. Never
+    #: consulted for any other agent, and never a grant: it only spares these
+    #: names the mode's own refusal, so the frame, the narrowing and the PDP
+    #: still decide afterwards.
+    copilot_exceptions: frozenset[str] = frozenset()
 
 
 ASK = ChatMode(
@@ -108,6 +113,43 @@ SUMMARISE = ChatMode(
 
 #: Keyed by command word. Insertion order is picker order.
 MODES: dict[str, ChatMode] = {m.key: m for m in (ASK, PLAN, DO, SUMMARISE)}
+
+#: Per research TURN -- the follow-up firing and every wake-up after it, which
+#: share `context["followup"]["turn_id"]`. Per run would let each wake-up
+#: delegate again, and every finished delegate wakes the Copilot.
+RESEARCH_MAX_DELEGATIONS = 3
+
+RESEARCH = ChatMode(
+    key="research",
+    summary="Look things up for a responsibility. Changes nothing but your notes.",
+    instruction=(
+        "This is a research follow-up. Find out what is new for this responsibility. "
+        f"You may read, and you may ask at most {RESEARCH_MAX_DELEGATIONS} colleagues "
+        "to look things up for you -- they can only read too. Write what you find as a "
+        "personal note with memory_write (tier 'agent') and keep next_step current with "
+        "responsibility_update. Nothing else may change: do not ask the person a "
+        "question, and do not schedule, open or close anything. Report (report=true) "
+        "only when the notify_rule calls for it."
+    ),
+    allows_writes=False,
+    copilot_exceptions=frozenset({"memory_write", "responsibility_update", "delegate_task"}),
+)
+
+RESEARCH_DELEGATE = ChatMode(
+    key="research_delegate",
+    summary="Look something up for a research follow-up. Changes nothing.",
+    instruction=(
+        "You were asked to look something up for a research follow-up. Read only: "
+        "every tool that would change anything is withheld, and you cannot hand the "
+        "work on to anyone else. Answer with what you found."
+    ),
+    allows_writes=False,
+)
+
+#: Set by oc8 itself (a research follow-up and its delegation chain), never by
+#: a typed command: `mode_from_context` knows them, `parse_command` does not,
+#: and the composer's picker lists only `MODES`.
+INTERNAL_MODES: dict[str, ChatMode] = {m.key: m for m in (RESEARCH, RESEARCH_DELEGATE)}
 
 #: Core-owned tools that CHANGE something, and therefore have no business in a
 #: read-only mode. The connection tools are classified by the pack's own
@@ -184,7 +226,8 @@ def mode_from_context(context: Mapping[str, Any] | None) -> ChatMode | None:
     """
     if not context:
         return None
-    return MODES.get(str(context.get("chat_mode") or ""))
+    key = str(context.get("chat_mode") or "")
+    return MODES.get(key) or INTERNAL_MODES.get(key)
 
 
 def mode_directive(mode: ChatMode) -> str:
@@ -195,13 +238,18 @@ def mode_directive(mode: ChatMode) -> str:
 
 
 def mode_refusal(
-    mode: ChatMode | None, tool_name: str, *, tool_scopes: Mapping[str, Any] | None
+    mode: ChatMode | None,
+    tool_name: str,
+    *,
+    tool_scopes: Mapping[str, Any] | None,
+    is_tenant_assistant: bool = False,
 ) -> str | None:
     """Why this mode will not let this tool be called, or None.
 
     None means "no opinion here" -- never "allowed". The frame, the narrowing
     and the value threshold all still have their say afterwards; this only ever
-    subtracts.
+    subtracts. `is_tenant_assistant` defaults to False so a call site that
+    forgets it gets the stricter answer.
     """
     if mode is None:
         return None
@@ -223,7 +271,14 @@ def mode_refusal(
         writes = False
     else:
         writes = required_right(tool_name, tool_scopes) != "read"
+    if writes and is_tenant_assistant and tool_name in mode.copilot_exceptions:
+        return None
     if writes:
+        if mode.key in INTERNAL_MODES:
+            return (
+                f"a research follow-up only reads -- {tool_name} is withheld. Note what "
+                "you would do and report it under the notify_rule instead."
+            )
         return (
             f"/{mode.key} changes nothing -- {tool_name} is withheld for this turn. "
             "Describe what you would do with it instead, and the operator can send "

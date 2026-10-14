@@ -63,9 +63,14 @@ export function FollowupCard({ props }: { props: Record<string, unknown> }): Rea
     <Card className="space-y-1.5 p-3 text-sm">
       <div className="flex items-start justify-between gap-2">
         <div className="font-medium">{title}</div>
-        <Badge variant="outline">
-          {recurring ? t("recurring", "wiederkehrend") : t("once", "einmalig")}
-        </Badge>
+        <div className="flex shrink-0 gap-1">
+          {props.purpose === "research" && (
+            <Badge variant="secondary">{t("Research · read-only", "Recherche · nur lesend")}</Badge>
+          )}
+          <Badge variant="outline">
+            {recurring ? t("recurring", "wiederkehrend") : t("once", "einmalig")}
+          </Badge>
+        </div>
       </div>
       {when && (
         <p className="text-xs">

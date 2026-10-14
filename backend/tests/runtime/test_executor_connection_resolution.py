@@ -612,6 +612,7 @@ async def test_wakeup_does_not_hand_a_sub_agent_login_to_the_lead(
             output="done",
             succeeded=True,
             mcp_conn=sub_conn,
+            run_context=None,
         )
         assert wake_id is not None
         wake = await db.get(m.AgentRun, wake_id)
@@ -633,6 +634,7 @@ async def test_wakeup_does_not_hand_a_sub_agent_login_to_the_lead(
             output="done",
             succeeded=True,
             mcp_conn=shared,
+            run_context=None,
         )
         assert wake2_id is not None
         wake2 = await db.get(m.AgentRun, wake2_id)
@@ -795,6 +797,7 @@ async def test_wakeup_still_inherits_a_department_connection_the_lead_only_enabl
             output="done",
             succeeded=True,
             mcp_conn=shared,
+            run_context=None,
         )
         assert wake_id is not None
         wake = await db.get(m.AgentRun, wake_id)
@@ -845,6 +848,7 @@ async def test_wakeup_withholds_a_department_connection_from_a_lead_with_its_own
             output="done",
             succeeded=True,
             mcp_conn=shared,
+            run_context=None,
         )
         assert wake_id is not None
         wake = await db.get(m.AgentRun, wake_id)

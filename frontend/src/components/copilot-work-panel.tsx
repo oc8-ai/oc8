@@ -277,7 +277,12 @@ function FollowupRow({ f }: { f: FollowupDTO }) {
     <div
       className={`space-y-1 rounded-md border border-border p-3 text-sm ${f.enabled ? "" : "opacity-60"}`}
     >
-      <div className="font-medium">{f.responsibilityTitle}</div>
+      <div className="flex items-start justify-between gap-2">
+        <div className="font-medium">{f.responsibilityTitle}</div>
+        {f.purpose === "research" && (
+          <Badge variant="secondary">{t("Research · read-only", "Recherche · nur lesend")}</Badge>
+        )}
+      </div>
       <div className="text-xs text-muted-foreground" title={f.cronExpression ?? undefined}>
         {f.kind === "once" || !f.cronExpression
           ? t("Once", "Einmalig")
@@ -341,7 +346,14 @@ function NotesTab() {
           key={n.id}
           className="flex items-start gap-2 rounded-md border border-border p-2 text-sm"
         >
-          <span className="min-w-0 flex-1 whitespace-pre-wrap">{n.content}</span>
+          <div className="min-w-0 flex-1">
+            {n.responsibilityTitle && (
+              <div className="text-xs text-muted-foreground" data-testid="note-responsibility">
+                {n.responsibilityTitle}
+              </div>
+            )}
+            <span className="whitespace-pre-wrap">{n.content}</span>
+          </div>
           <Button size="sm" variant="ghost" onClick={() => del.mutate(n.id)}>
             {t("Delete", "Löschen")}
           </Button>

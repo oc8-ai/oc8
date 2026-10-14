@@ -114,6 +114,7 @@ async def test_a_lead_wake_run_is_pinned_and_a_later_publish_does_not_reach_it(
             output="done",
             succeeded=True,
             mcp_conn=None,
+            run_context=None,
         )
         assert wake_id is not None
         wake = await db.get(m.AgentRun, wake_id)
