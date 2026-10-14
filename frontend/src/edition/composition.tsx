@@ -10,6 +10,8 @@ export interface FrontendEditionComposition {
 }
 
 export interface EditionCapabilityGateRule {
+  /** The navigation item this rule belongs to. */
+  readonly id: string;
   readonly to: string;
   readonly capabilities: readonly string[];
 }
@@ -25,16 +27,31 @@ export function lacksCapabilities(
   );
 }
 
+const trimSlashes = (path: string) => (path.length > 1 ? path.replace(/\/+$/, "") || "/" : path);
+
+/** The navigation items the caller may use: an item is dropped only when its own
+ *  extension declares capabilities and the known capabilities lack one. */
+export function visibleEditionNavigation(
+  navigation: readonly EditionNavigationItem[],
+  gates: readonly EditionCapabilityGateRule[],
+  callerCapabilities: readonly string[] | null,
+): readonly EditionNavigationItem[] {
+  return navigation.filter(
+    (item) => !gates.some((g) => g.id === item.id && lacksCapabilities(g, callerCapabilities)),
+  );
+}
+
 /** Whether a path belongs to an edition feature the caller cannot use. */
 export function isPathBlocked(
   gates: readonly EditionCapabilityGateRule[],
   path: string,
   callerCapabilities: readonly string[] | null,
 ): boolean {
-  return gates.some(
-    (g) =>
-      (path === g.to || path.startsWith(`${g.to}/`)) && lacksCapabilities(g, callerCapabilities),
-  );
+  const p = trimSlashes(path);
+  return gates.some((g) => {
+    const to = trimSlashes(g.to);
+    return (p === to || p.startsWith(`${to}/`)) && lacksCapabilities(g, callerCapabilities);
+  });
 }
 
 const emptyComposition: FrontendEditionComposition = {
@@ -68,7 +85,7 @@ export function composeFrontendEdition(
       navigationIds.add(item.id);
       navigation.push(item);
       if (extension.capabilities?.length)
-        gates.push({ to: item.to, capabilities: extension.capabilities });
+        gates.push({ id: item.id, to: item.to, capabilities: extension.capabilities });
     }
     for (const capability of extension.capabilities ?? []) capabilities.add(capability);
     for (const banner of extension.banners ?? []) {

@@ -54,7 +54,7 @@ import {
   listenForPushSubscriptionChanges,
   unsubscribeFromPush,
 } from "@/lib/push-notifications";
-import { isPathBlocked, lacksCapabilities, useFrontendEdition } from "@/edition/composition";
+import { isPathBlocked, useFrontendEdition, visibleEditionNavigation } from "@/edition/composition";
 import type { EditionNavigationItem } from "@/edition/contracts";
 
 /** Hand this device's push subscription back before the session ends.
@@ -547,9 +547,6 @@ export function AppShell() {
   const notifCount = agents.filter((a) => a.status === "warning" || a.status === "error").length;
   const edition = useFrontendEdition();
   const callerCapabilities = useCallerCapabilities();
-  const hiddenEditionPaths = new Set(
-    edition.gates.filter((g) => lacksCapabilities(g, callerCapabilities)).map((g) => g.to),
-  );
 
   const nav: NavEntry[] = [
     { to: "/", label: t("Office", "Büro"), icon: Building2, exact: true, needs: "department:view" },
@@ -682,17 +679,15 @@ export function AppShell() {
         },
       ],
     },
-    ...edition.navigation
-      .filter((item) => !hiddenEditionPaths.has(item.to))
-      .map(
-        (item): NavLink => ({
-          to: item.to,
-          label: t(item.label.en, item.label.de),
-          icon: item.icon,
-          needs: item.needs,
-          strict: item.strict,
-        }),
-      ),
+    ...visibleEditionNavigation(edition.navigation, edition.gates, callerCapabilities).map(
+      (item): NavLink => ({
+        to: item.to,
+        label: t(item.label.en, item.label.de),
+        icon: item.icon,
+        needs: item.needs,
+        strict: item.strict,
+      }),
+    ),
   ];
 
   // `/agents` and `/departments` graduate READ for any live seat — no

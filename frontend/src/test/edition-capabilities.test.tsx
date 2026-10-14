@@ -14,6 +14,7 @@ import {
   EditionCompositionProvider,
   composeFrontendEdition,
   isPathBlocked,
+  visibleEditionNavigation,
 } from "@/edition/composition";
 
 const extension = {
@@ -83,11 +84,46 @@ describe("edition capability panel", () => {
 });
 
 describe("edition navigation", () => {
-  it("drops the items of a gated extension the caller lacks, using the same rule as the routes", async () => {
-    const { readFileSync } = await import("node:fs");
-    const { join } = await import("node:path");
-    const src = readFileSync(join(process.cwd(), "src/components/app-shell.tsx"), "utf-8");
-    expect(src).toContain("lacksCapabilities(g, callerCapabilities)");
-    expect(src).toContain(".filter((item) => !hiddenEditionPaths.has(item.to))");
+  const { navigation } = composeFrontendEdition([extension]);
+  const ids = (caps: string[] | null) =>
+    visibleEditionNavigation(navigation, gates, caps).map((i) => i.id);
+
+  it("hides the item when the capabilities lack the declared one", () => {
+    expect(ids([])).toEqual([]);
+  });
+
+  it("shows the item when the capabilities include it", () => {
+    expect(ids(["edition.feature.a"])).toEqual(["feature"]);
+  });
+
+  it("shows the item when the capabilities are unknown", () => {
+    expect(ids(null)).toEqual(["feature"]);
+  });
+
+  it("gates per item, not per target, when two extensions share a target", () => {
+    const item = (id: string) => ({
+      id,
+      to: "/edition/shared",
+      label: { en: id, de: id },
+      icon: (() => null) as never,
+    });
+    const both = composeFrontendEdition([
+      { id: "open", navigation: [item("open-item")] },
+      { id: "gated", capabilities: ["edition.feature.a"], navigation: [item("gated-item")] },
+    ]);
+    expect(visibleEditionNavigation(both.navigation, both.gates, []).map((i) => i.id)).toEqual([
+      "open-item",
+    ]);
+  });
+});
+
+describe("edition path matching", () => {
+  it("ignores trailing slashes on both sides", () => {
+    expect(isPathBlocked(gates, "/edition/feature/", [])).toBe(true);
+    expect(isPathBlocked(gates, "/edition/feature/sub/", [])).toBe(true);
+    const slash = composeFrontendEdition([
+      { ...extension, navigation: [{ ...extension.navigation[0], to: "/edition/feature/" }] },
+    ]);
+    expect(isPathBlocked(slash.gates, "/edition/feature/sub", [])).toBe(true);
   });
 });
