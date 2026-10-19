@@ -198,7 +198,7 @@ async def run_scheduler_tick() -> int:
 
 
 async def run_scheduler(*, once: bool = False, interval_seconds: float = 30.0) -> None:
-    # Deferred: oc8.channels.poll imports list_active_tenant_ids from this
+    # Deferred: oc8.channels.poll imports list_runnable_tenant_ids from this
     # module, so importing it at module scope here would be circular.
     from oc8.channels.poll import poll_tick
 

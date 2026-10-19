@@ -513,3 +513,83 @@ async def test_a_fire_refused_by_the_intake_is_logged_and_the_tick_goes_on(
         refreshed = await db.get(m.Trigger, trigger_a)
         assert refreshed is not None
         assert refreshed.last_run_at is None, "the refused fire leaves the trigger due"
+
+
+async def test_a_due_follow_up_waits_and_fires_once_after_the_organisation_may_run(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8.agent.assistant import get_or_create_assistant
+    from oc8.copilot.followups import schedule_followup
+    from oc8.copilot.responsibilities import open_responsibility
+    from tests.copilot.helpers import copilot_seat, once_in_an_hour
+
+    tenant = await _new_tenant_with_org(app_session)
+    async with app_session(tenant) as db:
+        assistant = await get_or_create_assistant(db, tenant_id=tenant)
+        seat = await copilot_seat(db, tenant, "lisa@example.com")
+        responsibility = await open_responsibility(
+            db,
+            tenant_id=tenant,
+            member_id=seat.member_id,
+            chat_session_id=seat.session_id,
+            title="Offsite",
+            goal="Keep the offsite on track",
+            origin_channel=None,
+            run_id=None,
+            actor_agent_id=assistant.id,
+            member_subject=seat.subject,
+        )
+        trigger = await schedule_followup(
+            db,
+            tenant_id=tenant,
+            member_id=seat.member_id,
+            responsibility_id=responsibility.id,
+            assistant_id=assistant.id,
+            spec=once_in_an_hour(),
+            prompt="Check the venue replies",
+            member_subject=seat.subject,
+        )
+        assert trigger.kind == "once" and trigger.chat_session_id == seat.session_id
+        due_at = datetime.now(tz=UTC) - timedelta(minutes=5)
+        trigger.next_run_at = due_at
+        trigger_id = trigger.id
+        await db.flush()
+
+    async def chat_runs() -> list[m.AgentRun]:
+        async with app_session(tenant) as db:
+            return list(
+                (
+                    await db.execute(
+                        select(m.AgentRun).where(
+                            m.AgentRun.tenant_id == tenant, m.AgentRun.source == "chat"
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+    test_queue = RunQueue(redis_url, key=f"test:{uuid.uuid4()}")
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: test_queue)
+    set_tenant_activity_gate(_gate_saying_no_for(tenant))
+    try:
+        await run_scheduler_tick()
+
+        async with app_session(tenant) as db:
+            waiting = await db.get(m.Trigger, trigger_id)
+            assert waiting is not None
+            assert waiting.enabled is True
+            assert waiting.next_run_at == due_at
+            assert waiting.last_run_at is None
+        assert await chat_runs() == []
+
+        set_tenant_activity_gate(None)
+        await run_scheduler_tick()
+        await run_scheduler_tick()
+    finally:
+        await test_queue.close()
+
+    assert len(await chat_runs()) == 1
+    async with app_session(tenant) as db:
+        spent = await db.get(m.Trigger, trigger_id)
+        assert spent is not None and spent.enabled is False

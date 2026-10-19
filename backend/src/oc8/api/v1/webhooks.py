@@ -20,7 +20,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from oc8.api.deps import unguarded
 from oc8.db.session import tenant_session
-from oc8.triggers.scheduler import fire_trigger, list_runnable_tenant_ids
+from oc8.tenants.activity import tenant_may_run
+from oc8.triggers.scheduler import fire_trigger, list_active_tenant_ids
 from oc8.triggers.service import get_trigger_by_webhook_token
 
 router = APIRouter()
@@ -53,12 +54,15 @@ async def ingest_webhook(token: str, request: Request) -> dict[str, str]:
     # No tenant context yet -- the token names it. Same all-tenant discovery
     # loop handle_inbound_event (triggers/handler.py) already uses for
     # kind='event' fan-out; here at most one tenant/trigger ever matches.
-    for tenant_id in await list_runnable_tenant_ids():
+    # The activity gate is asked only for that one organisation, not for
+    # every organisation on each unauthenticated request; an organisation
+    # that may not run answers exactly like an unknown token.
+    for tenant_id in await list_active_tenant_ids():
         async with tenant_session(tenant_id) as db:
             trigger = await get_trigger_by_webhook_token(db, token=token)
             if trigger is None:
                 continue
-            if not trigger.enabled:
+            if not trigger.enabled or not await tenant_may_run(tenant_id):
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown or disabled webhook")
             await fire_trigger(db, trigger, tenant_id=tenant_id, payload=payload)
             return {"status": "accepted"}

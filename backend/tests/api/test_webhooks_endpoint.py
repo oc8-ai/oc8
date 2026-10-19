@@ -191,3 +191,45 @@ async def test_webhook_of_an_inactive_organisation_is_not_found(
             .all()
         )
         assert runs == []
+
+
+async def test_a_webhook_asks_the_activity_gate_at_most_once_per_request(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """The gate is asked only for the organisation whose trigger matches the
+    token, not for every organisation on each unauthenticated request."""
+    tenant = uuid.uuid4()
+    _, token, _ = await _webhook_trigger(app_session, tenant)
+    # A second organisation, so a loop that asked the gate for every
+    # organisation would ask it more than once.
+    await _webhook_trigger(app_session, uuid.uuid4())
+
+    asked: list[uuid.UUID] = []
+    may_run = {"answer": False}
+
+    async def gate(tenant_id: uuid.UUID) -> bool:
+        asked.append(tenant_id)
+        return may_run["answer"]
+
+    set_tenant_activity_gate(gate)
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            # Inactive: the lookup asks once, for the matching organisation.
+            refused = await c.post(f"/api/v1/webhooks/{token}", json={"anything": "goes"})
+            assert refused.status_code == 404, refused.text
+            assert refused.json()["detail"] == "unknown or disabled webhook"
+            assert asked == [tenant]
+
+            # Unknown token: the gate is never asked.
+            asked.clear()
+            unknown = await c.post(f"/api/v1/webhooks/{uuid.uuid4().hex}", json={})
+            assert unknown.status_code == 404, unknown.text
+            assert asked == []
+
+            # Active: once by the lookup, once more by enqueue_run as it fires.
+            asked.clear()
+            may_run["answer"] = True
+            accepted = await c.post(f"/api/v1/webhooks/{token}", json={"anything": "goes"})
+            assert accepted.status_code == 202, accepted.text
+            assert asked == [tenant, tenant]
