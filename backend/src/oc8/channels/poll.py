@@ -38,18 +38,18 @@ from oc8 import models as m
 from oc8.channels.dispatch import process_inbound
 from oc8.channels.registry import channels_for_tenant
 from oc8.db.session import tenant_session
-from oc8.triggers.scheduler import list_active_tenant_ids
+from oc8.triggers.scheduler import list_runnable_tenant_ids
 
 logger = logging.getLogger(__name__)
 
 
 async def poll_tick() -> int:
-    """One tick: for every active tenant, poll every channel that supports
-    it. Returns the number of updates processed. Never raises -- a tenant
+    """One tick: for every tenant that may run, poll every channel that
+    supports it. Returns the number of updates processed. Never raises -- a tenant
     or channel that fails is logged and skipped, the same isolation
     `run_scheduler_tick` already gives cron triggers."""
     processed = 0
-    for tenant_id in await list_active_tenant_ids():
+    for tenant_id in await list_runnable_tenant_ids():
         try:
             processed += await _poll_tenant(tenant_id)
         except Exception:

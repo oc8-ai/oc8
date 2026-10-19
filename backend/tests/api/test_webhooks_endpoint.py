@@ -16,6 +16,7 @@ from sqlalchemy import select
 from oc8 import models as m
 from oc8.auth import get_identity_provider
 from oc8.main import create_app
+from oc8.tenants.activity import set_tenant_activity_gate
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -164,3 +165,29 @@ async def test_empty_body_still_fires(app_session: AppSessionFactory, redis_url:
             .all()
         )
         assert len(count) == 1
+
+
+async def test_webhook_of_an_inactive_organisation_is_not_found(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    agent_id, token, _ = await _webhook_trigger(app_session, tenant)
+
+    async def gate(tenant_id: uuid.UUID) -> bool:
+        return tenant_id != tenant
+
+    set_tenant_activity_gate(gate)
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post(f"/api/v1/webhooks/{token}", json={"anything": "goes"})
+            assert r.status_code == 404, r.text
+            assert r.json()["detail"] == "unknown or disabled webhook"
+
+    async with app_session(tenant) as s:
+        runs = (
+            (await s.execute(select(m.AgentRun).where(m.AgentRun.agent_id == agent_id)))
+            .scalars()
+            .all()
+        )
+        assert runs == []

@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.db.session import tenant_session
 from oc8.runtime.intake import enqueue_run
+from oc8.tenants.activity import tenant_may_run
 from oc8.triggers.service import compute_next_run
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,40 @@ async def list_active_tenant_ids() -> list[uuid.UUID]:
     async with tenant_session(None) as db:
         result = await db.execute(select(m.Organization.id))
         return list(result.scalars().all())
+
+
+async def list_runnable_tenant_ids() -> list[uuid.UUID]:
+    """Tenants that may run background work now. Cleanup sweeps keep using
+    list_active_tenant_ids(): they must visit every organisation."""
+    return [t for t in await list_active_tenant_ids() if await tenant_may_run(t)]
+
+
+async def _advance_without_firing(tenant_id: uuid.UUID) -> None:
+    """An organisation that may not run: move its due schedules on without
+    firing them, so nothing is caught up once it may run again. One-shot
+    follow-ups stay due and fire once afterwards."""
+    # tenant_session commits on a clean exit, so no explicit commit here.
+    async with tenant_session(tenant_id) as db:
+        now = datetime.now(tz=UTC)
+        due = (
+            (
+                await db.execute(
+                    select(m.Trigger)
+                    .where(
+                        m.Trigger.kind == "cron",
+                        m.Trigger.enabled.is_(True),
+                        m.Trigger.next_run_at <= now,
+                        m.Trigger.cron_expression.is_not(None),
+                    )
+                    .with_for_update(skip_locked=True)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for trigger in due:
+            assert trigger.cron_expression is not None
+            trigger.next_run_at = compute_next_run(trigger.cron_expression, after=now)
 
 
 async def fire_trigger(
@@ -93,6 +128,18 @@ async def run_scheduler_tick() -> int:
     commit."""
     fired = 0
     for tenant_id in await list_active_tenant_ids():
+        if not await tenant_may_run(tenant_id):
+            # An organisation that may not run: its due cron triggers are not
+            # fired, and their next_run_at moves past now so nothing is caught
+            # up once it may run again. Due one-shot follow-ups are left due;
+            # they fire once afterwards.
+            try:
+                await _advance_without_firing(tenant_id)
+            except Exception:
+                logger.exception(
+                    "scheduler tick failed to advance schedules for tenant %s", tenant_id
+                )
+            continue
         try:
             async with tenant_session(tenant_id) as db:
                 now = datetime.now(tz=UTC)

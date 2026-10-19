@@ -177,6 +177,18 @@ def _reset_queue_singletons() -> Iterator[None]:
     ingest_mod._queue = None
 
 
+@pytest.fixture(autouse=True)
+def _reset_tenant_activity_gate() -> Iterator[None]:
+    """`oc8.tenants.activity` holds the activity gate in a module global. A
+    test that sets it must not leave every later test's organisations unable
+    to run, so clear it around every test."""
+    from oc8.tenants.activity import set_tenant_activity_gate
+
+    set_tenant_activity_gate(None)
+    yield
+    set_tenant_activity_gate(None)
+
+
 @pytest.fixture(scope="session")
 def redis_url() -> Iterator[str]:
     from oc8.config import get_settings

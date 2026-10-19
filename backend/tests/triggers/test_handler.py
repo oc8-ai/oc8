@@ -10,6 +10,7 @@ from oc8.events.types import InboundEvent
 from oc8.runtime.queue import RunQueue
 from oc8.runtime.repository import RunRepository
 from oc8.runtime.states import RunState
+from oc8.tenants.activity import set_tenant_activity_gate
 from oc8.triggers.handler import handle_inbound_event
 from oc8.triggers.service import create_trigger
 from tests.conftest import AppSessionFactory
@@ -385,3 +386,45 @@ async def test_no_delivery_id_fires_every_time(
             .all()
         )
         assert len(rows) == 2
+
+
+async def test_event_fan_out_skips_an_inactive_organisation(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_a = await _new_tenant_with_org(app_session)
+    tenant_b = await _new_tenant_with_org(app_session)
+    test_queue = RunQueue(redis_url, key=f"test:{uuid.uuid4()}")
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: test_queue)
+    event_type = _unique_event_type("inactive")
+
+    trigger_ids: dict[uuid.UUID, uuid.UUID] = {}
+    for tenant in (tenant_a, tenant_b):
+        async with app_session(tenant) as db:
+            trigger = await create_trigger(
+                db,
+                tenant_id=tenant,
+                agent_id=uuid.uuid4(),
+                kind="event",
+                task_text="respond to issue",
+                event_source="github",
+                event_type=event_type,
+            )
+            trigger_ids[tenant] = trigger.id
+
+    async def gate(tenant_id: uuid.UUID) -> bool:
+        return tenant_id != tenant_a
+
+    set_tenant_activity_gate(gate)
+    try:
+        await handle_inbound_event(InboundEvent(source="github", type=event_type, payload={}))
+    finally:
+        await test_queue.close()
+
+    async with app_session(tenant_a) as db:
+        refreshed_a = await db.get(m.Trigger, trigger_ids[tenant_a])
+        assert refreshed_a is not None
+        assert refreshed_a.last_run_at is None
+    async with app_session(tenant_b) as db:
+        refreshed_b = await db.get(m.Trigger, trigger_ids[tenant_b])
+        assert refreshed_b is not None
+        assert refreshed_b.last_run_at is not None
