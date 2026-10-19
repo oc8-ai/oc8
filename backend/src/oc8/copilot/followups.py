@@ -330,14 +330,15 @@ async def fire_followup(db: AsyncSession, trigger: m.Trigger, *, tenant_id: uuid
 async def catch_up(db: AsyncSession, *, tenant_id: uuid.UUID, member_id: uuid.UUID) -> int:
     """After resume: one catch-up turn per responsibility that had a follow-up
     skipped because of the pause -- never one per missed occurrence."""
-    if not await tenant_may_run(tenant_id):
-        # Leave every "paused" mark in place: the catch-up happens on a later
-        # resume, once the organisation may run again.
-        logger.info("catch-up skipped: organisation %s is not active", tenant_id)
-        return 0
     fired = 0
     done: set[uuid.UUID] = set()
-    for t in await list_followups(db, tenant_id=tenant_id, member_id=member_id):
+    # By id, re-read each turn: a refusal inside fire_followup rolls the
+    # session back, which expires every row loaded before it.
+    ids = [t.id for t in await list_followups(db, tenant_id=tenant_id, member_id=member_id)]
+    for trigger_id in ids:
+        t = await db.get(m.Trigger, trigger_id)
+        if t is None:
+            continue
         # Never re-enable: a follow-up the member ended, or whose responsibility
         # was closed, stays ended (cancel/close also clear last_skip_reason).
         if not t.enabled or t.last_skip_reason != "paused" or t.responsibility_id is None:
@@ -347,14 +348,10 @@ async def catch_up(db: AsyncSession, *, tenant_id: uuid.UUID, member_id: uuid.UU
             continue
         done.add(t.responsibility_id)
         t.last_skip_reason = None
-        outcome = await fire_followup(db, t, tenant_id=tenant_id)
-        if outcome == "fired":
+        # An organisation that may not run gets "inactive" here, like a
+        # scheduled fire: the mark is spent and nothing is caught up later.
+        if await fire_followup(db, t, tenant_id=tenant_id) == "fired":
             fired += 1
-        elif outcome == "inactive":
-            # Nothing else will fire either. Stop here rather than read rows a
-            # rollback inside fire_followup may have expired; what is left
-            # keeps its "paused" mark and is caught up on a later resume.
-            break
         # fire_followup commits, which ends the transaction-local tenant binding.
         await db.execute(
             text("SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant_id)}

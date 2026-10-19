@@ -43,7 +43,7 @@ from sqlalchemy import select, text
 from oc8.models.core import Agent, Department
 from oc8.models.ops import Task
 from oc8.runtime.intake import enqueue_run
-from oc8.tenants.activity import TenantInactive
+from oc8.tenants.activity import TenantInactive, tenant_may_run
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -186,6 +186,11 @@ async def create_task(
     if lead is None or lead.deleted_at is not None:
         raise NoTeamLead(f"department {department_id} has no team lead to receive tasks")
 
+    # Refused before the task is built: a member asking for work is told now,
+    # rather than left with a task on the board that nobody will run.
+    if not await tenant_may_run(tenant_id):
+        raise TenantInactive(tenant_id)
+
     task = Task(
         tenant_id=tenant_id,
         department_id=dept.id,
@@ -200,26 +205,15 @@ async def create_task(
     # `task_id` travels with the run at creation for the same reason
     # `route_to_team_lead` passes it: without it the engine opens a task of its
     # own when the run starts, and the board shows the same request twice.
-    try:
-        await enqueue_run(
-            db,
-            tenant_id=tenant_id,
-            agent_id=lead.id,
-            context={"task": instructions},
-            source="manual",
-            idempotency_key=f"member-task:{task.id}",
-            task_id=task.id,
-        )
-    except TenantInactive:
-        # Refused before anything was committed, so the tenant binding is
-        # still in place: the task stays with the caller's transaction, but
-        # no run starts on it.
-        logger.info(
-            "task %s created, but no run started: organisation %s is not active",
-            task.id,
-            tenant_id,
-        )
-        return _row(task, lead.name, dept.name)
+    await enqueue_run(
+        db,
+        tenant_id=tenant_id,
+        agent_id=lead.id,
+        context={"task": instructions},
+        source="manual",
+        idempotency_key=f"member-task:{task.id}",
+        task_id=task.id,
+    )
     # `enqueue_run` COMMITS, which ends the GUC set by `tenant_session`. Anything
     # read after it -- the row this function returns -- would run unbound and
     # see nothing. Same fix, same reason, as `collab/intake.py`.

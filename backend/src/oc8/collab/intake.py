@@ -115,7 +115,10 @@ async def route_to_team_lead(
         )
     except TenantInactive:
         # Refused before anything was committed: the task stays on the lead's
-        # desk with the caller's transaction, but no run starts on it.
+        # desk with the caller's transaction, but no run starts on it, so it
+        # waits in the backlog rather than reading as work in progress.
+        task.state = "backlog"
+        await db.flush()
         logger.info(
             "handoff %s routed to task %s, but no run started: organisation %s is not active",
             handoff.id,

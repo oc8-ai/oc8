@@ -832,22 +832,25 @@ async def test_a_followup_refused_by_the_intake_writes_nothing(
         assert t.enabled is True and t.last_run_at is None
 
 
-async def test_catch_up_of_an_inactive_organisation_keeps_the_paused_mark(
+async def test_catch_up_of_an_inactive_organisation_skips_and_catches_nothing_up_later(
     app_session: AppSessionFactory, redis_url: str
 ) -> None:
-    tenant, member_id, session_id, _r_id, t_id = await _world(app_session)
-    async with app_session(tenant) as db:
-        await pause(db, tenant_id=tenant, member_id=member_id)
-        trigger = await db.get(m.Trigger, t_id)
-        assert trigger is not None
-        assert await fire_followup(db, trigger, tenant_id=tenant) == "paused"
+    """Resuming while the organisation may not run: each paused follow-up is
+    marked inactive (a recurring one moves on), so nothing is caught up once
+    it may run again."""
+    tenant, member_id, _r_id, t_id = await _recurring_world(app_session)
     set_tenant_activity_gate(_gate_saying_no_for(tenant))
     async with app_session(tenant) as db:
         await resume(db, tenant_id=tenant, member_id=member_id)
         assert await catch_up(db, tenant_id=tenant, member_id=member_id) == 0
-    msgs, runs = await _turns_and_runs(app_session, tenant, session_id)
-    assert msgs == [] and runs == []
     async with app_session(tenant) as db:
+        assert (await db.execute(select(m.AgentRun))).scalars().all() == []
         t = await db.get(m.Trigger, t_id)
         assert t is not None
-        assert t.last_skip_reason == "paused", "caught up on a later resume"
+        assert t.enabled is True and t.last_skip_reason == "inactive"
+        assert t.next_run_at is not None and t.next_run_at > dt.datetime.now(tz=dt.UTC)
+
+    set_tenant_activity_gate(None)
+    async with app_session(tenant) as db:
+        assert await catch_up(db, tenant_id=tenant, member_id=member_id) == 0
+        assert (await db.execute(select(m.AgentRun))).scalars().all() == []

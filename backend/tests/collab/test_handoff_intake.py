@@ -171,7 +171,7 @@ def _gate_saying_no_for(tenant: uuid.UUID):  # type: ignore[no-untyped-def]
     return gate
 
 
-async def test_a_handoff_accepted_for_an_inactive_organisation_starts_no_run(
+async def test_a_handoff_accepted_for_an_inactive_organisation_waits_in_the_backlog(
     app_session: AppSessionFactory, queue: Any
 ) -> None:
     tenant = uuid.uuid4()
@@ -181,9 +181,13 @@ async def test_a_handoff_accepted_for_an_inactive_organisation_starts_no_run(
         assert lead is not None
         handoff = await _handoff(db, tenant, dept, {"kunde": "Acme"})
 
-        await route_to_team_lead(db, handoff, tenant_id=tenant)
+        task_id = await route_to_team_lead(db, handoff, tenant_id=tenant)
+        assert task_id is not None
 
     async with app_session(tenant) as db:
+        task = await db.get(m.Task, task_id)
+        assert task is not None
+        assert task.state == "backlog", "nobody is working on it, so it is not in progress"
         runs = (
             (await db.execute(select(m.AgentRun).where(m.AgentRun.agent_id == lead.id)))
             .scalars()
