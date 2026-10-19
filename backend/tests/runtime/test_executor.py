@@ -1096,3 +1096,160 @@ async def test_a_crashed_chat_run_still_records_a_reply_and_tells_telegram(
         run = await s.get(m.AgentRun, run_id)
         assert run is not None
         assert "the model provider hung up" in run.context["error"]
+
+
+def _block(tenant: uuid.UUID) -> None:
+    from oc8.tenants.activity import set_tenant_activity_gate
+
+    async def gate(tenant_id: uuid.UUID) -> bool:
+        return tenant_id != tenant
+
+    set_tenant_activity_gate(gate)
+
+
+async def _assert_interrupted_as_inactive(
+    app_session: AppSessionFactory, tenant: uuid.UUID, run_id: uuid.UUID
+) -> None:
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None and run.state == RunState.INTERRUPTED.value
+        assert run.context["cancellation_kind"] == "tenant_inactive"
+        agent = await s.get(m.Agent, run.agent_id)
+        assert agent is not None and agent.status == "idle"
+
+
+async def test_a_queued_run_of_an_inactive_organisation_is_interrupted_at_start(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    run_id = await _make_queued_run(app_session, tenant)
+    _block(tenant)
+
+    async def must_not_run(db: Any, **kw: Any) -> RunResult:
+        raise AssertionError("a run of an inactive organisation must not invoke the runtime")
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=_FnRuntime(must_not_run),
+    )
+
+    await _assert_interrupted_as_inactive(app_session, tenant, run_id)
+    async with app_session(tenant) as s:
+        events = await s.execute(
+            select(m.ActivityEvent.message).where(m.ActivityEvent.tenant_id == tenant)
+        )
+        messages = events.scalars().all()
+        assert "Dev: Cancelled: organisation is not active" in messages
+
+
+async def test_a_republished_run_is_stopped_at_start_too(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8.runtime.intake import publish_run
+    from oc8.runtime.queue import RunQueue
+
+    queue = RunQueue(redis_url, key=f"test:{uuid.uuid4()}")
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: queue)
+    tenant = uuid.uuid4()
+    run_id = await _make_queued_run(app_session, tenant)
+    _block(tenant)
+
+    async def must_not_run(db: Any, **kw: Any) -> RunResult:
+        raise AssertionError("a run of an inactive organisation must not invoke the runtime")
+
+    try:
+        await publish_run(run_id=run_id, tenant_id=tenant)
+        message = await queue.dequeue(timeout=1.0)
+        assert message is not None
+        await execute_run(message, runtime=_FnRuntime(must_not_run))
+    finally:
+        await queue.close()
+
+    await _assert_interrupted_as_inactive(app_session, tenant, run_id)
+
+
+async def test_a_running_run_stops_at_its_next_step_when_the_organisation_stops(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8.modelrouter import CompletionResult, ToolCall, Usage, chunk_from_result
+    from oc8.runtime.adapter import Oc8AgentRuntime
+
+    tenant = uuid.uuid4()
+
+    class _CountingRouter:
+        """Always asks for another tool call; the gate flips to "no" after the
+        first model call, so a second call would mean the step check missed it."""
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, req: Any) -> CompletionResult:
+            self.calls += 1
+            _block(tenant)
+            return CompletionResult(
+                text="",
+                tool_calls=[ToolCall(id=f"c{self.calls}", name="noop", arguments={})],
+                usage=Usage(tokens_in=1, tokens_out=1),
+                stop_reason="tool_use",
+                provider="fake",
+                model="fake",
+            )
+
+        async def stream(self, req: Any) -> Any:
+            yield chunk_from_result(await self.complete(req))
+
+    router = _CountingRouter()
+    monkeypatch.setattr("oc8.agent.engine.get_model_router", lambda: router)
+
+    async with app_session(tenant) as s:
+        dept = m.Department(tenant_id=tenant, name="Ops", frame={})
+        s.add(dept)
+        await s.flush()
+        agent = m.Agent(tenant_id=tenant, department_id=dept.id, name="Dev")
+        s.add(agent)
+        await s.flush()
+        run = await RunRepository(s).create(
+            tenant_id=tenant, agent_id=agent.id, context={"task": "loop"}
+        )
+        run_id = run.id
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=Oc8AgentRuntime(),
+    )
+
+    assert router.calls == 1
+    await _assert_interrupted_as_inactive(app_session, tenant, run_id)
+
+
+async def test_a_raising_gate_lets_runs_continue(app_session: AppSessionFactory) -> None:
+    from oc8.tenants.activity import set_tenant_activity_gate
+
+    tenant = uuid.uuid4()
+    run_id = await _make_queued_run(app_session, tenant)
+
+    async def broken_gate(tenant_id: uuid.UUID) -> bool:
+        raise RuntimeError("gate unavailable")
+
+    set_tenant_activity_gate(broken_gate)
+
+    async def stepping_runner(db: Any, **kw: Any) -> RunResult:
+        assert await kw["cancel_check"]() is False
+        return RunResult(
+            task_id=uuid.uuid4(),
+            agent_id=kw["agent"].id,
+            status="done",
+            output="finished",
+            tool_calls=[],
+            steps=1,
+        )
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=_FnRuntime(stepping_runner),
+    )
+
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None and run.state == RunState.DONE.value
+        assert "cancellation_kind" not in run.context
