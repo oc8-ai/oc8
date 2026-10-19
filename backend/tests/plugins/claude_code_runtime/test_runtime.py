@@ -191,6 +191,9 @@ async def test_a_finished_run_returns_done_and_tears_down(
     assert result.output == "Fixed the bug."
     assert driver.torn_down == 1
     spec = driver.specs[0]
+    from oc8.sandbox.reaper import TENANT_LABEL
+
+    assert spec.labels[TENANT_LABEL] == str(tenant)
     assert spec.network_disabled is False
     assert "--output-format" in spec.command and "stream-json" in spec.command
     assert "--resume" not in spec.command  # first leg, nothing to resume

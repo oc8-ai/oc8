@@ -41,7 +41,7 @@ from oc8.realtime.emit import publish_run_output_delta
 from oc8.sandbox import get_sandbox_driver
 from oc8.sandbox.mounts import validate_mounts
 from oc8.sandbox.naming import container_name
-from oc8.sandbox.reaper import RUN_LABEL
+from oc8.sandbox.reaper import RUN_LABEL, TENANT_LABEL
 from oc8.sandbox.types import BindMount, SandboxSpec
 
 _PLUGIN_NAME = "opencode_runtime"
@@ -313,7 +313,7 @@ class OpencodeRuntime:
             image=settings.opencode_agent_image,
             name=container_name(agent.name, "opencode", run_id),
             # Identity for the startup reaper; the name is only for humans.
-            labels={RUN_LABEL: str(run_id)},
+            labels={RUN_LABEL: str(run_id), TENANT_LABEL: str(tenant_id)},
             command=_build_command(
                 task_text=f"{task_text}\n\n{TOOLCHAIN_NOTE}", resume_session_id=resume_session_id
             ),

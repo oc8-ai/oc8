@@ -59,9 +59,11 @@ def make_scoped_token(tenant_id: uuid.UUID, plugin_id: str, scopes: list[str]) -
 
 @dataclass
 class SandboxedExecutor:
-    """Pooled: one hardened worker per (tenant, plugin_version). Worker code
+    """Pooled: one hardened worker per plugin, and one executor per
+    organisation (``tenant_id``), so the pool is per organisation. Worker code
     receives a scoped token, never DB creds."""
 
+    tenant_id: uuid.UUID
     driver: SandboxDriver | None = None
     image: str = "docker.io/library/python:3.13-alpine"
     regime: dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_COMMUNITY_REGIME))
@@ -71,13 +73,14 @@ class SandboxedExecutor:
     def _driver(self) -> SandboxDriver:
         return self.driver or get_sandbox_driver()
 
-    async def _ensure(self, key: str, tenant_id: uuid.UUID) -> SandboxHandle:
+    async def _ensure(self, key: str) -> SandboxHandle:
         if key not in self._pool:
             spec = SandboxSpec(
                 image=self.image,
                 # No run id: this worker is POOLED and outlives any one run.
                 name=container_name(key, "hook"),
-                labels={TENANT_LABEL: str(tenant_id)},
+                # Last, so nothing can override it.
+                labels={TENANT_LABEL: str(self.tenant_id)},
                 command=["sleep", "3600"],
                 runtime=self.regime.get("runtime"),
                 read_only=bool(self.regime.get("read_only", False)),
@@ -91,7 +94,7 @@ class SandboxedExecutor:
 
     async def _invoke(self, handler: HookHandler, ctx: HookCtx, payload: dict[str, Any]) -> Any:
         key = handler.plugin_id
-        handle = await self._ensure(key, ctx.tenant_id)
+        handle = await self._ensure(key)
         token = make_scoped_token(ctx.tenant_id, handler.plugin_id, self.grants.get(key, []))
         request = {
             "point": handler.point,

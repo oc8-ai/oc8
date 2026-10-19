@@ -153,7 +153,9 @@ def _register_hooks(
     is_community = plugin.trust_level == "community"
     offered = {} if is_community else _trusted_handlers(plugin)
     executor: object = (
-        SandboxedExecutor(grants={str(plugin.id): granted}) if is_community else InProcessExecutor()
+        SandboxedExecutor(tenant_id=tenant_id, grants={str(plugin.id): granted})
+        if is_community
+        else InProcessExecutor()
     )
     for binding in version.manifest.get("handles", []):
         point = binding["point"] if isinstance(binding, dict) else binding.point

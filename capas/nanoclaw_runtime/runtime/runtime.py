@@ -35,7 +35,7 @@ from oc8.sandbox import get_sandbox_driver
 from oc8.sandbox.driver import SandboxDriver
 from oc8.sandbox.mounts import validate_mounts
 from oc8.sandbox.naming import container_name
-from oc8.sandbox.reaper import RUN_LABEL
+from oc8.sandbox.reaper import RUN_LABEL, TENANT_LABEL
 from oc8.sandbox.types import SandboxError, SandboxHandle, SandboxSpec
 from oc8.skills.runtime import catalog_block, load_assigned_skills
 
@@ -490,6 +490,7 @@ class NanoclawRuntime:
         driver = get_sandbox_driver()
         session = await provision_session(
             root,
+            tenant_id=tenant_id,
             agent_id=agent.id,
             run_id=run_id,
             image=provisioner_image(),
@@ -539,7 +540,7 @@ class NanoclawRuntime:
             image=agent_image(),
             name=container_name(agent.name, "agent", run_id),
             # Identity for the startup reaper; the name is only for humans.
-            labels={RUN_LABEL: str(run_id)},
+            labels={RUN_LABEL: str(run_id), TENANT_LABEL: str(tenant_id)},
             # The whole security claim of this runtime is this dict.
             env={
                 "ANTHROPIC_BASE_URL": f"{settings.internal_base_url}/llm",
