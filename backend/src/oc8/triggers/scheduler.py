@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.db.session import tenant_session
 from oc8.runtime.intake import enqueue_run
-from oc8.tenants.activity import tenant_may_run
+from oc8.tenants.activity import TenantInactive, tenant_may_run
 from oc8.triggers.service import compute_next_run
 
 logger = logging.getLogger(__name__)
@@ -190,6 +190,14 @@ async def run_scheduler_tick() -> int:
                     else:
                         await fire_trigger(db, trigger, tenant_id=tenant_id)
                     fired += 1
+            except TenantInactive:
+                # The organisation stopped being allowed to run after the
+                # check above; the trigger stays due. Expected, not an error.
+                logger.info(
+                    "scheduler tick skipped trigger %s: organisation %s is not active",
+                    trigger_id,
+                    tenant_id,
+                )
             except Exception:
                 logger.exception(
                     "scheduler tick failed to fire trigger %s for tenant %s", trigger_id, tenant_id

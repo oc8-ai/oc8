@@ -131,7 +131,12 @@ from oc8.runtime.run_context import append_tool_call
 from oc8.runtime.step_record import call_state_for, step_timing_dto
 from oc8.skills.runtime import LoadedSkill, instruction_block, load_assigned_skills
 from oc8.storage import s3
-from oc8.tenants.activity import TENANT_INACTIVE_OUTPUT, tenant_may_run
+from oc8.tenants.activity import (
+    TENANT_INACTIVE_KIND,
+    TENANT_INACTIVE_OUTPUT,
+    TenantInactive,
+    tenant_may_run,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -619,7 +624,7 @@ async def step(
     if operator_kind is not None or not await tenant_may_run(run.tenant_id):
         ctx = dict(run.context)
         if operator_kind is None:
-            ctx["cancellation_kind"] = "tenant_inactive"
+            ctx["cancellation_kind"] = TENANT_INACTIVE_KIND
             reason = TENANT_INACTIVE_OUTPUT
         else:
             reason = "Run cancelled by operator."
@@ -1477,6 +1482,8 @@ async def tool(
     principal: CurrentPrincipal,
 ) -> ToolResult:
     run = await _run_for_token(run_id, db, principal)
+    if not await tenant_may_run(run.tenant_id):
+        raise TenantInactive(run.tenant_id)
     agent, dept, conn, pinned = await _load(db, run)
     return await _dispatch_one_tool(
         run=run,
@@ -1504,6 +1511,8 @@ async def tools(
     if not body.calls:
         return ToolsResult(results=[])
     run = await _run_for_token(run_id, db, principal)
+    if not await tenant_may_run(run.tenant_id):
+        raise TenantInactive(run.tenant_id)
     agent, dept, conn, pinned = await _load(db, run)
     try:
         prepared = await _precompute_leading_reads(

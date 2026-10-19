@@ -25,7 +25,7 @@ from oc8.runtime.repository import RunRepository
 from oc8.runtime.run_context import merge_context
 from oc8.runtime.states import RunState
 from oc8.runtime.workspace import sync_run_output
-from oc8.tenants.activity import TENANT_INACTIVE_OUTPUT, tenant_may_run
+from oc8.tenants.activity import TENANT_INACTIVE_KIND, TENANT_INACTIVE_OUTPUT, tenant_may_run
 
 logger = logging.getLogger(__name__)
 
@@ -706,7 +706,11 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             # already queued (or re-published without going through
             # enqueue_run) stops here, before the runtime is ever invoked.
             if not await tenant_may_run(tenant_id):
-                await merge_context(db, run, {"cancellation_kind": "tenant_inactive"})
+                await merge_context(
+                    db,
+                    run,
+                    {"cancellation_kind": TENANT_INACTIVE_KIND, "output": TENANT_INACTIVE_OUTPUT},
+                )
                 if agent.pause_reason is None:
                     agent.status = "idle"
                     await publish_agent_status(agent)
@@ -1164,11 +1168,12 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         if kind is None:
                             gate_stopped = (
                                 stopped_by_gate
-                                or (run.context or {}).get("cancellation_kind") == "tenant_inactive"
+                                or (run.context or {}).get("cancellation_kind")
+                                == TENANT_INACTIVE_KIND
                             )
-                            kind = "tenant_inactive" if gate_stopped else "operator_interrupted"
+                            kind = TENANT_INACTIVE_KIND if gate_stopped else "operator_interrupted"
                         stop: dict[str, Any] = {"cancellation_kind": kind}
-                        if kind == "tenant_inactive":
+                        if kind == TENANT_INACTIVE_KIND:
                             # The engine's interrupted result names the operator;
                             # this run was not stopped by one.
                             stop["output"] = TENANT_INACTIVE_OUTPUT

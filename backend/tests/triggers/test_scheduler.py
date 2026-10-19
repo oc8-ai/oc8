@@ -500,7 +500,7 @@ async def test_a_fire_refused_by_the_intake_is_logged_and_the_tick_goes_on(
     monkeypatch.setattr("oc8.triggers.scheduler.tenant_may_run", may_run)
 
     try:
-        with caplog.at_level(logging.ERROR, logger="oc8.triggers.scheduler"):
+        with caplog.at_level(logging.INFO, logger="oc8.triggers.scheduler"):
             fired = await run_scheduler_tick()
     finally:
         await test_queue.close()
@@ -508,7 +508,10 @@ async def test_a_fire_refused_by_the_intake_is_logged_and_the_tick_goes_on(
     assert fired == 1
     assert await _runs_for(app_session, tenant_a, agent_a) == []
     assert len(await _runs_for(app_session, tenant_b, agent_b)) == 1
-    assert any(str(trigger_a) in r.getMessage() and r.exc_info is not None for r in caplog.records)
+    refused = [r for r in caplog.records if str(trigger_a) in r.getMessage()]
+    assert refused, "the refused fire is logged"
+    # A gate change mid-tick is expected, not an error with a traceback.
+    assert all(r.levelno == logging.INFO and r.exc_info is None for r in refused)
     async with app_session(tenant_a) as db:
         refreshed = await db.get(m.Trigger, trigger_a)
         assert refreshed is not None

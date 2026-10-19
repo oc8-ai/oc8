@@ -2625,3 +2625,57 @@ async def test_a_copilot_dot_card_reaches_the_run_s_rendered_components(
         cards = fresh.context["rendered_components"]
         assert [c["component_key"] for c in cards] == ["responsibility_card"]
         assert cards[0]["props"]["title"] == "Offsite"
+
+
+async def _inactive_run(app_session: Any) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+    from oc8.tenants.activity import set_tenant_activity_gate
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, _task, run = await _plain_agent_run(db, tenant)
+        agent_id, run_id = agent.id, run.id
+
+    async def gate(tenant_id: uuid.UUID) -> bool:
+        return tenant_id != tenant
+
+    set_tenant_activity_gate(gate)
+    return tenant, agent_id, run_id
+
+
+@pytest.mark.asyncio
+async def test_tool_refuses_an_organisation_that_may_not_run(app_session: Any) -> None:
+    tenant, agent_id, run_id = await _inactive_run(app_session)
+    code, body = await _post_tool(
+        tenant, agent_id, run_id, "todo_write", {"todos": [{"content": "x", "status": "pending"}]}
+    )
+    assert code == 403, body
+    assert body == {"detail": "tenant_inactive"}
+
+
+@pytest.mark.asyncio
+async def test_tools_refuses_an_organisation_that_may_not_run(app_session: Any) -> None:
+    from asgi_lifespan import LifespanManager
+    from httpx import ASGITransport, AsyncClient
+
+    from oc8.main import create_app
+
+    tenant, agent_id, run_id = await _inactive_run(app_session)
+    token = _agent_token(tenant, agent_id, run_id)
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post(
+                f"/api/v1/internal/agent/{run_id}/tools",
+                json={
+                    "calls": [
+                        {
+                            "id": "c1",
+                            "name": "todo_write",
+                            "arguments": {"todos": [{"content": "x", "status": "pending"}]},
+                        }
+                    ]
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    assert r.status_code == 403, r.text
+    assert r.json() == {"detail": "tenant_inactive"}

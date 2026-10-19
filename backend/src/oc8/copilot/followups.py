@@ -27,7 +27,7 @@ from oc8.modelrouter.subscription_guard import (
     assert_manual_only_compatible,
 )
 from oc8.runtime.states import RunState
-from oc8.tenants.activity import TenantInactive, tenant_may_run
+from oc8.tenants.activity import TENANT_INACTIVE_KIND, TenantInactive, tenant_may_run
 
 logger = logging.getLogger(__name__)
 
@@ -252,7 +252,7 @@ async def fire_followup(db: AsyncSession, trigger: m.Trigger, *, tenant_id: uuid
     if not await tenant_may_run(tenant_id):
         # Checked before anything is written: the intake would refuse the turn
         # anyway, and a refusal there leaves a half-written turn to undo.
-        outcome = "inactive"
+        outcome = TENANT_INACTIVE_KIND
     elif not await member_holds_assigned_permission(db, member=member, permission=COPILOT_USE):
         outcome = "no_permission"
     elif (
@@ -323,7 +323,7 @@ async def fire_followup(db: AsyncSession, trigger: m.Trigger, *, tenant_id: uuid
             text("SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant_id)}
         )
         logger.info("follow-up %s skipped: organisation %s is not active", trigger_id, tenant_id)
-        return "inactive"
+        return TENANT_INACTIVE_KIND
     return "fired"
 
 
@@ -348,7 +348,7 @@ async def catch_up(db: AsyncSession, *, tenant_id: uuid.UUID, member_id: uuid.UU
             continue
         done.add(t.responsibility_id)
         t.last_skip_reason = None
-        # An organisation that may not run gets "inactive" here, like a
+        # An organisation that may not run gets "tenant_inactive" here, like a
         # scheduled fire: the mark is spent and nothing is caught up later.
         if await fire_followup(db, t, tenant_id=tenant_id) == "fired":
             fired += 1

@@ -12,6 +12,7 @@ from sqlalchemy import select
 from oc8 import models as m
 from oc8.db.session import tenant_session
 from oc8.events.types import InboundEvent
+from oc8.tenants.activity import TenantInactive
 from oc8.triggers.scheduler import fire_trigger, list_runnable_tenant_ids
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,14 @@ async def handle_inbound_event(event: InboundEvent) -> None:
                             else None
                         ),
                     )
+            except TenantInactive:
+                # The organisation stopped being allowed to run after it was
+                # listed. Expected, not an error.
+                logger.info(
+                    "event handling skipped trigger %s: organisation %s is not active",
+                    trigger_id,
+                    tenant_id,
+                )
             except Exception:
                 logger.exception(
                     "event handling failed to fire trigger %s for tenant %s", trigger_id, tenant_id

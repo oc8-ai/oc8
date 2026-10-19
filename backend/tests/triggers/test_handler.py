@@ -428,3 +428,47 @@ async def test_event_fan_out_skips_an_inactive_organisation(
         refreshed_b = await db.get(m.Trigger, trigger_ids[tenant_b])
         assert refreshed_b is not None
         assert refreshed_b.last_run_at is not None
+
+
+async def test_an_event_fire_refused_by_the_intake_is_logged_at_info(
+    app_session: AppSessionFactory,
+    redis_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The gate can change between the fan-out's tenant list and the intake."""
+    import logging
+
+    tenant = await _new_tenant_with_org(app_session)
+    test_queue = RunQueue(redis_url, key=f"test:{uuid.uuid4()}")
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: test_queue)
+    event_type = _unique_event_type("refused")
+    async with app_session(tenant) as db:
+        trigger = await create_trigger(
+            db,
+            tenant_id=tenant,
+            agent_id=uuid.uuid4(),
+            kind="event",
+            task_text="respond to issue",
+            event_source="github",
+            event_type=event_type,
+        )
+        trigger_id = trigger.id
+
+    async def everyone() -> list[uuid.UUID]:
+        return [tenant]
+
+    async def gate(tenant_id: uuid.UUID) -> bool:
+        return tenant_id != tenant
+
+    monkeypatch.setattr("oc8.triggers.handler.list_runnable_tenant_ids", everyone)
+    set_tenant_activity_gate(gate)
+    try:
+        with caplog.at_level(logging.INFO, logger="oc8.triggers.handler"):
+            await handle_inbound_event(InboundEvent(source="github", type=event_type, payload={}))
+    finally:
+        await test_queue.close()
+
+    refused = [r for r in caplog.records if str(trigger_id) in r.getMessage()]
+    assert refused, "the refused fire is logged"
+    assert all(r.levelno == logging.INFO and r.exc_info is None for r in refused)

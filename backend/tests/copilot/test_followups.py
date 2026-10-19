@@ -794,7 +794,7 @@ async def test_a_followup_of_an_inactive_organisation_is_skipped_quietly(
     async with app_session(tenant) as db:
         trigger = await db.get(m.Trigger, t_id)
         assert trigger is not None
-        assert await fire_followup(db, trigger, tenant_id=tenant) == "inactive"
+        assert await fire_followup(db, trigger, tenant_id=tenant) == "tenant_inactive"
 
     msgs, runs = await _turns_and_runs(app_session, tenant, session_id)
     assert msgs == [], "no follow-up turn lands in the transcript"
@@ -803,7 +803,7 @@ async def test_a_followup_of_an_inactive_organisation_is_skipped_quietly(
         t = await db.get(m.Trigger, t_id)
         assert t is not None
         # A one-shot stays due and fires once the organisation may run again.
-        assert t.enabled is True and t.last_skip_reason == "inactive"
+        assert t.enabled is True and t.last_skip_reason == "tenant_inactive"
 
 
 async def test_a_followup_refused_by_the_intake_writes_nothing(
@@ -821,7 +821,7 @@ async def test_a_followup_refused_by_the_intake_writes_nothing(
     async with app_session(tenant) as db:
         trigger = await db.get(m.Trigger, t_id)
         assert trigger is not None
-        assert await fire_followup(db, trigger, tenant_id=tenant) == "inactive"
+        assert await fire_followup(db, trigger, tenant_id=tenant) == "tenant_inactive"
 
     msgs, runs = await _turns_and_runs(app_session, tenant, session_id)
     assert msgs == []
@@ -847,7 +847,7 @@ async def test_catch_up_of_an_inactive_organisation_skips_and_catches_nothing_up
         assert (await db.execute(select(m.AgentRun))).scalars().all() == []
         t = await db.get(m.Trigger, t_id)
         assert t is not None
-        assert t.enabled is True and t.last_skip_reason == "inactive"
+        assert t.enabled is True and t.last_skip_reason == "tenant_inactive"
         assert t.next_run_at is not None and t.next_run_at > dt.datetime.now(tz=dt.UTC)
 
     set_tenant_activity_gate(None)

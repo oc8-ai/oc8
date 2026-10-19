@@ -1114,8 +1114,13 @@ async def _assert_interrupted_as_inactive(
         run = await s.get(m.AgentRun, run_id)
         assert run is not None and run.state == RunState.INTERRUPTED.value
         assert run.context["cancellation_kind"] == "tenant_inactive"
+        assert run.context["output"] == "Cancelled: organisation is not active"
         agent = await s.get(m.Agent, run.agent_id)
         assert agent is not None and agent.status == "idle"
+        events = await s.execute(
+            select(m.ActivityEvent.message).where(m.ActivityEvent.tenant_id == tenant)
+        )
+        assert events.scalars().all() == ["Dev: Cancelled: organisation is not active"]
 
 
 async def _assert_the_stop_is_explained(
@@ -1149,12 +1154,6 @@ async def test_a_queued_run_of_an_inactive_organisation_is_interrupted_at_start(
     )
 
     await _assert_interrupted_as_inactive(app_session, tenant, run_id)
-    async with app_session(tenant) as s:
-        events = await s.execute(
-            select(m.ActivityEvent.message).where(m.ActivityEvent.tenant_id == tenant)
-        )
-        messages = events.scalars().all()
-        assert "Dev: Cancelled: organisation is not active" in messages
 
 
 async def test_a_republished_run_is_stopped_at_start_too(
