@@ -13,6 +13,7 @@ from oc8.hooks.types import HookCtx, HookHandler
 from oc8.sandbox import get_sandbox_driver
 from oc8.sandbox.driver import SandboxDriver
 from oc8.sandbox.naming import container_name
+from oc8.sandbox.reaper import TENANT_LABEL
 from oc8.sandbox.types import SandboxHandle, SandboxSpec
 
 WORKER_REQUEST_PATH = "/workspace/req.json"
@@ -70,12 +71,13 @@ class SandboxedExecutor:
     def _driver(self) -> SandboxDriver:
         return self.driver or get_sandbox_driver()
 
-    async def _ensure(self, key: str) -> SandboxHandle:
+    async def _ensure(self, key: str, tenant_id: uuid.UUID) -> SandboxHandle:
         if key not in self._pool:
             spec = SandboxSpec(
                 image=self.image,
                 # No run id: this worker is POOLED and outlives any one run.
                 name=container_name(key, "hook"),
+                labels={TENANT_LABEL: str(tenant_id)},
                 command=["sleep", "3600"],
                 runtime=self.regime.get("runtime"),
                 read_only=bool(self.regime.get("read_only", False)),
@@ -89,7 +91,7 @@ class SandboxedExecutor:
 
     async def _invoke(self, handler: HookHandler, ctx: HookCtx, payload: dict[str, Any]) -> Any:
         key = handler.plugin_id
-        handle = await self._ensure(key)
+        handle = await self._ensure(key, ctx.tenant_id)
         token = make_scoped_token(ctx.tenant_id, handler.plugin_id, self.grants.get(key, []))
         request = {
             "point": handler.point,

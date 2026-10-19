@@ -42,6 +42,9 @@ logger = logging.getLogger(__name__)
 #: unrelated run of the same second had finished. Caught by a test, not in
 #: production, which is the only reason it reads as a footnote.
 RUN_LABEL = "oc8.run"
+# The organisation a sandbox belongs to, so a deployment can find (and stop)
+# everything one organisation has running.
+TENANT_LABEL = "oc8.tenant"
 
 #: Namespace stays OUT of this Docker-side filter on purpose: a container
 #: built before NAMESPACE_LABEL existed carries none at all, and a filter of

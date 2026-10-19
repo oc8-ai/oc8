@@ -26,7 +26,7 @@ from oc8.runtime.workspace import ensure_workspace_dir, workspace_root
 from oc8.sandbox import get_sandbox_driver
 from oc8.sandbox.mounts import validate_mounts
 from oc8.sandbox.naming import container_name
-from oc8.sandbox.reaper import RUN_LABEL
+from oc8.sandbox.reaper import RUN_LABEL, TENANT_LABEL
 from oc8.sandbox.types import BindMount, SandboxError, SandboxHandle, SandboxSpec
 
 logger = logging.getLogger(__name__)
@@ -178,7 +178,7 @@ class DockerIsolatedRuntime:
             image=settings.agent_runtime_image,
             name=container_name(agent.name, "shell", run_id),
             # Identity for the startup reaper; the name is only for humans.
-            labels={RUN_LABEL: str(run_id)},
+            labels={RUN_LABEL: str(run_id), TENANT_LABEL: str(tenant_id)},
             # ONLY these three vars — no DB URL, no provider keys, no KEK.
             env={
                 "OC8_INTERNAL_URL": settings.internal_base_url,

@@ -89,3 +89,22 @@ async def test_sandboxed_pool_reuses_worker_per_key() -> None:
     await ex.run_filter(h, ctx, {"title": "a"})
     await ex.run_filter(h, ctx, {"title": "b"})
     assert provisions == 1
+
+
+async def test_hook_worker_carries_the_organisation_label() -> None:
+    from oc8.sandbox.reaper import TENANT_LABEL
+
+    driver = FakeDriver()
+    seen: list[Any] = []
+    original = driver.provision
+
+    async def spy(spec: Any) -> SandboxHandle:
+        seen.append(spec)
+        return await original(spec)
+
+    driver.provision = spy  # type: ignore[method-assign]
+    ex = SandboxedExecutor(driver=driver, grants={"p1": []})
+    tenant = uuid.uuid4()
+    h = HookHandler("p1", "task.before_create", 10, False, None, ex)
+    await ex.run_filter(h, HookCtx(tenant_id=tenant), {"title": "t"})
+    assert seen[0].labels[TENANT_LABEL] == str(tenant)
