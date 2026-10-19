@@ -23,6 +23,7 @@ from sqlalchemy import select
 from oc8 import models as m
 from oc8.collab.intake import brief, route_to_team_lead
 from oc8.runtime.queue import RunQueue
+from oc8.tenants.activity import set_tenant_activity_gate
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -161,3 +162,31 @@ async def test_the_brief_says_it_is_one_job_and_carries_the_payload() -> None:
     assert "EIN Auftrag" in text
     assert "delegate_task" in text
     assert "Acme" in text and "12.400 EUR" in text, "verbatim: summarising it here would"
+
+
+def _gate_saying_no_for(tenant: uuid.UUID):  # type: ignore[no-untyped-def]
+    async def gate(tenant_id: uuid.UUID) -> bool:
+        return tenant_id != tenant
+
+    return gate
+
+
+async def test_a_handoff_accepted_for_an_inactive_organisation_starts_no_run(
+    app_session: AppSessionFactory, queue: Any
+) -> None:
+    tenant = uuid.uuid4()
+    set_tenant_activity_gate(_gate_saying_no_for(tenant))
+    async with app_session(tenant) as db:
+        dept, lead = await _department(db, tenant, with_lead=True)
+        assert lead is not None
+        handoff = await _handoff(db, tenant, dept, {"kunde": "Acme"})
+
+        await route_to_team_lead(db, handoff, tenant_id=tenant)
+
+    async with app_session(tenant) as db:
+        runs = (
+            (await db.execute(select(m.AgentRun).where(m.AgentRun.agent_id == lead.id)))
+            .scalars()
+            .all()
+        )
+        assert runs == []

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -475,3 +476,40 @@ async def test_cleanup_still_visits_an_inactive_organisation(
     set_tenant_activity_gate(_gate_saying_no_for(tenant_a))
 
     assert tenant_a in await list_active_tenant_ids()
+
+
+async def test_a_fire_refused_by_the_intake_is_logged_and_the_tick_goes_on(
+    app_session: AppSessionFactory,
+    redis_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The gate can change between the tick's own check and the intake's: the
+    refused fire is logged, rolled back, and the other organisations still fire."""
+    tenant_a = await _new_tenant_with_org(app_session)
+    tenant_b = await _new_tenant_with_org(app_session)
+    test_queue = RunQueue(redis_url, key=f"test:{uuid.uuid4()}")
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: test_queue)
+    trigger_a, agent_a = await _due_cron_trigger(app_session, tenant_a)
+    _, agent_b = await _due_cron_trigger(app_session, tenant_b)
+    set_tenant_activity_gate(_gate_saying_no_for(tenant_a))
+
+    async def may_run(_tenant_id: uuid.UUID) -> bool:
+        return True
+
+    monkeypatch.setattr("oc8.triggers.scheduler.tenant_may_run", may_run)
+
+    try:
+        with caplog.at_level(logging.ERROR, logger="oc8.triggers.scheduler"):
+            fired = await run_scheduler_tick()
+    finally:
+        await test_queue.close()
+
+    assert fired == 1
+    assert await _runs_for(app_session, tenant_a, agent_a) == []
+    assert len(await _runs_for(app_session, tenant_b, agent_b)) == 1
+    assert any(str(trigger_a) in r.getMessage() and r.exc_info is not None for r in caplog.records)
+    async with app_session(tenant_a) as db:
+        refreshed = await db.get(m.Trigger, trigger_a)
+        assert refreshed is not None
+        assert refreshed.last_run_at is None, "the refused fire leaves the trigger due"

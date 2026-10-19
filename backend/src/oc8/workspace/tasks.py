@@ -33,6 +33,7 @@ already the place a task's origin lives.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -42,11 +43,14 @@ from sqlalchemy import select, text
 from oc8.models.core import Agent, Department
 from oc8.models.ops import Task
 from oc8.runtime.intake import enqueue_run
+from oc8.tenants.activity import TenantInactive
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from oc8.authz.scope import DecisionActor
+
+logger = logging.getLogger(__name__)
 
 #: Same ceiling as `approvals.repo`/`workspace.queue`, and for the same reason.
 DEFAULT_LIMIT = 100
@@ -196,15 +200,26 @@ async def create_task(
     # `task_id` travels with the run at creation for the same reason
     # `route_to_team_lead` passes it: without it the engine opens a task of its
     # own when the run starts, and the board shows the same request twice.
-    await enqueue_run(
-        db,
-        tenant_id=tenant_id,
-        agent_id=lead.id,
-        context={"task": instructions},
-        source="manual",
-        idempotency_key=f"member-task:{task.id}",
-        task_id=task.id,
-    )
+    try:
+        await enqueue_run(
+            db,
+            tenant_id=tenant_id,
+            agent_id=lead.id,
+            context={"task": instructions},
+            source="manual",
+            idempotency_key=f"member-task:{task.id}",
+            task_id=task.id,
+        )
+    except TenantInactive:
+        # Refused before anything was committed, so the tenant binding is
+        # still in place: the task stays with the caller's transaction, but
+        # no run starts on it.
+        logger.info(
+            "task %s created, but no run started: organisation %s is not active",
+            task.id,
+            tenant_id,
+        )
+        return _row(task, lead.name, dept.name)
     # `enqueue_run` COMMITS, which ends the GUC set by `tenant_session`. Anything
     # read after it -- the row this function returns -- would run unbound and
     # see nothing. Same fix, same reason, as `collab/intake.py`.

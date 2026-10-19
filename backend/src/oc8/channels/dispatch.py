@@ -32,6 +32,7 @@ from oc8.channels.notice import (
     NoticeOption,
     outranks,
 )
+from oc8.tenants.activity import TenantInactive
 
 logger = logging.getLogger(__name__)
 
@@ -451,15 +452,22 @@ async def bind_from_free_text(
             db, tenant_id=tenant_id, agent_id=assistant.id, member_id=member.id
         )
     )
-    _msg, run = await send_message(
-        db,
-        session=session,
-        tenant_id=tenant_id,
-        message=text.text,
-        originating_operator=None,
-        chat_channel=channel,
-        chat_channel_external_id=text.external_id,
-    )
+    try:
+        _msg, run = await send_message(
+            db,
+            session=session,
+            tenant_id=tenant_id,
+            message=text.text,
+            originating_operator=None,
+            chat_channel=channel,
+            chat_channel_external_id=text.external_id,
+        )
+    except TenantInactive:
+        # No run will answer this turn, so it is not kept in the transcript
+        # either: roll back what send_message wrote before the intake refused.
+        await db.rollback()
+        logger.info("free text on %s skipped: organisation %s is not active", channel, tenant_id)
+        return
     # send_message() committed via enqueue_run -- re-fetch nothing further needed here.
     if run is None:
         # The Assistant's secret-blindness gate refused this message outright

@@ -8,12 +8,14 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from oc8 import __version__
 from oc8.config import Settings, get_settings
 from oc8.db.engine import dispose_engine
 from oc8.edition import EditionExtension
 from oc8.edition.runtime import COMMUNITY_RUNTIME_COMPOSITION, EditionRuntimeComposition
+from oc8.tenants.activity import TenantInactive
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +114,12 @@ def create_app(
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
         FastAPIInstrumentor.instrument_app(app)
+
+    @app.exception_handler(TenantInactive)
+    async def tenant_inactive(request: Request, exc: TenantInactive) -> JSONResponse:
+        """`enqueue_run` refuses an organisation that may not run; every API
+        route that starts a run answers the same way without its own check."""
+        return JSONResponse(status_code=403, content={"detail": "tenant_inactive"})
 
     @app.get("/health", tags=["meta"])
     async def health() -> dict[str, str]:

@@ -14,6 +14,7 @@ travel with it, not just "approved".
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any
 
@@ -21,6 +22,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.runtime.intake import enqueue_run
+from oc8.tenants.activity import TenantInactive
+
+logger = logging.getLogger(__name__)
 
 
 class UnknownOption(ValueError):
@@ -75,10 +79,12 @@ async def carry_out_decision(
     decision: str,
     reason: str,
     option: str | None,
-) -> uuid.UUID:
+) -> uuid.UUID | None:
     """Record which option was picked and enqueue the run that acts on it.
 
-    COMMITS `db` (via `enqueue_run`); see its docstring.
+    COMMITS `db` (via `enqueue_run`); see its docstring. Returns None, and
+    commits nothing, when the organisation may not run: the decision is still
+    recorded by the caller, but no run carries it out.
     """
     options = option_labels(approval)
     if option is not None:
@@ -87,14 +93,22 @@ async def carry_out_decision(
         approval.decision_option = option
     await db.flush()
 
-    run, _published = await enqueue_run(
-        db,
-        tenant_id=approval.tenant_id,
-        agent_id=approval.agent_id,
-        context={"task": instruction_for(approval, decision=decision, reason=reason)},
-        source="decision",
-        # One run per decision, forever: a double-click on approve must not have
-        # the agent act twice on an external system.
-        idempotency_key=f"decision:{approval.id}",
-    )
+    try:
+        run, _published = await enqueue_run(
+            db,
+            tenant_id=approval.tenant_id,
+            agent_id=approval.agent_id,
+            context={"task": instruction_for(approval, decision=decision, reason=reason)},
+            source="decision",
+            # One run per decision, forever: a double-click on approve must not
+            # have the agent act twice on an external system.
+            idempotency_key=f"decision:{approval.id}",
+        )
+    except TenantInactive:
+        logger.info(
+            "decision %s not carried out: organisation %s is not active",
+            approval.id,
+            approval.tenant_id,
+        )
+        return None
     return run.id
