@@ -25,7 +25,7 @@ from oc8.runtime.repository import RunRepository
 from oc8.runtime.run_context import merge_context
 from oc8.runtime.states import RunState
 from oc8.runtime.workspace import sync_run_output
-from oc8.tenants.activity import tenant_may_run
+from oc8.tenants.activity import TENANT_INACTIVE_OUTPUT, tenant_may_run
 
 logger = logging.getLogger(__name__)
 
@@ -716,7 +716,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                     tenant_id=tenant_id,
                     agent_id=agent.id,
                     status="error",
-                    message=f"{agent.name}: Cancelled: organisation is not active",
+                    message=f"{agent.name}: {TENANT_INACTIVE_OUTPUT}",
                 )
                 logger.info("run %s interrupted before start (organisation not active)", run_id)
                 record_run_outcome(RunState.INTERRUPTED.value)
@@ -1157,10 +1157,29 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                     if new_state is RunState.INTERRUPTED:
                         # Carry the cancel kind onto the run so consumers see why it
                         # stopped, uniformly with the queued-skip path above.
+                        # An operator's run_cancellation row wins. Otherwise the
+                        # gate stopped it: seen by _cancel_check in-process, or
+                        # recorded on the run context by a container's /step.
                         kind = await _cancellation_kind(db, run_id)
                         if kind is None:
-                            kind = "tenant_inactive" if stopped_by_gate else "operator_interrupted"
-                        await merge_context(db, run, {"cancellation_kind": kind})
+                            gate_stopped = (
+                                stopped_by_gate
+                                or (run.context or {}).get("cancellation_kind") == "tenant_inactive"
+                            )
+                            kind = "tenant_inactive" if gate_stopped else "operator_interrupted"
+                        stop: dict[str, Any] = {"cancellation_kind": kind}
+                        if kind == "tenant_inactive":
+                            # The engine's interrupted result names the operator;
+                            # this run was not stopped by one.
+                            stop["output"] = TENANT_INACTIVE_OUTPUT
+                            await record_activity(
+                                db,
+                                tenant_id=tenant_id,
+                                agent_id=agent.id,
+                                status="error",
+                                message=f"{agent.name}: {TENANT_INACTIVE_OUTPUT}",
+                            )
+                        await merge_context(db, run, stop)
                     # done/failed/interrupted => the agent is free again; the engine
                     # already sets "waiting_for_approval" itself when it suspends for
                     # HITL, so don't clobber it.

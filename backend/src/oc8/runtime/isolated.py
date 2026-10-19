@@ -38,6 +38,9 @@ _TASK_STATE = {
     "failed": "failed",
     "waiting_for_approval": "waiting_for_approval",
     "waiting_for_input": "waiting_for_input",
+    # Cancelled at a step boundary: the task did not finish, as the in-process
+    # engine marks an interrupted run's task.
+    "interrupted": "failed",
 }
 
 

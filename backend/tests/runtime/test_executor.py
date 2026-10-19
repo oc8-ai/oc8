@@ -1098,7 +1098,7 @@ async def test_a_crashed_chat_run_still_records_a_reply_and_tells_telegram(
         assert "the model provider hung up" in run.context["error"]
 
 
-def _block(tenant: uuid.UUID) -> None:
+def _make_inactive(tenant: uuid.UUID) -> None:
     from oc8.tenants.activity import set_tenant_activity_gate
 
     async def gate(tenant_id: uuid.UUID) -> bool:
@@ -1118,12 +1118,27 @@ async def _assert_interrupted_as_inactive(
         assert agent is not None and agent.status == "idle"
 
 
+async def _assert_the_stop_is_explained(
+    app_session: AppSessionFactory, tenant: uuid.UUID, run_id: uuid.UUID
+) -> None:
+    """A run the gate stopped between steps says why, in its output and in the
+    activity feed, and does not claim an operator cancelled it."""
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        assert run.context["output"] == "Cancelled: organisation is not active"
+        events = await s.execute(
+            select(m.ActivityEvent.message).where(m.ActivityEvent.tenant_id == tenant)
+        )
+        assert events.scalars().all() == ["Dev: Cancelled: organisation is not active"]
+
+
 async def test_a_queued_run_of_an_inactive_organisation_is_interrupted_at_start(
     app_session: AppSessionFactory,
 ) -> None:
     tenant = uuid.uuid4()
     run_id = await _make_queued_run(app_session, tenant)
-    _block(tenant)
+    _make_inactive(tenant)
 
     async def must_not_run(db: Any, **kw: Any) -> RunResult:
         raise AssertionError("a run of an inactive organisation must not invoke the runtime")
@@ -1152,7 +1167,7 @@ async def test_a_republished_run_is_stopped_at_start_too(
     monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: queue)
     tenant = uuid.uuid4()
     run_id = await _make_queued_run(app_session, tenant)
-    _block(tenant)
+    _make_inactive(tenant)
 
     async def must_not_run(db: Any, **kw: Any) -> RunResult:
         raise AssertionError("a run of an inactive organisation must not invoke the runtime")
@@ -1185,7 +1200,7 @@ async def test_a_running_run_stops_at_its_next_step_when_the_organisation_stops(
 
         async def complete(self, req: Any) -> CompletionResult:
             self.calls += 1
-            _block(tenant)
+            _make_inactive(tenant)
             return CompletionResult(
                 text="",
                 tool_calls=[ToolCall(id=f"c{self.calls}", name="noop", arguments={})],
@@ -1220,6 +1235,7 @@ async def test_a_running_run_stops_at_its_next_step_when_the_organisation_stops(
 
     assert router.calls == 1
     await _assert_interrupted_as_inactive(app_session, tenant, run_id)
+    await _assert_the_stop_is_explained(app_session, tenant, run_id)
 
 
 async def test_a_raising_gate_lets_runs_continue(app_session: AppSessionFactory) -> None:
@@ -1253,3 +1269,213 @@ async def test_a_raising_gate_lets_runs_continue(app_session: AppSessionFactory)
         run = await s.get(m.AgentRun, run_id)
         assert run is not None and run.state == RunState.DONE.value
         assert "cancellation_kind" not in run.context
+
+
+async def test_an_operator_cancel_wins_over_the_activity_gate(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    run_id = await _make_queued_run(app_session, tenant)
+
+    async def cancelled_and_inactive(db: Any, **kw: Any) -> RunResult:
+        async with app_session(tenant) as other:
+            other.add(
+                m.RunCancellation(
+                    tenant_id=tenant,
+                    run_id=run_id,
+                    requested_at=_now(),
+                    cancellation_kind="operator_interrupted",
+                )
+            )
+        _make_inactive(tenant)
+        assert await kw["cancel_check"]() is True
+        return RunResult(
+            task_id=uuid.uuid4(),
+            agent_id=kw["agent"].id,
+            status="interrupted",
+            output="Run cancelled by operator.",
+            tool_calls=[],
+            steps=1,
+        )
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=_FnRuntime(cancelled_and_inactive),
+    )
+
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None and run.state == RunState.INTERRUPTED.value
+        assert run.context["cancellation_kind"] == "operator_interrupted"
+        assert run.context["output"] == "Run cancelled by operator."
+
+
+# ------------------------------------------------- container (isolated) runs
+
+
+async def _make_queued_container_run(
+    app_session: AppSessionFactory, tenant: uuid.UUID
+) -> tuple[uuid.UUID, uuid.UUID]:
+    async with app_session(tenant) as s:
+        dept = m.Department(tenant_id=tenant, name="Ops", frame={})
+        s.add(dept)
+        await s.flush()
+        agent = m.Agent(
+            tenant_id=tenant, department_id=dept.id, name="Dev", narrowing={}, definition={}
+        )
+        s.add(agent)
+        await s.flush()
+        run = await RunRepository(s).create(
+            tenant_id=tenant, agent_id=agent.id, context={"task": "loop"}
+        )
+        return agent.id, run.id
+
+
+async def _run_in_a_scripted_container(
+    app_session: AppSessionFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+    tenant: uuid.UUID,
+    *,
+    before_the_step: Callable[[uuid.UUID], Awaitable[None]],
+) -> tuple[uuid.UUID, dict[str, Any]]:
+    """Runs execute_run through the real DockerIsolatedRuntime. The container
+    is replaced by what its shell does: ask /step once, then report the step's
+    verdict to /finish -- the same calls isolated_shell makes."""
+    from asgi_lifespan import LifespanManager
+    from httpx import ASGITransport, AsyncClient
+
+    from oc8.auth import get_identity_provider
+    from oc8.config import get_settings
+    from oc8.main import create_app
+    from oc8.runtime.isolated import DockerIsolatedRuntime
+    from tests.runtime.test_isolated_runtime import _FakeDriver
+
+    monkeypatch.setenv("OC8_RUNTIME_SESSION_ROOT", str(tmp_path))
+    get_settings.cache_clear()
+    agent_id, run_id = await _make_queued_container_run(app_session, tenant)
+    step: dict[str, Any] = {}
+
+    async def shell() -> None:
+        await before_the_step(run_id)
+        token = get_identity_provider().mint(
+            tenant_id=tenant,
+            subject=f"agent:{agent_id}",
+            role="agent_default",
+            kind="agent",
+            scopes=[f"run:{run_id}"],
+        )
+        headers = {"Authorization": f"Bearer {token}"}
+        app = create_app()
+        async with LifespanManager(app):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+                r = await c.post(f"/api/v1/internal/agent/{run_id}/step", headers=headers)
+                assert r.status_code == 200, r.text
+                step.update(r.json())
+                assert step["tool_calls"] == []
+                finished = await c.post(
+                    f"/api/v1/internal/agent/{run_id}/finish",
+                    json={"status": step["status_override"], "output": step["text"]},
+                    headers=headers,
+                )
+                assert finished.status_code == 200, finished.text
+
+    monkeypatch.setattr("oc8.runtime.isolated.get_sandbox_driver", lambda: _FakeDriver(shell))
+    try:
+        await execute_run(
+            RunMessage(
+                run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False
+            ),
+            runtime=DockerIsolatedRuntime(),
+        )
+    finally:
+        get_settings.cache_clear()
+    return run_id, step
+
+
+def _cancel_by_operator(app_session: AppSessionFactory, tenant: uuid.UUID) -> Any:
+    async def cancel(run_id: uuid.UUID) -> None:
+        async with app_session(tenant) as other:
+            other.add(
+                m.RunCancellation(
+                    tenant_id=tenant,
+                    run_id=run_id,
+                    requested_at=_now(),
+                    cancellation_kind="operator_interrupted",
+                )
+            )
+
+    return cancel
+
+
+async def test_a_container_run_stops_at_its_next_step_when_the_organisation_stops(
+    app_session: AppSessionFactory,
+    redis_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    tenant = uuid.uuid4()
+
+    async def stop(run_id: uuid.UUID) -> None:
+        _make_inactive(tenant)
+
+    run_id, step = await _run_in_a_scripted_container(
+        app_session, monkeypatch, tmp_path, tenant, before_the_step=stop
+    )
+
+    assert step["status_override"] == "interrupted"
+    await _assert_interrupted_as_inactive(app_session, tenant, run_id)
+    await _assert_the_stop_is_explained(app_session, tenant, run_id)
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        task = await s.get(m.Task, run.task_id)
+        assert task is not None and task.state == "failed"
+
+
+async def test_an_operator_cancel_stops_a_container_run_at_its_next_step(
+    app_session: AppSessionFactory,
+    redis_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    tenant = uuid.uuid4()
+
+    run_id, step = await _run_in_a_scripted_container(
+        app_session,
+        monkeypatch,
+        tmp_path,
+        tenant,
+        before_the_step=_cancel_by_operator(app_session, tenant),
+    )
+
+    assert step["status_override"] == "interrupted"
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None and run.state == RunState.INTERRUPTED.value
+        assert run.context["cancellation_kind"] == "operator_interrupted"
+        agent = await s.get(m.Agent, run.agent_id)
+        assert agent is not None and agent.status == "idle"
+
+
+async def test_an_operator_cancel_wins_over_the_activity_gate_in_a_container_run(
+    app_session: AppSessionFactory,
+    redis_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    tenant = uuid.uuid4()
+    cancel = _cancel_by_operator(app_session, tenant)
+
+    async def both(run_id: uuid.UUID) -> None:
+        await cancel(run_id)
+        _make_inactive(tenant)
+
+    run_id, _ = await _run_in_a_scripted_container(
+        app_session, monkeypatch, tmp_path, tenant, before_the_step=both
+    )
+
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None and run.state == RunState.INTERRUPTED.value
+        assert run.context["cancellation_kind"] == "operator_interrupted"

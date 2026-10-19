@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from oc8.api.deps import unguarded
 from oc8.db.session import tenant_session
-from oc8.tenants.activity import tenant_may_run
+from oc8.tenants.activity import TenantInactive, tenant_may_run
 from oc8.triggers.scheduler import fire_trigger, list_active_tenant_ids
 from oc8.triggers.service import get_trigger_by_webhook_token
 
@@ -64,6 +64,12 @@ async def ingest_webhook(token: str, request: Request) -> dict[str, str]:
                 continue
             if not trigger.enabled or not await tenant_may_run(tenant_id):
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown or disabled webhook")
-            await fire_trigger(db, trigger, tenant_id=tenant_id, payload=payload)
+            try:
+                await fire_trigger(db, trigger, tenant_id=tenant_id, payload=payload)
+            except TenantInactive:
+                # The gate changed between the check above and the intake's own.
+                raise HTTPException(
+                    status.HTTP_404_NOT_FOUND, "unknown or disabled webhook"
+                ) from None
             return {"status": "accepted"}
     raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown or disabled webhook")

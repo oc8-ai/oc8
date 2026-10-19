@@ -4,6 +4,8 @@ A single-organisation deployment registers nothing here: every organisation
 may run. An embedding deployment that can take an organisation out of
 service registers a gate at startup; scheduled runs, queued and running
 runs, channel polling and ingestion then honour it.
+
+Asked once per step of every running run; a gate must be cheap or cached.
 """
 
 from __future__ import annotations
@@ -17,6 +19,9 @@ logger = logging.getLogger(__name__)
 type TenantActivityGate = Callable[[uuid.UUID], Awaitable[bool]]
 
 _gate: TenantActivityGate | None = None
+
+#: What a run stopped by the gate reports, as its output and in the activity feed.
+TENANT_INACTIVE_OUTPUT = "Cancelled: organisation is not active"
 
 
 class TenantInactive(Exception):

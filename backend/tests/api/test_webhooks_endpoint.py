@@ -233,3 +233,31 @@ async def test_a_webhook_asks_the_activity_gate_at_most_once_per_request(
             accepted = await c.post(f"/api/v1/webhooks/{token}", json={"anything": "goes"})
             assert accepted.status_code == 202, accepted.text
             assert asked == [tenant, tenant]
+
+
+async def test_a_webhook_refused_between_lookup_and_fire_is_not_found(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """The gate can change between the lookup's check and the intake's own."""
+    tenant = uuid.uuid4()
+    agent_id, token, _ = await _webhook_trigger(app_session, tenant)
+    answers = iter([True, False])
+
+    async def gate(tenant_id: uuid.UUID) -> bool:
+        return next(answers)
+
+    set_tenant_activity_gate(gate)
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post(f"/api/v1/webhooks/{token}", json={"anything": "goes"})
+            assert r.status_code == 404, r.text
+            assert r.json()["detail"] == "unknown or disabled webhook"
+
+    async with app_session(tenant) as s:
+        runs = (
+            (await s.execute(select(m.AgentRun).where(m.AgentRun.agent_id == agent_id)))
+            .scalars()
+            .all()
+        )
+        assert runs == []
