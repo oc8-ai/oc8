@@ -45,7 +45,7 @@ from oc8.runtime.images import registry_auth_for_runtime, runtime_image
 from oc8.sandbox import get_sandbox_driver
 from oc8.sandbox.mounts import validate_mounts
 from oc8.sandbox.naming import container_name
-from oc8.sandbox.reaper import RUN_LABEL
+from oc8.sandbox.reaper import RUN_LABEL, TENANT_LABEL
 from oc8.sandbox.types import BindMount, SandboxSpec
 
 _PLUGIN_NAME = "claude_code_runtime"
@@ -304,7 +304,7 @@ class ClaudeCodeRuntime:
             ),
             name=container_name(agent.name, "claude", run_id),
             # Identity for the startup reaper; the name is only for humans.
-            labels={RUN_LABEL: str(run_id)},
+            labels={RUN_LABEL: str(run_id), TENANT_LABEL: str(tenant_id)},
             command=_build_command(
                 task_text=f"{task_text}\n\n{TOOLCHAIN_NOTE}",
                 mcp_config_path=_MCP_CONFIG_PATH,

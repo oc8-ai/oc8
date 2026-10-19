@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -8,6 +9,7 @@ from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.runtime.queue import RunQueue
+from oc8.tenants.activity import TenantActivityGate, set_tenant_activity_gate
 from oc8.triggers.scheduler import list_active_tenant_ids, run_scheduler_tick
 from oc8.triggers.service import create_trigger
 from tests.conftest import AppSessionFactory
@@ -377,3 +379,220 @@ async def test_tick_isolates_tenants_each_fires_only_its_own_due_trigger(
         refreshed_b = await db.get(m.Trigger, trigger_b_id)
         assert refreshed_b is not None
         assert refreshed_b.last_run_at is None
+
+
+def _gate_saying_no_for(*inactive: uuid.UUID) -> TenantActivityGate:
+    async def gate(tenant_id: uuid.UUID) -> bool:
+        return tenant_id not in inactive
+
+    return gate
+
+
+async def _due_cron_trigger(
+    app_session: AppSessionFactory, tenant: uuid.UUID, *, cron_expression: str = "0 9 * * *"
+) -> tuple[uuid.UUID, uuid.UUID]:
+    agent_id = uuid.uuid4()
+    async with app_session(tenant) as db:
+        trigger = await create_trigger(
+            db,
+            tenant_id=tenant,
+            agent_id=agent_id,
+            kind="cron",
+            task_text="scheduled",
+            cron_expression=cron_expression,
+        )
+        trigger.next_run_at = datetime.now(tz=UTC) - timedelta(minutes=30)
+        trigger_id = trigger.id
+        await db.flush()
+    return trigger_id, agent_id
+
+
+async def _runs_for(
+    app_session: AppSessionFactory, tenant: uuid.UUID, agent_id: uuid.UUID
+) -> list[m.AgentRun]:
+    async with app_session(tenant) as db:
+        return list(
+            (await db.execute(select(m.AgentRun).where(m.AgentRun.agent_id == agent_id)))
+            .scalars()
+            .all()
+        )
+
+
+async def test_tick_skips_an_inactive_organisation_and_fires_the_others(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_a = await _new_tenant_with_org(app_session)
+    tenant_b = await _new_tenant_with_org(app_session)
+    test_queue = RunQueue(redis_url, key=f"test:{uuid.uuid4()}")
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: test_queue)
+    _, agent_a = await _due_cron_trigger(app_session, tenant_a)
+    _, agent_b = await _due_cron_trigger(app_session, tenant_b)
+    set_tenant_activity_gate(_gate_saying_no_for(tenant_a))
+
+    try:
+        fired = await run_scheduler_tick()
+    finally:
+        await test_queue.close()
+
+    assert fired == 1
+    assert await _runs_for(app_session, tenant_a, agent_a) == []
+    assert len(await _runs_for(app_session, tenant_b, agent_b)) == 1
+
+
+async def test_a_skipped_cron_trigger_is_not_caught_up_later(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_a = await _new_tenant_with_org(app_session)
+    test_queue = RunQueue(redis_url, key=f"test:{uuid.uuid4()}")
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: test_queue)
+    trigger_id, agent_a = await _due_cron_trigger(
+        app_session, tenant_a, cron_expression="*/5 * * * *"
+    )
+    set_tenant_activity_gate(_gate_saying_no_for(tenant_a))
+
+    try:
+        await run_scheduler_tick()
+
+        async with app_session(tenant_a) as db:
+            refreshed = await db.get(m.Trigger, trigger_id)
+            assert refreshed is not None
+            assert refreshed.next_run_at is not None
+            assert refreshed.next_run_at > datetime.now(tz=UTC)
+            assert refreshed.last_run_at is None
+        assert await _runs_for(app_session, tenant_a, agent_a) == []
+
+        set_tenant_activity_gate(None)
+        await run_scheduler_tick()
+    finally:
+        await test_queue.close()
+
+    assert await _runs_for(app_session, tenant_a, agent_a) == []
+
+
+async def test_cleanup_still_visits_an_inactive_organisation(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant_a = await _new_tenant_with_org(app_session)
+    set_tenant_activity_gate(_gate_saying_no_for(tenant_a))
+
+    assert tenant_a in await list_active_tenant_ids()
+
+
+async def test_a_fire_refused_by_the_intake_is_logged_and_the_tick_goes_on(
+    app_session: AppSessionFactory,
+    redis_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The gate can change between the tick's own check and the intake's: the
+    refused fire is logged, rolled back, and the other organisations still fire."""
+    tenant_a = await _new_tenant_with_org(app_session)
+    tenant_b = await _new_tenant_with_org(app_session)
+    test_queue = RunQueue(redis_url, key=f"test:{uuid.uuid4()}")
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: test_queue)
+    trigger_a, agent_a = await _due_cron_trigger(app_session, tenant_a)
+    _, agent_b = await _due_cron_trigger(app_session, tenant_b)
+    set_tenant_activity_gate(_gate_saying_no_for(tenant_a))
+
+    async def may_run(_tenant_id: uuid.UUID) -> bool:
+        return True
+
+    monkeypatch.setattr("oc8.triggers.scheduler.tenant_may_run", may_run)
+
+    try:
+        with caplog.at_level(logging.INFO, logger="oc8.triggers.scheduler"):
+            fired = await run_scheduler_tick()
+    finally:
+        await test_queue.close()
+
+    assert fired == 1
+    assert await _runs_for(app_session, tenant_a, agent_a) == []
+    assert len(await _runs_for(app_session, tenant_b, agent_b)) == 1
+    refused = [r for r in caplog.records if str(trigger_a) in r.getMessage()]
+    assert refused, "the refused fire is logged"
+    # A gate change mid-tick is expected, not an error with a traceback.
+    assert all(r.levelno == logging.INFO and r.exc_info is None for r in refused)
+    async with app_session(tenant_a) as db:
+        refreshed = await db.get(m.Trigger, trigger_a)
+        assert refreshed is not None
+        assert refreshed.last_run_at is None, "the refused fire leaves the trigger due"
+
+
+async def test_a_due_follow_up_waits_and_fires_once_after_the_organisation_may_run(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8.agent.assistant import get_or_create_assistant
+    from oc8.copilot.followups import schedule_followup
+    from oc8.copilot.responsibilities import open_responsibility
+    from tests.copilot.helpers import copilot_seat, once_in_an_hour
+
+    tenant = await _new_tenant_with_org(app_session)
+    async with app_session(tenant) as db:
+        assistant = await get_or_create_assistant(db, tenant_id=tenant)
+        seat = await copilot_seat(db, tenant, "lisa@example.com")
+        responsibility = await open_responsibility(
+            db,
+            tenant_id=tenant,
+            member_id=seat.member_id,
+            chat_session_id=seat.session_id,
+            title="Offsite",
+            goal="Keep the offsite on track",
+            origin_channel=None,
+            run_id=None,
+            actor_agent_id=assistant.id,
+            member_subject=seat.subject,
+        )
+        trigger = await schedule_followup(
+            db,
+            tenant_id=tenant,
+            member_id=seat.member_id,
+            responsibility_id=responsibility.id,
+            assistant_id=assistant.id,
+            spec=once_in_an_hour(),
+            prompt="Check the venue replies",
+            member_subject=seat.subject,
+        )
+        assert trigger.kind == "once" and trigger.chat_session_id == seat.session_id
+        due_at = datetime.now(tz=UTC) - timedelta(minutes=5)
+        trigger.next_run_at = due_at
+        trigger_id = trigger.id
+        await db.flush()
+
+    async def chat_runs() -> list[m.AgentRun]:
+        async with app_session(tenant) as db:
+            return list(
+                (
+                    await db.execute(
+                        select(m.AgentRun).where(
+                            m.AgentRun.tenant_id == tenant, m.AgentRun.source == "chat"
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+    test_queue = RunQueue(redis_url, key=f"test:{uuid.uuid4()}")
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: test_queue)
+    set_tenant_activity_gate(_gate_saying_no_for(tenant))
+    try:
+        await run_scheduler_tick()
+
+        async with app_session(tenant) as db:
+            waiting = await db.get(m.Trigger, trigger_id)
+            assert waiting is not None
+            assert waiting.enabled is True
+            assert waiting.next_run_at == due_at
+            assert waiting.last_run_at is None
+        assert await chat_runs() == []
+
+        set_tenant_activity_gate(None)
+        await run_scheduler_tick()
+        await run_scheduler_tick()
+    finally:
+        await test_queue.close()
+
+    assert len(await chat_runs()) == 1
+    async with app_session(tenant) as db:
+        spent = await db.get(m.Trigger, trigger_id)
+        assert spent is not None and spent.enabled is False

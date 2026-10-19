@@ -6,11 +6,13 @@ from typing import Any
 import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.auth import get_identity_provider
 from oc8.constants import ACME_TENANT_ID
 from oc8.main import create_app
+from oc8.tenants.activity import set_tenant_activity_gate
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -129,3 +131,43 @@ async def test_run_updated_at_reaches_the_wire(app_session: AppSessionFactory) -
             body = r.json()
             assert "updatedAt" in body
             assert body["updatedAt"] == expected_updated_at.isoformat()
+
+
+async def test_starting_a_run_over_the_api_answers_tenant_inactive(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    async with app_session(tenant) as s:
+        agent = m.Agent(tenant_id=tenant, department_id=uuid.uuid4(), name="Dev")
+        s.add(agent)
+        await s.flush()
+        agent_id = agent.id
+
+    app = create_app()
+    fake = _FakeQueue()
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: fake)
+    token = get_identity_provider().mint(tenant_id=tenant, subject="dev-user", role="org_admin")
+
+    async def gate(tenant_id: uuid.UUID) -> bool:
+        return tenant_id != tenant
+
+    set_tenant_activity_gate(gate)
+
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as client:
+            r = await client.post(
+                f"/api/v1/agents/{agent_id}/run",
+                json={"task": "build it"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    assert r.status_code == 403
+    assert r.json() == {"detail": "tenant_inactive"}
+    assert fake.enqueued == []
+    async with app_session(tenant) as s:
+        runs = (
+            (await s.execute(select(m.AgentRun).where(m.AgentRun.agent_id == agent_id)))
+            .scalars()
+            .all()
+        )
+        assert runs == []

@@ -54,7 +54,7 @@ class FakeDriver:
 
 async def test_sandboxed_filter_roundtrip_with_scoped_token() -> None:
     driver = FakeDriver()
-    ex = SandboxedExecutor(driver=driver, grants={"p1": ["api:tasks.read"]})
+    ex = SandboxedExecutor(tenant_id=uuid.uuid4(), driver=driver, grants={"p1": ["api:tasks.read"]})
     ctx = HookCtx(tenant_id=uuid.uuid4())
     h = HookHandler("p1", "task.before_create", 10, False, None, ex)
     out = await ex.run_filter(h, ctx, {"title": "t"})
@@ -83,9 +83,28 @@ async def test_sandboxed_pool_reuses_worker_per_key() -> None:
         return await orig_provision(spec)
 
     driver.provision = counting_provision  # type: ignore[method-assign]
-    ex = SandboxedExecutor(driver=driver, grants={"p1": []})
+    ex = SandboxedExecutor(tenant_id=uuid.uuid4(), driver=driver, grants={"p1": []})
     ctx = HookCtx(tenant_id=uuid.uuid4())
     h = HookHandler("p1", "task.before_create", 10, False, None, ex)
     await ex.run_filter(h, ctx, {"title": "a"})
     await ex.run_filter(h, ctx, {"title": "b"})
     assert provisions == 1
+
+
+async def test_hook_worker_carries_the_organisation_label() -> None:
+    from oc8.sandbox.reaper import TENANT_LABEL
+
+    driver = FakeDriver()
+    seen: list[Any] = []
+    original = driver.provision
+
+    async def spy(spec: Any) -> SandboxHandle:
+        seen.append(spec)
+        return await original(spec)
+
+    driver.provision = spy  # type: ignore[method-assign]
+    tenant = uuid.uuid4()
+    ex = SandboxedExecutor(tenant_id=tenant, driver=driver, grants={"p1": []})
+    h = HookHandler("p1", "task.before_create", 10, False, None, ex)
+    await ex.run_filter(h, HookCtx(tenant_id=tenant), {"title": "t"})
+    assert seen[0].labels[TENANT_LABEL] == str(tenant)

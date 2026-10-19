@@ -31,6 +31,7 @@ from oc8 import models as m
 from oc8.channels.binding import issue_code, redeem_code
 from oc8.channels.dispatch import process_inbound
 from oc8.channels.notice import ChannelCapabilities, ChannelFreeText
+from oc8.tenants.activity import set_tenant_activity_gate
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -516,3 +517,58 @@ async def test_a_second_message_from_the_same_sender_reuses_the_session(
             .all()
         )
         assert len(sessions) == 1, "the second message must reuse the session, not open a new one"
+
+
+async def test_channel_free_text_of_an_inactive_organisation_starts_no_run(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    impl = FakeChannel()
+    async with app_session(tenant) as db:
+        member = m.OrgMember(
+            tenant_id=tenant,
+            subject="authorized-sender",
+            all_departments=True,
+            subject_uuid=uuid.uuid4(),
+        )
+        db.add(member)
+        await db.flush()
+        row = await issue_code(
+            db, tenant_id=tenant, user_id=uuid.uuid4(), channel=CHANNEL, member_id=member.id
+        )
+        code = row.code
+        member_id = member.id
+    async with app_session(tenant) as db:
+        await redeem_code(db, tenant_id=tenant, channel=CHANNEL, code=str(code), external_id="999")
+    async with app_session(tenant) as db:
+        member = await db.get(m.OrgMember, member_id)
+        assert member is not None
+        await _grant_copilot_manage(db, tenant_id=tenant, member=member)
+
+    async def gate(tenant_id: uuid.UUID) -> bool:
+        return tenant_id != tenant
+
+    set_tenant_activity_gate(gate)
+    async with app_session(tenant) as db:
+        await process_inbound(
+            db,
+            impl,
+            tenant_id=tenant,
+            channel=CHANNEL,
+            update={"message": {"text": "Wie viele offene Tickets?", "from": {"id": 999}}},
+        )
+    impl.say.assert_not_awaited()
+
+    async with app_session(tenant) as db:
+        runs = (
+            (await db.execute(select(m.AgentRun).where(m.AgentRun.tenant_id == tenant)))
+            .scalars()
+            .all()
+        )
+        assert runs == []
+        messages = (
+            (await db.execute(select(m.ChatMessage).where(m.ChatMessage.tenant_id == tenant)))
+            .scalars()
+            .all()
+        )
+        assert messages == [], "a turn nobody will answer is not left in the transcript"

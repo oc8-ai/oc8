@@ -27,7 +27,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm.attributes import flag_modified
 
 from oc8 import models as m
@@ -131,6 +131,12 @@ from oc8.runtime.run_context import append_tool_call
 from oc8.runtime.step_record import call_state_for, step_timing_dto
 from oc8.skills.runtime import LoadedSkill, instruction_block, load_assigned_skills
 from oc8.storage import s3
+from oc8.tenants.activity import (
+    TENANT_INACTIVE_KIND,
+    TENANT_INACTIVE_OUTPUT,
+    TenantInactive,
+    tenant_may_run,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -604,6 +610,38 @@ async def step(
     principal: CurrentPrincipal,
 ) -> StepResult:
     run = await _run_for_token(run_id, db, principal)
+
+    # The in-process engine's per-step cancel probe (§7.2), for a container
+    # run: an operator cancel or an organisation that may no longer run ends
+    # the run here, before another model call. An operator cancel wins; when
+    # only the activity gate says no, the run context records it so the
+    # executor writes cancellation_kind "tenant_inactive", not an operator kind.
+    operator_kind = (
+        await db.execute(
+            select(m.RunCancellation.cancellation_kind).where(m.RunCancellation.run_id == run_id)
+        )
+    ).scalar_one_or_none()
+    if operator_kind is not None or not await tenant_may_run(run.tenant_id):
+        ctx = dict(run.context)
+        if operator_kind is None:
+            ctx["cancellation_kind"] = TENANT_INACTIVE_KIND
+            reason = TENANT_INACTIVE_OUTPUT
+        else:
+            reason = "Run cancelled by operator."
+        closed_step_timing = None
+        step_timings = ctx.get("stepTimings") or []
+        if step_timings and "_t0" in step_timings[-1]:
+            closed_step_timing = finish_step(step_timings[-1])
+        run.context = ctx
+        # Same in-place mutation reason as the step-limit branch below.
+        flag_modified(run, "context")
+        await db.commit()
+        if closed_step_timing is not None:
+            await publish_run_step_timing(
+                run.tenant_id, run_id=run.id, timing=step_timing_dto(closed_step_timing)
+            )
+        return StepResult(done=True, text=reason, status_override="interrupted")
+
     agent, dept, conn, pinned = await _load(db, run)
     max_steps = _max_steps(pinned["definition"])
 
@@ -1444,6 +1482,8 @@ async def tool(
     principal: CurrentPrincipal,
 ) -> ToolResult:
     run = await _run_for_token(run_id, db, principal)
+    if not await tenant_may_run(run.tenant_id):
+        raise TenantInactive(run.tenant_id)
     agent, dept, conn, pinned = await _load(db, run)
     return await _dispatch_one_tool(
         run=run,
@@ -1471,6 +1511,8 @@ async def tools(
     if not body.calls:
         return ToolsResult(results=[])
     run = await _run_for_token(run_id, db, principal)
+    if not await tenant_may_run(run.tenant_id):
+        raise TenantInactive(run.tenant_id)
     agent, dept, conn, pinned = await _load(db, run)
     try:
         prepared = await _precompute_leading_reads(

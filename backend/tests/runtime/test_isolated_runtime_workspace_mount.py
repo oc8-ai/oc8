@@ -19,6 +19,7 @@ from oc8.config import get_settings
 from oc8.runtime.isolated import DockerIsolatedRuntime
 from oc8.runtime.states import RunState
 from oc8.runtime.workspace import workspace_root
+from oc8.sandbox.reaper import RUN_LABEL, TENANT_LABEL
 from oc8.sandbox.types import SandboxHandle
 from tests.conftest import AppSessionFactory
 
@@ -130,3 +131,23 @@ async def test_workspace_host_path_stays_within_the_session_root(
     session_root = Path(get_settings().runtime_session_root)
     host_path = Path(driver.spec.mounts[0].host_path)
     assert host_path.is_relative_to(session_root)
+
+
+async def test_sandbox_carries_the_organisation_label(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant = uuid.uuid4()
+    agent_id, run_id = await _agent_and_run(app_session, tenant)
+
+    driver = _SpyDriver()
+    monkeypatch.setattr("oc8.runtime.isolated.get_sandbox_driver", lambda: driver)
+
+    async with app_session(tenant) as db:
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        await DockerIsolatedRuntime().execute(
+            db, agent=agent, task_text="verkauf etwas", tenant_id=tenant, run_id=run_id
+        )
+
+    assert driver.spec.labels[TENANT_LABEL] == str(tenant)
+    assert driver.spec.labels[RUN_LABEL] == str(run_id)

@@ -186,6 +186,9 @@ async def test_a_finished_run_returns_done(
     assert result.output == "Fixed it."
     assert driver.torn_down == 1
     spec = driver.specs[0]
+    from oc8.sandbox.reaper import TENANT_LABEL
+
+    assert spec.labels[TENANT_LABEL] == str(tenant)
     assert spec.command[:2] == ["opencode", "run"]
     assert "--auto" in spec.command
     assert "--format" in spec.command and "json" in spec.command

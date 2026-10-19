@@ -15,6 +15,7 @@ from oc8.models.run import AgentRun
 from oc8.runtime.queue import get_run_queue
 from oc8.runtime.repository import RunRepository
 from oc8.runtime.states import RunState
+from oc8.tenants.activity import TenantInactive, tenant_may_run
 
 
 async def enqueue_run(
@@ -60,7 +61,13 @@ async def enqueue_run(
     key, so a later redelivery of the same delivery would find no unique-index
     conflict and create a duplicate run. With a key present, the create-with-key
     path is the sole dedup and the key is always stored.
+
+    Raises ``TenantInactive`` for an organisation that may not run
+    (``oc8.tenants.activity``), before any query: nothing is created, reused
+    or committed, and ``db`` keeps whatever its caller had pending.
     """
+    if not await tenant_may_run(tenant_id):
+        raise TenantInactive(tenant_id)
     # 1. Coalesce (best-effort): fold a repeat fire onto a still-queued run so
     #    it doesn't stack a second identical job. RLS scopes this to the tenant.
     #    Gate on ``idempotency_key is None``: coalescing only matches

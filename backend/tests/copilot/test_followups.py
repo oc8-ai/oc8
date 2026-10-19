@@ -18,6 +18,7 @@ from oc8.copilot.followups import (
 from oc8.copilot.profile import pause, resume
 from oc8.copilot.responsibilities import close_responsibility, open_responsibility
 from oc8.copilot.schedule import MAX_ACTIVE_FOLLOWUPS, FollowupRejected, FollowupSpec
+from oc8.tenants.activity import set_tenant_activity_gate
 from tests.conftest import AppSessionFactory
 from tests.copilot.helpers import copilot_seat, once_in_an_hour
 
@@ -763,3 +764,93 @@ async def test_an_invalid_stored_cap_falls_back_to_the_default(
         )
         await db.flush()
         assert await max_active_followups(db, tenant_id=tenant) == MAX_ACTIVE_FOLLOWUPS
+
+
+def _gate_saying_no_for(tenant: uuid.UUID):  # type: ignore[no-untyped-def]
+    async def gate(tenant_id: uuid.UUID) -> bool:
+        return tenant_id != tenant
+
+    return gate
+
+
+async def _turns_and_runs(
+    app_session: AppSessionFactory, tenant: uuid.UUID, session_id: uuid.UUID
+) -> tuple[list[m.ChatMessage], list[m.AgentRun]]:
+    async with app_session(tenant) as db:
+        msgs = (
+            (await db.execute(select(m.ChatMessage).where(m.ChatMessage.session_id == session_id)))
+            .scalars()
+            .all()
+        )
+        runs = (await db.execute(select(m.AgentRun))).scalars().all()
+        return list(msgs), list(runs)
+
+
+async def test_a_followup_of_an_inactive_organisation_is_skipped_quietly(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant, _member_id, session_id, _r_id, t_id = await _world(app_session)
+    set_tenant_activity_gate(_gate_saying_no_for(tenant))
+    async with app_session(tenant) as db:
+        trigger = await db.get(m.Trigger, t_id)
+        assert trigger is not None
+        assert await fire_followup(db, trigger, tenant_id=tenant) == "tenant_inactive"
+
+    msgs, runs = await _turns_and_runs(app_session, tenant, session_id)
+    assert msgs == [], "no follow-up turn lands in the transcript"
+    assert runs == []
+    async with app_session(tenant) as db:
+        t = await db.get(m.Trigger, t_id)
+        assert t is not None
+        # A one-shot stays due and fires once the organisation may run again.
+        assert t.enabled is True and t.last_skip_reason == "tenant_inactive"
+
+
+async def test_a_followup_refused_by_the_intake_writes_nothing(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gate can change between fire_followup's own check and the intake's:
+    the refusal then rolls the half-written turn back instead of raising."""
+    tenant, _member_id, session_id, _r_id, t_id = await _world(app_session)
+    set_tenant_activity_gate(_gate_saying_no_for(tenant))
+
+    async def may_run(_tenant_id: uuid.UUID) -> bool:
+        return True
+
+    monkeypatch.setattr("oc8.copilot.followups.tenant_may_run", may_run)
+    async with app_session(tenant) as db:
+        trigger = await db.get(m.Trigger, t_id)
+        assert trigger is not None
+        assert await fire_followup(db, trigger, tenant_id=tenant) == "tenant_inactive"
+
+    msgs, runs = await _turns_and_runs(app_session, tenant, session_id)
+    assert msgs == []
+    assert runs == []
+    async with app_session(tenant) as db:
+        t = await db.get(m.Trigger, t_id)
+        assert t is not None
+        assert t.enabled is True and t.last_run_at is None
+
+
+async def test_catch_up_of_an_inactive_organisation_skips_and_catches_nothing_up_later(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """Resuming while the organisation may not run: each paused follow-up is
+    marked inactive (a recurring one moves on), so nothing is caught up once
+    it may run again."""
+    tenant, member_id, _r_id, t_id = await _recurring_world(app_session)
+    set_tenant_activity_gate(_gate_saying_no_for(tenant))
+    async with app_session(tenant) as db:
+        await resume(db, tenant_id=tenant, member_id=member_id)
+        assert await catch_up(db, tenant_id=tenant, member_id=member_id) == 0
+    async with app_session(tenant) as db:
+        assert (await db.execute(select(m.AgentRun))).scalars().all() == []
+        t = await db.get(m.Trigger, t_id)
+        assert t is not None
+        assert t.enabled is True and t.last_skip_reason == "tenant_inactive"
+        assert t.next_run_at is not None and t.next_run_at > dt.datetime.now(tz=dt.UTC)
+
+    set_tenant_activity_gate(None)
+    async with app_session(tenant) as db:
+        assert await catch_up(db, tenant_id=tenant, member_id=member_id) == 0
+        assert (await db.execute(select(m.AgentRun))).scalars().all() == []

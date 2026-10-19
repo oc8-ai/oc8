@@ -11,6 +11,8 @@ const m = vi.hoisted(() => ({
   cancelRun: vi.fn(),
   agentId: "agent-1" as string | undefined,
   cron: "0 9 * * *",
+  followupEnabled: true,
+  lastSkipReason: null as string | null,
 }));
 
 vi.mock("@/lib/hooks-copilot", () => ({
@@ -55,8 +57,8 @@ vi.mock("@/lib/hooks-copilot", () => ({
         timezone: "Europe/Berlin",
         nextRunAt: "2026-10-05T07:00:00Z",
         endsAt: "2026-11-01T00:00:00Z",
-        enabled: true,
-        lastSkipReason: null,
+        enabled: m.followupEnabled,
+        lastSkipReason: m.lastSkipReason,
       },
     ],
   }),
@@ -97,6 +99,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   m.agentId = "agent-1";
   m.cron = "0 9 * * *";
+  m.followupEnabled = true;
+  m.lastSkipReason = null;
 });
 
 describe("CopilotWorkPanel", () => {
@@ -118,6 +122,14 @@ describe("CopilotWorkPanel", () => {
     expect(screen.getByText(/Ends:/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "End schedule" }));
     expect(m.endFollowup).toHaveBeenCalledWith("f1");
+  });
+
+  it("says a follow-up was skipped because the organisation is not active", () => {
+    m.followupEnabled = false;
+    m.lastSkipReason = "tenant_inactive";
+    wrap(<CopilotWorkPanel />);
+    openTab(/scheduled/i);
+    expect(screen.getByText("Skipped: the organisation is not active")).toBeInTheDocument();
   });
 
   it("names the weekday of a weekly schedule, and falls back to the raw cron", () => {

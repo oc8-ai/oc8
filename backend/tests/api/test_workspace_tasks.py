@@ -16,10 +16,12 @@ from typing import Any
 import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.auth import get_identity_provider
 from oc8.main import create_app
+from oc8.tenants.activity import set_tenant_activity_gate
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -119,3 +121,32 @@ async def test_a_department_without_a_team_lead_refuses_with_409(
         )
     assert refused.status_code == 409, refused.text
     assert queue.enqueued == []
+
+
+async def test_creating_a_task_for_an_inactive_organisation_answers_tenant_inactive(
+    app_session: AppSessionFactory, queue: _FakeQueue
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        dept = await _department(db, tenant, "Kundenservice", with_lead=True)
+
+    async def gate(tenant_id: uuid.UUID) -> bool:
+        return tenant_id != tenant
+
+    set_tenant_activity_gate(gate)
+    async with _http() as http:
+        refused = await http.post(
+            "/api/v1/tasks",
+            json={"departmentId": str(dept.id), "instructions": "Bitte Tickets zusammenfassen."},
+            headers=_headers(tenant, "boss", "org_admin"),
+        )
+    assert refused.status_code == 403, refused.text
+    assert refused.json() == {"detail": "tenant_inactive"}
+    assert queue.enqueued == []
+    async with app_session(tenant) as db:
+        tasks = (
+            (await db.execute(select(m.Task).where(m.Task.department_id == dept.id)))
+            .scalars()
+            .all()
+        )
+        assert tasks == [], "nothing is written for a refused task"

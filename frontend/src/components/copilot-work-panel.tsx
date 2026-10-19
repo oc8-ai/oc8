@@ -138,6 +138,8 @@ function skipReasonLabel(t: ReturnType<typeof useT>, reason: string): string {
       return t("Skipped: the chat session is gone", "Übersprungen: Chat-Sitzung fehlt");
     case "ended":
       return t("The schedule has ended", "Der Zeitplan ist beendet");
+    case "tenant_inactive":
+      return t("Skipped: the organisation is not active", "Übersprungen: Organisation nicht aktiv");
     default:
       return reason;
   }

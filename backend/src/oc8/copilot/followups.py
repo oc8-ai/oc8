@@ -27,6 +27,7 @@ from oc8.modelrouter.subscription_guard import (
     assert_manual_only_compatible,
 )
 from oc8.runtime.states import RunState
+from oc8.tenants.activity import TENANT_INACTIVE_KIND, TenantInactive, tenant_may_run
 
 logger = logging.getLogger(__name__)
 
@@ -248,7 +249,11 @@ async def fire_followup(db: AsyncSession, trigger: m.Trigger, *, tenant_id: uuid
         return "no_member"
     outcome: str | None = None
     r: m.Responsibility | None = None
-    if not await member_holds_assigned_permission(db, member=member, permission=COPILOT_USE):
+    if not await tenant_may_run(tenant_id):
+        # Checked before anything is written: the intake would refuse the turn
+        # anyway, and a refusal there leaves a half-written turn to undo.
+        outcome = TENANT_INACTIVE_KIND
+    elif not await member_holds_assigned_permission(db, member=member, permission=COPILOT_USE):
         outcome = "no_permission"
     elif (
         await get_or_create_profile(db, tenant_id=tenant_id, member_id=member.id)
@@ -292,18 +297,33 @@ async def fire_followup(db: AsyncSession, trigger: m.Trigger, *, tenant_id: uuid
     _advance(trigger, now)
     from oc8.chat.service import send_message
 
-    await send_message(
-        db,
-        session=session,
-        tenant_id=tenant_id,
-        message=f"Follow-up for “{r.title}”: {trigger.task_text}",
-        originating_operator=member.subject,
-        operator_role=None,
-        chat_channel=channel,
-        chat_channel_external_id=external_id,
-        role="followup",
-        extra_context={"followup": {"responsibility_id": str(r.id), "trigger_id": str(trigger.id)}},
-    )  # commits via enqueue_run
+    trigger_id = trigger.id
+    try:
+        await send_message(
+            db,
+            session=session,
+            tenant_id=tenant_id,
+            message=f"Follow-up for “{r.title}”: {trigger.task_text}",
+            originating_operator=member.subject,
+            operator_role=None,
+            chat_channel=channel,
+            chat_channel_external_id=external_id,
+            role="followup",
+            extra_context={
+                "followup": {"responsibility_id": str(r.id), "trigger_id": str(trigger.id)}
+            },
+        )  # commits via enqueue_run
+    except TenantInactive:
+        # The organisation stopped being allowed to run between the check
+        # above and the intake. Undo the turn and the advance written for it,
+        # so the follow-up stays due and no unanswered turn is left behind.
+        # The rollback ends the tenant binding; re-bind it like a commit would.
+        await db.rollback()
+        await db.execute(
+            text("SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant_id)}
+        )
+        logger.info("follow-up %s skipped: organisation %s is not active", trigger_id, tenant_id)
+        return TENANT_INACTIVE_KIND
     return "fired"
 
 
@@ -312,7 +332,13 @@ async def catch_up(db: AsyncSession, *, tenant_id: uuid.UUID, member_id: uuid.UU
     skipped because of the pause -- never one per missed occurrence."""
     fired = 0
     done: set[uuid.UUID] = set()
-    for t in await list_followups(db, tenant_id=tenant_id, member_id=member_id):
+    # By id, re-read each turn: a refusal inside fire_followup rolls the
+    # session back, which expires every row loaded before it.
+    ids = [t.id for t in await list_followups(db, tenant_id=tenant_id, member_id=member_id)]
+    for trigger_id in ids:
+        t = await db.get(m.Trigger, trigger_id)
+        if t is None:
+            continue
         # Never re-enable: a follow-up the member ended, or whose responsibility
         # was closed, stays ended (cancel/close also clear last_skip_reason).
         if not t.enabled or t.last_skip_reason != "paused" or t.responsibility_id is None:
@@ -322,6 +348,8 @@ async def catch_up(db: AsyncSession, *, tenant_id: uuid.UUID, member_id: uuid.UU
             continue
         done.add(t.responsibility_id)
         t.last_skip_reason = None
+        # An organisation that may not run gets "tenant_inactive" here, like a
+        # scheduled fire: the mark is spent and nothing is caught up later.
         if await fire_followup(db, t, tenant_id=tenant_id) == "fired":
             fired += 1
         # fire_followup commits, which ends the transaction-local tenant binding.

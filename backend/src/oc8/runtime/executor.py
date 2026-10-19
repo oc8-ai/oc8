@@ -25,6 +25,7 @@ from oc8.runtime.repository import RunRepository
 from oc8.runtime.run_context import merge_context
 from oc8.runtime.states import RunState
 from oc8.runtime.workspace import sync_run_output
+from oc8.tenants.activity import TENANT_INACTIVE_KIND, TENANT_INACTIVE_OUTPUT, tenant_may_run
 
 logger = logging.getLogger(__name__)
 
@@ -701,6 +702,30 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 record_run_outcome(RunState.INTERRUPTED.value)
                 return
 
+            # The organisation may not run background work: a run that was
+            # already queued (or re-published without going through
+            # enqueue_run) stops here, before the runtime is ever invoked.
+            if not await tenant_may_run(tenant_id):
+                await merge_context(
+                    db,
+                    run,
+                    {"cancellation_kind": TENANT_INACTIVE_KIND, "output": TENANT_INACTIVE_OUTPUT},
+                )
+                if agent.pause_reason is None:
+                    agent.status = "idle"
+                    await publish_agent_status(agent)
+                await repo.transition(run, RunState.INTERRUPTED)
+                await record_activity(
+                    db,
+                    tenant_id=tenant_id,
+                    agent_id=agent.id,
+                    status="error",
+                    message=f"{agent.name}: {TENANT_INACTIVE_OUTPUT}",
+                )
+                logger.info("run %s interrupted before start (organisation not active)", run_id)
+                record_run_outcome(RunState.INTERRUPTED.value)
+                return
+
             # ONE run per agent at a time. Nothing enforced this: the executor
             # set agent.status = "running" and never asked whether it already
             # was -- which is why two containers named for one agent were seen
@@ -835,13 +860,25 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             delegation_depth = int(run.context.get("delegation_depth", 0))
             originating_operator = run.context.get("originating_operator")
 
+            stopped_by_gate = False
+
             async def _cancel_check() -> bool:
+                nonlocal stopped_by_gate
                 # Per-step cancel probe (§7.2). Reads the run_cancellation table --
                 # a row this transaction does NOT lock -- so under READ COMMITTED it
                 # sees the cancel endpoint's committed insert at the next step
                 # boundary. Signalling off the locked agent_run row is the deadlock
                 # fix; see RunCancellation.
-                return await _cancellation_kind(db, run_id) is not None
+                #
+                # The organisation's activity gate is asked at the same step
+                # boundary; when it is what stopped the run, the kind written
+                # below is "tenant_inactive" rather than an operator interrupt.
+                if await _cancellation_kind(db, run_id) is not None:
+                    return True
+                if not await tenant_may_run(tenant_id):
+                    stopped_by_gate = True
+                    return True
+                return False
 
             async def _inbox_check() -> list[str]:
                 # Per-step operator-message probe (live steering). Same unlocked
@@ -1124,10 +1161,30 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                     if new_state is RunState.INTERRUPTED:
                         # Carry the cancel kind onto the run so consumers see why it
                         # stopped, uniformly with the queued-skip path above.
+                        # An operator's run_cancellation row wins. Otherwise the
+                        # gate stopped it: seen by _cancel_check in-process, or
+                        # recorded on the run context by a container's /step.
                         kind = await _cancellation_kind(db, run_id)
-                        await merge_context(
-                            db, run, {"cancellation_kind": kind or "operator_interrupted"}
-                        )
+                        if kind is None:
+                            gate_stopped = (
+                                stopped_by_gate
+                                or (run.context or {}).get("cancellation_kind")
+                                == TENANT_INACTIVE_KIND
+                            )
+                            kind = TENANT_INACTIVE_KIND if gate_stopped else "operator_interrupted"
+                        stop: dict[str, Any] = {"cancellation_kind": kind}
+                        if kind == TENANT_INACTIVE_KIND:
+                            # The engine's interrupted result names the operator;
+                            # this run was not stopped by one.
+                            stop["output"] = TENANT_INACTIVE_OUTPUT
+                            await record_activity(
+                                db,
+                                tenant_id=tenant_id,
+                                agent_id=agent.id,
+                                status="error",
+                                message=f"{agent.name}: {TENANT_INACTIVE_OUTPUT}",
+                            )
+                        await merge_context(db, run, stop)
                     # done/failed/interrupted => the agent is free again; the engine
                     # already sets "waiting_for_approval" itself when it suspends for
                     # HITL, so don't clobber it.
