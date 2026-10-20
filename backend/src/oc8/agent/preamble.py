@@ -13,6 +13,7 @@ Core-neutral: names no vendor, product or software specifics.
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -176,6 +177,32 @@ async def roster_block(db: AsyncSession, *, agent: m.Agent) -> str | None:
     return f"Your department's agents:\n{roster}"
 
 
+def run_context_block(*, now: dt.datetime, member: m.OrgMember | None) -> str:
+    """When this run happens and, for a chat-driven run, who it is for.
+
+    The model has no clock: without this an agent asked for "yesterday's
+    numbers" can only guess the date, and it guesses from whatever date it last
+    saw -- observed live, a scheduled daily summary reported the weekend on a
+    Tuesday because its standing instructions happened to contain a Monday as
+    a worked example. It also has no idea who is talking to it: a chat agent
+    asked to create a record "for me" in a connected system cannot fill in the
+    person, although the platform authenticated them before the message was
+    accepted.
+
+    Information only, never authority -- naming the person grants nothing; every
+    tool call is still authorised exactly as before.
+    """
+    lines = [f"Current date and time: {now:%Y-%m-%d %H:%M} UTC ({now:%A})."]
+    if member is not None:
+        name = member.display_name.strip() or member.subject
+        lines.append(
+            f"You are acting for {name} (login: {member.subject}), the person who "
+            "started this conversation. Use this when a task refers to them, e.g. "
+            "'me' or 'my'; it grants no permissions."
+        )
+    return "\n".join(lines)
+
+
 async def _gated_copilot_permissions(
     db: AsyncSession,
     *,
@@ -233,11 +260,15 @@ async def build_run_preamble(
     supports_vision: bool = False,
     task: m.Task | None = None,
     run_id: uuid.UUID | None = None,
+    now: dt.datetime | None = None,
 ) -> RunPreamble:
     """Seed a run's conversation: system context first, the task last.
 
     Message order is part of the contract -- the task must be the final turn, so
     the model reads its instructions against context already established.
+
+    ``now`` exists for tests; production always passes nothing and gets the
+    current UTC time.
     """
     messages: list[NeutralMessage] = [
         NeutralMessage(role="system", content=system_prompt(agent))
@@ -307,6 +338,26 @@ async def build_run_preamble(
     catalog = catalog_block(assigned_skills)
     if catalog:
         messages.append(NeutralMessage(role="system", content=catalog))
+
+    # Last of the system context, right before the task: it changes on every
+    # run, and everything above it stays a stable, cacheable prefix. The person
+    # is resolved through the same fail-closed seam the Copilot write tools use
+    # (`_resolve_agent_actor`): nobody for a scheduled or delegated run, and
+    # nobody when someone other than the session's own member posted the turn.
+    actor = (
+        await _resolve_agent_actor(db, tenant_id=tenant_id, task=task, run_id=run_id)
+        if task is not None
+        else None
+    )
+    messages.append(
+        NeutralMessage(
+            role="system",
+            content=run_context_block(
+                now=now or dt.datetime.now(dt.UTC),
+                member=actor.member if actor is not None else None,
+            ),
+        )
+    )
 
     if task_images and supports_vision:
         messages.append(
