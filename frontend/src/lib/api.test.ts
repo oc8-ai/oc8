@@ -8,6 +8,7 @@ import { API_URL, COMMUNITY_TOKEN_KEY, api, setSessionRenewer } from "./api";
 // 401 at the same moment, and retries each request once with the new token.
 
 const reloadMock = vi.fn();
+const hrefSets: string[] = [];
 const originalLocation = window.location;
 
 function json(status: number, body: unknown): Response {
@@ -22,12 +23,15 @@ function authHeader(call: unknown[]): string | undefined {
   return (init?.headers as Record<string, string> | undefined)?.authorization;
 }
 
-/** Answers `/auth/config` (hit by `logoutCommunity`) with no SSO logout, and
- *  every other route through `handler`. */
-function stubFetch(handler: (url: string, init?: RequestInit) => Response | Promise<Response>) {
+/** Answers `/auth/config` (hit by `logoutCommunity`) with `ssoLogoutUrl`
+ *  (none by default), and every other route through `handler`. */
+function stubFetch(
+  handler: (url: string, init?: RequestInit) => Response | Promise<Response>,
+  ssoLogoutUrl: string | null = null,
+) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
-    if (url.endsWith("/auth/config")) return json(200, { ssoLogoutUrl: null });
+    if (url.endsWith("/auth/config")) return json(200, { ssoLogoutUrl });
     return handler(url, init);
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -42,11 +46,15 @@ beforeEach(() => {
   window.localStorage.clear();
   window.localStorage.setItem(COMMUNITY_TOKEN_KEY, "old-token");
   reloadMock.mockReset();
+  hrefSets.length = 0;
   // jsdom's `location.reload` is not configurable -- replace the object.
-  Object.defineProperty(window, "location", {
+  const location = { ...originalLocation, reload: reloadMock, origin: "http://localhost" };
+  Object.defineProperty(location, "href", {
     configurable: true,
-    value: { ...originalLocation, reload: reloadMock, origin: "http://localhost" },
+    get: () => hrefSets.at(-1) ?? "http://localhost/",
+    set: (value: string) => hrefSets.push(value),
   });
+  Object.defineProperty(window, "location", { configurable: true, value: location });
 });
 
 afterEach(() => {
@@ -218,6 +226,60 @@ describe("request() on a 401", () => {
     await api.get("/b");
 
     expect(renewer).toHaveBeenCalledTimes(2);
+  });
+
+  it("signs out once when concurrent requests cannot be renewed", async () => {
+    // Without a shared sign-out, the first request clears the token and
+    // awaits `/auth/config`; the rest then see no community session, take the
+    // dev branch and reload, cancelling the SSO logout redirect.
+    const fetchMock = stubFetch(() => json(401, {}), "https://idp.example/logout");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const renewer = vi.fn(async () => {
+      await gate;
+      return false;
+    });
+    setSessionRenewer(renewer);
+
+    const pending = Promise.allSettled([1, 2, 3, 4, 5].map((n) => api.get(`/things/${n}`)));
+    await vi.waitFor(() => expect(apiCalls(fetchMock)).toHaveLength(5));
+    release();
+    const results = await pending;
+
+    expect(results.every((r) => r.status === "rejected")).toBe(true);
+    expect(renewer).toHaveBeenCalledTimes(1);
+    const configCalls = fetchMock.mock.calls.filter((c) => String(c[0]).endsWith("/auth/config"));
+    expect(configCalls).toHaveLength(1);
+    expect(hrefSets).toHaveLength(1);
+    expect(hrefSets[0]).toContain("https://idp.example/logout?post_logout_redirect_uri=");
+    expect(reloadMock).not.toHaveBeenCalled();
+  });
+
+  it("signs out when a late 401 is retried with the renewed token and refused again", async () => {
+    let releaseSlow!: () => void;
+    const slow = new Promise<void>((resolve) => (releaseSlow = resolve));
+    const fetchMock = stubFetch(async (url, init) => {
+      const auth = (init?.headers as Record<string, string>).authorization;
+      if (url.endsWith("/slow")) {
+        if (auth === "Bearer old-token") await slow;
+        return json(401, {});
+      }
+      return auth === "Bearer new-token" ? json(200, {}) : json(401, {});
+    });
+    const renewer = vi.fn(async () => {
+      window.localStorage.setItem(COMMUNITY_TOKEN_KEY, "new-token");
+      return true;
+    });
+    setSessionRenewer(renewer);
+
+    const late = api.get("/slow");
+    await api.get("/fast");
+    releaseSlow();
+
+    await expect(late).rejects.toThrow("session expired");
+    expect(renewer).toHaveBeenCalledTimes(1);
+    expect(apiCalls(fetchMock).filter((c) => String(c[0]).endsWith("/slow"))).toHaveLength(2);
+    expect(reloadMock).toHaveBeenCalledTimes(1);
   });
 
   it("signs out without looping when the retry also gets a 401", async () => {

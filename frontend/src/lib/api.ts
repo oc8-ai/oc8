@@ -149,6 +149,7 @@ let renewal: Promise<boolean> | null = null;
 export function setSessionRenewer(fn: SessionRenewer | null): void {
   sessionRenewer = fn;
   renewal = null;
+  signingOut = null;
 }
 
 function renewSession(): Promise<boolean> {
@@ -169,23 +170,32 @@ function renewSession(): Promise<boolean> {
   return renewal;
 }
 
-async function signOutExpired(): Promise<never> {
-  // The token died (its TTL, or a role that stopped resolving) and nothing
-  // could renew it. Drop it and reload: <DevSignIn>/<CommunitySignIn>
-  // reappears because `hasDevSession()`/`hasCommunitySession()` is now false,
-  // which is a real screen a person can act on instead of every open query
-  // failing red one at a time. Community mode is checked first, mirroring
-  // `getToken()`'s own precedence above -- clearing the wrong key here left
-  // the expired community token in place, so the reload just re-sent it and
-  // got another 401, forever.
-  if (hasCommunitySession()) {
-    // Owns its own reload/SSO-redirect -- see its doc comment.
-    await logoutCommunity();
-  } else {
-    logoutDev();
-    if (typeof window !== "undefined") window.location.reload();
-  }
-  throw new Error("session expired — signing in again");
+// The sign-out in flight, if any. When a renewal fails, every request that
+// waited on it resumes at once; without this, the first one clears the token
+// and awaits `/auth/config`, and the rest see no community session, take the
+// dev branch and reload -- cancelling the SSO logout redirect.
+let signingOut: Promise<never> | null = null;
+
+function signOutExpired(): Promise<never> {
+  signingOut ??= (async (): Promise<never> => {
+    // The token died (its TTL, or a role that stopped resolving) and nothing
+    // could renew it. Drop it and reload: <DevSignIn>/<CommunitySignIn>
+    // reappears because `hasDevSession()`/`hasCommunitySession()` is now
+    // false, which is a real screen a person can act on instead of every open
+    // query failing red one at a time. Community mode is checked first,
+    // mirroring `getToken()`'s own precedence above -- clearing the wrong key
+    // here left the expired community token in place, so the reload just
+    // re-sent it and got another 401, forever.
+    if (hasCommunitySession()) {
+      // Owns its own reload/SSO-redirect -- see its doc comment.
+      await logoutCommunity();
+    } else {
+      logoutDev();
+      if (typeof window !== "undefined") window.location.reload();
+    }
+    throw new Error("session expired — signing in again");
+  })();
+  return signingOut;
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -206,7 +216,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     // refused: either another request already renewed the session while this
     // one was in flight, or the renewer just did. A second 401 signs out --
     // it never asks again, so a renewer that "succeeds" with a token the API
-    // still refuses cannot loop.
+    // still refuses cannot loop. A truly revoked token therefore costs one
+    // renewal before the sign-out.
     let current = await getToken().catch(() => null);
     if (current === token && (await renewSession())) {
       current = await getToken().catch(() => null);
