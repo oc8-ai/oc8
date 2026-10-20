@@ -35,6 +35,7 @@ from cli_harness.session_state import clear_session_id, get_session_id, set_sess
 from cli_harness.tail import tail_new_lines
 from oc8 import models as m
 from oc8.agent.engine import RunResult, open_run_task
+from oc8.agent.preamble import run_context
 from oc8.config import get_settings
 from oc8.realtime.emit import publish_run_output_delta
 from oc8.sandbox import get_sandbox_driver
@@ -272,6 +273,15 @@ class ClaudeCodeRuntime:
         settings = get_settings()
         token = run_token(tenant_id=tenant_id, agent=agent, run_id=run_id)
         mcp_url = f"{settings.internal_base_url}/mcp"
+        # Same run context the built-in runtimes get from build_run_preamble
+        # (current date, and the person behind a chat): this runtime composes
+        # its own prompt, so without it its agent is the one still guessing.
+        # Prepended, so the task stays the last thing the model reads.
+        prompt_text = (
+            await run_context(db, tenant_id=tenant_id, task=task, run_id=run_id)
+            + "\n\n"
+            + task_text
+        )
         resume_session_id = get_session_id(run, _PLUGIN_NAME)
         session_root = SESSION_ROOT_OVERRIDE or settings.runtime_session_root
 
@@ -292,7 +302,7 @@ class ClaudeCodeRuntime:
             # Identity for the startup reaper; the name is only for humans.
             labels={RUN_LABEL: str(run_id)},
             command=_build_command(
-                task_text=task_text,
+                task_text=prompt_text,
                 mcp_config_path=_MCP_CONFIG_PATH,
                 resume_session_id=resume_session_id,
             ),
