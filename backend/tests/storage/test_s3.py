@@ -51,3 +51,11 @@ async def test_delete_prefix_removes_every_object_under_it_and_nothing_else(
 async def test_delete_prefix_refuses_an_empty_prefix(minio_url: str) -> None:
     with pytest.raises(ValueError):
         await s3.delete_prefix("")
+
+
+@pytest.mark.parametrize("prefix", ["", "some-tenant", "some-tenant/chat_message"])
+async def test_delete_prefix_refuses_a_prefix_without_a_trailing_slash(
+    minio_url: str, prefix: str
+) -> None:
+    with pytest.raises(ValueError):
+        await s3.delete_prefix(prefix)

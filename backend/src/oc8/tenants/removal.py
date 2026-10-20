@@ -5,14 +5,23 @@ In order:
 1. Every run of the organisation that has not finished gets the
    `run_cancellation` row the cancel endpoint writes (kind
    `tenant_inactive`), committed on its own, so a running executor stops at
-   its next step boundary and a queued run is skipped on pickup. New work is
-   the caller's concern: a deployment that removes organisations registers
-   an activity gate (`oc8.tenants.activity`) and closes it first.
+   its next step boundary and a queued run is skipped on pickup. Removal then
+   waits, up to `RUN_STOP_DEADLINE_S`, until none is still `running`: a
+   running executor holds its `agent_run` row locked for the whole run, and
+   it can only see its cancel row while that row exists. If one is still
+   running at the deadline, `TenantRemovalError` is raised before anything is
+   deleted; call again later. New work is the caller's concern: a deployment
+   that removes organisations registers an activity gate
+   (`oc8.tenants.activity`) and closes it first.
 2. Every row in every table of the current schema that has a `tenant_id`
    column, found in `information_schema` rather than from the ORM, so a
-   table added by an extension living in the same database goes too. Deleted
-   in batches of `BATCH_SIZE` rows, each batch its own transaction, children
-   before parents along the foreign keys in `pg_constraint`.
+   table added by an extension living in the same database goes too.
+   Partitioned tables are emptied through their partitions. Deleted in
+   batches of `BATCH_SIZE` rows, each batch its own transaction, children
+   before parents along the foreign keys in `pg_constraint`, and
+   `run_cancellation` only once `agent_run` is empty. A delete that waits
+   longer than `LOCK_TIMEOUT` for a lock, deadlocks, or is refused by a
+   foreign key is retried after the other tables.
 3. The `organization` row itself.
 4. Every stored object under `f"{tenant_id}/"`.
 5. The organisation's Redis entries: its department cache and its event
@@ -28,8 +37,10 @@ Runs under the schema-owner session: the app role may not delete
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import logging
+import time
 import uuid
 from collections import defaultdict
 from typing import Any, cast
@@ -38,7 +49,7 @@ import redis.asyncio as redis
 from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -46,7 +57,7 @@ from oc8.caching import department_cache
 from oc8.config import get_settings
 from oc8.db.session import owner_session
 from oc8.realtime.bus import channel_for
-from oc8.runtime.states import TERMINAL
+from oc8.runtime.states import TERMINAL, RunState
 from oc8.storage import s3
 from oc8.tenants.activity import TENANT_INACTIVE_KIND
 
@@ -61,7 +72,23 @@ BATCH_SIZE = 5000
 #: possibly after the sweep passed those tables.
 _MAX_SWEEPS = 5
 
-_FK_VIOLATION = "23503"
+#: How long removal waits for the organisation's running runs to stop.
+RUN_STOP_DEADLINE_S = 120.0
+#: How often it looks.
+RUN_STOP_POLL_S = 1.0
+
+#: How long one batch delete waits for a row lock before it gives up and the
+#: table is retried after the others.
+LOCK_TIMEOUT = "30s"
+
+#: Errors after which a table is retried later rather than failing the call:
+#: foreign key violation, lock not available (lock_timeout), deadlock.
+_RETRYABLE = frozenset({"23503", "55P03", "40P01"})
+
+#: A table that must keep its rows until another table is empty. A running
+#: executor polls `run_cancellation` for its cancel signal while it holds its
+#: `agent_run` row; without the signal it would never let go.
+_DELETE_AFTER = {"run_cancellation": "agent_run"}
 
 
 class TenantRemovalError(Exception):
@@ -74,6 +101,7 @@ async def remove_tenant(tenant_id: uuid.UUID) -> bool:
     Returns True if the organisation existed, False if it did not.
     """
     await _cancel_active_runs(tenant_id)
+    await _wait_for_runs_to_stop(tenant_id)
     deleted_rows = await _delete_tenant_rows(tenant_id)
     async with owner_session() as db:
         existed = (
@@ -138,6 +166,39 @@ async def _cancel_active_runs(tenant_id: uuid.UUID) -> None:
     logger.info("cancelled %d active run(s) of organisation %s", len(run_ids), tenant_id)
 
 
+async def _wait_for_runs_to_stop(tenant_id: uuid.UUID) -> None:
+    """Wait until no run of the organisation is `running`.
+
+    Only `running` runs hold their `agent_run` row locked. A queued run is
+    not locked and is skipped when a worker picks it up; a run waiting for
+    input or approval is suspended, honours its cancel only when resumed, and
+    would never end by itself. Both are simply deleted.
+    """
+    deadline = time.monotonic() + RUN_STOP_DEADLINE_S
+    while True:
+        async with owner_session() as db:
+            running = (
+                (
+                    await db.execute(
+                        select(m.AgentRun.id).where(
+                            m.AgentRun.tenant_id == tenant_id,
+                            m.AgentRun.state == RunState.RUNNING.value,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        if not running:
+            return
+        if time.monotonic() >= deadline:
+            raise TenantRemovalError(
+                f"{len(running)} run(s) of organisation {tenant_id} still running after "
+                f"{RUN_STOP_DEADLINE_S:g}s; nothing was deleted, try again later"
+            )
+        await asyncio.sleep(RUN_STOP_POLL_S)
+
+
 async def _delete_tenant_rows(tenant_id: uuid.UUID) -> int:
     """Delete the organisation's rows from every table with a `tenant_id`
     column; return how many rows went."""
@@ -157,7 +218,9 @@ async def _delete_tenant_rows(tenant_id: uuid.UUID) -> int:
 
 async def _tenant_tables(db: AsyncSession) -> list[str]:
     """Every base table (not view) in the current schema with a `tenant_id`
-    column."""
+    column. A partitioned table is left out: its partitions are listed
+    themselves, and a row location (ctid) is only unique within one of them.
+    """
     rows = await db.execute(
         text(
             """
@@ -165,9 +228,13 @@ async def _tenant_tables(db: AsyncSession) -> list[str]:
             FROM information_schema.columns c
             JOIN information_schema.tables t
               ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+            JOIN pg_class cl
+              ON cl.relname = c.table_name
+             AND cl.relnamespace = current_schema()::regnamespace
             WHERE c.table_schema = current_schema()
               AND c.column_name = 'tenant_id'
               AND t.table_type = 'BASE TABLE'
+              AND cl.relkind = 'r'
             ORDER BY c.table_name
             """
         )
@@ -214,43 +281,61 @@ async def _children_first(db: AsyncSession, tables: list[str]) -> list[str]:
 
 
 async def _sweep(db: AsyncSession, tenant_id: uuid.UUID, order: list[str]) -> int:
-    """One pass over `order`. A table whose delete is refused by a foreign key
-    is retried after the others, until a round makes no progress."""
+    """One pass over `order`. A table whose delete is refused (foreign key,
+    lock timeout, deadlock) is retried after the others, and a table in
+    `_DELETE_AFTER` waits until its table is done; until a round makes no
+    progress."""
     deleted = 0
+    finished: set[str] = set()
     pending = list(order)
     while pending:
-        refused: list[str] = []
+        retry: list[str] = []
+        progressed = False
         for table in pending:
+            first = _DELETE_AFTER.get(table)
+            if first is not None and first in order and first not in finished:
+                retry.append(table)
+                continue
             try:
                 deleted += await _delete_in_batches(db, table, tenant_id)
-            except IntegrityError as exc:
+                finished.add(table)
+                progressed = True
+            except DBAPIError as exc:
                 await db.rollback()
-                if getattr(exc.orig, "sqlstate", None) != _FK_VIOLATION:
+                if getattr(exc.orig, "sqlstate", None) not in _RETRYABLE:
                     raise
-                refused.append(table)
-        if len(refused) == len(pending):
+                logger.info("deleting from %s refused (%s); retrying later", table, exc.orig)
+                retry.append(table)
+        if not progressed:
             raise TenantRemovalError(
-                f"foreign keys keep organisation {tenant_id}'s rows in "
-                f"{', '.join(refused)}; a table without a tenant_id column may reference them"
+                f"could not delete organisation {tenant_id}'s rows from {', '.join(retry)}: "
+                "still locked, or referenced from a table without a tenant_id column"
             )
-        pending = refused
+        pending = retry
     return deleted
 
 
 async def _delete_in_batches(db: AsyncSession, table: str, tenant_id: uuid.UUID) -> int:
-    # By ctid so that no table needs a particular primary key.
+    # By ctid so that no table needs a particular primary key. The outer
+    # tenant_id filter keeps the delete to this organisation even if a
+    # location were ever ambiguous.
     quoted = '"' + table.replace('"', '""') + '"'
     statement = text(
-        f"DELETE FROM {quoted} WHERE ctid = ANY (ARRAY("
-        f"SELECT ctid FROM {quoted} WHERE tenant_id = :t LIMIT {BATCH_SIZE}))"
+        f"DELETE FROM {quoted} WHERE tenant_id = :t AND ctid = ANY (ARRAY("
+        f"SELECT ctid FROM {quoted} WHERE tenant_id = :t LIMIT :n))"
     )
+    batch_size = BATCH_SIZE
     deleted = 0
     while True:
-        result = cast(CursorResult[Any], await db.execute(statement, {"t": tenant_id}))
+        # Per transaction: each batch commits, and SET LOCAL ends with it.
+        await db.execute(text("SELECT set_config('lock_timeout', :v, true)"), {"v": LOCK_TIMEOUT})
+        result = cast(
+            CursorResult[Any], await db.execute(statement, {"t": tenant_id, "n": batch_size})
+        )
         await db.commit()
         count = result.rowcount or 0
         deleted += count
-        if count < BATCH_SIZE:
+        if count < batch_size:
             return deleted
 
 

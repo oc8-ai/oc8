@@ -117,10 +117,10 @@ async def object_exists(key: str) -> bool:
 async def delete_prefix(prefix: str) -> int:
     """Delete every object whose key starts with `prefix`; return how many.
 
-    An empty prefix would empty the whole bucket, so it is refused. Pass a
-    prefix ending in "/" (e.g. f"{tenant_id}/") so that one id cannot match
-    another that merely starts with the same characters.
+    The prefix must end in "/" (e.g. f"{tenant_id}/"), so that one id cannot
+    match another that merely starts with the same characters; an empty
+    prefix, the whole bucket, is refused for the same reason.
     """
-    if not prefix:
-        raise ValueError("refusing to delete an empty prefix (the whole bucket)")
+    if not prefix.endswith("/"):
+        raise ValueError(f"refusing to delete prefix {prefix!r}: it must end with '/'")
     return await asyncio.to_thread(_delete_prefix_sync, prefix)

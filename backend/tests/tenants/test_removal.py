@@ -3,6 +3,7 @@ it owns, and nothing of any other organisation's."""
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import re
 import uuid
@@ -311,36 +312,65 @@ async def test_an_unknown_organisation_returns_false(
     assert await remove_tenant(uuid.uuid4()) is False
 
 
-async def test_active_runs_are_cancelled_before_the_rows_go(
+async def _tenant_with_runs(
+    owner_session: OwnerSessionFactory, *states: RunState
+) -> tuple[uuid.UUID, dict[RunState, uuid.UUID]]:
+    async with owner_session() as db:
+        created = await create_tenant(db, slug=f"rm-{uuid.uuid4().hex[:10]}", name="Runs")
+        tid = created.tenant_id
+        agent_id = uuid.uuid4()
+        runs: dict[RunState, uuid.UUID] = {}
+        for state in states:
+            run_id = uuid.uuid4()
+            runs[state] = run_id
+            db.add(
+                m.AgentRun(
+                    id=run_id, tenant_id=tid, agent_id=agent_id, state=state.value, context={}
+                )
+            )
+    return tid, runs
+
+
+async def _act_as_executor(
+    owner_session: OwnerSessionFactory, run_id: uuid.UUID, *, delay: float = 0.3
+) -> None:
+    """What a running executor does: once the cancel row is there, wait a
+    step, then mark its run interrupted."""
+    while True:
+        async with owner_session() as db:
+            cancelled = (
+                await db.execute(
+                    select(m.RunCancellation.id).where(m.RunCancellation.run_id == run_id)
+                )
+            ).first()
+        if cancelled is not None:
+            break
+        await asyncio.sleep(0.05)
+    await asyncio.sleep(delay)
+    async with owner_session() as db:
+        await db.execute(
+            text("UPDATE agent_run SET state = 'interrupted' WHERE id = :r"), {"r": run_id}
+        )
+
+
+async def test_active_runs_are_cancelled_and_stopped_before_the_rows_go(
     owner_session: OwnerSessionFactory,
     minio_url: str,
     redis_url: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Every run that has not finished gets the same run_cancellation row the
-    cancel endpoint writes, committed before anything is deleted, so a running
-    executor stops at its next step boundary instead of holding its row."""
+    cancel endpoint writes, and removal waits until no run is still running
+    before it deletes anything."""
     from oc8.tenants import removal
 
-    async with owner_session() as db:
-        created = await create_tenant(db, slug=f"rm-{uuid.uuid4().hex[:10]}", name="Runs")
-        tid = created.tenant_id
-        agent_id = uuid.uuid4()
-        runs = {}
-        for state in (RunState.QUEUED, RunState.RUNNING, RunState.DONE):
-            run_id = uuid.uuid4()
-            runs[state] = run_id
-            db.add(
-                m.AgentRun(
-                    id=run_id,
-                    tenant_id=tid,
-                    agent_id=agent_id,
-                    state=state.value,
-                    context={},
-                )
-            )
+    monkeypatch.setattr(removal, "RUN_STOP_POLL_S", 0.05)
+    tid, runs = await _tenant_with_runs(
+        owner_session, RunState.QUEUED, RunState.RUNNING, RunState.DONE
+    )
 
     seen: dict[uuid.UUID, str] = {}
+    states_at_sweep: dict[uuid.UUID, str] = {}
     real_sweep = removal._delete_tenant_rows
 
     async def _spy(tenant_id: uuid.UUID) -> int:
@@ -352,13 +382,213 @@ async def test_active_runs_are_cancelled_before_the_rows_go(
                     )
                 )
             ).all()
+            states = (
+                await db.execute(
+                    select(m.AgentRun.id, m.AgentRun.state).where(m.AgentRun.tenant_id == tenant_id)
+                )
+            ).all()
         seen.update({run_id: kind for run_id, kind in rows})
+        states_at_sweep.update({run_id: state for run_id, state in states})
         return await real_sweep(tenant_id)
 
     monkeypatch.setattr(removal, "_delete_tenant_rows", _spy)
 
+    executor = asyncio.create_task(_act_as_executor(owner_session, runs[RunState.RUNNING]))
     assert await remove_tenant(tid) is True
+    await executor
     assert seen == {
         runs[RunState.QUEUED]: "tenant_inactive",
         runs[RunState.RUNNING]: "tenant_inactive",
     }
+    assert states_at_sweep[runs[RunState.RUNNING]] == "interrupted"
+
+
+async def test_a_run_that_does_not_stop_in_time_aborts_the_removal(
+    owner_session: OwnerSessionFactory,
+    minio_url: str,
+    redis_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from oc8.tenants import removal
+
+    monkeypatch.setattr(removal, "RUN_STOP_DEADLINE_S", 0.3)
+    monkeypatch.setattr(removal, "RUN_STOP_POLL_S", 0.05)
+    tid, runs = await _tenant_with_runs(owner_session, RunState.RUNNING)
+
+    with pytest.raises(removal.TenantRemovalError, match="still running"):
+        await remove_tenant(tid)
+
+    # Nothing was deleted; the call can simply be repeated later.
+    async with owner_session() as db:
+        assert await db.get(m.Organization, tid) is not None
+        assert await db.get(m.AgentRun, runs[RunState.RUNNING]) is not None
+        assert (
+            await db.execute(
+                select(m.RunCancellation.id).where(
+                    m.RunCancellation.run_id == runs[RunState.RUNNING]
+                )
+            )
+        ).first() is not None
+
+
+class _Refused(Exception):
+    def __init__(self, sqlstate: str) -> None:
+        super().__init__(sqlstate)
+        self.sqlstate = sqlstate
+
+
+class _FakeSession:
+    async def rollback(self) -> None:
+        return None
+
+
+async def test_run_cancellation_goes_only_after_agent_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """While agent_run still has rows (here: its delete hit a lock timeout
+    once), run_cancellation is kept, so a running executor can still see it."""
+    from sqlalchemy.exc import OperationalError
+
+    from oc8.tenants import removal
+
+    done: list[str] = []
+    attempts: dict[str, int] = defaultdict(int)
+
+    async def _fake_delete(db: Any, table: str, tenant_id: uuid.UUID) -> int:
+        attempts[table] += 1
+        if table == "agent_run" and attempts[table] == 1:
+            raise OperationalError("DELETE", {}, _Refused("55P03"))
+        done.append(table)
+        return 1
+
+    monkeypatch.setattr(removal, "_delete_in_batches", _fake_delete)
+    order = ["run_cancellation", "agent_run", "task"]
+    await removal._sweep(_FakeSession(), uuid.uuid4(), order)  # type: ignore[arg-type]
+    assert sorted(done) == sorted(order)
+    assert done.index("run_cancellation") > done.index("agent_run")
+
+
+@pytest.mark.parametrize("sqlstate", ["55P03", "40P01", "23503"])
+async def test_a_table_that_stays_refused_raises(
+    monkeypatch: pytest.MonkeyPatch, sqlstate: str
+) -> None:
+    from sqlalchemy.exc import DBAPIError
+
+    from oc8.tenants import removal
+
+    async def _fake_delete(db: Any, table: str, tenant_id: uuid.UUID) -> int:
+        if table == "agent_run":
+            raise DBAPIError("DELETE", {}, _Refused(sqlstate))
+        return 1
+
+    monkeypatch.setattr(removal, "_delete_in_batches", _fake_delete)
+    with pytest.raises(removal.TenantRemovalError, match="agent_run"):
+        await removal._sweep(_FakeSession(), uuid.uuid4(), ["agent_run", "task"])  # type: ignore[arg-type]
+
+
+async def test_a_locked_row_is_retried_then_reported(
+    owner_session: OwnerSessionFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A row another transaction keeps locked makes the delete give up after
+    the lock timeout instead of waiting forever."""
+    from oc8.tenants import removal
+
+    monkeypatch.setattr(removal, "LOCK_TIMEOUT", "100ms")
+    tid = uuid.uuid4()
+    async with owner_session() as db:
+        await db.execute(text("CREATE TABLE removal_probe_locked (tenant_id uuid NOT NULL)"))
+        await db.execute(
+            text("INSERT INTO removal_probe_locked (tenant_id) VALUES (:t)"), {"t": tid}
+        )
+    try:
+        async with owner_session() as holder:
+            await holder.execute(
+                text("SELECT * FROM removal_probe_locked WHERE tenant_id = :t FOR UPDATE"),
+                {"t": tid},
+            )
+            with pytest.raises(removal.TenantRemovalError, match="removal_probe_locked"):
+                await removal._delete_tenant_rows(tid)
+        assert await removal._delete_tenant_rows(tid) == 1
+    finally:
+        async with owner_session() as db:
+            await db.execute(text("DROP TABLE removal_probe_locked"))
+
+
+async def test_a_table_without_a_primary_key_is_scoped_to_the_organisation(
+    owner_session: OwnerSessionFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Batches cross their size limit, the table has no primary key, and the
+    other organisation's rows in the same table stay."""
+    from oc8.tenants import removal
+
+    monkeypatch.setattr(removal, "BATCH_SIZE", 2)
+    doomed, kept = uuid.uuid4(), uuid.uuid4()
+    async with owner_session() as db:
+        await db.execute(text("CREATE TABLE removal_probe_nopk (tenant_id uuid NOT NULL)"))
+        for tid, n in ((doomed, 5), (kept, 3)):
+            for _ in range(n):
+                await db.execute(
+                    text("INSERT INTO removal_probe_nopk (tenant_id) VALUES (:t)"), {"t": tid}
+                )
+    try:
+        assert await removal._delete_tenant_rows(doomed) == 5
+        async with owner_session() as db:
+            counts = dict(
+                (
+                    await db.execute(
+                        text(
+                            "SELECT tenant_id, count(*) FROM removal_probe_nopk GROUP BY tenant_id"
+                        )
+                    )
+                ).all()
+            )
+        assert counts == {kept: 3}
+    finally:
+        async with owner_session() as db:
+            await db.execute(text("DROP TABLE removal_probe_nopk"))
+
+
+async def test_a_partitioned_table_is_emptied_through_its_partitions(
+    owner_session: OwnerSessionFactory,
+) -> None:
+    """Row locations (ctid) repeat across partitions: the first row of each
+    partition is (0,1). A delete by location through the partitioned parent
+    would reach the other organisation's row in the other partition."""
+    from oc8.tenants import removal
+
+    doomed, kept = uuid.uuid4(), uuid.uuid4()
+    async with owner_session() as db:
+        await db.execute(
+            text(
+                "CREATE TABLE removal_probe_parted (tenant_id uuid NOT NULL, part int NOT NULL) "
+                "PARTITION BY LIST (part)"
+            )
+        )
+        for part in (1, 2):
+            await db.execute(
+                text(
+                    f"CREATE TABLE removal_probe_parted_{part} "
+                    f"PARTITION OF removal_probe_parted FOR VALUES IN ({part})"
+                )
+            )
+        await db.execute(
+            text("INSERT INTO removal_probe_parted VALUES (:d, 1), (:k, 2)"),
+            {"d": doomed, "k": kept},
+        )
+    try:
+        async with owner_session() as db:
+            assert "removal_probe_parted" not in await removal._tenant_tables(db)
+            assert "removal_probe_parted_1" in await removal._tenant_tables(db)
+        await removal._delete_tenant_rows(doomed)
+        async with owner_session() as db:
+            left = (
+                (await db.execute(text("SELECT tenant_id FROM removal_probe_parted")))
+                .scalars()
+                .all()
+            )
+        assert left == [kept]
+    finally:
+        async with owner_session() as db:
+            await db.execute(text("DROP TABLE removal_probe_parted"))
