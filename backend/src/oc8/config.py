@@ -196,6 +196,21 @@ class Settings(BaseSettings):
     """Largest tar the runtime-provisioner accepts or returns in one request:
     a seed, a ``put_archive`` body or a ``get_archive`` result. Above it the
     request fails with 413 instead of filling the provisioner's memory."""
+    run_output_max_bytes: int = 128 * 1024 * 1024
+    """Largest ``/workspace/output`` archive one output sync reads from a
+    sandbox without mounts (``oc8.runtime.workspace``). The read stops at this
+    size, and that pass syncs nothing; each file is still capped at the
+    attachment limit on top."""
+    run_output_max_files: int = 1000
+    """Most archive members (files and directories) one output sync accepts
+    from ``/workspace/output``. More than that and the pass syncs nothing."""
+    run_state_max_bytes: int = 128 * 1024 * 1024
+    """Largest saved run-state tar (``oc8.runtime.run_state.RunStateStore``),
+    for example a CLI home kept between legs. Larger state is refused on save;
+    pass it as ``max_bytes`` to ``get_archive`` so the read stops early."""
+    run_state_max_files: int = 20000
+    """Most archive members (files and directories) one saved run state may
+    hold. More than that and the save is refused."""
 
     # Shared secret, das die eigenen service-to-service Tenant-Provisioning-
     # Route(n) dieser Instanz in `Authorization: Bearer <token>` erwarten.

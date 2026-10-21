@@ -24,7 +24,7 @@ from oc8.runtime.registry import resolve_runtime
 from oc8.runtime.repository import RunRepository
 from oc8.runtime.run_context import merge_context
 from oc8.runtime.states import RunState
-from oc8.runtime.workspace import sync_run_output
+from oc8.runtime.workspace import sync_final_run_output
 from oc8.tenants.activity import TENANT_INACTIVE_KIND, TENANT_INACTIVE_OUTPUT, tenant_may_run
 
 logger = logging.getLogger(__name__)
@@ -982,7 +982,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         pending_runs.append(wake_id)
                 except Exception:
                     logger.exception("run %s: failed to wake parent after sub-task failure", run_id)
-                await sync_run_output(db, tenant_id=tenant_id, run_id=run_id)
+                await sync_final_run_output(db, tenant_id=tenant_id, run_id=run_id)
                 await repo.transition(run, RunState.FAILED)
                 await record_activity(
                     db,
@@ -1118,7 +1118,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             logger.exception(
                                 "run %s: failed to wake parent after sub-task failure", run_id
                             )
-                        await sync_run_output(db, tenant_id=tenant_id, run_id=run_id)
+                        await sync_final_run_output(db, tenant_id=tenant_id, run_id=run_id)
                         await repo.transition(run, RunState.FAILED)
                         await record_activity(
                             db,
@@ -1217,7 +1217,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         )
                         if wake_id is not None:
                             pending_runs.append(wake_id)
-                    await sync_run_output(db, tenant_id=tenant_id, run_id=run_id)
+                    await sync_final_run_output(db, tenant_id=tenant_id, run_id=run_id)
                     await repo.transition(run, new_state)
                     logger.info("run %s finished in state %s", run_id, new_state.value)
                     record_run_outcome(new_state.value)
