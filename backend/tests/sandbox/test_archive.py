@@ -99,3 +99,26 @@ def test_a_compressed_archive_is_not_unpacked() -> None:
         tar.addfile(info, io.BytesIO(content))
     with pytest.raises(SandboxError):
         safe_extract_to_memory(buf.getvalue(), max_members=10, max_total_bytes=100)
+
+
+def test_links_and_special_files_can_be_skipped_and_are_reported() -> None:
+    fifo = tarfile.TarInfo("pipe")
+    fifo.type = tarfile.FIFOTYPE
+    data = _tar(
+        _file("keep.txt", b"k"),
+        _link("sym", "/etc/shadow", tarfile.SYMTYPE),
+        _link("hard", "keep.txt", tarfile.LNKTYPE),
+        (fifo, None),
+    )
+    skipped: list[str] = []
+    files = safe_extract_to_memory(
+        data, max_members=10, max_total_bytes=100, on_link="skip", skipped=skipped
+    )
+    assert files == {"keep.txt": b"k"}
+    assert skipped == ["sym", "hard", "pipe"]
+
+
+def test_skipping_links_still_rejects_names_outside_the_root() -> None:
+    data = _tar(_link("../sym", "x", tarfile.SYMTYPE))
+    with pytest.raises(SandboxError):
+        safe_extract_to_memory(data, max_members=10, max_total_bytes=100, on_link="skip")

@@ -119,9 +119,8 @@ async def test_saving_again_replaces_the_previous_state(
     [
         [("../escape.txt", b"x", "file")],
         [("/etc/passwd", b"x", "file")],
-        [("link", b"/etc/shadow", "symlink")],
     ],
-    ids=["dotdot", "absolute", "symlink"],
+    ids=["dotdot", "absolute"],
 )
 async def test_an_unsafe_archive_is_refused_and_nothing_is_stored(
     minio_url: str,
@@ -210,8 +209,9 @@ async def test_pack_files_puts_the_files_under_a_prefix() -> None:
     tar = pack_files({"a/b.txt": b"b", "c.txt": b"c"}, prefix="root/.codex", uid=5, gid=6)
     with tarfile.open(fileobj=io.BytesIO(tar), mode="r:") as t:
         names = [mem.name for mem in t]
+    # Only the prefix's last component and below: an ancestor such as "root"
+    # (or "home") already exists in the image and must keep its owner and mode.
     assert names == [
-        "root",
         "root/.codex",
         "root/.codex/a",
         "root/.codex/a/b.txt",
@@ -223,3 +223,40 @@ async def test_pack_files_puts_the_files_under_a_prefix() -> None:
 async def test_pack_files_refuses_a_name_that_leaves_its_root() -> None:
     with pytest.raises(ValueError):
         pack_files({"../x": b"x"})
+
+
+async def test_pack_files_never_emits_an_ancestor_of_the_prefix() -> None:
+    tar = pack_files({"s.jsonl": b"t"}, prefix="/home/agent/.claude/", uid=1, gid=1)
+    with tarfile.open(fileobj=io.BytesIO(tar), mode="r:") as t:
+        names = [mem.name for mem in t]
+    assert names == ["home/agent/.claude", "home/agent/.claude/s.jsonl"]
+    assert "home" not in names and "home/agent" not in names
+
+
+async def test_links_and_special_files_are_skipped_on_save_not_refused(
+    minio_url: str, ids: tuple[uuid.UUID, uuid.UUID], caplog: pytest.LogCaptureFixture
+) -> None:
+    """A CLI home may hold a symlink (a "latest" pointer, a linked config).
+    Refusing the whole home would lose the transcript; the link is dropped."""
+    tenant, run = ids
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        info = tarfile.TarInfo("sessions/s.jsonl")
+        info.size = 1
+        tar.addfile(info, io.BytesIO(b"t"))
+        link = tarfile.TarInfo("latest")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "/etc/shadow"
+        tar.addfile(link)
+        hard = tarfile.TarInfo("hard")
+        hard.type = tarfile.LNKTYPE
+        hard.linkname = "sessions/s.jsonl"
+        tar.addfile(hard)
+        fifo = tarfile.TarInfo("pipe")
+        fifo.type = tarfile.FIFOTYPE
+        tar.addfile(fifo)
+    store = RunStateStore(tenant)
+    with caplog.at_level("INFO", logger="oc8.runtime.run_state"):
+        await store.save(run, "cli-home", buf.getvalue())
+    assert await store.load_files(run, "cli-home") == {"sessions/s.jsonl": b"t"}
+    assert "skipped 3" in caplog.text

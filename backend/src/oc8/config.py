@@ -196,14 +196,16 @@ class Settings(BaseSettings):
     """Largest tar the runtime-provisioner accepts or returns in one request:
     a seed, a ``put_archive`` body or a ``get_archive`` result. Above it the
     request fails with 413 instead of filling the provisioner's memory."""
-    run_output_max_bytes: int = 128 * 1024 * 1024
-    """Largest ``/workspace/output`` archive one output sync reads from a
-    sandbox without mounts (``oc8.runtime.workspace``). The read stops at this
-    size, and that pass syncs nothing; each file is still capped at the
-    attachment limit on top."""
     run_output_max_files: int = 1000
-    """Most archive members (files and directories) one output sync accepts
-    from ``/workspace/output``. More than that and the pass syncs nothing."""
+    """Most files one output sync pass lists in a sandbox's
+    ``/workspace/output`` (``oc8.runtime.workspace``). Beyond it the rest are
+    left out of that pass and a warning is logged. Each file is fetched on its
+    own and capped at the attachment limit."""
+    run_output_sync_interval_s: float = 60.0
+    """How often a run's own output task stores ``/workspace/output`` from a
+    sandbox without mounts while the leg runs."""
+    run_output_final_read_timeout_s: float = 60.0
+    """Upper bound on the last output pass when a leg ends, before teardown."""
     run_state_max_bytes: int = 128 * 1024 * 1024
     """Largest saved run-state tar (``oc8.runtime.run_state.RunStateStore``),
     for example a CLI home kept between legs. Larger state is refused on save;

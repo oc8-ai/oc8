@@ -14,15 +14,21 @@ state too.
 The tar a sandbox hands back is untrusted. ``save`` reads it through
 ``safe_extract_to_memory`` and stores a tar rebuilt from the regular files
 alone; ``load`` checks the stored object the same way again before anything
-goes back into a sandbox. Links, special files, names that leave the root and
-anything over ``run_state_max_files`` / ``run_state_max_bytes`` are refused
-with ``RunStateRejected``. A rebuilt tar keeps names and content only: no
-symlinks, no file modes beyond ``file_mode``/``dir_mode``, no original mtimes.
+goes back into a sandbox. On save, symlinks, hardlinks and special files are
+skipped (and counted in the log), so one link in a CLI home does not cost the
+transcript. Names that leave the root and anything over
+``run_state_max_files`` / ``run_state_max_bytes`` are refused with
+``RunStateRejected``. A rebuilt tar keeps names and content only: no links, no
+file modes beyond ``file_mode``/``dir_mode``, no original mtimes.
+
+Peak memory of a save or load is about twice the archive size: the tar plus
+the files read from it.
 """
 
 from __future__ import annotations
 
 import io
+import logging
 import posixpath
 import re
 import tarfile
@@ -34,6 +40,8 @@ from oc8.config import get_settings
 from oc8.sandbox.archive import is_outside, safe_extract_to_memory
 from oc8.sandbox.types import SandboxError
 from oc8.storage import s3
+
+logger = logging.getLogger(__name__)
 
 TAR_CONTENT_TYPE = "application/x-tar"
 
@@ -56,21 +64,27 @@ def pack_files(
     """A plain tar of ``files`` (relative name to content), each under
     ``prefix``, owned by ``uid``:``gid``.
 
-    Every parent directory gets its own entry, before the files in it and with
-    the same owner, so a non-root process in the sandbox can add files next to
-    the restored ones. Use it to put loaded state into a seed, which is
-    unpacked at ``/``: ``pack_files(files, prefix="home/agent/.codex", ...)``.
+    Directory entries are emitted for the prefix's LAST component and
+    everything below it, before the files in them and with the same owner, so
+    a non-root process in the sandbox can add files next to the restored ones.
+    Ancestors of the prefix (``home``, ``home/agent``) get no entry: they
+    exist in the image and keep its owner and mode. Use it to put loaded state
+    into a seed, which is unpacked at ``/``:
+    ``pack_files(files, prefix="home/agent/.codex", ...)``.
     """
-    root = prefix.strip("/")
+    root = posixpath.normpath(prefix.strip("/")) if prefix.strip("/") else ""
     if root and is_outside(root):
         raise ValueError(f"prefix leaves its root: {prefix!r}")
     now = int(time.time())
     seen: set[str] = set()
     buf = io.BytesIO()
 
+    # The first path component that gets an entry: the prefix's last one.
+    first = len(root.split("/")) if root else 1
+
     def add_dir(name: str, tar: tarfile.TarFile) -> None:
         parts = name.split("/")
-        for i in range(1, len(parts) + 1):
+        for i in range(first, len(parts) + 1):
             path = "/".join(parts[:i])
             if path in seen:
                 continue
@@ -98,20 +112,30 @@ def pack_files(
     return buf.getvalue()
 
 
-def _checked_files(tar: bytes) -> dict[str, bytes]:
+def _checked_files(tar: bytes, *, skip_links: bool = False) -> dict[str, bytes]:
     settings = get_settings()
     if len(tar) > settings.run_state_max_bytes:
         raise RunStateRejected(
             f"state archive is {len(tar)} bytes, over the {settings.run_state_max_bytes} limit"
         )
+    skipped: list[str] = []
     try:
-        return safe_extract_to_memory(
+        files = safe_extract_to_memory(
             tar,
             max_members=settings.run_state_max_files,
             max_total_bytes=settings.run_state_max_bytes,
+            on_link="skip" if skip_links else "refuse",
+            skipped=skipped,
         )
     except SandboxError as exc:
         raise RunStateRejected(str(exc)) from exc
+    if skipped:
+        logger.info(
+            "run state: skipped %d link(s) or special file(s), first %r",
+            len(skipped),
+            skipped[0],
+        )
+    return files
 
 
 class RunStateStore:
@@ -123,6 +147,11 @@ class RunStateStore:
     ``put_archive`` into that directory, or None when nothing was saved.
     ``load_files`` returns the files themselves, for building a seed with
     ``pack_files``.
+
+    ``tenant_id`` must be the tenant of the run as loaded under RLS (the
+    ``agent_run`` row's ``tenant_id`` read in a ``tenant_session``), never a
+    value taken from the sandbox, a request body or a token claim alone: the
+    key prefix is the only thing separating one tenant's state from another's.
     """
 
     def __init__(self, tenant_id: uuid.UUID) -> None:
@@ -136,7 +165,7 @@ class RunStateStore:
 
     async def save(self, run_id: uuid.UUID, name: str, tar: bytes) -> None:
         key = self.key(self.tenant_id, run_id, name)
-        files = _checked_files(tar)
+        files = _checked_files(tar, skip_links=True)
         await s3.put_object(key, pack_files(files), TAR_CONTENT_TYPE)
 
     async def load_files(self, run_id: uuid.UUID, name: str) -> dict[str, bytes] | None:

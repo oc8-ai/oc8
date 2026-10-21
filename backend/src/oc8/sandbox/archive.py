@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 import posixpath
 import tarfile
+from typing import Literal
 
 from oc8.sandbox.types import SandboxError
 
@@ -25,7 +26,12 @@ def is_outside(name: str) -> bool:
 
 
 def safe_extract_to_memory(
-    data: bytes, *, max_members: int, max_total_bytes: int
+    data: bytes,
+    *,
+    max_members: int,
+    max_total_bytes: int,
+    on_link: Literal["refuse", "skip"] = "refuse",
+    skipped: list[str] | None = None,
 ) -> dict[str, bytes]:
     """The regular files in the tar ``data``, by normalised name.
 
@@ -34,6 +40,11 @@ def safe_extract_to_memory(
     climb out with ``..``, more than ``max_members`` members, more than
     ``max_total_bytes`` of declared file content (checked from the headers,
     before content is copied), and compressed archives.
+
+    With ``on_link="skip"``, links, devices and fifos are left out instead of
+    refused, and their names are appended to ``skipped`` when it is given.
+    Names outside the root and every limit are still refused. Peak memory is
+    about twice ``len(data)``: the input plus the files read from it.
     """
     files: dict[str, bytes] = {}
     total = 0
@@ -44,11 +55,15 @@ def safe_extract_to_memory(
                     raise SandboxError(f"archive has more than {max_members} members")
                 if is_outside(member.name):
                     raise SandboxError(f"archive path leaves its root: {member.name!r}")
-                if member.issym() or member.islnk():
-                    raise SandboxError(f"archive contains a link: {member.name!r}")
                 if member.isdir():
                     continue
-                if not member.isfile():
+                if not member.isfile() or member.issym() or member.islnk():
+                    if on_link == "skip":
+                        if skipped is not None:
+                            skipped.append(member.name)
+                        continue
+                    if member.issym() or member.islnk():
+                        raise SandboxError(f"archive contains a link: {member.name!r}")
                     raise SandboxError(f"archive contains a special file: {member.name!r}")
                 total += member.size
                 if total > max_total_bytes:
