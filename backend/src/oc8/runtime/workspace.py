@@ -1,15 +1,11 @@
-"""The `/workspace` host-path convention every containerized runtime shares,
-and the sync step that turns a run's `/workspace/output/` into durable
-`FileAttachment` rows.
+"""How a run's `/workspace/output/` becomes durable `FileAttachment` rows.
 
-Every containerized runtime plugin (`opencode_runtime`, `codex_runtime`,
-`claude_code_runtime`, and -- via `oc8.runtime.isolated` -- isolated-shell)
-binds a per-run host directory at exactly
-`f"{settings.runtime_session_root}/{run_id}"` into its sandbox at
-`/workspace`. That convention lives here, not inside any one plugin, so the
-isolated runtime's own mount, this module's sync step, and
-`api/v1/run.py`'s (legacy, being replaced) workspace-files endpoints all
-agree on one definition instead of three copies that can drift.
+The isolated runtime and the CLI runtimes (`claude_code_runtime`,
+`codex_runtime`, `opencode_runtime`) run with `/workspace` as a scratch dir
+inside their sandbox, with no host directory behind it, and read their
+output from the sandbox. A runtime that still bind-mounts a host directory
+at `/workspace` must bind `f"{settings.runtime_session_root}/{run_id}"`
+(`workspace_root`), the one path the host walk below reads.
 
 `/workspace/output/` is the one reserved subdirectory an agent's produced
 deliverables belong in; everything else under `/workspace` stays scratch
@@ -17,11 +13,13 @@ space, invisible to this sync and to the rest of oc8.
 
 Two ways to read the output
 ---------------------------
-* **Host walk.** A runtime whose sandbox bind-mounts the host directory
-  (Nanoclaw, and any runtime not yet moved off mounts) is read by walking
-  `output_dir(run_id)` on the host: `sync_run_output`, called by the
-  executor when a leg ends (done, failed, interrupted, waiting for approval
-  or for input) and by the worker's housekeeping (`sync_active_run_outputs`).
+* **Host walk.** A runtime whose sandbox bind-mounts `workspace_root(run_id)`
+  is read by walking `output_dir(run_id)` on the host: `sync_run_output`,
+  called by the executor when a leg ends (done, failed, interrupted,
+  waiting for approval or for input). None of the runtimes in this
+  repository uses it any more (Nanoclaw mounts its own session directory
+  and hands files back through its own channel); it stays for a runtime
+  that keeps mounts.
 * **From the sandbox.** A sandbox without mounts has no host directory. The
   runtime wraps the leg in `run_output_sandbox(run_id, tenant_id, spec,
   driver, handle)`. That starts a per-run task which stores the output every
@@ -50,6 +48,12 @@ Two ways to read the output
   Peak memory is therefore about twice one file (at most the attachment
   cap), not the whole directory. Nothing from the sandbox is ever written
   to the host.
+
+  A sandbox whose command has exited is stopped and runs no `exec`, which
+  is the usual state at the last pass. Its directory is then read in one
+  `get_archive`, capped at `run_output_pass_max_bytes`, links skipped
+  (`_sync_stopped_sandbox_output`): nothing runs any more that could swap
+  a path.
 
   The task is the run's own because the worker's housekeeping cannot run
   while that worker is executing a run.
@@ -84,7 +88,7 @@ from oc8 import models as m
 from oc8.config import get_settings
 from oc8.sandbox.archive import is_outside, safe_extract_to_memory
 from oc8.sandbox.driver import SandboxDriver
-from oc8.sandbox.types import SandboxError, SandboxHandle, SandboxSpec
+from oc8.sandbox.types import ArchiveTooLarge, SandboxError, SandboxHandle, SandboxSpec
 from oc8.storage.attachments import (
     ALLOWED_CONTENT_TYPES,
     MAX_ATTACHMENT_BYTES,
@@ -116,29 +120,6 @@ def workspace_root(run_id: uuid.UUID) -> str:
 
 def output_dir(run_id: uuid.UUID) -> str:
     return os.path.join(workspace_root(run_id), OUTPUT_SUBDIR)
-
-
-def ensure_workspace_dir(path: str) -> str:
-    """`mkdir -p` a host directory a sandbox will bind-mount, chowned to
-    `settings.sandbox_user` when one is configured.
-
-    Re-implements `cli_harness.dirs.ensure_dir`/`chown_to_sandbox_user`
-    rather than importing them: `cli_harness` is a plugin-only helper never
-    on core backend's own import path in production (see backend/pyproject
-    .toml's `[tool.mypy]` note on that gap), and `oc8.runtime.isolated` is
-    core backend, not a plugin.
-    """
-    os.makedirs(path, exist_ok=True)
-    user = get_settings().sandbox_user
-    if user:
-        uid_s, _, gid_s = user.partition(":")
-        uid = int(uid_s)
-        gid = int(gid_s) if gid_s else -1
-        try:
-            os.chown(path, uid, gid)
-        except OSError:
-            logger.warning("could not chown workspace dir %s to %s", path, user)
-    return path
 
 
 def _scan_output_dir(root: str) -> list[tuple[str, bytes]]:
@@ -253,8 +234,7 @@ async def sync_run_output(
     (`set_config('app.tenant_id', ..., true)`, see `oc8.db.session`) is
     transaction-local and a commit here would drop it for the rest of the
     caller's `tenant_session`/request, breaking whatever runs after this
-    (the terminal `repo.transition` in `executor.py`, or the next run in
-    `sync_active_run_outputs`'s per-tenant loop). Every caller already owns
+    (the terminal `repo.transition` in `executor.py`). Every caller already owns
     a session that commits on its own successful exit; each file is flushed
     inside a savepoint, so the dedup sees rows synced earlier in the pass.
     """
@@ -292,6 +272,11 @@ def _list_command(limit: int) -> list[str]:
     ]
 
 
+class _CannotExec(SandboxError):
+    """The sandbox could not run the listing at all, typically because its
+    command has exited and the container is stopped."""
+
+
 @dataclass(frozen=True)
 class _Listing:
     #: The uid the sandbox's own processes run as (what the listing ran as).
@@ -307,7 +292,10 @@ async def _list_sandbox_output(
     ``run_output_max_files``. Malformed or unsafe entries are skipped; a
     listing without its uid record raises ``SandboxError``."""
     limit = get_settings().run_output_max_files
-    result = await driver.exec(handle, _list_command(limit + 1), timeout=_LIST_TIMEOUT_S)
+    try:
+        result = await driver.exec(handle, _list_command(limit + 1), timeout=_LIST_TIMEOUT_S)
+    except Exception as exc:
+        raise _CannotExec(str(exc)) from exc
     if result.exit_code != 0:
         raise SandboxError(
             f"listing /workspace/output exited {result.exit_code}"
@@ -432,6 +420,10 @@ async def sync_sandbox_output(
     refused = refused if refused is not None else set()
     try:
         listing = await _list_sandbox_output(run_id, driver, handle)
+    except _CannotExec as exc:
+        return await _sync_stopped_sandbox_output(
+            db, tenant_id=tenant_id, run_id=run_id, driver=driver, handle=handle, reason=str(exc)
+        )
     except SandboxError as exc:
         logger.warning("run %s: could not list output in the sandbox: %s", run_id, exc)
         return []
@@ -486,6 +478,80 @@ async def sync_sandbox_output(
             refused.add((rel_path, size))
             continue
         if (name, len(raw)) in seen:
+            continue
+        row = await _store_one(db, tenant_id=tenant_id, run_id=run_id, name=name, raw=raw)
+        if row is not None:
+            seen.add((name, len(raw)))
+            synced.append(row)
+    return synced
+
+
+async def _sync_stopped_sandbox_output(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    run_id: uuid.UUID,
+    driver: SandboxDriver,
+    handle: SandboxHandle,
+    reason: str,
+) -> list[m.FileAttachment]:
+    """One pass for a sandbox that cannot run the listing: its command has
+    exited, so the container is stopped and runs no `exec`, while its
+    filesystem can still be read. That is the normal state of the last pass
+    after a CLI or shell exits on its own.
+
+    Nothing runs in a stopped sandbox, so nothing can swap a path between
+    listing and fetch; the whole directory is read in one archive instead,
+    capped at ``run_output_pass_max_bytes`` (plus tar overhead). Links and
+    special files are skipped, a too-large or unsafe archive syncs nothing
+    and says so. Files then pass the same filters as listed ones: the
+    attachment cap, the type allowlist and the dedup.
+    """
+    settings = get_settings()
+    budget = settings.run_output_pass_max_bytes
+    try:
+        data = await driver.get_archive(
+            handle, OUTPUT_CONTAINER_PATH, max_bytes=budget + _TAR_OVERHEAD
+        )
+        files = safe_extract_to_memory(
+            data,
+            # Directories are members too.
+            max_members=2 * settings.run_output_max_files,
+            max_total_bytes=budget,
+            on_link="skip",
+        )
+    except ArchiveTooLarge:
+        logger.warning(
+            "run %s: output in the stopped sandbox is too large to read at once "
+            "(over %d bytes); not synced",
+            run_id,
+            budget,
+        )
+        return []
+    except SandboxError as exc:
+        # No output directory, or the sandbox is gone as well.
+        logger.info("run %s: no output read from the sandbox (%s; %s)", run_id, reason, exc)
+        return []
+    except Exception:
+        logger.exception("run %s: reading output from the stopped sandbox failed", run_id)
+        return []
+    seen = await _existing(db, tenant_id=tenant_id, run_id=run_id)
+    synced: list[m.FileAttachment] = []
+    for rel_path, raw in sorted(files.items()):
+        name = sanitize_output_name(rel_path)
+        if name is None or (name, len(raw)) in seen:
+            continue
+        if len(raw) > MAX_ATTACHMENT_BYTES:
+            logger.warning(
+                "run %s: skipped output file %r: %d bytes is over the attachment limit",
+                run_id,
+                name,
+                len(raw),
+            )
+            continue
+        content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        if content_type not in ALLOWED_CONTENT_TYPES:
+            logger.info("run %s: skipped output file %r: type %s", run_id, name, content_type)
             continue
         row = await _store_one(db, tenant_id=tenant_id, run_id=run_id, name=name, raw=raw)
         if row is not None:
@@ -605,38 +671,3 @@ async def run_output_sandbox(
         _detached_passes.add(last)
         last.add_done_callback(_detached_passes.discard)
         await asyncio.shield(last)
-
-
-async def sync_active_run_outputs() -> int:
-    """The periodic host walk: for every run still `running`, across every
-    tenant, sync its host `output_dir` -- so a file becomes visible while the
-    run is still in progress. Runs on the run worker's housekeeping timer
-    (`runtime.worker.run_worker`), which fires only between runs that worker
-    executes. A sandbox without mounts is synced by its own task instead
-    (`run_output_sandbox`); this finds nothing for it.
-
-    Returns the number of files synced, for the caller to log.
-    """
-    from oc8.db.session import tenant_session
-    from oc8.runtime.states import RunState
-    from oc8.triggers.scheduler import list_active_tenant_ids
-
-    total = 0
-    for tenant_id in await list_active_tenant_ids():
-        async with tenant_session(tenant_id) as db:
-            run_ids = (
-                (
-                    await db.execute(
-                        select(m.AgentRun.id).where(
-                            m.AgentRun.tenant_id == tenant_id,
-                            m.AgentRun.state == RunState.RUNNING.value,
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            for run_id in run_ids:
-                synced = await sync_run_output(db, tenant_id=tenant_id, run_id=run_id)
-                total += len(synced)
-    return total

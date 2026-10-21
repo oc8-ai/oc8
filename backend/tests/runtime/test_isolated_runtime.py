@@ -12,25 +12,13 @@ from typing import Any
 import pytest
 
 from oc8 import models as m
-from oc8.config import get_settings
 from oc8.runtime.approval_resume import resolve_tool_approval
 from oc8.runtime.isolated import DockerIsolatedRuntime
 from oc8.runtime.states import RunState
-from oc8.sandbox.types import SandboxHandle
+from oc8.sandbox.types import ExecResult, SandboxHandle
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
-
-
-@pytest.fixture(autouse=True)
-def _use_tmp_session_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
-    """DockerIsolatedRuntime.execute now creates a per-run `/workspace` host
-    directory under runtime_session_root (see isolated.py); the real default
-    is a deployed container's `/var/lib/oc8`, not writable here."""
-    monkeypatch.setenv("OC8_RUNTIME_SESSION_ROOT", str(tmp_path))
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
 
 
 class _FakeDriver:
@@ -53,6 +41,10 @@ class _FakeDriver:
 
     async def logs(self, handle: SandboxHandle) -> str:
         return ""
+
+    async def exec(self, handle: SandboxHandle, command: list[str], **kw: Any) -> ExecResult:
+        # The output sync's listing: no files in /workspace/output.
+        return ExecResult(exit_code=0, output="uid=1000\0")
 
     async def teardown(self, handle: SandboxHandle) -> None:
         return None

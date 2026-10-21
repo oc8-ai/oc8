@@ -120,6 +120,8 @@ class _FakeDriver:
         self.fetches.append((rel, max_bytes))
         if self.torn_down:
             raise SandboxError("no such container")
+        if rel == ".":
+            return self._whole_dir(max_bytes)
         base = self.renames.get(rel, posixpath.basename(path))
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w") as tar:
@@ -143,6 +145,26 @@ class _FakeDriver:
                     extra = tarfile.TarInfo("second")
                     extra.size = 1
                     tar.addfile(extra, io.BytesIO(b"x"))
+        return buf.getvalue()
+
+    def _whole_dir(self, max_bytes: int | None) -> bytes:
+        """The whole output directory, names relative to it, as a stopped
+        Docker container's archive API returns it: links as link entries."""
+        if not self.files and not self.symlinks:
+            raise SandboxError("no such path: /workspace/output")
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tar:
+            for name in sorted(self.symlinks):
+                info = tarfile.TarInfo(name)
+                info.type = tarfile.SYMTYPE
+                info.linkname = "/etc/shadow"
+                tar.addfile(info)
+            for name, data in sorted(self.files.items()):
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+        if max_bytes is not None and len(buf.getvalue()) > max_bytes:
+            raise ArchiveTooLarge("too big")
         return buf.getvalue()
 
     async def teardown(self, handle: SandboxHandle) -> None:
@@ -334,15 +356,16 @@ async def test_only_the_first_max_files_entries_are_considered(
         assert len(synced) == 2
 
 
-@pytest.mark.parametrize(
-    "error", [SandboxError("no such container"), RuntimeError("boom")], ids=["sandbox", "other"]
-)
-async def test_a_failed_listing_syncs_nothing_and_does_not_raise(
-    app_session: AppSessionFactory, minio_url: str, error: Exception
+async def test_a_listing_that_exits_nonzero_syncs_nothing_and_does_not_raise(
+    app_session: AppSessionFactory, minio_url: str
 ) -> None:
     tenant = uuid.uuid4()
-    driver = _FakeDriver({"a.txt": b"a"})
-    driver.exec_error = error
+
+    class _Busybox(_FakeDriver):
+        async def exec(self, handle: SandboxHandle, command: list[str], **kw: Any) -> ExecResult:
+            return ExecResult(exit_code=3, output="uid=1000\0")
+
+    driver = _Busybox({"a.txt": b"a"})
     async with app_session(tenant) as db:
         run = await _dept_agent_run(db, tenant)
         assert (
@@ -351,6 +374,77 @@ async def test_a_failed_listing_syncs_nothing_and_does_not_raise(
             )
             == []
         )
+    assert driver.fetches == []
+
+
+async def test_a_gone_sandbox_syncs_nothing_and_does_not_raise(
+    app_session: AppSessionFactory, minio_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    driver = _FakeDriver({"a.txt": b"a"})
+    driver.torn_down = True
+    async with app_session(tenant) as db:
+        run = await _dept_agent_run(db, tenant)
+        assert (
+            await sync_sandbox_output(
+                db, tenant_id=tenant, run_id=run.id, driver=driver, handle=HANDLE
+            )
+            == []
+        )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [SandboxError("409 Conflict: container is not running"), RuntimeError("boom")],
+    ids=["sandbox", "other"],
+)
+async def test_a_sandbox_that_cannot_run_the_listing_is_read_as_one_archive(
+    app_session: AppSessionFactory, minio_url: str, error: Exception
+) -> None:
+    """The CLI exiting stops the container, and a stopped container runs no
+    `exec` -- but its archive can still be read, and nothing in it can swap
+    a path any more. The last pass then reads /workspace/output whole,
+    capped at the pass budget, links skipped, and stores what passes the
+    same filters as a listed file."""
+    tenant = uuid.uuid4()
+    driver = _FakeDriver({"report.txt": b"done", "sub/data.csv": b"a,b\n", "blob.bin": b"\x00"})
+    driver.symlinks.add("shadow.txt")
+    driver.exec_error = error
+    async with app_session(tenant) as db:
+        run = await _dept_agent_run(db, tenant)
+        synced = await sync_sandbox_output(
+            db, tenant_id=tenant, run_id=run.id, driver=driver, handle=HANDLE
+        )
+        # The link is skipped, and a type attachments refuse is not stored.
+        assert sorted(f.filename for f in synced) == ["report.txt", "sub/data.csv"]
+        # A second pass stores nothing new.
+        again = await sync_sandbox_output(
+            db, tenant_id=tenant, run_id=run.id, driver=driver, handle=HANDLE
+        )
+        assert again == []
+    budget = get_settings().run_output_pass_max_bytes
+    assert driver.fetches[0] == (".", budget + workspace._TAR_OVERHEAD)
+
+
+async def test_a_stopped_sandbox_with_too_much_output_syncs_nothing_and_says_so(
+    app_session: AppSessionFactory,
+    minio_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(get_settings(), "run_output_pass_max_bytes", 10)
+    tenant = uuid.uuid4()
+    driver = _FakeDriver({"report.txt": b"x" * 200_000})
+    driver.exec_error = SandboxError("not running")
+    async with app_session(tenant) as db:
+        run = await _dept_agent_run(db, tenant)
+        assert (
+            await sync_sandbox_output(
+                db, tenant_id=tenant, run_id=run.id, driver=driver, handle=HANDLE
+            )
+            == []
+        )
+    assert "too large" in caplog.text
 
 
 async def test_one_failing_file_does_not_stop_the_others_or_break_the_session(

@@ -1,42 +1,29 @@
-"""The isolated-shell runtime's first-ever filesystem mount: a per-run host
-directory bound at `/workspace`, synced to `FileAttachment` by
-`oc8.runtime.workspace.sync_run_output` once the run ends (see
-isolated.py's `execute`). Verifies the `SandboxSpec` handed to `provision()`
-carries it -- and that `validate_mounts`'s traversal guard actually runs, by
-using the fixture other isolated-runtime tests already establish
-(test_isolated_runtime.py's `_FakeDriver`/`_agent_and_run`)."""
+"""The isolated-shell runtime's `/workspace`: a scratch dir the driver
+provides, with no host directory behind it. Output written under
+`/workspace/output/` is read from the sandbox by `run_output_sandbox` while
+the leg runs and once more before teardown (see isolated.py's `execute`)."""
 
 from __future__ import annotations
 
 import uuid
-from pathlib import Path
 from typing import Any
 
 import pytest
 
 from oc8 import models as m
-from oc8.config import get_settings
 from oc8.runtime.isolated import DockerIsolatedRuntime
 from oc8.runtime.states import RunState
-from oc8.runtime.workspace import workspace_root
 from oc8.sandbox.reaper import RUN_LABEL, TENANT_LABEL
-from oc8.sandbox.types import SandboxHandle
+from oc8.sandbox.types import ExecResult, SandboxHandle
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
 
 
-@pytest.fixture(autouse=True)
-def _use_tmp_session_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
-    monkeypatch.setenv("OC8_RUNTIME_SESSION_ROOT", str(tmp_path))
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
-
-
 class _SpyDriver:
     def __init__(self) -> None:
         self.spec: Any = None
+        self.events: list[str] = []
 
     async def provision(self, spec: Any) -> SandboxHandle:
         self.spec = spec
@@ -48,8 +35,13 @@ class _SpyDriver:
     async def logs(self, handle: SandboxHandle) -> str:
         return ""
 
+    async def exec(self, handle: SandboxHandle, command: list[str], **kw: Any) -> ExecResult:
+        # The output sync's listing: no files yet.
+        self.events.append("list-output")
+        return ExecResult(exit_code=0, output="uid=1000\0")
+
     async def teardown(self, handle: SandboxHandle) -> None:
-        return None
+        self.events.append("teardown")
 
 
 async def _agent_and_run(
@@ -80,7 +72,7 @@ async def _agent_and_run(
         return agent.id, run.id
 
 
-async def test_provisions_a_workspace_bind_mount(
+async def test_provisions_a_scratch_workspace_and_no_mounts(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     tenant = uuid.uuid4()
@@ -96,25 +88,25 @@ async def test_provisions_a_workspace_bind_mount(
             db, agent=agent, task_text="verkauf etwas", tenant_id=tenant, run_id=run_id
         )
 
-    assert driver.spec is not None
-    mounts = driver.spec.mounts
-    assert len(mounts) == 1
-    mount = mounts[0]
-    assert mount.container_path == "/workspace"
-    assert mount.readonly is False
-    assert Path(mount.host_path) == Path(workspace_root(run_id))
-    # Docker would otherwise auto-create the bind source as root:root, which
-    # the container's unprivileged uid can't write to -- see isolated.py.
-    assert Path(mount.host_path).is_dir()  # noqa: ASYNC240 -- one-off existence check
+    spec = driver.spec
+    assert spec is not None
+    assert spec.mounts == []
+    assert [d.path for d in spec.scratch] == ["/workspace"]
+    assert spec.scratch[0].size_mb > 0
+    # Nothing to seed: the run token travels in the env, as before.
+    assert spec.seed is None
+    assert set(spec.env) == {"OC8_INTERNAL_URL", "OC8_AGENT_TOKEN", "OC8_RUN_ID"}
+    assert spec.workdir == "/app"
+    # The shell reaches the control plane's internal API; same as before.
+    assert spec.egress == "open"
+    assert spec.network_disabled is False
 
 
-async def test_workspace_host_path_stays_within_the_session_root(
+async def test_output_is_read_from_the_sandbox_before_teardown(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """validate_mounts's traversal guard runs on this mount too -- not just
-    documented as intent. A run_id can't smuggle a `..` (UUIDs can't), so
-    this pins the *shape* of the call (host_path inside runtime_session_root)
-    rather than trying to force a traversal through a UUID primary key."""
+    """With no host directory, the only place the output exists is the
+    sandbox: the last output pass must run before teardown."""
     tenant = uuid.uuid4()
     agent_id, run_id = await _agent_and_run(app_session, tenant)
 
@@ -128,9 +120,7 @@ async def test_workspace_host_path_stays_within_the_session_root(
             db, agent=agent, task_text="verkauf etwas", tenant_id=tenant, run_id=run_id
         )
 
-    session_root = Path(get_settings().runtime_session_root)
-    host_path = Path(driver.spec.mounts[0].host_path)
-    assert host_path.is_relative_to(session_root)
+    assert driver.events == ["list-output", "teardown"]
 
 
 async def test_sandbox_carries_the_organisation_label(

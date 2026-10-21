@@ -2006,7 +2006,7 @@ async def test_ask_user_through_a_plugin_creates_exactly_one_clarification(
     _plugin_path: None,
     app_session: AppSessionFactory,
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Any,
+    minio_url: str,
 ) -> None:
     """The whole ask_user path, end to end, across the three files that own a
     piece of it -- which is where the bug lived that no single one of their
@@ -2067,7 +2067,16 @@ async def test_ask_user_through_a_plugin_creates_exactly_one_clarification(
             raise TimeoutError("still running")
 
         async def exec(self, handle: SandboxHandle, command: list[str], **kw: Any) -> ExecResult:
-            raise NotImplementedError
+            # The output sync's listing: no files in /workspace/output.
+            return ExecResult(exit_code=0, output="uid=1000\0")
+
+        async def get_archive(
+            self, handle: SandboxHandle, path: str, *, max_bytes: int | None = None
+        ) -> bytes:
+            # The CLI home saved at the park: empty here.
+            from oc8.runtime.run_state import pack_files
+
+            return pack_files({})
 
         async def fs_write(self, handle: SandboxHandle, path: str, content: bytes) -> None:
             raise NotImplementedError
@@ -2083,7 +2092,6 @@ async def test_ask_user_through_a_plugin_creates_exactly_one_clarification(
 
     driver = _AsksOnFirstPoll()
     monkeypatch.setattr("runtime.runtime.get_sandbox_driver", lambda: driver)
-    monkeypatch.setattr("runtime.runtime.SESSION_ROOT_OVERRIDE", str(tmp_path))
 
     await execute_run(
         RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),

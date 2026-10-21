@@ -6,11 +6,14 @@ config.toml, not CLI flags (codex-rs/config/src/mcp_types.rs's
 McpServerTransportConfig::StreamableHttp and codex-rs/protocol/src/
 protocol.rs's AskForApproval::Never, both verified against Codex's own
 source); resume is the `codex exec resume <SESSION_ID>` subcommand, not a
-flag on the base command; and the session that subcommand resumes lives in
-`$CODEX_HOME/sessions` (verified against a real Codex install's own
-$CODEX_HOME layout), i.e. OUTSIDE /workspace -- so $CODEX_HOME is a per-run
-HOST directory mounted read-write, or teardown destroys the very thing the
-next leg resumes."""
+flag on the base command, and always by the explicit id the leg's
+`thread.started` event reported, never `--last` (a restored home has lost its
+mtimes). The session that subcommand resumes lives in `$CODEX_HOME/sessions`
+(verified against a real Codex install's own $CODEX_HOME layout), i.e.
+OUTSIDE /workspace -- so $CODEX_HOME is a scratch dir that is saved to
+`RunStateStore` after every leg and restored by the next leg's seed, or
+teardown destroys the very thing the next leg resumes. See cli_harness.seed.
+"""
 
 from __future__ import annotations
 
@@ -19,10 +22,21 @@ import time
 import uuid
 from typing import Any
 
-from cli_harness.dirs import ensure_dir, write_private_file
 from cli_harness.mint import run_token
 from cli_harness.outcome import no_terminal_event
 from cli_harness.park import POLL_INTERVAL_S, is_parked
+from cli_harness.seed import (
+    CONTAINER_HOME,
+    HOME_SCRATCH_MB,
+    WORKSPACE,
+    SeedDir,
+    build_seed,
+    load_home,
+    sandbox_owner,
+    save_home,
+    stop_cli,
+    workspace_scratch,
+)
 from cli_harness.session_state import clear_session_id, get_session_id, set_session_id
 from cli_harness.tail import tail_new_lines
 from cli_harness.toolchain import TOOLCHAIN_NOTE
@@ -33,11 +47,11 @@ from oc8 import models as m
 from oc8.agent.engine import RunResult, open_run_task
 from oc8.config import get_settings
 from oc8.realtime.emit import publish_run_output_delta
+from oc8.runtime.workspace import run_output_sandbox
 from oc8.sandbox import get_sandbox_driver
-from oc8.sandbox.mounts import validate_mounts
 from oc8.sandbox.naming import container_name
 from oc8.sandbox.reaper import RUN_LABEL, TENANT_LABEL
-from oc8.sandbox.types import BindMount, SandboxSpec
+from oc8.sandbox.types import SandboxSpec, ScratchDir
 
 _PLUGIN_NAME = "codex_runtime"
 #: An arbitrary, non-empty label -- oc8's /llm gateway resolves the model
@@ -49,18 +63,12 @@ _MODEL_ID = "oc8-gateway"
 #: `useradd --uid 1000 oc8agent` this image used to carry failed the build
 #: outright ("UID 1000 is not unique"). See claude_code_runtime/
 #: Dockerfile.base, which all three images share.
-_CONTAINER_HOME = "/home/node"
+_CONTAINER_HOME = CONTAINER_HOME
 _CODEX_HOME = f"{_CONTAINER_HOME}/.codex"
 _CONFIG_PATH = f"{_CODEX_HOME}/config.toml"
+#: The name `_CODEX_HOME` is saved under in RunStateStore.
+_HOME_STATE = "codex-home"
 _RUN_TIMEOUT_S = 1800.0
-#: Test-only override for the host root this run's directories are created
-#: under. Mirrors nanoclaw_runtime/runtime/runtime.py's SESSION_ROOT_OVERRIDE exactly, and
-#: for the same reason: fixing the config.toml write-after-provision() race
-#: (see _write_config_toml's docstring) and creating the mount sources before
-#: provision() means this plugin does REAL disk I/O even under a FakeDriver,
-#: and the default runtime_session_root (/var/lib/oc8/sessions) is neither
-#: writable nor expected to exist outside a deployed container.
-SESSION_ROOT_OVERRIDE: str | None = None
 # Task 3's review (claude_code_runtime) found the poll loop below has NO
 # overall deadline without this check: driver.wait(timeout_s=POLL_INTERVAL_S)
 # raises every ~2s while the container is merely still running, and looping
@@ -73,25 +81,11 @@ SESSION_ROOT_OVERRIDE: str | None = None
 # is what actually enforces this constant.
 
 
-def _workspace_dir(session_root: str, run_id: uuid.UUID) -> str:
-    return f"{session_root}/{run_id}"
-
-
-def _codex_home_dir(session_root: str, run_id: uuid.UUID) -> str:
-    """Backs `$CODEX_HOME` -- where `codex exec resume <id>` finds its session.
-
-    Per-RUN and a SIBLING of /workspace's host directory, exactly like
-    claude_code_runtime's `_config_home_dir` and nanoclaw's `claude_home_dir`
-    before it: a resume leg is the SAME run, so per-run supplies everything
-    the CLI's own resume needs, while a per-AGENT folder would let one run
-    leave state a LATER, unrelated run of the same agent reads back as its
-    own session.
-    """
-    return f"{session_root}/{run_id}-codex-home"
-
-
-def _config_dir(session_root: str, run_id: uuid.UUID) -> str:
-    return f"{session_root}/{run_id}-codex-config"
+def _not_saved(rel: str) -> bool:
+    """What a saved $CODEX_HOME leaves out: the config every leg seeds fresh
+    (so an edit by the agent never outlives its leg), any credentials file,
+    and logs."""
+    return rel in ("config.toml", "auth.json") or rel.split("/", 1)[0] == "log"
 
 
 def _config_toml(*, mcp_url: str, llm_url: str) -> str:
@@ -133,41 +127,6 @@ def _config_toml(*, mcp_url: str, llm_url: str) -> str:
     )
 
 
-def _write_config_toml(
-    *, session_root: str, run_id: uuid.UUID, mcp_url: str, llm_url: str
-) -> str:
-    """Write config.toml to a HOST path before the container starts, and
-    return that path for the caller to bind-mount in -- NOT a driver.fs_write
-    call into an already-running container.
-
-    A review of this plugin found the original fs_write-after-provision()
-    sequence racy: provision() starts the container (and, via the base
-    image's tini entrypoint, `codex exec ...`) immediately, and fs_write is a
-    SEPARATE Docker API round-trip with nothing synchronizing the two. If
-    `codex` reads config.toml before fs_write lands, it starts under Codex's
-    default INTERACTIVE approval policy instead of approval_policy="never" --
-    and Codex's own documented non-interactive-mode behaviour is to fail the
-    run outright the first time it would otherwise prompt. That defeats
-    exactly what this plugin's config.toml exists to enforce, silently and
-    non-deterministically (a race, not a guaranteed failure), which is why no
-    test caught it against the (instantaneous) FakeDriver. A bind mount has
-    no such race: the file exists on the host and is already present at
-    container start, before Codex's entrypoint ever runs.
-
-    Its own host directory, NOT the `$CODEX_HOME` directory it is mounted
-    INTO. $CODEX_HOME must be writable (Codex writes its resumable session
-    there -- see `_codex_home_dir`), and putting config.toml inside that same
-    HOST directory would give the agent's own file-edit tools a writable path
-    to the file that carries `approval_policy = "never"`, defeating the
-    read-only mount that exists to stop exactly that. Two host directories,
-    one read-write and one read-only, is what keeps them independent -- the
-    same class of bypass nanoclaw_runtime/runtime/session.py's platform_mounts
-    docstring documents for settings.json.
-    """
-    path = f"{_config_dir(session_root, run_id)}/config.toml"
-    return write_private_file(path, _config_toml(mcp_url=mcp_url, llm_url=llm_url))
-
-
 def _build_command(*, task_text: str, resume_session_id: str | None) -> list[str]:
     # `--` (clap's end-of-flags separator) MUST come immediately before
     # task_text, in both branches: task_text is free-form (a human chat
@@ -183,7 +142,7 @@ def _build_command(*, task_text: str, resume_session_id: str | None) -> list[str
     # whole-branch review, claude_code_runtime too -- `claude`'s `-p` is
     # `--print`, a boolean, so ITS task_text is a bare positional as well.
     #
-    # `--skip-git-repo-check` is NOT optional: /workspace is a bare bind mount
+    # `--skip-git-repo-check` is NOT optional: /workspace is a bare scratch dir
     # and `codex exec` refuses outright in a directory that is not a git repo
     # ("Not inside a trusted directory and --skip-git-repo-check was not
     # specified", exit 2 -- measured against codex-cli 0.147.0 inside this
@@ -291,18 +250,25 @@ class CodexRuntime:
         # itself.
         llm_url = f"{settings.internal_base_url}/llm/v1"
         resume_session_id = get_session_id(run, _PLUGIN_NAME)
-        session_root = SESSION_ROOT_OVERRIDE or settings.runtime_session_root
 
-        # All three mount sources are created HERE, before provision():
-        # Docker auto-creates a missing bind-mount source as root:root, which
-        # the container's unprivileged uid then cannot write to -- silently
-        # defeating both /workspace and the resumable session. See
-        # cli_harness.dirs.
-        workspace_path = ensure_dir(_workspace_dir(session_root, run_id))
-        codex_home_path = ensure_dir(_codex_home_dir(session_root, run_id))
-        config_toml_path = _write_config_toml(
-            session_root=session_root, run_id=run_id, mcp_url=mcp_url, llm_url=llm_url
-        )
+        # A resume leg needs the session the previous leg saved; without it
+        # `codex exec resume <id>` names a session that exists nowhere.
+        # Refuse plainly rather than start over -- see claude_code_runtime.
+        home_files: dict[str, bytes] = {}
+        if resume_session_id is not None:
+            restored = await load_home(tenant_id=tenant_id, run_id=run_id, name=_HOME_STATE)
+            if restored is None:
+                return RunResult(
+                    task_id=task_id,
+                    agent_id=agent.id,
+                    status="failed",
+                    output=(
+                        f"codex cannot resume session {resume_session_id}: "
+                        "the run's saved CLI home is missing"
+                    ),
+                )
+            home_files = {rel: data for rel, data in restored.items() if not _not_saved(rel)}
+        uid, gid = sandbox_owner()
 
         spec = SandboxSpec(
             image=settings.codex_agent_image,
@@ -322,47 +288,34 @@ class CodexRuntime:
                 # default HOME to "/".
                 "HOME": _CONTAINER_HOME,
             },
+            workdir=WORKSPACE,
             network_disabled=False,
             network=settings.agent_runtime_network,
-            # docker_driver.py documents validate_mounts as a gate every
-            # caller must pass its bind-mount paths through; nanoclaw_runtime
-            # complies and this plugin did not.
-            mounts=validate_mounts(
+            egress="restricted",
+            scratch=(workspace_scratch(), ScratchDir(_CODEX_HOME, HOME_SCRATCH_MB)),
+            # config.toml in place BEFORE `codex` starts. A write after start
+            # (fs_write once provision() returned) raced the CLI: provision()
+            # starts the container -- and, via tini, `codex exec` -- at once,
+            # and a codex that reads config.toml first runs under its default
+            # INTERACTIVE approval policy, which fails a non-interactive run
+            # the first time it would prompt. The seed is unpacked before
+            # start on every driver, so the race cannot happen. On a resume
+            # leg the seed also restores the saved $CODEX_HOME; the config
+            # always comes fresh, never from saved state.
+            seed=build_seed(
                 [
-                    BindMount(
-                        host_path=workspace_path,
-                        container_path="/workspace",
-                        readonly=False,
-                    ),
-                    # $CODEX_HOME writable, so `codex exec resume <id>` on the
-                    # next leg can still find the session this leg wrote.
-                    BindMount(
-                        host_path=codex_home_path,
-                        container_path=_CODEX_HOME,
-                        readonly=False,
-                    ),
-                    # ...and config.toml LAYERED read-only on top of it, at
-                    # the exact path it would otherwise occupy inside that
-                    # writable directory. Two entries whose container paths
-                    # nest is fine here: docker_driver.py builds `volumes` as
-                    # a dict keyed by HOST path (these are two different host
-                    # paths, so neither shadows the other in the dict) and the
-                    # daemon orders mount points by destination depth, so the
-                    # deeper, read-only one wins for this one file. Written to
-                    # disk BEFORE provision() -- see _write_config_toml.
-                    BindMount(
-                        host_path=config_toml_path,
-                        container_path=_CONFIG_PATH,
-                        readonly=True,
-                    ),
+                    SeedDir(
+                        _CODEX_HOME,
+                        {
+                            **home_files,
+                            "config.toml": _config_toml(mcp_url=mcp_url, llm_url=llm_url).encode(),
+                        },
+                    )
                 ],
-                allowed_root=session_root,
+                uid=uid,
+                gid=gid,
             ),
-            # Bind mounts carry HOST ownership, so the container has to run as
-            # the uid that owns the directories created just above -- matched
-            # by raw uid, not by an in-container username the image's passwd
-            # db would have to know. See nanoclaw_runtime/runtime/session.py's
-            # _chown_to_sandbox_user for the full reasoning.
+            # The seed belongs to this uid; see cli_harness.seed.sandbox_owner.
             user=settings.sandbox_user or None,
         )
 
@@ -385,89 +338,109 @@ class CodexRuntime:
         # the final event line) would risk misreporting a finished,
         # successful run as failed.
         all_events: list[dict[str, Any]] = []
+        exited = False
         try:
-            while True:
-                new_lines, previous_raw = await tail_new_lines(
-                    driver, handle, previous_raw=previous_raw
-                )
-                if new_lines:
-                    await publish_run_output_delta(
-                        tenant_id, run_id=run_id, chunk="\n".join(new_lines)
-                    )
-                new_events = _parse_events(new_lines)
-                all_events.extend(new_events)
-                tid = _thread_id(new_events)
-                if tid is not None and tid != resume_session_id:
-                    # merge_context, NOT `run.context = ...` -- see
-                    # claude_code_runtime/runtime/runtime.py's identical comment and
-                    # cli_harness.session_state: a whole-object write from
-                    # this session's older snapshot erases the park marker the
-                    # /mcp gateway just committed from its own session.
-                    await set_session_id(db, run, _PLUGIN_NAME, tid)
-                    await db.commit()
-                    await _rebind(db, tenant_id)
-
-                await db.refresh(run)
-                parked, status = is_parked(run)
-                if parked:
-                    return RunResult(
-                        task_id=task_id,
-                        agent_id=agent.id,
-                        status=status,
-                        output=str((run.context.get("isolated_result") or {}).get("output", "")),
-                    )
-
-                # §7.2 operator cancel, probed every poll exactly as
-                # nanoclaw_runtime/runtime/runtime.py does in its own drive loop; the
-                # finally below tears the container down on the way out.
-                if cancel_check is not None and await cancel_check():
-                    return RunResult(
-                        task_id=task_id,
-                        agent_id=agent.id,
-                        status="interrupted",
-                        output="Stopped by an operator.",
-                    )
-
-                # NOTE: `inbox_check` is deliberately NOT probed -- see
-                # claude_code_runtime/runtime/runtime.py's identical note. Calling it
-                # marks messages delivered, and a headless `codex exec` has no
-                # channel to inject them into once started, so draining them
-                # would destroy operator steering rather than deliver it.
-
-                if time.monotonic() - started_at > _RUN_TIMEOUT_S:
-                    return RunResult(
-                        task_id=task_id,
-                        agent_id=agent.id,
-                        status="failed",
-                        output=f"codex timed out after {_RUN_TIMEOUT_S:.0f}s",
-                    )
-
+            async with run_output_sandbox(run_id, tenant_id, spec, driver, handle):
                 try:
-                    exit_code = await driver.wait(handle, timeout_s=POLL_INTERVAL_S)
-                    # One last tail BEFORE teardown, not after: each loop
-                    # iteration tails logs THEN blocks in driver.wait() for
-                    # up to POLL_INTERVAL_S, so a task that finishes within a
-                    # single interval has its final terminal event written to
-                    # stdout WHILE this call is blocked inside wait() -- after
-                    # the tail that already ran this iteration, before any
-                    # tail that would ever run again. The container is still
-                    # present here (teardown is the very next line, in the
-                    # finally below), so this is the safe side of the "second
-                    # driver.logs() call after teardown()" bug the
-                    # accumulator comment above warns about -- it stays a
-                    # genuine bug to re-tail from OUTSIDE this loop, after
-                    # teardown, not to take one more reading before it.
-                    final_lines, previous_raw = await tail_new_lines(
-                        driver, handle, previous_raw=previous_raw
-                    )
-                    if final_lines:
-                        await publish_run_output_delta(
-                            tenant_id, run_id=run_id, chunk="\n".join(final_lines)
+                    while True:
+                        new_lines, previous_raw = await tail_new_lines(
+                            driver, handle, previous_raw=previous_raw
                         )
-                    all_events.extend(_parse_events(final_lines))
-                    break
-                except Exception:
-                    continue  # still running; poll again
+                        if new_lines:
+                            await publish_run_output_delta(
+                                tenant_id, run_id=run_id, chunk="\n".join(new_lines)
+                            )
+                        new_events = _parse_events(new_lines)
+                        all_events.extend(new_events)
+                        tid = _thread_id(new_events)
+                        if tid is not None and tid != resume_session_id:
+                            # merge_context, NOT `run.context = ...` -- see
+                            # claude_code_runtime/runtime/runtime.py's identical comment and
+                            # cli_harness.session_state: a whole-object write from
+                            # this session's older snapshot erases the park marker the
+                            # /mcp gateway just committed from its own session.
+                            await set_session_id(db, run, _PLUGIN_NAME, tid)
+                            await db.commit()
+                            await _rebind(db, tenant_id)
+
+                        await db.refresh(run)
+                        parked, status = is_parked(run)
+                        if parked:
+                            return RunResult(
+                                task_id=task_id,
+                                agent_id=agent.id,
+                                status=status,
+                                output=str(
+                                    (run.context.get("isolated_result") or {}).get("output", "")
+                                ),
+                            )
+
+                        # §7.2 operator cancel, probed every poll exactly as
+                        # nanoclaw_runtime/runtime/runtime.py does in its own drive loop; the
+                        # finally below tears the container down on the way out.
+                        if cancel_check is not None and await cancel_check():
+                            return RunResult(
+                                task_id=task_id,
+                                agent_id=agent.id,
+                                status="interrupted",
+                                output="Stopped by an operator.",
+                            )
+
+                        # NOTE: `inbox_check` is deliberately NOT probed -- see
+                        # claude_code_runtime/runtime/runtime.py's identical note. Calling it
+                        # marks messages delivered, and a headless `codex exec` has no
+                        # channel to inject them into once started, so draining them
+                        # would destroy operator steering rather than deliver it.
+
+                        if time.monotonic() - started_at > _RUN_TIMEOUT_S:
+                            return RunResult(
+                                task_id=task_id,
+                                agent_id=agent.id,
+                                status="failed",
+                                output=f"codex timed out after {_RUN_TIMEOUT_S:.0f}s",
+                            )
+
+                        try:
+                            exit_code = await driver.wait(handle, timeout_s=POLL_INTERVAL_S)
+                            exited = True
+                            # One last tail BEFORE teardown, not after: each loop
+                            # iteration tails logs THEN blocks in driver.wait() for
+                            # up to POLL_INTERVAL_S, so a task that finishes within a
+                            # single interval has its final terminal event written to
+                            # stdout WHILE this call is blocked inside wait() -- after
+                            # the tail that already ran this iteration, before any
+                            # tail that would ever run again. The container is still
+                            # present here (teardown is the very next line, in the
+                            # finally below), so this is the safe side of the "second
+                            # driver.logs() call after teardown()" bug the
+                            # accumulator comment above warns about -- it stays a
+                            # genuine bug to re-tail from OUTSIDE this loop, after
+                            # teardown, not to take one more reading before it.
+                            final_lines, previous_raw = await tail_new_lines(
+                                driver, handle, previous_raw=previous_raw
+                            )
+                            if final_lines:
+                                await publish_run_output_delta(
+                                    tenant_id, run_id=run_id, chunk="\n".join(final_lines)
+                                )
+                            all_events.extend(_parse_events(final_lines))
+                            break
+                        except Exception:
+                            continue  # still running; poll again
+                finally:
+                    # Every leg, whatever its outcome, before teardown: a
+                    # parked leg's next leg resumes from exactly this.
+                    if not exited:
+                        await stop_cli(driver, handle)
+                    await save_home(
+                        driver,
+                        handle,
+                        tenant_id=tenant_id,
+                        run_id=run_id,
+                        name=_HOME_STATE,
+                        path=_CODEX_HOME,
+                        exclude=_not_saved,
+                    )
         finally:
             await driver.teardown(handle)
 

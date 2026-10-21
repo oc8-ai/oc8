@@ -1,0 +1,149 @@
+"""claude_code_runtime against the real Docker driver, with a stub image.
+
+The CLI image is not built in tests, so `claude` is replaced by a shell
+script on debian:bookworm-slim that does what matters here: it reads the MCP
+config at its first instruction (seed before start), appends to a transcript
+in $CLAUDE_CONFIG_DIR, writes an output file, and prints a `result` event.
+Two legs prove the transcript leg 1 wrote is back for leg 2, on a fresh
+sandbox with no host directory behind it, and that it all works as the
+image's uid 1000."""
+
+from __future__ import annotations
+
+import sys
+import uuid
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
+
+import pytest
+from sqlalchemy import select
+
+from oc8 import models as m
+from oc8.config import get_settings
+from oc8.sandbox.docker_driver import DockerSandboxDriver
+
+PLUGIN_ROOT = Path(__file__).resolve().parents[4] / "capas" / "claude_code_runtime"
+
+_STUB_IMAGE = "debian:bookworm-slim"
+
+#: Replaces `claude`. Fails (exit 3/4) unless the seeded config is already
+#: there, carries the token and belongs to uid 1000; counts the transcript's
+#: lines so leg 2 can prove leg 1's were restored.
+_STUB = r"""
+set -e
+cfg=/home/node/.config/oc8/mcp.json
+[ -f "$cfg" ] || { echo "no config at start" >&2; exit 3; }
+grep -q '"Bearer ' "$cfg" || { echo "no token in config" >&2; exit 4; }
+[ "$(stat -c %u "$cfg")" = 1000 ] || { echo "config not owned by 1000" >&2; exit 5; }
+[ "$(id -u)" = 1000 ]
+[ "$PWD" = /workspace ]
+t="$CLAUDE_CONFIG_DIR/projects/-workspace/stub-sess.jsonl"
+mkdir -p "$(dirname "$t")"
+echo "{\"resume\": \"$RESUME\"}" >> "$t"
+n=$(wc -l < "$t")
+mkdir -p /workspace/output
+echo "leg $n" > /workspace/output/report.txt
+echo '{"type":"system","subtype":"init","session_id":"stub-sess"}'
+printf '{"type":"result","subtype":"success","result":"lines=%s","session_id":"stub-sess"}\n' "$n"
+"""
+
+
+def _evict() -> None:
+    for stale in [n for n in sys.modules if n == "runtime" or n.startswith("runtime.")]:
+        del sys.modules[stale]
+
+
+@pytest.fixture(autouse=True)
+def _plugin_path() -> Iterator[None]:
+    """See test_runtime.py's fixture of the same name."""
+    _evict()
+    sys.path.insert(0, str(PLUGIN_ROOT))
+    yield
+    sys.path.remove(str(PLUGIN_ROOT))
+    _evict()
+
+
+async def _agent_and_run(app_session: Any, tenant: uuid.UUID) -> tuple[Any, uuid.UUID]:
+    async with app_session(tenant) as db:
+        dept = m.Department(tenant_id=tenant, name="Eng", frame={})
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(
+            tenant_id=tenant,
+            department_id=dept.id,
+            name="Coder",
+            status="running",
+            narrowing={},
+            definition={},
+        )
+        db.add(agent)
+        await db.flush()
+        run = m.AgentRun(tenant_id=tenant, agent_id=agent.id, state="running", context={})
+        db.add(run)
+        await db.flush()
+        return agent, run.id
+
+
+async def test_two_legs_on_real_docker_resume_from_the_saved_home(
+    _plugin_path: None,
+    app_session: Any,
+    minio_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import runtime.runtime as rt
+
+    from oc8.runtime.run_context import merge_context
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "sandbox_user", "1000:1000")
+    monkeypatch.setattr(settings, "agent_runtime_network", None)
+    monkeypatch.setattr(rt, "runtime_image", lambda plugin, fallback: _STUB_IMAGE)
+    commands: list[list[str]] = []
+    real_build = rt._build_command
+
+    def _stub_command(**kw: Any) -> list[str]:
+        commands.append(real_build(**kw))
+        resume = kw["resume_session_id"] or ""
+        return ["sh", "-c", f"RESUME={resume}; {_STUB}"]
+
+    monkeypatch.setattr(rt, "_build_command", _stub_command)
+    driver = DockerSandboxDriver()
+    monkeypatch.setattr(rt, "get_sandbox_driver", lambda: driver)
+
+    tenant = uuid.uuid4()
+    agent, run_id = await _agent_and_run(app_session, tenant)
+
+    async with app_session(tenant) as db:
+        db.add(agent)
+        first = await rt.ClaudeCodeRuntime().execute(
+            db, agent=agent, task_text="start", tenant_id=tenant, run_id=run_id
+        )
+    assert (first.status, first.output) == ("done", "lines=1")
+
+    # As if leg 1 had parked: leg 2 resumes the session it started.
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        await merge_context(db, run, {"cli_harness_sessions": {rt._PLUGIN_NAME: "stub-sess"}})
+
+    async with app_session(tenant) as db:
+        db.add(agent)
+        second = await rt.ClaudeCodeRuntime().execute(
+            db, agent=agent, task_text="carry on", tenant_id=tenant, run_id=run_id
+        )
+    assert (second.status, second.output) == ("done", "lines=2")
+    assert commands[1][commands[1].index("--resume") + 1] == "stub-sess"
+
+    # The output reached attachments without any host directory.
+    async with app_session(tenant) as db:
+        names = (
+            (
+                await db.execute(
+                    select(m.FileAttachment.filename).where(m.FileAttachment.owner_id == run_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert "report.txt" in names

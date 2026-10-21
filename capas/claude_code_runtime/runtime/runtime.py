@@ -15,9 +15,12 @@ passed as a read-only FILE so the run's bearer JWT never rides on argv).
 The session id alone does NOT make a resume work: Claude Code writes the
 transcript that id names to `$CLAUDE_CONFIG_DIR/projects/<encoded-cwd>/
 <session>.jsonl`, i.e. OUTSIDE /workspace, and teardown destroys the
-container filesystem. So the config dir is a per-run HOST directory mounted
-read-write -- see cli_harness.dirs and nanoclaw_runtime/runtime/session.py's
-`claude_home_dir`, which fixed the identical bug for nanoclaw first.
+sandbox. So `$CLAUDE_CONFIG_DIR` is a scratch dir that is read back with
+`get_archive` after every leg and kept in `RunStateStore`; the next leg's seed
+restores it before `claude` starts. The cwd (`/workspace`) is pinned, so the
+encoded-cwd directory matches on every leg. With CLAUDE_CONFIG_DIR set, the
+CLI keeps its `.claude.json` inside that directory too, so nothing it needs
+lives in `$HOME` itself. See cli_harness.seed.
 """
 
 from __future__ import annotations
@@ -27,10 +30,22 @@ import time
 import uuid
 from typing import Any
 
-from cli_harness.dirs import ensure_dir, write_private_file
 from cli_harness.mint import run_token
 from cli_harness.outcome import no_terminal_event
 from cli_harness.park import POLL_INTERVAL_S, is_parked
+from cli_harness.seed import (
+    CONFIG_SCRATCH_MB,
+    CONTAINER_HOME,
+    HOME_SCRATCH_MB,
+    WORKSPACE,
+    SeedDir,
+    build_seed,
+    load_home,
+    sandbox_owner,
+    save_home,
+    stop_cli,
+    workspace_scratch,
+)
 from cli_harness.session_state import clear_session_id, get_session_id, set_session_id
 from cli_harness.tail import tail_new_lines
 from cli_harness.toolchain import TOOLCHAIN_NOTE
@@ -42,11 +57,11 @@ from oc8.agent.engine import RunResult, open_run_task
 from oc8.config import get_settings
 from oc8.realtime.emit import publish_run_output_delta
 from oc8.runtime.images import registry_auth_for_runtime, runtime_image
+from oc8.runtime.workspace import run_output_sandbox
 from oc8.sandbox import get_sandbox_driver
-from oc8.sandbox.mounts import validate_mounts
 from oc8.sandbox.naming import container_name
 from oc8.sandbox.reaper import RUN_LABEL, TENANT_LABEL
-from oc8.sandbox.types import BindMount, SandboxSpec
+from oc8.sandbox.types import SandboxSpec, ScratchDir
 
 _PLUGIN_NAME = "claude_code_runtime"
 #: The container's HOME. `node`, not `oc8agent`: the base image is
@@ -55,19 +70,21 @@ _PLUGIN_NAME = "claude_code_runtime"
 #: outright ("UID 1000 is not unique"). See Dockerfile.base. Set explicitly
 #: in the container env because SandboxSpec.user pins a raw HOST uid that the
 #: image's own passwd db does not know, and Docker then defaults HOME to "/".
-_CONTAINER_HOME = "/home/node"
+_CONTAINER_HOME = CONTAINER_HOME
 #: Where `claude` keeps its resumable transcripts. Named explicitly via
 #: CLAUDE_CONFIG_DIR rather than left to fall back to $HOME/.claude, so the
-#: mount below and the CLI cannot disagree about it.
+#: scratch dir, the saved state and the CLI cannot disagree about it.
 _CLAUDE_CONFIG_DIR = f"{_CONTAINER_HOME}/.claude"
+#: The name `_CLAUDE_CONFIG_DIR` is saved under in RunStateStore.
+_HOME_STATE = "claude-home"
 #: Where the MCP server definition lands INSIDE the container. Deliberately
-#: NOT under _CLAUDE_CONFIG_DIR: that directory is mounted read-WRITE (the
+#: NOT under _CLAUDE_CONFIG_DIR: that directory is saved after every leg (the
 #: resume transcript lives there), and this file carries the run's bearer
-#: JWT and the /mcp endpoint -- keeping it on its own read-only mount, at a
-#: path nested inside nothing writable, means the agent's own file-edit tools
-#: never get a second, writable path to it. Same construction as
-#: opencode_runtime's _OPENCODE_CONFIG_PATH.
-_MCP_CONFIG_PATH = f"{_CONTAINER_HOME}/.config/oc8/mcp.json"
+#: JWT -- keeping it in its own directory keeps the token out of the saved
+#: state. Every leg seeds it fresh, so a rewrite by the agent never outlives
+#: its leg. Same construction as opencode_runtime's _OPENCODE_CONFIG_PATH.
+_MCP_CONFIG_DIR = f"{_CONTAINER_HOME}/.config/oc8"
+_MCP_CONFIG_PATH = f"{_MCP_CONFIG_DIR}/mcp.json"
 #: The run's real deadline (backend/src/oc8/sandbox/docker_driver.py's own
 #: `wait()` docstring calls this out explicitly: a caller passing a SHORT
 #: timeout_s -- as this loop does, POLL_INTERVAL_S -- must still track its
@@ -80,34 +97,6 @@ _MCP_CONFIG_PATH = f"{_CONTAINER_HOME}/.config/oc8/mcp.json"
 #: resolves to THIS plugin inside its test module's `_plugin_path` fixture.
 #: and have the loop below actually observe the smaller value.
 _RUN_TIMEOUT_S = 1800.0
-#: Test-only override for the host root this run's directories are created
-#: under. Mirrors codex_runtime/opencode_runtime (and
-#: nanoclaw_runtime/runtime/runtime.py's SESSION_ROOT_OVERRIDE before them) exactly, and
-#: for the same reason: creating the workspace and config-dir mount sources
-#: before provision() means this plugin does REAL disk I/O even under a
-#: FakeDriver, and the default runtime_session_root (/var/lib/oc8/sessions)
-#: is neither writable nor expected to exist outside a deployed container.
-SESSION_ROOT_OVERRIDE: str | None = None
-
-
-def _workspace_dir(session_root: str, run_id: uuid.UUID) -> str:
-    return f"{session_root}/{run_id}"
-
-
-def _config_dir(session_root: str, run_id: uuid.UUID) -> str:
-    return f"{session_root}/{run_id}-claude-config"
-
-
-def _config_home_dir(session_root: str, run_id: uuid.UUID) -> str:
-    """Backs `$CLAUDE_CONFIG_DIR` -- the transcript a `--resume` leg reads.
-
-    Per-RUN and a SIBLING of /workspace's host directory, exactly like
-    nanoclaw's `claude_home_dir`: a resume leg is the SAME run, so per-run
-    already supplies everything the CLI's own resume needs, while a per-AGENT
-    folder would let one run leave state a LATER, unrelated run of the same
-    agent reads back as its own session.
-    """
-    return f"{session_root}/{run_id}-claude-home"
 
 
 def _mcp_config(mcp_url: str, token: str) -> str:
@@ -122,24 +111,6 @@ def _mcp_config(mcp_url: str, token: str) -> str:
             }
         }
     )
-
-
-def _write_mcp_config(*, session_root: str, run_id: uuid.UUID, mcp_url: str, token: str) -> str:
-    """Write the MCP server definition to a HOST file and return its path, so
-    the command line can NAME it instead of CARRYING it.
-
-    `--mcp-config` takes "JSON files or strings" (verified against the CLI's
-    own --help in this plugin's image, claude 2.1.229). Passing the string
-    put the run's bearer JWT directly in the container's argv, where any
-    `docker inspect` and any process on the host reading /proc/<pid>/cmdline
-    could lift a live credential -- the one hole codex_runtime (bearer_token_
-    env_var) and opencode_runtime (a config file) had both already closed by
-    construction. A file closes it the same way, and 0600 + the sandbox-uid
-    chown (`write_private_file`) keeps the host side no more readable than
-    opencode's equivalent.
-    """
-    path = f"{_config_dir(session_root, run_id)}/mcp.json"
-    return write_private_file(path, _mcp_config(mcp_url, token))
 
 
 def _build_command(
@@ -168,7 +139,7 @@ def _build_command(
         "--verbose",
         "--bare",
         # A PATH, not the JSON itself -- the JSON carries this run's bearer
-        # JWT and argv is world-readable. See _write_mcp_config. Safe ahead of
+        # JWT and argv is world-readable; the file comes in the seed. Safe ahead of
         # this variadic-capable flag's own consumption rules because a flag
         # (--permission-mode) follows it immediately, not the `--` separator.
         "--mcp-config",
@@ -227,8 +198,13 @@ class ClaudeCodeRuntime:
     # login, and the resume session id all follow it.
     plugin_name = _PLUGIN_NAME
 
-    def prepare_config_home(self, config_home: str) -> None:
-        """Seed CLAUDE_CONFIG_DIR before the CLI starts. The default writes nothing."""
+    def prepare_config_home(self, files: dict[str, bytes]) -> None:
+        """Add files to CLAUDE_CONFIG_DIR before the CLI starts.
+
+        ``files`` maps names relative to CLAUDE_CONFIG_DIR to their content and
+        already holds what an earlier leg of this run saved; change it in
+        place. It goes into the sandbox's seed. The default adds nothing.
+        """
 
     async def execute(
         self,
@@ -283,19 +259,27 @@ class ClaudeCodeRuntime:
         token = run_token(tenant_id=tenant_id, agent=agent, run_id=run_id)
         mcp_url = f"{settings.internal_base_url}/mcp"
         resume_session_id = get_session_id(run, self.plugin_name)
-        session_root = SESSION_ROOT_OVERRIDE or settings.runtime_session_root
 
-        # Both mount sources are created HERE, before provision(): Docker
-        # auto-creates a missing bind-mount source as root:root, which the
-        # container's unprivileged uid then cannot write to -- silently
-        # defeating both /workspace and the resume transcript. See
-        # cli_harness.dirs.
-        workspace_path = ensure_dir(_workspace_dir(session_root, run_id))
-        config_home_path = ensure_dir(_config_home_dir(session_root, run_id))
-        self.prepare_config_home(config_home_path)
-        mcp_config_path = _write_mcp_config(
-            session_root=session_root, run_id=run_id, mcp_url=mcp_url, token=token
-        )
+        # A resume leg needs the transcript the previous leg saved; without
+        # it `--resume` names a session that exists nowhere. Refuse plainly
+        # rather than start over: a fresh session would redo work (and side
+        # effects) the operator already approved once.
+        home_files: dict[str, bytes] = {}
+        if resume_session_id is not None:
+            restored = await load_home(tenant_id=tenant_id, run_id=run_id, name=_HOME_STATE)
+            if restored is None:
+                return RunResult(
+                    task_id=task_id,
+                    agent_id=agent.id,
+                    status="failed",
+                    output=(
+                        f"claude-code cannot resume session {resume_session_id}: "
+                        "the run's saved CLI home is missing"
+                    ),
+                )
+            home_files = restored
+        self.prepare_config_home(home_files)
+        uid, gid = sandbox_owner()
 
         spec = SandboxSpec(
             image=runtime_image(self.plugin_name, settings.claude_code_agent_image),
@@ -316,42 +300,31 @@ class ClaudeCodeRuntime:
                 "HOME": _CONTAINER_HOME,
                 "CLAUDE_CONFIG_DIR": _CLAUDE_CONFIG_DIR,
             },
+            # Pinned: the transcript's directory is named after the cwd, so a
+            # resume leg must run in exactly the same one.
+            workdir=WORKSPACE,
             network_disabled=False,
             network=settings.agent_runtime_network,
-            # docker_driver.py documents this as a gate every caller must pass
-            # its bind-mount paths through -- one allowed root, matched by
-            # RESOLVED path, because `..` and a symlink both defeat a textual
-            # prefix test. nanoclaw_runtime complies; this plugin did not.
-            mounts=validate_mounts(
-                [
-                    BindMount(
-                        host_path=workspace_path,
-                        container_path="/workspace",
-                        readonly=False,
-                    ),
-                    BindMount(
-                        host_path=config_home_path,
-                        container_path=_CLAUDE_CONFIG_DIR,
-                        readonly=False,
-                    ),
-                    # ...and the MCP definition read-only, at a container path
-                    # that is NOT nested inside that writable directory, so
-                    # the agent cannot rewrite the endpoint it is governed
-                    # through. Same shape as codex_runtime's config.toml and
-                    # opencode_runtime's opencode.jsonc.
-                    BindMount(
-                        host_path=mcp_config_path,
-                        container_path=_MCP_CONFIG_PATH,
-                        readonly=True,
-                    ),
-                ],
-                allowed_root=session_root,
+            egress="restricted",
+            scratch=(
+                workspace_scratch(),
+                ScratchDir(_CLAUDE_CONFIG_DIR, HOME_SCRATCH_MB),
+                ScratchDir(_MCP_CONFIG_DIR, CONFIG_SCRATCH_MB),
             ),
-            # Bind mounts carry HOST ownership, so the container has to run as
-            # the uid that owns the directories created just above -- matched
-            # by raw uid, not by an in-container username the image's passwd
-            # db would have to know. See nanoclaw_runtime/runtime/session.py's
-            # _chown_to_sandbox_user for the full reasoning.
+            # In place before `claude` starts: the MCP definition (with the
+            # run's token) and, on a resume leg, the saved CLI home.
+            seed=build_seed(
+                [
+                    SeedDir(
+                        _MCP_CONFIG_DIR,
+                        {"mcp.json": _mcp_config(mcp_url, token).encode()},
+                    ),
+                    SeedDir(_CLAUDE_CONFIG_DIR, home_files),
+                ],
+                uid=uid,
+                gid=gid,
+            ),
+            # The seed belongs to this uid; see cli_harness.seed.sandbox_owner.
             user=settings.sandbox_user or None,
         )
 
@@ -383,108 +356,127 @@ class ClaudeCodeRuntime:
         # a second tail_new_lines() call (and a second driver.logs()) after
         # driver.teardown() has already torn the container down.
         all_events: list[dict[str, Any]] = []
+        exited = False
         try:
-            while True:
-                new_lines, previous_raw = await tail_new_lines(
-                    driver, handle, previous_raw=previous_raw
-                )
-                if new_lines:
-                    await publish_run_output_delta(
-                        tenant_id, run_id=run_id, chunk="\n".join(new_lines)
-                    )
-                new_events = _parse_events(new_lines)
-                all_events.extend(new_events)
-                for event in new_events:
-                    if event.get("type") == "system" and event.get("subtype") == "init":
-                        session_id = event.get("session_id")
-                        if session_id and str(session_id) != resume_session_id:
-                            # merge_context, NOT `run.context = ...`: the /mcp
-                            # gateway may have just written the park marker
-                            # from its own session, and a whole-object write
-                            # built from this session's older snapshot would
-                            # erase it -- leaving this loop spinning for the
-                            # full 30-minute deadline on a run that HAS parked.
-                            # See cli_harness.session_state.
-                            await set_session_id(db, run, self.plugin_name, str(session_id))
-                            await db.commit()
-                            await _rebind(db, tenant_id)
-
-                await db.refresh(run)
-                parked, status = is_parked(run)
-                if parked:
-                    return RunResult(
-                        task_id=task_id,
-                        agent_id=agent.id,
-                        status=status,
-                        output=str((run.context.get("isolated_result") or {}).get("output", "")),
-                    )
-
-                # §7.2 operator cancel, probed every poll exactly as
-                # nanoclaw_runtime/runtime/runtime.py does in its own drive loop: an
-                # agent that cannot be stopped is the one failure mode an
-                # operator has no answer to. The finally below tears the
-                # container down on the way out, so returning here is enough.
-                if cancel_check is not None and await cancel_check():
-                    return RunResult(
-                        task_id=task_id,
-                        agent_id=agent.id,
-                        status="interrupted",
-                        output="Stopped by an operator.",
-                    )
-
-                # NOTE: `inbox_check` is deliberately NOT probed here, unlike
-                # nanoclaw's loop. Calling it MARKS the messages delivered,
-                # and a headless `claude -p` run has no channel to inject them
-                # into once it has started -- draining them would silently
-                # DESTROY operator steering messages rather than deliver them.
-                # Wiring this up properly needs --input-format stream-json and
-                # a stdin the sandbox driver does not currently expose; until
-                # then, not consuming them leaves them for the next leg.
-
-                # driver.wait()'s own timeout_s (POLL_INTERVAL_S below) is
-                # deliberately short so this loop can also check park status
-                # and elapsed time every couple seconds -- it is NOT the run's
-                # deadline, and every "still running" iteration raises out of
-                # driver.wait() (see the except below) rather than returning
-                # normally. So the run's real deadline has to be enforced
-                # here, independently, or a wedged `claude` process (stuck on
-                # /llm, a CLI-side bug, a network partition to the gateway)
-                # polls forever -- never surfacing as failed, never releasing
-                # whatever worker slot is polling it.
-                if time.monotonic() - started_at > _RUN_TIMEOUT_S:
-                    return RunResult(
-                        task_id=task_id,
-                        agent_id=agent.id,
-                        status="failed",
-                        output=f"claude-code timed out after {_RUN_TIMEOUT_S:.0f}s",
-                    )
-
+            async with run_output_sandbox(run_id, tenant_id, spec, driver, handle):
                 try:
-                    exit_code = await driver.wait(handle, timeout_s=POLL_INTERVAL_S)
-                    # One last tail BEFORE teardown, not after: each loop
-                    # iteration tails logs THEN blocks in driver.wait() for
-                    # up to POLL_INTERVAL_S, so a task that finishes within a
-                    # single interval has its final `result` event written to
-                    # stdout WHILE this call is blocked inside wait() -- after
-                    # the tail that already ran this iteration, before any
-                    # tail that would ever run again. The container is still
-                    # present here (teardown is the very next line, in the
-                    # finally below), so this is the safe side of the "second
-                    # driver.logs() call after teardown()" bug the
-                    # accumulator comment above warns about -- it stays a
-                    # genuine bug to re-tail from OUTSIDE this loop, after
-                    # teardown, not to take one more reading before it.
-                    final_lines, previous_raw = await tail_new_lines(
-                        driver, handle, previous_raw=previous_raw
-                    )
-                    if final_lines:
-                        await publish_run_output_delta(
-                            tenant_id, run_id=run_id, chunk="\n".join(final_lines)
+                    while True:
+                        new_lines, previous_raw = await tail_new_lines(
+                            driver, handle, previous_raw=previous_raw
                         )
-                    all_events.extend(_parse_events(final_lines))
-                    break
-                except Exception:
-                    continue  # still running; poll again
+                        if new_lines:
+                            await publish_run_output_delta(
+                                tenant_id, run_id=run_id, chunk="\n".join(new_lines)
+                            )
+                        new_events = _parse_events(new_lines)
+                        all_events.extend(new_events)
+                        for event in new_events:
+                            if event.get("type") == "system" and event.get("subtype") == "init":
+                                session_id = event.get("session_id")
+                                if session_id and str(session_id) != resume_session_id:
+                                    # merge_context, NOT `run.context = ...`: the /mcp
+                                    # gateway may have just written the park marker
+                                    # from its own session, and a whole-object write
+                                    # built from this session's older snapshot would
+                                    # erase it -- leaving this loop spinning for the
+                                    # full 30-minute deadline on a run that HAS parked.
+                                    # See cli_harness.session_state.
+                                    await set_session_id(db, run, self.plugin_name, str(session_id))
+                                    await db.commit()
+                                    await _rebind(db, tenant_id)
+
+                        await db.refresh(run)
+                        parked, status = is_parked(run)
+                        if parked:
+                            return RunResult(
+                                task_id=task_id,
+                                agent_id=agent.id,
+                                status=status,
+                                output=str(
+                                    (run.context.get("isolated_result") or {}).get("output", "")
+                                ),
+                            )
+
+                        # §7.2 operator cancel, probed every poll exactly as
+                        # nanoclaw_runtime/runtime/runtime.py does in its own drive loop: an
+                        # agent that cannot be stopped is the one failure mode an
+                        # operator has no answer to. The finally below tears the
+                        # container down on the way out, so returning here is enough.
+                        if cancel_check is not None and await cancel_check():
+                            return RunResult(
+                                task_id=task_id,
+                                agent_id=agent.id,
+                                status="interrupted",
+                                output="Stopped by an operator.",
+                            )
+
+                        # NOTE: `inbox_check` is deliberately NOT probed here, unlike
+                        # nanoclaw's loop. Calling it MARKS the messages delivered,
+                        # and a headless `claude -p` run has no channel to inject them
+                        # into once it has started -- draining them would silently
+                        # DESTROY operator steering messages rather than deliver them.
+                        # Wiring this up properly needs --input-format stream-json and
+                        # a stdin the sandbox driver does not currently expose; until
+                        # then, not consuming them leaves them for the next leg.
+
+                        # driver.wait()'s own timeout_s (POLL_INTERVAL_S below) is
+                        # deliberately short so this loop can also check park status
+                        # and elapsed time every couple seconds -- it is NOT the run's
+                        # deadline, and every "still running" iteration raises out of
+                        # driver.wait() (see the except below) rather than returning
+                        # normally. So the run's real deadline has to be enforced
+                        # here, independently, or a wedged `claude` process (stuck on
+                        # /llm, a CLI-side bug, a network partition to the gateway)
+                        # polls forever -- never surfacing as failed, never releasing
+                        # whatever worker slot is polling it.
+                        if time.monotonic() - started_at > _RUN_TIMEOUT_S:
+                            return RunResult(
+                                task_id=task_id,
+                                agent_id=agent.id,
+                                status="failed",
+                                output=f"claude-code timed out after {_RUN_TIMEOUT_S:.0f}s",
+                            )
+
+                        try:
+                            exit_code = await driver.wait(handle, timeout_s=POLL_INTERVAL_S)
+                            exited = True
+                            # One last tail BEFORE teardown, not after: each loop
+                            # iteration tails logs THEN blocks in driver.wait() for
+                            # up to POLL_INTERVAL_S, so a task that finishes within a
+                            # single interval has its final `result` event written to
+                            # stdout WHILE this call is blocked inside wait() -- after
+                            # the tail that already ran this iteration, before any
+                            # tail that would ever run again. The container is still
+                            # present here (teardown is the very next line, in the
+                            # finally below), so this is the safe side of the "second
+                            # driver.logs() call after teardown()" bug the
+                            # accumulator comment above warns about -- it stays a
+                            # genuine bug to re-tail from OUTSIDE this loop, after
+                            # teardown, not to take one more reading before it.
+                            final_lines, previous_raw = await tail_new_lines(
+                                driver, handle, previous_raw=previous_raw
+                            )
+                            if final_lines:
+                                await publish_run_output_delta(
+                                    tenant_id, run_id=run_id, chunk="\n".join(final_lines)
+                                )
+                            all_events.extend(_parse_events(final_lines))
+                            break
+                        except Exception:
+                            continue  # still running; poll again
+                finally:
+                    # Every leg, whatever its outcome, before teardown: a
+                    # parked leg's next leg resumes from exactly this.
+                    if not exited:
+                        await stop_cli(driver, handle)
+                    await save_home(
+                        driver,
+                        handle,
+                        tenant_id=tenant_id,
+                        run_id=run_id,
+                        name=_HOME_STATE,
+                        path=_CLAUDE_CONFIG_DIR,
+                    )
         finally:
             await driver.teardown(handle)
 

@@ -69,27 +69,31 @@ def _plugin_path() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
-def _use_tmp_session_root(
-    _plugin_path: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """execute() now creates its bind-mount SOURCES on the host before
-    provision() -- /workspace's directory and the per-run $CLAUDE_CONFIG_DIR
-    that makes --resume able to find anything at all (see runtime.py's
-    _config_home_dir and cli_harness.dirs) -- so it does REAL disk I/O even
-    against a FakeDriver. The real runtime_session_root default
-    (/var/lib/oc8/sessions) is neither writable nor expected to exist outside
-    a deployed container, so every test redirects it to a pytest tmp_path,
-    the same way codex_runtime's and opencode_runtime's tests already do (and
-    nanoclaw_runtime's before them). Autouse, because there is no longer a
-    test in this file that can run without it.
+def _storage(_plugin_path: None, minio_url: str) -> None:
+    """Every leg saves its CLI home to RunStateStore (object storage) and a
+    resume leg loads it back, so every test needs storage. Takes
+    `_plugin_path` for the ordering only, like every fixture here that
+    resolves `runtime.runtime`."""
 
-    Takes `_plugin_path` as an ARGUMENT, not for its value but for the ordering:
-    `monkeypatch.setattr` with a dotted string resolves through `__import__` and
-    therefore through the `sys.modules` cache at fixture-setup time, so if this ran
-    first it would patch whichever plugin's module happened to be cached. A declared
-    dependency is the only ordering guarantee pytest gives -- declaration order is
-    not one."""
-    monkeypatch.setattr("runtime.runtime.SESSION_ROOT_OVERRIDE", str(tmp_path))
+
+def _home_tar(files: dict[str, bytes]) -> bytes:
+    from oc8.runtime.run_state import pack_files
+
+    return pack_files(files)
+
+
+def _seed_members(spec: Any) -> dict[str, tuple[bytes | None, int, int, int]]:
+    """name -> (content or None for a dir, uid, gid, mode) of a spec's seed."""
+    import io
+    import tarfile
+
+    assert spec.seed is not None, "the spec carries no seed"
+    out: dict[str, tuple[bytes | None, int, int, int]] = {}
+    with tarfile.open(fileobj=io.BytesIO(spec.seed), mode="r:") as tar:
+        for member in tar.getmembers():
+            f = tar.extractfile(member) if member.isfile() else None
+            out[member.name] = (f.read() if f else None, member.uid, member.gid, member.mode)
+    return out
 
 
 class _FakeDriver:
@@ -104,10 +108,20 @@ class _FakeDriver:
         self.exit_code = exit_code
         self.specs: list[Any] = []
         self.torn_down = 0
+        #: What get_archive hands back for the CLI home: the files the CLI
+        #: "wrote" during the leg.
+        self.home: dict[str, bytes] = {}
+        self.archived: list[str] = []
 
     async def provision(self, spec: Any) -> SandboxHandle:
         self.specs.append(spec)
         return SandboxHandle(container_id="claude-container", image=spec.image)
+
+    async def get_archive(
+        self, handle: SandboxHandle, path: str, *, max_bytes: int | None = None
+    ) -> bytes:
+        self.archived.append(path)
+        return _home_tar(self.home)
 
     async def logs(self, handle: SandboxHandle) -> str:
         return "".join(line + "\n" for line in self.stdout_lines)
@@ -116,7 +130,8 @@ class _FakeDriver:
         return self.exit_code
 
     async def exec(self, handle: SandboxHandle, command: list[str], **kw: Any) -> ExecResult:
-        raise NotImplementedError
+        # The output sync's listing: no /workspace/output files.
+        return ExecResult(exit_code=0, output="uid=1000\0")
 
     async def fs_write(self, handle: SandboxHandle, path: str, content: bytes) -> None:
         raise NotImplementedError
@@ -288,6 +303,7 @@ async def test_a_resume_leg_passes_the_resume_flag_and_the_session_id(
         db.add(run)
         await db.flush()
         run_id = run.id
+        await _save_home(tenant, run_id, {_TRANSCRIPT: b"{}\n"})
 
         await ClaudeCodeRuntime().execute(
             db,
@@ -429,112 +445,159 @@ async def _seed_agent(
         return agent, run.id
 
 
-async def test_the_session_directory_is_mounted_writable_so_a_resume_can_find_it(
-    app_session: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+async def _save_home(tenant: uuid.UUID, run_id: uuid.UUID, files: dict[str, bytes]) -> None:
+    """What leg 1 left behind: its CLI home, as RunStateStore keeps it."""
+    from oc8.runtime.run_state import RunStateStore
+
+    await RunStateStore(tenant).save(run_id, "claude-home", _home_tar(files))
+
+
+_TRANSCRIPT = "projects/-workspace/claude-sess-2.jsonl"
+
+
+async def test_the_sandbox_has_scratch_dirs_and_no_mounts(
+    app_session: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """--resume names a session whose transcript Claude Code writes to
-    $CLAUDE_CONFIG_DIR/projects/..., i.e. OUTSIDE /workspace -- and teardown
-    destroys the container filesystem at every park. So the flag alone proves
-    nothing: without a persistent, writable HOST directory behind that path,
-    a resumed run points at a session that no longer exists anywhere and the
-    CLI errors out. This asserts the MOUNT, not the flag."""
-    from runtime.runtime import _CLAUDE_CONFIG_DIR, ClaudeCodeRuntime
+    """No host directory exists behind a sandbox any more (Kubernetes has
+    none to give): /workspace, the CLI home and the MCP config dir are
+    scratch dirs the driver provides, and the CLI only reaches the backend."""
+    from runtime.runtime import _CLAUDE_CONFIG_DIR, _MCP_CONFIG_PATH, ClaudeCodeRuntime
 
     driver = _FakeDriver(
+        ['{"type":"result","subtype":"success","result":"Done.","session_id":"s"}']
+    )
+    _install(monkeypatch, driver)
+
+    tenant = uuid.uuid4()
+    agent, run_id = await _seed_agent(app_session, tenant, {})
+    async with app_session(tenant) as db:
+        db.add(agent)
+        await ClaudeCodeRuntime().execute(
+            db, agent=agent, task_text="fix the bug", tenant_id=tenant, run_id=run_id
+        )
+
+    spec = driver.specs[0]
+    assert spec.mounts == []
+    assert {d.path for d in spec.scratch} == {
+        "/workspace",
+        _CLAUDE_CONFIG_DIR,
+        _MCP_CONFIG_PATH.rsplit("/", 1)[0],
+    }
+    assert all(d.size_mb > 0 for d in spec.scratch)
+    assert spec.egress == "restricted"
+    # The transcript's directory is named after the cwd: pinned, so every leg
+    # agrees on it.
+    assert spec.workdir == "/workspace"
+    assert spec.env["CLAUDE_CONFIG_DIR"] == _CLAUDE_CONFIG_DIR
+
+
+async def test_a_resume_leg_restores_the_home_leg_one_saved(
+    app_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--resume names a session whose transcript Claude Code writes to
+    $CLAUDE_CONFIG_DIR/projects/..., OUTSIDE /workspace, and teardown destroys
+    the sandbox at every park. Leg 1 must save that home; leg 2's seed must
+    put it back, at the same path, before `claude` starts."""
+    from runtime.runtime import _CLAUDE_CONFIG_DIR, ClaudeCodeRuntime
+
+    tenant = uuid.uuid4()
+    agent, run_id = await _seed_agent(
+        app_session,
+        tenant,
+        {"isolated_result": {"status": "waiting_for_input", "output": "which file?"}},
+    )
+
+    # Leg 1: the CLI starts a session, writes its transcript, and the run parks.
+    leg1 = _FakeDriver(['{"type":"system","subtype":"init","session_id":"claude-sess-2"}'])
+    leg1.home = {_TRANSCRIPT: b'{"turn": 1}\n', ".claude.json": b"{}"}
+    _install(monkeypatch, leg1)
+    async with app_session(tenant) as db:
+        db.add(agent)
+        first = await ClaudeCodeRuntime().execute(
+            db, agent=agent, task_text="fix the bug", tenant_id=tenant, run_id=run_id
+        )
+    assert first.status == "waiting_for_input"
+    assert leg1.archived == [_CLAUDE_CONFIG_DIR]
+    assert leg1.torn_down == 1
+
+    # Leg 2, on a fresh driver (a different worker, as far as the run knows).
+    async with app_session(tenant) as db:
+        from oc8.runtime.run_context import merge_context
+
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        await merge_context(db, run, {"isolated_result": {}})
+    leg2 = _FakeDriver(
         ['{"type":"result","subtype":"success","result":"Done.","session_id":"claude-sess-2"}']
     )
+    _install(monkeypatch, leg2)
+    async with app_session(tenant) as db:
+        db.add(agent)
+        second = await ClaudeCodeRuntime().execute(
+            db, agent=agent, task_text="the answer is main.py", tenant_id=tenant, run_id=run_id
+        )
+    assert second.status == "done"
+
+    spec = leg2.specs[0]
+    cmd = spec.command
+    assert cmd[cmd.index("--resume") + 1] == "claude-sess-2"
+    seeded = _seed_members(spec)
+    home = _CLAUDE_CONFIG_DIR.lstrip("/")
+    assert seeded[f"{home}/{_TRANSCRIPT}"][0] == b'{"turn": 1}\n'
+    assert seeded[f"{home}/.claude.json"][0] == b"{}"
+
+
+async def test_a_resume_leg_without_saved_state_fails_before_any_sandbox(
+    app_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Resuming into an empty home would only fail inside the CLI with an
+    obscure "no conversation found"; starting over would redo work the
+    operator already approved. The leg fails plainly instead."""
+    from runtime.runtime import ClaudeCodeRuntime
+
+    driver = _FakeDriver([])
     _install(monkeypatch, driver)
 
     tenant = uuid.uuid4()
     agent, run_id = await _seed_agent(
-        app_session, tenant, {"cli_harness_sessions": {"claude_code_runtime": "claude-sess-2"}}
+        app_session, tenant, {"cli_harness_sessions": {"claude_code_runtime": "claude-sess-9"}}
     )
     async with app_session(tenant) as db:
         db.add(agent)
-        await ClaudeCodeRuntime().execute(
-            db, agent=agent, task_text="fix the bug", tenant_id=tenant, run_id=run_id
+        result = await ClaudeCodeRuntime().execute(
+            db, agent=agent, task_text="carry on", tenant_id=tenant, run_id=run_id
         )
 
-    spec = driver.specs[0]
-    assert "--resume" in spec.command
-    home = next(mnt for mnt in spec.mounts if mnt.container_path == _CLAUDE_CONFIG_DIR)
-    assert home.readonly is False, "a read-only config dir cannot hold a resumable transcript"
-    assert home.host_path.startswith(str(tmp_path))
-    # Per-RUN, and NOT nested inside the agent-writable /workspace mount.
-    assert str(run_id) in home.host_path
-    workspace = next(mnt for mnt in spec.mounts if mnt.container_path == "/workspace")
-    assert not home.host_path.startswith(workspace.host_path + "/")
-    # The container has to run as the uid that owns those host directories.
-    assert hasattr(spec, "user")
+    assert result.status == "failed"
+    assert "claude-sess-9" in result.output and "missing" in result.output
+    assert driver.specs == []
 
 
-async def test_every_mount_source_exists_on_disk_before_provision(
-    app_session: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+async def test_prepare_config_home_adds_files_to_the_seeded_home(
+    app_session: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Docker auto-creates a missing bind-mount source as root:root, which an
-    unprivileged container then cannot write to -- silently defeating both
-    /workspace and the resume transcript. A FakeDriver whose provision()
-    stats every mount source proves the ordering directly."""
-    from runtime.runtime import ClaudeCodeRuntime
+    """A runtime built on this one adds its own files to CLAUDE_CONFIG_DIR
+    through the seed, next to whatever an earlier leg saved."""
+    from runtime.runtime import _CLAUDE_CONFIG_DIR, ClaudeCodeRuntime
 
-    seen: dict[str, bool] = {}
+    class _Custom(ClaudeCodeRuntime):
+        def prepare_config_home(self, files: dict[str, bytes]) -> None:
+            files.setdefault("settings.json", b'{"attribution": {}}')
 
-    class _OrderCheckingDriver(_FakeDriver):
-        async def provision(self, spec: Any) -> SandboxHandle:
-            seen["all_exist"] = all(
-                # A local, cheap stat on a path this test just created.
-                Path(mnt.host_path).exists()  # noqa: ASYNC240
-                for mnt in spec.mounts
-            )
-            return await super().provision(spec)
-
-    driver = _OrderCheckingDriver(
-        ['{"type":"result","subtype":"success","result":"Done.","session_id":"s"}']
-    )
-    _install(monkeypatch, driver)
-
-    tenant = uuid.uuid4()
-    agent, run_id = await _seed_agent(app_session, tenant, {})
-    async with app_session(tenant) as db:
-        db.add(agent)
-        await ClaudeCodeRuntime().execute(
-            db, agent=agent, task_text="fix the bug", tenant_id=tenant, run_id=run_id
-        )
-
-    assert seen["all_exist"] is True
-
-
-async def test_mounts_go_through_the_sandbox_allowlist(
-    app_session: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """docker_driver.py documents sandbox.mounts.validate_mounts as a gate
-    every caller must pass its bind-mount paths through, against ONE allowed
-    root and by RESOLVED path. nanoclaw_runtime complies; this plugin did
-    not."""
-    import runtime.runtime as rt
-
-    calls: list[str] = []
-    real = rt.validate_mounts
-
-    def _spy(mounts: Any, *, allowed_root: str) -> Any:
-        calls.append(allowed_root)
-        return real(mounts, allowed_root=allowed_root)
-
-    monkeypatch.setattr(rt, "validate_mounts", _spy)
     driver = _FakeDriver(
         ['{"type":"result","subtype":"success","result":"Done.","session_id":"s"}']
     )
     _install(monkeypatch, driver)
-
     tenant = uuid.uuid4()
     agent, run_id = await _seed_agent(app_session, tenant, {})
     async with app_session(tenant) as db:
         db.add(agent)
-        await rt.ClaudeCodeRuntime().execute(
+        await _Custom().execute(
             db, agent=agent, task_text="fix the bug", tenant_id=tenant, run_id=run_id
         )
 
-    assert calls == [str(tmp_path)]
+    seeded = _seed_members(driver.specs[0])
+    assert seeded[f"{_CLAUDE_CONFIG_DIR.lstrip('/')}/settings.json"][0] == b'{"attribution": {}}'
 
 
 async def test_the_run_row_is_committed_before_the_container_is_polled(
@@ -709,6 +772,7 @@ async def test_task_text_cannot_be_parsed_as_a_flag(
     agent2, run_id2 = await _seed_agent(
         app_session, tenant, {"cli_harness_sessions": {"claude_code_runtime": "claude-sess-9"}}
     )
+    await _save_home(tenant, run_id2, {_TRANSCRIPT: b"{}\n"})
     async with app_session(tenant) as db:
         db.add(agent2)
         await ClaudeCodeRuntime().execute(
@@ -768,9 +832,8 @@ async def test_the_run_token_is_never_put_on_the_command_line(
     opencode_runtime (a config file) had both already closed this by
     construction; this is the same close for the third plugin.
 
-    The file is mounted READ-ONLY and at a path NOT nested inside the
-    read-write $CLAUDE_CONFIG_DIR, so the agent's own file-edit tools cannot
-    rewrite the endpoint it is governed through."""
+    The file comes in the seed, at a path NOT nested inside $CLAUDE_CONFIG_DIR,
+    which is saved after every leg."""
     import json as _json
 
     from runtime.runtime import (
@@ -800,18 +863,19 @@ async def test_the_run_token_is_never_put_on_the_command_line(
     assert token, "sanity: the run really does mint a token"
     assert not any(token in arg for arg in spec.command), "the JWT is exposed via docker inspect"
 
-    mount = next(mnt for mnt in spec.mounts if mnt.container_path == _MCP_CONFIG_PATH)
-    assert mount.readonly is True, "the agent could otherwise rewrite its own MCP endpoint"
     assert not _MCP_CONFIG_PATH.startswith(_CLAUDE_CONFIG_DIR + "/"), (
-        "must not sit inside the read-WRITE config dir, or the read-only mount is pointless"
+        "must not sit inside the saved config dir, or the token lands in object storage"
     )
 
-    # The file really is on disk before provision(), and really does carry the
-    # token -- otherwise the container gets no MCP server at all.
-    written = _json.loads(Path(mount.host_path).read_text(encoding="utf-8"))  # noqa: ASYNC240
+    # The file is in the seed, so it exists before `claude` starts, carries
+    # the token, and belongs to the image's uid-1000 user, readable by it
+    # alone.
+    content, uid, gid, mode = _seed_members(spec)[_MCP_CONFIG_PATH.lstrip("/")]
+    assert content is not None
+    written = _json.loads(content)
     assert written["mcpServers"]["oc8"]["headers"]["Authorization"] == f"Bearer {token}"
-    # 0600: it outlives the container on the host.
-    assert oct(Path(mount.host_path).stat().st_mode)[-3:] == "600"  # noqa: ASYNC240
+    assert (uid, gid) == (1000, 1000)
+    assert mode == 0o600
 
 
 async def test_the_toolchain_note_is_appended_to_the_task_prompt(
@@ -846,7 +910,11 @@ async def test_the_toolchain_note_is_appended_to_the_task_prompt(
         run_id = run.id
 
         await ClaudeCodeRuntime().execute(
-            db, agent=agent, task_text="fix the bug", tenant_id=tenant, run_id=run_id,
+            db,
+            agent=agent,
+            task_text="fix the bug",
+            tenant_id=tenant,
+            run_id=run_id,
         )
 
     spec = driver.specs[0]

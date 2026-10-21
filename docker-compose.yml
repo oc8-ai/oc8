@@ -78,7 +78,7 @@ x-backend-env: &backend-env
   # level -- it has no plugin.toml of its own and is never pip-installed,
   # only ever put on sys.path (see backend/pyproject.toml's identical
   # mypy_path/pythonpath entries for the same reason at dev-tooling time).
-  # Without this, `from cli_harness.dirs import ...` raises ModuleNotFoundError
+  # Without this, `from cli_harness.seed import ...` raises ModuleNotFoundError
   # the moment the backend or worker process tries to load any of those three
   # runtime plugins, and they report as installed-but-unavailable ("plugin
   # code is not loadable") with no indication why.
