@@ -201,6 +201,14 @@ class Settings(BaseSettings):
     ``/workspace/output`` (``oc8.runtime.workspace``). Beyond it the rest are
     left out of that pass and a warning is logged. Each file is fetched on its
     own and capped at the attachment limit."""
+    run_output_pass_max_bytes: int = 64 * 1024 * 1024
+    """Most bytes one output sync pass fetches from a sandbox, counted as
+    each file's listed size plus a small growth tolerance. The pass stops
+    there and the next one continues. Keep it at or above the 25 MB
+    attachment limit, or a file that size is never fetched."""
+    run_output_pass_max_files: int = 200
+    """Most files one output sync pass fetches from a sandbox; the next pass
+    continues."""
     run_output_sync_interval_s: float = 60.0
     """How often a run's own output task stores ``/workspace/output`` from a
     sandbox without mounts while the leg runs."""

@@ -439,3 +439,17 @@ async def test_a_scratch_dir_is_sticky_and_world_writable() -> None:
         assert result.output.strip() == "1777"
     finally:
         await driver.teardown(handle)
+
+
+async def test_get_archive_refuses_a_symlink_path() -> None:
+    """The archive API runs as the daemon, not the sandbox user: a link at the
+    requested path is refused rather than archived or followed."""
+    driver = DockerSandboxDriver()
+    handle = await driver.provision(SandboxSpec(image=_IMAGE, command=["sleep", "30"]))
+    try:
+        res = await driver.exec(handle, ["sh", "-c", "ln -s /etc/shadow /tmp/link"])
+        assert res.exit_code == 0
+        with pytest.raises(SandboxError, match="symlink"):
+            await driver.get_archive(handle, "/tmp/link")
+    finally:
+        await driver.teardown(handle)

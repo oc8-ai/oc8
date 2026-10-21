@@ -95,6 +95,8 @@ def _scratch_modes(scratch: tuple[ScratchDir, ...]) -> bytes:
 
 
 _GO_MODE_DIR = 1 << 31
+#: Go's os.ModeSymlink, as reported in the archive stat header.
+_GO_MODE_SYMLINK = 1 << 27
 
 
 def _quota_refused(exc: BaseException) -> bool:
@@ -588,8 +590,15 @@ class DockerSandboxDriver:
             except docker.errors.DockerException as exc:
                 raise SandboxError(f"get_archive failed: {exc}") from exc
             with spool:
+                # docker-py decodes the X-Docker-Container-Path-Stat header
+                # into ``info``; its mode is Go's FileMode. The daemon reads
+                # with more privilege than the sandbox user, so a link at the
+                # requested path is refused here, never archived or followed.
+                mode = int(info.get("mode", 0))
+                if mode & _GO_MODE_SYMLINK or info.get("linkTarget"):
+                    raise SandboxError(f"get_archive: {path} is a symlink")
                 # Docker reports Go's FileMode, whose directory bit is 1 << 31.
-                if int(info.get("mode", 0)) & _GO_MODE_DIR:
+                if mode & _GO_MODE_DIR:
                     try:
                         return _relative_to_directory(spool, str(info.get("name", "")))
                     except tarfile.TarError as exc:

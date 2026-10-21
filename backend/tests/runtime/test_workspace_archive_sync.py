@@ -81,6 +81,13 @@ class _FakeDriver:
         self.listing: str | None = None
         self.exec_error: Exception | None = None
         self.fetches: list[tuple[str, int | None]] = []
+        #: uid the listing exec runs as; files are owned by it unless in owners.
+        self.uid = 1000
+        self.owners: dict[str, int] = {}
+        #: name -> the member name the fetch returns instead (a swapped path).
+        self.renames: dict[str, str] = {}
+        #: names whose fetch returns two members.
+        self.doubles: set[str] = set()
         self.execs: list[list[str]] = []
         self.torn_down = False
 
@@ -101,9 +108,10 @@ class _FakeDriver:
         if self.exec_error is not None:
             raise self.exec_error
         if self.listing is not None:
-            return ExecResult(exit_code=0, output=self.listing)
+            return ExecResult(exit_code=0, output=f"uid={self.uid}\0" + self.listing)
         names = sorted(set(self.files) | set(self.sizes))
-        return ExecResult(exit_code=0, output="".join(f"{self._size(n)}\t{n}\0" for n in names))
+        listing = "".join(f"{self._size(n)}\t{n}\0" for n in names)
+        return ExecResult(exit_code=0, output=f"uid={self.uid}\0" + listing)
 
     async def get_archive(
         self, handle: SandboxHandle, path: str, *, max_bytes: int | None = None
@@ -112,7 +120,7 @@ class _FakeDriver:
         self.fetches.append((rel, max_bytes))
         if self.torn_down:
             raise SandboxError("no such container")
-        base = posixpath.basename(path)
+        base = self.renames.get(rel, posixpath.basename(path))
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w") as tar:
             if rel in self.symlinks:
@@ -121,14 +129,20 @@ class _FakeDriver:
                 info.linkname = "/etc/shadow"
                 tar.addfile(info)
             else:
-                if max_bytes is not None and self._size(rel) > max_bytes:
-                    raise ArchiveTooLarge("too big")
                 if rel not in self.files:
                     raise SandboxError(f"no such path: {path}")
                 data = self.files[rel]
+                # Like the real drivers: the read stops at max_bytes of tar.
+                if max_bytes is not None and len(data) + 1024 > max_bytes:
+                    raise ArchiveTooLarge("too big")
                 info = tarfile.TarInfo(base)
                 info.size = len(data)
+                info.uid = self.owners.get(rel, self.uid)
                 tar.addfile(info, io.BytesIO(data))
+                if rel in self.doubles:
+                    extra = tarfile.TarInfo("second")
+                    extra.size = 1
+                    tar.addfile(extra, io.BytesIO(b"x"))
         return buf.getvalue()
 
     async def teardown(self, handle: SandboxHandle) -> None:
@@ -192,10 +206,12 @@ async def test_output_from_the_sandbox_becomes_attachments(
         assert by_name["report.txt"].extracted_text == "Q3 numbers look good."
         assert by_name["report.txt"].owner_type == "agent_run"
 
-    # One file per fetch, each capped at the attachment limit plus tar overhead.
+    # One file per fetch, each capped at its listed size plus a small
+    # tolerance and tar overhead, never the whole attachment limit.
     assert sorted(name for name, _ in driver.fetches) == ["charts/q3.csv", "report.txt"]
-    for _name, cap in driver.fetches:
-        assert cap is not None and MAX_ATTACHMENT_BYTES < cap <= MAX_ATTACHMENT_BYTES + 65536
+    for name, cap in driver.fetches:
+        listed = len(driver.files[name])
+        assert cap == listed + workspace.GROWTH_TOLERANCE_BYTES + workspace._TAR_OVERHEAD
     assert not _host_output_exists(run.id)
 
 
@@ -253,13 +269,13 @@ async def test_a_large_file_is_skipped_and_the_small_one_still_stored(
     assert [name for name, _ in driver.fetches] == ["small.txt"]
 
 
-async def test_a_file_that_grew_past_the_cap_after_listing_is_skipped(
+async def test_a_file_that_grew_after_listing_is_rejected_not_read(
     app_session: AppSessionFactory, minio_url: str
 ) -> None:
     tenant = uuid.uuid4()
-    driver = _FakeDriver({"grows.txt": b"x", "ok.txt": b"ok"})
+    # Listed at 1 byte, 200 KiB by the time it is fetched.
+    driver = _FakeDriver({"grows.txt": b"x" * (200 * 1024), "ok.txt": b"ok"})
     driver.listing = "1\tgrows.txt\0" + "2\tok.txt\0"
-    driver.sizes["grows.txt"] = MAX_ATTACHMENT_BYTES + (1 << 17)
     async with app_session(tenant) as db:
         run = await _dept_agent_run(db, tenant)
         synced = await sync_sandbox_output(
@@ -294,7 +310,7 @@ async def test_a_file_swapped_for_a_symlink_is_skipped(
 ) -> None:
     tenant = uuid.uuid4()
     driver = _FakeDriver({"ok.txt": b"ok", "link.txt": b"x"})
-    driver.symlinks.add("link.txt")
+    driver.symlinks.add("link.txt")  # listed as a file, a link when fetched
     async with app_session(tenant) as db:
         run = await _dept_agent_run(db, tenant)
         synced = await sync_sandbox_output(
@@ -360,6 +376,170 @@ async def test_one_failing_file_does_not_stop_the_others_or_break_the_session(
         assert [f.filename for f in synced] == ["good.txt"]
         # The session is still usable afterwards (the executor transitions on it).
         assert await _attachments(db, run.id) == {"good.txt": 1}
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    ["renamed", "two-members", "foreign-owner"],
+)
+async def test_a_fetch_that_is_not_exactly_the_listed_file_is_rejected(
+    app_session: AppSessionFactory, minio_url: str, tamper: str
+) -> None:
+    """Between listing and fetch the sandbox can swap the file, or a directory
+    above it, for a link. The fetch runs with more privilege than the agent, so
+    anything but one regular file of the requested name, owned by the user
+    that listed it, is refused."""
+    tenant = uuid.uuid4()
+    driver = _FakeDriver({"ok.txt": b"ok", "sub/secret.txt": b"root only"})
+    if tamper == "renamed":
+        driver.renames["sub/secret.txt"] = "shadow"
+    elif tamper == "two-members":
+        driver.doubles.add("sub/secret.txt")
+    else:
+        driver.owners["sub/secret.txt"] = 0  # e.g. sub -> /etc after listing
+    async with app_session(tenant) as db:
+        run = await _dept_agent_run(db, tenant)
+        synced = await sync_sandbox_output(
+            db, tenant_id=tenant, run_id=run.id, driver=driver, handle=HANDLE
+        )
+        assert [f.filename for f in synced] == ["ok.txt"]
+
+
+async def test_a_root_sandbox_accepts_files_of_any_owner(
+    app_session: AppSessionFactory, minio_url: str
+) -> None:
+    """A sandbox user that is root can read every file itself: no privilege
+    is gained by the fetch, so ownership is not checked."""
+    tenant = uuid.uuid4()
+    driver = _FakeDriver({"a.txt": b"a"})
+    driver.uid = 0
+    driver.owners["a.txt"] = 1234
+    async with app_session(tenant) as db:
+        run = await _dept_agent_run(db, tenant)
+        synced = await sync_sandbox_output(
+            db, tenant_id=tenant, run_id=run.id, driver=driver, handle=HANDLE
+        )
+        assert [f.filename for f in synced] == ["a.txt"]
+
+
+async def test_a_listing_without_the_uid_record_syncs_nothing(
+    app_session: AppSessionFactory, minio_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    driver = _FakeDriver({"a.txt": b"a"})
+
+    async def no_uid(*a: Any, **kw: Any) -> ExecResult:
+        return ExecResult(exit_code=0, output="1\ta.txt\0")
+
+    driver.exec = no_uid  # type: ignore[method-assign]
+    async with app_session(tenant) as db:
+        run = await _dept_agent_run(db, tenant)
+        assert (
+            await sync_sandbox_output(
+                db, tenant_id=tenant, run_id=run.id, driver=driver, handle=HANDLE
+            )
+            == []
+        )
+    assert driver.fetches == []
+
+
+async def test_each_pass_stays_within_its_byte_and_file_budget(
+    app_session: AppSessionFactory, minio_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Each fetch is charged its listed size plus the growth tolerance: room
+    # for three 1000-byte files, not four.
+    per_file = 1000 + workspace.GROWTH_TOLERANCE_BYTES
+    monkeypatch.setenv("OC8_RUN_OUTPUT_PASS_MAX_BYTES", str(3 * per_file + per_file // 2))
+    monkeypatch.setenv("OC8_RUN_OUTPUT_PASS_MAX_FILES", "100")
+    get_settings.cache_clear()
+    tenant = uuid.uuid4()
+    driver = _FakeDriver({f"f{i}.txt": b"x" * 1000 for i in range(5)})
+    async with app_session(tenant) as db:
+        run = await _dept_agent_run(db, tenant)
+        first = await sync_sandbox_output(
+            db, tenant_id=tenant, run_id=run.id, driver=driver, handle=HANDLE
+        )
+        assert len(first) == 3
+        assert len(driver.fetches) == 3
+        second = await sync_sandbox_output(
+            db, tenant_id=tenant, run_id=run.id, driver=driver, handle=HANDLE
+        )
+        assert len(second) == 2
+        assert len(driver.fetches) == 5
+        assert len(await _attachments(db, run.id)) == 5
+
+
+async def test_the_file_budget_also_ends_a_pass(
+    app_session: AppSessionFactory, minio_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OC8_RUN_OUTPUT_PASS_MAX_FILES", "2")
+    get_settings.cache_clear()
+    tenant = uuid.uuid4()
+    driver = _FakeDriver({f"f{i}.txt": b"x" for i in range(3)})
+    async with app_session(tenant) as db:
+        run = await _dept_agent_run(db, tenant)
+        assert (
+            len(
+                await sync_sandbox_output(
+                    db, tenant_id=tenant, run_id=run.id, driver=driver, handle=HANDLE
+                )
+            )
+            == 2
+        )
+        assert (
+            len(
+                await sync_sandbox_output(
+                    db, tenant_id=tenant, run_id=run.id, driver=driver, handle=HANDLE
+                )
+            )
+            == 1
+        )
+
+
+async def test_a_rejected_file_does_not_use_up_later_passes(
+    app_session: AppSessionFactory, minio_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file refused once (here: a link) is not fetched again within the same
+    leg, so it cannot eat every pass's budget."""
+    monkeypatch.setenv("OC8_RUN_OUTPUT_PASS_MAX_FILES", "1")
+    get_settings.cache_clear()
+    tenant = uuid.uuid4()
+    driver = _FakeDriver({"a-link.txt": b"x", "b.txt": b"b"})
+    driver.symlinks.add("a-link.txt")
+    refused: set[tuple[str, int]] = set()
+    async with app_session(tenant) as db:
+        run = await _dept_agent_run(db, tenant)
+        for _ in range(2):
+            await sync_sandbox_output(
+                db, tenant_id=tenant, run_id=run.id, driver=driver, handle=HANDLE, refused=refused
+            )
+        assert await _attachments(db, run.id) == {"b.txt": 1}
+    assert [name for name, _ in driver.fetches] == ["a-link.txt", "b.txt"]
+
+
+async def test_an_unsupported_type_is_not_fetched(
+    app_session: AppSessionFactory, minio_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    driver = _FakeDriver({"blob.bin": b"\x00", "ok.txt": b"ok"})
+    async with app_session(tenant) as db:
+        run = await _dept_agent_run(db, tenant)
+        await sync_sandbox_output(db, tenant_id=tenant, run_id=run.id, driver=driver, handle=HANDLE)
+    assert [name for name, _ in driver.fetches] == ["ok.txt"]
+
+
+async def test_a_sanitised_name_collision_is_logged(
+    app_session: AppSessionFactory, minio_url: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    tenant = uuid.uuid4()
+    driver = _FakeDriver({"a\x01.txt": b"one", "a.txt": b"two"})
+    async with app_session(tenant) as db:
+        run = await _dept_agent_run(db, tenant)
+        with caplog.at_level("WARNING", logger="oc8.runtime.workspace"):
+            await sync_sandbox_output(
+                db, tenant_id=tenant, run_id=run.id, driver=driver, handle=HANDLE
+            )
+    assert "same name" in caplog.text
 
 
 # --- names --------------------------------------------------------------------
@@ -494,6 +674,44 @@ async def test_the_last_pass_is_bounded_by_a_timeout(
     async with asyncio.timeout(5):
         async with run_output_sandbox(run.id, tenant, MOUNTLESS, _Hanging(), HANDLE):
             pass
+
+
+async def test_the_last_pass_survives_a_cancellation_during_it(
+    app_session: AppSessionFactory, minio_url: str
+) -> None:
+    """Cancelled again while the last pass runs (a worker shutting down, an
+    outer timeout): the pass is shielded and still stores the output."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        run = await _dept_agent_run(db, tenant)
+    started = asyncio.Event()
+
+    class _Slow(_FakeDriver):
+        async def exec(self, *a: Any, **kw: Any) -> ExecResult:
+            started.set()
+            await asyncio.sleep(0.2)
+            return await super().exec(*a, **kw)
+
+    driver = _Slow({"final.txt": b"kept"})
+
+    async def leg() -> None:
+        async with run_output_sandbox(run.id, tenant, MOUNTLESS, driver, HANDLE):
+            await asyncio.Event().wait()
+
+    task = asyncio.create_task(leg())
+    await asyncio.sleep(0.05)
+    task.cancel()  # ends the block; the last pass starts
+    await asyncio.wait_for(started.wait(), 5)
+    task.cancel()  # and again, while the last pass runs
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    for _ in range(300):
+        async with app_session(tenant) as db:
+            if await _attachments(db, run.id):
+                break
+        await asyncio.sleep(0.01)
+    async with app_session(tenant) as db:
+        assert await _attachments(db, run.id) == {"final.txt": len(b"kept")}
 
 
 async def test_a_sandbox_with_mounts_starts_no_task_and_reads_nothing(

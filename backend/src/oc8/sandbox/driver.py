@@ -47,6 +47,14 @@ class SandboxDriver(Protocol):
         WHILE reading: past it the read stops and ``ArchiveTooLarge`` is
         raised, so an oversized archive is never buffered whole.
 
+        Never follows symlinks in the archived tree: a link inside it is
+        returned as a link entry, and a symlink at ``path`` itself is refused
+        with ``SandboxError`` (the Docker driver) or returned as a link entry,
+        never dereferenced. Drivers must not archive with ``tar -h`` or
+        ``docker cp -L`` semantics, and should read as the sandbox's own user:
+        whatever reads the archive may have more privilege than the process
+        that chose its paths.
+
         The result is UNTRUSTED. The process in the sandbox chose every name,
         link and size in it. Never unpack it with plain ``extractall``: use
         ``oc8.sandbox.archive.safe_extract_to_memory``, or ``tarfile`` with

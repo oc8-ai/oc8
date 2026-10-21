@@ -129,3 +129,52 @@ async def test_a_busybox_sandbox_fails_the_listing_loudly(
         assert "needs GNU find and head" in caplog.text
     finally:
         await driver.teardown(handle)
+
+
+async def test_a_file_swapped_for_a_link_after_listing_is_not_read(
+    app_session: AppSessionFactory, minio_url: str
+) -> None:
+    """The listing runs as the sandbox user; the fetch through the Docker API
+    does not. A path swapped for a link to a root-only file after the listing
+    must not come back, whether the file itself or a directory above it was
+    swapped."""
+    from oc8.runtime import workspace
+
+    driver = DockerSandboxDriver()
+    handle = await driver.provision(
+        SandboxSpec(
+            image=_DEBIAN,
+            user="1000:1000",
+            scratch=(ScratchDir("/workspace", 64),),
+        )
+    )
+    try:
+        size = (await driver.exec(handle, ["stat", "-c", "%s", "/etc/shadow"])).output.strip()
+        script = (
+            "set -e; mkdir -p /workspace/output/sub; cd /workspace/output; "
+            f"head -c {size} /dev/zero > shadow.txt; head -c {size} /dev/zero > sub/shadow; "
+            "printf ok > ok.txt"
+        )
+        res = await driver.exec(handle, ["sh", "-c", script])
+        assert res.exit_code == 0, res.output
+        entries = await workspace._list_sandbox_output(uuid.uuid4(), driver, handle)
+        swap = (
+            "set -e; cd /workspace/output; rm shadow.txt; ln -s /etc/shadow shadow.txt; "
+            "rm -r sub; ln -s /etc sub"
+        )
+        res = await driver.exec(handle, ["sh", "-c", swap])
+        assert res.exit_code == 0, res.output
+
+        tenant = uuid.uuid4()
+        async with app_session(tenant) as db:
+            run = await _run(db, tenant)
+            stored = []
+            for name, listed in entries.files:
+                raw = await workspace._fetch_one(
+                    run.id, driver, handle, name, listed=listed, uid=entries.uid
+                )
+                if raw is not None:
+                    stored.append(name)
+        assert stored == ["ok.txt"]
+    finally:
+        await driver.teardown(handle)

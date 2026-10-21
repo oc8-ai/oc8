@@ -31,16 +31,25 @@ Two ways to read the output
   down. Each pass (`sync_sandbox_output`):
 
   1. lists `/workspace/output` with GNU `find -printf '%s\\t%P\\0'`, cut
-     to `run_output_max_files` entries;
+     to `run_output_max_files` entries, as the sandbox's own user (the
+     listing also reports that uid);
   2. skips files already stored under the same (sanitised) name and size,
-     and files over the attachment cap, one at a time;
+     files over the attachment cap, types attachments do not accept, and
+     files refused earlier in the leg;
   3. fetches each remaining file on its own with `get_archive`, capped at
-     the attachment limit, and unpacks it with `safe_extract_to_memory`.
+     its listed size plus `GROWTH_TOLERANCE_BYTES`, until the pass's budget
+     (`run_output_pass_max_files`, `run_output_pass_max_bytes`) is used up;
+     the next pass continues;
+  4. accepts a fetch only if it is exactly one regular file with the
+     requested basename, within that cap and owned by the listing's uid
+     (any owner for a root sandbox). The fetch may run with more privilege
+     than the sandbox (the Docker API runs as the daemon), and the sandbox
+     can swap a listed path for a link before it, so anything else is
+     refused. Content is unpacked with `safe_extract_to_memory`.
 
   Peak memory is therefore about twice one file (at most the attachment
-  cap), not the whole directory. Everything from the sandbox is untrusted:
-  names that leave the directory, links and special files are skipped, and
-  nothing is ever written to the host.
+  cap), not the whole directory. Nothing from the sandbox is ever written
+  to the host.
 
   The task is the run's own because the worker's housekeeping cannot run
   while that worker is executing a run.
@@ -55,15 +64,18 @@ never fail the run or break the caller's session.
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import mimetypes
 import os
 import posixpath
+import tarfile
 import unicodedata
 import uuid
 from asyncio import to_thread
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -74,6 +86,7 @@ from oc8.sandbox.archive import is_outside, safe_extract_to_memory
 from oc8.sandbox.driver import SandboxDriver
 from oc8.sandbox.types import SandboxError, SandboxHandle, SandboxSpec
 from oc8.storage.attachments import (
+    ALLOWED_CONTENT_TYPES,
     MAX_ATTACHMENT_BYTES,
     AttachmentRejected,
     store_attachment_bytes,
@@ -89,6 +102,8 @@ MAX_OUTPUT_NAME_BYTES = 255
 MAX_OUTPUT_SEGMENT_BYTES = 200
 #: Room for tar headers (PAX for long names) and padding on top of a file.
 _TAR_OVERHEAD = 64 * 1024
+#: How much a file may grow between listing and fetch and still be read.
+GROWTH_TOLERANCE_BYTES = 4096
 _LIST_TIMEOUT_S = 30.0
 
 #: The periodic task's clock; replaced in tests.
@@ -260,13 +275,15 @@ async def sync_run_output(
 
 
 def _list_command(limit: int) -> list[str]:
-    """No output directory yet lists nothing. A userland without GNU
-    ``find -printf`` or ``head -z`` (busybox) exits 3 instead of silently
-    listing nothing; the images oc8 runs are Debian-based."""
+    """The first record is ``uid=<n>``, the user the listing runs as. No
+    output directory yet lists nothing. A userland without GNU ``find
+    -printf`` or ``head -z`` (busybox) exits 3 instead of silently listing
+    nothing; the images oc8 runs are Debian-based."""
     out = OUTPUT_CONTAINER_PATH
     return [
         "sh",
         "-c",
+        "printf 'uid=%s\\0' \"$(id -u)\"; "
         f"[ -d {out} ] || exit 0; "
         f"find {out} -maxdepth 0 -printf '' 2>/dev/null && head -z -n 1 </dev/null 2>/dev/null"
         " || exit 3; "
@@ -275,11 +292,20 @@ def _list_command(limit: int) -> list[str]:
     ]
 
 
+@dataclass(frozen=True)
+class _Listing:
+    #: The uid the sandbox's own processes run as (what the listing ran as).
+    uid: int
+    #: (name relative to /workspace/output, size) of each regular file.
+    files: list[tuple[str, int]]
+
+
 async def _list_sandbox_output(
     run_id: uuid.UUID, driver: SandboxDriver, handle: SandboxHandle
-) -> list[tuple[str, int]]:
-    """(name relative to /workspace/output, size) of each regular file, at
-    most ``run_output_max_files``. Malformed or unsafe entries are skipped."""
+) -> _Listing:
+    """The regular files in the sandbox's /workspace/output, at most
+    ``run_output_max_files``. Malformed or unsafe entries are skipped; a
+    listing without its uid record raises ``SandboxError``."""
     limit = get_settings().run_output_max_files
     result = await driver.exec(handle, _list_command(limit + 1), timeout=_LIST_TIMEOUT_S)
     if result.exit_code != 0:
@@ -287,13 +313,18 @@ async def _list_sandbox_output(
             f"listing /workspace/output exited {result.exit_code}"
             + (" (needs GNU find and head)" if result.exit_code == 3 else "")
         )
-    records = [r for r in result.output.split("\0") if r]
+    records = result.output.split("\0")
+    head = records[0] if records else ""
+    if not head.startswith("uid=") or not head[4:].isdigit():
+        raise SandboxError("listing /workspace/output: no uid record")
+    uid = int(head[4:])
+    records = [r for r in records[1:] if r]
     if len(records) > limit:
         logger.warning(
             "run %s: more than %d output files, syncing the first %d", run_id, limit, limit
         )
         records = records[:limit]
-    entries: list[tuple[str, int]] = []
+    files: list[tuple[str, int]] = []
     for record in records:
         size_s, sep, name = record.partition("\t")
         if not sep or not size_s.isdigit() or not name:
@@ -302,29 +333,78 @@ async def _list_sandbox_output(
         if is_outside(name) or posixpath.normpath(name) != name:
             logger.warning("run %s: skipped output path %r outside the directory", run_id, name)
             continue
-        entries.append((name, int(size_s)))
-    return entries
+        files.append((name, int(size_s)))
+    return _Listing(uid=uid, files=files)
+
+
+def _fetch_cap(listed: int) -> int:
+    """Most file bytes one fetch accepts: the listed size plus a little
+    growth, never more than the attachment limit."""
+    return min(listed + GROWTH_TOLERANCE_BYTES, MAX_ATTACHMENT_BYTES)
 
 
 async def _fetch_one(
-    run_id: uuid.UUID, driver: SandboxDriver, handle: SandboxHandle, name: str
+    run_id: uuid.UUID,
+    driver: SandboxDriver,
+    handle: SandboxHandle,
+    name: str,
+    *,
+    listed: int,
+    uid: int,
 ) -> bytes | None:
-    """One output file's content, through ``safe_extract_to_memory``. None
-    (logged) when it is gone, too large, a link or otherwise unreadable."""
+    """One output file's content, or None (logged) when it is not exactly
+    the file that was listed.
+
+    The fetch may run with more privilege than the sandbox's own user (the
+    Docker API runs as the daemon), and the sandbox can swap the file, or a
+    directory above it, for a link between listing and fetch. So the archive
+    must hold exactly one member: a regular file named like the requested
+    basename, no larger than ``_fetch_cap(listed)``, and -- unless the
+    sandbox user is root, who can read everything anyway -- owned by the
+    user the listing ran as. The read itself stops at that cap, and the
+    content goes through ``safe_extract_to_memory``.
+    """
     path = f"{OUTPUT_CONTAINER_PATH}/{name}"
+    cap = _fetch_cap(listed)
     try:
-        data = await driver.get_archive(
-            handle, path, max_bytes=MAX_ATTACHMENT_BYTES + _TAR_OVERHEAD
-        )
-        files = safe_extract_to_memory(data, max_members=1, max_total_bytes=MAX_ATTACHMENT_BYTES)
+        data = await driver.get_archive(handle, path, max_bytes=cap + _TAR_OVERHEAD)
+        problem = _not_the_listed_file(data, posixpath.basename(name), cap=cap, uid=uid)
+        if problem is not None:
+            logger.warning("run %s: refused output file %r: %s", run_id, name, problem)
+            return None
+        files = safe_extract_to_memory(data, max_members=1, max_total_bytes=cap)
     except SandboxError as exc:
         logger.warning("run %s: skipped output file %r: %s", run_id, name, exc)
         return None
     raw = files.get(posixpath.basename(name))
     if raw is None or len(files) != 1:
-        logger.warning("run %s: skipped output file %r: not a regular file", run_id, name)
+        logger.warning("run %s: refused output file %r: not a regular file", run_id, name)
         return None
     return raw
+
+
+def _not_the_listed_file(data: bytes, basename: str, *, cap: int, uid: int) -> str | None:
+    """Why ``data`` is not one regular file ``basename`` of at most ``cap``
+    bytes owned by ``uid`` (any owner when ``uid`` is 0), or None. Reads the
+    headers only; it never stops at more than two members."""
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as tar:
+            first = tar.next()
+            if first is None:
+                return "empty archive"
+            if tar.next() is not None:
+                return "more than one member"
+    except tarfile.TarError as exc:
+        return f"not a plain tar: {exc}"
+    if not first.isfile():
+        return "not a regular file"
+    if first.name != basename:
+        return f"archive member is {first.name!r}"
+    if first.size > cap:
+        return f"{first.size} bytes is more than the {cap} expected"
+    if uid != 0 and first.uid != uid:
+        return f"owned by uid {first.uid}, not the sandbox user {uid}"
+    return None
 
 
 async def sync_sandbox_output(
@@ -334,28 +414,50 @@ async def sync_sandbox_output(
     run_id: uuid.UUID,
     driver: SandboxDriver,
     handle: SandboxHandle,
+    refused: set[tuple[str, int]] | None = None,
 ) -> list[m.FileAttachment]:
     """One pass over a live sandbox's /workspace/output: list, skip what is
     stored, fetch and store the rest one file at a time (module docstring).
 
+    A pass fetches at most ``run_output_pass_max_files`` files and
+    ``run_output_pass_max_bytes`` of listed size, then stops; the next pass
+    continues, because what this one stored is skipped. ``refused`` (kept
+    across the passes of one leg by ``run_output_sandbox``) collects files
+    refused at fetch, so they are not fetched again at the same size.
+
     Never raises: a failed listing syncs nothing, a failed file is skipped.
     Does not commit, like `sync_run_output`.
     """
+    settings = get_settings()
+    refused = refused if refused is not None else set()
     try:
-        entries = await _list_sandbox_output(run_id, driver, handle)
+        listing = await _list_sandbox_output(run_id, driver, handle)
     except SandboxError as exc:
         logger.warning("run %s: could not list output in the sandbox: %s", run_id, exc)
         return []
     except Exception:
         logger.exception("run %s: listing output in the sandbox failed", run_id)
         return []
-    if not entries:
+    if not listing.files:
         return []
     seen = await _existing(db, tenant_id=tenant_id, run_id=run_id)
     synced: list[m.FileAttachment] = []
-    for rel_path, size in entries:
+    names: dict[str, str] = {}
+    files_left = settings.run_output_pass_max_files
+    bytes_left = settings.run_output_pass_max_bytes
+    for rel_path, size in listing.files:
         name = sanitize_output_name(rel_path)
-        if name is None or (name, size) in seen:
+        if name is None:
+            continue
+        if names.setdefault(name, rel_path) != rel_path:
+            logger.warning(
+                "run %s: output files %r and %r are stored under the same name %r",
+                run_id,
+                names[name],
+                rel_path,
+                name,
+            )
+        if (name, size) in seen or (rel_path, size) in refused:
             continue
         if size > MAX_ATTACHMENT_BYTES:
             logger.warning(
@@ -365,12 +467,25 @@ async def sync_sandbox_output(
                 size,
             )
             continue
+        content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        if content_type not in ALLOWED_CONTENT_TYPES:
+            logger.info("run %s: skipped output file %r: type %s", run_id, name, content_type)
+            continue
+        cap = _fetch_cap(size)
+        if files_left <= 0 or cap > bytes_left:
+            logger.info("run %s: output pass budget used up, continuing next pass", run_id)
+            break
+        files_left -= 1
+        bytes_left -= cap
         try:
-            raw = await _fetch_one(run_id, driver, handle, rel_path)
+            raw = await _fetch_one(run_id, driver, handle, rel_path, listed=size, uid=listing.uid)
         except Exception:
             logger.exception("run %s: could not fetch output file %r", run_id, name)
+            raw = None
+        if raw is None:
+            refused.add((rel_path, size))
             continue
-        if raw is None or (name, len(raw)) in seen:
+        if (name, len(raw)) in seen:
             continue
         row = await _store_one(db, tenant_id=tenant_id, run_id=run_id, name=name, raw=raw)
         if row is not None:
@@ -380,27 +495,61 @@ async def sync_sandbox_output(
 
 
 async def _sync_sandbox_in_own_session(
-    run_id: uuid.UUID, tenant_id: uuid.UUID, driver: SandboxDriver, handle: SandboxHandle
+    run_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    driver: SandboxDriver,
+    handle: SandboxHandle,
+    refused: set[tuple[str, int]],
 ) -> int:
     from oc8.db.session import tenant_session
 
     async with tenant_session(tenant_id) as db:
         synced = await sync_sandbox_output(
-            db, tenant_id=tenant_id, run_id=run_id, driver=driver, handle=handle
+            db,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            driver=driver,
+            handle=handle,
+            refused=refused,
         )
     return len(synced)
 
 
 async def _sync_periodically(
-    run_id: uuid.UUID, tenant_id: uuid.UUID, driver: SandboxDriver, handle: SandboxHandle
+    run_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    driver: SandboxDriver,
+    handle: SandboxHandle,
+    refused: set[tuple[str, int]],
 ) -> None:
     interval = get_settings().run_output_sync_interval_s
     while True:
         await _sleep(interval)
         try:
-            await _sync_sandbox_in_own_session(run_id, tenant_id, driver, handle)
+            await _sync_sandbox_in_own_session(run_id, tenant_id, driver, handle, refused)
         except Exception:
             logger.exception("run %s: periodic output sync failed", run_id)
+
+
+async def _last_pass(
+    run_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    driver: SandboxDriver,
+    handle: SandboxHandle,
+    refused: set[tuple[str, int]],
+) -> None:
+    try:
+        async with asyncio.timeout(get_settings().run_output_final_read_timeout_s):
+            await _sync_sandbox_in_own_session(run_id, tenant_id, driver, handle, refused)
+    except TimeoutError:
+        logger.warning("run %s: the last output sync timed out", run_id)
+    except Exception:
+        logger.exception("run %s: the last output sync failed", run_id)
+
+
+#: Last passes still running after their leg was cancelled; held so they are
+#: not garbage-collected mid-flight.
+_detached_passes: set[asyncio.Task[None]] = set()
 
 
 @asynccontextmanager
@@ -427,12 +576,20 @@ async def run_output_sandbox(
     `tenant_session` and commits, so stored output survives the worker dying
     afterwards. ``tenant_id`` must be the run's tenant as loaded under RLS
     (the ``agent_run`` row), never a value the sandbox supplied.
+
+    The last pass is shielded and bounded by
+    ``run_output_final_read_timeout_s``: if the block's task is cancelled
+    again while it runs, the pass still finishes (the cancellation then
+    propagates at once, so the caller's teardown may race the pass; a pass
+    against a sandbox already gone just logs).
     """
     if spec.mounts:
         yield
         return
+    refused: set[tuple[str, int]] = set()
     task = asyncio.create_task(
-        _sync_periodically(run_id, tenant_id, driver, handle), name=f"output-sync-{run_id}"
+        _sync_periodically(run_id, tenant_id, driver, handle, refused),
+        name=f"output-sync-{run_id}",
     )
     try:
         yield
@@ -441,13 +598,13 @@ async def run_output_sandbox(
         # Waits without re-raising the task's CancelledError; a cancellation
         # of THIS task still propagates.
         await asyncio.wait([task])
-        try:
-            async with asyncio.timeout(get_settings().run_output_final_read_timeout_s):
-                await _sync_sandbox_in_own_session(run_id, tenant_id, driver, handle)
-        except TimeoutError:
-            logger.warning("run %s: the last output sync timed out", run_id)
-        except Exception:
-            logger.exception("run %s: the last output sync failed", run_id)
+        last = asyncio.create_task(
+            _last_pass(run_id, tenant_id, driver, handle, refused),
+            name=f"output-sync-last-{run_id}",
+        )
+        _detached_passes.add(last)
+        last.add_done_callback(_detached_passes.discard)
+        await asyncio.shield(last)
 
 
 async def sync_active_run_outputs() -> int:
