@@ -10,13 +10,15 @@ import asyncio
 import io
 import posixpath
 import tarfile
+import time
 
 import docker
 from docker.errors import NotFound
 from docker.models.containers import Container
+from docker.types import DriverConfig, Mount
 
 from oc8.config import get_settings
-from oc8.sandbox.types import ExecResult, SandboxError, SandboxHandle, SandboxSpec
+from oc8.sandbox.types import ExecResult, SandboxError, SandboxHandle, SandboxSpec, ScratchDir
 
 #: Every container/label filter that acts on "ours" must match on both of
 #: these -- see oc8.sandbox.reaper. NAMESPACE_LABEL is deliberately NOT part
@@ -25,12 +27,79 @@ from oc8.sandbox.types import ExecResult, SandboxError, SandboxHandle, SandboxSp
 #: instead, with a missing label read as the default namespace.
 NAMESPACE_LABEL = "oc8.namespace"
 
+#: Unix time after which the reaper removes the container whatever its run
+#: says. Stamped from ``SandboxSpec.max_lifetime_s``; see oc8.sandbox.reaper.
+EXPIRES_LABEL = "oc8.expires-at"
 
-def _labels(extra: dict[str, str]) -> dict[str, str]:
+
+def _labels(extra: dict[str, str], *, max_lifetime_s: int | None = None) -> dict[str, str]:
     # Ours-ness labels last, so a caller-supplied `spec.labels` entry of the
     # same key can never spoof which sandbox/namespace a container claims to
-    # belong to.
-    return {**extra, "oc8.sandbox": "1", NAMESPACE_LABEL: get_settings().deployment_namespace}
+    # belong to. The deadline likewise comes only from `max_lifetime_s`: a
+    # spec label of that key is dropped, never trusted.
+    labels = {k: v for k, v in extra.items() if k != EXPIRES_LABEL}
+    if max_lifetime_s is not None:
+        labels[EXPIRES_LABEL] = str(int(time.time()) + int(max_lifetime_s))
+    return {**labels, "oc8.sandbox": "1", NAMESPACE_LABEL: get_settings().deployment_namespace}
+
+
+def _scratch_mount(scratch: ScratchDir, *, sized: bool) -> Mount:
+    """An anonymous volume for one scratch dir.
+
+    Anonymous, so it is created with the container and removed with it
+    (``remove(v=True)``). ``sized`` asks the local volume driver for a quota,
+    which it grants only on a quota-capable backing filesystem (xfs with
+    ``pquota``); elsewhere the daemon refuses the create and the driver retries
+    unsized -- see ``DockerSandboxDriver._create``.
+    """
+    driver_config = DriverConfig("local", {"size": f"{scratch.size_mb}m"}) if sized else None
+    return Mount(target=scratch.path, source=None, type="volume", driver_config=driver_config)
+
+
+def _scratch_modes(scratch: tuple[ScratchDir, ...]) -> bytes:
+    """A tar that makes every scratch dir mode 0777, owned by root.
+
+    A fresh volume over a path the image lacks is root's and 0755, which a
+    runtime image running as its own uid cannot write. Kubernetes' emptyDir is
+    0777; this gives the Docker driver the same promise.
+    """
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for entry in scratch:
+            info = tarfile.TarInfo(name=entry.path.strip("/"))
+            info.type = tarfile.DIRTYPE
+            info.mode = 0o777
+            info.mtime = int(time.time())
+            tar.addfile(info)
+    return buf.getvalue()
+
+
+_GO_MODE_DIR = 1 << 31
+
+
+def _quota_refused(exc: BaseException) -> bool:
+    return "quota" in str(exc).lower()
+
+
+def _relative_to_directory(data: bytes, name: str) -> bytes:
+    """Rename a Docker directory archive's entries to be relative to it.
+
+    Docker names them from the directory's own base name down
+    (``output/a.txt``); the contract names them from inside it (``a.txt``).
+    """
+    prefix = name + "/"
+    out = io.BytesIO()
+    with (
+        tarfile.open(fileobj=io.BytesIO(data), mode="r|") as src,
+        tarfile.open(fileobj=out, mode="w", format=tarfile.PAX_FORMAT) as dst,
+    ):
+        for member in src:
+            if member.name in (name, name + "/"):
+                continue
+            if member.name.startswith(prefix):
+                member.name = member.name[len(prefix) :]
+            dst.addfile(member, src.extractfile(member) if member.isfile() else None)
+    return out.getvalue()
 
 
 #: Sensible default per-call exec timeout (seconds) for callers that want one
@@ -119,7 +188,7 @@ def _force_remove(container: Container) -> None:
     Never lets a cleanup failure mask the original provisioning error.
     """
     try:
-        container.remove(force=True)
+        container.remove(force=True, v=True)
     except docker.errors.DockerException:
         pass
 
@@ -127,15 +196,69 @@ def _force_remove(container: Container) -> None:
 class DockerSandboxDriver:
     def __init__(self, client: docker.DockerClient | None = None) -> None:  # type: ignore[name-defined]
         self._client = client or docker.from_env()  # type: ignore[attr-defined]
+        # Whether this daemon can size a volume. None until the first sized
+        # scratch dir asks; then remembered so later provisions do not pay a
+        # refused create each.
+        self._scratch_quota: bool | None = None
+
+    def _start(self, spec: SandboxSpec, run_kwargs: dict[str, object]) -> Container:
+        """Create and start the container.
+
+        A spec with no scratch and no seed takes the one-call path it always
+        took. Otherwise: create, unpack the archives into the CREATED
+        container -- its filesystem and volumes exist, its process does not --
+        and only then start. Scratch modes go in first, so a seed entry inside
+        a scratch dir keeps its own mode.
+        """
+        if not spec.scratch and spec.seed is None:
+            return self._client.containers.run(spec.image, detach=True, **run_kwargs)
+        container = self._create(spec, run_kwargs)
+        try:
+            if spec.scratch and not container.put_archive("/", _scratch_modes(spec.scratch)):
+                raise SandboxError("provision failed: scratch dirs were refused")
+            if spec.seed is not None and not container.put_archive("/", spec.seed):
+                raise SandboxError("provision failed: the seed was refused")
+            container.start()
+        except BaseException:
+            _force_remove(container)
+            raise
+        return container
+
+    def _create(self, spec: SandboxSpec, run_kwargs: dict[str, object]) -> Container:
+        """Create (not start) the container, sizing scratch volumes if the
+        daemon can and falling back to unsized ones if it cannot."""
+        if not spec.scratch:
+            return self._client.containers.create(spec.image, **run_kwargs)
+        if self._scratch_quota is not False:
+            mounts = [_scratch_mount(s, sized=True) for s in spec.scratch]
+            try:
+                container = self._client.containers.create(spec.image, mounts=mounts, **run_kwargs)
+            except docker.errors.APIError as exc:
+                if not _quota_refused(exc):
+                    raise
+                self._scratch_quota = False
+            else:
+                self._scratch_quota = True
+                return container
+        mounts = [_scratch_mount(s, sized=False) for s in spec.scratch]
+        return self._client.containers.create(spec.image, mounts=mounts, **run_kwargs)
 
     async def provision(self, spec: SandboxSpec) -> SandboxHandle:
+        """Create the container, unpack scratch modes and the seed, then start.
+
+        The order (see ``_start``) is the guarantee: nothing in ``spec.seed`` can be missing
+        when the command's first instruction runs, because the process does
+        not exist until every archive is in. ``spec.egress`` is accepted and
+        ignored -- Docker has no allowlist to apply, so the network settings
+        stay exactly what ``network_disabled``/``network`` say.
+        """
+
         def _run() -> SandboxHandle:
             run_kwargs: dict[str, object] = dict(
                 command=spec.command,
-                detach=True,
                 environment=dict(spec.env),
                 working_dir=spec.workdir,
-                labels=_labels(spec.labels),
+                labels=_labels(spec.labels, max_lifetime_s=spec.max_lifetime_s),
                 tty=False,
                 mem_limit=spec.mem_limit,
                 pids_limit=spec.pids_limit,
@@ -168,7 +291,7 @@ class DockerSandboxDriver:
                     for m in spec.mounts
                 }
             try:
-                container = self._client.containers.run(spec.image, **run_kwargs)
+                container = self._start(spec, run_kwargs)
             except docker.errors.DockerException as exc:
                 raise SandboxError(f"provision failed: {exc}") from exc
 
@@ -270,7 +393,8 @@ class DockerSandboxDriver:
     async def teardown(self, handle: SandboxHandle) -> None:
         def _run() -> None:
             try:
-                self._client.containers.get(handle.container_id).remove(force=True)
+                # v=True: scratch dirs are anonymous volumes and go with it.
+                self._client.containers.get(handle.container_id).remove(force=True, v=True)
             except NotFound:
                 return
             except docker.errors.DockerException as exc:
@@ -344,6 +468,47 @@ class DockerSandboxDriver:
                 raise SandboxError(f"fs_read: {path} not readable (exit {code})")
             stdout, _stderr = output
             return stdout or b""
+
+        return await asyncio.to_thread(_run)
+
+    async def put_archive(self, handle: SandboxHandle, path: str, data: bytes) -> None:
+        def _run() -> None:
+            try:
+                container = self._client.containers.get(handle.container_id)
+                try:
+                    accepted = container.put_archive(path, data)
+                except NotFound:
+                    # The container exists (`get` above found it), so it is the
+                    # target directory that is missing. Creating it needs a
+                    # running process, same as `fs_write`.
+                    container.reload()
+                    if container.status != "running":
+                        raise SandboxError(f"put_archive: {path} does not exist") from None
+                    code, _ = container.exec_run(["mkdir", "-p", path])
+                    if int(code) != 0:
+                        raise SandboxError(f"put_archive: cannot create {path}") from None
+                    accepted = container.put_archive(path, data)
+                if not accepted:
+                    raise SandboxError(f"put_archive rejected the archive for {path}")
+            except docker.errors.DockerException as exc:
+                raise SandboxError(f"put_archive failed: {exc}") from exc
+
+        await asyncio.to_thread(_run)
+
+    async def get_archive(self, handle: SandboxHandle, path: str) -> bytes:
+        def _run() -> bytes:
+            try:
+                container = self._client.containers.get(handle.container_id)
+                chunks, info = container.get_archive(path)
+                data = b"".join(chunks)
+            except NotFound as exc:
+                raise SandboxError(f"get_archive: {path} does not exist") from exc
+            except docker.errors.DockerException as exc:
+                raise SandboxError(f"get_archive failed: {exc}") from exc
+            # Docker reports Go's FileMode, whose directory bit is 1 << 31.
+            if int(info.get("mode", 0)) & _GO_MODE_DIR:
+                return _relative_to_directory(data, str(info.get("name", "")))
+            return data
 
         return await asyncio.to_thread(_run)
 

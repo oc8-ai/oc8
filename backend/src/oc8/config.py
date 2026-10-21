@@ -192,6 +192,10 @@ class Settings(BaseSettings):
     sandbox_driver: str = "docker"
     sandbox_provisioner_url: str = "http://runtime-provisioner:8090"
     sandbox_provisioner_token: str = ""
+    sandbox_archive_max_bytes: int = 256 * 1024 * 1024
+    """Largest tar the runtime-provisioner accepts or returns in one request:
+    a seed, a ``put_archive`` body or a ``get_archive`` result. Above it the
+    request fails with 413 instead of filling the provisioner's memory."""
 
     # Shared secret, das die eigenen service-to-service Tenant-Provisioning-
     # Route(n) dieser Instanz in `Authorization: Bearer <token>` erwarten.

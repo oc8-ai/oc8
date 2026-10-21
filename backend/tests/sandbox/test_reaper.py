@@ -43,8 +43,9 @@ class _FakeContainer:
         )
         self.removed = False
 
-    def remove(self, force: bool = False) -> None:
+    def remove(self, force: bool = False, v: bool = False) -> None:
         self.removed = True
+        self.removed_volumes = v
 
 
 class _FakeDocker:
@@ -276,4 +277,60 @@ async def test_a_stranger_is_left_alone_even_when_exited(
     written. A container labelled by something else is none of our business."""
     docker = _FakeDocker([])
     docker.items = [_exited("tender_lamarr", minutes_ago=999)]
+    assert await reap_orphaned_containers(client=docker) == []
+
+
+# ------------------------------------------------------------- lifetime bound
+
+# A spec's `max_lifetime_s` reaches Docker as a deadline label. Past it, the
+# container is removed whatever its run says: the caller asked for the bound.
+
+
+async def test_a_container_past_its_deadline_is_removed_even_while_its_run_is_live(
+    app_session: AppSessionFactory,
+) -> None:
+    import time
+
+    from oc8.sandbox.reaper import EXPIRES_LABEL
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        running = await _run(db, tenant, "running")
+        await db.commit()
+
+    name = container_name("Sina", "agent", running)
+    docker = _FakeDocker([(name, str(running))])
+    docker.items[0].labels[EXPIRES_LABEL] = str(int(time.time()) - 5)
+
+    assert await reap_orphaned_containers(client=docker) == [name]
+    # Scratch lives in anonymous volumes; they go with the container.
+    assert docker.items[0].removed_volumes is True
+
+
+async def test_a_container_before_its_deadline_is_left_alone(
+    app_session: AppSessionFactory,
+) -> None:
+    import time
+
+    from oc8.sandbox.reaper import EXPIRES_LABEL
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        running = await _run(db, tenant, "running")
+        await db.commit()
+
+    docker = _FakeDocker([(container_name("Sina", "agent", running), str(running))])
+    docker.items[0].labels[EXPIRES_LABEL] = str(int(time.time()) + 600)
+    assert await reap_orphaned_containers(client=docker) == []
+
+
+async def test_an_unreadable_deadline_is_not_a_deadline(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.sandbox.reaper import EXPIRES_LABEL
+
+    docker = _FakeDocker([])
+    running = _FakeContainer("oc8-nora-agent-019fa522-d093ec")
+    running.labels[EXPIRES_LABEL] = "soon"
+    docker.items = [running]
     assert await reap_orphaned_containers(client=docker) == []

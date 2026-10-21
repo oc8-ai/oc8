@@ -185,3 +185,61 @@ async def test_a_named_spec_reaches_docker_as_that_name() -> None:
         assert container.name == name
     finally:
         await driver.teardown(handle)
+
+
+async def test_a_lifetime_becomes_a_deadline_label_the_reaper_reads() -> None:
+    from oc8.sandbox.reaper import EXPIRES_LABEL
+
+    driver = DockerSandboxDriver()
+    client = docker.from_env()  # type: ignore[attr-defined]
+    before = int(time.time())
+    handle = await driver.provision(SandboxSpec(image=_IMAGE, max_lifetime_s=600))
+    try:
+        deadline = int(client.containers.get(handle.container_id).labels[EXPIRES_LABEL])
+        assert before + 600 <= deadline <= int(time.time()) + 600
+    finally:
+        await driver.teardown(handle)
+
+
+async def test_no_lifetime_means_no_deadline_even_if_a_label_claims_one() -> None:
+    from oc8.sandbox.reaper import EXPIRES_LABEL
+
+    driver = DockerSandboxDriver()
+    client = docker.from_env()  # type: ignore[attr-defined]
+    handle = await driver.provision(SandboxSpec(image=_IMAGE, labels={EXPIRES_LABEL: "1"}))
+    try:
+        assert EXPIRES_LABEL not in client.containers.get(handle.container_id).labels
+    finally:
+        await driver.teardown(handle)
+
+
+async def test_teardown_removes_the_scratch_volume() -> None:
+    """Scratch is an anonymous volume. Removing the container without its
+    volumes would leave one behind on the host for every run."""
+    from oc8.sandbox.types import ScratchDir
+
+    driver = DockerSandboxDriver()
+    client = docker.from_env()  # type: ignore[attr-defined]
+    handle = await driver.provision(
+        SandboxSpec(image=_IMAGE, scratch=(ScratchDir(path="/scratch", size_mb=16),))
+    )
+    try:
+        mounts = client.containers.get(handle.container_id).attrs["Mounts"]
+        volumes = [m["Name"] for m in mounts if m["Destination"] == "/scratch"]
+        assert len(volumes) == 1
+    finally:
+        await driver.teardown(handle)
+    with pytest.raises(docker.errors.NotFound):
+        client.volumes.get(volumes[0])
+
+
+async def test_restricted_egress_leaves_the_docker_network_as_it_is() -> None:
+    """Docker has no FQDN allowlist. `egress` is accepted and ignored; the
+    network the spec asks for is the one the container gets."""
+    driver = DockerSandboxDriver()
+    client = docker.from_env()  # type: ignore[attr-defined]
+    handle = await driver.provision(SandboxSpec(image=_IMAGE, egress="restricted"))
+    try:
+        assert client.containers.get(handle.container_id).attrs["Config"]["NetworkDisabled"] is True
+    finally:
+        await driver.teardown(handle)

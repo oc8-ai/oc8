@@ -125,3 +125,40 @@ def test_policy_forces_dropped_capabilities_and_rejects_excessive_resources() ->
 
     with pytest.raises(SandboxError, match="memory"):
         _policy().validate(SandboxSpec(image="oc8-runtime:1", mem_limit="3g"))
+
+
+def _scratch_policy() -> ProvisionerPolicy:
+    return ProvisionerPolicy(
+        allowed_images={"oc8-runtime:1"},
+        agent_network="oc8_agents",
+        session_root="/var/lib/oc8/sessions",
+        platform_mounts={},
+        max_scratch_mb=1024,
+    )
+
+
+def test_scratch_dirs_must_be_clean_absolute_paths_within_the_budget() -> None:
+    from oc8.sandbox.types import ScratchDir
+
+    policy = _scratch_policy()
+    ok = SandboxSpec(
+        image="oc8-runtime:1",
+        scratch=(ScratchDir("/workspace", 512), ScratchDir("/home/agent", 512)),
+    )
+    assert policy.validate(ok).scratch == ok.scratch
+
+    for bad in (
+        (ScratchDir("workspace", 8),),
+        (ScratchDir("/", 8),),
+        (ScratchDir("/workspace/../etc", 8),),
+        (ScratchDir("/workspace", 0),),
+        (ScratchDir("/workspace", 8), ScratchDir("/workspace", 8)),
+        (ScratchDir("/workspace", 1000), ScratchDir("/home/agent", 100)),
+    ):
+        with pytest.raises(SandboxError):
+            policy.validate(SandboxSpec(image="oc8-runtime:1", scratch=bad))
+
+
+def test_a_lifetime_must_be_positive() -> None:
+    with pytest.raises(SandboxError):
+        _scratch_policy().validate(SandboxSpec(image="oc8-runtime:1", max_lifetime_s=0))

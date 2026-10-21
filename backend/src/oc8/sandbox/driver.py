@@ -23,6 +23,25 @@ class SandboxDriver(Protocol):
 
     async def fs_read(self, handle: SandboxHandle, path: str) -> bytes: ...
 
+    async def put_archive(self, handle: SandboxHandle, path: str, data: bytes) -> None:
+        """Unpack the tar archive ``data`` into the directory ``path``.
+
+        ``path`` is absolute; a missing directory is created. Unlike
+        ``fs_write`` this has no size cap of its own beyond what the transport
+        and the target directory allow.
+        """
+        ...
+
+    async def get_archive(self, handle: SandboxHandle, path: str) -> bytes:
+        """A tar archive of ``path``.
+
+        For a directory, entries are named relative to it (``a.txt``,
+        ``sub/b.bin``), so ``put_archive(h, path, get_archive(h, path))``
+        restores it in place. For a file, the archive holds that one file
+        under its base name. A missing path raises ``SandboxError``.
+        """
+        ...
+
     async def teardown(self, handle: SandboxHandle) -> None: ...
 
     async def wait(self, handle: SandboxHandle, timeout_s: float = 600.0) -> int:

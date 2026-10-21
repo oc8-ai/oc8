@@ -3,10 +3,25 @@
 from __future__ import annotations
 
 import base64
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from oc8.sandbox.types import BindMount, RegistryAuth, SandboxHandle, SandboxSpec
+from oc8.sandbox.types import (
+    BindMount,
+    Egress,
+    RegistryAuth,
+    SandboxHandle,
+    SandboxSpec,
+    ScratchDir,
+)
+
+#: Media type of every archive body the provisioner API sends or accepts.
+TAR_MEDIA_TYPE = "application/x-tar"
+
+#: Spec fields an older provisioner does not know. Sent only when set, so a
+#: spec that uses none of them is the same JSON it always was.
+_OPTIONAL_WIRE_FIELDS = ("scratch", "egress", "max_lifetime_s")
 
 
 class _TransportModel(BaseModel):
@@ -40,7 +55,19 @@ class RegistryAuthDTO(_TransportModel):
         return cls(username=auth.username, password=auth.password, registry=auth.registry)
 
 
+class ScratchDirDTO(_TransportModel):
+    path: str
+    size_mb: int
+
+    def to_domain(self) -> ScratchDir:
+        return ScratchDir(path=self.path, size_mb=self.size_mb)
+
+
 class SandboxSpecDTO(_TransportModel):
+    """The JSON half of a spec. ``seed`` never travels in here: it is a tar of
+    any size and goes as its own ``application/x-tar`` part (see
+    ``POST /v1/sandboxes/seeded``)."""
+
     image: str
     env: dict[str, str] = Field(default_factory=dict)
     workdir: str = "/workspace"
@@ -58,8 +85,19 @@ class SandboxSpecDTO(_TransportModel):
     name: str | None = None
     user: str | None = None
     registry_auth: RegistryAuthDTO | None = None
+    scratch: list[ScratchDirDTO] = Field(default_factory=list)
+    egress: Egress = "open"
+    max_lifetime_s: int | None = None
 
-    def to_domain(self) -> SandboxSpec:
+    def to_wire(self) -> dict[str, Any]:
+        """JSON for the request body, leaving out new fields that are unset."""
+        data = self.model_dump(mode="json")
+        for name in _OPTIONAL_WIRE_FIELDS:
+            if data[name] == type(self).model_fields[name].get_default(call_default_factory=True):
+                del data[name]
+        return data
+
+    def to_domain(self, seed: bytes | None = None) -> SandboxSpec:
         return SandboxSpec(
             image=self.image,
             env=self.env,
@@ -81,6 +119,10 @@ class SandboxSpecDTO(_TransportModel):
             name=self.name,
             user=self.user,
             registry_auth=None if self.registry_auth is None else self.registry_auth.to_domain(),
+            scratch=tuple(entry.to_domain() for entry in self.scratch),
+            seed=seed,
+            egress=self.egress,
+            max_lifetime_s=self.max_lifetime_s,
         )
 
     @classmethod
@@ -105,6 +147,9 @@ class SandboxSpecDTO(_TransportModel):
             registry_auth=None
             if spec.registry_auth is None
             else RegistryAuthDTO.from_domain(spec.registry_auth),
+            scratch=[ScratchDirDTO(path=s.path, size_mb=s.size_mb) for s in spec.scratch],
+            egress=spec.egress,
+            max_lifetime_s=spec.max_lifetime_s,
         )
 
 

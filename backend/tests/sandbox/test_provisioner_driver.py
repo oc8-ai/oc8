@@ -199,3 +199,101 @@ async def test_every_other_call_keeps_the_clients_own_default_timeout() -> None:
     await driver.aclose()
 
     assert seen == [{"connect": 5.0, "read": 5.0, "write": 5.0, "pool": 5.0}]
+
+
+@pytest.mark.asyncio
+async def test_the_new_spec_fields_travel_only_when_set() -> None:
+    """Unset, the wire spec is byte-for-byte what it was (see the test above),
+    so an older provisioner still accepts it. Set, they travel."""
+    from oc8.sandbox.types import ScratchDir
+
+    seen: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(201, json={"container_id": "h", "image": "image:1"})
+
+    driver = _driver(httpx.MockTransport(handler))
+    await driver.provision(
+        SandboxSpec(
+            image="image:1",
+            scratch=(ScratchDir("/workspace", 512),),
+            egress="restricted",
+            max_lifetime_s=3600,
+        )
+    )
+    await driver.aclose()
+
+    assert seen[0]["scratch"] == [{"path": "/workspace", "size_mb": 512}]
+    assert seen[0]["egress"] == "restricted"
+    assert seen[0]["max_lifetime_s"] == 3600
+    assert "seed" not in seen[0]
+
+
+@pytest.mark.asyncio
+async def test_a_seeded_spec_travels_as_multipart_with_a_tar_part() -> None:
+    """The seed is a tar of any size. It travels as its own `application/x-tar`
+    part next to the JSON spec, never base64'd inside it."""
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["content_type"] = request.headers["content-type"]
+        captured["body"] = request.content
+        return httpx.Response(201, json={"container_id": "h", "image": "image:1"})
+
+    driver = _driver(httpx.MockTransport(handler))
+    handle = await driver.provision(SandboxSpec(image="image:1", seed=b"TARBYTES"))
+    await driver.aclose()
+
+    assert handle == SandboxHandle("h", "image:1")
+    assert captured["path"] == "/v1/sandboxes/seeded"
+    assert str(captured["content_type"]).startswith("multipart/form-data")
+    body = captured["body"]
+    assert isinstance(body, bytes)
+    assert b"Content-Type: application/x-tar" in body
+    assert b"TARBYTES" in body
+    assert b'"image":"image:1"' in body or b'"image": "image:1"' in body
+
+
+@pytest.mark.asyncio
+async def test_archives_travel_as_raw_tar_bodies() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET":
+            return httpx.Response(
+                200, content=b"OUTTAR", headers={"content-type": "application/x-tar"}
+            )
+        return httpx.Response(204)
+
+    driver = _driver(httpx.MockTransport(handler))
+    handle = SandboxHandle("opaque", "image")
+    await driver.put_archive(handle, "/workspace", b"INTAR")
+    assert await driver.get_archive(handle, "/workspace/output") == b"OUTTAR"
+    await driver.aclose()
+
+    put, get = requests
+    assert (put.method, put.url.path, put.url.params["path"]) == (
+        "PUT",
+        "/v1/sandboxes/opaque/archive",
+        "/workspace",
+    )
+    assert put.headers["content-type"] == "application/x-tar"
+    assert put.content == b"INTAR"
+    assert (get.method, get.url.path, get.url.params["path"]) == (
+        "GET",
+        "/v1/sandboxes/opaque/archive",
+        "/workspace/output",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_failed_archive_call_is_a_sandbox_error() -> None:
+    driver = _driver(httpx.MockTransport(lambda _request: httpx.Response(413)))
+    with pytest.raises(SandboxError, match="413"):
+        await driver.put_archive(SandboxHandle("h", "image"), "/x", b"big")
+    with pytest.raises(SandboxError, match="413"):
+        await driver.get_archive(SandboxHandle("h", "image"), "/x")
+    await driver.aclose()

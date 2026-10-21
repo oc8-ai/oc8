@@ -13,6 +13,11 @@ named in its own name is FINISHED. That makes the sweep safe with several
 workers on one host without any coordination between them -- a sibling's live run
 is not finished, so its containers are invisible to this. Anything we cannot
 resolve to a finished run is left alone: unknown is not the same as done.
+
+One exception: a container provisioned with ``max_lifetime_s`` carries a
+deadline label, and past that deadline it is removed whatever its run says.
+That is how the Docker driver enforces the bound, so it holds only as tightly
+as this sweep runs.
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ import asyncio
 import datetime as dt
 import logging
 import re
+import time
 import uuid
 from typing import Any
 
@@ -30,7 +36,7 @@ from oc8 import models as m
 from oc8.config import Settings, get_settings
 from oc8.db.session import tenant_session
 from oc8.runtime.states import TERMINAL
-from oc8.sandbox.docker_driver import NAMESPACE_LABEL
+from oc8.sandbox.docker_driver import EXPIRES_LABEL, NAMESPACE_LABEL
 from oc8.triggers.scheduler import list_active_tenant_ids
 
 logger = logging.getLogger(__name__)
@@ -77,6 +83,24 @@ _OUR_NAME = re.compile(r"^oc8-[a-z0-9-]+$")
 #: seconds ago -- that is how a failed run reports what went wrong -- and an hour
 #: is far past any run this system produces.
 _DEBRIS_AFTER = dt.timedelta(hours=1)
+
+
+def _past_deadline(container: Any) -> bool:
+    """Whether ``container`` has outlived its ``max_lifetime_s``.
+
+    The deadline is a label the driver stamps at provision time, so this needs
+    no inspect. A missing or unreadable one is no deadline: unknown is not the
+    same as expired.
+    """
+    labels = getattr(container, "labels", None) or {}
+    raw = labels.get(EXPIRES_LABEL)
+    if not raw:
+        return False
+    try:
+        deadline = int(raw)
+    except ValueError:
+        return False
+    return time.time() > deadline
 
 
 def run_id_of(container: Any) -> str | None:
@@ -159,7 +183,8 @@ async def _finished_runs(run_ids: set[str]) -> set[str]:
 
 
 async def reap_orphaned_containers(*, client: Any | None = None) -> list[str]:
-    """Remove containers whose run has finished. Returns the names removed.
+    """Remove containers whose run has finished, and containers past their
+    maximum lifetime (``EXPIRES_LABEL``). Returns the names removed.
 
     Never raises: this runs at worker startup, and a docker hiccup must not stop
     a worker from starting. One container that refuses to die does not stop the
@@ -179,8 +204,15 @@ async def reap_orphaned_containers(*, client: Any | None = None) -> list[str]:
 
     by_run: dict[str, list[Any]] = {}
     debris: list[Any] = []
+    expired: list[Any] = []
     for c in containers:
         if not _ours_namespace(c):
+            continue
+        if _past_deadline(c):
+            # The caller asked for this bound when it provisioned; the run's
+            # own state does not get a say. This is the one rule here that
+            # removes a LIVE container, and only one that carries the label.
+            expired.append(c)
             continue
         run_id = run_id_of(c)
         if run_id is not None:
@@ -195,9 +227,18 @@ async def reap_orphaned_containers(*, client: Any | None = None) -> list[str]:
         return []
 
     removed: list[str] = []
+    for c in expired:
+        try:
+            await asyncio.to_thread(c.remove, force=True, v=True)
+        except Exception:
+            logger.warning("could not remove expired container %s", c.name, exc_info=True)
+            continue
+        removed.append(c.name)
+        logger.info("removed container %s (past its maximum lifetime)", c.name)
+
     for c in debris:
         try:
-            await asyncio.to_thread(c.remove, force=True)
+            await asyncio.to_thread(c.remove, force=True, v=True)
         except Exception:
             logger.warning("could not remove stopped container %s", c.name, exc_info=True)
             continue
@@ -207,7 +248,7 @@ async def reap_orphaned_containers(*, client: Any | None = None) -> list[str]:
     for run_id in sorted(finished):
         for c in by_run[run_id]:
             try:
-                await asyncio.to_thread(c.remove, force=True)
+                await asyncio.to_thread(c.remove, force=True, v=True)
             except Exception:
                 logger.warning("could not remove leftover container %s", c.name, exc_info=True)
                 continue

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
+
+Egress = Literal["open", "restricted"]
 
 
 class SandboxError(RuntimeError):
@@ -40,6 +43,20 @@ class RegistryAuth:
         return (
             f"RegistryAuth(username={self.username!r}, registry={self.registry!r}, password='***')"
         )
+
+
+@dataclass(frozen=True)
+class ScratchDir:
+    """A writable directory the driver provides inside one sandbox.
+
+    It starts empty, is writable by any user in the container (mode 0777, as a
+    Kubernetes ``emptyDir`` is) and goes away with the sandbox. ``size_mb`` is
+    the most it may hold; how strictly that is enforced depends on the driver
+    (see ``DockerSandboxDriver``).
+    """
+
+    path: str
+    size_mb: int
 
 
 @dataclass(frozen=True)
@@ -97,6 +114,21 @@ class SandboxSpec:
     registry_auth: RegistryAuth | None = None
     """Login for pulling `image` when it is not already local. Never copied
     into ``env``. None pulls anonymously."""
+    scratch: tuple[ScratchDir, ...] = ()
+    """Writable directories the driver provides, each with a size limit. The
+    way to give a sandbox a workspace without a host directory."""
+    seed: bytes | None = field(default=None, repr=False)
+    """A tar archive unpacked at ``/`` BEFORE the command starts, so the
+    command's first instruction already sees every file in it. Entries may land
+    inside a scratch dir. Kept out of ``repr``: it carries config files, run
+    tokens among them."""
+    egress: Egress = "open"
+    """Which outbound network profile the sandbox asks for. ``"restricted"``
+    lets a driver that can enforce an allowlist do so; a driver that cannot
+    (Docker) ignores it and applies the network settings above unchanged."""
+    max_lifetime_s: int | None = None
+    """Upper bound on the sandbox's life, in seconds. None means no bound
+    beyond whatever the caller's own teardown does."""
 
 
 @dataclass(frozen=True)

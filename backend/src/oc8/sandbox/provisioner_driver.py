@@ -8,12 +8,14 @@ the provisioner service in the next task.
 from __future__ import annotations
 
 import binascii
-from typing import TypeVar
+import json as jsonlib
+from typing import Any, TypeVar
 
 import httpx
 from pydantic import ValidationError
 
 from oc8.sandbox.provisioner_models import (
+    TAR_MEDIA_TYPE,
     ExecRequestDTO,
     ExecResponseDTO,
     FileReadRequestDTO,
@@ -27,6 +29,11 @@ from oc8.sandbox.provisioner_models import (
     WaitResponseDTO,
 )
 from oc8.sandbox.types import ExecResult, SandboxError, SandboxHandle, SandboxSpec
+
+#: Archives can be many MB. The client's 30s default is for calls that answer
+#: near-instantly; a transfer gets longer, still bounded so a wedged
+#: provisioner fails the caller instead of hanging it.
+_ARCHIVE_TIMEOUT_S = 300.0
 
 TransportResponse = TypeVar(
     "TransportResponse",
@@ -65,6 +72,7 @@ class ProvisionerSandboxDriver:
         *,
         json: dict[str, object] | None = None,
         timeout: float | None = None,  # noqa: ASYNC109 - httpx per-request override, not asyncio
+        **body: Any,
     ) -> httpx.Response:
         # httpx treats an explicit `timeout=None` as "no timeout at all", not
         # "use the client's own default" -- those are different sentinels
@@ -74,10 +82,10 @@ class ProvisionerSandboxDriver:
         try:
             if timeout is not None:
                 response = await self._client.request(
-                    method, path, json=json, timeout=timeout
+                    method, path, json=json, timeout=timeout, **body
                 )
             else:
-                response = await self._client.request(method, path, json=json)
+                response = await self._client.request(method, path, json=json, **body)
         except httpx.HTTPError as exc:
             raise SandboxError("provisioner request failed") from exc
         if not response.is_success:
@@ -92,11 +100,19 @@ class ProvisionerSandboxDriver:
             raise SandboxError("provisioner returned an invalid response") from exc
 
     async def provision(self, spec: SandboxSpec) -> SandboxHandle:
-        response = await self._request(
-            "POST",
-            "/v1/sandboxes",
-            json=SandboxSpecDTO.from_domain(spec).model_dump(mode="json"),
-        )
+        wire = SandboxSpecDTO.from_domain(spec).to_wire()
+        if spec.seed is None:
+            response = await self._request("POST", "/v1/sandboxes", json=wire)
+        else:
+            # One request, so the provisioner can create, seed and start in
+            # that order without the container ever running unseeded.
+            response = await self._request(
+                "POST",
+                "/v1/sandboxes/seeded",
+                data={"spec": jsonlib.dumps(wire)},
+                files={"seed": ("seed.tar", spec.seed, TAR_MEDIA_TYPE)},
+                timeout=_ARCHIVE_TIMEOUT_S,
+            )
         return self._model(response, SandboxHandleDTO).to_domain()
 
     async def exec(
@@ -136,6 +152,25 @@ class ProvisionerSandboxDriver:
             return result.content()
         except (ValueError, binascii.Error) as exc:
             raise SandboxError("provisioner returned invalid file content") from exc
+
+    async def put_archive(self, handle: SandboxHandle, path: str, data: bytes) -> None:
+        await self._request(
+            "PUT",
+            f"/v1/sandboxes/{handle.container_id}/archive",
+            params={"path": path},
+            content=data,
+            headers={"Content-Type": TAR_MEDIA_TYPE},
+            timeout=_ARCHIVE_TIMEOUT_S,
+        )
+
+    async def get_archive(self, handle: SandboxHandle, path: str) -> bytes:
+        response = await self._request(
+            "GET",
+            f"/v1/sandboxes/{handle.container_id}/archive",
+            params={"path": path},
+            timeout=_ARCHIVE_TIMEOUT_S,
+        )
+        return response.content
 
     async def teardown(self, handle: SandboxHandle) -> None:
         await self._request("DELETE", f"/v1/sandboxes/{handle.container_id}")
