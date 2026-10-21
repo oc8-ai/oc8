@@ -287,10 +287,11 @@ class Settings(BaseSettings):
 
     # Observability (§18). Off by default => fully inert (no provider, no exporter).
     otel_enabled: bool = False
-    otel_exporter: str = "otlp"  # otlp | console | none
+    otel_exporter: str = "otlp"  # otlp (gRPC) | otlp_http | console | none
     otel_exporter_otlp_endpoint: str = ""
     otel_service_name: str = "oc8"
     otel_metrics_enabled: bool = True
+    otel_traces_enabled: bool = True
 
     @model_validator(mode="after")
     def _validate_sandbox_user(self) -> Settings:
@@ -345,11 +346,12 @@ class Settings(BaseSettings):
     def _validate_otel(self) -> Settings:
         if (
             self.otel_enabled
-            and self.otel_exporter == "otlp"
+            and self.otel_exporter in ("otlp", "otlp_http")
             and not self.otel_exporter_otlp_endpoint
         ):
             raise ValueError(
-                "otel_enabled with otel_exporter='otlp' requires otel_exporter_otlp_endpoint"
+                f"otel_enabled with otel_exporter='{self.otel_exporter}' "
+                "requires otel_exporter_otlp_endpoint"
             )
         return self
 
