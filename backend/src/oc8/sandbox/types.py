@@ -12,6 +12,11 @@ class SandboxError(RuntimeError):
     """A sandbox operation (provision/exec/fs/teardown) failed."""
 
 
+class ArchiveTooLarge(SandboxError):
+    """An archive passed its size cap. Raised while it is read, before the
+    rest of it is buffered."""
+
+
 @dataclass(frozen=True)
 class BindMount:
     """One host directory made visible inside a sandbox.

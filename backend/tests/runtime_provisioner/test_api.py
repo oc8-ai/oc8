@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from typing import Any
 
 import httpx
 import pytest
@@ -171,8 +172,15 @@ class ArchiveDriver(FakeDriver):
     async def put_archive(self, handle: SandboxHandle, path: str, data: bytes) -> None:
         self.archives.append((handle.container_id, path, data))
 
-    async def get_archive(self, handle: SandboxHandle, path: str) -> bytes:
-        return b"T" * 2048 if path == "/big" else b"OUTTAR"
+    async def get_archive(
+        self, handle: SandboxHandle, path: str, *, max_bytes: int | None = None
+    ) -> bytes:
+        from oc8.sandbox.types import ArchiveTooLarge
+
+        data = b"T" * 2048 if path == "/big" else b"OUTTAR"
+        if max_bytes is not None and len(data) > max_bytes:
+            raise ArchiveTooLarge("over the cap")
+        return data
 
 
 def _archive_app(driver: FakeDriver, *, archive_max_bytes: int = 1024) -> FastAPI:
@@ -331,3 +339,76 @@ async def test_the_archive_cap_comes_from_the_settings(monkeypatch: pytest.Monke
     finally:
         get_settings.cache_clear()
     assert response.status_code == 413
+
+
+async def test_a_seeded_spec_without_a_content_length_is_refused() -> None:
+    """The declared length is what bounds the read: the server reads exactly
+    that much. Without it there is no bound before the body is spooled."""
+    driver = ArchiveDriver()
+    transport = httpx.ASGITransport(app=_archive_app(driver))
+    boundary = "b0undary"
+    body = (
+        f'--{boundary}\r\nContent-Disposition: form-data; name="spec"\r\n\r\n'
+        '{"image": "oc8-runtime:1"}\r\n'
+        f'--{boundary}\r\nContent-Disposition: form-data; name="seed"; filename="s.tar"\r\n'
+        "Content-Type: application/x-tar\r\n\r\nS\r\n"
+        f"--{boundary}--\r\n"
+    ).encode()
+
+    async def chunked() -> Any:
+        yield body
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/v1/sandboxes/seeded",
+            headers={**_AUTH, "Content-Type": f"multipart/form-data; boundary={boundary}"},
+            content=chunked(),
+        )
+    assert response.status_code == 411
+    assert driver.provisioned == []
+
+
+class CappedArchiveDriver(ArchiveDriver):
+    def __init__(self) -> None:
+        super().__init__()
+        self.caps: list[int | None] = []
+
+    async def get_archive(
+        self, handle: SandboxHandle, path: str, *, max_bytes: int | None = None
+    ) -> bytes:
+        from oc8.sandbox.types import ArchiveTooLarge
+
+        self.caps.append(max_bytes)
+        if path == "/big":
+            raise ArchiveTooLarge("too big")
+        return b"OUTTAR"
+
+
+async def test_the_archive_cap_is_enforced_by_the_driver_while_reading() -> None:
+    """The broker hands its cap to the driver, so an oversized archive is cut
+    off while it is read, not after it is all in memory. A smaller cap the
+    caller asks for wins."""
+    driver = CappedArchiveDriver()
+    transport = httpx.ASGITransport(app=_archive_app(driver, archive_max_bytes=1024))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        handle = (
+            await client.post("/v1/sandboxes", headers=_AUTH, json={"image": "oc8-runtime:1"})
+        ).json()["container_id"]
+        big = await client.get(
+            f"/v1/sandboxes/{handle}/archive", params={"path": "/big"}, headers=_AUTH
+        )
+        ok = await client.get(
+            f"/v1/sandboxes/{handle}/archive",
+            params={"path": "/w", "max_bytes": 100},
+            headers=_AUTH,
+        )
+        larger = await client.get(
+            f"/v1/sandboxes/{handle}/archive",
+            params={"path": "/w", "max_bytes": 1 << 30},
+            headers=_AUTH,
+        )
+
+    assert big.status_code == 413
+    assert ok.content == b"OUTTAR"
+    assert larger.status_code == 200
+    assert driver.caps == [1024, 100, 1024]

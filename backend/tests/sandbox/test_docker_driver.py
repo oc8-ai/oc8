@@ -243,3 +243,199 @@ async def test_restricted_egress_leaves_the_docker_network_as_it_is() -> None:
         assert client.containers.get(handle.container_id).attrs["Config"]["NetworkDisabled"] is True
     finally:
         await driver.teardown(handle)
+
+
+# ------------------------------------------------- archives: bounds and names
+
+import io  # noqa: E402
+import tarfile  # noqa: E402
+from collections.abc import Iterator  # noqa: E402
+from typing import Any  # noqa: E402
+
+from oc8.sandbox.types import ArchiveTooLarge, SandboxHandle, ScratchDir  # noqa: E402
+
+
+def _tar_bytes(files: dict[str, bytes], *, links: dict[str, str] | None = None) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for name, content in files.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            tar.addfile(info, io.BytesIO(content))
+        for name, target in (links or {}).items():
+            info = tarfile.TarInfo(name)
+            info.type = tarfile.LNKTYPE
+            info.linkname = target
+            tar.addfile(info)
+    return buf.getvalue()
+
+
+class _StopReading(AssertionError):
+    pass
+
+
+def _chunks_failing_past(data: bytes, *, size: int, allowed: int) -> Iterator[bytes]:
+    """Docker's archive stream, in `size` chunks; reading past the first chunk
+    that crosses `allowed` bytes fails the test."""
+    sent = 0
+    for start in range(0, len(data), size):
+        if sent > allowed:
+            raise _StopReading(f"read on after {sent} bytes with a cap of {allowed}")
+        chunk = data[start : start + size]
+        sent += len(chunk)
+        yield chunk
+
+
+class _ArchiveContainer:
+    def __init__(self, chunks: Iterator[bytes], info: dict[str, Any]) -> None:
+        self._chunks = chunks
+        self._info = info
+
+    def get_archive(self, path: str) -> tuple[Iterator[bytes], dict[str, Any]]:
+        return self._chunks, self._info
+
+
+class _ArchiveClient:
+    def __init__(self, container: _ArchiveContainer) -> None:
+        outer = container
+
+        class _Containers:
+            def get(self, _id: str) -> _ArchiveContainer:
+                return outer
+
+        self.containers = _Containers()
+
+
+_DIR_INFO = {"name": "output", "mode": (1 << 31) | 0o755}
+_FILE_INFO = {"name": "big.bin", "mode": 0o644}
+
+
+@pytest.mark.parametrize("info", [_DIR_INFO, _FILE_INFO], ids=["directory", "file"])
+async def test_get_archive_stops_reading_at_the_cap(info: dict[str, Any]) -> None:
+    data = _tar_bytes({"output/big.bin": b"z" * 64 * 1024})
+    chunks = _chunks_failing_past(data, size=1024, allowed=8 * 1024)
+    driver = DockerSandboxDriver(client=_ArchiveClient(_ArchiveContainer(chunks, info)))
+    with pytest.raises(ArchiveTooLarge):
+        await driver.get_archive(SandboxHandle("c", _IMAGE), "/x", max_bytes=8 * 1024)
+
+
+async def test_get_archive_cap_defaults_to_the_setting(monkeypatch: pytest.MonkeyPatch) -> None:
+    from oc8.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("OC8_SANDBOX_ARCHIVE_MAX_BYTES", "4096")
+    try:
+        data = _tar_bytes({"output/big.bin": b"z" * 64 * 1024})
+        chunks = _chunks_failing_past(data, size=1024, allowed=4096)
+        driver = DockerSandboxDriver(client=_ArchiveClient(_ArchiveContainer(chunks, _DIR_INFO)))
+        with pytest.raises(ArchiveTooLarge):
+            await driver.get_archive(SandboxHandle("c", _IMAGE), "/x")
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "files,links",
+    [
+        ({"output/../../etc/evil": b"x"}, None),
+        ({"/etc/evil": b"x"}, None),
+        ({"output/a": b"x"}, {"output/b": "../../etc/passwd"}),
+    ],
+    ids=["dotdot", "absolute", "hardlink-out"],
+)
+async def test_get_archive_rejects_names_outside_the_directory(
+    files: dict[str, bytes], links: dict[str, str] | None
+) -> None:
+    data = _tar_bytes(files, links=links)
+    driver = DockerSandboxDriver(client=_ArchiveClient(_ArchiveContainer(iter([data]), _DIR_INFO)))
+    with pytest.raises(SandboxError, match="outside"):
+        await driver.get_archive(SandboxHandle("c", _IMAGE), "/output", max_bytes=1 << 20)
+
+
+# ------------------------------------------- failed provisions leave nothing
+
+
+def _leftovers(run: str) -> tuple[list[Any], list[Any]]:
+    client = docker.from_env()  # type: ignore[attr-defined]
+    label = {"label": f"oc8.run={run}"}
+    return client.containers.list(all=True, filters=label), client.volumes.list(filters=label)
+
+
+async def test_a_refused_seed_leaves_no_container_and_no_volume() -> None:
+    run = str(uuid.uuid4())
+    driver = DockerSandboxDriver()
+    with pytest.raises(SandboxError):
+        await driver.provision(
+            SandboxSpec(
+                image=_IMAGE,
+                labels={"oc8.run": run},
+                scratch=(ScratchDir("/scratch", 16),),
+                seed=b"this is not a tar archive" * 100,
+            )
+        )
+    assert _leftovers(run) == ([], [])
+
+
+async def test_a_failed_start_leaves_no_container_and_no_volume() -> None:
+    run = str(uuid.uuid4())
+    driver = DockerSandboxDriver()
+    with pytest.raises(SandboxError):
+        await driver.provision(
+            SandboxSpec(
+                image=_IMAGE,
+                command=["/no/such/binary"],
+                labels={"oc8.run": run},
+                scratch=(ScratchDir("/scratch", 16),),
+            )
+        )
+    assert _leftovers(run) == ([], [])
+
+
+async def test_scratch_volumes_carry_the_sandbox_labels() -> None:
+    """How the two tests above can see a leaked volume at all, and how an
+    operator finds whose volume is whose."""
+    run = str(uuid.uuid4())
+    driver = DockerSandboxDriver()
+    handle = await driver.provision(
+        SandboxSpec(image=_IMAGE, labels={"oc8.run": run}, scratch=(ScratchDir("/s", 16),))
+    )
+    try:
+        _containers, volumes = _leftovers(run)
+        assert len(volumes) == 1
+        assert volumes[0].attrs["Labels"]["oc8.sandbox"] == "1"
+    finally:
+        await driver.teardown(handle)
+    assert _leftovers(run) == ([], [])
+
+
+# ------------------------------------------------------ spec combinations
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{"seed": _tar_bytes({"a": b"x"})}, {"scratch": (ScratchDir("/s", 16),)}],
+    ids=["seed", "scratch"],
+)
+async def test_read_only_cannot_be_combined_with_seed_or_scratch(extra: dict[str, Any]) -> None:
+    driver = DockerSandboxDriver()
+    with pytest.raises(SandboxError, match="read_only"):
+        await driver.provision(SandboxSpec(image=_IMAGE, read_only=True, **extra))
+
+
+@pytest.mark.parametrize("path", ["/etc", "/etc/ssl", "/usr/bin", "/proc", "/lib64", "/dev/x"])
+async def test_a_scratch_dir_over_a_system_path_is_refused(path: str) -> None:
+    driver = DockerSandboxDriver()
+    with pytest.raises(SandboxError, match="scratch"):
+        await driver.provision(SandboxSpec(image=_IMAGE, scratch=(ScratchDir(path, 16),)))
+
+
+async def test_a_scratch_dir_is_sticky_and_world_writable() -> None:
+    driver = DockerSandboxDriver()
+    handle = await driver.provision(
+        SandboxSpec(image=_IMAGE, command=["sleep", "30"], scratch=(ScratchDir("/s", 16),))
+    )
+    try:
+        result = await driver.exec(handle, ["stat", "-c", "%a", "/s"])
+        assert result.output.strip() == "1777"
+    finally:
+        await driver.teardown(handle)

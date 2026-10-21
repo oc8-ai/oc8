@@ -10,7 +10,10 @@ import asyncio
 import io
 import posixpath
 import tarfile
+import tempfile
 import time
+from collections.abc import Iterator
+from typing import IO, Any
 
 import docker
 from docker.errors import NotFound
@@ -18,7 +21,16 @@ from docker.models.containers import Container
 from docker.types import DriverConfig, Mount
 
 from oc8.config import get_settings
-from oc8.sandbox.types import ExecResult, SandboxError, SandboxHandle, SandboxSpec, ScratchDir
+from oc8.sandbox.archive import is_outside
+from oc8.sandbox.scratch import validate_scratch
+from oc8.sandbox.types import (
+    ArchiveTooLarge,
+    ExecResult,
+    SandboxError,
+    SandboxHandle,
+    SandboxSpec,
+    ScratchDir,
+)
 
 #: Every container/label filter that acts on "ours" must match on both of
 #: these -- see oc8.sandbox.reaper. NAMESPACE_LABEL is deliberately NOT part
@@ -43,32 +55,40 @@ def _labels(extra: dict[str, str], *, max_lifetime_s: int | None = None) -> dict
     return {**labels, "oc8.sandbox": "1", NAMESPACE_LABEL: get_settings().deployment_namespace}
 
 
-def _scratch_mount(scratch: ScratchDir, *, sized: bool) -> Mount:
+def _scratch_mount(scratch: ScratchDir, *, sized: bool, labels: dict[str, str]) -> Mount:
     """An anonymous volume for one scratch dir.
 
     Anonymous, so it is created with the container and removed with it
     (``remove(v=True)``). ``sized`` asks the local volume driver for a quota,
     which it grants only on a quota-capable backing filesystem (xfs with
     ``pquota``); elsewhere the daemon refuses the create and the driver retries
-    unsized -- see ``DockerSandboxDriver._create``.
+    unsized -- see ``DockerSandboxDriver._create``. The volume carries the
+    container's labels, so a leaked one can be found and attributed.
     """
     driver_config = DriverConfig("local", {"size": f"{scratch.size_mb}m"}) if sized else None
-    return Mount(target=scratch.path, source=None, type="volume", driver_config=driver_config)
+    return Mount(
+        target=scratch.path,
+        source=None,
+        type="volume",
+        driver_config=driver_config,
+        labels=labels,
+    )
 
 
 def _scratch_modes(scratch: tuple[ScratchDir, ...]) -> bytes:
-    """A tar that makes every scratch dir mode 0777, owned by root.
+    """A tar that makes every scratch dir mode 1777, owned by root.
 
     A fresh volume over a path the image lacks is root's and 0755, which a
     runtime image running as its own uid cannot write. Kubernetes' emptyDir is
-    0777; this gives the Docker driver the same promise.
+    world-writable too; the sticky bit, as on /tmp, keeps one user from
+    deleting another's files in it.
     """
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:
         for entry in scratch:
             info = tarfile.TarInfo(name=entry.path.strip("/"))
             info.type = tarfile.DIRTYPE
-            info.mode = 0o777
+            info.mode = 0o1777
             info.mtime = int(time.time())
             tar.addfile(info)
     return buf.getvalue()
@@ -81,25 +101,80 @@ def _quota_refused(exc: BaseException) -> bool:
     return "quota" in str(exc).lower()
 
 
-def _relative_to_directory(data: bytes, name: str) -> bytes:
+#: Above this, an archive read from Docker is spooled to a temporary file
+#: instead of held in memory while it is rewritten.
+_SPOOL_IN_MEMORY_BYTES = 8 * 1024 * 1024
+
+
+def _spool_capped(chunks: Iterator[bytes], max_bytes: int) -> IO[bytes]:
+    """Copy Docker's archive stream into a spooled file, stopping at the cap.
+
+    The stream is abandoned at the first chunk that crosses ``max_bytes``:
+    nothing past it is read, and nothing past one chunk is buffered.
+    """
+    spool: IO[bytes] = tempfile.SpooledTemporaryFile(max_size=_SPOOL_IN_MEMORY_BYTES)
+    total = 0
+    try:
+        for chunk in chunks:
+            total += len(chunk)
+            if total > max_bytes:
+                raise ArchiveTooLarge(f"archive exceeds {max_bytes} bytes")
+            spool.write(chunk)
+    except BaseException:
+        spool.close()
+        close = getattr(chunks, "close", None)
+        if callable(close):
+            close()
+        raise
+    spool.seek(0)
+    return spool
+
+
+def _relative_name(name: str, top: str) -> str | None:
+    """``name`` relative to the archived directory ``top``; None for ``top``
+    itself. Anything that does not sit under ``top`` is refused: Docker never
+    writes such a name, so one that appears was not written by Docker."""
+    if name.rstrip("/") == top:
+        return None
+    prefix = top + "/"
+    if not name.startswith(prefix):
+        raise SandboxError(f"archive entry is outside {top!r}: {name!r}")
+    relative = name[len(prefix) :]
+    if not relative or is_outside(relative):
+        raise SandboxError(f"archive entry is outside {top!r}: {name!r}")
+    return relative
+
+
+def _relative_to_directory(src_file: IO[bytes], top: str) -> bytes:
     """Rename a Docker directory archive's entries to be relative to it.
 
     Docker names them from the directory's own base name down
     (``output/a.txt``); the contract names them from inside it (``a.txt``).
+    A hardlink names its target the same way, so ``linkname`` is renamed too,
+    or the link would point at nothing once the archive is unpacked. Read and
+    written as streams: one member at a time, never the whole input.
     """
-    prefix = name + "/"
     out = io.BytesIO()
     with (
-        tarfile.open(fileobj=io.BytesIO(data), mode="r|") as src,
+        tarfile.open(fileobj=src_file, mode="r|") as src,
         tarfile.open(fileobj=out, mode="w", format=tarfile.PAX_FORMAT) as dst,
     ):
         for member in src:
-            if member.name in (name, name + "/"):
+            relative = _relative_name(member.name, top)
+            if relative is None:
                 continue
-            if member.name.startswith(prefix):
-                member.name = member.name[len(prefix) :]
+            member.name = relative
+            if member.islnk():
+                target = _relative_name(member.linkname, top)
+                if target is None:
+                    raise SandboxError(f"archive hardlink is outside {top!r}: {member.linkname!r}")
+                member.linkname = target
             dst.addfile(member, src.extractfile(member) if member.isfile() else None)
     return out.getvalue()
+
+
+def _archive_cap(max_bytes: int | None) -> int:
+    return max_bytes if max_bytes is not None else get_settings().sandbox_archive_max_bytes
 
 
 #: Sensible default per-call exec timeout (seconds) for callers that want one
@@ -227,10 +302,11 @@ class DockerSandboxDriver:
     def _create(self, spec: SandboxSpec, run_kwargs: dict[str, object]) -> Container:
         """Create (not start) the container, sizing scratch volumes if the
         daemon can and falling back to unsized ones if it cannot."""
+        labels: Any = run_kwargs["labels"]
         if not spec.scratch:
             return self._client.containers.create(spec.image, **run_kwargs)
         if self._scratch_quota is not False:
-            mounts = [_scratch_mount(s, sized=True) for s in spec.scratch]
+            mounts = [_scratch_mount(s, sized=True, labels=labels) for s in spec.scratch]
             try:
                 container = self._client.containers.create(spec.image, mounts=mounts, **run_kwargs)
             except docker.errors.APIError as exc:
@@ -240,7 +316,7 @@ class DockerSandboxDriver:
             else:
                 self._scratch_quota = True
                 return container
-        mounts = [_scratch_mount(s, sized=False) for s in spec.scratch]
+        mounts = [_scratch_mount(s, sized=False, labels=labels) for s in spec.scratch]
         return self._client.containers.create(spec.image, mounts=mounts, **run_kwargs)
 
     async def provision(self, spec: SandboxSpec) -> SandboxHandle:
@@ -252,6 +328,8 @@ class DockerSandboxDriver:
         ignored -- Docker has no allowlist to apply, so the network settings
         stay exactly what ``network_disabled``/``network`` say.
         """
+
+        validate_scratch(spec)
 
         def _run() -> SandboxHandle:
             run_kwargs: dict[str, object] = dict(
@@ -495,20 +573,28 @@ class DockerSandboxDriver:
 
         await asyncio.to_thread(_run)
 
-    async def get_archive(self, handle: SandboxHandle, path: str) -> bytes:
+    async def get_archive(
+        self, handle: SandboxHandle, path: str, *, max_bytes: int | None = None
+    ) -> bytes:
+        cap = _archive_cap(max_bytes)
+
         def _run() -> bytes:
             try:
                 container = self._client.containers.get(handle.container_id)
                 chunks, info = container.get_archive(path)
-                data = b"".join(chunks)
+                spool = _spool_capped(chunks, cap)
             except NotFound as exc:
                 raise SandboxError(f"get_archive: {path} does not exist") from exc
             except docker.errors.DockerException as exc:
                 raise SandboxError(f"get_archive failed: {exc}") from exc
-            # Docker reports Go's FileMode, whose directory bit is 1 << 31.
-            if int(info.get("mode", 0)) & _GO_MODE_DIR:
-                return _relative_to_directory(data, str(info.get("name", "")))
-            return data
+            with spool:
+                # Docker reports Go's FileMode, whose directory bit is 1 << 31.
+                if int(info.get("mode", 0)) & _GO_MODE_DIR:
+                    try:
+                        return _relative_to_directory(spool, str(info.get("name", "")))
+                    except tarfile.TarError as exc:
+                        raise SandboxError(f"get_archive: unreadable archive: {exc}") from exc
+                return spool.read()
 
         return await asyncio.to_thread(_run)
 

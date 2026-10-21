@@ -162,3 +162,50 @@ def test_scratch_dirs_must_be_clean_absolute_paths_within_the_budget() -> None:
 def test_a_lifetime_must_be_positive() -> None:
     with pytest.raises(SandboxError):
         _scratch_policy().validate(SandboxSpec(image="oc8-runtime:1", max_lifetime_s=0))
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/etc",
+        "/etc/x",
+        "/usr",
+        "/usr/local/x",
+        "/bin",
+        "/sbin",
+        "/lib",
+        "/lib64/x",
+        "/libexec",
+        "/proc",
+        "/sys",
+        "/dev",
+        "/dev/shm",
+    ],
+)
+def test_scratch_over_a_system_path_is_rejected(path: str) -> None:
+    from oc8.sandbox.types import ScratchDir
+
+    with pytest.raises(SandboxError, match="scratch"):
+        _scratch_policy().validate(
+            SandboxSpec(image="oc8-runtime:1", scratch=(ScratchDir(path, 8),))
+        )
+
+
+def test_scratch_near_a_system_path_is_fine() -> None:
+    from oc8.sandbox.types import ScratchDir
+
+    spec = SandboxSpec(
+        image="oc8-runtime:1",
+        scratch=(ScratchDir("/etcetera", 8), ScratchDir("/home/user", 8), ScratchDir("/devx", 8)),
+    )
+    assert _scratch_policy().validate(spec).scratch == spec.scratch
+
+
+def test_read_only_cannot_be_combined_with_seed_or_scratch() -> None:
+    from oc8.sandbox.types import ScratchDir
+
+    for extra in ({"seed": b"tar"}, {"scratch": (ScratchDir("/w", 8),)}):
+        with pytest.raises(SandboxError, match="read_only"):
+            _scratch_policy().validate(
+                SandboxSpec(image="oc8-runtime:1", read_only=True, **extra)  # type: ignore[arg-type]
+            )

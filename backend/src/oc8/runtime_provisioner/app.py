@@ -8,9 +8,9 @@ import os
 import posixpath
 from base64 import b64decode, b64encode
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from pydantic import ValidationError
 from starlette.datastructures import UploadFile
 
@@ -30,7 +30,7 @@ from oc8.sandbox.provisioner_models import (
     WaitRequestDTO,
     WaitResponseDTO,
 )
-from oc8.sandbox.types import SandboxError, SandboxHandle, SandboxSpec
+from oc8.sandbox.types import ArchiveTooLarge, SandboxError, SandboxHandle, SandboxSpec
 
 from .policy import ProvisionerPolicy
 from .store import ProvisionerStore
@@ -173,8 +173,15 @@ def create_provisioner_app(
         The body is read only here, after authentication: no route parameter
         asks FastAPI to parse it first. Starlette spools a large part to disk.
         """
+        # A declared length is required: it is what bounds the read. The HTTP
+        # server reads exactly that many bytes and no more, so checking it
+        # here bounds what is spooled before a single byte is parsed.
         declared = _declared_length(request)
-        if declared is not None and declared > archive_cap + _SEEDED_OVERHEAD_BYTES:
+        if declared is None:
+            raise HTTPException(
+                status_code=status.HTTP_411_LENGTH_REQUIRED, detail="content-length required"
+            )
+        if declared > archive_cap + _SEEDED_OVERHEAD_BYTES:
             raise _too_large()
         try:
             async with request.form(max_files=1, max_fields=1) as form:
@@ -283,7 +290,10 @@ def create_provisioner_app(
             if len(body) > archive_cap:
                 raise _too_large()
         try:
-            await active_driver.put_archive(handle, path, bytes(body))
+            # The bytearray itself: no second copy of a body that may be
+            # close to the cap. The contract types `data` as bytes; the Docker
+            # driver hands it to docker-py, which sends any bytes-like body.
+            await active_driver.put_archive(handle, path, cast(bytes, body))
         except SandboxError as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -295,23 +305,30 @@ def create_provisioner_app(
     async def get_archive(
         opaque_id: str,
         path: str,
+        max_bytes: Annotated[int | None, Query(ge=1)] = None,
         request_owner: str = Depends(authenticated_owner),
     ) -> Response:
-        """A tar of ``path`` as an ``application/x-tar`` body."""
+        """A tar of ``path`` as an ``application/x-tar`` body.
+
+        The cap is handed to the driver, which stops reading at it: an
+        oversized archive is refused before it is buffered. A caller may ask
+        for a smaller cap than the provisioner's, never a larger one.
+        """
         handle = resolve(opaque_id, request_owner)
         if not posixpath.isabs(path):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="invalid sandbox request",
             )
+        cap = archive_cap if max_bytes is None else min(max_bytes, archive_cap)
         try:
-            data = await active_driver.get_archive(handle, path)
+            data = await active_driver.get_archive(handle, path, max_bytes=cap)
+        except ArchiveTooLarge as exc:
+            raise _too_large() from exc
         except SandboxError as exc:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY, detail="sandbox operation failed"
             ) from exc
-        if len(data) > archive_cap:
-            raise _too_large()
         return Response(content=data, media_type=TAR_MEDIA_TYPE)
 
     @app.delete("/v1/sandboxes/{opaque_id}", status_code=status.HTTP_204_NO_CONTENT)

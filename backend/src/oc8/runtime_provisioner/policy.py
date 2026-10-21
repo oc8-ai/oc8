@@ -6,11 +6,11 @@ only this module decides which image, mount and network reaches Docker.
 
 from __future__ import annotations
 
-import posixpath
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from oc8.sandbox.types import BindMount, SandboxError, SandboxSpec, ScratchDir
+from oc8.sandbox.scratch import validate_scratch
+from oc8.sandbox.types import BindMount, SandboxError, SandboxSpec
 
 
 def _is_within(path: str, root: str) -> bool:
@@ -67,30 +67,19 @@ class ProvisionerPolicy:
 
         for mount in spec.mounts:
             self._validate_mount(mount)
-        self._validate_scratch(spec.scratch)
+        self._validate_scratch(spec)
         if spec.max_lifetime_s is not None and spec.max_lifetime_s <= 0:
             raise SandboxError("max lifetime must be positive")
 
         # The Docker adapter also enforces no-new-privileges and privileged=False.
         return replace(spec, cap_drop=["ALL"])
 
-    def _validate_scratch(self, scratch: tuple[ScratchDir, ...]) -> None:
+    def _validate_scratch(self, spec: SandboxSpec) -> None:
         # A scratch dir is a fresh volume inside the container, so it cannot
-        # reach the host; what is checked is that it is a sane, distinct
-        # absolute path and that the total stays within budget.
-        paths: set[str] = set()
-        for entry in scratch:
-            if (
-                not entry.path.startswith("/")
-                or posixpath.normpath(entry.path) != entry.path
-                or entry.path == "/"
-                or entry.path in paths
-            ):
-                raise SandboxError("scratch path is not allowed")
-            if entry.size_mb <= 0:
-                raise SandboxError("scratch size must be positive")
-            paths.add(entry.path)
-        if sum(entry.size_mb for entry in scratch) > self.max_scratch_mb:
+        # reach the host. The path rules are the driver's own (shared, so a
+        # direct Docker caller gets them too); the budget is the policy's.
+        validate_scratch(spec)
+        if sum(entry.size_mb for entry in spec.scratch) > self.max_scratch_mb:
             raise SandboxError("scratch size exceeds policy")
 
     def _validate_mount(self, mount: BindMount) -> None:

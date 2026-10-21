@@ -181,3 +181,30 @@ async def test_a_many_megabyte_archive_round_trips(driver: SandboxDriver) -> Non
         assert files_of(await driver.get_archive(handle, "/workspace/big.bin")) == {"big.bin": blob}
     finally:
         await driver.teardown(handle)
+
+
+async def test_a_hardlink_pair_survives_a_round_trip_into_a_new_directory(
+    driver: SandboxDriver,
+) -> None:
+    """A hardlink entry names its target by archive path. That path has to be
+    renamed along with the entries, or the link points at nothing."""
+    handle = await driver.provision(SandboxSpec(image=_IMAGE, command=["sleep", "60"]))
+    try:
+        made = await driver.exec(
+            handle,
+            ["sh", "-c", "mkdir -p /src && echo same > /src/a && ln /src/a /src/b"],
+        )
+        assert made.exit_code == 0, made.output
+        await driver.put_archive(handle, "/dst", await driver.get_archive(handle, "/src"))
+        check = await driver.exec(
+            handle,
+            [
+                "sh",
+                "-c",
+                'cat /dst/a /dst/b && [ "$(stat -c %i /dst/a)" = "$(stat -c %i /dst/b)" ]',
+            ],
+        )
+        assert check.exit_code == 0, check.output
+        assert check.output.split() == ["same", "same"]
+    finally:
+        await driver.teardown(handle)

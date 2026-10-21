@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from typing import Any
 
 import httpx
 import pytest
@@ -296,4 +297,40 @@ async def test_a_failed_archive_call_is_a_sandbox_error() -> None:
         await driver.put_archive(SandboxHandle("h", "image"), "/x", b"big")
     with pytest.raises(SandboxError, match="413"):
         await driver.get_archive(SandboxHandle("h", "image"), "/x")
+    await driver.aclose()
+
+
+@pytest.mark.asyncio
+async def test_get_archive_stops_reading_the_response_at_the_cap() -> None:
+    from oc8.sandbox.types import ArchiveTooLarge
+
+    sent: list[int] = []
+    seen_params: list[dict[str, str]] = []
+
+    class _Body(httpx.AsyncByteStream):
+        async def __aiter__(self) -> Any:
+            for _ in range(64):
+                if sum(sent) > 4096:
+                    raise AssertionError("read on past the cap")
+                sent.append(1024)
+                yield b"x" * 1024
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_params.append(dict(request.url.params))
+        return httpx.Response(200, stream=_Body(), headers={"content-type": "application/x-tar"})
+
+    driver = _driver(httpx.MockTransport(handler))
+    with pytest.raises(ArchiveTooLarge):
+        await driver.get_archive(SandboxHandle("h", "image"), "/out", max_bytes=4096)
+    await driver.aclose()
+    assert seen_params == [{"path": "/out", "max_bytes": "4096"}]
+
+
+@pytest.mark.asyncio
+async def test_a_413_from_the_provisioner_is_archive_too_large() -> None:
+    from oc8.sandbox.types import ArchiveTooLarge
+
+    driver = _driver(httpx.MockTransport(lambda _request: httpx.Response(413)))
+    with pytest.raises(ArchiveTooLarge):
+        await driver.get_archive(SandboxHandle("h", "image"), "/out")
     await driver.aclose()
