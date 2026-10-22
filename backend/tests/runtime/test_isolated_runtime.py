@@ -21,6 +21,11 @@ from tests.conftest import AppSessionFactory
 pytestmark = pytest.mark.asyncio
 
 
+@pytest.fixture(autouse=True)
+def _storage(minio_url: str) -> None:
+    """Every leg loads and saves its /workspace in object storage."""
+
+
 class _FakeDriver:
     """Stands in for the Docker driver: `wait` runs `on_wait` in place of the
     container, so a test can script exactly what the shell would have written
@@ -45,6 +50,13 @@ class _FakeDriver:
     async def exec(self, handle: SandboxHandle, command: list[str], **kw: Any) -> ExecResult:
         # The output sync's listing: no files in /workspace/output.
         return ExecResult(exit_code=0, output="")
+
+    async def get_archive(
+        self, handle: SandboxHandle, path: str, *, max_bytes: int | None = None
+    ) -> bytes:
+        from oc8.runtime.run_state import pack_files
+
+        return pack_files({})
 
     async def teardown(self, handle: SandboxHandle) -> None:
         return None

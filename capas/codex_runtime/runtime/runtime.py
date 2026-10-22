@@ -32,10 +32,14 @@ from cli_harness.seed import (
     SeedDir,
     build_seed,
     load_home,
+    load_workspace,
+    sandbox_lifetime_s,
     sandbox_owner,
     save_home,
+    save_workspace,
     stop_cli,
     workspace_scratch,
+    workspace_seed,
 )
 from cli_harness.session_state import clear_session_id, get_session_id, set_session_id
 from cli_harness.tail import tail_new_lines
@@ -268,6 +272,8 @@ class CodexRuntime:
                     ),
                 )
             home_files = {rel: data for rel, data in restored.items() if not _not_saved(rel)}
+        # Whatever the previous leg left in /workspace (without output/).
+        workspace_files = await load_workspace(tenant_id=tenant_id, run_id=run_id) or {}
         uid, gid = sandbox_owner()
 
         spec = SandboxSpec(
@@ -292,6 +298,7 @@ class CodexRuntime:
             network_disabled=False,
             network=settings.agent_runtime_network,
             egress="restricted",
+            max_lifetime_s=sandbox_lifetime_s(_RUN_TIMEOUT_S),
             scratch=(workspace_scratch(), ScratchDir(_CODEX_HOME, HOME_SCRATCH_MB)),
             # config.toml in place BEFORE `codex` starts. A write after start
             # (fs_write once provision() returned) raced the CLI: provision()
@@ -304,13 +311,14 @@ class CodexRuntime:
             # always comes fresh, never from saved state.
             seed=build_seed(
                 [
+                    *workspace_seed(workspace_files),
                     SeedDir(
                         _CODEX_HOME,
                         {
                             **home_files,
                             "config.toml": _config_toml(mcp_url=mcp_url, llm_url=llm_url).encode(),
                         },
-                    )
+                    ),
                 ],
                 uid=uid,
                 gid=gid,
@@ -441,6 +449,7 @@ class CodexRuntime:
                         path=_CODEX_HOME,
                         exclude=_not_saved,
                     )
+                    await save_workspace(driver, handle, tenant_id=tenant_id, run_id=run_id)
         finally:
             await driver.teardown(handle)
 

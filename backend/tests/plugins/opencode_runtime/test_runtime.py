@@ -78,13 +78,15 @@ class _FakeDriver:
         self.torn_down = 0
         #: What get_archive hands back for the data dir at the end of the leg.
         self.home: dict[str, bytes] = {}
+        #: What get_archive hands back for /workspace.
+        self.workspace: dict[str, bytes] = {}
         self.archived: list[str] = []
 
     async def get_archive(
         self, handle: SandboxHandle, path: str, *, max_bytes: int | None = None
     ) -> bytes:
         self.archived.append(path)
-        return _home_tar(self.home)
+        return _home_tar(self.workspace if path == "/workspace" else self.home)
 
     async def provision(self, spec: Any) -> SandboxHandle:
         self.specs.append(spec)
@@ -502,6 +504,16 @@ async def test_the_sandbox_has_scratch_dirs_and_no_mounts(
         _OPENCODE_CONFIG_PATH.rsplit("/", 1)[0],
     }
     assert all(d.size_mb > 0 for d in spec.scratch)
+    from cli_harness.seed import SAVE_TIMEOUT_S, STOP_GRACE_S
+    from runtime.runtime import _RUN_TIMEOUT_S
+
+    from oc8.runtime.workspace_state import SAVE_TIMEOUT_S as WORKSPACE_SAVE_TIMEOUT_S
+
+    # Its own deadline, the stop grace, both saves and 300 s of slack: past
+    # that the sandbox may be reaped whatever the run says.
+    assert spec.max_lifetime_s == int(
+        _RUN_TIMEOUT_S + STOP_GRACE_S + SAVE_TIMEOUT_S + WORKSPACE_SAVE_TIMEOUT_S + 300
+    )
     assert spec.egress == "restricted"
     assert spec.workdir == "/workspace"
     # The state dir sits inside the saved data dir.
@@ -535,6 +547,7 @@ async def test_a_resume_leg_restores_the_data_dir_leg_one_saved(
         "log/2026-10-22.log": b"noise",
         "cache/node_modules/pkg/index.js": b"x",
     }
+    leg1.workspace = {"notes.txt": b"half done", "output/report.txt": b"stored already"}
     _install(monkeypatch, leg1)
     async with app_session(tenant) as db:
         db.add(agent)
@@ -542,7 +555,7 @@ async def test_a_resume_leg_restores_the_data_dir_leg_one_saved(
             db, agent=agent, task_text="fix the bug", tenant_id=tenant, run_id=run_id
         )
     assert first.status == "waiting_for_input"
-    assert leg1.archived == [_OPENCODE_DATA_DIR]
+    assert leg1.archived == [_OPENCODE_DATA_DIR, "/workspace"]
 
     async with app_session(tenant) as db:
         from oc8.runtime.run_context import merge_context
@@ -565,6 +578,9 @@ async def test_a_resume_leg_restores_the_data_dir_leg_one_saved(
     cmd = spec.command
     assert cmd[cmd.index("--session") + 1] == "opencode-sess-1"
     seeded = _seed_members(spec)
+    # /workspace comes back too, without output/ (stored as attachments).
+    assert seeded["workspace/notes.txt"][0] == b"half done"
+    assert not any(name.startswith("workspace/output") for name in seeded)
     data = _OPENCODE_DATA_DIR.lstrip("/")
     assert seeded[f"{data}/{_SESSION_FILE}"][0] == b"{}"
     assert seeded[f"{data}/opencode.db"][0] == b"SQLite format 3\x00"

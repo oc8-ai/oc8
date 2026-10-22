@@ -1,46 +1,88 @@
-"""A sandbox outlives its command, and is read only as its own user.
+"""The sandbox contract every driver shares: lingering, the ``/.oc8``
+marker dir, ``wait``, image tools and reads as the sandbox user.
 
-Both halves are shared by every driver (Docker here; a Kubernetes driver
-does the same with an ``emptyDir`` at ``/.oc8`` and exec as the pod's
-``runAsUser``).
+A new driver (Docker in this repository; a Kubernetes one elsewhere) builds
+on these helpers and follows this text. The protocol itself is
+``oc8.sandbox.driver.SandboxDriver``.
 
-**Lingering.** The spec's command runs under ``lingering_command``::
+**1. Lingering, and where the wrapper goes.** The spec's command runs under
+``lingering_command``::
 
     sh -c 'trap : TERM INT; "$@"; c=$?; echo; echo >&2;
            echo "$c" > /.oc8/exit; trap "" TERM INT;
            exec sleep 2147483647 >/dev/null 2>&1' -- <cmd>
 
 so the sandbox stays up after the command exits, with the command's exit
-code in ``/.oc8/exit``. ``wait`` reports completion from that file; reading
-output and a CLI home after the command, through exec, keeps working on any
-driver, including one that cannot read a stopped sandbox at all. Teardown
-removes the sandbox as before (SIGKILL; nothing ignores that). Before the
-``exec sleep`` the wrapper switches the traps to IGNORE: a caught trap is
-reset by ``exec``, an ignored one is kept, so a stop that arrives after the
-command exited (a parked leg's ``stop_cli``) cannot end the ``sleep`` and,
-with tini as PID 1, the whole sandbox. The two ``echo``s end a last line the command
-left unterminated: a log driver holds a partial line back until the stream
-closes, and a lingering sandbox's stream stays open (so the log gains a blank
-line on each stream). The trap makes the wrapper survive a SIGTERM
-meant for the command (a caught signal is reset to its default in the
-command, so the command itself still gets it): to stop the command, signal
-every process of the sandbox user (``kill -TERM -1``), not PID 1.
+code in ``/.oc8/exit``; reading output and state through exec then works
+after the command on any driver, including one that cannot read a stopped
+sandbox. Teardown removes the sandbox in any state (SIGKILL).
 
-The marker lives in a directory the sandbox can write (it must, to record
-the exit), so the sandbox can also write it early or forge a code. That only
-ends its own leg sooner; nothing is trusted from it beyond "the leg is over".
+- The wrapper replaces the spec's COMMAND (Docker ``Cmd``; on an
+  orchestrator the container ``args``), never the image ENTRYPOINT, which is
+  kept (tini in the CLI images).
+- An empty command is not wrapped: the image's own CMD runs and ``wait``
+  reports the container's own exit. A spec with a seed must name its
+  command, or nothing guarantees the seed is in place before it starts.
+- ``trap : TERM INT`` keeps the wrapper alive when the command is stopped (a
+  caught signal is reset to its default in the command, which still gets
+  it); ``trap "" TERM INT`` before the ``exec sleep`` keeps the sleep alive
+  too (an ignored signal survives ``exec``). To stop the command, signal
+  every process of the sandbox user (``STOP_COMMAND``, ``kill -TERM -1``),
+  never PID 1.
+- The two ``echo``s end a last line the command left unterminated: a log
+  driver holds a partial line back while the stream is open, and a
+  lingering sandbox's stream stays open. The log gains one blank line per
+  stream.
 
-**Every image needs ``/bin/sh``.** All images oc8 runs have one: the CLI
-runtime base (node:22-bookworm-slim), the isolated shell (python slim), the
-hooks worker (python alpine), and nanoclaw's agent and provisioner images
-(Debian, oven/bun). A spec with no command keeps the image's own and is not
-wrapped; ``wait`` then reports the container's own exit, as before.
+**2. The ``/.oc8`` dir.** Driver-provided, small, writable by the sandbox user
+(Docker: a tmpfs, mode 1777; Kubernetes: an ``emptyDir``). It holds:
 
-**Reading as the sandbox user.** ``archive_command`` is ``tar -c`` (never
-``-h``) of a path, run through exec AS THE SANDBOX'S CONFIGURED USER, which
-the driver takes from the sandbox's configuration, never from the sandbox.
-The read can then reach exactly what the sandbox's own processes can, so a
-link or a swapped directory pointing at ``/etc/shadow`` yields nothing.
+- ``START_FILE`` (``/.oc8/start``): a driver that cannot unpack the seed
+  before the container starts (Kubernetes) runs ``gated_command``, which
+  waits for this file, and creates it after the seed is in;
+- ``EXIT_FILE`` (``/.oc8/exit``): the command's exit code.
+
+Everything in it is UNTRUSTED and forgeable: the sandbox can write the exit
+code early or falsely, or put a FIFO or a link there. Nothing is trusted from
+it beyond "the leg is over", and it must never be a seed target.
+
+**3. ``wait``.** Report completion from ``EXIT_FILE``, read with
+``READ_EXIT_COMMAND`` (a regular file only, never a link, at most 32 bytes,
+killed after 2 s), through exec as the sandbox user. Bound every look in the
+driver's own process as well, and check the deadline on every iteration,
+whether the look succeeded, failed or timed out. Before returning, let the
+log settle (the last output may still be on its way into it). A sandbox that
+stopped anyway reports its own exit code. Reaching the timeout raises
+``TimeoutError``; -1 is a driver-level fault, never "too long".
+
+**4. Tools every sandbox image must have.** ``/bin/sh`` (with ``kill``,
+``trap``, ``read``), ``tar``, ``timeout``, ``head`` (with ``-c``), ``stat -c``
+or ``date -r``, and for the output listing GNU ``find -printf`` and
+``head -z`` (busybox lacks the last two: the output sync then logs and syncs
+nothing). Debian-based images have all of them; all images oc8 runs do: the
+CLI base (node:22-bookworm-slim), the isolated shell (python slim), the
+hooks worker (python alpine; it needs no output listing) and nanoclaw's
+Debian and oven/bun images.
+
+**5. Reading as the sandbox user.** ``archive_command`` is ``tar -c`` (never
+``-h``) of a path, run through exec AS THE SANDBOX'S CONFIGURED USER (taken
+from the sandbox's configuration, never from the sandbox), so it reaches
+exactly what the sandbox's processes can:
+
+- tar's stdout is the archive; stderr is read separately, for errors only;
+- exit 0 or 1 (GNU tar: a file changed while it was read) is success; 40
+  (``ARCHIVE_MISSING``) is a missing or unreadable path; 41
+  (``ARCHIVE_SYMLINK``) a symlink at the path itself; anything else fails;
+- links INSIDE the tree come back as link entries; links in the path's
+  INTERMEDIATE components are resolved by the shell, as that user -- so they
+  reach nothing that user could not read anyway;
+- ``relative_archive`` renames entries to the contract's layout.
+
+**6. ``max_lifetime_s``.** An upper bound on the sandbox's life, set by the
+runtime to cover its whole leg (deadline, stop, state saves, last output
+pass) plus slack. Past it the driver (or its reaper) may remove the sandbox
+whatever the run says; it is a backstop for a worker that died, not a
+deadline a leg is expected to reach.
 """
 
 from __future__ import annotations
@@ -52,9 +94,10 @@ from typing import IO
 from oc8.sandbox.archive import is_outside
 from oc8.sandbox.types import SandboxError
 
-#: Driver-provided, small, writable by the sandbox user.
+#: Driver-provided, small, writable by the sandbox user; untrusted.
 MARKER_DIR = "/.oc8"
 EXIT_FILE = f"{MARKER_DIR}/exit"
+START_FILE = f"{MARKER_DIR}/start"
 
 _WRAPPER = (
     'trap : TERM INT; "$@"; c=$?; echo; echo >&2; '
@@ -75,6 +118,17 @@ def lingering_command(command: list[str]) -> list[str]:
     if not command:
         return command
     return ["sh", "-c", _WRAPPER, "--", *command]
+
+
+def gated_command(command: list[str]) -> list[str]:
+    """``lingering_command(command)`` that first waits for ``START_FILE``: for
+    a driver that seeds a sandbox after its container has started. Nothing
+    of ``command`` runs before the driver creates the file. An empty command
+    stays empty (and a seeded spec must name one)."""
+    if not command:
+        return command
+    gate = f"until [ -e {START_FILE} ]; do sleep 0.2; done; "
+    return ["sh", "-c", gate + _WRAPPER, "--", *command]
 
 
 #: Prints the recorded exit code, or nothing while the command still runs.

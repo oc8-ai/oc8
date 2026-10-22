@@ -634,3 +634,17 @@ async def test_an_untimed_exec_still_has_a_bound(monkeypatch: pytest.MonkeyPatch
     with pytest.raises(SandboxError, match="did not return"):
         await driver.exec(SandboxHandle("c", _IMAGE), ["true"])
     assert time.monotonic() - started < 2
+
+
+async def test_a_scratch_dir_starts_empty_over_an_image_directory() -> None:
+    """Like an emptyDir: the image's own files at that path are not copied
+    into the scratch volume (alpine ships /media/cdrom, /media/usb, ...)."""
+    driver = DockerSandboxDriver()
+    handle = await driver.provision(
+        SandboxSpec(image=_IMAGE, scratch=(ScratchDir("/media", 16),), command=["sleep", "30"])
+    )
+    try:
+        res = await driver.exec(handle, ["ls", "-A", "/media"])
+        assert (res.exit_code, res.output) == (0, "")
+    finally:
+        await driver.teardown(handle)

@@ -189,6 +189,31 @@ def _reset_tenant_activity_gate() -> Iterator[None]:
     set_tenant_activity_gate(None)
 
 
+class _NoRunStateStorage:
+    """Object storage as run state sees it in a test without MinIO: every
+    call fails at once, as an unreachable store would after its retries."""
+
+    ObjectNotFound = type("ObjectNotFound", (Exception,), {})
+
+    @staticmethod
+    async def _unavailable(*args: object, **kwargs: object) -> object:
+        raise ConnectionError("object storage is not available in this test")
+
+    get_object = put_object = delete_object = delete_prefix = _unavailable
+
+
+@pytest.fixture(autouse=True)
+def _run_state_storage(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Runtimes now load and save run state (a CLI home, /workspace) and a
+    terminal transition deletes it, all in object storage. A test that did
+    not ask for MinIO gets a store that fails at once -- every caller treats
+    that as best-effort -- instead of waiting on retries against an address
+    that does not exist here."""
+    if "minio_url" in request.fixturenames:
+        return
+    monkeypatch.setattr("oc8.runtime.run_state.s3", _NoRunStateStorage)
+
+
 @pytest.fixture(scope="session")
 def redis_url() -> Iterator[str]:
     from oc8.config import get_settings

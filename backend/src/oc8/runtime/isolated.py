@@ -22,7 +22,9 @@ from oc8.config import get_settings
 from oc8.metering import check_budget, trigger_budget_hard_stop
 from oc8.observability import record_budget_exceeded
 from oc8.realtime.emit import record_activity
+from oc8.runtime.run_state import pack_files
 from oc8.runtime.workspace import run_output_sandbox
+from oc8.runtime.workspace_state import load_workspace, save_workspace
 from oc8.sandbox import get_sandbox_driver
 from oc8.sandbox.naming import container_name
 from oc8.sandbox.reaper import RUN_LABEL, TENANT_LABEL
@@ -32,6 +34,25 @@ logger = logging.getLogger(__name__)
 
 #: Size of the run's `/workspace` scratch dir.
 WORKSPACE_SCRATCH_MB = 4096
+#: Sandbox lifetime on top of the step budget (last output pass, workspace
+#: save, provisioning and teardown).
+LIFETIME_SLACK_S = 300
+
+
+def _owner_uid() -> int:
+    """The uid the shell runs as (``settings.sandbox_user``; the image's own
+    user, root, when unset) -- the owner of its seeded workspace."""
+    user = get_settings().sandbox_user
+    return int(user.partition(":")[0]) if user else 0
+
+
+def _owner_gid() -> int:
+    user = get_settings().sandbox_user
+    if not user:
+        return 0
+    uid, _, gid = user.partition(":")
+    return int(gid or uid)
+
 
 # The shell's verdict -> the state its task lands in. Anything unknown is a
 # failure, the same way the executor treats an unknown run status.
@@ -168,6 +189,10 @@ class DockerIsolatedRuntime:
             kind="agent",
             scopes=[f"run:{run_id}"],
         )
+        # Whatever the previous leg left in /workspace (without output/): a
+        # resume leg starts a fresh conversation, not a fresh workspace.
+        workspace_files = await load_workspace(tenant_id=tenant_id, run_id=run_id)
+        step_budget_s = _max_steps(pinned_definition) * 60
         spec = SandboxSpec(
             image=settings.agent_runtime_image,
             name=container_name(agent.name, "shell", run_id),
@@ -197,6 +222,15 @@ class DockerIsolatedRuntime:
             # FileAttachment rows. No seed: the shell's only credential is the
             # run token in its env.
             scratch=(ScratchDir("/workspace", WORKSPACE_SCRATCH_MB),),
+            seed=(
+                pack_files(workspace_files, prefix="workspace", uid=_owner_uid(), gid=_owner_gid())
+                if workspace_files
+                else None
+            ),
+            # The step budget the wait below allows, plus slack for the last
+            # output pass and the workspace save: past it the sandbox may be
+            # reaped whatever the run says.
+            max_lifetime_s=step_budget_s + LIFETIME_SLACK_S,
             user=settings.sandbox_user or None,
         )
         driver = get_sandbox_driver()
@@ -220,9 +254,12 @@ class DockerIsolatedRuntime:
             # enforces, or a raised per-agent override would still get killed by
             # a wall-clock timeout sized for the framework default.
             async with run_output_sandbox(run_id, tenant_id, spec, driver, handle):
-                code = await driver.wait(
-                    handle, timeout_s=float(_max_steps(pinned_definition) * 60)
-                )
+                try:
+                    code = await driver.wait(handle, timeout_s=float(step_budget_s))
+                finally:
+                    # Before the last output pass and teardown, whatever the
+                    # outcome: the next leg resumes from this workspace.
+                    await save_workspace(driver, handle, tenant_id=tenant_id, run_id=run_id)
                 if code != 0:
                     logs = await driver.logs(handle)
                     logger.warning(

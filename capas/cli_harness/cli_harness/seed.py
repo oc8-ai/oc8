@@ -43,14 +43,17 @@ import io
 import logging
 import posixpath
 import tarfile
-import tempfile
 import uuid
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import IO
 
 from oc8.config import get_settings
-from oc8.runtime.run_state import RunStateStore, pack_files
+from oc8.runtime.run_state import RunStateStore, filter_tar, pack_files
+from oc8.runtime.workspace_state import SAVE_TIMEOUT_S as WORKSPACE_SAVE_TIMEOUT_S
+
+# Re-exported: the CLI runtimes keep /workspace between legs the same way.
+from oc8.runtime.workspace_state import load_workspace as load_workspace
+from oc8.runtime.workspace_state import save_workspace as save_workspace
 from oc8.sandbox.driver import SandboxDriver
 from oc8.sandbox.linger import STOP_COMMAND
 from oc8.sandbox.types import SandboxHandle, ScratchDir
@@ -67,8 +70,10 @@ IMAGE_UID = 1000
 STOP_GRACE_S = 10.0
 #: Longest one save of a CLI home may take, read and upload together.
 SAVE_TIMEOUT_S = 300.0
-#: Above this, a filtered home is spooled to disk rather than memory.
-_SPOOL_IN_MEMORY_BYTES = 8 * 1024 * 1024
+#: Slack on top of a leg's own bounds before the driver may reap its sandbox:
+#: the last output pass, provisioning, a slow teardown.
+LIFETIME_SLACK_S = 300
+
 
 WORKSPACE_SCRATCH_MB = 4096
 HOME_SCRATCH_MB = 1024
@@ -163,28 +168,19 @@ async def save_home(
     return True
 
 
-def filter_tar(tar: bytes, exclude: Callable[[str], bool]) -> bytes:
-    """``tar`` without the members ``exclude`` names, links and special files.
+def workspace_seed(files: Mapping[str, bytes]) -> list[SeedDir]:
+    """The restored ``/workspace`` for a seed, or nothing on a first leg (the
+    scratch dir alone then provides an empty one)."""
+    return [SeedDir(WORKSPACE, files)] if files else []
 
-    Streams one member at a time into a spooled file, never extracting the
-    whole archive. The result is still untrusted: ``RunStateStore.save``
-    checks it again (names, sizes, member count).
-    """
-    out: IO[bytes] = tempfile.SpooledTemporaryFile(max_size=_SPOOL_IN_MEMORY_BYTES)
-    with out:
-        with (
-            tarfile.open(fileobj=io.BytesIO(tar), mode="r|") as src,
-            tarfile.open(fileobj=out, mode="w", format=tarfile.PAX_FORMAT) as dst,
-        ):
-            for member in src:
-                if not (member.isfile() or member.isdir()):
-                    continue
-                rel = posixpath.normpath(member.name)
-                if member.isfile() and exclude(rel):
-                    continue
-                dst.addfile(member, src.extractfile(member) if member.isfile() else None)
-        out.seek(0)
-        return out.read()
+
+def sandbox_lifetime_s(run_timeout_s: float) -> int:
+    """``SandboxSpec.max_lifetime_s`` for a CLI leg: its own deadline, the
+    stop grace, both state saves (home and workspace), and slack. Past it the
+    sandbox may be removed whatever the run says."""
+    return int(
+        run_timeout_s + STOP_GRACE_S + SAVE_TIMEOUT_S + WORKSPACE_SAVE_TIMEOUT_S + LIFETIME_SLACK_S
+    )
 
 
 async def stop_cli(driver: SandboxDriver, handle: SandboxHandle) -> bool:

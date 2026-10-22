@@ -79,6 +79,24 @@ async def _close_task_of(session: AsyncSession, *, run: AgentRun, dst: RunState)
     await session.flush()
 
 
+def _delete_state_after_commit(
+    session: AsyncSession, *, tenant_id: uuid.UUID, run_id: uuid.UUID
+) -> None:
+    from sqlalchemy import event
+
+    from oc8.runtime.run_state import delete_run_state_soon
+
+    def _after_commit(_session: object) -> None:
+        try:
+            delete_run_state_soon(tenant_id, run_id)
+        except RuntimeError:
+            # No running event loop (a synchronous commit): nothing to
+            # schedule on. The state stays until the tenant is removed.
+            logger.warning("run %s: could not schedule deleting its state", run_id)
+
+    event.listen(session.sync_session, "after_commit", _after_commit, once=True)
+
+
 class RunRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._s = session
@@ -196,6 +214,10 @@ class RunRepository:
             # And the task it was working, for the same reason and in the same
             # place. See _close_task_of.
             await _close_task_of(self._s, run=run, dst=dst)
+            # Its saved state (a CLI home, a workspace) goes too, but only once
+            # the terminal state is COMMITTED: a rolled-back transition leaves
+            # a run that may still resume. Best-effort; see delete_run_state.
+            _delete_state_after_commit(self._s, tenant_id=run.tenant_id, run_id=run.id)
         from oc8.realtime.bus import get_event_bus
 
         await get_event_bus().publish_event(

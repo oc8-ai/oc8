@@ -41,10 +41,14 @@ from cli_harness.seed import (
     SeedDir,
     build_seed,
     load_home,
+    load_workspace,
+    sandbox_lifetime_s,
     sandbox_owner,
     save_home,
+    save_workspace,
     stop_cli,
     workspace_scratch,
+    workspace_seed,
 )
 from cli_harness.session_state import clear_session_id, get_session_id, set_session_id
 from cli_harness.tail import tail_new_lines
@@ -279,6 +283,8 @@ class ClaudeCodeRuntime:
                 )
             home_files = restored
         self.prepare_config_home(home_files)
+        # Whatever the previous leg left in /workspace (without output/).
+        workspace_files = await load_workspace(tenant_id=tenant_id, run_id=run_id) or {}
         uid, gid = sandbox_owner()
 
         spec = SandboxSpec(
@@ -306,6 +312,7 @@ class ClaudeCodeRuntime:
             network_disabled=False,
             network=settings.agent_runtime_network,
             egress="restricted",
+            max_lifetime_s=sandbox_lifetime_s(_RUN_TIMEOUT_S),
             scratch=(
                 workspace_scratch(),
                 ScratchDir(_CLAUDE_CONFIG_DIR, HOME_SCRATCH_MB),
@@ -315,6 +322,7 @@ class ClaudeCodeRuntime:
             # run's token) and, on a resume leg, the saved CLI home.
             seed=build_seed(
                 [
+                    *workspace_seed(workspace_files),
                     SeedDir(
                         _MCP_CONFIG_DIR,
                         {"mcp.json": _mcp_config(mcp_url, token).encode()},
@@ -477,6 +485,7 @@ class ClaudeCodeRuntime:
                         name=_HOME_STATE,
                         path=_CLAUDE_CONFIG_DIR,
                     )
+                    await save_workspace(driver, handle, tenant_id=tenant_id, run_id=run_id)
         finally:
             await driver.teardown(handle)
 

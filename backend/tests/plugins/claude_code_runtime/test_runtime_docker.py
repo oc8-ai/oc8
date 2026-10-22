@@ -3,7 +3,9 @@
 The CLI image is not built in tests, so `claude` is replaced by a shell
 script on debian:bookworm-slim that does what matters here: it reads the MCP
 config at its first instruction (seed before start), appends to a transcript
-in $CLAUDE_CONFIG_DIR, writes an output file, and prints a `result` event.
+in $CLAUDE_CONFIG_DIR, writes /workspace/notes.txt and an output file, and
+prints a `result` event. On leg 2 it fails unless notes.txt came back and
+output/ did not.
 Two legs prove the transcript leg 1 wrote is back for leg 2, on a fresh
 sandbox with no host directory behind it, and that it all works as the
 image's uid 1000."""
@@ -39,6 +41,12 @@ grep -q '"Bearer ' "$cfg" || { echo "no token in config" >&2; exit 4; }
 [ "$(stat -c %u "$cfg")" = 1000 ] || { echo "config not owned by 1000" >&2; exit 5; }
 [ "$(id -u)" = 1000 ]
 [ "$PWD" = /workspace ]
+if [ -n "$RESUME" ]; then
+  grep -q "from leg 1" /workspace/notes.txt || { echo "workspace not restored" >&2; exit 6; }
+  [ ! -e /workspace/output/report.txt ] || { echo "output/ was restored" >&2; exit 7; }
+else
+  echo "from leg 1" > /workspace/notes.txt
+fi
 t="$CLAUDE_CONFIG_DIR/projects/-workspace/stub-sess.jsonl"
 mkdir -p "$(dirname "$t")"
 echo "{\"resume\": \"$RESUME\"}" >> "$t"

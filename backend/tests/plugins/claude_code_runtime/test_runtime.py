@@ -111,6 +111,8 @@ class _FakeDriver:
         #: What get_archive hands back for the CLI home: the files the CLI
         #: "wrote" during the leg.
         self.home: dict[str, bytes] = {}
+        #: What get_archive hands back for /workspace.
+        self.workspace: dict[str, bytes] = {}
         self.archived: list[str] = []
 
     async def provision(self, spec: Any) -> SandboxHandle:
@@ -121,7 +123,7 @@ class _FakeDriver:
         self, handle: SandboxHandle, path: str, *, max_bytes: int | None = None
     ) -> bytes:
         self.archived.append(path)
-        return _home_tar(self.home)
+        return _home_tar(self.workspace if path == "/workspace" else self.home)
 
     async def logs(self, handle: SandboxHandle) -> str:
         return "".join(line + "\n" for line in self.stdout_lines)
@@ -484,6 +486,16 @@ async def test_the_sandbox_has_scratch_dirs_and_no_mounts(
         _MCP_CONFIG_PATH.rsplit("/", 1)[0],
     }
     assert all(d.size_mb > 0 for d in spec.scratch)
+    from cli_harness.seed import SAVE_TIMEOUT_S, STOP_GRACE_S
+    from runtime.runtime import _RUN_TIMEOUT_S
+
+    from oc8.runtime.workspace_state import SAVE_TIMEOUT_S as WORKSPACE_SAVE_TIMEOUT_S
+
+    # Its own deadline, the stop grace, both saves and 300 s of slack: past
+    # that the sandbox may be reaped whatever the run says.
+    assert spec.max_lifetime_s == int(
+        _RUN_TIMEOUT_S + STOP_GRACE_S + SAVE_TIMEOUT_S + WORKSPACE_SAVE_TIMEOUT_S + 300
+    )
     assert spec.egress == "restricted"
     # The transcript's directory is named after the cwd: pinned, so every leg
     # agrees on it.
@@ -510,6 +522,7 @@ async def test_a_resume_leg_restores_the_home_leg_one_saved(
     # Leg 1: the CLI starts a session, writes its transcript, and the run parks.
     leg1 = _FakeDriver(['{"type":"system","subtype":"init","session_id":"claude-sess-2"}'])
     leg1.home = {_TRANSCRIPT: b'{"turn": 1}\n', ".claude.json": b"{}"}
+    leg1.workspace = {"notes.txt": b"half done", "output/report.txt": b"stored already"}
     _install(monkeypatch, leg1)
     async with app_session(tenant) as db:
         db.add(agent)
@@ -517,7 +530,7 @@ async def test_a_resume_leg_restores_the_home_leg_one_saved(
             db, agent=agent, task_text="fix the bug", tenant_id=tenant, run_id=run_id
         )
     assert first.status == "waiting_for_input"
-    assert leg1.archived == [_CLAUDE_CONFIG_DIR]
+    assert leg1.archived == [_CLAUDE_CONFIG_DIR, "/workspace"]
     assert leg1.torn_down == 1
 
     # Leg 2, on a fresh driver (a different worker, as far as the run knows).
@@ -542,6 +555,9 @@ async def test_a_resume_leg_restores_the_home_leg_one_saved(
     cmd = spec.command
     assert cmd[cmd.index("--resume") + 1] == "claude-sess-2"
     seeded = _seed_members(spec)
+    # /workspace comes back too, without output/ (stored as attachments).
+    assert seeded["workspace/notes.txt"][0] == b"half done"
+    assert not any(name.startswith("workspace/output") for name in seeded)
     home = _CLAUDE_CONFIG_DIR.lstrip("/")
     assert seeded[f"{home}/{_TRANSCRIPT}"][0] == b'{"turn": 1}\n'
     assert seeded[f"{home}/.claude.json"][0] == b"{}"

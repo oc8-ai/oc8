@@ -81,6 +81,9 @@ def _scratch_mount(scratch: ScratchDir, *, sized: bool, labels: dict[str, str]) 
         target=scratch.path,
         source=None,
         type="volume",
+        # Start empty, like an emptyDir: Docker would otherwise copy the
+        # image's own files at that path into a fresh volume.
+        no_copy=True,
         driver_config=driver_config,
         labels=labels,
     )

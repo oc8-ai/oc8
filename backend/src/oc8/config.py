@@ -225,6 +225,10 @@ class Settings(BaseSettings):
     """Largest saved run-state tar (``oc8.runtime.run_state.RunStateStore``),
     for example a CLI home kept between legs. Larger state is refused on save;
     pass it as ``max_bytes`` to ``get_archive`` so the read stops early."""
+    run_workspace_state_max_bytes: int = 256 * 1024 * 1024
+    """Largest ``/workspace`` (without ``output/``) kept between legs of a run
+    whose sandbox has no host directory. A larger one is dropped with a
+    warning, and the next leg starts with an empty workspace."""
     run_state_max_files: int = 20000
     """Most archive members (files and directories) one saved run state may
     hold. More than that and the save is refused."""

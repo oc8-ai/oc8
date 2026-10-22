@@ -27,14 +27,17 @@ the files read from it.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import posixpath
 import re
 import tarfile
+import tempfile
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from typing import IO
 
 from oc8.config import get_settings
 from oc8.sandbox.archive import is_outside, safe_extract_to_memory
@@ -44,6 +47,9 @@ from oc8.storage import s3
 logger = logging.getLogger(__name__)
 
 TAR_CONTENT_TYPE = "application/x-tar"
+
+#: Above this, a filtered state tar is spooled to disk rather than memory.
+_SPOOL_IN_MEMORY_BYTES = 8 * 1024 * 1024
 
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
@@ -112,18 +118,19 @@ def pack_files(
     return buf.getvalue()
 
 
-def _checked_files(tar: bytes, *, skip_links: bool = False) -> dict[str, bytes]:
+def _checked_files(
+    tar: bytes, *, skip_links: bool = False, max_bytes: int | None = None
+) -> dict[str, bytes]:
     settings = get_settings()
-    if len(tar) > settings.run_state_max_bytes:
-        raise RunStateRejected(
-            f"state archive is {len(tar)} bytes, over the {settings.run_state_max_bytes} limit"
-        )
+    limit = max_bytes if max_bytes is not None else settings.run_state_max_bytes
+    if len(tar) > limit:
+        raise RunStateRejected(f"state archive is {len(tar)} bytes, over the {limit} limit")
     skipped: list[str] = []
     try:
         files = safe_extract_to_memory(
             tar,
             max_members=settings.run_state_max_files,
-            max_total_bytes=settings.run_state_max_bytes,
+            max_total_bytes=limit,
             on_link="skip" if skip_links else "refuse",
             skipped=skipped,
         )
@@ -163,18 +170,24 @@ class RunStateStore:
             raise ValueError(f"invalid state name {name!r}")
         return f"{tenant_id}/runs/{run_id}/state/{name}.tar"
 
-    async def save(self, run_id: uuid.UUID, name: str, tar: bytes) -> None:
+    async def save(
+        self, run_id: uuid.UUID, name: str, tar: bytes, *, max_bytes: int | None = None
+    ) -> None:
+        """``max_bytes`` overrides ``run_state_max_bytes`` for this state (the
+        workspace has its own cap)."""
         key = self.key(self.tenant_id, run_id, name)
-        files = _checked_files(tar, skip_links=True)
+        files = _checked_files(tar, skip_links=True, max_bytes=max_bytes)
         await s3.put_object(key, pack_files(files), TAR_CONTENT_TYPE)
 
-    async def load_files(self, run_id: uuid.UUID, name: str) -> dict[str, bytes] | None:
+    async def load_files(
+        self, run_id: uuid.UUID, name: str, *, max_bytes: int | None = None
+    ) -> dict[str, bytes] | None:
         key = self.key(self.tenant_id, run_id, name)
         try:
             raw = await s3.get_object(key)
         except s3.ObjectNotFound:
             return None
-        return _checked_files(raw)
+        return _checked_files(raw, max_bytes=max_bytes)
 
     async def load(
         self, run_id: uuid.UUID, name: str, *, uid: int = 0, gid: int = 0
@@ -183,3 +196,68 @@ class RunStateStore:
         if files is None:
             return None
         return pack_files(files, uid=uid, gid=gid)
+
+    async def delete(self, run_id: uuid.UUID, name: str) -> None:
+        """Remove one state; nothing saved is not an error."""
+        await s3.delete_object(self.key(self.tenant_id, run_id, name))
+
+
+def state_prefix(tenant_id: uuid.UUID, run_id: uuid.UUID) -> str:
+    return f"{tenant_id}/runs/{run_id}/state/"
+
+
+async def delete_run_state(tenant_id: uuid.UUID, run_id: uuid.UUID) -> None:
+    """Delete every state object of a run. Best-effort: logged, never raised.
+
+    Called once the run has ended (done, failed or interrupted): nothing
+    resumes it any more, and a CLI home or workspace should not outlive it.
+    A run that is waiting for approval or input keeps its state.
+    """
+    try:
+        await s3.delete_prefix(state_prefix(tenant_id, run_id))
+    except Exception:
+        logger.warning("run %s: could not delete its saved state", run_id, exc_info=True)
+
+
+#: Deletions scheduled at a terminal transition, kept until they finish.
+_pending_deletions: set[asyncio.Task[None]] = set()
+
+
+def delete_run_state_soon(tenant_id: uuid.UUID, run_id: uuid.UUID) -> None:
+    """Schedule ``delete_run_state`` without waiting for it."""
+    task = asyncio.get_running_loop().create_task(
+        delete_run_state(tenant_id, run_id), name=f"delete-run-state-{run_id}"
+    )
+    _pending_deletions.add(task)
+    task.add_done_callback(_pending_deletions.discard)
+
+
+async def drain_deletions() -> None:
+    """Wait for every scheduled deletion (tests and shutdown)."""
+    while _pending_deletions:
+        await asyncio.gather(*list(_pending_deletions), return_exceptions=True)
+
+
+def filter_tar(tar: bytes, exclude: Callable[[str], bool]) -> bytes:
+    """``tar`` without the files ``exclude`` names (by normalised relative
+    name), and without links and special files.
+
+    Streams one member at a time into a spooled file, never extracting the
+    whole archive. The result is still untrusted: ``RunStateStore.save``
+    checks it again.
+    """
+    out: IO[bytes] = tempfile.SpooledTemporaryFile(max_size=_SPOOL_IN_MEMORY_BYTES)
+    with out:
+        with (
+            tarfile.open(fileobj=io.BytesIO(tar), mode="r|") as src,
+            tarfile.open(fileobj=out, mode="w", format=tarfile.PAX_FORMAT) as dst,
+        ):
+            for member in src:
+                if not (member.isfile() or member.isdir()):
+                    continue
+                rel = posixpath.normpath(member.name)
+                if exclude(rel):
+                    continue
+                dst.addfile(member, src.extractfile(member) if member.isfile() else None)
+        out.seek(0)
+        return out.read()

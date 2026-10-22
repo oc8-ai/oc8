@@ -1,10 +1,16 @@
 """The SandboxDriver contract. v1 implementation: DockerSandboxDriver.
 
-Every driver runs a spec's command under ``oc8.sandbox.linger``'s wrapper,
-so a sandbox outlives its command until teardown and stays readable through
-exec. **Sandbox images must provide ``/bin/sh``** (and ``tar`` for
-``get_archive``). ``exec`` and every read run as the sandbox's configured
-user, never with more privilege.
+The shared rules every driver follows live in ``oc8.sandbox.linger``'s
+docstring: the lingering wrapper and where it goes (the command/args, never
+the entrypoint), the ``/.oc8`` dir and its untrusted markers, ``wait``, the
+tools every sandbox image needs (``sh``, ``tar``, ``timeout``, ``head``,
+``stat``/``date``, ``kill``, GNU ``find -printf``, ``head -z``), reads as the
+sandbox user and ``max_lifetime_s``. The spec fields are documented on
+``oc8.sandbox.types.SandboxSpec``.
+
+In short: a sandbox outlives its command until teardown and stays readable
+through exec; ``exec`` and every read run as the sandbox's configured user,
+never with more privilege.
 """
 
 from __future__ import annotations
@@ -36,6 +42,16 @@ class SandboxDriver(Protocol):
         ``path`` is absolute; a missing directory is created. Unlike
         ``fs_write`` this has no size cap of its own beyond what the transport
         and the target directory allow.
+
+        Identity and ownership: a driver may unpack as root (Docker's archive
+        API) or as the sandbox user (tar over exec), and may ignore the
+        archive's owner fields. A portable caller therefore targets only the
+        sandbox's scratch dirs (writable by any user) and does not rely on
+        header ownership. Content is the CALLER's, never the sandbox's:
+        never ``put_archive`` onto a path the sandbox controls after its
+        command has started (it could have swapped a directory for a link to
+        somewhere the unpacking identity may write). The seed
+        (``SandboxSpec.seed``) is the way to put files in before start.
         """
         ...
 

@@ -84,13 +84,15 @@ class _FakeDriver:
         self.torn_down = 0
         #: What get_archive hands back for $CODEX_HOME at the end of the leg.
         self.home: dict[str, bytes] = {}
+        #: What get_archive hands back for /workspace.
+        self.workspace: dict[str, bytes] = {}
         self.archived: list[str] = []
 
     async def get_archive(
         self, handle: SandboxHandle, path: str, *, max_bytes: int | None = None
     ) -> bytes:
         self.archived.append(path)
-        return _home_tar(self.home)
+        return _home_tar(self.workspace if path == "/workspace" else self.home)
 
     async def provision(self, spec: Any) -> SandboxHandle:
         self.specs.append(spec)
@@ -461,6 +463,16 @@ async def test_the_sandbox_has_scratch_dirs_and_no_mounts(
     assert spec.mounts == []
     assert {d.path for d in spec.scratch} == {"/workspace", _CODEX_HOME}
     assert all(d.size_mb > 0 for d in spec.scratch)
+    from cli_harness.seed import SAVE_TIMEOUT_S, STOP_GRACE_S
+    from runtime.runtime import _RUN_TIMEOUT_S
+
+    from oc8.runtime.workspace_state import SAVE_TIMEOUT_S as WORKSPACE_SAVE_TIMEOUT_S
+
+    # Its own deadline, the stop grace, both saves and 300 s of slack: past
+    # that the sandbox may be reaped whatever the run says.
+    assert spec.max_lifetime_s == int(
+        _RUN_TIMEOUT_S + STOP_GRACE_S + SAVE_TIMEOUT_S + WORKSPACE_SAVE_TIMEOUT_S + 300
+    )
     assert spec.egress == "restricted"
     assert spec.workdir == "/workspace"
     assert spec.env["CODEX_HOME"] == _CODEX_HOME
@@ -489,6 +501,7 @@ async def test_a_resume_leg_restores_the_session_leg_one_saved(
         "config.toml": b'approval_policy = "on-request"\n',
         "log/codex-tui.log": b"noise",
     }
+    leg1.workspace = {"notes.txt": b"half done", "output/report.txt": b"stored already"}
     _install(monkeypatch, leg1)
     async with app_session(tenant) as db:
         db.add(agent)
@@ -496,7 +509,7 @@ async def test_a_resume_leg_restores_the_session_leg_one_saved(
             db, agent=agent, task_text="send the report", tenant_id=tenant, run_id=run_id
         )
     assert first.status == "waiting_for_approval"
-    assert leg1.archived == [_CODEX_HOME]
+    assert leg1.archived == [_CODEX_HOME, "/workspace"]
 
     async with app_session(tenant) as db:
         from oc8.runtime.run_context import merge_context
@@ -517,6 +530,9 @@ async def test_a_resume_leg_restores_the_session_leg_one_saved(
     assert spec.command[:4] == ["codex", "exec", "resume", "codex-sess-1"]
     assert "--last" not in spec.command
     seeded = _seed_members(spec)
+    # /workspace comes back too, without output/ (stored as attachments).
+    assert seeded["workspace/notes.txt"][0] == b"half done"
+    assert not any(name.startswith("workspace/output") for name in seeded)
     home = _CODEX_HOME.lstrip("/")
     assert seeded[f"{home}/{_ROLLOUT}"][0] == b'{"type": "session_meta"}\n'
     # The agent's edit of its config did not outlive leg 1, and logs stay out.
