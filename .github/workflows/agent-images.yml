@@ -4,12 +4,12 @@ name: Agent runtime images
 # (arm64 under QEMU), smoke-tests each on both platforms, and publishes them
 # to ghcr.io/oc8-ai:
 #
-#   oc8-agent-runtime-base   shared base of the CLI runtimes (Node, Python,
+#   agent-runtime-base   shared base of the CLI runtimes (Node, Python,
 #                            Playwright Chromium, tini)
-#   oc8-agent-claude-code    \
-#   oc8-agent-codex           > FROM oc8-agent-runtime-base
-#   oc8-agent-opencode       /
-#   oc8-agent-isolated       the isolated runtime's slim sandbox image
+#   agent-claude-code    \
+#   agent-codex           > FROM agent-runtime-base
+#   agent-opencode       /
+#   agent-isolated       the isolated runtime's slim sandbox image
 #
 # Tags: a push to dev publishes :dev and :<sha>, a push to main :latest and
 # :<sha>, a tag vX.Y.Z :X.Y.Z and :X.Y. Pull requests (forks included) and
@@ -89,7 +89,7 @@ jobs:
       contents: read
       packages: write
     env:
-      IMAGE: oc8-agent-isolated
+      IMAGE: agent-isolated
       DESCRIPTION: oc8 isolated agent runtime (linux/amd64 and linux/arm64)
     steps:
       - name: Checkout
@@ -191,15 +191,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - image: oc8-agent-claude-code
+          - image: agent-claude-code
             capa: claude_code_runtime
             smoke: claude
             description: oc8 Claude Code agent runtime (linux/amd64 and linux/arm64)
-          - image: oc8-agent-codex
+          - image: agent-codex
             capa: codex_runtime
             smoke: codex
             description: oc8 Codex agent runtime (linux/amd64 and linux/arm64)
-          - image: oc8-agent-opencode
+          - image: agent-opencode
             capa: opencode_runtime
             smoke: opencode
             description: oc8 OpenCode agent runtime (linux/amd64 and linux/arm64)
@@ -335,7 +335,7 @@ jobs:
       contents: read
       packages: write
     env:
-      IMAGE: oc8-agent-runtime-base
+      IMAGE: agent-runtime-base
       DESCRIPTION: oc8 agent runtime base image (linux/amd64 and linux/arm64)
     steps:
       - name: Checkout

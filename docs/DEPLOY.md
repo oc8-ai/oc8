@@ -156,11 +156,11 @@ and smoke-tested on both platforms before they are pushed.
 
 | Image | Runtime | Setting |
 | --- | --- | --- |
-| `ghcr.io/oc8-ai/oc8-agent-claude-code` | Claude Code | `OC8_CLAUDE_CODE_AGENT_IMAGE` |
-| `ghcr.io/oc8-ai/oc8-agent-codex` | Codex | `OC8_CODEX_AGENT_IMAGE` |
-| `ghcr.io/oc8-ai/oc8-agent-opencode` | OpenCode | `OC8_OPENCODE_AGENT_IMAGE` |
-| `ghcr.io/oc8-ai/oc8-agent-isolated` | Isolated shell | `OC8_AGENT_RUNTIME_IMAGE` |
-| `ghcr.io/oc8-ai/oc8-agent-runtime-base` | Shared base of the three CLI images | (build argument `BASE_IMAGE`) |
+| `ghcr.io/oc8-ai/agent-claude-code` | Claude Code | `OC8_CLAUDE_CODE_AGENT_IMAGE` |
+| `ghcr.io/oc8-ai/agent-codex` | Codex | `OC8_CODEX_AGENT_IMAGE` |
+| `ghcr.io/oc8-ai/agent-opencode` | OpenCode | `OC8_OPENCODE_AGENT_IMAGE` |
+| `ghcr.io/oc8-ai/agent-isolated` | Isolated shell | `OC8_AGENT_RUNTIME_IMAGE` |
+| `ghcr.io/oc8-ai/agent-runtime-base` | Shared base of the three CLI images | (build argument `BASE_IMAGE`) |
 
 ### Tags
 
@@ -178,14 +178,14 @@ Pin a release tag or a commit sha in production; `latest` and `dev` move.
 With Docker Compose, set the images in your `.env`:
 
 ```bash
-OC8_CLAUDE_CODE_AGENT_IMAGE=ghcr.io/oc8-ai/oc8-agent-claude-code:latest
-OC8_CODEX_AGENT_IMAGE=ghcr.io/oc8-ai/oc8-agent-codex:latest
-OC8_OPENCODE_AGENT_IMAGE=ghcr.io/oc8-ai/oc8-agent-opencode:latest
-OC8_AGENT_RUNTIME_IMAGE=ghcr.io/oc8-ai/oc8-agent-isolated:latest
+OC8_CLAUDE_CODE_AGENT_IMAGE=ghcr.io/oc8-ai/agent-claude-code:latest
+OC8_CODEX_AGENT_IMAGE=ghcr.io/oc8-ai/agent-codex:latest
+OC8_OPENCODE_AGENT_IMAGE=ghcr.io/oc8-ai/agent-opencode:latest
+OC8_AGENT_RUNTIME_IMAGE=ghcr.io/oc8-ai/agent-isolated:latest
 ```
 
 `OC8_AGENT_RUNTIME_IMAGE` defaults to the full backend image
-(`oc8-backend:latest`). `oc8-agent-isolated` is a slimmer alternative: it holds
+(`oc8-backend:latest`). `agent-isolated` is a slimmer alternative: it holds
 the `oc8` package and its dependencies only, with no capas or frontend, runs as
 uid 1000, and starts `/opt/venv/bin/python -m oc8.isolated_shell` like the
 backend image does.
@@ -200,7 +200,8 @@ docker build -t oc8-agent-opencode:latest capas/opencode_runtime
 docker build -f backend/Dockerfile.isolated -t oc8-agent-isolated:latest backend
 ```
 
-The CLI images build `FROM oc8-agent-runtime-base:latest` unless you pass
+Built locally, the images keep the `oc8-agent-*` names the settings default
+to. The CLI images build `FROM oc8-agent-runtime-base:latest` unless you pass
 `--build-arg BASE_IMAGE=<image>`.
 
 ## Kubernetes (Helm)

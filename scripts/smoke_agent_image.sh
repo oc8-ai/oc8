@@ -6,7 +6,7 @@
 #   smoke_agent_image.sh <image> <platform> <kind>
 #
 # kind: claude | codex | opencode   a CLI runtime image (its CLI's name)
-#       isolated                    oc8-agent-isolated, the isolated runtime
+#       isolated                    agent-isolated, the isolated runtime
 #
 # Every kind checks the tools oc8's sandbox contract execs inside a sandbox
 # (oc8.sandbox.linger and oc8.sandbox.scratch: sh, tar, timeout, head, stat,
