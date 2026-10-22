@@ -192,6 +192,13 @@ class Settings(BaseSettings):
     sandbox_driver: str = "docker"
     sandbox_provisioner_url: str = "http://runtime-provisioner:8090"
     sandbox_provisioner_token: str = ""
+    sandbox_archive_timeout_s: float = 120.0
+    """Longest one ``get_archive`` may take before the driver abandons it with
+    ``SandboxError``: a daemon call into a dying sandbox can otherwise block
+    forever."""
+    sandbox_exec_default_timeout_s: float = 600.0
+    """Bound on an ``exec`` whose caller gave no timeout (the provisioner
+    passes it on for requests without one)."""
     sandbox_archive_max_bytes: int = 256 * 1024 * 1024
     """Largest tar the runtime-provisioner accepts or returns in one request:
     a seed, a ``put_archive`` body or a ``get_archive`` result. Above it the

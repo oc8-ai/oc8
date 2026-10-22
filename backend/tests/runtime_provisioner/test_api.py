@@ -428,3 +428,27 @@ async def test_a_wait_past_its_timeout_is_a_504() -> None:
             f"/v1/sandboxes/{handle}/wait", headers=auth, json={"timeout_s": 1}
         )
     assert waited.status_code == 504
+
+
+async def test_an_exec_without_a_timeout_gets_the_default_one() -> None:
+    from oc8.config import get_settings
+
+    seen: list[float | None] = []
+
+    class _Recording(FakeDriver):
+        async def exec(
+            self, handle: SandboxHandle, command: list[str], **kwargs: object
+        ) -> ExecResult:
+            seen.append(kwargs.get("timeout"))  # type: ignore[arg-type]
+            return ExecResult(0, "ok")
+
+    transport = httpx.ASGITransport(app=_app(_Recording()))
+    auth = {"Authorization": "Bearer provisioner-token"}
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        created = await client.post("/v1/sandboxes", headers=auth, json={"image": "oc8-runtime:1"})
+        handle = created.json()["container_id"]
+        res = await client.post(
+            f"/v1/sandboxes/{handle}/exec", headers=auth, json={"command": ["true"]}
+        )
+    assert res.status_code == 200
+    assert seen == [get_settings().sandbox_exec_default_timeout_s]

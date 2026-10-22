@@ -222,7 +222,12 @@ def create_provisioner_app(
                 resolve(opaque_id, request_owner),
                 request.command,
                 workdir=request.workdir,
-                timeout=request.timeout,
+                # Never unbounded: a request without a timeout gets the default.
+                timeout=(
+                    request.timeout
+                    if request.timeout is not None
+                    else get_settings().sandbox_exec_default_timeout_s
+                ),
             )
         except SandboxError as exc:
             raise HTTPException(

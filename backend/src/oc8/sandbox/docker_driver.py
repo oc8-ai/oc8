@@ -1,18 +1,20 @@
 """Docker-backed SandboxDriver (v1) — talks to the host daemon via docker-py.
 
-All blocking docker-py calls run in a worker thread (asyncio.to_thread) so the
+All blocking docker-py calls run on a dedicated, bounded thread pool so the
 event loop is never blocked. Containers get ONLY spec.env — never the host
 environment — so oc8/provider secrets cannot leak into a sandbox."""
 
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import contextvars
 import io
 import posixpath
 import tarfile
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import IO, Any
 
 import docker
@@ -218,6 +220,30 @@ def _ensure_local_image(client: docker.DockerClient, spec: SandboxSpec) -> None:
                 "add the registry login in the runtime setup"
             ) from exc
         raise SandboxError(f"image pull failed: {exc}") from exc
+
+
+#: Blocking daemon calls run here, not on the default executor: a hung
+#: daemon then strands at most these threads, and the event loop's own pool
+#: (used by everything else in the process) stays free.
+_DAEMON_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=32, thread_name_prefix="oc8-docker"
+)
+
+
+async def _in_pool[T](fn: Callable[[], T]) -> T:
+    """``fn()`` on the daemon pool, with the caller's context."""
+    loop = asyncio.get_running_loop()
+    ctx = contextvars.copy_context()
+    return await loop.run_in_executor(_DAEMON_POOL, ctx.run, fn)
+
+
+async def _bounded[T](fn: Callable[[], T], bound_s: float, what: str) -> T:
+    """``fn()`` on the daemon pool, abandoned with ``SandboxError`` after
+    ``bound_s`` seconds. The abandoned thread finishes or fails on its own."""
+    try:
+        return await asyncio.wait_for(_in_pool(fn), timeout=bound_s)
+    except TimeoutError as exc:
+        raise SandboxError(f"{what} did not return within {bound_s:.0f}s") from exc
 
 
 #: How often ``wait`` looks for the command's exit marker.
@@ -440,7 +466,7 @@ class DockerSandboxDriver:
                     )
             return SandboxHandle(container_id=container.id, image=spec.image)
 
-        return await asyncio.to_thread(_run)
+        return await _in_pool(_run)
 
     async def wait(self, handle: SandboxHandle, timeout_s: float = 600.0) -> int:
         """Block until the sandbox's COMMAND exits, for at most timeout_s;
@@ -478,7 +504,7 @@ class DockerSandboxDriver:
                 # into a dying container) must not outlive the deadline. A
                 # thread abandoned this way finishes or fails on its own.
                 code = await asyncio.wait_for(
-                    asyncio.to_thread(_poll), timeout=min(_POLL_CALL_TIMEOUT_S, left)
+                    _in_pool(_poll), timeout=min(_POLL_CALL_TIMEOUT_S, left)
                 )
             except TimeoutError:
                 code = None
@@ -512,7 +538,7 @@ class DockerSandboxDriver:
             except docker.errors.DockerException:
                 return ""
 
-        return await asyncio.to_thread(_run)
+        return await _in_pool(_run)
 
     async def teardown(self, handle: SandboxHandle) -> None:
         def _run() -> None:
@@ -524,7 +550,7 @@ class DockerSandboxDriver:
             except docker.errors.DockerException as exc:
                 raise SandboxError(f"teardown failed: {exc}") from exc
 
-        await asyncio.to_thread(_run)
+        await _in_pool(_run)
 
     async def exec(
         self,
@@ -561,16 +587,16 @@ class DockerSandboxDriver:
             text = output.decode("utf-8", errors="replace") if output else ""
             return ExecResult(exit_code=int(code), output=text)
 
-        if timeout is None:
-            return await asyncio.to_thread(_run)
-        # Bounded in Python as well: the in-sandbox `timeout` cannot help when
-        # the daemon call itself never returns (an exec into a sandbox that is
-        # being torn down).
-        try:
-            bound = timeout + _EXEC_GRACE_S
-            return await asyncio.wait_for(asyncio.to_thread(_run), timeout=bound)
-        except TimeoutError as exc:
-            raise SandboxError(f"exec did not return within {bound:.0f}s") from exc
+        # Bounded in Python as well, always: the in-sandbox `timeout` cannot
+        # help when the daemon call itself never returns (an exec into a
+        # sandbox that is being torn down). Without a timeout, the setting's
+        # default bounds it.
+        bound = (
+            timeout + _EXEC_GRACE_S
+            if timeout is not None
+            else get_settings().sandbox_exec_default_timeout_s
+        )
+        return await _bounded(_run, bound, "exec")
 
     async def fs_write(self, handle: SandboxHandle, path: str, content: bytes) -> None:
         directory = posixpath.dirname(path) or "/"
@@ -590,7 +616,7 @@ class DockerSandboxDriver:
             except docker.errors.DockerException as exc:
                 raise SandboxError(f"fs_write failed: {exc}") from exc
 
-        await asyncio.to_thread(_run)
+        await _in_pool(_run)
 
     async def fs_read(self, handle: SandboxHandle, path: str) -> bytes:
         def _run() -> bytes:
@@ -604,7 +630,7 @@ class DockerSandboxDriver:
             stdout, _stderr = output
             return stdout or b""
 
-        return await asyncio.to_thread(_run)
+        return await _in_pool(_run)
 
     async def put_archive(self, handle: SandboxHandle, path: str, data: bytes) -> None:
         def _run() -> None:
@@ -628,7 +654,7 @@ class DockerSandboxDriver:
             except docker.errors.DockerException as exc:
                 raise SandboxError(f"put_archive failed: {exc}") from exc
 
-        await asyncio.to_thread(_run)
+        await _in_pool(_run)
 
     async def get_archive(
         self, handle: SandboxHandle, path: str, *, max_bytes: int | None = None
@@ -680,7 +706,7 @@ class DockerSandboxDriver:
                     raise archive_error(path, code, stderr.decode("utf-8", "replace"))
                 return relative_archive(spool)
 
-        return await asyncio.to_thread(_run)
+        return await _bounded(_run, get_settings().sandbox_archive_timeout_s, "get_archive")
 
     async def reap_orphans(self) -> int:
         """The fixed, no-argument orphan sweep the runtime-provisioner API

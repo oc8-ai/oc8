@@ -586,3 +586,51 @@ def files_of_tar(data: bytes) -> dict[str, bytes]:
                 assert f is not None
                 out[member.name] = f.read()
     return out
+
+
+class _HungContainer:
+    """A container whose every daemon call blocks, as an exec into a dying
+    sandbox can on some daemons."""
+
+    id = "c"
+    attrs: dict[str, Any] = {"Config": {"User": ""}}
+
+    def exec_run(self, *a: Any, **kw: Any) -> Any:
+        time.sleep(5)
+
+
+class _HungApi:
+    def exec_create(self, *a: Any, **kw: Any) -> dict[str, str]:
+        time.sleep(5)
+        return {"Id": "e"}
+
+
+class _HungClient:
+    api = _HungApi()
+
+    class containers:
+        @staticmethod
+        def get(_id: str) -> _HungContainer:
+            return _HungContainer()
+
+
+async def test_a_hung_get_archive_is_abandoned_on_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    from oc8.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "sandbox_archive_timeout_s", 0.5)
+    driver = DockerSandboxDriver(client=_HungClient())
+    started = time.monotonic()
+    with pytest.raises(SandboxError, match="did not return"):
+        await driver.get_archive(SandboxHandle("c", _IMAGE), "/workspace/output")
+    assert time.monotonic() - started < 2
+
+
+async def test_an_untimed_exec_still_has_a_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+    from oc8.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "sandbox_exec_default_timeout_s", 0.5)
+    driver = DockerSandboxDriver(client=_HungClient())
+    started = time.monotonic()
+    with pytest.raises(SandboxError, match="did not return"):
+        await driver.exec(SandboxHandle("c", _IMAGE), ["true"])
+    assert time.monotonic() - started < 2
