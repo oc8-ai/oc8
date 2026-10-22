@@ -82,6 +82,17 @@ class _FakeDriver:
         self.specs: list[Any] = []
         self.fs_writes: dict[str, bytes] = {}
         self.torn_down = 0
+        #: What get_archive hands back for $CODEX_HOME at the end of the leg.
+        self.home: dict[str, bytes] = {}
+        #: What get_archive hands back for /workspace.
+        self.workspace: dict[str, bytes] = {}
+        self.archived: list[str] = []
+
+    async def get_archive(
+        self, handle: SandboxHandle, path: str, *, max_bytes: int | None = None
+    ) -> bytes:
+        self.archived.append(path)
+        return _home_tar(self.workspace if path == "/workspace" else self.home)
 
     async def provision(self, spec: Any) -> SandboxHandle:
         self.specs.append(spec)
@@ -94,7 +105,8 @@ class _FakeDriver:
         return self.exit_code
 
     async def exec(self, handle: SandboxHandle, command: list[str], **kw: Any) -> ExecResult:
-        raise NotImplementedError
+        # The output sync's listing: no /workspace/output files.
+        return ExecResult(exit_code=0, output="")
 
     async def fs_write(self, handle: SandboxHandle, path: str, content: bytes) -> None:
         self.fs_writes[path] = content
@@ -126,17 +138,41 @@ def _install(monkeypatch: pytest.MonkeyPatch, driver: Any) -> None:
     monkeypatch.setattr("runtime.runtime.get_sandbox_driver", lambda: driver)
 
 
-def _use_tmp_session_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """The config.toml race fix (see runtime.py's _write_config_toml
-    docstring) means execute() now does REAL disk I/O -- os.makedirs() and a
-    real file write -- even against a FakeDriver, since the whole point of
-    the fix is that the file exists on the host BEFORE driver.provision() is
-    ever called. The real runtime_session_root default
-    (/var/lib/oc8/sessions) is neither writable nor expected to exist outside
-    a deployed container, so every test must redirect it to a pytest tmp_path
-    the same way nanoclaw_runtime's own tests redirect
-    nanoclaw_runtime/runtime/runtime.py's SESSION_ROOT_OVERRIDE."""
-    monkeypatch.setattr("runtime.runtime.SESSION_ROOT_OVERRIDE", str(tmp_path))
+@pytest.fixture(autouse=True)
+def _storage(_plugin_path: None, minio_url: str) -> None:
+    """Every leg saves $CODEX_HOME to RunStateStore (object storage) and a
+    resume leg loads it back, so every test needs storage. Takes
+    `_plugin_path` for the ordering only."""
+
+
+def _home_tar(files: dict[str, bytes]) -> bytes:
+    from oc8.runtime.run_state import pack_files
+
+    return pack_files(files)
+
+
+async def _save_home(tenant: uuid.UUID, run_id: uuid.UUID, files: dict[str, bytes]) -> None:
+    """What leg 1 left behind: its $CODEX_HOME, as RunStateStore keeps it."""
+    from oc8.runtime.run_state import RunStateStore
+
+    await RunStateStore(tenant).save(run_id, "codex-home", _home_tar(files))
+
+
+def _seed_members(spec: Any) -> dict[str, tuple[bytes | None, int, int, int]]:
+    """name -> (content or None for a dir, uid, gid, mode) of a spec's seed."""
+    import io
+    import tarfile
+
+    assert spec.seed is not None, "the spec carries no seed"
+    out: dict[str, tuple[bytes | None, int, int, int]] = {}
+    with tarfile.open(fileobj=io.BytesIO(spec.seed), mode="r:") as tar:
+        for member in tar.getmembers():
+            f = tar.extractfile(member) if member.isfile() else None
+            out[member.name] = (f.read() if f else None, member.uid, member.gid, member.mode)
+    return out
+
+
+_ROLLOUT = "sessions/2026/10/22/rollout-2026-10-22T10-00-00-codex-sess-1.jsonl"
 
 
 async def _seed_agent(app_session: Any, tenant: uuid.UUID, context: dict) -> tuple[Any, uuid.UUID]:
@@ -165,7 +201,6 @@ async def test_a_finished_run_returns_done(
 ) -> None:
     from runtime.runtime import CodexRuntime
 
-    _use_tmp_session_root(monkeypatch, tmp_path)
     driver = _FakeDriver(
         [
             '{"type":"thread.started","thread_id":"codex-sess-1"}',
@@ -200,18 +235,13 @@ async def test_a_finished_run_returns_done(
 
 
 async def test_config_toml_disables_interactive_approval(
-    app_session: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    app_session: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Also proves the write-before-provision fix: the config.toml file must
-    already exist on the host (mounted in via a BindMount) by the time
-    provision() runs, NOT be pushed into the container after the fact via
-    driver.fs_write() -- see runtime.py's _write_config_toml docstring for
-    the race that fix closes. This test now reads the config from the mount
-    entry's host_path on disk, rather than from driver.fs_writes, precisely
-    because fs_write is no longer called at all."""
+    """config.toml travels in the seed, at its in-container path, owned by the
+    image's uid-1000 user. It names the env var holding the token rather
+    than carrying the token itself."""
     from runtime.runtime import CodexRuntime
 
-    _use_tmp_session_root(monkeypatch, tmp_path)
     driver = _FakeDriver(['{"type":"thread.started","thread_id":"s1"}'])
     _install(monkeypatch, driver)
 
@@ -228,40 +258,32 @@ async def test_config_toml_disables_interactive_approval(
         )
 
     spec = driver.specs[0]
-    mount = next(mnt for mnt in spec.mounts if mnt.container_path.endswith("config.toml"))
-    assert mount.readonly is True
-    assert mount.container_path == "/home/node/.codex/config.toml"
-    # A local, cheap read of a tiny file this same test just wrote via
-    # execute() -- not the kind of blocking call asyncio.to_thread exists to
-    # protect against; mirrors nanoclaw_runtime/runtime/session.py's identical
-    # suppression on its own local os.path.exists() check.
-    text = Path(mount.host_path).read_text(encoding="utf-8")  # noqa: ASYNC240
+    content, uid, gid, mode = _seed_members(spec)["home/node/.codex/config.toml"]
+    assert content is not None
+    text = content.decode()
     assert 'approval_policy = "never"' in text
     assert 'sandbox_mode = "workspace-write"' in text
     assert "[mcp_servers.oc8]" in text
     assert 'type = "streamable_http"' in text
+    assert 'bearer_token_env_var = "OC8_TOKEN"' in text
+    assert spec.env["OC8_TOKEN"] and spec.env["OC8_TOKEN"] not in text
+    assert (uid, gid, mode) == (1000, 1000, 0o600)
 
 
-async def test_config_toml_is_written_before_the_container_is_provisioned(
-    app_session: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+async def test_config_toml_is_in_the_spec_the_container_is_provisioned_with(
+    app_session: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The race this whole fix exists to close: config.toml must be a real
-    file on disk by the time driver.provision() is called (and therefore by
-    the time Codex's entrypoint could possibly read it), not written via a
-    second, unsynchronized call afterward. A FakeDriver whose provision()
-    checks for the file's existence proves the ordering directly, rather
-    than just trusting that no post-provision fs_write call remains."""
+    """The race the seed closes: config.toml must be in place before Codex's
+    entrypoint could read it, not written by a second, unsynchronized call
+    after provision(). It is part of the very spec provision() receives
+    (drivers unpack the seed before start), and nothing is written after."""
     from runtime.runtime import CodexRuntime
-
-    _use_tmp_session_root(monkeypatch, tmp_path)
 
     seen_at_provision: dict[str, bool] = {}
 
     class _OrderCheckingDriver(_FakeDriver):
         async def provision(self, spec: Any) -> SandboxHandle:
-            mount = next(mnt for mnt in spec.mounts if mnt.container_path.endswith("config.toml"))
-            # Same rationale as above: a local, cheap stat.
-            seen_at_provision["exists"] = Path(mount.host_path).is_file()  # noqa: ASYNC240
+            seen_at_provision["seeded"] = "home/node/.codex/config.toml" in _seed_members(spec)
             return await super().provision(spec)
 
     driver = _OrderCheckingDriver(['{"type":"thread.started","thread_id":"s1"}'])
@@ -279,7 +301,8 @@ async def test_config_toml_is_written_before_the_container_is_provisioned(
             run_id=run_id,
         )
 
-    assert seen_at_provision["exists"] is True
+    assert seen_at_provision["seeded"] is True
+    assert driver.fs_writes == {}
 
 
 async def test_a_resume_leg_uses_the_resume_subcommand(
@@ -287,7 +310,6 @@ async def test_a_resume_leg_uses_the_resume_subcommand(
 ) -> None:
     from runtime.runtime import CodexRuntime
 
-    _use_tmp_session_root(monkeypatch, tmp_path)
     driver = _FakeDriver(
         ['{"type":"item.completed","item":{"type":"agent_message","text":"Done."}}']
     )
@@ -297,6 +319,7 @@ async def test_a_resume_leg_uses_the_resume_subcommand(
     agent, run_id = await _seed_agent(
         app_session, tenant, {"cli_harness_sessions": {"codex_runtime": "codex-sess-1"}}
     )
+    await _save_home(tenant, run_id, {_ROLLOUT: b"{}\n"})
     async with app_session(tenant) as db:
         db.add(agent)
         await CodexRuntime().execute(
@@ -325,7 +348,6 @@ async def test_task_text_cannot_be_parsed_as_a_flag(
     resume-leg command shapes."""
     from runtime.runtime import CodexRuntime
 
-    _use_tmp_session_root(monkeypatch, tmp_path)
     hostile_task_text = "--dangerously-bypass-approvals-and-sandbox"
 
     driver = _FakeDriver(
@@ -352,6 +374,7 @@ async def test_task_text_cannot_be_parsed_as_a_flag(
     agent2, run_id2 = await _seed_agent(
         app_session, tenant, {"cli_harness_sessions": {"codex_runtime": "codex-sess-9"}}
     )
+    await _save_home(tenant, run_id2, {_ROLLOUT: b"{}\n"})
     async with app_session(tenant) as db:
         db.add(agent2)
         await CodexRuntime().execute(
@@ -380,7 +403,6 @@ async def test_a_wedged_run_times_out_and_tears_down(
     exactly in shape."""
     from runtime.runtime import CodexRuntime
 
-    _use_tmp_session_root(monkeypatch, tmp_path)
     driver = _NeverFinishingDriver(['{"type":"thread.started","thread_id":"codex-sess-3"}'])
     _install(monkeypatch, driver)
     monkeypatch.setattr("runtime.runtime._RUN_TIMEOUT_S", 0.05)
@@ -416,124 +438,130 @@ async def test_a_wedged_run_times_out_and_tears_down(
 # --------------------------------------------------------------------------
 
 
-async def test_the_session_directory_is_mounted_writable_so_a_resume_can_find_it(
-    app_session: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+async def test_the_sandbox_has_scratch_dirs_and_no_mounts(
+    app_session: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`codex exec resume <id>` reads the rollout .jsonl Codex writes under
-    $CODEX_HOME/sessions/ (measured against codex-cli 0.147.0 inside this
-    plugin's own image), i.e. OUTSIDE /workspace -- and teardown destroys the
-    container filesystem at every park. So the subcommand alone proves
-    nothing: without a persistent, writable HOST directory behind
-    $CODEX_HOME, a resumed run names a session that no longer exists.
+    """No host directory exists behind a sandbox any more: /workspace and
+    $CODEX_HOME are scratch dirs the driver provides, and the CLI only
+    reaches the backend."""
+    from runtime.runtime import _CODEX_HOME, CodexRuntime
 
-    And config.toml stays READ-ONLY on top of it: the writable directory is
-    what the resume needs, but the agent's own file-edit tools must not be
-    able to rewrite the file carrying approval_policy = "never"."""
-    from runtime.runtime import _CODEX_HOME, _CONFIG_PATH, CodexRuntime
-
-    _use_tmp_session_root(monkeypatch, tmp_path)
     driver = _FakeDriver(
         ['{"type":"item.completed","item":{"type":"agent_message","text":"Done."}}']
     )
+    _install(monkeypatch, driver)
+
+    tenant = uuid.uuid4()
+    agent, run_id = await _seed_agent(app_session, tenant, {})
+    async with app_session(tenant) as db:
+        db.add(agent)
+        await CodexRuntime().execute(
+            db, agent=agent, task_text="fix the bug", tenant_id=tenant, run_id=run_id
+        )
+
+    spec = driver.specs[0]
+    assert spec.mounts == []
+    assert {d.path for d in spec.scratch} == {"/workspace", _CODEX_HOME}
+    assert all(d.size_mb > 0 for d in spec.scratch)
+    from cli_harness.seed import SAVE_TIMEOUT_S, STOP_GRACE_S
+    from runtime.runtime import _RUN_TIMEOUT_S
+
+    from oc8.runtime.workspace_state import SAVE_TIMEOUT_S as WORKSPACE_SAVE_TIMEOUT_S
+
+    # Its own deadline, the stop grace, both saves and 300 s of slack: past
+    # that the sandbox may be reaped whatever the run says.
+    assert spec.max_lifetime_s == int(
+        _RUN_TIMEOUT_S + STOP_GRACE_S + SAVE_TIMEOUT_S + WORKSPACE_SAVE_TIMEOUT_S + 300
+    )
+    assert spec.egress == "restricted"
+    assert spec.workdir == "/workspace"
+    assert spec.env["CODEX_HOME"] == _CODEX_HOME
+
+
+async def test_a_resume_leg_restores_the_session_leg_one_saved(
+    app_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`codex exec resume <id>` reads the rollout .jsonl Codex writes under
+    $CODEX_HOME/sessions/, OUTSIDE /workspace, and teardown destroys the
+    sandbox at every park. Leg 1 saves $CODEX_HOME (without its config,
+    which every leg seeds fresh); leg 2's seed puts the rollout back and
+    resumes it by its explicit id, never `--last`."""
+    from runtime.runtime import _CODEX_HOME, CodexRuntime
+
+    tenant = uuid.uuid4()
+    agent, run_id = await _seed_agent(
+        app_session,
+        tenant,
+        {"isolated_result": {"status": "waiting_for_approval", "output": "send it?"}},
+    )
+
+    leg1 = _FakeDriver(['{"type":"thread.started","thread_id":"codex-sess-1"}'])
+    leg1.home = {
+        _ROLLOUT: b'{"type": "session_meta"}\n',
+        "config.toml": b'approval_policy = "on-request"\n',
+        "log/codex-tui.log": b"noise",
+    }
+    leg1.workspace = {"notes.txt": b"half done", "output/report.txt": b"stored already"}
+    _install(monkeypatch, leg1)
+    async with app_session(tenant) as db:
+        db.add(agent)
+        first = await CodexRuntime().execute(
+            db, agent=agent, task_text="send the report", tenant_id=tenant, run_id=run_id
+        )
+    assert first.status == "waiting_for_approval"
+    assert leg1.archived == [_CODEX_HOME, "/workspace"]
+
+    async with app_session(tenant) as db:
+        from oc8.runtime.run_context import merge_context
+
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        await merge_context(db, run, {"isolated_result": {}})
+    leg2 = _FakeDriver(['{"type":"item.completed","item":{"type":"agent_message","text":"Sent."}}'])
+    _install(monkeypatch, leg2)
+    async with app_session(tenant) as db:
+        db.add(agent)
+        second = await CodexRuntime().execute(
+            db, agent=agent, task_text="approved", tenant_id=tenant, run_id=run_id
+        )
+    assert second.status == "done"
+
+    spec = leg2.specs[0]
+    assert spec.command[:4] == ["codex", "exec", "resume", "codex-sess-1"]
+    assert "--last" not in spec.command
+    seeded = _seed_members(spec)
+    # /workspace comes back too, without output/ (stored as attachments).
+    assert seeded["workspace/notes.txt"][0] == b"half done"
+    assert not any(name.startswith("workspace/output") for name in seeded)
+    home = _CODEX_HOME.lstrip("/")
+    assert seeded[f"{home}/{_ROLLOUT}"][0] == b'{"type": "session_meta"}\n'
+    # The agent's edit of its config did not outlive leg 1, and logs stay out.
+    config = seeded[f"{home}/config.toml"][0]
+    assert config is not None and b'approval_policy = "never"' in config
+    assert f"{home}/log/codex-tui.log" not in seeded
+
+
+async def test_a_resume_leg_without_saved_state_fails_before_any_sandbox(
+    app_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from runtime.runtime import CodexRuntime
+
+    driver = _FakeDriver([])
     _install(monkeypatch, driver)
 
     tenant = uuid.uuid4()
     agent, run_id = await _seed_agent(
-        app_session, tenant, {"cli_harness_sessions": {"codex_runtime": "codex-sess-1"}}
+        app_session, tenant, {"cli_harness_sessions": {"codex_runtime": "codex-sess-7"}}
     )
     async with app_session(tenant) as db:
         db.add(agent)
-        await CodexRuntime().execute(
-            db, agent=agent, task_text="fix the bug", tenant_id=tenant, run_id=run_id
+        result = await CodexRuntime().execute(
+            db, agent=agent, task_text="carry on", tenant_id=tenant, run_id=run_id
         )
 
-    spec = driver.specs[0]
-    assert spec.command[:3] == ["codex", "exec", "resume"]
-    home = next(mnt for mnt in spec.mounts if mnt.container_path == _CODEX_HOME)
-    assert home.readonly is False, "a read-only $CODEX_HOME cannot hold a resumable session"
-    assert home.host_path.startswith(str(tmp_path))
-    assert str(run_id) in home.host_path
-    # Per-RUN, and NOT nested inside the agent-writable /workspace mount.
-    workspace = next(mnt for mnt in spec.mounts if mnt.container_path == "/workspace")
-    assert not home.host_path.startswith(workspace.host_path + "/")
-
-    # The config's CONTAINER path nests inside the writable one (the daemon
-    # orders mount points by destination depth, so the deeper read-only entry
-    # wins for that one file -- measured against the real image), while its
-    # HOST path deliberately does NOT, so there is no writable second path to
-    # it either.
-    config = next(mnt for mnt in spec.mounts if mnt.container_path == _CONFIG_PATH)
-    assert config.readonly is True
-    assert config.container_path.startswith(_CODEX_HOME + "/")
-    assert not config.host_path.startswith(home.host_path + "/")
-
-
-async def test_every_mount_source_exists_on_disk_before_provision(
-    app_session: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Docker auto-creates a missing bind-mount source as root:root, which an
-    unprivileged container then cannot write to -- silently defeating both
-    /workspace and the resumable session."""
-    from runtime.runtime import CodexRuntime
-
-    _use_tmp_session_root(monkeypatch, tmp_path)
-    seen: dict[str, bool] = {}
-
-    class _OrderCheckingDriver(_FakeDriver):
-        async def provision(self, spec: Any) -> SandboxHandle:
-            seen["all_exist"] = all(
-                # A local, cheap stat on a path this test just created.
-                Path(mnt.host_path).exists()  # noqa: ASYNC240
-                for mnt in spec.mounts
-            )
-            return await super().provision(spec)
-
-    driver = _OrderCheckingDriver(
-        ['{"type":"item.completed","item":{"type":"agent_message","text":"Done."}}']
-    )
-    _install(monkeypatch, driver)
-
-    tenant = uuid.uuid4()
-    agent, run_id = await _seed_agent(app_session, tenant, {})
-    async with app_session(tenant) as db:
-        db.add(agent)
-        await CodexRuntime().execute(
-            db, agent=agent, task_text="fix the bug", tenant_id=tenant, run_id=run_id
-        )
-
-    assert seen["all_exist"] is True
-
-
-async def test_mounts_go_through_the_sandbox_allowlist(
-    app_session: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """docker_driver.py documents sandbox.mounts.validate_mounts as a gate
-    every caller must pass its bind-mount paths through."""
-    import runtime.runtime as rt
-
-    _use_tmp_session_root(monkeypatch, tmp_path)
-    calls: list[str] = []
-    real = rt.validate_mounts
-
-    def _spy(mounts: Any, *, allowed_root: str) -> Any:
-        calls.append(allowed_root)
-        return real(mounts, allowed_root=allowed_root)
-
-    monkeypatch.setattr(rt, "validate_mounts", _spy)
-    driver = _FakeDriver(
-        ['{"type":"item.completed","item":{"type":"agent_message","text":"Done."}}']
-    )
-    _install(monkeypatch, driver)
-
-    tenant = uuid.uuid4()
-    agent, run_id = await _seed_agent(app_session, tenant, {})
-    async with app_session(tenant) as db:
-        db.add(agent)
-        await rt.CodexRuntime().execute(
-            db, agent=agent, task_text="fix the bug", tenant_id=tenant, run_id=run_id
-        )
-
-    assert calls == [str(tmp_path)]
+    assert result.status == "failed"
+    assert "codex-sess-7" in result.output and "missing" in result.output
+    assert driver.specs == []
 
 
 async def test_the_run_row_is_committed_before_the_container_is_polled(
@@ -546,7 +574,6 @@ async def test_the_run_row_is_committed_before_the_container_is_polled(
     transition for the whole container run."""
     from runtime.runtime import CodexRuntime
 
-    _use_tmp_session_root(monkeypatch, tmp_path)
     seen: dict[str, Any] = {}
 
     class _ObservingDriver(_FakeDriver):
@@ -581,7 +608,6 @@ async def test_a_real_task_row_is_opened_and_reused_on_resume(
     against it can never be resolved back to the run."""
     from runtime.runtime import CodexRuntime
 
-    _use_tmp_session_root(monkeypatch, tmp_path)
     driver = _FakeDriver(
         ['{"type":"item.completed","item":{"type":"agent_message","text":"Done."}}']
     )
@@ -618,7 +644,6 @@ async def test_an_operator_cancel_interrupts_the_poll_loop(
     plugin accepted the parameter and never called it."""
     from runtime.runtime import CodexRuntime
 
-    _use_tmp_session_root(monkeypatch, tmp_path)
     driver = _NeverFinishingDriver(['{"type":"thread.started","thread_id":"codex-sess-4"}'])
     _install(monkeypatch, driver)
 
@@ -654,7 +679,6 @@ async def test_a_clean_exit_with_no_terminal_event_says_so(
     same event as "the task failed"."""
     from runtime.runtime import CodexRuntime
 
-    _use_tmp_session_root(monkeypatch, tmp_path)
     driver = _FakeDriver(['{"type":"turn.started"}'], exit_code=0)
     _install(monkeypatch, driver)
 
@@ -680,7 +704,6 @@ async def test_codex_is_allowed_to_run_outside_a_git_repo(
     single run of this runtime fails before it starts. Both leg shapes."""
     from runtime.runtime import CodexRuntime
 
-    _use_tmp_session_root(monkeypatch, tmp_path)
     driver = _FakeDriver(
         ['{"type":"item.completed","item":{"type":"agent_message","text":"Done."}}']
     )
@@ -699,6 +722,7 @@ async def test_codex_is_allowed_to_run_outside_a_git_repo(
     agent2, run_id2 = await _seed_agent(
         app_session, tenant, {"cli_harness_sessions": {"codex_runtime": "codex-sess-8"}}
     )
+    await _save_home(tenant, run_id2, {_ROLLOUT: b"{}\n"})
     async with app_session(tenant) as db:
         db.add(agent2)
         await CodexRuntime().execute(
@@ -712,7 +736,6 @@ async def test_the_toolchain_note_is_appended_to_the_task_prompt(
 ) -> None:
     from runtime.runtime import CodexRuntime
 
-    _use_tmp_session_root(monkeypatch, tmp_path)
     driver = _FakeDriver(
         [
             '{"type":"thread.started","thread_id":"codex-sess-1"}',
@@ -728,7 +751,11 @@ async def test_the_toolchain_note_is_appended_to_the_task_prompt(
     async with app_session(tenant) as db:
         db.add(agent)
         await CodexRuntime().execute(
-            db, agent=agent, task_text="fix the bug", tenant_id=tenant, run_id=run_id,
+            db,
+            agent=agent,
+            task_text="fix the bug",
+            tenant_id=tenant,
+            run_id=run_id,
         )
 
     spec = driver.specs[0]

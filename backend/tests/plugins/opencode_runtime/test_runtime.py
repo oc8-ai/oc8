@@ -76,6 +76,17 @@ class _FakeDriver:
         self.specs: list[Any] = []
         self.fs_writes: dict[str, bytes] = {}
         self.torn_down = 0
+        #: What get_archive hands back for the data dir at the end of the leg.
+        self.home: dict[str, bytes] = {}
+        #: What get_archive hands back for /workspace.
+        self.workspace: dict[str, bytes] = {}
+        self.archived: list[str] = []
+
+    async def get_archive(
+        self, handle: SandboxHandle, path: str, *, max_bytes: int | None = None
+    ) -> bytes:
+        self.archived.append(path)
+        return _home_tar(self.workspace if path == "/workspace" else self.home)
 
     async def provision(self, spec: Any) -> SandboxHandle:
         self.specs.append(spec)
@@ -88,7 +99,8 @@ class _FakeDriver:
         return self.exit_code
 
     async def exec(self, handle: SandboxHandle, command: list[str], **kw: Any) -> ExecResult:
-        raise NotImplementedError
+        # The output sync's listing: no /workspace/output files.
+        return ExecResult(exit_code=0, output="")
 
     async def fs_write(self, handle: SandboxHandle, path: str, content: bytes) -> None:
         self.fs_writes[path] = content
@@ -120,17 +132,42 @@ def _install(monkeypatch: pytest.MonkeyPatch, driver: Any) -> None:
     monkeypatch.setattr("runtime.runtime.get_sandbox_driver", lambda: driver)
 
 
-def _use_tmp_session_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """The opencode.jsonc race fix (see runtime.py's _write_opencode_config
-    docstring) means execute() now does REAL disk I/O -- os.makedirs() and a
-    real file write -- even against a FakeDriver, since the whole point of
-    the fix is that the file exists on the host BEFORE driver.provision() is
-    ever called. The real runtime_session_root default
-    (/var/lib/oc8/sessions) is neither writable nor expected to exist outside
-    a deployed container, so every test must redirect it to a pytest tmp_path
-    the same way codex_runtime's (and nanoclaw_runtime's) own tests redirect
-    their SESSION_ROOT_OVERRIDE."""
-    monkeypatch.setattr("runtime.runtime.SESSION_ROOT_OVERRIDE", str(tmp_path))
+@pytest.fixture(autouse=True)
+def _storage(_plugin_path: None, minio_url: str) -> None:
+    """Every leg saves opencode's data dir to RunStateStore (object storage)
+    and a resume leg loads it back, so every test needs storage. Takes
+    `_plugin_path` for the ordering only."""
+
+
+def _home_tar(files: dict[str, bytes]) -> bytes:
+    from oc8.runtime.run_state import pack_files
+
+    return pack_files(files)
+
+
+async def _save_home(tenant: uuid.UUID, run_id: uuid.UUID, files: dict[str, bytes]) -> None:
+    """What leg 1 left behind: opencode's data dir, as RunStateStore keeps it."""
+    from oc8.runtime.run_state import RunStateStore
+
+    await RunStateStore(tenant).save(run_id, "opencode-data", _home_tar(files))
+
+
+def _seed_members(spec: Any) -> dict[str, tuple[bytes | None, int, int, int]]:
+    """name -> (content or None for a dir, uid, gid, mode) of a spec's seed."""
+    import io
+    import tarfile
+
+    assert spec.seed is not None, "the spec carries no seed"
+    out: dict[str, tuple[bytes | None, int, int, int]] = {}
+    with tarfile.open(fileobj=io.BytesIO(spec.seed), mode="r:") as tar:
+        for member in tar.getmembers():
+            f = tar.extractfile(member) if member.isfile() else None
+            out[member.name] = (f.read() if f else None, member.uid, member.gid, member.mode)
+    return out
+
+
+_SESSION_FILE = "storage/session/global/opencode-sess-1.json"
+_OK = '{"type":"text","sessionID":"s1","part":{"type":"text","text":"ok","time":{"end":1}}}'
 
 
 async def _seed_agent(app_session: Any, tenant: uuid.UUID, context: dict) -> tuple[Any, uuid.UUID]:
@@ -159,7 +196,6 @@ async def test_a_finished_run_returns_done(
 ) -> None:
     from runtime.runtime import OpencodeRuntime
 
-    _use_tmp_session_root(monkeypatch, tmp_path)
     driver = _FakeDriver(
         [
             '{"type":"tool_use","sessionID":"opencode-sess-1",'
@@ -195,21 +231,14 @@ async def test_a_finished_run_returns_done(
 
 
 async def test_config_points_the_custom_provider_at_oc8s_gateway(
-    app_session: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    app_session: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Also proves the write-before-provision fix: opencode.jsonc must
-    already exist on the host (mounted in via a BindMount) by the time
-    provision() runs, NOT be pushed into the container after the fact via
-    driver.fs_write() -- see runtime.py's _write_opencode_config docstring
-    for the race that fix closes. This test reads the config from the mount
-    entry's host_path on disk, rather than from driver.fs_writes, precisely
-    because fs_write is no longer called at all for the config file."""
-    from runtime.runtime import OpencodeRuntime
+    """opencode.jsonc travels in the seed, at its in-container path, owned by
+    the image's uid-1000 user and readable by it alone: it carries the run's
+    bearer token."""
+    from runtime.runtime import _OPENCODE_CONFIG_PATH, OpencodeRuntime
 
-    _use_tmp_session_root(monkeypatch, tmp_path)
-    driver = _FakeDriver(
-        ['{"type":"text","sessionID":"s1","part":{"type":"text","text":"ok","time":{"end":1}}}']
-    )
+    driver = _FakeDriver([_OK])
     _install(monkeypatch, driver)
 
     tenant = uuid.uuid4()
@@ -217,57 +246,41 @@ async def test_config_points_the_custom_provider_at_oc8s_gateway(
     async with app_session(tenant) as db:
         db.add(agent)
         await OpencodeRuntime().execute(
-            db,
-            agent=agent,
-            task_text="fix the bug",
-            tenant_id=tenant,
-            run_id=run_id,
+            db, agent=agent, task_text="fix the bug", tenant_id=tenant, run_id=run_id
         )
 
     spec = driver.specs[0]
-    mount = next(mnt for mnt in spec.mounts if mnt.container_path.endswith("opencode.jsonc"))
-    assert mount.readonly is True
-    # NOT nested under /workspace -- see _write_opencode_config's docstring
-    # for why the config must be a sibling, unreachable via the agent's
-    # writable /workspace mount.
-    assert not mount.container_path.startswith("/workspace")
-    # A local, cheap read of a tiny file this same test just wrote via
-    # execute() -- not the kind of blocking call asyncio.to_thread exists to
-    # protect against; mirrors codex_runtime's identical suppression.
-    config = json.loads(Path(mount.host_path).read_text(encoding="utf-8"))  # noqa: ASYNC240
+    assert spec.env["OPENCODE_CONFIG"] == _OPENCODE_CONFIG_PATH
+    # NOT under /workspace, and NOT under the saved data dir.
+    assert not _OPENCODE_CONFIG_PATH.startswith("/workspace")
+    content, uid, gid, mode = _seed_members(spec)[_OPENCODE_CONFIG_PATH.lstrip("/")]
+    assert content is not None
+    config = json.loads(content)
     assert config["provider"]["oc8"]["npm"] == "@ai-sdk/openai-compatible"
     assert config["provider"]["oc8"]["options"]["baseURL"].endswith("/llm/v1")
     assert config["mcp"]["oc8"]["type"] == "remote"
-    assert config["mcp"]["oc8"]["headers"]["Authorization"].startswith("Bearer ")
+    token = config["provider"]["oc8"]["options"]["apiKey"]
+    assert token and config["mcp"]["oc8"]["headers"]["Authorization"] == f"Bearer {token}"
+    assert (uid, gid, mode) == (1000, 1000, 0o600)
 
 
-async def test_opencode_config_is_written_before_the_container_is_provisioned(
-    app_session: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+async def test_opencode_config_is_in_the_spec_the_container_is_provisioned_with(
+    app_session: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The race this whole fix exists to close: opencode.jsonc must be a real
-    file on disk by the time driver.provision() is called (and therefore by
-    the time opencode's entrypoint could possibly read it), not written via a
-    second, unsynchronized call afterward. A FakeDriver whose provision()
-    checks for the file's existence proves the ordering directly, rather
-    than just trusting that no post-provision fs_write call remains."""
-    from runtime.runtime import OpencodeRuntime
-
-    _use_tmp_session_root(monkeypatch, tmp_path)
+    """The race the seed closes: the config must be in place before
+    opencode's entrypoint could read it. It is part of the very spec
+    provision() receives (drivers unpack the seed before start), and nothing
+    is written after."""
+    from runtime.runtime import _OPENCODE_CONFIG_PATH, OpencodeRuntime
 
     seen_at_provision: dict[str, bool] = {}
 
     class _OrderCheckingDriver(_FakeDriver):
         async def provision(self, spec: Any) -> SandboxHandle:
-            mount = next(
-                mnt for mnt in spec.mounts if mnt.container_path.endswith("opencode.jsonc")
-            )
-            # Same rationale as above: a local, cheap stat.
-            seen_at_provision["exists"] = Path(mount.host_path).is_file()  # noqa: ASYNC240
+            seen_at_provision["seeded"] = _OPENCODE_CONFIG_PATH.lstrip("/") in _seed_members(spec)
             return await super().provision(spec)
 
-    driver = _OrderCheckingDriver(
-        ['{"type":"text","sessionID":"s1","part":{"type":"text","text":"ok","time":{"end":1}}}']
-    )
+    driver = _OrderCheckingDriver([_OK])
     _install(monkeypatch, driver)
 
     tenant = uuid.uuid4()
@@ -275,14 +288,11 @@ async def test_opencode_config_is_written_before_the_container_is_provisioned(
     async with app_session(tenant) as db:
         db.add(agent)
         await OpencodeRuntime().execute(
-            db,
-            agent=agent,
-            task_text="fix the bug",
-            tenant_id=tenant,
-            run_id=run_id,
+            db, agent=agent, task_text="fix the bug", tenant_id=tenant, run_id=run_id
         )
 
-    assert seen_at_provision["exists"] is True
+    assert seen_at_provision["seeded"] is True
+    assert driver.fs_writes == {}
 
 
 async def test_a_resume_leg_passes_the_session_flag(
@@ -290,7 +300,6 @@ async def test_a_resume_leg_passes_the_session_flag(
 ) -> None:
     from runtime.runtime import OpencodeRuntime
 
-    _use_tmp_session_root(monkeypatch, tmp_path)
     driver = _FakeDriver(
         [
             '{"type":"text","sessionID":"opencode-sess-1",'
@@ -303,6 +312,7 @@ async def test_a_resume_leg_passes_the_session_flag(
     agent, run_id = await _seed_agent(
         app_session, tenant, {"cli_harness_sessions": {"opencode_runtime": "opencode-sess-1"}}
     )
+    await _save_home(tenant, run_id, {_SESSION_FILE: b"{}"})
     async with app_session(tenant) as db:
         db.add(agent)
         await OpencodeRuntime().execute(
@@ -332,7 +342,6 @@ async def test_task_text_cannot_be_parsed_as_a_flag(
     matching codex_runtime's own test_task_text_cannot_be_parsed_as_a_flag."""
     from runtime.runtime import OpencodeRuntime
 
-    _use_tmp_session_root(monkeypatch, tmp_path)
     hostile_task_text = "--dangerous-looking-flag"
 
     driver = _FakeDriver(
@@ -359,6 +368,7 @@ async def test_task_text_cannot_be_parsed_as_a_flag(
     agent2, run_id2 = await _seed_agent(
         app_session, tenant, {"cli_harness_sessions": {"opencode_runtime": "opencode-sess-9"}}
     )
+    await _save_home(tenant, run_id2, {_SESSION_FILE: b"{}"})
     async with app_session(tenant) as db:
         db.add(agent2)
         await OpencodeRuntime().execute(
@@ -387,7 +397,6 @@ async def test_a_wedged_run_times_out_and_tears_down(
     test_a_wedged_run_times_out_and_tears_down exactly in shape."""
     from runtime.runtime import OpencodeRuntime
 
-    _use_tmp_session_root(monkeypatch, tmp_path)
     driver = _NeverFinishingDriver(
         [
             '{"type":"text","sessionID":"opencode-sess-3",'
@@ -432,7 +441,6 @@ async def test_multiple_text_events_are_concatenated_in_emission_order(
     one -- the subtlest part of this fix to get wrong."""
     from runtime.runtime import OpencodeRuntime
 
-    _use_tmp_session_root(monkeypatch, tmp_path)
     driver = _FakeDriver(
         [
             '{"type":"text","sessionID":"opencode-sess-2",'
@@ -469,34 +477,19 @@ async def test_multiple_text_events_are_concatenated_in_emission_order(
 # --------------------------------------------------------------------------
 
 
-async def test_the_session_directory_is_mounted_writable_so_a_resume_can_find_it(
-    app_session: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+async def test_the_sandbox_has_scratch_dirs_and_no_mounts(
+    app_session: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`--session <id>` reads the storage opencode writes under
-    `Global.Path.data` -- `path.join(xdgData, "opencode")` then `storage/` per
-    packages/core/src/global.ts and packages/opencode/src/storage/storage.ts,
-    confirmed by running the real CLI inside this plugin's own image -- i.e.
-    OUTSIDE /workspace, and teardown destroys the container filesystem at
-    every park. So the flag alone proves nothing without a persistent,
-    writable HOST directory behind that path.
+    """No host directory exists behind a sandbox any more: /workspace,
+    opencode's data dir and its config dir are scratch dirs the driver
+    provides, and the CLI only reaches the backend."""
+    from runtime.runtime import _OPENCODE_CONFIG_PATH, _OPENCODE_DATA_DIR, OpencodeRuntime
 
-    The config stays read-only, and -- unlike codex_runtime's config.toml --
-    at a container path that is not nested inside the writable data directory
-    at all, so no layering is needed to keep it out of the agent's reach."""
-    from runtime.runtime import (
-        _OPENCODE_CONFIG_PATH,
-        _OPENCODE_DATA_DIR,
-        OpencodeRuntime,
-    )
-
-    _use_tmp_session_root(monkeypatch, tmp_path)
-    driver = _FakeDriver(['{"type":"text","sessionID":"opencode-sess-1","part":{"text":"Done."}}'])
+    driver = _FakeDriver([_OK])
     _install(monkeypatch, driver)
 
     tenant = uuid.uuid4()
-    agent, run_id = await _seed_agent(
-        app_session, tenant, {"cli_harness_sessions": {"opencode_runtime": "opencode-sess-1"}}
-    )
+    agent, run_id = await _seed_agent(app_session, tenant, {})
     async with app_session(tenant) as db:
         db.add(agent)
         await OpencodeRuntime().execute(
@@ -504,86 +497,121 @@ async def test_the_session_directory_is_mounted_writable_so_a_resume_can_find_it
         )
 
     spec = driver.specs[0]
-    assert "--session" in spec.command
-    home = next(mnt for mnt in spec.mounts if mnt.container_path == _OPENCODE_DATA_DIR)
-    assert home.readonly is False, "a read-only data dir cannot hold a resumable session"
-    assert home.host_path.startswith(str(tmp_path))
-    assert str(run_id) in home.host_path
-    # Per-RUN, and NOT nested inside the agent-writable /workspace mount.
-    workspace = next(mnt for mnt in spec.mounts if mnt.container_path == "/workspace")
-    assert not home.host_path.startswith(workspace.host_path + "/")
+    assert spec.mounts == []
+    assert {d.path for d in spec.scratch} == {
+        "/workspace",
+        _OPENCODE_DATA_DIR,
+        _OPENCODE_CONFIG_PATH.rsplit("/", 1)[0],
+    }
+    assert all(d.size_mb > 0 for d in spec.scratch)
+    from cli_harness.seed import SAVE_TIMEOUT_S, STOP_GRACE_S
+    from runtime.runtime import _RUN_TIMEOUT_S
 
-    config = next(mnt for mnt in spec.mounts if mnt.container_path == _OPENCODE_CONFIG_PATH)
-    assert config.readonly is True
-    assert not config.container_path.startswith(_OPENCODE_DATA_DIR + "/")
-    assert not config.host_path.startswith(home.host_path + "/")
-    # XDG_DATA_HOME is pinned rather than inferred, so the mount above and the
-    # CLI cannot disagree about where the data directory is.
-    assert spec.env["XDG_DATA_HOME"] + "/opencode" == _OPENCODE_DATA_DIR
+    from oc8.runtime.workspace_state import SAVE_TIMEOUT_S as WORKSPACE_SAVE_TIMEOUT_S
+
+    # Its own deadline, the stop grace, both saves and 300 s of slack: past
+    # that the sandbox may be reaped whatever the run says.
+    assert spec.max_lifetime_s == int(
+        _RUN_TIMEOUT_S + STOP_GRACE_S + SAVE_TIMEOUT_S + WORKSPACE_SAVE_TIMEOUT_S + 300
+    )
+    assert spec.egress == "restricted"
+    assert spec.workdir == "/workspace"
+    # The state dir sits inside the saved data dir.
+    assert spec.env["XDG_STATE_HOME"].startswith(_OPENCODE_DATA_DIR + "/")
 
 
-async def test_every_mount_source_exists_on_disk_before_provision(
-    app_session: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+async def test_a_resume_leg_restores_the_data_dir_leg_one_saved(
+    app_session: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Docker auto-creates a missing bind-mount source as root:root, which an
-    unprivileged container then cannot write to -- silently defeating both
-    /workspace and the resumable session."""
+    """`--session <id>` reads the storage opencode keeps under its data dir,
+    OUTSIDE /workspace, and teardown destroys the sandbox at every park.
+    Leg 1 saves the data dir -- a SQLite database with its -wal and -shm
+    files as well as JSON storage -- without opencode's binaries, logs or
+    installed packages; leg 2's seed puts it back and resumes by id."""
+    from runtime.runtime import _OPENCODE_DATA_DIR, OpencodeRuntime
+
+    tenant = uuid.uuid4()
+    agent, run_id = await _seed_agent(
+        app_session,
+        tenant,
+        {"isolated_result": {"status": "waiting_for_input", "output": "which file?"}},
+    )
+
+    leg1 = _FakeDriver(['{"type":"step_start","sessionID":"opencode-sess-1"}'])
+    leg1.home = {
+        _SESSION_FILE: b"{}",
+        "opencode.db": b"SQLite format 3\x00",
+        "opencode.db-wal": b"wal",
+        "opencode.db-shm": b"shm",
+        "bin/rg": b"\x7fELF",
+        "log/2026-10-22.log": b"noise",
+        "cache/node_modules/pkg/index.js": b"x",
+    }
+    leg1.workspace = {"notes.txt": b"half done", "output/report.txt": b"stored already"}
+    _install(monkeypatch, leg1)
+    async with app_session(tenant) as db:
+        db.add(agent)
+        first = await OpencodeRuntime().execute(
+            db, agent=agent, task_text="fix the bug", tenant_id=tenant, run_id=run_id
+        )
+    assert first.status == "waiting_for_input"
+    assert leg1.archived == [_OPENCODE_DATA_DIR, "/workspace"]
+
+    async with app_session(tenant) as db:
+        from oc8.runtime.run_context import merge_context
+
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        await merge_context(db, run, {"isolated_result": {}})
+    leg2 = _FakeDriver(
+        ['{"type":"text","sessionID":"opencode-sess-1","part":{"type":"text","text":"Done."}}']
+    )
+    _install(monkeypatch, leg2)
+    async with app_session(tenant) as db:
+        db.add(agent)
+        second = await OpencodeRuntime().execute(
+            db, agent=agent, task_text="main.py", tenant_id=tenant, run_id=run_id
+        )
+    assert second.status == "done"
+
+    spec = leg2.specs[0]
+    cmd = spec.command
+    assert cmd[cmd.index("--session") + 1] == "opencode-sess-1"
+    seeded = _seed_members(spec)
+    # /workspace comes back too, without output/ (stored as attachments).
+    assert seeded["workspace/notes.txt"][0] == b"half done"
+    assert not any(name.startswith("workspace/output") for name in seeded)
+    data = _OPENCODE_DATA_DIR.lstrip("/")
+    assert seeded[f"{data}/{_SESSION_FILE}"][0] == b"{}"
+    assert seeded[f"{data}/opencode.db"][0] == b"SQLite format 3\x00"
+    assert seeded[f"{data}/opencode.db-wal"][0] == b"wal"
+    assert seeded[f"{data}/opencode.db-shm"][0] == b"shm"
+    assert not any(
+        name.startswith((f"{data}/bin", f"{data}/log")) or "node_modules" in name for name in seeded
+    )
+
+
+async def test_a_resume_leg_without_saved_state_fails_before_any_sandbox(
+    app_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from runtime.runtime import OpencodeRuntime
 
-    _use_tmp_session_root(monkeypatch, tmp_path)
-    seen: dict[str, bool] = {}
-
-    class _OrderCheckingDriver(_FakeDriver):
-        async def provision(self, spec: Any) -> SandboxHandle:
-            seen["all_exist"] = all(
-                # A local, cheap stat on a path this test just created.
-                Path(mnt.host_path).exists()  # noqa: ASYNC240
-                for mnt in spec.mounts
-            )
-            return await super().provision(spec)
-
-    driver = _OrderCheckingDriver(['{"type":"text","sessionID":"s","part":{"text":"Done."}}'])
+    driver = _FakeDriver([])
     _install(monkeypatch, driver)
 
     tenant = uuid.uuid4()
-    agent, run_id = await _seed_agent(app_session, tenant, {})
+    agent, run_id = await _seed_agent(
+        app_session, tenant, {"cli_harness_sessions": {"opencode_runtime": "opencode-sess-7"}}
+    )
     async with app_session(tenant) as db:
         db.add(agent)
-        await OpencodeRuntime().execute(
-            db, agent=agent, task_text="fix the bug", tenant_id=tenant, run_id=run_id
+        result = await OpencodeRuntime().execute(
+            db, agent=agent, task_text="carry on", tenant_id=tenant, run_id=run_id
         )
 
-    assert seen["all_exist"] is True
-
-
-async def test_mounts_go_through_the_sandbox_allowlist(
-    app_session: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """docker_driver.py documents sandbox.mounts.validate_mounts as a gate
-    every caller must pass its bind-mount paths through."""
-    import runtime.runtime as rt
-
-    _use_tmp_session_root(monkeypatch, tmp_path)
-    calls: list[str] = []
-    real = rt.validate_mounts
-
-    def _spy(mounts: Any, *, allowed_root: str) -> Any:
-        calls.append(allowed_root)
-        return real(mounts, allowed_root=allowed_root)
-
-    monkeypatch.setattr(rt, "validate_mounts", _spy)
-    driver = _FakeDriver(['{"type":"text","sessionID":"s","part":{"text":"Done."}}'])
-    _install(monkeypatch, driver)
-
-    tenant = uuid.uuid4()
-    agent, run_id = await _seed_agent(app_session, tenant, {})
-    async with app_session(tenant) as db:
-        db.add(agent)
-        await rt.OpencodeRuntime().execute(
-            db, agent=agent, task_text="fix the bug", tenant_id=tenant, run_id=run_id
-        )
-
-    assert calls == [str(tmp_path)]
+    assert result.status == "failed"
+    assert "opencode-sess-7" in result.output and "missing" in result.output
+    assert driver.specs == []
 
 
 async def test_the_run_row_is_committed_before_the_container_is_polled(
@@ -596,7 +624,6 @@ async def test_the_run_row_is_committed_before_the_container_is_polled(
     transition for the whole container run."""
     from runtime.runtime import OpencodeRuntime
 
-    _use_tmp_session_root(monkeypatch, tmp_path)
     seen: dict[str, Any] = {}
 
     class _ObservingDriver(_FakeDriver):
@@ -629,7 +656,6 @@ async def test_a_real_task_row_is_opened_and_reused_on_resume(
     against it can never be resolved back to the run."""
     from runtime.runtime import OpencodeRuntime
 
-    _use_tmp_session_root(monkeypatch, tmp_path)
     driver = _FakeDriver(['{"type":"text","sessionID":"s","part":{"text":"Done."}}'])
     _install(monkeypatch, driver)
 
@@ -664,7 +690,6 @@ async def test_an_operator_cancel_interrupts_the_poll_loop(
     plugin accepted the parameter and never called it."""
     from runtime.runtime import OpencodeRuntime
 
-    _use_tmp_session_root(monkeypatch, tmp_path)
     driver = _NeverFinishingDriver(['{"type":"tool_use","sessionID":"opencode-sess-4","part":{}}'])
     _install(monkeypatch, driver)
 
@@ -700,7 +725,6 @@ async def test_a_clean_exit_with_no_terminal_event_says_so(
     same event as "the task failed"."""
     from runtime.runtime import OpencodeRuntime
 
-    _use_tmp_session_root(monkeypatch, tmp_path)
     driver = _FakeDriver(['{"type":"tool_use","sessionID":"s","part":{}}'], exit_code=0)
     _install(monkeypatch, driver)
 
@@ -727,7 +751,6 @@ async def test_the_session_id_is_committed_once_not_every_poll(
     all."""
     from runtime.runtime import OpencodeRuntime
 
-    _use_tmp_session_root(monkeypatch, tmp_path)
     driver = _NeverFinishingDriver(['{"type":"tool_use","sessionID":"opencode-sess-1","part":{}}'])
     _install(monkeypatch, driver)
     monkeypatch.setattr("runtime.runtime._RUN_TIMEOUT_S", 0.05)
@@ -747,6 +770,7 @@ async def test_the_session_id_is_committed_once_not_every_poll(
     agent, run_id = await _seed_agent(
         app_session, tenant, {"cli_harness_sessions": {"opencode_runtime": "opencode-sess-1"}}
     )
+    await _save_home(tenant, run_id, {_SESSION_FILE: b"{}"})
     async with app_session(tenant) as db:
         db.add(agent)
         await OpencodeRuntime().execute(
@@ -767,7 +791,6 @@ async def test_the_toolchain_note_is_appended_to_the_task_prompt(
     JSON "text" event shape as the other tests in this file instead."""
     from runtime.runtime import OpencodeRuntime
 
-    _use_tmp_session_root(monkeypatch, tmp_path)
     driver = _FakeDriver(
         [
             '{"type":"text","sessionID":"opencode-sess-1",'
@@ -782,9 +805,77 @@ async def test_the_toolchain_note_is_appended_to_the_task_prompt(
     async with app_session(tenant) as db:
         db.add(agent)
         await OpencodeRuntime().execute(
-            db, agent=agent, task_text="fix the bug", tenant_id=tenant, run_id=run_id,
+            db,
+            agent=agent,
+            task_text="fix the bug",
+            tenant_id=tenant,
+            run_id=run_id,
         )
 
     spec = driver.specs[0]
     assert spec.command[-1].startswith("fix the bug\n\n")
     assert "Playwright" in spec.command[-1]
+
+
+async def test_a_parked_leg_stops_opencode_before_reading_its_data_dir(
+    app_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A park leaves opencode running. Its SQLite database (and -wal file)
+    is read only after the CLI was asked to exit and did, so the saved copy
+    is at rest; a leg whose CLI exited on its own is not signalled."""
+    from runtime.runtime import _OPENCODE_DATA_DIR, OpencodeRuntime
+
+    order: list[str] = []
+
+    class _Recording(_NeverFinishingDriver):
+        async def exec(self, handle: SandboxHandle, command: list[str], **kw: Any) -> ExecResult:
+            if "kill -TERM -1" in " ".join(command):
+                order.append("kill")
+                self.stopped = True
+            return await super().exec(handle, command, **kw)
+
+        async def wait(self, handle: SandboxHandle, timeout_s: float = 600.0) -> int:
+            if getattr(self, "stopped", False):
+                order.append("exited")
+                return 143
+            raise TimeoutError("still running")
+
+        async def get_archive(
+            self, handle: SandboxHandle, path: str, *, max_bytes: int | None = None
+        ) -> bytes:
+            if path == _OPENCODE_DATA_DIR:
+                order.append("save")
+            return await super().get_archive(handle, path, max_bytes=max_bytes)
+
+    driver = _Recording(['{"type":"step_start","sessionID":"opencode-sess-1"}'])
+    _install(monkeypatch, driver)
+    tenant = uuid.uuid4()
+    agent, run_id = await _seed_agent(
+        app_session, tenant, {"isolated_result": {"status": "waiting_for_input", "output": "?"}}
+    )
+    async with app_session(tenant) as db:
+        db.add(agent)
+        result = await OpencodeRuntime().execute(
+            db, agent=agent, task_text="fix the bug", tenant_id=tenant, run_id=run_id
+        )
+    assert result.status == "waiting_for_input"
+    assert order == ["kill", "exited", "save"]
+
+    # A leg whose CLI finished by itself is not signalled.
+    done = _FakeDriver([_OK])
+    calls: list[list[str]] = []
+    real_exec = done.exec
+
+    async def _exec(handle: SandboxHandle, command: list[str], **kw: Any) -> ExecResult:
+        calls.append(command)
+        return await real_exec(handle, command, **kw)
+
+    done.exec = _exec  # type: ignore[method-assign]
+    _install(monkeypatch, done)
+    agent2, run_id2 = await _seed_agent(app_session, tenant, {})
+    async with app_session(tenant) as db:
+        db.add(agent2)
+        await OpencodeRuntime().execute(
+            db, agent=agent2, task_text="fix the bug", tenant_id=tenant, run_id=run_id2
+        )
+    assert not any("kill" in " ".join(c) for c in calls)

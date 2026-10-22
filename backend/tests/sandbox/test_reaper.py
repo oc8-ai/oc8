@@ -43,8 +43,9 @@ class _FakeContainer:
         )
         self.removed = False
 
-    def remove(self, force: bool = False) -> None:
+    def remove(self, force: bool = False, v: bool = False) -> None:
         self.removed = True
+        self.removed_volumes = v
 
 
 class _FakeDocker:
@@ -75,9 +76,7 @@ async def _run(db: Any, tenant: uuid.UUID, state: str) -> uuid.UUID:
     # scheduler does, because RLS fails closed and an unbound session sees no
     # runs at all.
     if await db.get(m.Organization, tenant) is None:
-        db.add(
-            m.Organization(id=tenant, slug=f"t-{tenant.hex[:8]}", name="T")
-        )
+        db.add(m.Organization(id=tenant, slug=f"t-{tenant.hex[:8]}", name="T"))
         await db.flush()
     agent = m.Agent(tenant_id=tenant, department_id=uuid.uuid4(), name="Sina")
     db.add(agent)
@@ -241,9 +240,7 @@ async def test_an_old_exited_container_without_a_run_label_is_removed(
 ) -> None:
     docker = _FakeDocker([])
     docker.items = [_exited("oc8-nora-agent-019fa522-d093ec", minutes_ago=180)]
-    assert await reap_orphaned_containers(client=docker) == [
-        "oc8-nora-agent-019fa522-d093ec"
-    ]
+    assert await reap_orphaned_containers(client=docker) == ["oc8-nora-agent-019fa522-d093ec"]
 
 
 async def test_one_that_only_just_exited_is_given_time(
@@ -269,6 +266,61 @@ async def test_a_running_container_without_a_run_label_is_never_touched(
     assert await reap_orphaned_containers(client=docker) == []
 
 
+def _lingering(name: str, *, minutes_ago: int | None) -> _FakeContainer:
+    """A running container whose command finished ``minutes_ago`` (None: still
+    running): the wrapper keeps it up and records the end in /.oc8/exit."""
+    c = _FakeContainer(name)
+    c.status = "running"
+    c.attrs = {
+        "State": {"Running": True, "FinishedAt": "0001-01-01T00:00:00Z"},
+        "Config": {"User": "1000:1000"},
+    }
+
+    def exec_run(cmd: list[str], **kw: Any) -> tuple[int, bytes]:
+        # As the configured user, never root, and killed inside the sandbox.
+        assert kw.get("user") == "1000:1000"
+        assert cmd[:3] == ["timeout", "-s", "KILL"]
+        if minutes_ago is None:
+            return 1, b""
+        finished = dt.datetime.now(tz=dt.UTC) - dt.timedelta(minutes=minutes_ago)
+        return 0, f"{int(finished.timestamp())}\n".encode()
+
+    c.exec_run = exec_run  # type: ignore[attr-defined]
+    return c
+
+
+async def test_a_lingering_container_whose_command_ended_long_ago_is_removed(
+    app_session: AppSessionFactory,
+) -> None:
+    """A sandbox outlives its command (oc8.sandbox.linger), so a container
+    without a run label (a pooled hook worker) never reaches `exited`. Its
+    command having ended long ago makes it debris all the same."""
+    docker = _FakeDocker([])
+    docker.items = [
+        _lingering("oc8-nora-hook-019fa522-d093ec", minutes_ago=180),
+        _lingering("oc8-nora-hook-019fa522-aaaaaa", minutes_ago=2),
+        _lingering("oc8-nora-hook-019fa522-bbbbbb", minutes_ago=None),
+    ]
+    assert await reap_orphaned_containers(client=docker) == ["oc8-nora-hook-019fa522-d093ec"]
+
+
+async def test_a_reaper_read_that_never_returns_is_abandoned(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time as _time
+
+    from oc8.sandbox import reaper
+
+    monkeypatch.setattr(reaper, "_EXEC_TIMEOUT_S", 0.5)
+    hung = _lingering("oc8-nora-hook-019fa522-cccccc", minutes_ago=180)
+    hung.exec_run = lambda *a, **kw: _time.sleep(3)  # type: ignore[attr-defined]
+    docker = _FakeDocker([])
+    docker.items = [hung]
+    started = _time.monotonic()
+    assert await reap_orphaned_containers(client=docker) == []
+    assert _time.monotonic() - started < 2.5
+
+
 async def test_a_stranger_is_left_alone_even_when_exited(
     app_session: AppSessionFactory,
 ) -> None:
@@ -276,4 +328,60 @@ async def test_a_stranger_is_left_alone_even_when_exited(
     written. A container labelled by something else is none of our business."""
     docker = _FakeDocker([])
     docker.items = [_exited("tender_lamarr", minutes_ago=999)]
+    assert await reap_orphaned_containers(client=docker) == []
+
+
+# ------------------------------------------------------------- lifetime bound
+
+# A spec's `max_lifetime_s` reaches Docker as a deadline label. Past it, the
+# container is removed whatever its run says: the caller asked for the bound.
+
+
+async def test_a_container_past_its_deadline_is_removed_even_while_its_run_is_live(
+    app_session: AppSessionFactory,
+) -> None:
+    import time
+
+    from oc8.sandbox.reaper import EXPIRES_LABEL
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        running = await _run(db, tenant, "running")
+        await db.commit()
+
+    name = container_name("Sina", "agent", running)
+    docker = _FakeDocker([(name, str(running))])
+    docker.items[0].labels[EXPIRES_LABEL] = str(int(time.time()) - 5)
+
+    assert await reap_orphaned_containers(client=docker) == [name]
+    # Scratch lives in anonymous volumes; they go with the container.
+    assert docker.items[0].removed_volumes is True
+
+
+async def test_a_container_before_its_deadline_is_left_alone(
+    app_session: AppSessionFactory,
+) -> None:
+    import time
+
+    from oc8.sandbox.reaper import EXPIRES_LABEL
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        running = await _run(db, tenant, "running")
+        await db.commit()
+
+    docker = _FakeDocker([(container_name("Sina", "agent", running), str(running))])
+    docker.items[0].labels[EXPIRES_LABEL] = str(int(time.time()) + 600)
+    assert await reap_orphaned_containers(client=docker) == []
+
+
+async def test_an_unreadable_deadline_is_not_a_deadline(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.sandbox.reaper import EXPIRES_LABEL
+
+    docker = _FakeDocker([])
+    running = _FakeContainer("oc8-nora-agent-019fa522-d093ec")
+    running.labels[EXPIRES_LABEL] = "soon"
+    docker.items = [running]
     assert await reap_orphaned_containers(client=docker) == []

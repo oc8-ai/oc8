@@ -5,6 +5,13 @@ model through /llm, every tool through /mcp -- so the PEP still sees every actio
 and no credential ever enters the container. That is the entire point; if this
 adapter ever passes a provider key or an MCP credential, the >3000 EUR approval
 stops being enforceable.
+
+Docker-only for now. Unlike the isolated, Claude Code, Codex and opencode
+runtimes, which run on scratch dirs and a seed, this one still bind-mounts host
+directories under ``runtime_session_root``: it exchanges messages with the
+harness through SQLite files both sides open live, which a seed and an archive
+read cannot replace. A sandbox driver without host mounts (Kubernetes) cannot
+run it.
 """
 
 from __future__ import annotations

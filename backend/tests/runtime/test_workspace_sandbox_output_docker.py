@@ -1,0 +1,208 @@
+"""The sandbox output sync against a real Docker sandbox: the GNU find listing,
+one get_archive per file, names with spaces and tabs, a symlink and a file
+over the attachment cap. Runtime images are Debian-based; a busybox userland
+fails the listing loudly instead of silently syncing nothing."""
+
+from __future__ import annotations
+
+import uuid
+from typing import Any
+
+import pytest
+from sqlalchemy import select
+
+from oc8 import models as m
+from oc8.runtime.workspace import sync_sandbox_output
+from oc8.sandbox.docker_driver import DockerSandboxDriver
+from oc8.sandbox.types import SandboxSpec, ScratchDir
+from oc8.storage.attachments import MAX_ATTACHMENT_BYTES
+from tests.conftest import AppSessionFactory
+
+pytestmark = pytest.mark.asyncio
+
+_DEBIAN = "debian:bookworm-slim"
+_ALPINE = "alpine:latest"
+
+
+async def _run(db: Any, tenant: uuid.UUID) -> m.AgentRun:
+    dept = m.Department(tenant_id=tenant, name="Ops", frame={})
+    db.add(dept)
+    await db.flush()
+    agent = m.Agent(
+        tenant_id=tenant,
+        department_id=dept.id,
+        name="Ada",
+        status="running",
+        definition={},
+        presentation={},
+        narrowing={},
+    )
+    db.add(agent)
+    await db.flush()
+    run = m.AgentRun(tenant_id=tenant, agent_id=agent.id, state="running")
+    db.add(run)
+    await db.flush()
+    return run
+
+
+async def test_a_debian_sandbox_output_is_listed_and_fetched_per_file(
+    app_session: AppSessionFactory, minio_url: str
+) -> None:
+    driver = DockerSandboxDriver()
+    handle = await driver.provision(
+        SandboxSpec(image=_DEBIAN, scratch=(ScratchDir("/workspace", 128),))
+    )
+    try:
+        script = (
+            "set -e; mkdir -p '/workspace/output/sub dir'; cd /workspace/output; "
+            "printf 'Q3' > report.txt; printf 'deep' > 'sub dir/a b.txt'; "
+            "printf 'tab' > \"$(printf 'tab\\there.txt')\"; "
+            "ln -s /etc/shadow link.txt; "
+            f"head -c {MAX_ATTACHMENT_BYTES + 1} /dev/zero > big.txt"
+        )
+        res = await driver.exec(handle, ["sh", "-c", script])
+        assert res.exit_code == 0, res.output
+
+        tenant = uuid.uuid4()
+        async with app_session(tenant) as db:
+            run = await _run(db, tenant)
+            synced = await sync_sandbox_output(
+                db, tenant_id=tenant, run_id=run.id, driver=driver, handle=handle
+            )
+            names = sorted(f.filename for f in synced)
+            assert names == ["report.txt", "sub dir/a b.txt", "tabhere.txt"]
+            rows = (
+                (
+                    await db.execute(
+                        select(m.FileAttachment).where(m.FileAttachment.owner_id == run.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert {r.filename: r.size_bytes for r in rows}["sub dir/a b.txt"] == 4
+            again = await sync_sandbox_output(
+                db, tenant_id=tenant, run_id=run.id, driver=driver, handle=handle
+            )
+            assert again == []
+    finally:
+        await driver.teardown(handle)
+
+
+async def test_a_sandbox_without_an_output_dir_syncs_nothing_quietly(
+    app_session: AppSessionFactory, minio_url: str
+) -> None:
+    driver = DockerSandboxDriver()
+    handle = await driver.provision(SandboxSpec(image=_DEBIAN))
+    try:
+        tenant = uuid.uuid4()
+        async with app_session(tenant) as db:
+            run = await _run(db, tenant)
+            assert (
+                await sync_sandbox_output(
+                    db, tenant_id=tenant, run_id=run.id, driver=driver, handle=handle
+                )
+                == []
+            )
+    finally:
+        await driver.teardown(handle)
+
+
+async def test_a_busybox_sandbox_fails_the_listing_loudly(
+    app_session: AppSessionFactory, minio_url: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    driver = DockerSandboxDriver()
+    handle = await driver.provision(SandboxSpec(image=_ALPINE))
+    try:
+        res = await driver.exec(
+            handle, ["sh", "-c", "mkdir -p /workspace/output && echo x > /workspace/output/a.txt"]
+        )
+        assert res.exit_code == 0, res.output
+        tenant = uuid.uuid4()
+        async with app_session(tenant) as db:
+            run = await _run(db, tenant)
+            with caplog.at_level("WARNING", logger="oc8.runtime.workspace"):
+                synced = await sync_sandbox_output(
+                    db, tenant_id=tenant, run_id=run.id, driver=driver, handle=handle
+                )
+        assert synced == []
+        assert "needs GNU find and head" in caplog.text
+    finally:
+        await driver.teardown(handle)
+
+
+async def test_a_file_swapped_for_a_link_after_listing_is_not_read(
+    app_session: AppSessionFactory, minio_url: str
+) -> None:
+    """Listing and fetch both run as the sandbox user. A path swapped for a
+    link to a root-only file after the listing must not come back, whether
+    the file itself or a directory above it was swapped -- even with the
+    owner check switched off (as a sandbox claiming to be root would have
+    switched it off when its listing reported the uid)."""
+    from oc8.runtime import workspace
+
+    driver = DockerSandboxDriver()
+    handle = await driver.provision(
+        SandboxSpec(
+            image=_DEBIAN,
+            user="1000:1000",
+            scratch=(ScratchDir("/workspace", 64),),
+        )
+    )
+    try:
+        size = (await driver.exec(handle, ["stat", "-c", "%s", "/etc/shadow"])).output.strip()
+        script = (
+            "set -e; mkdir -p /workspace/output/sub; cd /workspace/output; "
+            f"head -c {size} /dev/zero > shadow.txt; head -c {size} /dev/zero > sub/shadow; "
+            "printf ok > ok.txt"
+        )
+        res = await driver.exec(handle, ["sh", "-c", script])
+        assert res.exit_code == 0, res.output
+        entries = await workspace._list_sandbox_output(uuid.uuid4(), driver, handle)
+        swap = (
+            "set -e; cd /workspace/output; rm shadow.txt; ln -s /etc/shadow shadow.txt; "
+            "rm -r sub; ln -s /etc sub"
+        )
+        res = await driver.exec(handle, ["sh", "-c", swap])
+        assert res.exit_code == 0, res.output
+        tenant = uuid.uuid4()
+        async with app_session(tenant) as db:
+            run = await _run(db, tenant)
+            for owner_uid in (1000, 0, None):
+                stored = []
+                for name, listed in entries.files:
+                    raw = await workspace._fetch_one(
+                        run.id, driver, handle, name, listed=listed, owner_uid=owner_uid
+                    )
+                    if raw is not None:
+                        stored.append(name)
+                        assert b"root:" not in raw
+                assert stored == ["ok.txt"], owner_uid
+    finally:
+        await driver.teardown(handle)
+
+
+async def test_output_is_read_after_the_command_exits(
+    app_session: AppSessionFactory, minio_url: str
+) -> None:
+    """The sandbox outlives its command, so the last pass still reads it."""
+    driver = DockerSandboxDriver()
+    handle = await driver.provision(
+        SandboxSpec(
+            image=_DEBIAN,
+            user="1000:1000",
+            scratch=(ScratchDir("/workspace", 64),),
+            command=["sh", "-c", "mkdir -p /workspace/output && echo hi > /workspace/output/r.txt"],
+        )
+    )
+    try:
+        assert await driver.wait(handle, timeout_s=30) == 0
+        tenant = uuid.uuid4()
+        async with app_session(tenant) as db:
+            run = await _run(db, tenant)
+            synced = await sync_sandbox_output(
+                db, tenant_id=tenant, run_id=run.id, driver=driver, handle=handle, owner_uid=1000
+            )
+            assert [f.filename for f in synced] == ["r.txt"]
+    finally:
+        await driver.teardown(handle)

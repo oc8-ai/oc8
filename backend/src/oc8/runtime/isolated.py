@@ -22,14 +22,37 @@ from oc8.config import get_settings
 from oc8.metering import check_budget, trigger_budget_hard_stop
 from oc8.observability import record_budget_exceeded
 from oc8.realtime.emit import record_activity
-from oc8.runtime.workspace import ensure_workspace_dir, workspace_root
+from oc8.runtime.run_state import pack_files
+from oc8.runtime.workspace import run_output_sandbox
+from oc8.runtime.workspace_state import load_workspace, save_workspace
 from oc8.sandbox import get_sandbox_driver
-from oc8.sandbox.mounts import validate_mounts
 from oc8.sandbox.naming import container_name
 from oc8.sandbox.reaper import RUN_LABEL, TENANT_LABEL
-from oc8.sandbox.types import BindMount, SandboxError, SandboxHandle, SandboxSpec
+from oc8.sandbox.types import SandboxError, SandboxHandle, SandboxSpec, ScratchDir
 
 logger = logging.getLogger(__name__)
+
+#: Size of the run's `/workspace` scratch dir.
+WORKSPACE_SCRATCH_MB = 4096
+#: Sandbox lifetime on top of the step budget (last output pass, workspace
+#: save, provisioning and teardown).
+LIFETIME_SLACK_S = 300
+
+
+def _owner_uid() -> int:
+    """The uid the shell runs as (``settings.sandbox_user``; the image's own
+    user, root, when unset) -- the owner of its seeded workspace."""
+    user = get_settings().sandbox_user
+    return int(user.partition(":")[0]) if user else 0
+
+
+def _owner_gid() -> int:
+    user = get_settings().sandbox_user
+    if not user:
+        return 0
+    uid, _, gid = user.partition(":")
+    return int(gid or uid)
+
 
 # The shell's verdict -> the state its task lands in. Anything unknown is a
 # failure, the same way the executor treats an unknown run status.
@@ -166,14 +189,10 @@ class DockerIsolatedRuntime:
             kind="agent",
             scopes=[f"run:{run_id}"],
         )
-        # Created BEFORE provision(): Docker auto-creates a missing bind-mount
-        # source as root:root, which the container's unprivileged uid then
-        # cannot write to -- see the three runtime plugins' own workspace_dir
-        # setup (e.g. opencode_runtime/runtime/runtime.py) for the same
-        # reasoning and the same failure this avoids.
-        session_root = settings.runtime_session_root
-        workspace_path = ensure_workspace_dir(workspace_root(run_id))
-
+        # Whatever the previous leg left in /workspace (without output/): a
+        # resume leg starts a fresh conversation, not a fresh workspace.
+        workspace_files = await load_workspace(tenant_id=tenant_id, run_id=run_id)
+        step_budget_s = _max_steps(pinned_definition) * 60
         spec = SandboxSpec(
             image=settings.agent_runtime_image,
             name=container_name(agent.name, "shell", run_id),
@@ -192,29 +211,33 @@ class DockerIsolatedRuntime:
             mem_limit="512m",
             pids_limit=256,
             cpu_limit=1.0,
-            # First mount this runtime has ever had -- see the design's
-            # Runtime Integration section: isolated-shell had no filesystem
-            # sandbox at all before this, so an agent here could only hand
-            # back a produced file through write_output_file. Now it behaves
-            # like the other containerized runtimes: anything written under
-            # /workspace/output/ is synced to FileAttachment when the run
-            # ends (oc8.runtime.workspace.sync_run_output).
-            mounts=validate_mounts(
-                [BindMount(host_path=workspace_path, container_path="/workspace", readonly=False)],
-                allowed_root=session_root,
+            # Unrestricted, as before this field existed: the shell must reach
+            # the control plane's internal API, wherever that runs.
+            egress="open",
+            # `/workspace` is a scratch dir the driver provides, with no host
+            # directory behind it, so the sandbox runs the same on any node.
+            # Anything written under /workspace/output/ is read out of the
+            # sandbox while the leg runs and once more before teardown
+            # (oc8.runtime.workspace.run_output_sandbox), and stored as
+            # FileAttachment rows. No seed: the shell's only credential is the
+            # run token in its env.
+            scratch=(ScratchDir("/workspace", WORKSPACE_SCRATCH_MB),),
+            seed=(
+                pack_files(workspace_files, prefix="workspace", uid=_owner_uid(), gid=_owner_gid())
+                if workspace_files
+                else None
             ),
-            # Bind mount carries HOST ownership -- the container has to run as
-            # the uid that created it, same as every other containerized
-            # runtime plugin (see e.g. opencode_runtime's identical `user=`).
+            # The step budget the wait below allows, plus slack for the last
+            # output pass and the workspace save: past it the sandbox may be
+            # reaped whatever the run says.
+            max_lifetime_s=step_budget_s + LIFETIME_SLACK_S,
             user=settings.sandbox_user or None,
         )
         driver = get_sandbox_driver()
         handle: SandboxHandle | None = None
         try:
             handle = await driver.provision(spec)
-            logger.info(
-                "run %s: isolated container %s started", run_id, handle.container_id[:12]
-            )
+            logger.info("run %s: isolated container %s started", run_id, handle.container_id[:12])
             # The bound on the WORK, and the only thing that ends a wedged
             # container: one that never exits ends here and is torn down by the
             # finally below, whether wait raises (docker-py's ReadTimeout on the
@@ -230,12 +253,18 @@ class DockerIsolatedRuntime:
             # the SAME per-agent budget internal_agent.py's /step endpoint
             # enforces, or a raised per-agent override would still get killed by
             # a wall-clock timeout sized for the framework default.
-            code = await driver.wait(handle, timeout_s=float(_max_steps(pinned_definition) * 60))
-            if code != 0:
-                logs = await driver.logs(handle)
-                logger.warning(
-                    "run %s: isolated container exited %s\n%s", run_id, code, logs[-800:]
-                )
+            async with run_output_sandbox(run_id, tenant_id, spec, driver, handle):
+                try:
+                    code = await driver.wait(handle, timeout_s=float(step_budget_s))
+                finally:
+                    # Before the last output pass and teardown, whatever the
+                    # outcome: the next leg resumes from this workspace.
+                    await save_workspace(driver, handle, tenant_id=tenant_id, run_id=run_id)
+                if code != 0:
+                    logs = await driver.logs(handle)
+                    logger.warning(
+                        "run %s: isolated container exited %s\n%s", run_id, code, logs[-800:]
+                    )
         finally:
             if handle is not None:
                 await driver.teardown(handle)
@@ -299,9 +328,7 @@ class DockerIsolatedRuntime:
         # that copy makes it onto the RunResult the executor's merge_context()
         # persists. Omitting it here lets RunResult's empty default wipe the
         # already-durable list at the run's own terminal commit.
-        step_timings = (
-            fresh.context.get("stepTimings", []) if fresh is not None else []
-        ) or []
+        step_timings = (fresh.context.get("stepTimings", []) if fresh is not None else []) or []
         return RunResult(
             task_id=task_id,
             agent_id=agent.id,

@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
+
+Egress = Literal["open", "restricted"]
 
 
 class SandboxError(RuntimeError):
     """A sandbox operation (provision/exec/fs/teardown) failed."""
+
+
+class ArchiveTooLarge(SandboxError):
+    """An archive passed its size cap. Raised while it is read, before the
+    rest of it is buffered."""
 
 
 @dataclass(frozen=True)
@@ -40,6 +48,26 @@ class RegistryAuth:
         return (
             f"RegistryAuth(username={self.username!r}, registry={self.registry!r}, password='***')"
         )
+
+
+@dataclass(frozen=True)
+class ScratchDir:
+    """A writable directory the driver provides inside one sandbox.
+
+    It starts EMPTY (the image's own files at that path are not copied in, as
+    with a Kubernetes ``emptyDir``), is writable by any user in the container
+    (Docker: mode 1777, root-owned, sticky like /tmp; an ``emptyDir`` is 0777)
+    and goes away with the sandbox. Its ancestors the image lacks are created
+    root-owned, mode 0755: seed into the scratch dir, not next to it.
+
+    ``size_mb`` is the most it may hold. "Full" has no guaranteed shape: a
+    driver may fail writes with ENOSPC, may evict the whole sandbox
+    (Kubernetes, on ``ephemeral-storage``), or may not enforce the size at
+    all (Docker without quota support). A runtime must not rely on any one.
+    """
+
+    path: str
+    size_mb: int
 
 
 @dataclass(frozen=True)
@@ -89,7 +117,10 @@ class SandboxSpec:
     engine invent one, which is what every caller did until operators had to
     inspect mounts to tell whose container was whose."""
     user: str | None = None
-    """Docker's ``--user`` (``"uid:gid"``). None keeps the image's own user.
+    """The NUMERIC ``"uid"`` or ``"uid:gid"`` the sandbox runs as, never a name
+    (an orchestrator's ``runAsUser`` takes numbers, and the image's passwd db
+    need not know the uid). None keeps the image's own user. Every exec and
+    every read (``get_archive``) runs as this user.
 
     Bind mounts carry HOST ownership, so a container that must read or write a
     directory the control plane created has to run as the uid that created it.
@@ -97,6 +128,31 @@ class SandboxSpec:
     registry_auth: RegistryAuth | None = None
     """Login for pulling `image` when it is not already local. Never copied
     into ``env``. None pulls anonymously."""
+    scratch: tuple[ScratchDir, ...] = ()
+    """Writable directories the driver provides, each with a size limit. The
+    way to give a sandbox a workspace without a host directory."""
+    seed: bytes | None = field(default=None, repr=False)
+    """A tar archive unpacked at ``/`` BEFORE the command starts, so the
+    command's first instruction already sees every file in it. Kept out of
+    ``repr``: it carries config files, run tokens among them.
+
+    A portable seed targets only the spec's scratch dirs (see
+    ``SandboxDriver.put_archive`` on identity and ownership), never
+    ``/.oc8``, and comes with an explicit ``command``: the start guarantee
+    holds for the wrapped command, not for an image's own CMD."""
+    egress: Egress = "open"
+    """Which outbound network profile the sandbox asks for. ``"restricted"``
+    lets a driver that can enforce an allowlist do so; it must still reach
+    ``settings.internal_base_url`` (the control plane's gateways), or no
+    runtime works. A driver that cannot enforce one (Docker) ignores it and
+    applies the network settings above unchanged. ``network`` is a Docker
+    network name; drivers without Docker networks ignore it."""
+    max_lifetime_s: int | None = None
+    """Upper bound on the sandbox's life, in seconds, counted from creation.
+    Past it the driver (or its reaper) may remove the sandbox whatever its
+    run says: a backstop for a worker that died, sized by the runtime to
+    cover the whole leg plus slack, not a deadline a leg should reach. None
+    means no bound beyond the caller's own teardown."""
 
 
 @dataclass(frozen=True)

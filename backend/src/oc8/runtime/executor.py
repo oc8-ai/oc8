@@ -1026,6 +1026,10 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                     # the WAITING_FOR_INPUT transition; adding waiting_for_input to
                     # _STATUS_TO_STATE too would attempt a second transition on an
                     # already-transitioned run and fail the state guard.
+                    # A park ends this leg: the sandbox is gone, so what it
+                    # left in /workspace/output must be stored now, like on
+                    # every other way a leg ends.
+                    await sync_run_output(db, tenant_id=tenant_id, run_id=run_id)
                     run.task_id = result.task_id
                     await merge_context(
                         db,

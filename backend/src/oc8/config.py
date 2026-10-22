@@ -192,6 +192,46 @@ class Settings(BaseSettings):
     sandbox_driver: str = "docker"
     sandbox_provisioner_url: str = "http://runtime-provisioner:8090"
     sandbox_provisioner_token: str = ""
+    sandbox_archive_timeout_s: float = 120.0
+    """Longest one ``get_archive`` may take before the driver abandons it with
+    ``SandboxError``: a daemon call into a dying sandbox can otherwise block
+    forever."""
+    sandbox_exec_default_timeout_s: float = 600.0
+    """Bound on an ``exec`` whose caller gave no timeout (the provisioner
+    passes it on for requests without one)."""
+    sandbox_archive_max_bytes: int = 256 * 1024 * 1024
+    """Largest tar the runtime-provisioner accepts or returns in one request:
+    a seed, a ``put_archive`` body or a ``get_archive`` result. Above it the
+    request fails with 413 instead of filling the provisioner's memory."""
+    run_output_max_files: int = 1000
+    """Most files one output sync pass lists in a sandbox's
+    ``/workspace/output`` (``oc8.runtime.workspace``). Beyond it the rest are
+    left out of that pass and a warning is logged. Each file is fetched on its
+    own and capped at the attachment limit."""
+    run_output_pass_max_bytes: int = 64 * 1024 * 1024
+    """Most bytes one output sync pass fetches from a sandbox, counted as
+    each file's listed size plus a small growth tolerance. The pass stops
+    there and the next one continues. Keep it at or above the 25 MB
+    attachment limit, or a file that size is never fetched."""
+    run_output_pass_max_files: int = 200
+    """Most files one output sync pass fetches from a sandbox; the next pass
+    continues."""
+    run_output_sync_interval_s: float = 60.0
+    """How often a run's own output task stores ``/workspace/output`` from a
+    sandbox without mounts while the leg runs."""
+    run_output_final_read_timeout_s: float = 60.0
+    """Upper bound on the last output pass when a leg ends, before teardown."""
+    run_state_max_bytes: int = 128 * 1024 * 1024
+    """Largest saved run-state tar (``oc8.runtime.run_state.RunStateStore``),
+    for example a CLI home kept between legs. Larger state is refused on save;
+    pass it as ``max_bytes`` to ``get_archive`` so the read stops early."""
+    run_workspace_state_max_bytes: int = 256 * 1024 * 1024
+    """Largest ``/workspace`` (without ``output/``) kept between legs of a run
+    whose sandbox has no host directory. A larger one is dropped with a
+    warning, and the next leg starts with an empty workspace."""
+    run_state_max_files: int = 20000
+    """Most archive members (files and directories) one saved run state may
+    hold. More than that and the save is refused."""
 
     # Shared secret, das die eigenen service-to-service Tenant-Provisioning-
     # Route(n) dieser Instanz in `Authorization: Bearer <token>` erwarten.
