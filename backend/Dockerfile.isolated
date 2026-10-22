@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # A slim sandbox image for the isolated runtime (OC8_AGENT_RUNTIME_IMAGE),
-# published as ghcr.io/oc8-ai/oc8-agent-isolated. Agents run untrusted shell
+# published as ghcr.io/oc8-ai/agent-isolated. Agents run untrusted shell
 # commands and Python in it, so it holds the oc8 package and nothing else: no
 # capas, no frontend, no app config. oc8.isolated_shell itself needs only the
 # standard library and httpx and talks to the backend over OC8_INTERNAL_URL.
