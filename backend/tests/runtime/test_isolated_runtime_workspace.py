@@ -38,7 +38,7 @@ class _SpyDriver:
     async def exec(self, handle: SandboxHandle, command: list[str], **kw: Any) -> ExecResult:
         # The output sync's listing: no files yet.
         self.events.append("list-output")
-        return ExecResult(exit_code=0, output="uid=1000\0")
+        return ExecResult(exit_code=0, output="")
 
     async def teardown(self, handle: SandboxHandle) -> None:
         self.events.append("teardown")

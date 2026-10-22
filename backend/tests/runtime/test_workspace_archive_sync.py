@@ -81,7 +81,7 @@ class _FakeDriver:
         self.listing: str | None = None
         self.exec_error: Exception | None = None
         self.fetches: list[tuple[str, int | None]] = []
-        #: uid the listing exec runs as; files are owned by it unless in owners.
+        #: uid the sandbox runs as; files are owned by it unless in owners.
         self.uid = 1000
         self.owners: dict[str, int] = {}
         #: name -> the member name the fetch returns instead (a swapped path).
@@ -108,10 +108,10 @@ class _FakeDriver:
         if self.exec_error is not None:
             raise self.exec_error
         if self.listing is not None:
-            return ExecResult(exit_code=0, output=f"uid={self.uid}\0" + self.listing)
+            return ExecResult(exit_code=0, output=self.listing)
         names = sorted(set(self.files) | set(self.sizes))
         listing = "".join(f"{self._size(n)}\t{n}\0" for n in names)
-        return ExecResult(exit_code=0, output=f"uid={self.uid}\0" + listing)
+        return ExecResult(exit_code=0, output=listing)
 
     async def get_archive(
         self, handle: SandboxHandle, path: str, *, max_bytes: int | None = None
@@ -120,8 +120,6 @@ class _FakeDriver:
         self.fetches.append((rel, max_bytes))
         if self.torn_down:
             raise SandboxError("no such container")
-        if rel == ".":
-            return self._whole_dir(max_bytes)
         base = self.renames.get(rel, posixpath.basename(path))
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w") as tar:
@@ -145,26 +143,6 @@ class _FakeDriver:
                     extra = tarfile.TarInfo("second")
                     extra.size = 1
                     tar.addfile(extra, io.BytesIO(b"x"))
-        return buf.getvalue()
-
-    def _whole_dir(self, max_bytes: int | None) -> bytes:
-        """The whole output directory, names relative to it, as a stopped
-        Docker container's archive API returns it: links as link entries."""
-        if not self.files and not self.symlinks:
-            raise SandboxError("no such path: /workspace/output")
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w") as tar:
-            for name in sorted(self.symlinks):
-                info = tarfile.TarInfo(name)
-                info.type = tarfile.SYMTYPE
-                info.linkname = "/etc/shadow"
-                tar.addfile(info)
-            for name, data in sorted(self.files.items()):
-                info = tarfile.TarInfo(name)
-                info.size = len(data)
-                tar.addfile(info, io.BytesIO(data))
-        if max_bytes is not None and len(buf.getvalue()) > max_bytes:
-            raise ArchiveTooLarge("too big")
         return buf.getvalue()
 
     async def teardown(self, handle: SandboxHandle) -> None:
@@ -363,7 +341,7 @@ async def test_a_listing_that_exits_nonzero_syncs_nothing_and_does_not_raise(
 
     class _Busybox(_FakeDriver):
         async def exec(self, handle: SandboxHandle, command: list[str], **kw: Any) -> ExecResult:
-            return ExecResult(exit_code=3, output="uid=1000\0")
+            return ExecResult(exit_code=3, output="")
 
     driver = _Busybox({"a.txt": b"a"})
     async with app_session(tenant) as db:
@@ -394,48 +372,14 @@ async def test_a_gone_sandbox_syncs_nothing_and_does_not_raise(
 
 
 @pytest.mark.parametrize(
-    "error",
-    [SandboxError("409 Conflict: container is not running"), RuntimeError("boom")],
-    ids=["sandbox", "other"],
+    "error", [SandboxError("no such container"), RuntimeError("boom")], ids=["sandbox", "other"]
 )
-async def test_a_sandbox_that_cannot_run_the_listing_is_read_as_one_archive(
+async def test_a_failed_listing_syncs_nothing_and_does_not_raise(
     app_session: AppSessionFactory, minio_url: str, error: Exception
 ) -> None:
-    """The CLI exiting stops the container, and a stopped container runs no
-    `exec` -- but its archive can still be read, and nothing in it can swap
-    a path any more. The last pass then reads /workspace/output whole,
-    capped at the pass budget, links skipped, and stores what passes the
-    same filters as a listed file."""
     tenant = uuid.uuid4()
-    driver = _FakeDriver({"report.txt": b"done", "sub/data.csv": b"a,b\n", "blob.bin": b"\x00"})
-    driver.symlinks.add("shadow.txt")
+    driver = _FakeDriver({"a.txt": b"a"})
     driver.exec_error = error
-    async with app_session(tenant) as db:
-        run = await _dept_agent_run(db, tenant)
-        synced = await sync_sandbox_output(
-            db, tenant_id=tenant, run_id=run.id, driver=driver, handle=HANDLE
-        )
-        # The link is skipped, and a type attachments refuse is not stored.
-        assert sorted(f.filename for f in synced) == ["report.txt", "sub/data.csv"]
-        # A second pass stores nothing new.
-        again = await sync_sandbox_output(
-            db, tenant_id=tenant, run_id=run.id, driver=driver, handle=HANDLE
-        )
-        assert again == []
-    budget = get_settings().run_output_pass_max_bytes
-    assert driver.fetches[0] == (".", budget + workspace._TAR_OVERHEAD)
-
-
-async def test_a_stopped_sandbox_with_too_much_output_syncs_nothing_and_says_so(
-    app_session: AppSessionFactory,
-    minio_url: str,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    monkeypatch.setattr(get_settings(), "run_output_pass_max_bytes", 10)
-    tenant = uuid.uuid4()
-    driver = _FakeDriver({"report.txt": b"x" * 200_000})
-    driver.exec_error = SandboxError("not running")
     async with app_session(tenant) as db:
         run = await _dept_agent_run(db, tenant)
         assert (
@@ -444,7 +388,7 @@ async def test_a_stopped_sandbox_with_too_much_output_syncs_nothing_and_says_so(
             )
             == []
         )
-    assert "too large" in caplog.text
+    assert driver.fetches == []
 
 
 async def test_one_failing_file_does_not_stop_the_others_or_break_the_session(
@@ -480,9 +424,9 @@ async def test_a_fetch_that_is_not_exactly_the_listed_file_is_rejected(
     app_session: AppSessionFactory, minio_url: str, tamper: str
 ) -> None:
     """Between listing and fetch the sandbox can swap the file, or a directory
-    above it, for a link. The fetch runs with more privilege than the agent, so
-    anything but one regular file of the requested name, owned by the user
-    that listed it, is refused."""
+    above it, for a link. Reads run as the sandbox user, and on top of that
+    anything but one regular file of the requested name, owned by the
+    CONFIGURED uid, is refused."""
     tenant = uuid.uuid4()
     driver = _FakeDriver({"ok.txt": b"ok", "sub/secret.txt": b"root only"})
     if tamper == "renamed":
@@ -494,47 +438,55 @@ async def test_a_fetch_that_is_not_exactly_the_listed_file_is_rejected(
     async with app_session(tenant) as db:
         run = await _dept_agent_run(db, tenant)
         synced = await sync_sandbox_output(
-            db, tenant_id=tenant, run_id=run.id, driver=driver, handle=HANDLE
+            db, tenant_id=tenant, run_id=run.id, driver=driver, handle=HANDLE, owner_uid=1000
         )
         assert [f.filename for f in synced] == ["ok.txt"]
 
 
-async def test_a_root_sandbox_accepts_files_of_any_owner(
+async def test_a_uid_the_sandbox_reports_is_never_trusted(
     app_session: AppSessionFactory, minio_url: str
 ) -> None:
-    """A sandbox user that is root can read every file itself: no privilege
-    is gained by the fetch, so ownership is not checked."""
+    """A listing that claims `uid=0` (the old trust record) does not disable
+    the owner check: the uid comes from the spec. The forged record itself is
+    just a malformed entry."""
+    tenant = uuid.uuid4()
+    driver = _FakeDriver({"secret.txt": b"root only", "ok.txt": b"ok"})
+    driver.owners["secret.txt"] = 0
+    driver.listing = "uid=0\0" + "9\tsecret.txt\0" + "2\tok.txt\0"
+    async with app_session(tenant) as db:
+        run = await _dept_agent_run(db, tenant)
+        synced = await sync_sandbox_output(
+            db, tenant_id=tenant, run_id=run.id, driver=driver, handle=HANDLE, owner_uid=1000
+        )
+        assert [f.filename for f in synced] == ["ok.txt"]
+
+
+@pytest.mark.parametrize("owner_uid", [0, None], ids=["root", "image-user"])
+async def test_without_a_non_root_configured_user_any_owner_is_accepted(
+    app_session: AppSessionFactory, minio_url: str, owner_uid: int | None
+) -> None:
+    """A root sandbox can read every file itself, and a spec without a user
+    names no uid to compare with; the read as that user is the defence."""
     tenant = uuid.uuid4()
     driver = _FakeDriver({"a.txt": b"a"})
-    driver.uid = 0
     driver.owners["a.txt"] = 1234
     async with app_session(tenant) as db:
         run = await _dept_agent_run(db, tenant)
         synced = await sync_sandbox_output(
-            db, tenant_id=tenant, run_id=run.id, driver=driver, handle=HANDLE
+            db,
+            tenant_id=tenant,
+            run_id=run.id,
+            driver=driver,
+            handle=HANDLE,
+            owner_uid=owner_uid,
         )
         assert [f.filename for f in synced] == ["a.txt"]
 
 
-async def test_a_listing_without_the_uid_record_syncs_nothing(
-    app_session: AppSessionFactory, minio_url: str
-) -> None:
-    tenant = uuid.uuid4()
-    driver = _FakeDriver({"a.txt": b"a"})
-
-    async def no_uid(*a: Any, **kw: Any) -> ExecResult:
-        return ExecResult(exit_code=0, output="1\ta.txt\0")
-
-    driver.exec = no_uid  # type: ignore[method-assign]
-    async with app_session(tenant) as db:
-        run = await _dept_agent_run(db, tenant)
-        assert (
-            await sync_sandbox_output(
-                db, tenant_id=tenant, run_id=run.id, driver=driver, handle=HANDLE
-            )
-            == []
-        )
-    assert driver.fetches == []
+def test_the_owner_uid_comes_from_the_spec() -> None:
+    assert workspace.configured_uid(SandboxSpec(image="i", user="1000:1000")) == 1000
+    assert workspace.configured_uid(SandboxSpec(image="i", user="2000")) == 2000
+    assert workspace.configured_uid(SandboxSpec(image="i")) is None
 
 
 async def test_each_pass_stays_within_its_byte_and_file_budget(

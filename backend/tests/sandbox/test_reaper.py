@@ -270,6 +270,38 @@ async def test_a_running_container_without_a_run_label_is_never_touched(
     assert await reap_orphaned_containers(client=docker) == []
 
 
+def _lingering(name: str, *, minutes_ago: int | None) -> _FakeContainer:
+    """A running container whose command finished ``minutes_ago`` (None: still
+    running): the wrapper keeps it up and records the end in /.oc8/exit."""
+    c = _FakeContainer(name)
+    c.status = "running"
+    c.attrs = {"State": {"Running": True, "FinishedAt": "0001-01-01T00:00:00Z"}}
+
+    def exec_run(cmd: list[str], **kw: Any) -> tuple[int, bytes]:
+        if minutes_ago is None:
+            return 1, b""
+        finished = dt.datetime.now(tz=dt.UTC) - dt.timedelta(minutes=minutes_ago)
+        return 0, f"{int(finished.timestamp())}\n".encode()
+
+    c.exec_run = exec_run  # type: ignore[attr-defined]
+    return c
+
+
+async def test_a_lingering_container_whose_command_ended_long_ago_is_removed(
+    app_session: AppSessionFactory,
+) -> None:
+    """A sandbox outlives its command (oc8.sandbox.linger), so a container
+    without a run label (a pooled hook worker) never reaches `exited`. Its
+    command having ended long ago makes it debris all the same."""
+    docker = _FakeDocker([])
+    docker.items = [
+        _lingering("oc8-nora-hook-019fa522-d093ec", minutes_ago=180),
+        _lingering("oc8-nora-hook-019fa522-aaaaaa", minutes_ago=2),
+        _lingering("oc8-nora-hook-019fa522-bbbbbb", minutes_ago=None),
+    ]
+    assert await reap_orphaned_containers(client=docker) == ["oc8-nora-hook-019fa522-d093ec"]
+
+
 async def test_a_stranger_is_left_alone_even_when_exited(
     app_session: AppSessionFactory,
 ) -> None:

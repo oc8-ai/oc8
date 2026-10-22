@@ -134,10 +134,11 @@ async def test_a_busybox_sandbox_fails_the_listing_loudly(
 async def test_a_file_swapped_for_a_link_after_listing_is_not_read(
     app_session: AppSessionFactory, minio_url: str
 ) -> None:
-    """The listing runs as the sandbox user; the fetch through the Docker API
-    does not. A path swapped for a link to a root-only file after the listing
-    must not come back, whether the file itself or a directory above it was
-    swapped."""
+    """Listing and fetch both run as the sandbox user. A path swapped for a
+    link to a root-only file after the listing must not come back, whether
+    the file itself or a directory above it was swapped -- even with the
+    owner check switched off (as a sandbox claiming to be root would have
+    switched it off when its listing reported the uid)."""
     from oc8.runtime import workspace
 
     driver = DockerSandboxDriver()
@@ -164,17 +165,44 @@ async def test_a_file_swapped_for_a_link_after_listing_is_not_read(
         )
         res = await driver.exec(handle, ["sh", "-c", swap])
         assert res.exit_code == 0, res.output
-
         tenant = uuid.uuid4()
         async with app_session(tenant) as db:
             run = await _run(db, tenant)
-            stored = []
-            for name, listed in entries.files:
-                raw = await workspace._fetch_one(
-                    run.id, driver, handle, name, listed=listed, uid=entries.uid
-                )
-                if raw is not None:
-                    stored.append(name)
-        assert stored == ["ok.txt"]
+            for owner_uid in (1000, 0, None):
+                stored = []
+                for name, listed in entries.files:
+                    raw = await workspace._fetch_one(
+                        run.id, driver, handle, name, listed=listed, owner_uid=owner_uid
+                    )
+                    if raw is not None:
+                        stored.append(name)
+                        assert b"root:" not in raw
+                assert stored == ["ok.txt"], owner_uid
+    finally:
+        await driver.teardown(handle)
+
+
+async def test_output_is_read_after_the_command_exits(
+    app_session: AppSessionFactory, minio_url: str
+) -> None:
+    """The sandbox outlives its command, so the last pass still reads it."""
+    driver = DockerSandboxDriver()
+    handle = await driver.provision(
+        SandboxSpec(
+            image=_DEBIAN,
+            user="1000:1000",
+            scratch=(ScratchDir("/workspace", 64),),
+            command=["sh", "-c", "mkdir -p /workspace/output && echo hi > /workspace/output/r.txt"],
+        )
+    )
+    try:
+        assert await driver.wait(handle, timeout_s=30) == 0
+        tenant = uuid.uuid4()
+        async with app_session(tenant) as db:
+            run = await _run(db, tenant)
+            synced = await sync_sandbox_output(
+                db, tenant_id=tenant, run_id=run.id, driver=driver, handle=handle, owner_uid=1000
+            )
+            assert [f.filename for f in synced] == ["r.txt"]
     finally:
         await driver.teardown(handle)

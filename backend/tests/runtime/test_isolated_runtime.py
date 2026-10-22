@@ -44,7 +44,7 @@ class _FakeDriver:
 
     async def exec(self, handle: SandboxHandle, command: list[str], **kw: Any) -> ExecResult:
         # The output sync's listing: no files in /workspace/output.
-        return ExecResult(exit_code=0, output="uid=1000\0")
+        return ExecResult(exit_code=0, output="")
 
     async def teardown(self, handle: SandboxHandle) -> None:
         return None

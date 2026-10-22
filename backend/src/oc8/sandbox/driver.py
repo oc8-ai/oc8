@@ -1,4 +1,11 @@
-"""The SandboxDriver contract. v1 implementation: DockerSandboxDriver."""
+"""The SandboxDriver contract. v1 implementation: DockerSandboxDriver.
+
+Every driver runs a spec's command under ``oc8.sandbox.linger``'s wrapper,
+so a sandbox outlives its command until teardown and stays readable through
+exec. **Sandbox images must provide ``/bin/sh``** (and ``tar`` for
+``get_archive``). ``exec`` and every read run as the sandbox's configured
+user, never with more privilege.
+"""
 
 from __future__ import annotations
 
@@ -47,13 +54,14 @@ class SandboxDriver(Protocol):
         WHILE reading: past it the read stops and ``ArchiveTooLarge`` is
         raised, so an oversized archive is never buffered whole.
 
-        Never follows symlinks in the archived tree: a link inside it is
-        returned as a link entry, and a symlink at ``path`` itself is refused
-        with ``SandboxError`` (the Docker driver) or returned as a link entry,
-        never dereferenced. Drivers must not archive with ``tar -h`` or
-        ``docker cp -L`` semantics, and should read as the sandbox's own user:
-        whatever reads the archive may have more privilege than the process
-        that chose its paths.
+        Read with ``tar -c`` (``oc8.sandbox.linger.archive_command``) through
+        exec, AS THE SANDBOX'S CONFIGURED USER -- the user the driver set at
+        create time, never one the sandbox reports -- so it reaches exactly
+        what the sandbox's own processes can. Never through a privileged path
+        (Docker's archive API reads as root). Never follows symlinks: a link
+        inside the tree is returned as a link entry, and a symlink at
+        ``path`` itself raises ``SandboxError``; never ``tar -h``. Works after
+        the command has exited, because the sandbox lingers.
 
         The result is UNTRUSTED. The process in the sandbox chose every name,
         link and size in it. Never unpack it with plain ``extractall``: use
@@ -62,16 +70,19 @@ class SandboxDriver(Protocol):
         """
         ...
 
-    async def teardown(self, handle: SandboxHandle) -> None: ...
+    async def teardown(self, handle: SandboxHandle) -> None:
+        """Remove the sandbox, whether or not its command has exited."""
+        ...
 
     async def wait(self, handle: SandboxHandle, timeout_s: float = 600.0) -> int:
-        """Block until the container exits, for at most timeout_s; return its
-        exit code.
+        """Block until the sandbox's COMMAND exits, for at most timeout_s;
+        return its exit code (from ``/.oc8/exit``; the sandbox itself lingers
+        until teardown). A sandbox that stopped anyway reports its own code.
 
         Two endings, and callers have been getting them the wrong way round:
-        reaching timeout_s RAISES (the reference driver lets docker-py's
-        requests.exceptions.ReadTimeout out), while -1 is returned only for a
-        docker-level fault -- container gone, daemon error. So -1 is "no
+        reaching timeout_s RAISES (``TimeoutError`` from the Docker driver,
+        ``SandboxError`` over the provisioner), while -1 is returned only for
+        a driver-level fault -- sandbox gone, daemon error. So -1 is "no
         verdict", never "it took too long", and a caller that wants a bound on
         the work gets it from the exception, not from the return value.
         """

@@ -356,6 +356,12 @@ def create_provisioner_app(
             exit_code = await active_driver.wait(
                 resolve(opaque_id, request_owner), request.timeout_s
             )
+        except TimeoutError as exc:
+            # The command is still running; the client raises, as the
+            # in-process driver does.
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="sandbox still running"
+            ) from exc
         except SandboxError as exc:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY, detail="sandbox operation failed"

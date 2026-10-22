@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import tarfile
+import uuid
 from collections.abc import AsyncIterator
 
 import httpx
@@ -206,5 +207,103 @@ async def test_a_hardlink_pair_survives_a_round_trip_into_a_new_directory(
         )
         assert check.exit_code == 0, check.output
         assert check.output.split() == ["same", "same"]
+    finally:
+        await driver.teardown(handle)
+
+
+# ------------------------------------------------ after the command exits
+
+
+async def test_after_the_command_exits_its_files_stay_readable_and_wait_has_its_code(
+    driver: SandboxDriver,
+) -> None:
+    """The sandbox outlives its command: the last output pass and the CLI
+    home save read it AFTER the command has exited, through exec. `wait`
+    still reports the command's own exit code."""
+    handle = await driver.provision(
+        SandboxSpec(
+            image=_IMAGE,
+            user="1000:1000",
+            scratch=(ScratchDir("/workspace", 16),),
+            command=[
+                "sh",
+                "-c",
+                "mkdir -p /workspace/output && echo done > /workspace/output/a.txt; exit 3",
+            ],
+        )
+    )
+    try:
+        assert await driver.wait(handle, timeout_s=30) == 3
+        assert files_of(await driver.get_archive(handle, "/workspace/output")) == {
+            "a.txt": b"done\n"
+        }
+        res = await driver.exec(handle, ["cat", "/workspace/output/a.txt"])
+        assert (res.exit_code, res.output) == (0, "done\n")
+        # Asking again gives the same answer.
+        assert await driver.wait(handle, timeout_s=5) == 3
+    finally:
+        await driver.teardown(handle)
+
+
+async def test_wait_still_raises_when_the_command_outlives_the_timeout(
+    driver: SandboxDriver,
+) -> None:
+    handle = await driver.provision(SandboxSpec(image=_IMAGE, command=["sleep", "60"]))
+    try:
+        with pytest.raises(Exception):  # noqa: B017 -- any raise; -1 would be "no verdict"
+            await driver.wait(handle, timeout_s=1)
+    finally:
+        await driver.teardown(handle)
+
+
+async def test_a_sandbox_whose_command_exited_is_still_torn_down(driver: SandboxDriver) -> None:
+    import docker
+
+    marker = f"torn-down-{uuid.uuid4().hex[:8]}"
+    handle = await driver.provision(
+        SandboxSpec(image=_IMAGE, command=["true"], labels={"oc8.test": marker})
+    )
+    assert await driver.wait(handle, timeout_s=30) == 0
+    await driver.teardown(handle)
+    client = docker.from_env()  # type: ignore[attr-defined]
+    assert client.containers.list(all=True, filters={"label": f"oc8.test={marker}"}) == []
+
+
+async def test_get_archive_reads_as_the_sandbox_user_never_with_more(
+    driver: SandboxDriver,
+) -> None:
+    """The read runs as the spec's user, so it cannot reach what that user
+    cannot: /etc/shadow, directly or through a link the sandbox planted."""
+    handle = await driver.provision(
+        SandboxSpec(
+            image=_IMAGE,
+            user="1000:1000",
+            scratch=(ScratchDir("/workspace", 16),),
+            command=["sleep", "60"],
+        )
+    )
+    try:
+        res = await driver.exec(
+            handle,
+            [
+                "sh",
+                "-c",
+                "mkdir -p /workspace/output && cd /workspace/output && "
+                "echo ok > ok.txt && ln -s /etc/shadow shadow.txt && ln -s /etc sub",
+            ],
+        )
+        assert res.exit_code == 0, res.output
+        with pytest.raises(SandboxError):
+            await driver.get_archive(handle, "/etc/shadow")
+        with pytest.raises(SandboxError):
+            await driver.get_archive(handle, "/workspace/output/shadow.txt")
+        with pytest.raises(SandboxError):
+            await driver.get_archive(handle, "/workspace/output/sub/shadow")
+        # The directory itself: links come back as links, never as content.
+        data = await driver.get_archive(handle, "/workspace/output")
+        assert files_of(data) == {"ok.txt": b"ok\n"}
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r") as tar:
+            links = {m.name: m.linkname for m in tar.getmembers() if m.issym()}
+        assert links == {"shadow.txt": "/etc/shadow", "sub": "/etc"}
     finally:
         await driver.teardown(handle)

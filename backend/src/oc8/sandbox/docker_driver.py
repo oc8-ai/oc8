@@ -21,7 +21,16 @@ from docker.models.containers import Container
 from docker.types import DriverConfig, Mount
 
 from oc8.config import get_settings
-from oc8.sandbox.archive import is_outside
+from oc8.sandbox.linger import (
+    MARKER_DIR,
+    READ_EXIT_COMMAND,
+    archive_command,
+    archive_error,
+    lingering_command,
+    parse_exit,
+    relative_archive,
+    tar_succeeded,
+)
 from oc8.sandbox.scratch import validate_scratch
 from oc8.sandbox.types import (
     ArchiveTooLarge,
@@ -94,11 +103,6 @@ def _scratch_modes(scratch: tuple[ScratchDir, ...]) -> bytes:
     return buf.getvalue()
 
 
-_GO_MODE_DIR = 1 << 31
-#: Go's os.ModeSymlink, as reported in the archive stat header.
-_GO_MODE_SYMLINK = 1 << 27
-
-
 def _quota_refused(exc: BaseException) -> bool:
     return "quota" in str(exc).lower()
 
@@ -130,49 +134,6 @@ def _spool_capped(chunks: Iterator[bytes], max_bytes: int) -> IO[bytes]:
         raise
     spool.seek(0)
     return spool
-
-
-def _relative_name(name: str, top: str) -> str | None:
-    """``name`` relative to the archived directory ``top``; None for ``top``
-    itself. Anything that does not sit under ``top`` is refused: Docker never
-    writes such a name, so one that appears was not written by Docker."""
-    if name.rstrip("/") == top:
-        return None
-    prefix = top + "/"
-    if not name.startswith(prefix):
-        raise SandboxError(f"archive entry is outside {top!r}: {name!r}")
-    relative = name[len(prefix) :]
-    if not relative or is_outside(relative):
-        raise SandboxError(f"archive entry is outside {top!r}: {name!r}")
-    return relative
-
-
-def _relative_to_directory(src_file: IO[bytes], top: str) -> bytes:
-    """Rename a Docker directory archive's entries to be relative to it.
-
-    Docker names them from the directory's own base name down
-    (``output/a.txt``); the contract names them from inside it (``a.txt``).
-    A hardlink names its target the same way, so ``linkname`` is renamed too,
-    or the link would point at nothing once the archive is unpacked. Read and
-    written as streams: one member at a time, never the whole input.
-    """
-    out = io.BytesIO()
-    with (
-        tarfile.open(fileobj=src_file, mode="r|") as src,
-        tarfile.open(fileobj=out, mode="w", format=tarfile.PAX_FORMAT) as dst,
-    ):
-        for member in src:
-            relative = _relative_name(member.name, top)
-            if relative is None:
-                continue
-            member.name = relative
-            if member.islnk():
-                target = _relative_name(member.linkname, top)
-                if target is None:
-                    raise SandboxError(f"archive hardlink is outside {top!r}: {member.linkname!r}")
-                member.linkname = target
-            dst.addfile(member, src.extractfile(member) if member.isfile() else None)
-    return out.getvalue()
 
 
 def _archive_cap(max_bytes: int | None) -> int:
@@ -259,6 +220,53 @@ def _ensure_local_image(client: docker.DockerClient, spec: SandboxSpec) -> None:
         raise SandboxError(f"image pull failed: {exc}") from exc
 
 
+#: How often ``wait`` looks for the command's exit marker.
+_WAIT_POLL_S = 0.25
+
+
+def _configured_user(container: Container) -> str:
+    """The user the sandbox runs as, from ITS CONFIGURATION (what ``spec.user``
+    set at create time; empty means the image's own user, which is what
+    Docker's exec then uses too). Never asked of the sandbox."""
+    config = container.attrs.get("Config") or {}
+    return str(config.get("User") or "")
+
+
+#: After the exit marker appears, the daemon may not have copied the
+#: command's last stdout bytes into its log yet (an exited container's log
+#: is complete; a lingering one's lags by a few ms). ``wait`` returns once
+#: the log has stopped growing, at most this long after the marker.
+_LOG_SETTLE_MAX_S = 1.0
+_LOG_SETTLE_STEP_S = 0.05
+
+
+def _settle_logs(container: Container) -> None:
+    """Return once the container's log has stopped growing for one step."""
+    deadline = time.monotonic() + _LOG_SETTLE_MAX_S
+    last = -1
+    while time.monotonic() < deadline:
+        try:
+            size = len(container.logs(tail=50))
+        except docker.errors.DockerException:
+            return
+        if size == last:
+            return
+        last = size
+        time.sleep(_LOG_SETTLE_STEP_S)
+
+
+def _read_exit(container: Container, user: str) -> int | None:
+    """The command's exit code from the wrapper's marker, or None while it
+    runs (or when the container stopped between the status check and here)."""
+    try:
+        code, output = container.exec_run(READ_EXIT_COMMAND, user=user)
+    except docker.errors.APIError:
+        return None
+    if int(code) != 0:
+        return None
+    return parse_exit((output or b"").decode("utf-8", "replace"))
+
+
 def _force_remove(container: Container) -> None:
     """Best-effort cleanup of a partially-provisioned container.
 
@@ -335,7 +343,12 @@ class DockerSandboxDriver:
 
         def _run() -> SandboxHandle:
             run_kwargs: dict[str, object] = dict(
-                command=spec.command,
+                # The sandbox outlives its command (see oc8.sandbox.linger):
+                # `wait` reads the exit code from /.oc8/exit, and output and
+                # state stay readable through exec after the command is done.
+                command=lingering_command(list(spec.command)),
+                # Small, writable by any uid, and fine on a read-only root.
+                tmpfs={MARKER_DIR: "rw,size=64k,mode=1777"},
                 environment=dict(spec.env),
                 working_dir=spec.workdir,
                 labels=_labels(spec.labels, max_lifetime_s=spec.max_lifetime_s),
@@ -425,23 +438,36 @@ class DockerSandboxDriver:
         return await asyncio.to_thread(_run)
 
     async def wait(self, handle: SandboxHandle, timeout_s: float = 600.0) -> int:
-        """Block until the container exits, for at most timeout_s; return its exit code.
+        """Block until the sandbox's COMMAND exits, for at most timeout_s;
+        return its exit code.
 
-        This bound is what closes a WEDGED container: a run whose container never
-        exits ends here, at timeout_s, and its caller's `finally` tears the
-        container down. It ends by RAISING, not by returning -1 -- docker-py
-        raises requests.exceptions.ReadTimeout on the request timeout, which is
-        not a DockerException and so is not caught below (verified against the
-        installed docker-py: APIClient.wait documents exactly that). The
-        executor's `except Exception` turns it into a failed run that says why.
-        -1 is returned for docker-level faults (container gone, daemon error).
+        The container itself lingers after the command (see
+        oc8.sandbox.linger), so completion is the exit code the wrapper
+        writes to /.oc8/exit, read through exec as the sandbox user. A
+        container that stopped anyway (killed, out of memory, an image whose
+        entrypoint ignores the command) reports its own exit code, as
+        before. Reaching timeout_s RAISES ``TimeoutError``; -1 is returned
+        for docker-level faults (container gone, daemon error).
         """
 
         def _run() -> int:
+            deadline = time.monotonic() + timeout_s
             try:
                 container = self._client.containers.get(handle.container_id)
-                res = container.wait(timeout=timeout_s)
-                return int(res.get("StatusCode", -1))
+                user = _configured_user(container)
+                while True:
+                    container.reload()
+                    if container.status not in ("running", "created", "restarting"):
+                        state = container.attrs.get("State") or {}
+                        return int(state.get("ExitCode", -1))
+                    code = _read_exit(container, user)
+                    if code is not None:
+                        _settle_logs(container)
+                        return code
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        raise TimeoutError(f"sandbox command still running after {timeout_s:.0f}s")
+                    time.sleep(min(_WAIT_POLL_S, left))
             except docker.errors.DockerException:
                 return -1
 
@@ -578,32 +604,52 @@ class DockerSandboxDriver:
     async def get_archive(
         self, handle: SandboxHandle, path: str, *, max_bytes: int | None = None
     ) -> bytes:
+        """``tar -c`` of ``path``, run through exec AS THE SANDBOX USER.
+
+        The user comes from the container's own configuration (``Config.User``,
+        set from ``spec.user`` at create time), never from the sandbox, so the
+        read reaches exactly what the sandbox's own processes can: a link or a
+        swapped directory pointing at a file only root can read yields
+        nothing. Docker's archive API is not used for reads: the daemon reads
+        as root. Needs a running container, which a lingering sandbox is
+        after its command exits; stdout is capped while it streams.
+        """
         cap = _archive_cap(max_bytes)
 
         def _run() -> bytes:
             try:
                 container = self._client.containers.get(handle.container_id)
-                chunks, info = container.get_archive(path)
-                spool = _spool_capped(chunks, cap)
+                user = _configured_user(container)
+                api = self._client.api
+                exec_id = api.exec_create(
+                    container.id,
+                    archive_command(path),
+                    stdout=True,
+                    stderr=True,
+                    user=user,
+                )["Id"]
+                stream = api.exec_start(exec_id, stream=True, demux=True)
             except NotFound as exc:
-                raise SandboxError(f"get_archive: {path} does not exist") from exc
+                raise SandboxError(f"get_archive: {handle.container_id} does not exist") from exc
             except docker.errors.DockerException as exc:
                 raise SandboxError(f"get_archive failed: {exc}") from exc
-            with spool:
-                # docker-py decodes the X-Docker-Container-Path-Stat header
-                # into ``info``; its mode is Go's FileMode. The daemon reads
-                # with more privilege than the sandbox user, so a link at the
-                # requested path is refused here, never archived or followed.
-                mode = int(info.get("mode", 0))
-                if mode & _GO_MODE_SYMLINK or info.get("linkTarget"):
-                    raise SandboxError(f"get_archive: {path} is a symlink")
-                # Docker reports Go's FileMode, whose directory bit is 1 << 31.
-                if mode & _GO_MODE_DIR:
-                    try:
-                        return _relative_to_directory(spool, str(info.get("name", "")))
-                    except tarfile.TarError as exc:
-                        raise SandboxError(f"get_archive: unreadable archive: {exc}") from exc
-                return spool.read()
+            stderr = bytearray()
+
+            def _stdout() -> Iterator[bytes]:
+                for out, err in stream:
+                    if err and len(stderr) < 4096:
+                        stderr.extend(err[: 4096 - len(stderr)])
+                    if out:
+                        yield out
+
+            with _spool_capped(_stdout(), cap) as spool:
+                try:
+                    code = int(api.exec_inspect(exec_id).get("ExitCode") or 0)
+                except docker.errors.DockerException as exc:
+                    raise SandboxError(f"get_archive failed: {exc}") from exc
+                if not tar_succeeded(code):
+                    raise archive_error(path, code, stderr.decode("utf-8", "replace"))
+                return relative_archive(spool)
 
         return await asyncio.to_thread(_run)
 

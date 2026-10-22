@@ -104,7 +104,7 @@ class _FakeDriver:
 
     async def exec(self, handle: SandboxHandle, command: list[str], **kw: Any) -> ExecResult:
         # The output sync's listing: no /workspace/output files.
-        return ExecResult(exit_code=0, output="uid=1000\0")
+        return ExecResult(exit_code=0, output="")
 
     async def fs_write(self, handle: SandboxHandle, path: str, content: bytes) -> None:
         self.fs_writes[path] = content

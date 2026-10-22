@@ -37,6 +37,7 @@ from oc8.config import Settings, get_settings
 from oc8.db.session import tenant_session
 from oc8.runtime.states import TERMINAL
 from oc8.sandbox.docker_driver import EXPIRES_LABEL, NAMESPACE_LABEL
+from oc8.sandbox.linger import EXIT_TIME_COMMAND
 from oc8.triggers.scheduler import list_active_tenant_ids
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,7 @@ def _ours_namespace(container: Any) -> bool:
     namespace = labels.get(NAMESPACE_LABEL) or default_namespace
     return bool(namespace == get_settings().deployment_namespace)
 
+
 #: A name this codebase would have written (see sandbox.naming). Used only for
 #: the leftovers below: the label alone is not enough to claim a container.
 _OUR_NAME = re.compile(r"^oc8-[a-z0-9-]+$")
@@ -109,7 +111,6 @@ def run_id_of(container: Any) -> str | None:
     return str(value) if value else None
 
 
-
 async def _exited_long_ago(container: Any) -> bool:
     """An exited container of ours that nothing can still be using.
 
@@ -131,6 +132,11 @@ async def _exited_long_ago(container: Any) -> bool:
             await asyncio.to_thread(reload_)
         except Exception:
             return False
+    if str(getattr(container, "status", "")) == "running":
+        # A sandbox outlives its command (oc8.sandbox.linger): a running one
+        # whose command ended long ago is as finished as an exited one.
+        finished = await _command_finished_at(container)
+        return finished is not None and dt.datetime.now(tz=dt.UTC) - finished > _DEBRIS_AFTER
     if str(getattr(container, "status", "")) != "exited":
         return False
     state = (getattr(container, "attrs", None) or {}).get("State")
@@ -144,6 +150,22 @@ async def _exited_long_ago(container: Any) -> bool:
     if finished.tzinfo is None:
         finished = finished.replace(tzinfo=dt.UTC)
     return dt.datetime.now(tz=dt.UTC) - finished > _DEBRIS_AFTER
+
+
+async def _command_finished_at(container: Any) -> dt.datetime | None:
+    """When a lingering container's command ended, from its exit marker; None
+    while it runs, or when that cannot be told."""
+    exec_run = getattr(container, "exec_run", None)
+    if not callable(exec_run):
+        return None
+    try:
+        code, output = await asyncio.to_thread(exec_run, EXIT_TIME_COMMAND)
+    except Exception:
+        return None
+    text = (output or b"").decode("utf-8", "replace").strip()
+    if int(code) != 0 or not text.isdigit():
+        return None
+    return dt.datetime.fromtimestamp(int(text), tz=dt.UTC)
 
 
 async def _finished_runs(run_ids: set[str]) -> set[str]:

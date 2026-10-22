@@ -98,7 +98,7 @@ class _FakeDriver:
 
     async def exec(self, handle: SandboxHandle, command: list[str], **kw: Any) -> ExecResult:
         # The output sync's listing: no /workspace/output files.
-        return ExecResult(exit_code=0, output="uid=1000\0")
+        return ExecResult(exit_code=0, output="")
 
     async def fs_write(self, handle: SandboxHandle, path: str, content: bytes) -> None:
         self.fs_writes[path] = content
@@ -813,7 +813,7 @@ async def test_a_parked_leg_stops_opencode_before_reading_its_data_dir(
 
     class _Recording(_NeverFinishingDriver):
         async def exec(self, handle: SandboxHandle, command: list[str], **kw: Any) -> ExecResult:
-            if command[0] == "kill":
+            if "kill -TERM -1" in " ".join(command):
                 order.append("kill")
                 self.stopped = True
             return await super().exec(handle, command, **kw)
@@ -862,4 +862,4 @@ async def test_a_parked_leg_stops_opencode_before_reading_its_data_dir(
         await OpencodeRuntime().execute(
             db, agent=agent2, task_text="fix the bug", tenant_id=tenant, run_id=run_id2
         )
-    assert not any(c[0] == "kill" for c in calls)
+    assert not any("kill" in " ".join(c) for c in calls)

@@ -412,3 +412,19 @@ async def test_the_archive_cap_is_enforced_by_the_driver_while_reading() -> None
     assert ok.content == b"OUTTAR"
     assert larger.status_code == 200
     assert driver.caps == [1024, 100, 1024]
+
+
+async def test_a_wait_past_its_timeout_is_a_504() -> None:
+    class _StillRunning(FakeDriver):
+        async def wait(self, handle: SandboxHandle, timeout_s: float = 600.0) -> int:
+            raise TimeoutError("still running")
+
+    transport = httpx.ASGITransport(app=_app(_StillRunning()))
+    auth = {"Authorization": "Bearer provisioner-token"}
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        created = await client.post("/v1/sandboxes", headers=auth, json={"image": "oc8-runtime:1"})
+        handle = created.json()["container_id"]
+        waited = await client.post(
+            f"/v1/sandboxes/{handle}/wait", headers=auth, json={"timeout_s": 1}
+        )
+    assert waited.status_code == 504

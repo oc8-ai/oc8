@@ -29,8 +29,7 @@ Two ways to read the output
   down. Each pass (`sync_sandbox_output`):
 
   1. lists `/workspace/output` with GNU `find -printf '%s\\t%P\\0'`, cut
-     to `run_output_max_files` entries, as the sandbox's own user (the
-     listing also reports that uid);
+     to `run_output_max_files` entries;
   2. skips files already stored under the same (sanitised) name and size,
      files over the attachment cap, types attachments do not accept, and
      files refused earlier in the leg;
@@ -39,21 +38,19 @@ Two ways to read the output
      (`run_output_pass_max_files`, `run_output_pass_max_bytes`) is used up;
      the next pass continues;
   4. accepts a fetch only if it is exactly one regular file with the
-     requested basename, within that cap and owned by the listing's uid
-     (any owner for a root sandbox). The fetch may run with more privilege
-     than the sandbox (the Docker API runs as the daemon), and the sandbox
-     can swap a listed path for a link before it, so anything else is
-     refused. Content is unpacked with `safe_extract_to_memory`.
+     requested basename, within that cap and, when the spec names a non-root
+     user, owned by that uid. Every read (listing and fetch) runs as the
+     sandbox's configured user (the driver contract), so a path the sandbox
+     swaps for a link reaches nothing that user could not read anyway; the
+     owner check is defence in depth, against the CONFIGURED uid, never one
+     the sandbox reports. Content is unpacked with `safe_extract_to_memory`.
 
   Peak memory is therefore about twice one file (at most the attachment
   cap), not the whole directory. Nothing from the sandbox is ever written
   to the host.
 
-  A sandbox whose command has exited is stopped and runs no `exec`, which
-  is the usual state at the last pass. Its directory is then read in one
-  `get_archive`, capped at `run_output_pass_max_bytes`, links skipped
-  (`_sync_stopped_sandbox_output`): nothing runs any more that could swap
-  a path.
+  The sandbox outlives its command (oc8.sandbox.linger), so the last pass
+  reads it through exec after the command has exited, on any driver.
 
   The task is the run's own because the worker's housekeeping cannot run
   while that worker is executing a run.
@@ -88,7 +85,7 @@ from oc8 import models as m
 from oc8.config import get_settings
 from oc8.sandbox.archive import is_outside, safe_extract_to_memory
 from oc8.sandbox.driver import SandboxDriver
-from oc8.sandbox.types import ArchiveTooLarge, SandboxError, SandboxHandle, SandboxSpec
+from oc8.sandbox.types import SandboxError, SandboxHandle, SandboxSpec
 from oc8.storage.attachments import (
     ALLOWED_CONTENT_TYPES,
     MAX_ATTACHMENT_BYTES,
@@ -255,15 +252,15 @@ async def sync_run_output(
 
 
 def _list_command(limit: int) -> list[str]:
-    """The first record is ``uid=<n>``, the user the listing runs as. No
-    output directory yet lists nothing. A userland without GNU ``find
+    """No output directory yet lists nothing. A userland without GNU ``find
     -printf`` or ``head -z`` (busybox) exits 3 instead of silently listing
-    nothing; the images oc8 runs are Debian-based."""
+    nothing; the images oc8 runs are Debian-based. Nothing in the listing is
+    trusted beyond names and sizes: whose files they are comes from the
+    sandbox's configuration (``run_output_sandbox``), never from here."""
     out = OUTPUT_CONTAINER_PATH
     return [
         "sh",
         "-c",
-        "printf 'uid=%s\\0' \"$(id -u)\"; "
         f"[ -d {out} ] || exit 0; "
         f"find {out} -maxdepth 0 -printf '' 2>/dev/null && head -z -n 1 </dev/null 2>/dev/null"
         " || exit 3; "
@@ -272,15 +269,8 @@ def _list_command(limit: int) -> list[str]:
     ]
 
 
-class _CannotExec(SandboxError):
-    """The sandbox could not run the listing at all, typically because its
-    command has exited and the container is stopped."""
-
-
 @dataclass(frozen=True)
 class _Listing:
-    #: The uid the sandbox's own processes run as (what the listing ran as).
-    uid: int
     #: (name relative to /workspace/output, size) of each regular file.
     files: list[tuple[str, int]]
 
@@ -289,24 +279,15 @@ async def _list_sandbox_output(
     run_id: uuid.UUID, driver: SandboxDriver, handle: SandboxHandle
 ) -> _Listing:
     """The regular files in the sandbox's /workspace/output, at most
-    ``run_output_max_files``. Malformed or unsafe entries are skipped; a
-    listing without its uid record raises ``SandboxError``."""
+    ``run_output_max_files``. Malformed or unsafe entries are skipped."""
     limit = get_settings().run_output_max_files
-    try:
-        result = await driver.exec(handle, _list_command(limit + 1), timeout=_LIST_TIMEOUT_S)
-    except Exception as exc:
-        raise _CannotExec(str(exc)) from exc
+    result = await driver.exec(handle, _list_command(limit + 1), timeout=_LIST_TIMEOUT_S)
     if result.exit_code != 0:
         raise SandboxError(
             f"listing /workspace/output exited {result.exit_code}"
             + (" (needs GNU find and head)" if result.exit_code == 3 else "")
         )
-    records = result.output.split("\0")
-    head = records[0] if records else ""
-    if not head.startswith("uid=") or not head[4:].isdigit():
-        raise SandboxError("listing /workspace/output: no uid record")
-    uid = int(head[4:])
-    records = [r for r in records[1:] if r]
+    records = [r for r in result.output.split("\0") if r]
     if len(records) > limit:
         logger.warning(
             "run %s: more than %d output files, syncing the first %d", run_id, limit, limit
@@ -322,7 +303,7 @@ async def _list_sandbox_output(
             logger.warning("run %s: skipped output path %r outside the directory", run_id, name)
             continue
         files.append((name, int(size_s)))
-    return _Listing(uid=uid, files=files)
+    return _Listing(files=files)
 
 
 def _fetch_cap(listed: int) -> int:
@@ -338,25 +319,26 @@ async def _fetch_one(
     name: str,
     *,
     listed: int,
-    uid: int,
+    owner_uid: int | None,
 ) -> bytes | None:
     """One output file's content, or None (logged) when it is not exactly
     the file that was listed.
 
-    The fetch may run with more privilege than the sandbox's own user (the
-    Docker API runs as the daemon), and the sandbox can swap the file, or a
-    directory above it, for a link between listing and fetch. So the archive
-    must hold exactly one member: a regular file named like the requested
-    basename, no larger than ``_fetch_cap(listed)``, and -- unless the
-    sandbox user is root, who can read everything anyway -- owned by the
-    user the listing ran as. The read itself stops at that cap, and the
-    content goes through ``safe_extract_to_memory``.
+    The fetch runs as the sandbox's own configured user (the driver
+    contract), so a file or a directory above it swapped for a link between
+    listing and fetch reaches nothing that user could not read anyway. On
+    top of that, the archive must hold exactly one member: a regular file
+    named like the requested basename, no larger than ``_fetch_cap(listed)``,
+    and -- when ``owner_uid`` is known and not root -- owned by it.
+    ``owner_uid`` comes from the sandbox's configuration, never from the
+    sandbox. The read itself stops at that cap, and the content goes through
+    ``safe_extract_to_memory``.
     """
     path = f"{OUTPUT_CONTAINER_PATH}/{name}"
     cap = _fetch_cap(listed)
     try:
         data = await driver.get_archive(handle, path, max_bytes=cap + _TAR_OVERHEAD)
-        problem = _not_the_listed_file(data, posixpath.basename(name), cap=cap, uid=uid)
+        problem = _not_the_listed_file(data, posixpath.basename(name), cap=cap, owner_uid=owner_uid)
         if problem is not None:
             logger.warning("run %s: refused output file %r: %s", run_id, name, problem)
             return None
@@ -371,10 +353,12 @@ async def _fetch_one(
     return raw
 
 
-def _not_the_listed_file(data: bytes, basename: str, *, cap: int, uid: int) -> str | None:
+def _not_the_listed_file(
+    data: bytes, basename: str, *, cap: int, owner_uid: int | None
+) -> str | None:
     """Why ``data`` is not one regular file ``basename`` of at most ``cap``
-    bytes owned by ``uid`` (any owner when ``uid`` is 0), or None. Reads the
-    headers only; it never stops at more than two members."""
+    bytes owned by ``owner_uid`` (any owner when it is None or 0), or None.
+    Reads the headers only; it never stops at more than two members."""
     try:
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as tar:
             first = tar.next()
@@ -390,8 +374,8 @@ def _not_the_listed_file(data: bytes, basename: str, *, cap: int, uid: int) -> s
         return f"archive member is {first.name!r}"
     if first.size > cap:
         return f"{first.size} bytes is more than the {cap} expected"
-    if uid != 0 and first.uid != uid:
-        return f"owned by uid {first.uid}, not the sandbox user {uid}"
+    if owner_uid not in (None, 0) and first.uid != owner_uid:
+        return f"owned by uid {first.uid}, not the sandbox user {owner_uid}"
     return None
 
 
@@ -403,6 +387,7 @@ async def sync_sandbox_output(
     driver: SandboxDriver,
     handle: SandboxHandle,
     refused: set[tuple[str, int]] | None = None,
+    owner_uid: int | None = None,
 ) -> list[m.FileAttachment]:
     """One pass over a live sandbox's /workspace/output: list, skip what is
     stored, fetch and store the rest one file at a time (module docstring).
@@ -420,10 +405,6 @@ async def sync_sandbox_output(
     refused = refused if refused is not None else set()
     try:
         listing = await _list_sandbox_output(run_id, driver, handle)
-    except _CannotExec as exc:
-        return await _sync_stopped_sandbox_output(
-            db, tenant_id=tenant_id, run_id=run_id, driver=driver, handle=handle, reason=str(exc)
-        )
     except SandboxError as exc:
         logger.warning("run %s: could not list output in the sandbox: %s", run_id, exc)
         return []
@@ -470,7 +451,9 @@ async def sync_sandbox_output(
         files_left -= 1
         bytes_left -= cap
         try:
-            raw = await _fetch_one(run_id, driver, handle, rel_path, listed=size, uid=listing.uid)
+            raw = await _fetch_one(
+                run_id, driver, handle, rel_path, listed=size, owner_uid=owner_uid
+            )
         except Exception:
             logger.exception("run %s: could not fetch output file %r", run_id, name)
             raw = None
@@ -486,78 +469,13 @@ async def sync_sandbox_output(
     return synced
 
 
-async def _sync_stopped_sandbox_output(
-    db: AsyncSession,
-    *,
-    tenant_id: uuid.UUID,
-    run_id: uuid.UUID,
-    driver: SandboxDriver,
-    handle: SandboxHandle,
-    reason: str,
-) -> list[m.FileAttachment]:
-    """One pass for a sandbox that cannot run the listing: its command has
-    exited, so the container is stopped and runs no `exec`, while its
-    filesystem can still be read. That is the normal state of the last pass
-    after a CLI or shell exits on its own.
-
-    Nothing runs in a stopped sandbox, so nothing can swap a path between
-    listing and fetch; the whole directory is read in one archive instead,
-    capped at ``run_output_pass_max_bytes`` (plus tar overhead). Links and
-    special files are skipped, a too-large or unsafe archive syncs nothing
-    and says so. Files then pass the same filters as listed ones: the
-    attachment cap, the type allowlist and the dedup.
-    """
-    settings = get_settings()
-    budget = settings.run_output_pass_max_bytes
-    try:
-        data = await driver.get_archive(
-            handle, OUTPUT_CONTAINER_PATH, max_bytes=budget + _TAR_OVERHEAD
-        )
-        files = safe_extract_to_memory(
-            data,
-            # Directories are members too.
-            max_members=2 * settings.run_output_max_files,
-            max_total_bytes=budget,
-            on_link="skip",
-        )
-    except ArchiveTooLarge:
-        logger.warning(
-            "run %s: output in the stopped sandbox is too large to read at once "
-            "(over %d bytes); not synced",
-            run_id,
-            budget,
-        )
-        return []
-    except SandboxError as exc:
-        # No output directory, or the sandbox is gone as well.
-        logger.info("run %s: no output read from the sandbox (%s; %s)", run_id, reason, exc)
-        return []
-    except Exception:
-        logger.exception("run %s: reading output from the stopped sandbox failed", run_id)
-        return []
-    seen = await _existing(db, tenant_id=tenant_id, run_id=run_id)
-    synced: list[m.FileAttachment] = []
-    for rel_path, raw in sorted(files.items()):
-        name = sanitize_output_name(rel_path)
-        if name is None or (name, len(raw)) in seen:
-            continue
-        if len(raw) > MAX_ATTACHMENT_BYTES:
-            logger.warning(
-                "run %s: skipped output file %r: %d bytes is over the attachment limit",
-                run_id,
-                name,
-                len(raw),
-            )
-            continue
-        content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
-        if content_type not in ALLOWED_CONTENT_TYPES:
-            logger.info("run %s: skipped output file %r: type %s", run_id, name, content_type)
-            continue
-        row = await _store_one(db, tenant_id=tenant_id, run_id=run_id, name=name, raw=raw)
-        if row is not None:
-            seen.add((name, len(raw)))
-            synced.append(row)
-    return synced
+def configured_uid(spec: SandboxSpec) -> int | None:
+    """The uid the sandbox was configured to run as (``spec.user``), or None
+    for the image's own user. Never asked of the sandbox."""
+    if not spec.user:
+        return None
+    uid = spec.user.partition(":")[0]
+    return int(uid) if uid.isdigit() else None
 
 
 async def _sync_sandbox_in_own_session(
@@ -566,6 +484,7 @@ async def _sync_sandbox_in_own_session(
     driver: SandboxDriver,
     handle: SandboxHandle,
     refused: set[tuple[str, int]],
+    owner_uid: int | None,
 ) -> int:
     from oc8.db.session import tenant_session
 
@@ -577,6 +496,7 @@ async def _sync_sandbox_in_own_session(
             driver=driver,
             handle=handle,
             refused=refused,
+            owner_uid=owner_uid,
         )
     return len(synced)
 
@@ -587,12 +507,15 @@ async def _sync_periodically(
     driver: SandboxDriver,
     handle: SandboxHandle,
     refused: set[tuple[str, int]],
+    owner_uid: int | None,
 ) -> None:
     interval = get_settings().run_output_sync_interval_s
     while True:
         await _sleep(interval)
         try:
-            await _sync_sandbox_in_own_session(run_id, tenant_id, driver, handle, refused)
+            await _sync_sandbox_in_own_session(
+                run_id, tenant_id, driver, handle, refused, owner_uid
+            )
         except Exception:
             logger.exception("run %s: periodic output sync failed", run_id)
 
@@ -603,10 +526,13 @@ async def _last_pass(
     driver: SandboxDriver,
     handle: SandboxHandle,
     refused: set[tuple[str, int]],
+    owner_uid: int | None,
 ) -> None:
     try:
         async with asyncio.timeout(get_settings().run_output_final_read_timeout_s):
-            await _sync_sandbox_in_own_session(run_id, tenant_id, driver, handle, refused)
+            await _sync_sandbox_in_own_session(
+                run_id, tenant_id, driver, handle, refused, owner_uid
+            )
     except TimeoutError:
         logger.warning("run %s: the last output sync timed out", run_id)
     except Exception:
@@ -653,8 +579,9 @@ async def run_output_sandbox(
         yield
         return
     refused: set[tuple[str, int]] = set()
+    owner_uid = configured_uid(spec)
     task = asyncio.create_task(
-        _sync_periodically(run_id, tenant_id, driver, handle, refused),
+        _sync_periodically(run_id, tenant_id, driver, handle, refused, owner_uid),
         name=f"output-sync-{run_id}",
     )
     try:
@@ -665,7 +592,7 @@ async def run_output_sandbox(
         # of THIS task still propagates.
         await asyncio.wait([task])
         last = asyncio.create_task(
-            _last_pass(run_id, tenant_id, driver, handle, refused),
+            _last_pass(run_id, tenant_id, driver, handle, refused, owner_uid),
             name=f"output-sync-last-{run_id}",
         )
         _detached_passes.add(last)

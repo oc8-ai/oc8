@@ -2068,7 +2068,7 @@ async def test_ask_user_through_a_plugin_creates_exactly_one_clarification(
 
         async def exec(self, handle: SandboxHandle, command: list[str], **kw: Any) -> ExecResult:
             # The output sync's listing: no files in /workspace/output.
-            return ExecResult(exit_code=0, output="uid=1000\0")
+            return ExecResult(exit_code=0, output="")
 
         async def get_archive(
             self, handle: SandboxHandle, path: str, *, max_bytes: int | None = None

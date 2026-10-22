@@ -165,10 +165,15 @@ class _StoppableDriver:
 async def test_stop_cli_signals_the_init_process_and_waits_for_it() -> None:
     """A parked leg's CLI is still running; its home (opencode's SQLite with
     its -wal file, a transcript being appended to) is read only once it has
-    exited, as the old teardown-then-read did."""
+    exited."""
     driver = _StoppableDriver()
     assert await stop_cli(driver, _HANDLE) is True  # type: ignore[arg-type]
-    assert driver.calls == [("exec", ["kill", "-TERM", "1"]), ("wait", STOP_GRACE_S)]
+    from oc8.sandbox.linger import STOP_COMMAND
+
+    # Every process of the sandbox user, not PID 1: the lingering wrapper
+    # traps TERM and must survive to record the exit and keep the home
+    # readable.
+    assert driver.calls == [("exec", STOP_COMMAND), ("wait", STOP_GRACE_S)]
 
 
 async def test_stop_cli_gives_up_after_the_grace_period(caplog: pytest.LogCaptureFixture) -> None:

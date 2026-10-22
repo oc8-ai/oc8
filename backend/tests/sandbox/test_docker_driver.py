@@ -286,37 +286,69 @@ def _chunks_failing_past(data: bytes, *, size: int, allowed: int) -> Iterator[by
         yield chunk
 
 
-class _ArchiveContainer:
-    def __init__(self, chunks: Iterator[bytes], info: dict[str, Any]) -> None:
-        self._chunks = chunks
-        self._info = info
+class _ExecApi:
+    """docker-py's low-level exec API, streaming ``chunks`` as tar's stdout."""
 
-    def get_archive(self, path: str) -> tuple[Iterator[bytes], dict[str, Any]]:
-        return self._chunks, self._info
+    def __init__(self, chunks: Iterator[bytes], *, exit_code: int = 0) -> None:
+        self._chunks = chunks
+        self._exit_code = exit_code
+        self.created: list[dict[str, Any]] = []
+
+    def exec_create(self, container: str, cmd: list[str], **kw: Any) -> dict[str, str]:
+        self.created.append({"cmd": cmd, **kw})
+        return {"Id": "e1"}
+
+    def exec_start(self, exec_id: str, **kw: Any) -> Iterator[tuple[bytes | None, bytes | None]]:
+        return ((chunk, None) for chunk in self._chunks)
+
+    def exec_inspect(self, exec_id: str) -> dict[str, Any]:
+        return {"ExitCode": self._exit_code}
+
+
+class _ArchiveContainer:
+    id = "c"
+    attrs: dict[str, Any] = {"Config": {"User": "1000:1000"}}
 
 
 class _ArchiveClient:
-    def __init__(self, container: _ArchiveContainer) -> None:
-        outer = container
+    def __init__(self, api: _ExecApi) -> None:
+        self.api = api
 
         class _Containers:
             def get(self, _id: str) -> _ArchiveContainer:
-                return outer
+                return _ArchiveContainer()
 
         self.containers = _Containers()
 
 
-_DIR_INFO = {"name": "output", "mode": (1 << 31) | 0o755}
-_FILE_INFO = {"name": "big.bin", "mode": 0o644}
-
-
-@pytest.mark.parametrize("info", [_DIR_INFO, _FILE_INFO], ids=["directory", "file"])
-async def test_get_archive_stops_reading_at_the_cap(info: dict[str, Any]) -> None:
-    data = _tar_bytes({"output/big.bin": b"z" * 64 * 1024})
+async def test_get_archive_stops_reading_at_the_cap() -> None:
+    data = _tar_bytes({"./big.bin": b"z" * 64 * 1024})
     chunks = _chunks_failing_past(data, size=1024, allowed=8 * 1024)
-    driver = DockerSandboxDriver(client=_ArchiveClient(_ArchiveContainer(chunks, info)))
+    driver = DockerSandboxDriver(client=_ArchiveClient(_ExecApi(chunks)))
     with pytest.raises(ArchiveTooLarge):
         await driver.get_archive(SandboxHandle("c", _IMAGE), "/x", max_bytes=8 * 1024)
+
+
+async def test_get_archive_runs_tar_through_exec_as_the_configured_user() -> None:
+    """The read runs as the user the container was CONFIGURED with, never
+    root and never a uid the sandbox reports, and never follows links."""
+    api = _ExecApi(iter([_tar_bytes({"./a.txt": b"a"})]))
+    driver = DockerSandboxDriver(client=_ArchiveClient(api))
+    data = await driver.get_archive(SandboxHandle("c", _IMAGE), "/workspace/output")
+    with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+        assert tar.getnames() == ["a.txt"]
+    (created,) = api.created
+    assert created["user"] == "1000:1000"
+    script = " ".join(created["cmd"])
+    assert "tar -c" in script and " -h" not in script and "--dereference" not in script
+    assert created["cmd"][-1] == "/workspace/output"
+
+
+async def test_a_failed_tar_is_an_error() -> None:
+    api = _ExecApi(iter([b""]), exit_code=41)
+    driver = DockerSandboxDriver(client=_ArchiveClient(api))
+    with pytest.raises(SandboxError, match="symlink"):
+        await driver.get_archive(SandboxHandle("c", _IMAGE), "/x")
 
 
 async def test_get_archive_cap_defaults_to_the_setting(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -325,9 +357,9 @@ async def test_get_archive_cap_defaults_to_the_setting(monkeypatch: pytest.Monke
     get_settings.cache_clear()
     monkeypatch.setenv("OC8_SANDBOX_ARCHIVE_MAX_BYTES", "4096")
     try:
-        data = _tar_bytes({"output/big.bin": b"z" * 64 * 1024})
+        data = _tar_bytes({"./big.bin": b"z" * 64 * 1024})
         chunks = _chunks_failing_past(data, size=1024, allowed=4096)
-        driver = DockerSandboxDriver(client=_ArchiveClient(_ArchiveContainer(chunks, _DIR_INFO)))
+        driver = DockerSandboxDriver(client=_ArchiveClient(_ExecApi(chunks)))
         with pytest.raises(ArchiveTooLarge):
             await driver.get_archive(SandboxHandle("c", _IMAGE), "/x")
     finally:
@@ -337,9 +369,9 @@ async def test_get_archive_cap_defaults_to_the_setting(monkeypatch: pytest.Monke
 @pytest.mark.parametrize(
     "files,links",
     [
-        ({"output/../../etc/evil": b"x"}, None),
+        ({"./../../etc/evil": b"x"}, None),
         ({"/etc/evil": b"x"}, None),
-        ({"output/a": b"x"}, {"output/b": "../../etc/passwd"}),
+        ({"./a": b"x"}, {"./b": "../../etc/passwd"}),
     ],
     ids=["dotdot", "absolute", "hardlink-out"],
 )
@@ -347,7 +379,7 @@ async def test_get_archive_rejects_names_outside_the_directory(
     files: dict[str, bytes], links: dict[str, str] | None
 ) -> None:
     data = _tar_bytes(files, links=links)
-    driver = DockerSandboxDriver(client=_ArchiveClient(_ArchiveContainer(iter([data]), _DIR_INFO)))
+    driver = DockerSandboxDriver(client=_ArchiveClient(_ExecApi(iter([data]))))
     with pytest.raises(SandboxError, match="outside"):
         await driver.get_archive(SandboxHandle("c", _IMAGE), "/output", max_bytes=1 << 20)
 
@@ -383,12 +415,24 @@ async def test_a_failed_start_leaves_no_container_and_no_volume() -> None:
         await driver.provision(
             SandboxSpec(
                 image=_IMAGE,
-                command=["/no/such/binary"],
+                # An unknown user fails the start itself. (A missing binary no
+                # longer does: the lingering wrapper starts, and `wait`
+                # reports the command's 127 -- see the test below.)
+                user="no-such-user",
                 labels={"oc8.run": run},
                 scratch=(ScratchDir("/scratch", 16),),
             )
         )
     assert _leftovers(run) == ([], [])
+
+
+async def test_a_missing_binary_is_the_commands_exit_127() -> None:
+    driver = DockerSandboxDriver()
+    handle = await driver.provision(SandboxSpec(image=_IMAGE, command=["/no/such/binary"]))
+    try:
+        assert await driver.wait(handle, timeout_s=30) == 127
+    finally:
+        await driver.teardown(handle)
 
 
 async def test_scratch_volumes_carry_the_sandbox_labels() -> None:
@@ -451,5 +495,29 @@ async def test_get_archive_refuses_a_symlink_path() -> None:
         assert res.exit_code == 0
         with pytest.raises(SandboxError, match="symlink"):
             await driver.get_archive(handle, "/tmp/link")
+    finally:
+        await driver.teardown(handle)
+
+
+async def test_stopping_the_command_keeps_the_sandbox_readable() -> None:
+    """`STOP_COMMAND` (what a parked CLI leg sends) ends the command, not the
+    sandbox: `wait` reports the command's 143 and files stay readable."""
+    from oc8.sandbox.linger import STOP_COMMAND
+
+    driver = DockerSandboxDriver()
+    handle = await driver.provision(
+        SandboxSpec(
+            image=_IMAGE,
+            user="1000:1000",
+            scratch=(ScratchDir("/w", 16),),
+            command=["sh", "-c", "echo kept > /w/a.txt; exec sleep 300"],
+        )
+    )
+    try:
+        await driver.exec(handle, ["sh", "-c", "until [ -f /w/a.txt ]; do sleep 0.1; done"])
+        await driver.exec(handle, STOP_COMMAND)
+        assert await driver.wait(handle, timeout_s=10) == 143
+        res = await driver.exec(handle, ["cat", "/w/a.txt"])
+        assert (res.exit_code, res.output) == (0, "kept\n")
     finally:
         await driver.teardown(handle)

@@ -50,6 +50,7 @@ from oc8.config import get_settings
 from oc8.runtime.run_state import RunStateStore, pack_files
 from oc8.sandbox.archive import safe_extract_to_memory
 from oc8.sandbox.driver import SandboxDriver
+from oc8.sandbox.linger import STOP_COMMAND
 from oc8.sandbox.types import SandboxHandle, ScratchDir
 
 logger = logging.getLogger(__name__)
@@ -159,18 +160,18 @@ async def save_home(
 async def stop_cli(driver: SandboxDriver, handle: SandboxHandle) -> bool:
     """Ask a CLI that is still running (a parked, cancelled or timed-out leg)
     to exit, and wait for it, so its home is read at rest: opencode's SQLite
-    database with its ``-wal`` file, a transcript the CLI appends to. The
-    old bind mounts got the same from teardown, which killed the CLI before
-    the next leg read the host directory.
+    database with its ``-wal`` file, a transcript the CLI appends to.
 
-    SIGTERM goes to PID 1, the images' tini, which passes it on to the CLI.
-    Returns whether the CLI exited within ``STOP_GRACE_S``; if not, the home
-    is read while it runs, which is logged.
+    SIGTERM goes to every process of the sandbox user but PID 1
+    (``STOP_COMMAND``): the CLI and its children. The lingering wrapper
+    traps it and stays up, so the sandbox remains readable afterwards (see
+    ``oc8.sandbox.linger``). Returns whether the CLI exited within
+    ``STOP_GRACE_S``; if not, the home is read while it runs, which is logged.
     """
     try:
-        await driver.exec(handle, ["kill", "-TERM", "1"], timeout=STOP_GRACE_S)
+        await driver.exec(handle, STOP_COMMAND, timeout=STOP_GRACE_S)
     except Exception:
-        logger.debug("could not signal the sandbox's init process", exc_info=True)
+        logger.debug("could not signal the sandbox's command", exc_info=True)
     try:
         await driver.wait(handle, timeout_s=STOP_GRACE_S)
     except Exception:
