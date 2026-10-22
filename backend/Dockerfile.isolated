@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1
+# A slim sandbox image for the isolated runtime (OC8_AGENT_RUNTIME_IMAGE),
+# published as ghcr.io/oc8-ai/oc8-agent-isolated. Agents run untrusted shell
+# commands and Python in it, so it holds the oc8 package and nothing else: no
+# capas, no frontend, no app config. oc8.isolated_shell itself needs only the
+# standard library and httpx and talks to the backend over OC8_INTERNAL_URL.
+# The rest of oc8's dependencies are installed too, because run_program runs
+# the agent's scripts with this venv's python3 (openpyxl, python-docx, pypdf,
+# ...), as it does in the full backend image.
+#
+# Build context: backend/
+#   docker build -f backend/Dockerfile.isolated -t oc8-agent-isolated ./backend
+FROM docker.io/library/python:3.12-slim AS build
+COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /bin/uv
+ENV UV_LINK_MODE=copy
+WORKDIR /build
+COPY pyproject.toml ./
+COPY src ./src
+RUN uv venv /opt/venv && VIRTUAL_ENV=/opt/venv uv pip install --no-cache --no-editable .
+
+FROM docker.io/library/python:3.12-slim
+COPY --from=build /opt/venv /opt/venv
+# Sandboxes run as 1000:1000; give that uid a home and a /workspace of its
+# own for when nothing is mounted there.
+RUN useradd --uid 1000 --user-group --create-home --shell /bin/sh agent \
+ && install -d -o 1000 -g 1000 /workspace
+# The isolated runtime starts `/opt/venv/bin/python -m oc8.isolated_shell`
+# with workdir /app (oc8/runtime/isolated.py).
+WORKDIR /app
+ENV PATH="/opt/venv/bin:$PATH"
+USER 1000:1000
+CMD ["/opt/venv/bin/python", "-m", "oc8.isolated_shell"]

@@ -275,6 +275,10 @@ sandboxed execution for community-trust capas is next.
 | `docs/` | Deployment, operational, security, and getting-started guides |
 | `docker-compose.yml` | Reference deployment |
 
+Prebuilt agent runtime images (Claude Code, Codex, OpenCode, isolated shell)
+for amd64 and arm64 are on GHCR: see
+[docs/DEPLOY.md](docs/DEPLOY.md#prebuilt-agent-runtime-images).
+
 ## Development and verification
 
 ```bash
