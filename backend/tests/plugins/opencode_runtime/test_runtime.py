@@ -264,6 +264,40 @@ async def test_config_points_the_custom_provider_at_oc8s_gateway(
     assert (uid, gid, mode) == (1000, 1000, 0o600)
 
 
+async def test_opencode_is_kept_off_nonessential_network_traffic(
+    app_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sandbox with restricted egress blocks update checks, models.dev and
+    LSP downloads; the config and env turn them off so opencode does not try.
+    The custom provider still points at oc8's gateway."""
+    from runtime.runtime import _OPENCODE_CONFIG_PATH, OpencodeRuntime
+
+    driver = _FakeDriver([_OK])
+    _install(monkeypatch, driver)
+
+    tenant = uuid.uuid4()
+    agent, run_id = await _seed_agent(app_session, tenant, {})
+    async with app_session(tenant) as db:
+        db.add(agent)
+        await OpencodeRuntime().execute(
+            db, agent=agent, task_text="fix the bug", tenant_id=tenant, run_id=run_id
+        )
+
+    spec = driver.specs[0]
+    for name in (
+        "OPENCODE_DISABLE_AUTOUPDATE",
+        "OPENCODE_DISABLE_MODELS_FETCH",
+        "OPENCODE_DISABLE_LSP_DOWNLOAD",
+    ):
+        assert spec.env[name] == "1", name
+    content = _seed_members(spec)[_OPENCODE_CONFIG_PATH.lstrip("/")][0]
+    assert content is not None
+    config = json.loads(content)
+    assert config["autoupdate"] is False
+    assert config["share"] == "disabled"
+    assert config["provider"]["oc8"]["options"]["baseURL"].endswith("/llm/v1")
+
+
 async def test_opencode_config_is_in_the_spec_the_container_is_provisioned_with(
     app_session: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

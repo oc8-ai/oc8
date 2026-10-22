@@ -270,6 +270,38 @@ async def test_config_toml_disables_interactive_approval(
     assert (uid, gid, mode) == (1000, 1000, 0o600)
 
 
+async def test_config_toml_keeps_codex_off_nonessential_network_traffic(
+    app_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sandbox with restricted egress blocks update checks, analytics and
+    feedback uploads; config.toml turns them off so Codex does not try.
+    The model provider stays oc8's gateway."""
+    import tomllib
+
+    from runtime.runtime import CodexRuntime
+
+    driver = _FakeDriver(['{"type":"thread.started","thread_id":"s1"}'])
+    _install(monkeypatch, driver)
+
+    tenant = uuid.uuid4()
+    agent, run_id = await _seed_agent(app_session, tenant, {})
+    async with app_session(tenant) as db:
+        db.add(agent)
+        await CodexRuntime().execute(
+            db, agent=agent, task_text="fix the bug", tenant_id=tenant, run_id=run_id
+        )
+
+    content = _seed_members(driver.specs[0])["home/node/.codex/config.toml"][0]
+    assert content is not None
+    config = tomllib.loads(content.decode())
+    assert config["check_for_update_on_startup"] is False
+    assert config["analytics"] == {"enabled": False}
+    assert config["feedback"] == {"enabled": False}
+    assert config["otel"] == {"metrics_exporter": "none"}
+    assert config["model_provider"] == "oc8"
+    assert config["model_providers"]["oc8"]["base_url"].endswith("/llm/v1")
+
+
 async def test_config_toml_is_in_the_spec_the_container_is_provisioned_with(
     app_session: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

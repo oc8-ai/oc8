@@ -102,10 +102,29 @@ def _not_saved(rel: str) -> bool:
     return parts[0] in ("bin", "log") or "node_modules" in parts
 
 
+#: Keeps opencode off traffic a sandbox with restricted egress blocks
+#: anyway: the update check, the models.dev catalog fetch (at startup and
+#: hourly after) and LSP server downloads. A blocked call stalls startup or
+#: logs noise. The oc8 provider is declared in full in the config, so it
+#: needs no catalog. Names verified against packages/core/src/flag/flag.ts,
+#: packages/opencode/src/effect/runtime-flags.ts and the env var table in
+#: packages/web/src/content/docs/cli.mdx in the opencode repo.
+_QUIET_ENV = {
+    "OPENCODE_DISABLE_AUTOUPDATE": "1",
+    "OPENCODE_DISABLE_MODELS_FETCH": "1",
+    "OPENCODE_DISABLE_LSP_DOWNLOAD": "1",
+}
+
+
 def _opencode_config(*, llm_url: str, mcp_url: str, token: str) -> str:
     return json.dumps(
         {
             "$schema": "https://opencode.ai/config.json",
+            # The config-side twin of OPENCODE_DISABLE_AUTOUPDATE, and no
+            # session sharing to opencode's share service. Both keys are in
+            # packages/core/src/v1/config/config.ts.
+            "autoupdate": False,
+            "share": "disabled",
             "provider": {
                 "oc8": {
                     "npm": "@ai-sdk/openai-compatible",
@@ -310,6 +329,7 @@ class OpencodeRuntime:
                 # itself could surface. Pointed inside the already-writable
                 # data dir, so it is saved and restored with the session.
                 "XDG_STATE_HOME": f"{_OPENCODE_DATA_DIR}/state",
+                **_QUIET_ENV,
             },
             workdir=WORKSPACE,
             network_disabled=False,
