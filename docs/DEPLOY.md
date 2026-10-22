@@ -146,6 +146,63 @@ The app runs without a model, but an actual agent run needs one. Either:
   `deploy.resources.reservations.devices` block to the `ollama` service per the
   Ollama docs.
 
+## Prebuilt agent runtime images
+
+The sandbox images for oc8's agent runtimes are published to GitHub Container
+Registry for `linux/amd64` and `linux/arm64`, so you can pull them instead of
+building them. They are built from this repository by
+[`.github/workflows/agent-images.yml`](../.github/workflows/agent-images.yml)
+and smoke-tested on both platforms before they are pushed.
+
+| Image | Runtime | Setting |
+| --- | --- | --- |
+| `ghcr.io/oc8-ai/oc8-agent-claude-code` | Claude Code | `OC8_CLAUDE_CODE_AGENT_IMAGE` |
+| `ghcr.io/oc8-ai/oc8-agent-codex` | Codex | `OC8_CODEX_AGENT_IMAGE` |
+| `ghcr.io/oc8-ai/oc8-agent-opencode` | OpenCode | `OC8_OPENCODE_AGENT_IMAGE` |
+| `ghcr.io/oc8-ai/oc8-agent-isolated` | Isolated shell | `OC8_AGENT_RUNTIME_IMAGE` |
+| `ghcr.io/oc8-ai/oc8-agent-runtime-base` | Shared base of the three CLI images | (build argument `BASE_IMAGE`) |
+
+### Tags
+
+| Tag | Built from |
+| --- | --- |
+| `X.Y.Z`, `X.Y` | release tag `vX.Y.Z` |
+| `latest` | `main` |
+| `dev` | `dev` |
+| `<commit sha>` | that commit on `main` or `dev` |
+
+Pin a release tag or a commit sha in production; `latest` and `dev` move.
+
+### Using them
+
+With Docker Compose, set the images in your `.env`:
+
+```bash
+OC8_CLAUDE_CODE_AGENT_IMAGE=ghcr.io/oc8-ai/oc8-agent-claude-code:latest
+OC8_CODEX_AGENT_IMAGE=ghcr.io/oc8-ai/oc8-agent-codex:latest
+OC8_OPENCODE_AGENT_IMAGE=ghcr.io/oc8-ai/oc8-agent-opencode:latest
+OC8_AGENT_RUNTIME_IMAGE=ghcr.io/oc8-ai/oc8-agent-isolated:latest
+```
+
+`OC8_AGENT_RUNTIME_IMAGE` defaults to the full backend image
+(`oc8-backend:latest`). `oc8-agent-isolated` is a slimmer alternative: it holds
+the `oc8` package and its dependencies only, with no capas or frontend, runs as
+uid 1000, and starts `/opt/venv/bin/python -m oc8.isolated_shell` like the
+backend image does.
+
+### Building them yourself
+
+```bash
+docker build -f capas/claude_code_runtime/Dockerfile.base -t oc8-agent-runtime-base:latest capas/claude_code_runtime
+docker build -t oc8-agent-claude-code:latest capas/claude_code_runtime
+docker build -t oc8-agent-codex:latest capas/codex_runtime
+docker build -t oc8-agent-opencode:latest capas/opencode_runtime
+docker build -f backend/Dockerfile.isolated -t oc8-agent-isolated:latest backend
+```
+
+The CLI images build `FROM oc8-agent-runtime-base:latest` unless you pass
+`--build-arg BASE_IMAGE=<image>`.
+
 ## Kubernetes (Helm)
 
 For clusters, use the chart in `deploy/helm/oc8/` (same components as Compose).

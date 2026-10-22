@@ -87,6 +87,9 @@ x-backend-env: &backend-env
   OC8_AGENT_ISOLATION: ${OC8_AGENT_ISOLATION:-true}
   OC8_INTERNAL_BASE_URL: ${OC8_INTERNAL_BASE_URL:-http://backend:8099}
   OC8_AGENT_RUNTIME_NETWORK: ${OC8_AGENT_RUNTIME_NETWORK:-oc8_agents}
+  # The isolated runtime's sandbox image; ghcr.io/oc8-ai/oc8-agent-isolated is a
+  # slimmer alternative (docs/DEPLOY.md).
+  OC8_AGENT_RUNTIME_IMAGE: ${OC8_AGENT_RUNTIME_IMAGE:-oc8-backend:latest}
   # uid:gid the sandbox/agent containers run as (see oc8.config.Settings.sandbox_user).
   # Empty by default -- the right value is a property of the deployment (the
   # uid that owns OC8_RUNTIME_SESSION_ROOT on the host), not of this compose file.

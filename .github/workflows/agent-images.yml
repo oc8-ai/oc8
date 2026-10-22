@@ -1,0 +1,388 @@
+name: Agent runtime images
+
+# Builds the agent runtime sandbox images for linux/amd64 and linux/arm64
+# (arm64 under QEMU), smoke-tests each on both platforms, and publishes them
+# to ghcr.io/oc8-ai:
+#
+#   oc8-agent-runtime-base   shared base of the CLI runtimes (Node, Python,
+#                            Playwright Chromium, tini)
+#   oc8-agent-claude-code    \
+#   oc8-agent-codex           > FROM oc8-agent-runtime-base
+#   oc8-agent-opencode       /
+#   oc8-agent-isolated       the isolated runtime's slim sandbox image
+#
+# Tags: a push to dev publishes :dev and :<sha>, a push to main :latest and
+# :<sha>, a tag vX.Y.Z :X.Y.Z and :X.Y. Pull requests (forks included) and
+# every other ref build and smoke-test only: they never log in to GHCR. The
+# CLI images build FROM a base pushed to a registry inside the job, so a pull
+# request needs no registry credentials either.
+
+on:
+  push:
+    branches: [dev, main]
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - ".github/workflows/agent-images.yml"
+      - "scripts/smoke_agent_image.sh"
+      - "backend/Dockerfile.isolated"
+      - "backend/pyproject.toml"
+      - "backend/src/**"
+      - "capas/claude_code_runtime/**"
+      - "capas/codex_runtime/**"
+      - "capas/opencode_runtime/**"
+  workflow_dispatch: {}
+
+# One run per ref. A pull request's older run is cancelled; a publishing run
+# never is, so an older build cannot land on top of a newer one half-way.
+concurrency:
+  group: agent-images-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  PLATFORMS: linux/amd64,linux/arm64
+
+jobs:
+  # Decides whether this run publishes, and under which tags.
+  tags:
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.tags.outputs.publish }}
+      suffixes: ${{ steps.tags.outputs.suffixes }}
+    steps:
+      - name: Resolve tags
+        id: tags
+        run: |
+          case "$GITHUB_REF" in
+            refs/heads/dev) suffixes="dev $GITHUB_SHA" ;;
+            refs/heads/main) suffixes="latest $GITHUB_SHA" ;;
+            refs/tags/v*)
+              version=${GITHUB_REF#refs/tags/v}
+              # Plain X.Y.Z only; anything else (pre-releases) is not published.
+              if echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+                suffixes="$version ${version%.*}"
+              else
+                suffixes=""
+              fi
+              ;;
+            *) suffixes="" ;;
+          esac
+          publish=true
+          if [ "$GITHUB_EVENT_NAME" = pull_request ] \
+            || [ "$GITHUB_REPOSITORY" != oc8-ai/oc8 ] \
+            || [ -z "$suffixes" ]; then
+            publish=false
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "suffixes=$suffixes" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish tags=[$suffixes]"
+
+  isolated:
+    needs: tags
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: oc8-agent-isolated
+      DESCRIPTION: oc8 isolated agent runtime (linux/amd64 and linux/arm64)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+        with:
+          platforms: arm64
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Build for the smoke test (linux/amd64)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: backend
+          file: backend/Dockerfile.isolated
+          platforms: linux/amd64
+          load: true
+          tags: smoke/${{ env.IMAGE }}:amd64
+          cache-from: type=gha,scope=${{ env.IMAGE }}
+          cache-to: type=gha,mode=max,scope=${{ env.IMAGE }}
+
+      - name: Smoke-test (linux/amd64)
+        run: scripts/smoke_agent_image.sh smoke/$IMAGE:amd64 linux/amd64 isolated
+
+      - name: Build for the smoke test (linux/arm64)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: backend
+          file: backend/Dockerfile.isolated
+          platforms: linux/arm64
+          load: true
+          tags: smoke/${{ env.IMAGE }}:arm64
+          cache-from: type=gha,scope=${{ env.IMAGE }}
+          cache-to: type=gha,mode=max,scope=${{ env.IMAGE }}
+
+      - name: Smoke-test (linux/arm64)
+        run: scripts/smoke_agent_image.sh smoke/$IMAGE:arm64 linux/arm64 isolated
+
+      - name: Tags
+        if: needs.tags.outputs.publish == 'true'
+        id: refs
+        env:
+          SUFFIXES: ${{ needs.tags.outputs.suffixes }}
+        run: |
+          {
+            echo "tags<<EOF"
+            for s in $SUFFIXES; do echo "$REGISTRY/${{ github.repository_owner }}/$IMAGE:$s"; done
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        if: needs.tags.outputs.publish == 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish
+        if: needs.tags.outputs.publish == 'true'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: backend
+          file: backend/Dockerfile.isolated
+          platforms: ${{ env.PLATFORMS }}
+          push: true
+          tags: ${{ steps.refs.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=${{ env.DESCRIPTION }}
+            org.opencontainers.image.licenses=LGPL-3.0-or-later
+            org.opencontainers.image.revision=${{ github.sha }}
+          annotations: |
+            index:org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            index:org.opencontainers.image.description=${{ env.DESCRIPTION }}
+            index:org.opencontainers.image.licenses=LGPL-3.0-or-later
+            index:org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=${{ env.IMAGE }}
+
+  # Each CLI image builds the base (from cache after the first) into a
+  # registry inside the job and builds FROM it there, so its smoke test covers
+  # what it inherits and a pull request needs no GHCR access.
+  runtime:
+    needs: tags
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: oc8-agent-claude-code
+            capa: claude_code_runtime
+            smoke: claude
+            description: oc8 Claude Code agent runtime (linux/amd64 and linux/arm64)
+          - image: oc8-agent-codex
+            capa: codex_runtime
+            smoke: codex
+            description: oc8 Codex agent runtime (linux/amd64 and linux/arm64)
+          - image: oc8-agent-opencode
+            capa: opencode_runtime
+            smoke: opencode
+            description: oc8 OpenCode agent runtime (linux/amd64 and linux/arm64)
+    env:
+      BASE: localhost:5000/oc8-agent-runtime-base:ci
+    steps:
+      # ubuntu-latest has ~14 GB free; a runtime job loads two ~2.3 GB smoke
+      # images next to the builder's cache. Drop toolchains no job here uses.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /usr/local/share/boost /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+        with:
+          platforms: arm64
+
+      # Host networking lets the builder reach the job's registry on
+      # localhost:5000, which serves plain HTTP.
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          driver-opts: network=host
+          buildkitd-config-inline: |
+            [registry."localhost:5000"]
+              http = true
+              insecure = true
+
+      - name: Build the runtime base into the job's registry
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: capas/claude_code_runtime
+          file: capas/claude_code_runtime/Dockerfile.base
+          platforms: ${{ env.PLATFORMS }}
+          push: true
+          tags: ${{ env.BASE }}
+          cache-from: type=gha,scope=oc8-agent-runtime-base
+          cache-to: type=gha,mode=max,scope=oc8-agent-runtime-base
+
+      - name: Build ${{ matrix.image }} for the smoke test (linux/amd64)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: capas/${{ matrix.capa }}
+          file: capas/${{ matrix.capa }}/Dockerfile
+          build-args: BASE_IMAGE=${{ env.BASE }}
+          platforms: linux/amd64
+          load: true
+          tags: smoke/${{ matrix.image }}:amd64
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+      - name: Smoke-test ${{ matrix.image }} (linux/amd64)
+        run: scripts/smoke_agent_image.sh smoke/${{ matrix.image }}:amd64 linux/amd64 ${{ matrix.smoke }}
+
+      - name: Remove the linux/amd64 smoke image
+        if: always()
+        run: docker image rm smoke/${{ matrix.image }}:amd64 || true
+
+      - name: Build ${{ matrix.image }} for the smoke test (linux/arm64)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: capas/${{ matrix.capa }}
+          file: capas/${{ matrix.capa }}/Dockerfile
+          build-args: BASE_IMAGE=${{ env.BASE }}
+          platforms: linux/arm64
+          load: true
+          tags: smoke/${{ matrix.image }}:arm64
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+      - name: Smoke-test ${{ matrix.image }} (linux/arm64)
+        run: scripts/smoke_agent_image.sh smoke/${{ matrix.image }}:arm64 linux/arm64 ${{ matrix.smoke }}
+
+      - name: Remove the linux/arm64 smoke image
+        if: always()
+        run: docker image rm smoke/${{ matrix.image }}:arm64 || true
+
+      - name: Tags
+        if: needs.tags.outputs.publish == 'true'
+        id: refs
+        env:
+          SUFFIXES: ${{ needs.tags.outputs.suffixes }}
+          IMAGE: ${{ matrix.image }}
+        run: |
+          {
+            echo "tags<<EOF"
+            for s in $SUFFIXES; do echo "$REGISTRY/${{ github.repository_owner }}/$IMAGE:$s"; done
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        if: needs.tags.outputs.publish == 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish ${{ matrix.image }}
+        if: needs.tags.outputs.publish == 'true'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: capas/${{ matrix.capa }}
+          file: capas/${{ matrix.capa }}/Dockerfile
+          build-args: BASE_IMAGE=${{ env.BASE }}
+          platforms: ${{ env.PLATFORMS }}
+          push: true
+          tags: ${{ steps.refs.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=${{ matrix.description }}
+            org.opencontainers.image.licenses=LGPL-3.0-or-later
+            org.opencontainers.image.revision=${{ github.sha }}
+          annotations: |
+            index:org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            index:org.opencontainers.image.description=${{ matrix.description }}
+            index:org.opencontainers.image.licenses=LGPL-3.0-or-later
+            index:org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+
+  # Published only once every CLI image built FROM it passed its smoke tests.
+  runtime-base:
+    needs: [tags, runtime]
+    if: needs.tags.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: oc8-agent-runtime-base
+      DESCRIPTION: oc8 agent runtime base image (linux/amd64 and linux/arm64)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+        with:
+          platforms: arm64
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Tags
+        id: refs
+        env:
+          SUFFIXES: ${{ needs.tags.outputs.suffixes }}
+        run: |
+          {
+            echo "tags<<EOF"
+            for s in $SUFFIXES; do echo "$REGISTRY/${{ github.repository_owner }}/$IMAGE:$s"; done
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: capas/claude_code_runtime
+          file: capas/claude_code_runtime/Dockerfile.base
+          platforms: ${{ env.PLATFORMS }}
+          push: true
+          tags: ${{ steps.refs.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=${{ env.DESCRIPTION }}
+            org.opencontainers.image.licenses=LGPL-3.0-or-later
+            org.opencontainers.image.revision=${{ github.sha }}
+          annotations: |
+            index:org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            index:org.opencontainers.image.description=${{ env.DESCRIPTION }}
+            index:org.opencontainers.image.licenses=LGPL-3.0-or-later
+            index:org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=oc8-agent-runtime-base
