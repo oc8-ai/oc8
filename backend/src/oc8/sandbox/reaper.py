@@ -152,14 +152,25 @@ async def _exited_long_ago(container: Any) -> bool:
     return dt.datetime.now(tz=dt.UTC) - finished > _DEBRIS_AFTER
 
 
+#: Longest the reaper waits for one exit-marker read.
+_EXEC_TIMEOUT_S = 10.0
+
+
 async def _command_finished_at(container: Any) -> dt.datetime | None:
     """When a lingering container's command ended, from its exit marker; None
     while it runs, or when that cannot be told."""
     exec_run = getattr(container, "exec_run", None)
     if not callable(exec_run):
         return None
+    attrs = getattr(container, "attrs", None) or {}
+    user = str((attrs.get("Config") or {}).get("User") or "")
     try:
-        code, output = await asyncio.to_thread(exec_run, EXIT_TIME_COMMAND)
+        # As the sandbox's configured user, and bounded: the command itself is
+        # killed in the sandbox after 5 s, and a daemon call that never
+        # answers is abandoned here.
+        code, output = await asyncio.wait_for(
+            asyncio.to_thread(exec_run, EXIT_TIME_COMMAND, user=user), timeout=_EXEC_TIMEOUT_S
+        )
     except Exception:
         return None
     text = (output or b"").decode("utf-8", "replace").strip()

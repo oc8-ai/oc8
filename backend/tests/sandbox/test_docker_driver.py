@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from pathlib import Path
@@ -521,3 +522,67 @@ async def test_stopping_the_command_keeps_the_sandbox_readable() -> None:
         assert (res.exit_code, res.output) == (0, "kept\n")
     finally:
         await driver.teardown(handle)
+
+
+class _InitDriver(DockerSandboxDriver):
+    """Runs every container with Docker's init (tini) as PID 1, as the CLI
+    images do through their ENTRYPOINT."""
+
+    def _create(self, spec: SandboxSpec, run_kwargs: dict[str, object]) -> Any:
+        return super()._create(spec, {**run_kwargs, "init": True})
+
+    def _start(self, spec: SandboxSpec, run_kwargs: dict[str, object]) -> Any:
+        return super()._start(spec, {**run_kwargs, "init": True})
+
+
+async def test_a_stop_after_the_command_exited_leaves_the_sandbox_up_under_tini() -> None:
+    """A parked leg whose CLI had already exited still sends the stop. The
+    wrapper is then `sleep`, which must ignore it, or tini exits and the
+    sandbox can no longer be read."""
+    from oc8.sandbox.linger import STOP_COMMAND
+
+    driver = _InitDriver()
+    handle = await driver.provision(
+        SandboxSpec(
+            image=_IMAGE,
+            user="1000:1000",
+            scratch=(ScratchDir("/w", 16),),
+            command=["sh", "-c", "echo kept > /w/a.txt"],
+        )
+    )
+    try:
+        assert await driver.wait(handle, timeout_s=30) == 0
+        await driver.exec(handle, STOP_COMMAND)
+        await asyncio.sleep(1)
+        container = docker.from_env().containers.get(handle.container_id)  # type: ignore[attr-defined]
+        assert container.status == "running"
+        assert files_of_tar(await driver.get_archive(handle, "/w")) == {"a.txt": b"kept\n"}
+        assert await driver.wait(handle, timeout_s=5) == 0
+    finally:
+        await driver.teardown(handle)
+
+
+async def test_a_fifo_at_the_exit_marker_cannot_wedge_wait() -> None:
+    driver = DockerSandboxDriver()
+    handle = await driver.provision(
+        SandboxSpec(image=_IMAGE, command=["sh", "-c", "mkfifo /.oc8/exit; exec sleep 120"])
+    )
+    try:
+        await driver.exec(handle, ["sh", "-c", "until [ -p /.oc8/exit ]; do sleep 0.1; done"])
+        started = time.monotonic()
+        with pytest.raises(TimeoutError):
+            await driver.wait(handle, timeout_s=3)
+        assert time.monotonic() - started < 3 + 6
+    finally:
+        await driver.teardown(handle)
+
+
+def files_of_tar(data: bytes) -> dict[str, bytes]:
+    out: dict[str, bytes] = {}
+    with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+        for member in tar.getmembers():
+            if member.isfile():
+                f = tar.extractfile(member)
+                assert f is not None
+                out[member.name] = f.read()
+    return out

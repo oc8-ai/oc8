@@ -22,6 +22,7 @@ from sqlalchemy import select
 from oc8 import models as m
 from oc8.config import get_settings
 from oc8.sandbox.docker_driver import DockerSandboxDriver
+from oc8.sandbox.types import SandboxSpec, ScratchDir
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[4] / "capas" / "claude_code_runtime"
 
@@ -62,6 +63,14 @@ def _plugin_path() -> Iterator[None]:
     yield
     sys.path.remove(str(PLUGIN_ROOT))
     _evict()
+
+
+class _InitDriver(DockerSandboxDriver):
+    def _create(self, spec: Any, run_kwargs: dict[str, object]) -> Any:
+        return super()._create(spec, {**run_kwargs, "init": True})
+
+    def _start(self, spec: Any, run_kwargs: dict[str, object]) -> Any:
+        return super()._start(spec, {**run_kwargs, "init": True})
 
 
 async def _agent_and_run(app_session: Any, tenant: uuid.UUID) -> tuple[Any, uuid.UUID]:
@@ -108,7 +117,8 @@ async def test_two_legs_on_real_docker_resume_from_the_saved_home(
         return ["sh", "-c", f"RESUME={resume}; {_STUB}"]
 
     monkeypatch.setattr(rt, "_build_command", _stub_command)
-    driver = DockerSandboxDriver()
+    # tini as PID 1, as the real CLI images have it (their ENTRYPOINT).
+    driver = _InitDriver()
     monkeypatch.setattr(rt, "get_sandbox_driver", lambda: driver)
 
     tenant = uuid.uuid4()
@@ -147,3 +157,39 @@ async def test_two_legs_on_real_docker_resume_from_the_saved_home(
             .all()
         )
     assert "report.txt" in names
+
+
+async def test_a_stop_after_the_cli_exited_still_saves_the_home_under_tini(
+    _plugin_path: None, minio_url: str
+) -> None:
+    """A parked leg whose CLI had already exited still runs `stop_cli`
+    before `save_home`. Under tini that stop used to end the lingering
+    sandbox, and the save then read nothing."""
+    from cli_harness.seed import load_home, save_home, stop_cli
+
+    driver = _InitDriver()
+    handle = await driver.provision(
+        SandboxSpec(
+            image=_STUB_IMAGE,
+            user="1000:1000",
+            scratch=(ScratchDir("/home/node/.claude", 16),),
+            command=["sh", "-c", "echo '{}' > /home/node/.claude/t.jsonl"],
+        )
+    )
+    try:
+        assert await driver.wait(handle, timeout_s=30) == 0
+        await stop_cli(driver, handle)
+        tenant, run = uuid.uuid4(), uuid.uuid4()
+        assert await save_home(
+            driver,
+            handle,
+            tenant_id=tenant,
+            run_id=run,
+            name="claude-home",
+            path="/home/node/.claude",
+        )
+        assert await load_home(tenant_id=tenant, run_id=run, name="claude-home") == {
+            "t.jsonl": b"{}\n"
+        }
+    finally:
+        await driver.teardown(handle)

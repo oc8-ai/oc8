@@ -7,13 +7,18 @@ does the same with an ``emptyDir`` at ``/.oc8`` and exec as the pod's
 **Lingering.** The spec's command runs under ``lingering_command``::
 
     sh -c 'trap : TERM INT; "$@"; c=$?; echo; echo >&2;
-           echo "$c" > /.oc8/exit; exec sleep 2147483647 >/dev/null 2>&1' -- <cmd>
+           echo "$c" > /.oc8/exit; trap "" TERM INT;
+           exec sleep 2147483647 >/dev/null 2>&1' -- <cmd>
 
 so the sandbox stays up after the command exits, with the command's exit
 code in ``/.oc8/exit``. ``wait`` reports completion from that file; reading
 output and a CLI home after the command, through exec, keeps working on any
 driver, including one that cannot read a stopped sandbox at all. Teardown
-removes the sandbox as before. The two ``echo``s end a last line the command
+removes the sandbox as before (SIGKILL; nothing ignores that). Before the
+``exec sleep`` the wrapper switches the traps to IGNORE: a caught trap is
+reset by ``exec``, an ignored one is kept, so a stop that arrives after the
+command exited (a parked leg's ``stop_cli``) cannot end the ``sleep`` and,
+with tini as PID 1, the whole sandbox. The two ``echo``s end a last line the command
 left unterminated: a log driver holds a partial line back until the stream
 closes, and a lingering sandbox's stream stays open (so the log gains a blank
 line on each stream). The trap makes the wrapper survive a SIGTERM
@@ -40,8 +45,8 @@ link or a swapped directory pointing at ``/etc/shadow`` yields nothing.
 
 from __future__ import annotations
 
-import io
 import tarfile
+import tempfile
 from typing import IO
 
 from oc8.sandbox.archive import is_outside
@@ -53,8 +58,12 @@ EXIT_FILE = f"{MARKER_DIR}/exit"
 
 _WRAPPER = (
     'trap : TERM INT; "$@"; c=$?; echo; echo >&2; '
-    f'echo "$c" > {EXIT_FILE}; exec sleep 2147483647 >/dev/null 2>&1'
+    f"echo \"$c\" > {EXIT_FILE}; trap '' TERM INT; "
+    "exec sleep 2147483647 >/dev/null 2>&1"
 )
+
+#: Above this, a rewritten archive is spooled to disk rather than memory.
+SPOOL_IN_MEMORY_BYTES = 8 * 1024 * 1024
 
 #: Exit codes of ``archive_command`` that are not tar's own.
 ARCHIVE_MISSING = 40
@@ -69,10 +78,24 @@ def lingering_command(command: list[str]) -> list[str]:
 
 
 #: Prints the recorded exit code, or nothing while the command still runs.
-READ_EXIT_COMMAND = ["sh", "-c", f'read c < {EXIT_FILE} 2>/dev/null && echo "$c"']
+#: Only a regular file, never a link, at most 32 bytes, and killed after 2 s:
+#: the sandbox can put a FIFO or a link at the marker path.
+READ_EXIT_COMMAND = [
+    "timeout",
+    "-s",
+    "KILL",
+    "2",
+    "sh",
+    "-c",
+    f"[ -f {EXIT_FILE} ] && [ ! -L {EXIT_FILE} ] && head -c 32 {EXIT_FILE}",
+]
 
 #: When the command ended (the marker's mtime, Unix seconds), or nothing.
 EXIT_TIME_COMMAND = [
+    "timeout",
+    "-s",
+    "KILL",
+    "5",
     "sh",
     "-c",
     f"stat -c %Y {EXIT_FILE} 2>/dev/null || date -r {EXIT_FILE} +%s 2>/dev/null",
@@ -136,8 +159,9 @@ def _strip_dot(name: str) -> str | None:
 def relative_archive(src_file: IO[bytes]) -> bytes:
     """``tar -c -C dir .`` output renamed to the contract's layout: entries
     and hardlink targets named from inside the directory, without ``./``.
-    Streams one member at a time."""
-    out = io.BytesIO()
+    Streams one member at a time into a spooled file (on disk above
+    ``SPOOL_IN_MEMORY_BYTES``), so only the returned result is held whole."""
+    out: IO[bytes] = tempfile.SpooledTemporaryFile(max_size=SPOOL_IN_MEMORY_BYTES)
     try:
         with (
             tarfile.open(fileobj=src_file, mode="r|") as src,
@@ -157,5 +181,11 @@ def relative_archive(src_file: IO[bytes]) -> bytes:
                     member.linkname = target
                 dst.addfile(member, src.extractfile(member) if member.isfile() else None)
     except tarfile.TarError as exc:
+        out.close()
         raise SandboxError(f"get_archive: unreadable archive: {exc}") from exc
-    return out.getvalue()
+    except BaseException:
+        out.close()
+        raise
+    with out:
+        out.seek(0)
+        return out.read()

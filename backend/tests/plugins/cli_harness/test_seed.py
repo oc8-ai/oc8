@@ -181,3 +181,72 @@ async def test_stop_cli_gives_up_after_the_grace_period(caplog: pytest.LogCaptur
     with caplog.at_level(logging.WARNING):
         assert await stop_cli(driver, _HANDLE) is False  # type: ignore[arg-type]
     assert "did not exit" in caplog.text
+
+
+def test_exclude_filters_a_tar_while_streaming_and_drops_links() -> None:
+    import io as _io
+
+    from cli_harness.seed import filter_tar
+
+    buf = _io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for name, data in (("keep/a.jsonl", b"a"), ("log/x.log", b"x"), ("config.toml", b"c")):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, _io.BytesIO(data))
+        link = tarfile.TarInfo("keep/link")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "/etc/shadow"
+        tar.addfile(link)
+    out = filter_tar(buf.getvalue(), lambda rel: rel == "config.toml" or rel.startswith("log/"))
+    assert {m.name: m.isfile() for m in _members(out).values()} == {"keep/a.jsonl": True}
+
+
+async def test_a_save_whose_read_never_returns_is_abandoned(
+    minio_url: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import asyncio
+
+    import cli_harness.seed as seed_mod
+
+    monkeypatch.setattr(seed_mod, "SAVE_TIMEOUT_S", 0.5)
+
+    class _Hangs:
+        async def get_archive(self, *a: Any, **kw: Any) -> bytes:
+            await asyncio.sleep(30)
+            return b""
+
+    with caplog.at_level(logging.ERROR):
+        saved = await save_home(
+            _Hangs(),  # type: ignore[arg-type]
+            _HANDLE,
+            tenant_id=uuid.uuid4(),
+            run_id=uuid.uuid4(),
+            name="claude-home",
+            path="/home/node/.claude",
+        )
+    assert saved is False
+
+
+async def test_stop_cli_is_bounded_when_the_sandbox_hangs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    import time
+
+    import cli_harness.seed as seed_mod
+
+    monkeypatch.setattr(seed_mod, "STOP_GRACE_S", 0.2)
+
+    class _Hangs:
+        async def exec(self, *a: Any, **kw: Any) -> Any:
+            await asyncio.sleep(30)
+
+        async def wait(self, *a: Any, **kw: Any) -> int:
+            await asyncio.sleep(30)
+            return 0
+
+    started = time.monotonic()
+    assert await stop_cli(_Hangs(), _HANDLE) is False  # type: ignore[arg-type]
+    # Two calls, each bounded by STOP_GRACE_S + 5.
+    assert time.monotonic() - started < 2 * (0.2 + 5) + 1

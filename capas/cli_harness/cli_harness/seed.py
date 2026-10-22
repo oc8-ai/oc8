@@ -38,17 +38,19 @@ never by "the most recent session".
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import posixpath
 import tarfile
+import tempfile
 import uuid
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
+from typing import IO
 
 from oc8.config import get_settings
 from oc8.runtime.run_state import RunStateStore, pack_files
-from oc8.sandbox.archive import safe_extract_to_memory
 from oc8.sandbox.driver import SandboxDriver
 from oc8.sandbox.linger import STOP_COMMAND
 from oc8.sandbox.types import SandboxHandle, ScratchDir
@@ -63,6 +65,10 @@ IMAGE_UID = 1000
 
 #: How long a CLI that was asked to exit gets before its home is read anyway.
 STOP_GRACE_S = 10.0
+#: Longest one save of a CLI home may take, read and upload together.
+SAVE_TIMEOUT_S = 300.0
+#: Above this, a filtered home is spooled to disk rather than memory.
+_SPOOL_IN_MEMORY_BYTES = 8 * 1024 * 1024
 
 WORKSPACE_SCRATCH_MB = 4096
 HOME_SCRATCH_MB = 1024
@@ -140,21 +146,45 @@ async def save_home(
     the sandbox supplied (see ``RunStateStore``).
     """
     settings = get_settings()
-    try:
+
+    async def _save() -> None:
         tar = await driver.get_archive(handle, path, max_bytes=settings.run_state_max_bytes)
         if exclude is not None:
-            files = safe_extract_to_memory(
-                tar,
-                max_members=settings.run_state_max_files,
-                max_total_bytes=settings.run_state_max_bytes,
-                on_link="skip",
-            )
-            tar = pack_files({rel: data for rel, data in files.items() if not exclude(rel)})
+            tar = filter_tar(tar, exclude)
         await RunStateStore(tenant_id).save(run_id, name, tar)
+
+    try:
+        # Bounded: the sandbox may be dying, and a read that never returns
+        # must not hold the leg (and its worker) forever.
+        await asyncio.wait_for(_save(), timeout=SAVE_TIMEOUT_S)
     except Exception:
         logger.exception("run %s: could not save %s from %s", run_id, name, path)
         return False
     return True
+
+
+def filter_tar(tar: bytes, exclude: Callable[[str], bool]) -> bytes:
+    """``tar`` without the members ``exclude`` names, links and special files.
+
+    Streams one member at a time into a spooled file, never extracting the
+    whole archive. The result is still untrusted: ``RunStateStore.save``
+    checks it again (names, sizes, member count).
+    """
+    out: IO[bytes] = tempfile.SpooledTemporaryFile(max_size=_SPOOL_IN_MEMORY_BYTES)
+    with out:
+        with (
+            tarfile.open(fileobj=io.BytesIO(tar), mode="r|") as src,
+            tarfile.open(fileobj=out, mode="w", format=tarfile.PAX_FORMAT) as dst,
+        ):
+            for member in src:
+                if not (member.isfile() or member.isdir()):
+                    continue
+                rel = posixpath.normpath(member.name)
+                if member.isfile() and exclude(rel):
+                    continue
+                dst.addfile(member, src.extractfile(member) if member.isfile() else None)
+        out.seek(0)
+        return out.read()
 
 
 async def stop_cli(driver: SandboxDriver, handle: SandboxHandle) -> bool:
@@ -168,12 +198,13 @@ async def stop_cli(driver: SandboxDriver, handle: SandboxHandle) -> bool:
     ``oc8.sandbox.linger``). Returns whether the CLI exited within
     ``STOP_GRACE_S``; if not, the home is read while it runs, which is logged.
     """
+    bound = STOP_GRACE_S + 5
     try:
-        await driver.exec(handle, STOP_COMMAND, timeout=STOP_GRACE_S)
+        await asyncio.wait_for(driver.exec(handle, STOP_COMMAND, timeout=STOP_GRACE_S), bound)
     except Exception:
         logger.debug("could not signal the sandbox's command", exc_info=True)
     try:
-        await driver.wait(handle, timeout_s=STOP_GRACE_S)
+        await asyncio.wait_for(driver.wait(handle, timeout_s=STOP_GRACE_S), bound)
     except Exception:
         logger.warning(
             "sandbox %s did not exit within %.0fs of SIGTERM; reading its home while it runs",

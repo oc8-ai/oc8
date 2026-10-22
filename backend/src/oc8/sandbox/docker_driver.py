@@ -222,6 +222,11 @@ def _ensure_local_image(client: docker.DockerClient, spec: SandboxSpec) -> None:
 
 #: How often ``wait`` looks for the command's exit marker.
 _WAIT_POLL_S = 0.25
+#: Longest one look may take (the marker read itself is killed after 2 s).
+_POLL_CALL_TIMEOUT_S = 5.0
+#: Extra time an exec with a ``timeout`` gets in Python, over the in-sandbox
+#: ``timeout`` that kills its process.
+_EXEC_GRACE_S = 5.0
 
 
 def _configured_user(container: Container) -> str:
@@ -450,28 +455,41 @@ class DockerSandboxDriver:
         for docker-level faults (container gone, daemon error).
         """
 
-        def _run() -> int:
-            deadline = time.monotonic() + timeout_s
+        deadline = time.monotonic() + timeout_s
+
+        def _poll() -> int | None:
+            """One look: the command's exit code, or None while it runs."""
+            container = self._client.containers.get(handle.container_id)
+            container.reload()
+            if container.status not in ("running", "created", "restarting"):
+                state = container.attrs.get("State") or {}
+                return int(state.get("ExitCode", -1))
+            code = _read_exit(container, _configured_user(container))
+            if code is not None:
+                _settle_logs(container)
+            return code
+
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError(f"sandbox command still running after {timeout_s:.0f}s")
             try:
-                container = self._client.containers.get(handle.container_id)
-                user = _configured_user(container)
-                while True:
-                    container.reload()
-                    if container.status not in ("running", "created", "restarting"):
-                        state = container.attrs.get("State") or {}
-                        return int(state.get("ExitCode", -1))
-                    code = _read_exit(container, user)
-                    if code is not None:
-                        _settle_logs(container)
-                        return code
-                    left = deadline - time.monotonic()
-                    if left <= 0:
-                        raise TimeoutError(f"sandbox command still running after {timeout_s:.0f}s")
-                    time.sleep(min(_WAIT_POLL_S, left))
+                # Bounded here too: a daemon call that never answers (an exec
+                # into a dying container) must not outlive the deadline. A
+                # thread abandoned this way finishes or fails on its own.
+                code = await asyncio.wait_for(
+                    asyncio.to_thread(_poll), timeout=min(_POLL_CALL_TIMEOUT_S, left)
+                )
+            except TimeoutError:
+                code = None
             except docker.errors.DockerException:
                 return -1
-
-        return await asyncio.to_thread(_run)
+            if code is not None:
+                return code
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError(f"sandbox command still running after {timeout_s:.0f}s")
+            await asyncio.sleep(min(_WAIT_POLL_S, left))
 
     async def logs(self, handle: SandboxHandle) -> str:
         def _run() -> str:
@@ -518,8 +536,10 @@ class DockerSandboxDriver:
     ) -> ExecResult:
         """Run ``command`` in the sandbox container.
 
-        When ``timeout`` is given, the command is wrapped with the
-        container's own ``timeout`` utility (busybox on alpine; verified to
+        Runs as the container's configured user (Docker's exec default).
+        When ``timeout`` is given, the call is also bounded in Python (plus
+        a few seconds), raising ``SandboxError``, and the command is wrapped
+        with the container's own ``timeout`` utility (busybox on alpine; verified to
         accept ``-s KILL``) so the *running process* is SIGKILLed on expiry —
         not just abandoned on the Python side. This frees the
         ``asyncio.to_thread`` worker even if the process itself ignores
@@ -541,7 +561,16 @@ class DockerSandboxDriver:
             text = output.decode("utf-8", errors="replace") if output else ""
             return ExecResult(exit_code=int(code), output=text)
 
-        return await asyncio.to_thread(_run)
+        if timeout is None:
+            return await asyncio.to_thread(_run)
+        # Bounded in Python as well: the in-sandbox `timeout` cannot help when
+        # the daemon call itself never returns (an exec into a sandbox that is
+        # being torn down).
+        try:
+            bound = timeout + _EXEC_GRACE_S
+            return await asyncio.wait_for(asyncio.to_thread(_run), timeout=bound)
+        except TimeoutError as exc:
+            raise SandboxError(f"exec did not return within {bound:.0f}s") from exc
 
     async def fs_write(self, handle: SandboxHandle, path: str, content: bytes) -> None:
         directory = posixpath.dirname(path) or "/"
