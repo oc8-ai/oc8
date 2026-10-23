@@ -474,6 +474,49 @@ async def test_an_upstream_rejection_reports_the_providers_own_reason(
     assert any(reason in r.getMessage() for r in caplog.records), "and readable in the log"
 
 
+async def test_a_turn_the_provider_will_not_serve_is_a_429_with_the_reason(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A spent provider quota or a throttling provider is a limit, not a broken
+    upstream: a harness backs off from a 429, and the detail says which limit --
+    the same sentence the isolated runtime's /step gives."""
+    import datetime as dt
+
+    import httpx as _httpx
+
+    from oc8.modelrouter.fallback import ProviderBudgetExceeded
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _dept = await _agent_run(db, tenant)
+
+    request = _httpx.Request("POST", "https://provider.example/v1/chat/completions")
+    cases = [
+        (
+            ProviderBudgetExceeded("openai_compatible", dt.datetime(2026, 11, 1, tzinfo=dt.UTC)),
+            "The monthly token quota for openai_compatible is used up until 2026-11-01.",
+        ),
+        (
+            _httpx.HTTPStatusError(
+                "429 from upstream", request=request, response=_httpx.Response(429, request=request)
+            ),
+            "The model provider is rate-limiting requests; try again shortly.",
+        ),
+    ]
+    for raised, reason in cases:
+
+        async def fake_complete(*a: object, _exc: Exception = raised, **kw: object) -> Any:
+            raise _exc
+
+        monkeypatch.setattr("oc8.api.llm_gateway.complete_with_fallback", fake_complete)
+        code, body, _h = await _post(
+            _agent_token(tenant, agent_id, run_id),
+            {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert code == 429, body
+        assert body["detail"] == reason
+
+
 async def test_a_stream_that_dies_says_why_in_the_log_too(
     app_session: AppSessionFactory,
     monkeypatch: pytest.MonkeyPatch,

@@ -41,7 +41,7 @@ from oc8.modelrouter import (
     estimate_tokens,
     get_model_router,
 )
-from oc8.modelrouter.fallback import stream_completion_with_fallback
+from oc8.modelrouter.fallback import limit_reason, stream_completion_with_fallback
 from oc8.modelrouter.http_errors import describe_upstream_error, explain_upstream_error
 from oc8.modelrouter.router import ClassificationViolation, TenantKeyRequired
 from oc8.modelrouter.sampling import resolve_params
@@ -326,6 +326,12 @@ async def _complete_or_raise(db: DbSession, common: dict[str, Any]) -> Completio
     except HTTPException:
         raise
     except Exception as exc:  # upstream failed after the chain was exhausted
+        # A spent quota or a throttling provider is a limit, not a broken
+        # upstream: 429, so a harness backs off, with a detail naming which one.
+        reason = limit_reason(exc)
+        if reason is not None:
+            logger.warning("llm gateway model turn refused: %s", exc)
+            raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, reason) from exc
         # LOG it too, not only in the 502 body. A harness usually reports "502 from
         # the gateway" and nothing else, so the provider's own reason has to be
         # readable server-side or the failure has to be reproduced by hand.
