@@ -87,6 +87,8 @@ class _FakeDriver:
         #: What get_archive hands back for /workspace.
         self.workspace: dict[str, bytes] = {}
         self.archived: list[str] = []
+        #: Runs once, at the first logs(): a park the gateway writes mid-leg.
+        self.on_first_logs: Any = None
 
     async def get_archive(
         self, handle: SandboxHandle, path: str, *, max_bytes: int | None = None
@@ -99,6 +101,9 @@ class _FakeDriver:
         return SandboxHandle(container_id="codex-container", image=spec.image)
 
     async def logs(self, handle: SandboxHandle) -> str:
+        if self.on_first_logs is not None:
+            hook, self.on_first_logs = self.on_first_logs, None
+            await hook()
         return "".join(line + "\n" for line in self.stdout_lines)
 
     async def wait(self, handle: SandboxHandle, timeout_s: float = 600.0) -> int:
@@ -194,6 +199,21 @@ async def _seed_agent(app_session: Any, tenant: uuid.UUID, context: dict) -> tup
         db.add(run)
         await db.flush()
         return agent, run.id
+
+
+def _parks(app_session: Any, tenant: uuid.UUID, run_id: uuid.UUID, marker: dict[str, Any]) -> Any:
+    """What the /mcp gateway does when the CLI calls ask_user or a held
+    tool: writes the park marker from its own session, during the leg."""
+
+    async def park() -> None:
+        from oc8.runtime.run_context import merge_context
+
+        async with app_session(tenant) as db:
+            run = await db.get(m.AgentRun, run_id)
+            assert run is not None
+            await merge_context(db, run, {"isolated_result": marker})
+
+    return park
 
 
 async def test_a_finished_run_returns_done(
@@ -521,13 +541,12 @@ async def test_a_resume_leg_restores_the_session_leg_one_saved(
     from runtime.runtime import _CODEX_HOME, CodexRuntime
 
     tenant = uuid.uuid4()
-    agent, run_id = await _seed_agent(
-        app_session,
-        tenant,
-        {"isolated_result": {"status": "waiting_for_approval", "output": "send it?"}},
-    )
+    agent, run_id = await _seed_agent(app_session, tenant, {})
 
     leg1 = _FakeDriver(['{"type":"thread.started","thread_id":"codex-sess-1"}'])
+    leg1.on_first_logs = _parks(
+        app_session, tenant, run_id, {"status": "waiting_for_approval", "output": "send it?"}
+    )
     leg1.home = {
         _ROLLOUT: b'{"type": "session_meta"}\n',
         "config.toml": b'approval_policy = "on-request"\n',
@@ -543,12 +562,8 @@ async def test_a_resume_leg_restores_the_session_leg_one_saved(
     assert first.status == "waiting_for_approval"
     assert leg1.archived == [_CODEX_HOME, "/workspace"]
 
-    async with app_session(tenant) as db:
-        from oc8.runtime.run_context import merge_context
-
-        run = await db.get(m.AgentRun, run_id)
-        assert run is not None
-        await merge_context(db, run, {"isolated_result": {}})
+    # Leg 2, on a fresh driver. The run still carries leg 1's park marker, as
+    # it does after an operator answers: the leg itself must clear it.
     leg2 = _FakeDriver(['{"type":"item.completed","item":{"type":"agent_message","text":"Sent."}}'])
     _install(monkeypatch, leg2)
     async with app_session(tenant) as db:

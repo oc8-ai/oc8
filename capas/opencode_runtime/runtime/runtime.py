@@ -30,7 +30,7 @@ from typing import Any
 
 from cli_harness.mint import run_token
 from cli_harness.outcome import no_terminal_event
-from cli_harness.park import POLL_INTERVAL_S, is_parked
+from cli_harness.park import POLL_INTERVAL_S, clear_park, is_parked
 from cli_harness.seed import (
     CONFIG_SCRATCH_MB,
     CONTAINER_HOME,
@@ -366,6 +366,9 @@ class OpencodeRuntime:
             user=settings.sandbox_user or None,
         )
 
+        # Before the CLI can start: the previous leg's park marker would
+        # otherwise read as this leg having parked. See cli_harness.park.
+        await clear_park(db, run)
         driver = get_sandbox_driver()
         handle = await driver.provision(spec)
         # Unconditionally, immediately: release the executor's lock on the
