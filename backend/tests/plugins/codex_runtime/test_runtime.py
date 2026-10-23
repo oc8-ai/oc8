@@ -282,7 +282,9 @@ async def test_config_toml_disables_interactive_approval(
     assert content is not None
     text = content.decode()
     assert 'approval_policy = "never"' in text
-    assert 'sandbox_mode = "workspace-write"' in text
+    # The oc8 sandbox is the boundary: Codex's own bwrap sandbox needs user
+    # namespaces, which a hardened container denies, and fails every command.
+    assert 'sandbox_mode = "danger-full-access"' in text
     assert "[mcp_servers.oc8]" in text
     assert 'type = "streamable_http"' in text
     assert 'bearer_token_env_var = "OC8_TOKEN"' in text
