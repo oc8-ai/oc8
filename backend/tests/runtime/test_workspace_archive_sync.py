@@ -574,6 +574,60 @@ async def test_an_unsupported_type_is_not_fetched(
     assert [name for name, _ in driver.fetches] == ["ok.txt"]
 
 
+async def test_source_files_an_agent_writes_become_attachments(
+    app_session: AppSessionFactory, minio_url: str
+) -> None:
+    """Code is the output of many runs. The type comes from the extension even
+    where the host's mime table says something else (.ts is not a video) or
+    nothing at all (.go, .rs, .yaml, .ipynb), and the text stays readable."""
+    tenant = uuid.uuid4()
+    sources = {
+        "primes.py": b"print(2)\n",
+        "run.sh": b"echo hi\n",
+        "app.js": b"console.log(1)\n",
+        "app.ts": b"const x: number = 1\n",
+        "main.c": b"int main(){}\n",
+        "Main.java": b"class Main {}\n",
+        "main.go": b"package main\n",
+        "lib.rs": b"fn main() {}\n",
+        "config.yaml": b"a: 1\n",
+        "pyproject.toml": b"[project]\n",
+        "query.sql": b"select 1;\n",
+        "notebook.ipynb": b'{"cells": []}\n',
+    }
+    driver = _FakeDriver(sources)
+    async with app_session(tenant) as db:
+        run = await _dept_agent_run(db, tenant)
+        await sync_sandbox_output(db, tenant_id=tenant, run_id=run.id, driver=driver, handle=HANDLE)
+        rows = (
+            (await db.execute(select(m.FileAttachment).where(m.FileAttachment.owner_id == run.id)))
+            .scalars()
+            .all()
+        )
+    by_name = {r.filename: r for r in rows}
+    assert sorted(by_name) == sorted(sources)
+    assert by_name["primes.py"].content_type == "text/x-python"
+    assert by_name["app.ts"].content_type == "application/typescript"
+    assert by_name["main.go"].content_type == "text/x-go"
+    assert by_name["primes.py"].extracted_text == "print(2)"
+
+
+async def test_executables_are_still_skipped(
+    app_session: AppSessionFactory, minio_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    driver = _FakeDriver(
+        {"primes": b"\x7fELF\x02\x01\x01", "setup.exe": b"MZ\x90\x00", "lib.dll": b"MZ"}
+    )
+    async with app_session(tenant) as db:
+        run = await _dept_agent_run(db, tenant)
+        synced = await sync_sandbox_output(
+            db, tenant_id=tenant, run_id=run.id, driver=driver, handle=HANDLE
+        )
+    assert synced == []
+    assert driver.fetches == []
+
+
 async def test_a_sanitised_name_collision_is_logged(
     app_session: AppSessionFactory, minio_url: str, caplog: pytest.LogCaptureFixture
 ) -> None:

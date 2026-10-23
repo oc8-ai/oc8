@@ -10,6 +10,8 @@ so this lives in `storage`, not `api/v1/files.py`.
 from __future__ import annotations
 
 import base64
+import mimetypes
+import posixpath
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,12 +34,67 @@ ALLOWED_CONTENT_TYPES = {
     "image/gif",
     "image/webp",
 }
+#: Source, config and notebook files an agent writes are text a person reads
+#: and downloads, never anything this side runs: each is stored as bytes and
+#: served as a download (api/v1/files.py). Named by extension here rather than
+#: through `mimetypes`, whose answers depend on the host's mime tables: `.ts`
+#: comes back as an MPEG transport stream there, and `.go`, `.rs`, `.yaml`,
+#: `.toml` and `.ipynb` as nothing. Executables and other binaries stay off
+#: the allowlist and are skipped.
+SOURCE_CONTENT_TYPES_BY_EXTENSION = {
+    ".py": "text/x-python",
+    ".sh": "application/x-sh",
+    ".bash": "application/x-sh",
+    ".js": "text/javascript",
+    ".mjs": "text/javascript",
+    ".cjs": "text/javascript",
+    ".jsx": "text/javascript",
+    ".ts": "application/typescript",
+    ".tsx": "application/typescript",
+    ".c": "text/x-c",
+    ".h": "text/x-c",
+    ".cc": "text/x-c",
+    ".cpp": "text/x-c",
+    ".hpp": "text/x-c",
+    ".java": "text/x-java",
+    ".go": "text/x-go",
+    ".rs": "text/x-rust",
+    ".rb": "text/x-ruby",
+    ".css": "text/css",
+    ".json": "application/json",
+    ".xml": "application/xml",
+    ".yaml": "application/yaml",
+    ".yml": "application/yaml",
+    ".toml": "application/toml",
+    ".sql": "application/sql",
+    ".ipynb": "application/x-ipynb+json",
+}
+#: The same files under the other names browsers and tools give them, so an
+#: upload declaring one of these is accepted too.
+SOURCE_CONTENT_TYPES = set(SOURCE_CONTENT_TYPES_BY_EXTENSION.values()) | {
+    "text/x-shellscript",
+    "application/javascript",
+    "application/x-yaml",
+    "text/yaml",
+    "application/x-sql",
+    "text/x-java-source",
+}
+ALLOWED_CONTENT_TYPES |= SOURCE_CONTENT_TYPES
 IMAGE_CONTENT_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
 _BINARY_EXTRACT_TYPES = {
     "application/pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 }
+
+
+def content_type_for(filename: str) -> str:
+    """The content type a file is stored under, from its name alone."""
+    ext = posixpath.splitext(filename)[1].lower()
+    known = SOURCE_CONTENT_TYPES_BY_EXTENSION.get(ext)
+    if known is not None:
+        return known
+    return mimetypes.guess_type(filename)[0] or "application/octet-stream"
 
 
 class AttachmentRejected(Exception):
@@ -77,7 +134,11 @@ async def store_attachment_bytes(
             else raw.decode("utf-8", errors="replace")
         )
         try:
-            extracted_text = extract_text(content=payload, content_type=content_type)
+            # Source files are plain text to read back, whatever their type.
+            extracted_text = extract_text(
+                content=payload,
+                content_type="text/plain" if content_type in SOURCE_CONTENT_TYPES else content_type,
+            )
         except IngestionError:
             extracted_text = None  # storage still succeeds -- see files.py's Global Constraints
         if extracted_text is not None and len(extracted_text) > MAX_DOCUMENT_LENGTH:
