@@ -112,11 +112,32 @@ def _config_toml(*, mcp_url: str, llm_url: str) -> str:
     # set to "responses" anyway: it is the version that actually reaches
     # oc8, producing that one missing-route 404 as the honest next blocker,
     # rather than "chat"'s earlier, less informative hard config-load error.
+    #
+    # The update check, analytics (and their default `statsig` metrics
+    # exporter) and feedback uploads are off: a sandbox with restricted
+    # egress blocks them anyway, and a blocked call stalls startup or logs
+    # noise. Keys verified against codex-rs/config/src/config_toml.rs and
+    # types.rs (AnalyticsConfigToml, FeedbackConfigToml, OtelConfigToml) and
+    # https://developers.openai.com/codex/config-reference. No model-list
+    # setting is needed: Codex only fetches `/models` for its own backend,
+    # command auth or a provider with `model_catalog_url`, none of which the
+    # `oc8` provider below uses (codex-rs/models-manager/src/manager.rs's
+    # should_refresh_models).
     return (
         'approval_policy = "never"\n'
         'sandbox_mode = "workspace-write"\n'
         'model_provider = "oc8"\n'
         f'model = "{_MODEL_ID}"\n'
+        "check_for_update_on_startup = false\n"
+        "\n"
+        "[analytics]\n"
+        "enabled = false\n"
+        "\n"
+        "[feedback]\n"
+        "enabled = false\n"
+        "\n"
+        "[otel]\n"
+        'metrics_exporter = "none"\n'
         "\n"
         "[model_providers.oc8]\n"
         'name = "oc8"\n'

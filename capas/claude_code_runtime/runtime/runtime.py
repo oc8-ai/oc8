@@ -101,6 +101,21 @@ _MCP_CONFIG_PATH = f"{_MCP_CONFIG_DIR}/mcp.json"
 #: resolves to THIS plugin inside its test module's `_plugin_path` fixture.
 #: and have the loop below actually observe the smaller value.
 _RUN_TIMEOUT_S = 1800.0
+#: Keeps `claude` off traffic a sandbox with restricted egress blocks anyway:
+#: auto-updates, telemetry, error reporting, feature flags, release notes
+#: (all under the first variable) and the official plugin marketplace's
+#: auto-install, which that one does not cover. Blocked calls stall startup
+#: or log noise. Model calls are unaffected: they go to ANTHROPIC_BASE_URL.
+#: Names verified against https://code.claude.com/docs/en/env-vars. The
+#: first variable covers the next three; they are set as well so an older or
+#: newer CLI that splits them differently still honours each.
+_QUIET_ENV = {
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "DISABLE_AUTOUPDATER": "1",
+    "DISABLE_TELEMETRY": "1",
+    "DISABLE_ERROR_REPORTING": "1",
+    "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": "1",
+}
 
 
 def _mcp_config(mcp_url: str, token: str) -> str:
@@ -305,6 +320,7 @@ class ClaudeCodeRuntime:
                 "ANTHROPIC_AUTH_TOKEN": token,
                 "HOME": _CONTAINER_HOME,
                 "CLAUDE_CONFIG_DIR": _CLAUDE_CONFIG_DIR,
+                **_QUIET_ENV,
             },
             # Pinned: the transcript's directory is named after the cwd, so a
             # resume leg must run in exactly the same one.

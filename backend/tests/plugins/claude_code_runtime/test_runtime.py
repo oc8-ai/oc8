@@ -503,6 +503,39 @@ async def test_the_sandbox_has_scratch_dirs_and_no_mounts(
     assert spec.env["CLAUDE_CONFIG_DIR"] == _CLAUDE_CONFIG_DIR
 
 
+async def test_the_cli_is_kept_off_nonessential_network_traffic(
+    app_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sandbox with restricted egress blocks auto-updates, telemetry and
+    error reports; the CLI must not try them (blocked calls stall startup or
+    log noise). Model calls still go to the gateway."""
+    from runtime.runtime import ClaudeCodeRuntime
+
+    driver = _FakeDriver(
+        ['{"type":"result","subtype":"success","result":"Done.","session_id":"s"}']
+    )
+    _install(monkeypatch, driver)
+
+    tenant = uuid.uuid4()
+    agent, run_id = await _seed_agent(app_session, tenant, {})
+    async with app_session(tenant) as db:
+        db.add(agent)
+        await ClaudeCodeRuntime().execute(
+            db, agent=agent, task_text="fix the bug", tenant_id=tenant, run_id=run_id
+        )
+
+    env = driver.specs[0].env
+    for name in (
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+        "DISABLE_AUTOUPDATER",
+        "DISABLE_TELEMETRY",
+        "DISABLE_ERROR_REPORTING",
+        "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL",
+    ):
+        assert env[name] == "1", name
+    assert env["ANTHROPIC_BASE_URL"].endswith("/llm")
+
+
 async def test_a_resume_leg_restores_the_home_leg_one_saved(
     app_session: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

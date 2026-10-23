@@ -1,6 +1,6 @@
 [plugin]
 name = "claude_code_runtime"
-version = "0.1.0"
+version = "0.1.1"
 type = "runtime_adapter"
 trust = "first_party"
 label = "Claude Code"
