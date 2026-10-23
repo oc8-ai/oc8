@@ -123,9 +123,17 @@ def _config_toml(*, mcp_url: str, llm_url: str) -> str:
     # command auth or a provider with `model_catalog_url`, none of which the
     # `oc8` provider below uses (codex-rs/models-manager/src/manager.rs's
     # should_refresh_models).
+    #
+    # sandbox_mode is "danger-full-access" because the oc8 sandbox IS the
+    # sandbox: its own container, a non-root user with no capabilities, and
+    # (on Kubernetes) an egress allowlist. Codex's "workspace-write" wraps
+    # every shell command in bwrap, which needs unprivileged user namespaces;
+    # a hardened container (Docker's and Kubernetes' default seccomp profiles)
+    # denies them, so each command failed with "No permissions to create a
+    # new namespace" and the agent could not run a single one.
     return (
         'approval_policy = "never"\n'
-        'sandbox_mode = "workspace-write"\n'
+        'sandbox_mode = "danger-full-access"\n'
         'model_provider = "oc8"\n'
         f'model = "{_MODEL_ID}"\n'
         "check_for_update_on_startup = false\n"
