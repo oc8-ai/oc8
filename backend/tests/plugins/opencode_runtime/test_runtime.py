@@ -81,6 +81,8 @@ class _FakeDriver:
         #: What get_archive hands back for /workspace.
         self.workspace: dict[str, bytes] = {}
         self.archived: list[str] = []
+        #: Runs once, at the first logs(): a park the gateway writes mid-leg.
+        self.on_first_logs: Any = None
 
     async def get_archive(
         self, handle: SandboxHandle, path: str, *, max_bytes: int | None = None
@@ -93,6 +95,9 @@ class _FakeDriver:
         return SandboxHandle(container_id="opencode-container", image=spec.image)
 
     async def logs(self, handle: SandboxHandle) -> str:
+        if self.on_first_logs is not None:
+            hook, self.on_first_logs = self.on_first_logs, None
+            await hook()
         return "".join(line + "\n" for line in self.stdout_lines)
 
     async def wait(self, handle: SandboxHandle, timeout_s: float = 600.0) -> int:
@@ -189,6 +194,21 @@ async def _seed_agent(app_session: Any, tenant: uuid.UUID, context: dict) -> tup
         db.add(run)
         await db.flush()
         return agent, run.id
+
+
+def _parks(app_session: Any, tenant: uuid.UUID, run_id: uuid.UUID, marker: dict[str, Any]) -> Any:
+    """What the /mcp gateway does when the CLI calls ask_user or a held
+    tool: writes the park marker from its own session, during the leg."""
+
+    async def park() -> None:
+        from oc8.runtime.run_context import merge_context
+
+        async with app_session(tenant) as db:
+            run = await db.get(m.AgentRun, run_id)
+            assert run is not None
+            await merge_context(db, run, {"isolated_result": marker})
+
+    return park
 
 
 async def test_a_finished_run_returns_done(
@@ -565,13 +585,12 @@ async def test_a_resume_leg_restores_the_data_dir_leg_one_saved(
     from runtime.runtime import _OPENCODE_DATA_DIR, OpencodeRuntime
 
     tenant = uuid.uuid4()
-    agent, run_id = await _seed_agent(
-        app_session,
-        tenant,
-        {"isolated_result": {"status": "waiting_for_input", "output": "which file?"}},
-    )
+    agent, run_id = await _seed_agent(app_session, tenant, {})
 
     leg1 = _FakeDriver(['{"type":"step_start","sessionID":"opencode-sess-1"}'])
+    leg1.on_first_logs = _parks(
+        app_session, tenant, run_id, {"status": "waiting_for_input", "output": "which file?"}
+    )
     leg1.home = {
         _SESSION_FILE: b"{}",
         "opencode.db": b"SQLite format 3\x00",
@@ -591,12 +610,8 @@ async def test_a_resume_leg_restores_the_data_dir_leg_one_saved(
     assert first.status == "waiting_for_input"
     assert leg1.archived == [_OPENCODE_DATA_DIR, "/workspace"]
 
-    async with app_session(tenant) as db:
-        from oc8.runtime.run_context import merge_context
-
-        run = await db.get(m.AgentRun, run_id)
-        assert run is not None
-        await merge_context(db, run, {"isolated_result": {}})
+    # Leg 2, on a fresh driver. The run still carries leg 1's park marker, as
+    # it does after an operator answers: the leg itself must clear it.
     leg2 = _FakeDriver(
         ['{"type":"text","sessionID":"opencode-sess-1","part":{"type":"text","text":"Done."}}']
     )
@@ -884,8 +899,9 @@ async def test_a_parked_leg_stops_opencode_before_reading_its_data_dir(
     driver = _Recording(['{"type":"step_start","sessionID":"opencode-sess-1"}'])
     _install(monkeypatch, driver)
     tenant = uuid.uuid4()
-    agent, run_id = await _seed_agent(
-        app_session, tenant, {"isolated_result": {"status": "waiting_for_input", "output": "?"}}
+    agent, run_id = await _seed_agent(app_session, tenant, {})
+    driver.on_first_logs = _parks(
+        app_session, tenant, run_id, {"status": "waiting_for_input", "output": "?"}
     )
     async with app_session(tenant) as db:
         db.add(agent)

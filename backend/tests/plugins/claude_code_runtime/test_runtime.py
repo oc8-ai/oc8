@@ -114,6 +114,8 @@ class _FakeDriver:
         #: What get_archive hands back for /workspace.
         self.workspace: dict[str, bytes] = {}
         self.archived: list[str] = []
+        #: Runs once, at the first logs(): a park the gateway writes mid-leg.
+        self.on_first_logs: Any = None
 
     async def provision(self, spec: Any) -> SandboxHandle:
         self.specs.append(spec)
@@ -126,6 +128,9 @@ class _FakeDriver:
         return _home_tar(self.workspace if path == "/workspace" else self.home)
 
     async def logs(self, handle: SandboxHandle) -> str:
+        if self.on_first_logs is not None:
+            hook, self.on_first_logs = self.on_first_logs, None
+            await hook()
         return "".join(line + "\n" for line in self.stdout_lines)
 
     async def wait(self, handle: SandboxHandle, timeout_s: float = 600.0) -> int:
@@ -247,11 +252,14 @@ async def test_a_parked_run_persists_the_session_id_and_tears_down(
             tenant_id=tenant,
             agent_id=agent.id,
             state="running",
-            context={"isolated_result": {"status": "waiting_for_input", "output": "which file?"}},
+            context={},
         )
         db.add(run)
         await db.flush()
         run_id = run.id
+        driver.on_first_logs = _parks(
+            app_session, tenant, run_id, {"status": "waiting_for_input", "output": "which file?"}
+        )
 
         result = await ClaudeCodeRuntime().execute(
             db,
@@ -447,6 +455,21 @@ async def _seed_agent(
         return agent, run.id
 
 
+def _parks(app_session: Any, tenant: uuid.UUID, run_id: uuid.UUID, marker: dict[str, Any]) -> Any:
+    """What the /mcp gateway does when the CLI calls ask_user or a held
+    tool: writes the park marker from its own session, during the leg."""
+
+    async def park() -> None:
+        from oc8.runtime.run_context import merge_context
+
+        async with app_session(tenant) as db:
+            run = await db.get(m.AgentRun, run_id)
+            assert run is not None
+            await merge_context(db, run, {"isolated_result": marker})
+
+    return park
+
+
 async def _save_home(tenant: uuid.UUID, run_id: uuid.UUID, files: dict[str, bytes]) -> None:
     """What leg 1 left behind: its CLI home, as RunStateStore keeps it."""
     from oc8.runtime.run_state import RunStateStore
@@ -546,16 +569,15 @@ async def test_a_resume_leg_restores_the_home_leg_one_saved(
     from runtime.runtime import _CLAUDE_CONFIG_DIR, ClaudeCodeRuntime
 
     tenant = uuid.uuid4()
-    agent, run_id = await _seed_agent(
-        app_session,
-        tenant,
-        {"isolated_result": {"status": "waiting_for_input", "output": "which file?"}},
-    )
+    agent, run_id = await _seed_agent(app_session, tenant, {})
 
     # Leg 1: the CLI starts a session, writes its transcript, and the run parks.
     leg1 = _FakeDriver(['{"type":"system","subtype":"init","session_id":"claude-sess-2"}'])
     leg1.home = {_TRANSCRIPT: b'{"turn": 1}\n', ".claude.json": b"{}"}
     leg1.workspace = {"notes.txt": b"half done", "output/report.txt": b"stored already"}
+    leg1.on_first_logs = _parks(
+        app_session, tenant, run_id, {"status": "waiting_for_input", "output": "which file?"}
+    )
     _install(monkeypatch, leg1)
     async with app_session(tenant) as db:
         db.add(agent)
@@ -566,13 +588,8 @@ async def test_a_resume_leg_restores_the_home_leg_one_saved(
     assert leg1.archived == [_CLAUDE_CONFIG_DIR, "/workspace"]
     assert leg1.torn_down == 1
 
-    # Leg 2, on a fresh driver (a different worker, as far as the run knows).
-    async with app_session(tenant) as db:
-        from oc8.runtime.run_context import merge_context
-
-        run = await db.get(m.AgentRun, run_id)
-        assert run is not None
-        await merge_context(db, run, {"isolated_result": {}})
+    # Leg 2, on a fresh driver. The run still carries leg 1's park marker, as
+    # it does after an operator answers: the leg itself must clear it.
     leg2 = _FakeDriver(
         ['{"type":"result","subtype":"success","result":"Done.","session_id":"claude-sess-2"}']
     )

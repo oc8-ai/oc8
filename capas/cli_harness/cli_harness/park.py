@@ -7,7 +7,10 @@ never outlived by one poller and not the other."""
 
 from __future__ import annotations
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from oc8 import models as m
+from oc8.runtime.run_context import merge_context
 
 POLL_INTERVAL_S = 2.0
 
@@ -20,3 +23,12 @@ def is_parked(run: m.AgentRun) -> tuple[bool, str]:
     if status in _PARK_STATUSES:
         return True, status
     return False, ""
+
+
+async def clear_park(db: AsyncSession, run: m.AgentRun) -> None:
+    """Start a leg unparked. The previous leg's park marker stays in the run
+    context after the operator answers; left there, this leg's first poll
+    would read it, stop the CLI before it saw the answer and park the run on
+    the same question again. runtime/isolated.py and nanoclaw_runtime clear it
+    the same way. Through merge_context, so no other key is touched."""
+    await merge_context(db, run, {"isolated_result": None})
