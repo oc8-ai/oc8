@@ -1,0 +1,3923 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: oc8\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"X-Native-Name: Dansk\n"
+"X-Flag: 🇩🇰\n"
+
+msgid " of "
+msgstr " af "
+
+msgid "— no agent"
+msgstr "— ingen agent"
+
+msgid "— required to reject"
+msgstr "— påkrævet for at afvise"
+
+msgid "(empty)"
+msgstr "(tom)"
+
+msgid "(optional)"
+msgstr "(valgfri)"
+
+msgid "(requires settings:manage)"
+msgstr "(kræver settings:manage)"
+
+msgid "2FA enabled. Please sign in again."
+msgstr "2FA aktiveret. Log venligst ind igen."
+
+msgid "A Capa is anything installable in oc8 — an agent template, an MCP tool pack, a guardrail set, a department template, a runtime, or a bundle of several."
+msgstr "En Capa er alt, der kan installeres i oc8 — en agentskabelon, en MCP-tool-pakke, et guardrail-sæt, en afdelingsskabelon, en runtime eller en samling af flere."
+
+msgid "A role is a name and a set of rights — nothing else. It applies company-wide: WHERE somebody works is decided by their seat in a department, not by their role. A change here takes effect on every holder’s next request, with the token they are already carrying."
+msgstr "En rolle er et navn og et sæt rettigheder — ikke andet. Den gælder i hele virksomheden: HVOR nogen arbejder, afgøres af deres plads i en afdeling, ikke af deres rolle. En ændring her gælder fra enhver indehavers næste forespørgsel, med det token de allerede bærer."
+
+msgid "A seat is granted per department by an administrator and takes effect on your next request — no new sign-in."
+msgstr "En plads tildeles pr. afdeling af en administrator og gælder fra Deres næste forespørgsel — uden nyt login."
+
+msgid "A template only — it ticks boxes now and is not stored. There is no inheritance."
+msgstr "Kun en skabelon — den sætter flueben nu og gemmes ikke. Der er ingen nedarvning."
+
+msgid "Accept"
+msgstr "Acceptér"
+
+msgid "Accept this suggestion to make it a live rule."
+msgstr "Acceptér dette forslag for at gøre det til en aktiv regel."
+
+msgid "Access"
+msgstr "Adgang"
+
+msgid "Access & roles"
+msgstr "Adgang & roller"
+
+msgid "access and tools"
+msgstr "adgang og tools"
+
+msgid "Account"
+msgstr "Konto"
+
+msgid "Account created successfully"
+msgstr "Konto oprettet"
+
+msgid "Action"
+msgstr "Handling"
+
+msgid "Action on threshold"
+msgstr "Handling ved tærskel"
+
+msgid "Actions"
+msgstr "Handlinger"
+
+msgid "Activation failed."
+msgstr "Aktivering mislykkedes."
+
+msgid "active"
+msgstr "aktiv"
+
+msgid "Active agents"
+msgstr "Aktive agenter"
+
+msgid "Active credential"
+msgstr "Aktive adgangsoplysninger"
+
+msgid "Activity"
+msgstr "Aktivitet"
+
+msgid "Activity feed"
+msgstr "Aktivitetsfeed"
+
+msgid "Actor type"
+msgstr "Aktørtype"
+
+msgid "Add"
+msgstr "Tilføj"
+
+msgid "Add a model configuration"
+msgstr "Tilføj en modelkonfiguration"
+
+msgid "Add another provider"
+msgstr "Tilføj endnu en udbyder"
+
+msgid "Add connection"
+msgstr "Tilføj forbindelse"
+
+msgid "Add custom MCP server"
+msgstr "Tilføj egen MCP-server"
+
+msgid "Add existing source…"
+msgstr "Tilføj eksisterende kilde…"
+
+msgid "Add limit"
+msgstr "Tilføj limit"
+
+msgid "Add model"
+msgstr "Tilføj model"
+
+msgid "Add model provider"
+msgstr "Tilføj modeludbyder"
+
+msgid "Add parameter"
+msgstr "Tilføj parameter"
+
+msgid "Add seat"
+msgstr "Tilføj plads"
+
+msgid "Add tool"
+msgstr "Tilføj tool"
+
+msgid "Add widget"
+msgstr "Tilføj widget"
+
+msgid "Add…"
+msgstr "Tilføj…"
+
+msgid "Admin"
+msgstr "Admin"
+
+msgid "Admin API key"
+msgstr "Admin-API-nøgle"
+
+msgid "Administrator"
+msgstr "Administrator"
+
+msgid "Advanced: exact role override"
+msgstr "Avanceret: præcis rolle-tilsidesættelse"
+
+msgid "Advanced: sign in as a specific subject/role"
+msgstr "Avanceret: log ind som bestemt subjekt/rolle"
+
+msgid "Advanced/Raw parameters (optional)"
+msgstr "Avancerede/rå parametre (valgfrit)"
+
+msgid "Agent"
+msgstr "Agent"
+
+msgid "agent → supervisor (thinking oversight)"
+msgstr "agent → teamleder (overvågning af tænkning)"
+
+msgid "Agent archived"
+msgstr "Agent arkiveret"
+
+msgid "Agent assignments"
+msgstr "Agenttildelinger"
+
+msgid "Agent created"
+msgstr "Agent oprettet"
+
+msgid "Agent deleted"
+msgstr "Agent slettet"
+
+msgid "agent identity"
+msgstr "agentidentitet"
+
+msgid "Agent not found, or you don't have access."
+msgstr "Agent ikke fundet, eller du har ikke adgang."
+
+msgid "Agent restored"
+msgstr "Agent gendannet"
+
+msgid "Agent roles"
+msgstr "Agentroller"
+
+msgid "agent's suggestion"
+msgstr "agentens forslag"
+
+msgid "Agents"
+msgstr "Agenter"
+
+msgid "agents"
+msgstr "agenter"
+
+msgid "Alerts"
+msgstr "Notifikationer"
+
+msgid "All"
+msgstr "Alle"
+
+msgid "All actions (base rights)"
+msgstr "Alle handlinger (grundrettigheder)"
+
+msgid "All agents"
+msgstr "Alle agenter"
+
+msgid "All agents, roles, and responsibilities."
+msgstr "Alle agenter, roller og ansvarsområder."
+
+msgid "All departments"
+msgstr "Alle afdelinger"
+
+msgid "all departments"
+msgstr "alle afdelinger"
+
+msgid "All knowledge bases are already linked."
+msgstr "Alle vidensbaser er allerede knyttet."
+
+msgid "All skills already assigned."
+msgstr "Alle skills allerede tildelt."
+
+msgid "All systems operational"
+msgstr "Alle systemer operationelle"
+
+msgid "Allowed"
+msgstr "Tilladt"
+
+msgid "allowed"
+msgstr "tilladt"
+
+msgid "Allowed origins (optional, comma-separated)"
+msgstr "Tilladte origins (valgfrit, kommasepareret)"
+
+msgid "Already assigned"
+msgstr "Allerede tildelt"
+
+msgid "Already running"
+msgstr "Kører allerede"
+
+msgid "Also require approval for a specific tool (optional)"
+msgstr "Kræv også godkendelse for et bestemt tool (valgfrit)"
+
+msgid "Amount"
+msgstr "Beløb"
+
+msgid "Amount (USD)"
+msgstr "Beløb (USD)"
+
+msgid "Analytics"
+msgstr "Analyse"
+
+msgid "Answer"
+msgstr "Svar"
+
+msgid "Answer in your own words"
+msgstr "Svar med egne ord"
+
+msgid "Answer sent"
+msgstr "Svar sendt"
+
+msgid "Answered from the department cache, not a fresh model call"
+msgstr "Besvaret fra afdelingens cache, ikke et nyt modelkald"
+
+msgid "Any origin"
+msgstr "Enhver origin"
+
+msgid "Any status"
+msgstr "Enhver status"
+
+msgid "Any system that can send a JSON POST can trigger this agent — no signature or per-source setup needed. The URL itself is the secret, so it isn't shown to anyone who isn't looking at this page."
+msgstr "Ethvert system, der kan sende en JSON POST, kan starte denne agent — ingen signatur eller opsætning pr. kilde nødvendig. URLen er i sig selv hemmeligheden, så den vises ikke til nogen, der ikke kigger på denne side."
+
+msgid "Any trust level"
+msgstr "Ethvert tillidsniveau"
+
+msgid "API key deleted"
+msgstr "API-nøgle slettet"
+
+msgid "API keys"
+msgstr "API-nøgler"
+
+msgid "Apply"
+msgstr "Anvend"
+
+msgid "Apply this rule to the draft below (doesn't save yet)"
+msgstr "Anvend denne regel på kladden nedenfor (gemmer ikke endnu)"
+
+msgid "Approval"
+msgstr "Godkendelse"
+
+msgid "approval"
+msgstr "godkendelse"
+
+msgid "Approval action suggestions"
+msgstr "Forslag til godkendelseshandlinger"
+
+msgid "Approval channels"
+msgstr "Godkendelseskanaler"
+
+msgid "approval for"
+msgstr "godkendelse af"
+
+msgid "Approval for:"
+msgstr "Godkendelse af:"
+
+msgid "Approval needed for"
+msgstr "Godkendelse påkrævet for"
+
+msgid "Approval needed for:"
+msgstr "Godkendelse påkrævet for:"
+
+msgid "Approval needed from (€, optional)"
+msgstr "Godkendelse påkrævet fra (€, valgfrit)"
+
+msgid "Approval required"
+msgstr "Godkendelse påkrævet"
+
+msgid "approval required"
+msgstr "godkendelse påkrævet"
+
+msgid "Approval wait"
+msgstr "Godkendelsesventetid"
+
+msgid "Approvals"
+msgstr "Godkendelser"
+
+msgid "approvals"
+msgstr "godkendelser"
+
+msgid "Approve"
+msgstr "Godkend"
+
+msgid "Approve this?"
+msgstr "Godkend dette?"
+
+msgid "Approved"
+msgstr "Godkendt"
+
+msgid "Archive file"
+msgstr "Arkivfil"
+
+msgid "Archived"
+msgstr "Arkiveret"
+
+msgid "Ask an administrator to add you — your queue appears the moment they do."
+msgstr "Bed en administrator om at tilføje dig — din kø vises, så snart det er sket."
+
+msgid "Ask an administrator to install or enable new Capas."
+msgstr "Bed en administrator om at installere eller aktivere nye Capas."
+
+msgid "Assign"
+msgstr "Tildel"
+
+msgid "Assign knowledge base"
+msgstr "Tildel vidensbase"
+
+msgid "Assign skill"
+msgstr "Tildel skill"
+
+msgid "Assign supervisor"
+msgstr "Tildel supervisor"
+
+msgid "Assign to agent"
+msgstr "Tildel til agent"
+
+msgid "assigned"
+msgstr "tildelt"
+
+msgid "Assigned LLM"
+msgstr "Tildelt LLM"
+
+msgid "Assigned skills"
+msgstr "Tildelte skills"
+
+msgid "Assigned to"
+msgstr "Tildelt til"
+
+msgid "Assigned to agents"
+msgstr "Tildelt agenter"
+
+msgid "Assigning…"
+msgstr "Tildeler…"
+
+msgid "Assignment cleared — that person’s token decides again."
+msgstr "Tildeling fjernet — nu afgør personens token igen."
+
+msgid "At least 8 characters"
+msgstr "Mindst 8 tegn"
+
+msgid "Attach a file"
+msgstr "Vedhæft en fil"
+
+msgid "Attach file"
+msgstr "Vedhæft fil"
+
+msgid "Attached files"
+msgstr "Vedhæftede filer"
+
+msgid "Attachments are limited to 25 MB."
+msgstr "Vedhæftninger er begrænset til 25 MB."
+
+msgid "Audit"
+msgstr "Revision"
+
+msgid "Auditor"
+msgstr "Revisor"
+
+msgid "Author"
+msgstr "Forfatter"
+
+msgid "Auto (department lead)"
+msgstr "Auto (afdelingsleder)"
+
+msgid "Automatic discovery isn't available for this provider — enter the model tag manually."
+msgstr "Automatisk opslag er ikke tilgængeligt for denne udbyder — indtast model-tagget manuelt."
+
+msgid "Available"
+msgstr "Tilgængelig"
+
+msgid "Available in:"
+msgstr "Tilgængelig i:"
+
+msgid "Available models"
+msgstr "Tilgængelige modeller"
+
+msgid "Avg. duration"
+msgstr "Gns. varighed"
+
+msgid "Avg. tool call"
+msgstr "Gns. tool-kald"
+
+msgid "Awaiting Approval"
+msgstr "Afventer godkendelse"
+
+msgid "Back"
+msgstr "Tilbage"
+
+msgid "Back to agents"
+msgstr "Tilbage til agenter"
+
+msgid "Back to knowledge"
+msgstr "Tilbage til viden"
+
+msgid "Back to office"
+msgstr "Tilbage til kontoret"
+
+msgid "Back to users"
+msgstr "Tilbage til brugere"
+
+msgid "Back to your profile"
+msgstr "Tilbage til din profil"
+
+msgid "Backlog"
+msgstr "Backlog"
+
+msgid "Backup and restore"
+msgstr "Backup og gendannelse"
+
+msgid "Backup downloaded"
+msgstr "Backup downloadet"
+
+msgid "Bar"
+msgstr "Søjle"
+
+msgid "Basic details of your workspace."
+msgstr "Grundlæggende oplysninger om Deres arbejdsområde."
+
+msgid "Basics"
+msgstr "Basis"
+
+msgid "Binding revoked"
+msgstr "Knytning fjernet"
+
+msgid "Blank fields inherit this agent's assigned model's own setting."
+msgstr "Tomme felter arver indstillingen fra den model, der er tildelt denne agent."
+
+msgid "Block"
+msgstr "Blokér"
+
+msgid "Block — hard stop"
+msgstr "Blokér — hårdt stop"
+
+msgid "Browse content →"
+msgstr "Gennemse indhold →"
+
+msgid "Budget"
+msgstr "Budget"
+
+msgid "Budget per skill"
+msgstr "Budget pr. skill"
+
+msgid "Building archive…"
+msgstr "Bygger arkiv…"
+
+msgid "Building preview…"
+msgstr "Bygger forhåndsvisning…"
+
+msgid "By Agent"
+msgstr "Pr. agent"
+
+msgid "By Department"
+msgstr "Pr. afdeling"
+
+msgid "By provider"
+msgstr "Efter udbyder"
+
+msgid "By spend"
+msgstr "Efter forbrug"
+
+msgid "cached"
+msgstr "fra cache"
+
+msgid "Called with no arguments."
+msgstr "Kaldes uden argumenter."
+
+msgid "Cancel"
+msgstr "Annullér"
+
+msgid "Cancel requested"
+msgstr "Annullering anmodet"
+
+msgid "Cancelling…"
+msgstr "Annullerer…"
+
+msgid "Cannot be changed later, and cannot be the name of a built-in role."
+msgstr "Kan ikke ændres senere og kan ikke være navnet på en indbygget rolle."
+
+msgid "Capa exported"
+msgstr "Capa eksporteret"
+
+msgid "Capa name"
+msgstr "Capa-navn"
+
+msgid "Capas"
+msgstr "Capas"
+
+msgid "Category"
+msgstr "Kategori"
+
+msgid "Change"
+msgstr "Ændr"
+
+msgid "Change color"
+msgstr "Skift farve"
+
+msgid "Change company"
+msgstr "Skift virksomhed"
+
+msgid "Change email"
+msgstr "Skift e-mail"
+
+msgid "Change key"
+msgstr "Skift nøgle"
+
+msgid "Change language"
+msgstr "Skift sprog"
+
+msgid "Change password"
+msgstr "Skift adgangskode"
+
+msgid "Change runtime"
+msgstr "Skift runtime"
+
+msgid "Changing the model takes effect for the next run. Manage model configurations under Models."
+msgstr "Ændring af modellen gælder fra næste kørsel. Modelkonfigurationer administreres under Modeller."
+
+msgid "Chat"
+msgstr "Chat"
+
+msgid "ChatGPT account"
+msgstr "ChatGPT-konto"
+
+msgid "Check a box to allow/deny it right away; ✓ interprets a Definition text into a structured rule you then Accept or Discard. Either way, use the panel's Save button to store your changes."
+msgstr "Sæt flueben for at tillade/afvise med det samme; ✓ oversætter en definitionstekst til en struktureret regel, som du derefter accepterer eller kasserer. Uanset hvad gemmes ændringerne først med panelets Gem-knap."
+
+msgid "Choose a company, or create a safely isolated one for local testing."
+msgstr "Vælg en virksomhed, eller opret en sikkert isoleret en til lokal test."
+
+msgid "Choose a department."
+msgstr "Vælg en afdeling."
+
+msgid "Choose a starting layout"
+msgstr "Vælg et startlayout"
+
+msgid "Choose an agent…"
+msgstr "Vælg en agent…"
+
+msgid "Choose from available models"
+msgstr "Vælg mellem tilgængelige modeller"
+
+msgid "Choose the model it thinks with and, if more than one is installed, the runtime it works in."
+msgstr "Vælg modellen, den tænker med, og — hvis der er installeret mere end én — den runtime, den arbejder i."
+
+msgid "Chunks · "
+msgstr "Chunks · "
+
+msgid "Chunks · all documents"
+msgstr "Chunks · alle dokumenter"
+
+msgid "Chunks · search results"
+msgstr "Chunks · søgeresultater"
+
+msgid "Clear the assignment — their token decides again"
+msgstr "Fjern tildelingen — så afgør deres token igen"
+
+msgid "Click Export to download the ZIP file."
+msgstr "Klik på Eksportér for at downloade ZIP-filen."
+
+msgid "Click to review"
+msgstr "Klik for at gennemse"
+
+msgid "Close"
+msgstr "Luk"
+
+msgid "Cloud"
+msgstr "Cloud"
+
+msgid "Cloud or local — 3 quick steps"
+msgstr "Cloud eller lokal — 3 hurtige trin"
+
+msgid "Code"
+msgstr "Kode"
+
+msgid "Collaboration"
+msgstr "Samarbejde"
+
+msgid "Company"
+msgstr "Virksomhed"
+
+msgid "Company / workspace name"
+msgstr "Virksomheds-/arbejdsområdenavn"
+
+msgid "Company name"
+msgstr "Virksomhedsnavn"
+
+msgid "Company-wide"
+msgstr "Hele virksomheden"
+
+msgid "Complete these live checks before inviting pilot users."
+msgstr "Gennemfør disse live-tjek, før du inviterer pilotbrugere."
+
+msgid "Components"
+msgstr "Komponenter"
+
+msgid "Configuration"
+msgstr "Konfiguration"
+
+msgid "Configure"
+msgstr "Konfigurér"
+
+msgid "configured"
+msgstr "konfigureret"
+
+msgid "Confirm"
+msgstr "Bekræft"
+
+msgid "Confirm Password"
+msgstr "Bekræft adgangskode"
+
+msgid "Confirming…"
+msgstr "Bekræfter…"
+
+msgid "Connect"
+msgstr "Forbind"
+
+msgid "Connect a provider"
+msgstr "Forbind en udbyder"
+
+msgid "Connect admin key for cost validation (optional)"
+msgstr "Forbind admin-nøgle til omkostningsvalidering (valgfrit)"
+
+msgid "Connect another provider"
+msgstr "Forbind endnu en udbyder"
+
+msgid "Connect model"
+msgstr "Forbind model"
+
+msgid "Connected"
+msgstr "Forbundet"
+
+msgid "Connected LLMs"
+msgstr "Forbundne LLMer"
+
+msgid "Connected via a personal ChatGPT subscription — scheduled/automated runs are blocked server-side."
+msgstr "Forbundet via et personligt ChatGPT-abonnement — planlagte/automatiserede kørsler er blokeret på serversiden."
+
+msgid "Connecting…"
+msgstr "Forbinder…"
+
+msgid "Connection"
+msgstr "Forbindelse"
+
+msgid "Connection error"
+msgstr "Forbindelsesfejl"
+
+msgid "Continue"
+msgstr "Fortsæt"
+
+msgid "Continue to export"
+msgstr "Fortsæt til eksport"
+
+msgid "Control Panel"
+msgstr "Kontrolpanel"
+
+msgid "Copied"
+msgstr "Kopieret"
+
+msgid "Copy"
+msgstr "Kopiér"
+
+msgid "Copy this key now — it will not be shown again."
+msgstr "Kopiér denne nøgle nu — den vises ikke igen."
+
+msgid "Cost"
+msgstr "Omkostninger"
+
+msgid "Cost Center"
+msgstr "Omkostningssted"
+
+msgid "Cost per agent"
+msgstr "Omkostninger pr. agent"
+
+msgid "Cost-limit preview"
+msgstr "Forhåndsvisning af omkostningsgrænse"
+
+msgid "Costs"
+msgstr "Omkostninger"
+
+msgid "Could not add price"
+msgstr "Kunne ikke tilføje pris"
+
+msgid "Could not add seat."
+msgstr "Kunne ikke tilføje plads."
+
+msgid "Could not add source."
+msgstr "Kunne ikke tilføje kilde."
+
+msgid "Could not assign"
+msgstr "Kunne ikke tildele"
+
+msgid "Could not assign role."
+msgstr "Kunne ikke tildele rolle."
+
+msgid "could not be checked — the tamper-proofing key is unavailable"
+msgstr "kunne ikke kontrolleres — nøglen til manipulationssikring er ikke tilgængelig"
+
+msgid "Could not build the archive."
+msgstr "Kunne ikke bygge arkivet."
+
+msgid "Could not change your email."
+msgstr "Kunne ikke ændre din e-mail."
+
+msgid "Could not change your password."
+msgstr "Kunne ikke ændre din adgangskode."
+
+msgid "Could not connect model"
+msgstr "Kunne ikke forbinde model"
+
+msgid "Could not connect tool"
+msgstr "Kunne ikke forbinde tool"
+
+msgid "Could not create agent"
+msgstr "Kunne ikke oprette agent"
+
+msgid "Could not create API key."
+msgstr "Kunne ikke oprette API-nøgle."
+
+msgid "Could not create credential"
+msgstr "Kunne ikke oprette adgangsoplysninger"
+
+msgid "Could not create department"
+msgstr "Kunne ikke oprette afdeling"
+
+msgid "Could not create the skill."
+msgstr "Kunne ikke oprette skillen."
+
+msgid "Could not create the task"
+msgstr "Kunne ikke oprette opgaven"
+
+msgid "Could not create user. Try again."
+msgstr "Kunne ikke oprette bruger. Prøv igen."
+
+msgid "Could not create."
+msgstr "Kunne ikke oprette."
+
+msgid "Could not delete — it may be assigned to agents."
+msgstr "Kunne ikke slette — den er muligvis tildelt agenter."
+
+msgid "Could not delete the department."
+msgstr "Kunne ikke slette afdelingen."
+
+msgid "Could not delete the key."
+msgstr "Kunne ikke slette nøglen."
+
+msgid "Could not delete the knowledge base."
+msgstr "Kunne ikke slette vidensbasen."
+
+msgid "Could not delete the source."
+msgstr "Kunne ikke slette datakilden."
+
+msgid "Could not delete."
+msgstr "Kunne ikke slette."
+
+msgid "Could not disable."
+msgstr "Kunne ikke deaktivere."
+
+msgid "Could not fetch model list"
+msgstr "Kunne ikke hente modelliste"
+
+msgid "Could not finish onboarding"
+msgstr "Kunne ikke afslutte opsætningen"
+
+msgid "Could not link this credential"
+msgstr "Kunne ikke knytte disse adgangsoplysninger"
+
+msgid "Could not load file preview."
+msgstr "Kunne ikke indlæse forhåndsvisning af filen."
+
+msgid "Could not load organization settings."
+msgstr "Kunne ikke indlæse organisationsindstillinger."
+
+msgid "Could not load the audit log."
+msgstr "Kunne ikke indlæse revisionsloggen."
+
+msgid "Could not load this department's existing tools, so it isn't safe to continue -- saving now could delete tools it already has."
+msgstr "Kunne ikke indlæse denne afdelings eksisterende tools, så det er ikke sikkert at fortsætte -- en lagring nu kunne slette tools, den allerede har."
+
+msgid "Could not load this department's tools, so guardrails can't be edited safely here."
+msgstr "Kunne ikke indlæse denne afdelings tools, så guardrails kan ikke redigeres sikkert her."
+
+msgid "Could not read that source"
+msgstr "Kunne ikke læse kilden"
+
+msgid "Could not read the archive."
+msgstr "Kunne ikke læse arkivet."
+
+msgid "Could not read the plugin folder."
+msgstr "Kunne ikke læse plugin-mappen."
+
+msgid "Could not record the decision"
+msgstr "Kunne ikke registrere beslutningen"
+
+msgid "Could not refresh"
+msgstr "Kunne ikke opdatere"
+
+msgid "Could not regenerate backup codes."
+msgstr "Kunne ikke generere nye backupkoder."
+
+msgid "Could not remove price"
+msgstr "Kunne ikke fjerne pris"
+
+msgid "Could not remove seat."
+msgstr "Kunne ikke fjerne plads."
+
+msgid "Could not remove source."
+msgstr "Kunne ikke fjerne kilde."
+
+msgid "Could not resolve this connection, so it isn't safe to continue -- saving now could write guardrails under the wrong key."
+msgstr "Kunne ikke opløse denne forbindelse, så det er ikke sikkert at fortsætte -- en lagring nu kunne skrive guardrails under den forkerte nøgle."
+
+msgid "Could not restore the agent."
+msgstr "Kunne ikke gendanne agenten."
+
+msgid "Could not restore the department."
+msgstr "Kunne ikke gendanne afdelingen."
+
+msgid "Could not restore the skill."
+msgstr "Kunne ikke gendanne skillen."
+
+msgid "Could not run the test"
+msgstr "Kunne ikke køre testen"
+
+msgid "Could not save budget"
+msgstr "Kunne ikke gemme budget"
+
+msgid "Could not save changes."
+msgstr "Kunne ikke gemme ændringer."
+
+msgid "Could not save department"
+msgstr "Kunne ikke gemme afdeling"
+
+msgid "Could not save guardrails"
+msgstr "Kunne ikke gemme guardrails"
+
+msgid "Could not save key"
+msgstr "Kunne ikke gemme nøgle"
+
+msgid "Could not save price"
+msgstr "Kunne ikke gemme pris"
+
+msgid "Could not save prompt caching setting"
+msgstr "Kunne ikke gemme indstilling for prompt-caching"
+
+msgid "Could not save settings."
+msgstr "Kunne ikke gemme indstillinger."
+
+msgid "Could not save the preset."
+msgstr "Kunne ikke gemme preset."
+
+msgid "Could not save workspace name"
+msgstr "Kunne ikke gemme arbejdsområdenavn"
+
+msgid "Could not save your dashboard layout"
+msgstr "Kunne ikke gemme dit dashboard-layout"
+
+msgid "Could not save."
+msgstr "Kunne ikke gemme."
+
+msgid "Could not send the answer"
+msgstr "Kunne ikke sende svaret"
+
+msgid "Could not set password."
+msgstr "Kunne ikke sætte adgangskode."
+
+msgid "Could not skip setup"
+msgstr "Kunne ikke springe opsætning over"
+
+msgid "Could not start enrollment."
+msgstr "Kunne ikke starte opsætning."
+
+msgid "Could not start the sign-in."
+msgstr "Kunne ikke starte login."
+
+msgid "Could not sync a source"
+msgstr "Kunne ikke synkronisere en kilde"
+
+msgid "Could not update seat."
+msgstr "Kunne ikke opdatere plads."
+
+msgid "Could not update the key."
+msgstr "Kunne ikke opdatere nøglen."
+
+msgid "Could not update the mail server."
+msgstr "Kunne ikke opdatere mailserveren."
+
+msgid "Could not update your name."
+msgstr "Kunne ikke opdatere dit navn."
+
+msgid "Could not update."
+msgstr "Kunne ikke opdatere."
+
+msgid "Couldn't assign knowledge base"
+msgstr "Kunne ikke tildele vidensbase"
+
+msgid "Couldn't assign skill"
+msgstr "Kunne ikke tildele skill"
+
+msgid "Couldn't cancel run"
+msgstr "Kunne ikke annullere kørsel"
+
+msgid "Couldn't create a link code"
+msgstr "Kunne ikke oprette en linkkode"
+
+msgid "Couldn't create webhook"
+msgstr "Kunne ikke oprette webhook"
+
+msgid "Couldn't delete memory"
+msgstr "Kunne ikke slette minde"
+
+msgid "Couldn't delete the agent"
+msgstr "Kunne ikke slette agenten"
+
+msgid "Couldn't delete the file"
+msgstr "Kunne ikke slette filen"
+
+msgid "Couldn't grant access"
+msgstr "Kunne ikke give adgang"
+
+msgid "Couldn't load attached files."
+msgstr "Kunne ikke indlæse vedhæftede filer."
+
+msgid "Couldn't load runtime information."
+msgstr "Kunne ikke indlæse runtime-information."
+
+msgid "Couldn't reach the copilot"
+msgstr "Kunne ikke nå copiloten"
+
+msgid "Couldn't remove skill"
+msgstr "Kunne ikke fjerne skill"
+
+msgid "Couldn't remove webhook"
+msgstr "Kunne ikke fjerne webhook"
+
+msgid "Couldn't rename the agent"
+msgstr "Kunne ikke omdøbe agenten"
+
+msgid "Couldn't rename the department"
+msgstr "Kunne ikke omdøbe afdelingen"
+
+msgid "Couldn't reset runtime"
+msgstr "Kunne ikke nulstille runtime"
+
+msgid "Couldn't revoke"
+msgstr "Kunne ikke fjerne"
+
+msgid "Couldn't revoke access"
+msgstr "Kunne ikke fratage adgang"
+
+msgid "Couldn't save guardrails"
+msgstr "Kunne ikke gemme guardrails"
+
+msgid "Couldn't save instructions"
+msgstr "Kunne ikke gemme instruktioner"
+
+msgid "Couldn't send answer"
+msgstr "Kunne ikke sende svar"
+
+msgid "Couldn't start run"
+msgstr "Kunne ikke starte kørsel"
+
+msgid "Couldn't understand that guardrail — try phrasing it differently."
+msgstr "Kunne ikke forstå den guardrail — prøv at formulere den anderledes."
+
+msgid "Couldn't update runtime"
+msgstr "Kunne ikke opdatere runtime"
+
+msgid "Couldn't update schedule"
+msgstr "Kunne ikke opdatere tidsplan"
+
+msgid "Couldn't upload the file"
+msgstr "Kunne ikke uploade filen"
+
+msgid "Create"
+msgstr "Opret"
+
+msgid "Create a local company"
+msgstr "Opret en lokal virksomhed"
+
+msgid "Create a room for a new team. You can assign agents later."
+msgstr "Opret et rum til et nyt team. De kan tildele agenter senere."
+
+msgid "Create Account"
+msgstr "Opret konto"
+
+msgid "Create Admin Account"
+msgstr "Opret admin-konto"
+
+msgid "Create agent"
+msgstr "Opret agent"
+
+msgid "Create company"
+msgstr "Opret virksomhed"
+
+msgid "Create limit"
+msgstr "Opret limit"
+
+msgid "Create new"
+msgstr "Opret ny"
+
+msgid "Create role"
+msgstr "Opret rolle"
+
+msgid "Create task"
+msgstr "Opret opgave"
+
+msgid "Create the first role"
+msgstr "Opret den første rolle"
+
+msgid "Create user"
+msgstr "Opret bruger"
+
+msgid "Create webhook URL"
+msgstr "Opret webhook-URL"
+
+msgid "Creating…"
+msgstr "Opretter…"
+
+msgid "Credential"
+msgstr "Adgangsoplysninger"
+
+msgid "Credential created"
+msgstr "Adgangsoplysninger oprettet"
+
+msgid "Credential updated"
+msgstr "Adgangsoplysninger opdateret"
+
+msgid "Credential works"
+msgstr "Adgangsoplysninger virker"
+
+msgid "Credentials"
+msgstr "Adgangsoplysninger"
+
+msgid "Credentials restored:"
+msgstr "Adgangsoplysninger gendannet:"
+
+msgid "Cross-department handoffs — contracts, gates, provenance."
+msgstr "Overdragelser på tværs af afdelinger — kontrakter, gates, oprindelse."
+
+msgid "CSV downloaded to your device."
+msgstr "CSV downloadet til Deres enhed."
+
+msgid "Current password"
+msgstr "Nuværende adgangskode"
+
+msgid "Currently"
+msgstr "I øjeblikket"
+
+msgid "Currently in this company → in the archive"
+msgstr "I øjeblikket i denne virksomhed → i arkivet"
+
+msgid "Custom MCP capa"
+msgstr "Egen MCP-capa"
+
+msgid "Daily"
+msgstr "Daglig"
+
+msgid "Daily role audit — compare actions vs. role scope"
+msgstr "Dagligt rolleaudit — sammenlign handlinger med rolleomfang"
+
+msgid "Data source"
+msgstr "Datakilde"
+
+msgid "Data source deleted"
+msgstr "Datakilde slettet"
+
+msgid "Data source updated"
+msgstr "Datakilde opdateret"
+
+msgid "Data Sources"
+msgstr "Datakilder"
+
+msgid "Data sources (optional)"
+msgstr "Datakilder (valgfrit)"
+
+msgid "Day"
+msgstr "Dag"
+
+msgid "Decided by you"
+msgstr "Besluttet af dig"
+
+msgid "Decision"
+msgstr "Beslutning"
+
+msgid "Decisions and questions waiting on you."
+msgstr "Beslutninger og spørgsmål, der venter på dig."
+
+msgid "Default"
+msgstr "Standard"
+
+msgid "Defined in code — not editable"
+msgstr "Defineret i kode — kan ikke redigeres"
+
+msgid "Definition"
+msgstr "Definition"
+
+msgid "Delete"
+msgstr "Slet"
+
+msgid "Delete agent"
+msgstr "Slet agent"
+
+msgid "Delete chat?"
+msgstr "Slet chat?"
+
+msgid "Delete connection"
+msgstr "Slet forbindelse"
+
+msgid "Delete connection?"
+msgstr "Slet forbindelse?"
+
+msgid "Delete credential?"
+msgstr "Slet adgangsoplysninger?"
+
+msgid "Delete data source?"
+msgstr "Slet datakilde?"
+
+msgid "Delete department"
+msgstr "Slet afdeling"
+
+msgid "Delete file"
+msgstr "Slet fil"
+
+msgid "Delete knowledge base?"
+msgstr "Slet vidensbase?"
+
+msgid "Delete limit"
+msgstr "Slet limit"
+
+msgid "Delete model?"
+msgstr "Slet model?"
+
+msgid "Delete preset"
+msgstr "Slet preset"
+
+msgid "Delete this agent?"
+msgstr "Slet denne agent?"
+
+msgid "Delete this file?"
+msgstr "Slet denne fil?"
+
+msgid "Delete this memory"
+msgstr "Slet dette minde"
+
+msgid "Delete this preset?"
+msgstr "Slet dette preset?"
+
+msgid "Delete…"
+msgstr "Slet…"
+
+msgid "Deleted"
+msgstr "Slettet"
+
+msgid "Deleting…"
+msgstr "Sletter…"
+
+msgid "Delta"
+msgstr "Difference"
+
+msgid "Department"
+msgstr "Afdeling"
+
+msgid "Department allows (ceiling)"
+msgstr "Afdeling tillader (loft)"
+
+msgid "Department archived"
+msgstr "Afdeling arkiveret"
+
+msgid "Department deleted"
+msgstr "Afdeling slettet"
+
+msgid "Department knowledge"
+msgstr "Afdelingsviden"
+
+msgid "Department lead"
+msgstr "Afdelingsleder"
+
+msgid "Department name"
+msgstr "Afdelingsnavn"
+
+msgid "Department not found, or you don't have access."
+msgstr "Afdeling ikke fundet, eller du har ikke adgang."
+
+msgid "Department restored"
+msgstr "Afdeling gendannet"
+
+msgid "Department seats"
+msgstr "Afdelingspladser"
+
+msgid "Departments"
+msgstr "Afdelinger"
+
+msgid "departments"
+msgstr "afdelinger"
+
+msgid "departments · jointly coordinated"
+msgstr "afdelinger · koordineret i fællesskab"
+
+msgid "Describe roughly what this agent should do"
+msgstr "Beskriv groft, hvad denne agent skal gøre"
+
+msgid "Describe step by step what the skill should do…"
+msgstr "Beskriv trin for trin, hvad skillen skal gøre…"
+
+msgid "Description"
+msgstr "Beskrivelse"
+
+msgid "Development only. A person's authority comes from their seats and any tenant role assigned to them, never from this screen."
+msgstr "Kun til udvikling. En persons rettigheder kommer fra deres pladser og en eventuel tildelt tenant-rolle, aldrig fra denne skærm."
+
+msgid "Development only. Production instances are set up once through POST /auth/setup, not this picker."
+msgstr "Kun til udvikling. Produktionsinstanser opsættes én gang via POST /auth/setup, ikke via denne vælger."
+
+msgid "Deviations"
+msgstr "Afvigelser"
+
+msgid "Disable"
+msgstr "Deaktivér"
+
+msgid "Disabled"
+msgstr "Deaktiveret"
+
+msgid "Discard"
+msgstr "Kassér"
+
+msgid "Discovered tools"
+msgstr "Fundne tools"
+
+msgid "Dismiss"
+msgstr "Luk"
+
+msgid "Display Name"
+msgstr "Vist navn"
+
+msgid "Display name"
+msgstr "Vist navn"
+
+msgid "Display name (optional)"
+msgstr "Vist navn (valgfrit)"
+
+msgid "Documents"
+msgstr "Dokumenter"
+
+msgid "Done"
+msgstr "Færdig"
+
+msgid "Download"
+msgstr "Download"
+
+msgid "Download a fresh backup above first — restoring is irreversible, and this is the recovery path if it goes wrong."
+msgstr "Download først en frisk backup ovenfor — gendannelse kan ikke fortrydes, og dette er vejen tilbage, hvis noget går galt."
+
+msgid "Download backup"
+msgstr "Download backup"
+
+msgid "Download failed."
+msgstr "Download mislykkedes."
+
+msgid "Downloads every agent, department, run history and knowledge item this company holds as one file."
+msgstr "Downloader alle agenter, afdelinger, kørselshistorik og videnselementer i denne virksomhed som én fil."
+
+msgid "Draft with copilot"
+msgstr "Udarbejd med copilot"
+
+msgid "Drift guard — pause on off-role actions"
+msgstr "Driftvagt — pause ved handlinger uden for rollen"
+
+msgid "e.g. \"Handles first-level IT support tickets, replies to users, escalates hardware issues.\""
+msgstr "f.eks. \"Håndterer first-level-it-supporttickets, svarer brugere, eskalerer hardwareproblemer.\""
+
+msgid "e.g. Claude Desktop"
+msgstr "f.eks. Claude Desktop"
+
+msgid "e.g. Close deals"
+msgstr "f.eks. Luk aftaler"
+
+msgid "e.g. Customer service, research, marketing …"
+msgstr "f.eks. Kundeservice, research, marketing …"
+
+msgid "e.g. delete_record"
+msgstr "f.eks. delete_record"
+
+msgid "e.g. discount too high for this customer"
+msgstr "f.eks. rabat for høj til denne kunde"
+
+msgid "e.g. Invoice Review"
+msgstr "f.eks. Fakturagennemgang"
+
+msgid "e.g. Legal & Compliance"
+msgstr "f.eks. Jura & Compliance"
+
+msgid "e.g. Nova, Atlas, Miro …"
+msgstr "f.eks. Nova, Atlas, Miro …"
+
+msgid "e.g. Review contracts on time"
+msgstr "f.eks. Gennemgå kontrakter til tiden"
+
+msgid "e.g. Sales sign-off"
+msgstr "f.eks. Salgsgodkendelse"
+
+msgid "Each code works once. Store them somewhere safe — you will not see them again."
+msgstr "Hver kode virker én gang. Gem dem et sikkert sted — De ser dem ikke igen."
+
+msgid "Edit"
+msgstr "Redigér"
+
+msgid "Edit credential"
+msgstr "Redigér adgangsoplysninger"
+
+msgid "Edit data source"
+msgstr "Redigér datakilde"
+
+msgid "Edit model"
+msgstr "Redigér model"
+
+msgid "Edit skill"
+msgstr "Redigér skill"
+
+msgid "Efficiency"
+msgstr "Effektivitet"
+
+msgid "Efficiency / load"
+msgstr "Effektivitet / belastning"
+
+msgid "Effort"
+msgstr "Effort"
+
+msgid "Effort (optional)"
+msgstr "Effort (valgfrit)"
+
+msgid "Email"
+msgstr "E-mail"
+
+msgid "Email updated"
+msgstr "E-mail opdateret"
+
+msgid "Embedding model"
+msgstr "Embedding-model"
+
+msgid "Employee"
+msgstr "Medarbejder"
+
+msgid "Empty"
+msgstr "Tom"
+
+msgid "Empty means no limit. A number here, or a context window recorded on the model, is what makes size a verdict at all."
+msgstr "Tom betyder ingen grænse. Først et tal her — eller et kontekstvindue registreret på modellen — gør størrelsen til en vurdering."
+
+msgid "en"
+msgstr "da"
+
+msgid "Enable"
+msgstr "Aktivér"
+
+msgid "Enabled"
+msgstr "Aktiveret"
+
+msgid "Enabling…"
+msgstr "Aktiverer…"
+
+msgid "Enforced by the platform — a hard limit pauses new tasks with budget_exceeded."
+msgstr "Håndhæves af platformen — en hård limit sætter nye opgaver på pause med budget_exceeded."
+
+msgid "Enrol somebody by their sign-in identity. They can also be added automatically the first time they sign in — this just lets you set them up (and assign a role) ahead of time."
+msgstr "Tilmeld en person via deres login-identitet. Vedkommende kan også tilføjes automatisk, første gang de logger ind — dette giver blot Dem mulighed for at opsætte dem (og tildele en rolle) på forhånd."
+
+msgid "Enter a sign-in email or username."
+msgstr "Indtast en login-e-mail eller et brugernavn."
+
+msgid "Enter manually"
+msgstr "Indtast manuelt"
+
+msgid "Enter manually instead"
+msgstr "Indtast manuelt i stedet"
+
+msgid "Enter room"
+msgstr "Gå ind i rum"
+
+msgid "Enter the 6-digit code"
+msgstr "Indtast den 6-cifrede kode"
+
+msgid "Enter this code on that page:"
+msgstr "Indtast denne kode på siden:"
+
+msgid "Enter valid, non-negative prices."
+msgstr "Indtast gyldige, ikke-negative priser."
+
+msgid "Enter your authentication code"
+msgstr "Indtast Deres godkendelseskode"
+
+msgid "Enter your credentials to continue."
+msgstr "Indtast Deres adgangsoplysninger for at fortsætte."
+
+msgid "Enter your office"
+msgstr "Gå ind i dit kontor"
+
+msgid "Entering…"
+msgstr "Går ind…"
+
+msgid "Entries are missing from this log."
+msgstr "Der mangler poster i denne log."
+
+msgid "Error"
+msgstr "Fejl"
+
+msgid "error"
+msgstr "fejl"
+
+msgid "Est. cost / 1k req"
+msgstr "Est. pris / 1k foresp."
+
+msgid "Estimate assumes ~1,500 input + 500 output tokens per request. Cost totals per agent and department use these prices."
+msgstr "Estimatet forudsætter ~1.500 input + 500 output tokens pr. forespørgsel. Omkostningssummer pr. agent og afdeling bruger disse priser."
+
+msgid "Every action, every timestamp."
+msgstr "Hver handling, hvert tidsstempel."
+
+msgid "Every department"
+msgstr "Hver afdeling"
+
+msgid "Every department — decisions and questions waiting on a person."
+msgstr "Alle afdelinger — beslutninger og spørgsmål, der venter på et menneske."
+
+msgid "Every export, with or without a passphrase, carries every member's password hash. With a passphrase, the file also carries every provider credential and OAuth token this company holds, encrypted under it — anyone with the file AND the passphrase holds those credentials too. The passphrase cannot be recovered if lost; losing it only costs the secrets, everything else still restores."
+msgstr "Hver eksport, med eller uden adgangssætning, indeholder hvert medlems adgangskode-hash. Med en adgangssætning indeholder filen desuden alle udbyder-adgangsoplysninger og OAuth-tokens, som denne virksomhed har, krypteret under den — enhver med filen OG adgangssætningen har også disse adgangsoplysninger. Adgangssætningen kan ikke genoprettes, hvis den går tabt; at miste den koster kun hemmelighederne — alt andet kan stadig gendannes."
+
+msgid "Every installable capability — connectors, tools, guardrails, templates."
+msgstr "Enhver installerbar funktion — connectors, tools, guardrails, skabeloner."
+
+msgid "Every save is kept — nothing is pruned."
+msgstr "Hver lagring bevares — intet slettes."
+
+msgid "Execution"
+msgstr "Udførelse"
+
+msgid "execution environment"
+msgstr "udførelsesmiljø"
+
+msgid "Expired"
+msgstr "Udløbet"
+
+msgid "Expires"
+msgstr "Udløber"
+
+msgid "Expires (optional)"
+msgstr "Udløber (valgfrit)"
+
+msgid "explicit"
+msgstr "eksplicit"
+
+msgid "Export"
+msgstr "Eksportér"
+
+msgid "Export as Capa"
+msgstr "Eksportér som Capa"
+
+msgid "Export CSV"
+msgstr "Eksportér CSV"
+
+msgid "Export failed"
+msgstr "Eksport mislykkedes"
+
+msgid "Export your whole company to one file, or replace it in place from a previously exported file."
+msgstr "Eksportér hele din virksomhed til én fil, eller erstat den på stedet ud fra en tidligere eksporteret fil."
+
+msgid "Exporting…"
+msgstr "Eksporterer…"
+
+msgid "Failed"
+msgstr "Mislykkedes"
+
+msgid "Fetch again"
+msgstr "Hent igen"
+
+msgid "Fetch available models"
+msgstr "Hent tilgængelige modeller"
+
+msgid "Fetching models…"
+msgstr "Henter modeller…"
+
+msgid "File deleted"
+msgstr "Fil slettet"
+
+msgid "File is too large"
+msgstr "Filen er for stor"
+
+msgid "File truncated for display."
+msgstr "Fil afkortet til visning."
+
+msgid "Files"
+msgstr "Filer"
+
+msgid "Fill in provider, model pattern, and valid prices."
+msgstr "Udfyld udbyder, modelmønster og gyldige priser."
+
+msgid "Filter"
+msgstr "Filter"
+
+msgid "Filter:"
+msgstr "Filter:"
+
+msgid "Find similar"
+msgstr "Find lignende"
+
+msgid "First seen"
+msgstr "Først set"
+
+msgid "fits"
+msgstr "passer"
+
+msgid "Floor 1 · Live operations"
+msgstr "Etage 1 · Live-drift"
+
+msgid "Flows"
+msgstr "Flows"
+
+msgid "For personal notes, open an agent and switch to the \"Memory\" tab."
+msgstr "For personlige noter: åbn en agent og skift til fanen \"Hukommelse\"."
+
+msgid "For task-specific instructions, assign a skill instead — this field is only the agent's base mission."
+msgstr "For opgavespecifikke instruktioner: tildel i stedet en skill — dette felt er kun agentens grundlæggende mission."
+
+msgid "For the whole team"
+msgstr "For hele teamet"
+
+msgid "Forgot password?"
+msgstr "Glemt adgangskode?"
+
+msgid "Forwarded verbatim to the provider after every named field above -- for knobs oc8 has no dedicated field for (e.g. OpenRouter's provider/top_p). Not validated here; the provider decides what it accepts."
+msgstr "Videresendes uændret til udbyderen efter alle navngivne felter ovenfor -- til indstillinger, som oc8 ikke har et eget felt til (f.eks. OpenRouters provider/top_p). Valideres ikke her; udbyderen afgør, hvad den accepterer."
+
+msgid "Framework default"
+msgstr "Framework-standard"
+
+msgid "From"
+msgstr "Fra"
+
+msgid "From (UTC)"
+msgstr "Fra (UTC)"
+
+msgid "From store"
+msgstr "Fra store"
+
+msgid "from the department"
+msgstr "fra afdelingen"
+
+msgid "from their sign-in"
+msgstr "fra deres login"
+
+msgid "Full access to every screen and department. Off means a standard user, limited to their department seats."
+msgstr "Fuld adgang til alle skærme og afdelinger. Fra betyder en standardbruger, begrænset til deres afdelingspladser."
+
+msgid "Full check"
+msgstr "Fuld kontrol"
+
+msgid "Function"
+msgstr "Funktion"
+
+msgid "General"
+msgstr "Generelt"
+
+msgid "Generate"
+msgstr "Generér"
+
+msgid "Generating…"
+msgstr "Genererer…"
+
+msgid "Get notified even when this tab isn't open."
+msgstr "Få besked, selv når denne fane ikke er åben."
+
+msgid "Git repository or archive"
+msgstr "Git-repository eller arkiv"
+
+msgid "Give a reason first — a rejection with none is a dead end for the agent that has to act on it"
+msgstr "Giv først en begrundelse — en afvisning uden begrundelse er en blindgyde for agenten, der skal handle på den"
+
+msgid "Go to my work"
+msgstr "Gå til mit arbejde"
+
+msgid "Goal"
+msgstr "Mål"
+
+msgid "Goal / OKR"
+msgstr "Mål / OKR"
+
+msgid "Granted company-wide access"
+msgstr "Gav adgang til hele virksomheden"
+
+msgid "grants nothing"
+msgstr "giver intet"
+
+msgid "Group by"
+msgstr "Gruppér efter"
+
+msgid "Guardrails"
+msgstr "Guardrails"
+
+msgid "Guardrails (one per line)"
+msgstr "Guardrails (én pr. linje)"
+
+msgid "Guardrails saved"
+msgstr "Guardrails gemt"
+
+msgid "Guided setup"
+msgstr "Guidet opsætning"
+
+msgid "Handoffs"
+msgstr "Overdragelser"
+
+msgid "hard"
+msgstr "hård"
+
+msgid "Hard limit exceeded"
+msgstr "Hård limit overskredet"
+
+msgid "Hard limit exceeded — new tasks are paused."
+msgstr "Hård limit overskredet — nye opgaver er sat på pause."
+
+msgid "Held by"
+msgstr "Indehaver"
+
+msgid "Hide the text"
+msgstr "Skjul teksten"
+
+msgid "Hire agent"
+msgstr "Ansæt agent"
+
+msgid "Hire an agent into it from the Agents page."
+msgstr "Ansæt en agent til den fra siden Agenter."
+
+msgid "History"
+msgstr "Historik"
+
+msgid "How many tool-using steps this agent may take in one run before it stops. Blank inherits the framework default (currently high, not unlimited -- budget/token metering only checks once per run)."
+msgstr "Hvor mange tool-brugende trin denne agent må tage i én kørsel, før den stopper. Tom arver framework-standarden (i øjeblikket høj, ikke ubegrænset -- budget-/token-måling tjekker kun én gang pr. kørsel)."
+
+msgid "How much an agent on this model may write per turn, before oc8 cuts it off. Leave blank for the framework default (1536). Raise this for reasoning-heavy models on large tasks — hidden reasoning tokens count against this budget too."
+msgstr "Hvor meget en agent på denne model må skrive pr. tur, før oc8 afbryder den. Lad stå tom for framework-standarden (1536). Sæt den højere for reasoning-tunge modeller på store opgaver — skjulte reasoning-tokens tæller også med i dette budget."
+
+msgid "Human oversight"
+msgstr "Menneskelig overvågning"
+
+msgid "Human reviewer"
+msgstr "Menneskelig reviewer"
+
+msgid "human reviewer"
+msgstr "menneskelig reviewer"
+
+msgid "I've saved it"
+msgstr "Jeg har gemt den"
+
+msgid "I've saved these"
+msgstr "Jeg har gemt dem"
+
+msgid "Icon"
+msgstr "Ikon"
+
+msgid "If that email exists and a mail server is configured, a reset link was sent."
+msgstr "Hvis den e-mail findes, og der er konfigureret en mailserver, er der sendt et nulstillingslink."
+
+msgid "If this archive was taken on a different oc8 instance, restoring it also replaces every member and role this company has with the source instance's — including your own membership. Because those rows carry sign-in identities from the source instance's own login provider, this can remove your own access to this company."
+msgstr "Hvis dette arkiv blev oprettet på en anden oc8-instans, erstatter gendannelsen også alle medlemmer og roller i denne virksomhed med kildeinstansens — inklusive dit eget medlemskab. Da disse rækker bærer login-identiteter fra kildeinstansens egen loginudbyder, kan det fjerne din egen adgang til denne virksomhed."
+
+msgid "Import"
+msgstr "Importér"
+
+msgid "Import failed"
+msgstr "Import mislykkedes"
+
+msgid "Import from a source"
+msgstr "Importér fra en kilde"
+
+msgid "Import from source"
+msgstr "Importér fra kilde"
+
+msgid "Importing…"
+msgstr "Importerer…"
+
+msgid "In archive"
+msgstr "I arkivet"
+
+msgid "In Progress"
+msgstr "I gang"
+
+msgid "Included automatically: modifying requires read access."
+msgstr "Inkluderet automatisk: ændring kræver læseadgang."
+
+msgid "info"
+msgstr "info"
+
+msgid "Inherited"
+msgstr "Nedarvet"
+
+msgid "Inherited from department"
+msgstr "Nedarvet fra afdeling"
+
+msgid "Input"
+msgstr "Input"
+
+msgid "Input / 1M"
+msgstr "Input / 1 mio."
+
+msgid "Input tokens"
+msgstr "Input-tokens"
+
+msgid "Insert into editor"
+msgstr "Indsæt i editoren"
+
+msgid "Install"
+msgstr "Installér"
+
+msgid "Installation failed."
+msgstr "Installation mislykkedes."
+
+msgid "Installed"
+msgstr "Installeret"
+
+msgid "Installing…"
+msgstr "Installerer…"
+
+msgid "Instance already initialized. Please log in."
+msgstr "Instansen er allerede initialiseret. Log venligst ind."
+
+msgid "Instance not yet initialized. Please complete setup."
+msgstr "Instansen er endnu ikke initialiseret. Gennemfør venligst opsætningen."
+
+msgid "Instructions"
+msgstr "Instruktioner"
+
+msgid "Instructions saved"
+msgstr "Instruktioner gemt"
+
+msgid "Invalid"
+msgstr "Ugyldig"
+
+msgid "Invalid code"
+msgstr "Ugyldig kode"
+
+msgid "Judge against this department's model"
+msgstr "Vurdér mod denne afdelings model"
+
+msgid "Judging against your number for this look only — nothing is saved."
+msgstr "Vurderer kun mod dit tal i denne visning — intet gemmes."
+
+msgid "key"
+msgstr "nøgle"
+
+msgid "Knowledge"
+msgstr "Viden"
+
+msgid "Knowledge base"
+msgstr "Vidensbase"
+
+msgid "Knowledge base assigned"
+msgstr "Vidensbase tildelt"
+
+msgid "Knowledge base deleted"
+msgstr "Vidensbase slettet"
+
+msgid "Knowledge base updated"
+msgstr "Vidensbase opdateret"
+
+msgid "Knowledge Bases"
+msgstr "Vidensbaser"
+
+msgid "Knowledge bases"
+msgstr "vidensbaser"
+
+msgid "Knowledge library"
+msgstr "Vidensbibliotek"
+
+msgid "Language switched to"
+msgstr "Sprog skiftet til"
+
+msgid "Last 30 days — validation only"
+msgstr "Sidste 30 dage — kun validering"
+
+msgid "Last action"
+msgstr "Sidste handling"
+
+msgid "Last run"
+msgstr "Sidste kørsel"
+
+msgid "Last tested"
+msgstr "Sidst testet"
+
+msgid "Latency"
+msgstr "Latens"
+
+msgid "Lead → Team"
+msgstr "Leder → Team"
+
+msgid "Leave blank to keep unchanged"
+msgstr "Lad stå tom for at beholde uændret"
+
+msgid "Leave empty to allow any origin."
+msgstr "Lad stå tom for at tillade enhver origin."
+
+msgid "Leave empty to never expire."
+msgstr "Lad stå tom, så den aldrig udløber."
+
+msgid "Leave empty to set up later"
+msgstr "Lad stå tom for at opsætte senere"
+
+msgid "Leave unassigned"
+msgstr "Lad være utildelt"
+
+msgid "Let the copilot draft this from a rough description"
+msgstr "Lad copiloten udarbejde dette ud fra en grov beskrivelse"
+
+msgid "Let the copilot read this agent's instructions and suggest guardrails"
+msgstr "Lad copiloten læse denne agents instruktioner og foreslå guardrails"
+
+msgid "Lets an external tool call oc8's Copilot over MCP as you, with your own permissions."
+msgstr "Lader et eksternt tool kalde oc8s Copilot via MCP som Dem, med Deres egne tilladelser."
+
+msgid "Lets them sign in immediately. Min. 8 characters."
+msgstr "Lader dem logge ind med det samme. Min. 8 tegn."
+
+msgid "Limit"
+msgstr "Limit"
+
+msgid "Limit created"
+msgstr "Limit oprettet"
+
+msgid "Limit removed"
+msgstr "Limit fjernet"
+
+msgid "Limits"
+msgstr "Limits"
+
+msgid "Line"
+msgstr "Linje"
+
+msgid "Link your own Telegram or WhatsApp so approvals reach you there. This is separate from a capa's admin setup (bot token) — this step binds YOUR chat."
+msgstr "Knyt din egen Telegram eller WhatsApp, så godkendelser når dig der. Dette er adskilt fra en capas admin-opsætning (bot-token) — dette trin binder DIN chat."
+
+msgid "Linked in this tenant"
+msgstr "Knyttet i denne tenant"
+
+msgid "Live"
+msgstr "Live"
+
+msgid "Live Log"
+msgstr "Live-log"
+
+msgid "Live Log · current run"
+msgstr "Live-log · aktuel kørsel"
+
+msgid "LLM"
+msgstr "LLM"
+
+msgid "LLM providers, costs, and assignments."
+msgstr "LLM-udbydere, omkostninger og tildelinger."
+
+msgid "Load"
+msgstr "Belastning"
+
+msgid "Load into the editor"
+msgstr "Indlæs i editoren"
+
+msgid "Load more"
+msgstr "Indlæs flere"
+
+msgid "Load older versions"
+msgstr "Indlæs ældre versioner"
+
+msgid "Loading agent…"
+msgstr "Indlæser agent…"
+
+msgid "Loading available tools…"
+msgstr "Indlæser tilgængelige tools…"
+
+msgid "Loading department…"
+msgstr "Indlæser afdeling…"
+
+msgid "Loading files…"
+msgstr "Indlæser filer…"
+
+msgid "Loading guardrails…"
+msgstr "Indlæser guardrails…"
+
+msgid "Loading providers…"
+msgstr "Indlæser udbydere…"
+
+msgid "Loading roles…"
+msgstr "Indlæser roller…"
+
+msgid "Loading run…"
+msgstr "Indlæser kørsel…"
+
+msgid "Loading the permission model…"
+msgstr "Indlæser tilladelsesmodellen…"
+
+msgid "Loading the rights…"
+msgstr "Indlæser rettighederne…"
+
+msgid "Loading the role…"
+msgstr "Indlæser rollen…"
+
+msgid "Loading users…"
+msgstr "Indlæser brugere…"
+
+msgid "Loading your department…"
+msgstr "Indlæser din afdeling…"
+
+msgid "Loading…"
+msgstr "Indlæser…"
+
+msgid "Local"
+msgstr "Lokal"
+
+msgid "local"
+msgstr "lokal"
+
+msgid "Local library"
+msgstr "Lokalt bibliotek"
+
+msgid "Locality"
+msgstr "Lokalitet"
+
+msgid "Logged in successfully"
+msgstr "Logget ind"
+
+msgid "Login"
+msgstr "Login"
+
+msgid "Login failed"
+msgstr "Login mislykkedes"
+
+msgid "Look"
+msgstr "Se"
+
+msgid "Made a standard user"
+msgstr "Gjort til standardbruger"
+
+msgid "Made an administrator"
+msgstr "Gjort til administrator"
+
+msgid "Mail server"
+msgstr "Mailserver"
+
+msgid "Mail server credentials"
+msgstr "Mailserver-adgangsoplysninger"
+
+msgid "Mail server disabled"
+msgstr "Mailserver deaktiveret"
+
+msgid "Mail server updated"
+msgstr "Mailserver opdateret"
+
+msgid "Manage user roles for your organization."
+msgstr "Administrér brugerroller for Deres organisation."
+
+msgid "Managed by your identity provider; not editable here."
+msgstr "Administreres af Deres identitetsudbyder; kan ikke redigeres her."
+
+msgid "Manages agents"
+msgstr "Administrerer agenter"
+
+msgid "Max output tokens (optional)"
+msgstr "Maks. output-tokens (valgfrit)"
+
+msgid "Max steps must be a positive whole number"
+msgstr "Maks. trin skal være et positivt heltal"
+
+msgid "Max steps per run"
+msgstr "Maks. trin pr. kørsel"
+
+msgid "Max tokens"
+msgstr "Maks. tokens"
+
+msgid "Max tokens must be a positive number"
+msgstr "Maks. tokens skal være et positivt tal"
+
+msgid "Max tokens must be a positive whole number"
+msgstr "Maks. tokens skal være et positivt heltal"
+
+msgid "MCP Connections"
+msgstr "MCP-forbindelser"
+
+msgid "memories"
+msgstr "minder"
+
+msgid "Memory"
+msgstr "Hukommelse"
+
+msgid "Memory deleted"
+msgstr "Minde slettet"
+
+msgid "metered by the platform"
+msgstr "målt af platformen"
+
+msgid "Model"
+msgstr "Model"
+
+msgid "Model (LLM)"
+msgstr "Model (LLM)"
+
+msgid "model pattern"
+msgstr "modelmønster"
+
+msgid "Model price added"
+msgstr "Modelpris tilføjet"
+
+msgid "Model pricing"
+msgstr "Modelpriser"
+
+msgid "Model tag"
+msgstr "Model-tag"
+
+msgid "Model updated"
+msgstr "Model opdateret"
+
+msgid "Models"
+msgstr "Modeller"
+
+msgid "models"
+msgstr "modeller"
+
+msgid "Models are now available for agents."
+msgstr "Modeller er nu tilgængelige for agenter."
+
+msgid "Models from connected providers appear here automatically."
+msgstr "Modeller fra forbundne udbydere vises her automatisk."
+
+msgid "modifies"
+msgstr "ændrer"
+
+msgid "Modify"
+msgstr "Ændr"
+
+msgid "Month"
+msgstr "Måned"
+
+msgid "Monthly"
+msgstr "Månedlig"
+
+msgid "More info"
+msgstr "Mere info"
+
+msgid "More runtimes appear here once installed as plugins."
+msgstr "Flere runtimes vises her, når de er installeret som plugins."
+
+msgid "Move holders to"
+msgstr "Flyt indehavere til"
+
+msgid "Move holders to…"
+msgstr "Flyt indehavere til…"
+
+msgid "Multi-stage flows across departments with live validation."
+msgstr "Flertrinsflows på tværs af afdelinger med live-validering."
+
+msgid "Must exactly match a tool this connection exposes -- pick from the suggestions."
+msgstr "Skal matche præcist et tool, som denne forbindelse eksponerer -- vælg fra forslagene."
+
+msgid "My work"
+msgstr "Mit arbejde"
+
+msgid "Name"
+msgstr "Navn"
+
+msgid "Name & description"
+msgstr "Navn & beskrivelse"
+
+msgid "name + rights"
+msgstr "navn + rettigheder"
+
+msgid "Name updated"
+msgstr "Navn opdateret"
+
+msgid "Name your workspace"
+msgstr "Navngiv dit arbejdsområde"
+
+msgid "Narrowed"
+msgstr "Indsnævret"
+
+msgid "Never expires"
+msgstr "Udløber aldrig"
+
+msgid "Never tested"
+msgstr "Aldrig testet"
+
+msgid "Never tested — click Test to check."
+msgstr "Aldrig testet — klik på Test for at kontrollere."
+
+msgid "Never used"
+msgstr "Aldrig brugt"
+
+msgid "never verified"
+msgstr "aldrig verificeret"
+
+msgid "New chat"
+msgstr "Ny chat"
+
+msgid "New cost limit"
+msgstr "Ny omkostningsgrænse"
+
+msgid "New credential"
+msgstr "Nye adgangsoplysninger"
+
+msgid "New department"
+msgstr "Ny afdeling"
+
+msgid "New email"
+msgstr "Ny e-mail"
+
+msgid "New guardrail"
+msgstr "Ny guardrail"
+
+msgid "New key"
+msgstr "Ny nøgle"
+
+msgid "New model"
+msgstr "Ny model"
+
+msgid "New password"
+msgstr "Ny adgangskode"
+
+msgid "New password (min. 8 characters)"
+msgstr "Ny adgangskode (min. 8 tegn)"
+
+msgid "New role"
+msgstr "Ny rolle"
+
+msgid "New run"
+msgstr "Ny kørsel"
+
+msgid "New skill"
+msgstr "Ny skill"
+
+msgid "New tab"
+msgstr "Ny fane"
+
+msgid "New task"
+msgstr "Ny opgave"
+
+msgid "New user"
+msgstr "Ny bruger"
+
+msgid "Next"
+msgstr "Næste"
+
+msgid "Next page"
+msgstr "Næste side"
+
+msgid "No activity yet for this agent."
+msgstr "Endnu ingen aktivitet for denne agent."
+
+msgid "No agents match your filters."
+msgstr "Ingen agenter matcher dine filtre."
+
+msgid "No agents outside a selected department."
+msgstr "Ingen agenter uden for en valgt afdeling."
+
+msgid "No API keys yet."
+msgstr "Endnu ingen API-nøgler."
+
+msgid "No approval-channel capa is installed and enabled yet."
+msgstr "Endnu ingen godkendelseskanal-capa installeret og aktiveret."
+
+msgid "No audit events for this filter."
+msgstr "Ingen revisionshændelser for dette filter."
+
+msgid "No budget — nothing is refused for its size"
+msgstr "Intet budget — intet afvises på grund af størrelsen"
+
+msgid "No Capas installed yet."
+msgstr "Endnu ingen Capas installeret."
+
+msgid "No channel is linked yet."
+msgstr "Endnu ingen kanal knyttet."
+
+msgid "No chunks found."
+msgstr "Ingen chunks fundet."
+
+msgid "No connected data sources yet — create one first from the Sources tab, or skip this step."
+msgstr "Endnu ingen forbundne datakilder — opret først en under fanen Kilder, eller spring dette trin over."
+
+msgid "No credential selected yet — pick or create one, or the platform's shared key is used if available."
+msgstr "Endnu ingen adgangsoplysninger valgt — vælg eller opret nogle, ellers bruges platformens delte nøgle, hvis den findes."
+
+msgid "No credentials yet."
+msgstr "Endnu ingen adgangsoplysninger."
+
+msgid "No data for this filter."
+msgstr "Ingen data for dette filter."
+
+msgid "No department"
+msgstr "Ingen afdeling"
+
+msgid "No department (strict default)"
+msgstr "Ingen afdeling (streng standard)"
+
+msgid "No department seats yet."
+msgstr "Endnu ingen afdelingspladser."
+
+msgid "No departments available"
+msgstr "Ingen afdelinger tilgængelige"
+
+msgid "No departments match your filters."
+msgstr "Ingen afdelinger matcher dine filtre."
+
+msgid "No departments yet."
+msgstr "Endnu ingen afdelinger."
+
+msgid "No description."
+msgstr "Ingen beskrivelse."
+
+msgid "No documents yet."
+msgstr "Endnu ingen dokumenter."
+
+msgid "No files attached yet."
+msgstr "Endnu ingen filer vedhæftet."
+
+msgid "No further details for this entry."
+msgstr "Ingen yderligere detaljer for denne post."
+
+msgid "No grouping"
+msgstr "Ingen gruppering"
+
+msgid "No inline preview for this file type -- download it instead."
+msgstr "Ingen inline-forhåndsvisning for denne filtype -- download den i stedet."
+
+msgid "No knowledge bases match your search."
+msgstr "Ingen vidensbaser matcher din søgning."
+
+msgid "No limits set yet. Add one to protect your budget."
+msgstr "Endnu ingen limits sat. Tilføj en for at beskytte Deres budget."
+
+msgid "No locally authored skills to export."
+msgstr "Ingen lokalt forfattede skills at eksportere."
+
+msgid "No mail server is configured for this instance, so the invite could not be emailed. Copy this link and send it to the new user yourself — it lets them set their own password."
+msgstr "Der er ikke konfigureret nogen mailserver for denne instans, så invitationen kunne ikke sendes pr. e-mail. Kopiér dette link og send det selv til den nye bruger — det lader vedkommende sætte sin egen adgangskode."
+
+msgid "No MCP connections yet."
+msgstr "Endnu ingen MCP-forbindelser."
+
+msgid "No model connected yet — connect a provider now to give this agent something to think with."
+msgstr "Endnu ingen model forbundet — forbind en udbyder nu, så denne agent har noget at tænke med."
+
+msgid "No model connected yet — connect one now to give this agent something to think with."
+msgstr "Endnu ingen model forbundet — forbind en nu, så denne agent har noget at tænke med."
+
+msgid "No models configured yet."
+msgstr "Endnu ingen modeller konfigureret."
+
+msgid "No providers configured yet. Start with the wizard."
+msgstr "Endnu ingen udbydere konfigureret. Start med guiden."
+
+msgid "No recent activity"
+msgstr "Ingen nylig aktivitet"
+
+msgid "no report yet"
+msgstr "endnu ingen rapport"
+
+msgid "No results"
+msgstr "Ingen resultater"
+
+msgid "no role, no seat"
+msgstr "ingen rolle, ingen plads"
+
+msgid "No run in progress. Start one with “Run now”, or wait for the schedule."
+msgstr "Ingen kørsel i gang. Start en med \"Kør nu\", eller vent på tidsplanen."
+
+msgid "No runtimes are available right now."
+msgstr "Ingen runtimes tilgængelige lige nu."
+
+msgid "No similar chunks for this one yet."
+msgstr "Endnu ingen lignende chunks for denne."
+
+msgid "No SKILL.md found there. This importer reads Claude Code skills."
+msgstr "Ingen SKILL.md fundet der. Denne importør læser Claude Code-skills."
+
+msgid "No skills assigned yet. Click ‘Assign skill’ to compose this agent."
+msgstr "Endnu ingen skills tildelt. Klik på ‘Tildel skill’ for at sammensætte denne agent."
+
+msgid "No skills match your filters."
+msgstr "Ingen skills matcher dine filtre."
+
+msgid "No skills match your search."
+msgstr "Ingen skills matcher din søgning."
+
+msgid "No sources linked yet."
+msgstr "Endnu ingen datakilder knyttet."
+
+msgid "No tasks yet — start one below."
+msgstr "Endnu ingen opgaver — start en nedenfor."
+
+msgid "No tool calls yet."
+msgstr "Endnu ingen tool-kald."
+
+msgid "No tools enabled yet."
+msgstr "Endnu ingen tools aktiveret."
+
+msgid "No tools match your search."
+msgstr "Ingen tools matcher din søgning."
+
+msgid "No tools yet — add one directly for this agent, or grant it to the whole department first."
+msgstr "Endnu ingen tools — tilføj et direkte til denne agent, eller giv det først til hele afdelingen."
+
+msgid "No usage metered yet for this tenant."
+msgstr "Endnu intet forbrug målt for denne tenant."
+
+msgid "No usage recorded yet."
+msgstr "Endnu intet forbrug registreret."
+
+msgid "No users found. Users appear here after they sign in."
+msgstr "Ingen brugere fundet. Brugere vises her, efter de har logget ind."
+
+msgid "no version"
+msgstr "ingen version"
+
+msgid "Nobody has signed in to this company yet — use quick access below."
+msgstr "Ingen har logget ind på denne virksomhed endnu — brug hurtigadgangen nedenfor."
+
+msgid "Nobody holds this role yet."
+msgstr "Ingen har denne rolle endnu."
+
+msgid "Nobody left to assign. People appear here after they have signed in once."
+msgstr "Ingen tilbage at tildele. Personer vises her, efter de har logget ind én gang."
+
+msgid "None (disable)"
+msgstr "Ingen (deaktivér)"
+
+msgid "Not allowed"
+msgstr "Ikke tilladt"
+
+msgid "not allowed"
+msgstr "ikke tilladt"
+
+msgid "Not available: "
+msgstr "Ikke tilgængelig: "
+
+msgid "Not enabled"
+msgstr "Ikke aktiveret"
+
+msgid "not for people"
+msgstr "ikke til mennesker"
+
+msgid "Not part of any backup:"
+msgstr "Ikke en del af nogen backup:"
+
+msgid "Not refreshed yet — click Refresh to fetch provider-reported cost."
+msgstr "Ikke opdateret endnu — klik på Opdatér for at hente udbyder-rapporterede omkostninger."
+
+msgid "Not restored:"
+msgstr "Ikke gendannet:"
+
+msgid "not set up"
+msgstr "ikke opsat"
+
+msgid "Nothing is imported until you choose. The source is fetched, not trusted."
+msgstr "Intet importeres, før du vælger det. Kilden hentes, ikke tiltrodes."
+
+msgid "Nothing is waiting for you."
+msgstr "Intet venter på dig."
+
+msgid "Nothing new on disk. Drop a folder containing a plugin.toml into the plugins directory, then reload."
+msgstr "Intet nyt på disken. Læg en mappe med en plugin.toml i plugin-mappen, og genindlæs derefter."
+
+msgid "Nothing on either side."
+msgstr "Intet på nogen af siderne."
+
+msgid "Nothing under this filter. Your other departments still have work."
+msgstr "Intet under dette filter. Dine andre afdelinger har stadig arbejde."
+
+msgid "Notifications"
+msgstr "Notifikationer"
+
+msgid "Notifications enabled"
+msgstr "Notifikationer aktiveret"
+
+msgid "Notifications were blocked in the browser."
+msgstr "Notifikationer blev blokeret i browseren."
+
+msgid "Notify"
+msgstr "Notificér"
+
+msgid "Notify — alert only"
+msgstr "Notificér — kun besked"
+
+msgid "Observe reasoning traces"
+msgstr "Observér reasoning-spor"
+
+msgid "oc8 calculated"
+msgstr "oc8 beregnet"
+
+msgid "Office"
+msgstr "Kontor"
+
+msgid "OK"
+msgstr "OK"
+
+msgid "One sentence"
+msgstr "Én sætning"
+
+msgid "Only for me"
+msgstr "Kun for mig"
+
+msgid "Only on-prem models are offered: this deployment routes every embedding through the local Ollama instance, so a cloud model would fail the moment a document is ingested."
+msgstr "Kun on-prem-modeller tilbydes: denne installation leder hvert embedding gennem den lokale Ollama-instans, så en cloud-model ville fejle i det øjeblik, et dokument indlæses."
+
+msgid "Only these surfaces (optional)"
+msgstr "Kun disse områder (valgfrit)"
+
+msgid "Only visible to you"
+msgstr "Kun synlig for dig"
+
+msgid "Only:"
+msgstr "Kun:"
+
+msgid "Open"
+msgstr "Åbn"
+
+msgid "Open approvals"
+msgstr "Åbne godkendelser"
+
+msgid "Open my work"
+msgstr "Åbn mit arbejde"
+
+msgid "Operator"
+msgstr "Operatør"
+
+msgid "optional, e.g. up to 100 units on its own, above that approval"
+msgstr "valgfrit, f.eks. op til 100 enheder selvstændigt, derover godkendelse"
+
+msgid "Or enter manually:"
+msgstr "Eller indtast manuelt:"
+
+msgid "Organization"
+msgstr "Organisation"
+
+msgid "Organization updated"
+msgstr "Organisation opdateret"
+
+msgid "Outbound mail — password reset, email confirmation — is sent through this credential."
+msgstr "Udgående mail — nulstilling af adgangskode, e-mail-bekræftelse — sendes via disse adgangsoplysninger."
+
+msgid "Output"
+msgstr "Output"
+
+msgid "Output / 1M"
+msgstr "Output / 1 mio."
+
+msgid "Output tokens"
+msgstr "Output-tokens"
+
+msgid "Over the budget: it stays in the transcript for the whole run. You can still import it — raise the budget above, or take it knowingly."
+msgstr "Over budgettet: den bliver i transskriptionen hele kørslen. Du kan stadig importere den — hæv budgettet ovenfor, eller tag den med vidende."
+
+msgid "Oversight rules — reasoning & behavior"
+msgstr "Overvågningsregler — tænkning & adfærd"
+
+msgid "Overview"
+msgstr "Oversigt"
+
+msgid "Page "
+msgstr "Side "
+
+msgid "Passphrase"
+msgstr "Adgangssætning"
+
+msgid "Passphrase (optional)"
+msgstr "Adgangssætning (valgfrit)"
+
+msgid "Password"
+msgstr "Adgangskode"
+
+msgid "Password (optional)"
+msgstr "Adgangskode (valgfrit)"
+
+msgid "Password changed"
+msgstr "Adgangskode ændret"
+
+msgid "Password must be at least 8 characters."
+msgstr "Adgangskoden skal være mindst 8 tegn."
+
+msgid "Password reset. Please sign in."
+msgstr "Adgangskode nulstillet. Log venligst ind."
+
+msgid "Password set"
+msgstr "Adgangskode sat"
+
+msgid "Passwords do not match"
+msgstr "Adgangskoderne stemmer ikke overens"
+
+msgid "Paste this into the external system's webhook / automation config — e.g. Odoo's Automation Rules → Send Webhook Notification."
+msgstr "Indsæt denne i det eksterne systems webhook-/automatiseringskonfiguration — f.eks. Odoos Automation Rules → Send Webhook Notification."
+
+msgid "paused"
+msgstr "pauset"
+
+msgid "People"
+msgstr "Personer"
+
+msgid "per-agent, optional"
+msgstr "pr. agent, valgfrit"
+
+msgid "Period"
+msgstr "Periode"
+
+msgid "Permanently remove this department and every agent in it."
+msgstr "Fjern permanent denne afdeling og alle agenter i den."
+
+msgid "Permission"
+msgstr "Tilladelse"
+
+msgid "Personal · manual only"
+msgstr "Personlig · kun manuel"
+
+msgid "phase"
+msgstr "fase"
+
+msgid "Pick a preset or define an exact schedule / cron expression."
+msgstr "Vælg et preset eller definér en præcis tidsplan / cron-udtryk."
+
+msgid "Pick any already-connected sources to sync into this base once it's created. You can add or remove sources later too."
+msgstr "Vælg eventuelle allerede forbundne kilder, der skal synkroniseres ind i denne base, når den er oprettet. Du kan også tilføje eller fjerne kilder senere."
+
+msgid "Pick at least one model"
+msgstr "Vælg mindst én model"
+
+msgid "Pie"
+msgstr "Cirkel"
+
+msgid "Pilot setup"
+msgstr "Pilotopsætning"
+
+msgid "Plugin setup failed."
+msgstr "Plugin-opsætning mislykkedes."
+
+msgid "Preset saved"
+msgstr "Preset gemt"
+
+msgid "Prevents agent-driven drift: the supervisor watches reasoning and behavior. Approvals stay off-agent with a human-in-the-loop."
+msgstr "Forhindrer agentdrevet drift: teamlederen overvåger tænkning og adfærd. Godkendelser bliver uden for agenten via human-in-the-loop."
+
+msgid "Preview"
+msgstr "Forhåndsvisning"
+
+msgid "Previous"
+msgstr "Forrige"
+
+msgid "Previous page"
+msgstr "Forrige side"
+
+msgid "Price updated"
+msgstr "Pris opdateret"
+
+msgid "Profile"
+msgstr "Profil"
+
+msgid "Prompt / logic"
+msgstr "Prompt / logik"
+
+msgid "Prompt caching"
+msgstr "Prompt-caching"
+
+msgid "Provider"
+msgstr "Udbyder"
+
+msgid "provider"
+msgstr "udbyder"
+
+msgid "Provider and model tag are required"
+msgstr "Udbyder og model-tag er påkrævet"
+
+msgid "Provider is required"
+msgstr "Udbyder er påkrævet"
+
+msgid "Provider reported"
+msgstr "Udbyder rapporteret"
+
+msgid "Provider returned no models"
+msgstr "Udbyder returnerede ingen modeller"
+
+msgid "Provider-reported cost"
+msgstr "Udbyder-rapporterede omkostninger"
+
+msgid "Push notifications aren't configured on this server yet."
+msgstr "Push-notifikationer er ikke konfigureret på denne server endnu."
+
+msgid "Push notifications for new approvals"
+msgstr "Push-notifikationer for nye godkendelser"
+
+msgid "QR code"
+msgstr "QR-kode"
+
+msgid "Questions"
+msgstr "Spørgsmål"
+
+msgid "queued"
+msgstr "i kø"
+
+msgid "Quick access — built-in roles"
+msgstr "Hurtigadgang — indbyggede roller"
+
+msgid "Quick check only covers entries since the last checkpoint; full check re-verifies the entire chain from the beginning."
+msgstr "Hurtig kontrol dækker kun poster siden sidste kontrolpunkt; fuld kontrol genverificerer hele kæden fra begyndelsen."
+
+msgid "Re-checking alone will not clear this. If tamper-proofing was only just switched on for this deployment, an administrator has to run the one-off `oc8 audit-adopt-checkpoints` command to seal the existing logs, and then a full check here. If it was already switched on, the seal was removed or the entries were rewritten — treat this as a security event and escalate."
+msgstr "En ny kontrol alene fjerner ikke dette. Hvis manipulationssikringen først lige er slået til for denne installation, skal en administrator køre engangskommandoen `oc8 audit-adopt-checkpoints` for at forsegle de eksisterende logs og derefter køre en fuld kontrol her. Var den allerede slået til, er forseglingen fjernet eller posterne omskrevet — behandl dette som en sikkerhedshændelse og eskalér."
+
+msgid "Re-sync"
+msgstr "Gensynkronisér"
+
+msgid "Read"
+msgstr "Læs"
+
+msgid "Read the text before importing"
+msgstr "Læs teksten før import"
+
+msgid "Reading archive…"
+msgstr "Læser arkiv…"
+
+msgid "Reading…"
+msgstr "Læser…"
+
+msgid "Real server connections agents can use as tools — separate from the catalog above."
+msgstr "Rigtige serverforbindelser, som agenter kan bruge som tools — adskilt fra kataloget ovenfor."
+
+msgid "Reason"
+msgstr "Begrundelse"
+
+msgid "Reasoning effort forwarded as-is to providers that support it (currently Anthropic). Leave blank to omit. Not validated here — the provider decides which values it accepts."
+msgstr "Reasoning-indsats videresendes uændret til udbydere, der understøtter det (i øjeblikket Anthropic). Lad stå tom for at udelade. Valideres ikke her — udbyderen afgør, hvilke værdier den accepterer."
+
+msgid "reasoning engine"
+msgstr "reasoning-motor"
+
+msgid "Recent"
+msgstr "Seneste"
+
+msgid "Recommended"
+msgstr "Anbefalet"
+
+msgid "Recommended by this capa"
+msgstr "Anbefalet af denne capa"
+
+msgid "Reconciliation refreshed"
+msgstr "Afstemning opdateret"
+
+msgid "Reconnecting -- new messages may be delayed."
+msgstr "Genopretter forbindelse -- nye beskeder kan være forsinkede."
+
+msgid "Recorded — but the agent's run could not be resumed, so the action never ran"
+msgstr "Registreret — men agentens kørsel kunne ikke genoptages, så handlingen blev aldrig udført"
+
+msgid "Recorded — the run was already gone, so there was nothing to stop"
+msgstr "Registreret — kørslen var allerede væk, så der var intet at stoppe"
+
+msgid "Recorded (live)"
+msgstr "Registreret (live)"
+
+msgid "Recorded spend"
+msgstr "Registreret forbrug"
+
+msgid "recorded to date"
+msgstr "registreret til dato"
+
+msgid "Recorded usage"
+msgstr "Registreret forbrug"
+
+msgid "Redirecting…"
+msgstr "Omdirigerer…"
+
+msgid "Reference material this agent can read on demand — never injected into every run automatically."
+msgstr "Referencemateriale, som denne agent kan læse ved behov — indsættes aldrig automatisk i hver kørsel."
+
+msgid "Refresh"
+msgstr "Opdatér"
+
+msgid "Regenerate backup codes"
+msgstr "Generér nye backupkoder"
+
+msgid "Region"
+msgstr "Region"
+
+msgid "Registers a model config agents can be assigned to."
+msgstr "Registrerer en modelkonfiguration, som agenter kan tildeles."
+
+msgid "Reject"
+msgstr "Afvis"
+
+msgid "Rejected"
+msgstr "Afvist"
+
+msgid "Remove"
+msgstr "Fjern"
+
+msgid "Remove parameter"
+msgstr "Fjern parameter"
+
+msgid "Remove pricing?"
+msgstr "Fjern pris?"
+
+msgid "Remove provider"
+msgstr "Fjern udbyder"
+
+msgid "Remove provider?"
+msgstr "Fjern udbyder?"
+
+msgid "Remove seat"
+msgstr "Fjern plads"
+
+msgid "Remove source?"
+msgstr "Fjern kilde?"
+
+msgid "Remove webhook"
+msgstr "Fjern webhook"
+
+msgid "Remove widget"
+msgstr "Fjern widget"
+
+msgid "Rename"
+msgstr "Omdøb"
+
+msgid "Rename agent"
+msgstr "Omdøb agent"
+
+msgid "Rename department"
+msgstr "Omdøb afdeling"
+
+msgid "Repeat your password"
+msgstr "Gentag Deres adgangskode"
+
+msgid "Report exported"
+msgstr "Rapport eksporteret"
+
+msgid "Reporting hierarchy"
+msgstr "Rapporteringshierarki"
+
+msgid "Reports"
+msgstr "Rapporter"
+
+msgid "Required tools (MCP)"
+msgstr "Påkrævede tools (MCP)"
+
+msgid "Resetting…"
+msgstr "Nulstiller…"
+
+msgid "Response time"
+msgstr "Svartid"
+
+msgid "Responsible"
+msgstr "Ansvarlig"
+
+msgid "Restore"
+msgstr "Gendan"
+
+msgid "Restore company from backup"
+msgstr "Gendan virksomhed fra backup"
+
+msgid "Restore complete"
+msgstr "Gendannelse fuldført"
+
+msgid "Restore complete."
+msgstr "Gendannelse fuldført."
+
+msgid "Restore failed."
+msgstr "Gendannelse mislykkedes."
+
+msgid "Restoring…"
+msgstr "Gendanner…"
+
+msgid "Retry"
+msgstr "Prøv igen"
+
+msgid "Reusable capabilities agents can be composed from."
+msgstr "Genbrugelige funktioner, som agenter kan sammensættes af."
+
+msgid "Reusable connections to other services -- pick one wherever a Capa or data source needs one."
+msgstr "Genbrugelige forbindelser til andre tjenester -- vælg en, overalt hvor en Capa eller datakilde har brug for en."
+
+msgid "Review"
+msgstr "Gennemse"
+
+msgid "Revoke"
+msgstr "Fjern"
+
+msgid "Revoked company-wide access"
+msgstr "Fratog adgang til hele virksomheden"
+
+msgid "Rights"
+msgstr "Rettigheder"
+
+msgid "Role"
+msgstr "Rolle"
+
+msgid "Role created."
+msgstr "Rolle oprettet."
+
+msgid "Role deleted."
+msgstr "Rolle slettet."
+
+msgid "Role updated"
+msgstr "Rolle opdateret"
+
+msgid "role:view"
+msgstr "role:view"
+
+msgid "Roles of this company"
+msgstr "Denne virksomheds roller"
+
+msgid "rooms"
+msgstr "rum"
+
+msgid "Run"
+msgstr "Kør"
+
+msgid "run"
+msgstr "kørsel"
+
+msgid "Run history browsing is not yet available."
+msgstr "Gennemsøgning af kørselshistorik er endnu ikke tilgængelig."
+
+msgid "Run not found."
+msgstr "Kørsel ikke fundet."
+
+msgid "Run now"
+msgstr "Kør nu"
+
+msgid "running"
+msgstr "kører"
+
+msgid "Running…"
+msgstr "Kører…"
+
+msgid "Runs"
+msgstr "Kørsler"
+
+msgid "Runs, durations, and waiting time across the tenant."
+msgstr "Kørsler, varigheder og ventetid på tværs af tenanten."
+
+msgid "Runs, last 30 days"
+msgstr "Kørsler, sidste 30 dage"
+
+msgid "Runtime"
+msgstr "Runtime"
+
+msgid "Runtime reset to the built-in default"
+msgstr "Runtime nulstillet til den indbyggede standard"
+
+msgid "Runtime updated"
+msgstr "Runtime opdateret"
+
+msgid "Same as department"
+msgstr "Samme som afdeling"
+
+msgid "Sampling overrides"
+msgstr "Sampling-tilsidesættelser"
+
+msgid "Sampling settings saved"
+msgstr "Sampling-indstillinger gemt"
+
+msgid "Save"
+msgstr "Gem"
+
+msgid "Save as preset"
+msgstr "Gem som preset"
+
+msgid "Save changes"
+msgstr "Gem ændringer"
+
+msgid "Save current layout as preset"
+msgstr "Gem aktuelt layout som preset"
+
+msgid "Save sampling settings"
+msgstr "Gem sampling-indstillinger"
+
+msgid "Save your backup codes"
+msgstr "Gem Deres backupkoder"
+
+msgid "Saved"
+msgstr "Gemt"
+
+msgid "Saved by caching:"
+msgstr "Sparet ved caching:"
+
+msgid "Saved presets"
+msgstr "Gemte presets"
+
+msgid "Saving…"
+msgstr "Gemmer…"
+
+msgid "Say hello to get started."
+msgstr "Sig hej for at komme i gang."
+
+msgid "Scan with your authenticator app"
+msgstr "Scan med Deres authenticator-app"
+
+msgid "Schedule"
+msgstr "Tidsplan"
+
+msgid "Schedule / trigger"
+msgstr "Tidsplan / trigger"
+
+msgid "Schedule updated"
+msgstr "Tidsplan opdateret"
+
+msgid "Scope"
+msgstr "Niveau"
+
+msgid "Search"
+msgstr "Søg"
+
+msgid "Search agents, departments, runs…"
+msgstr "Søg efter agenter, afdelinger, kørsler…"
+
+msgid "Search agents…"
+msgstr "Søg efter agenter…"
+
+msgid "Search by name or sign-in"
+msgstr "Søg efter navn eller login"
+
+msgid "Search Capas…"
+msgstr "Søg efter Capas…"
+
+msgid "Search data sources…"
+msgstr "Søg efter datakilder…"
+
+msgid "Search departments, agents, skills…"
+msgstr "Søg efter afdelinger, agenter, skills…"
+
+msgid "Search departments…"
+msgstr "Søg efter afdelinger…"
+
+msgid "Search knowledge bases…"
+msgstr "Søg efter vidensbaser…"
+
+msgid "Search members…"
+msgstr "Søg efter medlemmer…"
+
+msgid "Search people"
+msgstr "Søg efter personer"
+
+msgid "Search skills, tools, capabilities…"
+msgstr "Søg efter skills, tools, funktioner…"
+
+msgid "Search skills…"
+msgstr "Søg efter skills…"
+
+msgid "Search this knowledge base…"
+msgstr "Søg i denne vidensbase…"
+
+msgid "Search tools…"
+msgstr "Søg efter tools…"
+
+msgid "Search…"
+msgstr "Søg…"
+
+msgid "Seat added"
+msgstr "Plads tilføjet"
+
+msgid "Seat removed"
+msgstr "Plads fjernet"
+
+msgid "Seat role"
+msgstr "Pladsrolle"
+
+msgid "Seat updated"
+msgstr "Plads opdateret"
+
+msgid "Sees and decides in every department, including ones created later."
+msgstr "Ser og beslutter i hver afdeling, også dem der oprettes senere."
+
+msgid "Select a ChatGPT account…"
+msgstr "Vælg en ChatGPT-konto…"
+
+msgid "Select a credential…"
+msgstr "Vælg adgangsoplysninger…"
+
+msgid "Select a file to view its contents."
+msgstr "Vælg en fil for at se indholdet."
+
+msgid "Select a model"
+msgstr "Vælg en model"
+
+msgid "Select a model…"
+msgstr "Vælg en model…"
+
+msgid "select all"
+msgstr "vælg alle"
+
+msgid "select none"
+msgstr "vælg ingen"
+
+msgid "Select what to import"
+msgstr "Vælg hvad der skal importeres"
+
+msgid "Select…"
+msgstr "Vælg…"
+
+msgid "Self-sufficient"
+msgstr "Selvforsynende"
+
+msgid "Send"
+msgstr "Send"
+
+msgid "Send answer"
+msgstr "Send svar"
+
+msgid "Send reset link"
+msgstr "Send nulstillingslink"
+
+msgid "Sending…"
+msgstr "Sender…"
+
+msgid "Sensitivity"
+msgstr "Følsomhed"
+
+msgid "Set a new password so this person can sign in. There is no way to view their current password."
+msgstr "Sæt en ny adgangskode, så denne person kan logge ind. Den nuværende adgangskode kan ikke ses."
+
+msgid "Set automatically from the selected model"
+msgstr "Sættes automatisk ud fra den valgte model"
+
+msgid "Set new password"
+msgstr "Sæt ny adgangskode"
+
+msgid "Set password"
+msgstr "Sæt adgangskode"
+
+msgid "Set up your first administrator account to get started."
+msgstr "Opret Deres første administratorkonto for at komme i gang."
+
+msgid "Setting…"
+msgstr "Indstiller…"
+
+msgid "Settings"
+msgstr "Indstillinger"
+
+msgid "Setup failed"
+msgstr "Opsætning mislykkedes"
+
+msgid "Share"
+msgstr "Andel"
+
+msgid "Share this invite link"
+msgstr "Del dette invitationslink"
+
+msgid "Shared memory & private stores."
+msgstr "Delt hukommelse & private lagre."
+
+msgid "Shared with the team"
+msgstr "Delt med teamet"
+
+msgid "Short summary — otherwise the instructions are used"
+msgstr "Kort resumé — ellers bruges instruktionerne"
+
+msgid "Show archived"
+msgstr "Vis arkiverede"
+
+msgid "Show disabled"
+msgstr "Vis deaktiverede"
+
+msgid "Show older"
+msgstr "Vis ældre"
+
+msgid "Show the rights a role may not hold, and why"
+msgstr "Vis rettighederne, en rolle ikke må have, og hvorfor"
+
+msgid "Sign In"
+msgstr "Log ind"
+
+msgid "Sign in"
+msgstr "Log ind"
+
+msgid "Sign in as…"
+msgstr "Log ind som…"
+
+msgid "Sign in first — a model on this provider needs its own ChatGPT account and has no shared-key fallback."
+msgstr "Log ind først — en model hos denne udbyder kræver sin egen ChatGPT-konto og har ingen delt nøgle som fallback."
+
+msgid "Sign in with ChatGPT"
+msgstr "Log ind med ChatGPT"
+
+msgid "Sign out"
+msgstr "Log ud"
+
+msgid "Sign-in"
+msgstr "Login"
+
+msgid "Sign-in email"
+msgstr "Login-e-mail"
+
+msgid "Sign-in failed. Try again."
+msgstr "Login mislykkedes. Prøv igen."
+
+msgid "Sign-in identity updated"
+msgstr "Login-identitet opdateret"
+
+msgid "Signing in…"
+msgstr "Logger ind…"
+
+msgid "Similar chunks"
+msgstr "Lignende chunks"
+
+msgid "Since creation"
+msgstr "Siden oprettelse"
+
+msgid "Skill assigned"
+msgstr "Skill tildelt"
+
+msgid "Skill created"
+msgstr "Skill oprettet"
+
+msgid "Skill library"
+msgstr "Skill-bibliotek"
+
+msgid "Skill removed"
+msgstr "Skill fjernet"
+
+msgid "Skill restored"
+msgstr "Skill gendannet"
+
+msgid "Skill updated"
+msgstr "Skill opdateret"
+
+msgid "Skills"
+msgstr "Skills"
+
+msgid "skills found"
+msgstr "skills fundet"
+
+msgid "Skip for now"
+msgstr "Spring over for nu"
+
+msgid "soft"
+msgstr "blød"
+
+msgid "Somebody holds this role. Choose where they go first."
+msgstr "Denne rolle har indehavere. Vælg først, hvor de skal flyttes hen."
+
+msgid "Something went wrong"
+msgstr "Noget gik galt"
+
+msgid "Something went wrong."
+msgstr "Noget gik galt."
+
+msgid "Source removed"
+msgstr "Kilde fjernet"
+
+msgid "Source: "
+msgstr "Kilde: "
+
+msgid "Sources"
+msgstr "Kilder"
+
+msgid "Spend distribution"
+msgstr "Forbrugsfordeling"
+
+msgid "staff"
+msgstr "medarbejdere"
+
+msgid "Standalone agents"
+msgstr "Enkeltstående agenter"
+
+msgid "standing system prompt"
+msgstr "fast systemprompt"
+
+msgid "Start chat"
+msgstr "Start chat"
+
+msgid "Start from"
+msgstr "Skabelon"
+
+msgid "Statistics"
+msgstr "Statistik"
+
+msgid "Statistics could not be loaded."
+msgstr "Statistik kunne ikke indlæses."
+
+msgid "Status"
+msgstr "Status"
+
+msgid "Stop"
+msgstr "Stop"
+
+msgid "Stop this run"
+msgstr "Stop denne kørsel"
+
+msgid "Store a provider credential"
+msgstr "Gem udbyder-adgangsoplysninger"
+
+msgid "subject"
+msgstr "subjekt"
+
+msgid "success"
+msgstr "succes"
+
+msgid "Suggest from instructions"
+msgstr "Foreslå ud fra instruktioner"
+
+msgid "Summary"
+msgstr "Resumé"
+
+msgid "supervises →"
+msgstr "superviserer →"
+
+msgid "Supervisor updated"
+msgstr "Supervisor opdateret"
+
+msgid "Switch"
+msgstr "Skift"
+
+msgid "Switch layout"
+msgstr "Skift layout"
+
+msgid "Switch layout?"
+msgstr "Skift layout?"
+
+msgid "Switch to dark mode"
+msgstr "Skift til mørk tilstand"
+
+msgid "Switch to light mode"
+msgstr "Skift til lys tilstand"
+
+msgid "Sync"
+msgstr "Synkronisér"
+
+msgid "Sync failed"
+msgstr "Synkronisering mislykkedes"
+
+msgid "Sync started"
+msgstr "Synkronisering startet"
+
+msgid "Syncing…"
+msgstr "Synkroniserer…"
+
+msgid "System"
+msgstr "System"
+
+msgid "Table"
+msgstr "Tabel"
+
+msgid "Tamper-evident record of every decision."
+msgstr "Manipulationssikker registrering af hver beslutning."
+
+msgid "Target"
+msgstr "Mål"
+
+msgid "Task (optional)"
+msgstr "Opgave (valgfrit)"
+
+msgid "Task board"
+msgstr "Opgavetavle"
+
+msgid "Task created"
+msgstr "Opgave oprettet"
+
+msgid "Task distribution"
+msgstr "Opgavefordeling"
+
+msgid "tasks"
+msgstr "opgaver"
+
+msgid "Team lead"
+msgstr "Teamleder"
+
+msgid "Team lead · oversight"
+msgstr "Teamleder · overvågning"
+
+msgid "Team roster"
+msgstr "Teamoversigt"
+
+msgid "Team shared"
+msgstr "Delt i teamet"
+
+msgid "Teams, goals, and workload at a glance."
+msgstr "Teams, mål og arbejdsbelastning på ét blik."
+
+msgid "Temperature"
+msgstr "Temperatur"
+
+msgid "Temperature must be a number"
+msgstr "Temperatur skal være et tal"
+
+msgid "Tenant"
+msgstr "Tenant"
+
+msgid "Tenant-wide"
+msgstr "Hele tenanten"
+
+msgid "Test"
+msgstr "Test"
+
+msgid "Test an MCP connection"
+msgstr "Test en MCP-forbindelse"
+
+msgid "Test connection"
+msgstr "Test forbindelse"
+
+msgid "Test failed"
+msgstr "Test mislykkedes"
+
+msgid "Testing…"
+msgstr "Tester…"
+
+msgid "The agent is waiting for your input."
+msgstr "Agenten venter på dit input."
+
+msgid "The code expired before it was confirmed. Start again to get a new one."
+msgstr "Koden udløb, før den blev bekræftet. Start forfra for at få en ny."
+
+msgid "The copilot found nothing in the instructions to restrict here."
+msgstr "Copiloten fandt intet i instruktionerne, der bør begrænses her."
+
+msgid "The day somebody should only sign off offers: fork a built-in role, untick everything but four boxes, name it, assign it."
+msgstr "Den dag nogen kun skal godkende tilbud: brug en indbygget rolle som skabelon, fjern alle flueben undtagen fire, navngiv den, tildel den."
+
+msgid "The guided setup configures the tenant you are signed into. New tenants are deliberately provisioned by the administrator CLI so the application role never receives cross-tenant write authority."
+msgstr "Den guidede opsætning konfigurerer den tenant, du er logget ind på. Nye tenants klargøres bevidst via administrator-CLIen, så applikationsrollen aldrig får skriverettigheder på tværs af tenants."
+
+msgid "the ladder"
+msgstr "stigen"
+
+msgid "The last sync failed."
+msgstr "Den sidste synkronisering mislykkedes."
+
+msgid "The link doesn't fill the code in for you — type or paste it yourself."
+msgstr "Linket udfylder ikke koden for dig — skriv eller indsæt den selv."
+
+msgid "The name stays taken after a delete — it is never handed to a different role."
+msgstr "Navnet forbliver optaget efter en sletning — det gives aldrig til en anden rolle."
+
+msgid "The office floor is for administrators. What is waiting on you — decisions and questions from your department's agents — is on your own page."
+msgstr "Kontoretagen er for administratorer. Det der venter på dig — beslutninger og spørgsmål fra din afdelings agenter — er på din egen side."
+
+msgid "The org_admin role is not set up for this tenant."
+msgstr "Rollen org_admin er ikke opsat for denne tenant."
+
+msgid "The permission model could not be loaded."
+msgstr "Tilladelsesmodellen kunne ikke indlæses."
+
+msgid "The role list could not be loaded."
+msgstr "Rollelisten kunne ikke indlæses."
+
+msgid "The run will stop at its next step boundary."
+msgstr "Kørslen stopper ved næste tringrænse."
+
+msgid "The task board could not be loaded"
+msgstr "Opgavetavlen kunne ikke indlæses"
+
+msgid "The team lead observes reasoning traces and daily behavior to prevent role drift — separate from human-in-the-loop approvals, which stay off-agent."
+msgstr "Teamlederen observerer reasoning-spor og daglig adfærd for at forhindre rolledrift — adskilt fra human-in-the-loop-godkendelser, som forbliver uden for agenten."
+
+msgid "The update changed the setup form -- click Enable to review and confirm it."
+msgstr "Opdateringen ændrede opsætningsformularen -- klik på Aktivér for at gennemse og bekræfte den."
+
+msgid "The user list could not be loaded."
+msgstr "Brugerlisten kunne ikke indlæses."
+
+msgid "These describe what an AGENT may do in your systems. They are never given to a person, and they can only ever subtract: what an agent actually does is this, intersected with its department’s frame and with its own narrowing."
+msgstr "Disse beskriver, hvad en AGENT må i Deres systemer. De gives aldrig til et menneske, og de kan altid kun trække fra: hvad en agent faktisk gør, er denne mængde skåret med rammerne fra dens afdeling og dens egen indsnævring."
+
+msgid "These five roles ship with the product, so no request’s authorization depends on a database row existing. They cannot be changed here — a role of your own, above, is how you say something they do not."
+msgstr "Disse fem roller følger med produktet, så ingen forespørgsels autorisering afhænger af, at en databaserække findes. De kan ikke ændres her — en egen rolle ovenfor er måden at sige noget, som de ikke siger."
+
+msgid "Thinking…"
+msgstr "Tænker…"
+
+msgid "This action is blocked by an OC8 security policy."
+msgstr "Denne handling er blokeret af en OC8-sikkerhedspolitik."
+
+msgid "This agent has not produced any files yet."
+msgstr "Denne agent har endnu ikke produceret nogen filer."
+
+msgid "This agent hasn't written any memories yet."
+msgstr "Denne agent har endnu ikke skrevet nogen minder."
+
+msgid "This agent only"
+msgstr "Kun denne agent"
+
+msgid "This archive cannot be restored:"
+msgstr "Dette arkiv kan ikke gendannes:"
+
+msgid "This archive carries provider credentials and OAuth tokens, encrypted under this passphrase. Enter it exactly as set at export time — a wrong passphrase fails the whole restore before anything is touched."
+msgstr "Dette arkiv indeholder udbyder-adgangsoplysninger og OAuth-tokens, krypteret under denne adgangssætning. Indtast den præcist som ved eksporten — en forkert adgangssætning afbryder hele gendannelsen, før noget berøres."
+
+msgid "This base already has ingested content, so its embedding model can't change -- old and new chunks would no longer be comparable. Delete and recreate the base to use a different model."
+msgstr "Denne base har allerede indlæst indhold, så dens embedding-model kan ikke ændres -- gamle og nye chunks ville ikke længere være sammenlignelige. Slet og genskab basen for at bruge en anden model."
+
+msgid "This browser does not support push notifications."
+msgstr "Denne browser understøtter ikke push-notifikationer."
+
+msgid "This cannot be undone."
+msgstr "Dette kan ikke fortrydes."
+
+msgid "This company has not defined any roles of its own. As long as everybody may do everything, you do not need any."
+msgstr "Denne virksomhed har ikke defineret nogen egne roller. Så længe alle må alt, har De ikke brug for nogen."
+
+msgid "This deletes every agent, run and knowledge item this company currently has and replaces them with the contents of the uploaded file. It cannot be undone."
+msgstr "Dette sletter alle agenter, kørsler og videnselementer, som denne virksomhed i øjeblikket har, og erstatter dem med indholdet af den uploadede fil. Det kan ikke fortrydes."
+
+msgid "This department has no team lead to receive the task."
+msgstr "Denne afdeling har ingen teamleder til at modtage opgaven."
+
+msgid "This filter produces too many results. Narrow the date range, choose a coarser grouping, or filter by an agent or department."
+msgstr "Dette filter giver for mange resultater. Indsnævr datointervallet, vælg en grovere gruppering, eller filtrér efter en agent eller afdeling."
+
+msgid "This function is read-only in the plugin's manifest; it has no modify action."
+msgstr "Denne funktion er skrivebeskyttet i pluginnets manifest; den har ingen ændringshandling."
+
+msgid "This legacy preview is read-only. The live token budgets above are the only enforced budget controls until a cost-limit API exists."
+msgstr "Denne ældre forhåndsvisning er skrivebeskyttet. De live token-budgetter ovenfor er de eneste håndhævede budgetkontroller, indtil der findes en omkostningsgrænse-API."
+
+msgid "This link is invalid or has expired."
+msgstr "Dette link er ugyldigt eller udløbet."
+
+msgid "This log's tamper-proof seal is missing or does not match."
+msgstr "Denne logs manipulationssikre forsegling mangler eller stemmer ikke overens."
+
+msgid "This model can see images (vision)"
+msgstr "Denne model kan se billeder (vision)"
+
+msgid "This provider needs a completion key before its agents can run."
+msgstr "Denne udbyder kræver en completion-nøgle, før dens agenter kan køre."
+
+msgid "This replaces your current arrangement. You can switch back at any time."
+msgstr "Dette erstatter dit nuværende layout. Du kan altid skifte tilbage."
+
+msgid "This run failed."
+msgstr "Denne kørsel mislykkedes."
+
+msgid "This runtime can't be used here:"
+msgstr "Denne runtime kan ikke bruges her:"
+
+msgid "This runtime is no longer available."
+msgstr "Denne runtime er ikke længere tilgængelig."
+
+msgid "This skill has no published version yet, so there is nothing to assign."
+msgstr "Denne skill har endnu ingen publiceret version, så der er intet at tildele."
+
+msgid "This tool needs a login before it can be enabled."
+msgstr "Dette tool kræver et login, før det kan aktiveres."
+
+msgid "This widget could not be displayed."
+msgstr "Denne widget kunne ikke vises."
+
+msgid "Throttle"
+msgstr "Begræns"
+
+msgid "Throttle — slow requests"
+msgstr "Begræns — brems forespørgsler"
+
+msgid "Tier"
+msgstr "Niveau"
+
+msgid "tight"
+msgstr "stram"
+
+msgid "tile"
+msgstr "flise"
+
+msgid "tiles"
+msgstr "fliser"
+
+msgid "Time"
+msgstr "Tid"
+
+msgid "Title"
+msgstr "Titel"
+
+msgid "To"
+msgstr "Til"
+
+msgid "To (UTC)"
+msgstr "Til (UTC)"
+
+msgid "Today"
+msgstr "I dag"
+
+msgid "Todos"
+msgstr "Todos"
+
+msgid "Token Budgets (live)"
+msgstr "Token-budgetter (live)"
+
+msgid "Token spend across agents and departments — metered by the platform."
+msgstr "Token-forbrug på tværs af agenter og afdelinger — målt af platformen."
+
+msgid "Token spend across agents and departments."
+msgstr "Token-forbrug på tværs af agenter og afdelinger."
+
+msgid "Tokens"
+msgstr "Tokens"
+
+msgid "tokens"
+msgstr "tokens"
+
+msgid "tokens per skill"
+msgstr "tokens pr. skill"
+
+msgid "too big"
+msgstr "for stor"
+
+msgid "Tool"
+msgstr "Tool"
+
+msgid "tool access and guardrails"
+msgstr "tool-adgang og guardrails"
+
+msgid "Tools"
+msgstr "Tools"
+
+msgid "Tools (comma-separated)"
+msgstr "Tools (kommasepareret)"
+
+msgid "Tools & Access"
+msgstr "Tools & adgang"
+
+msgid "Tools & Guardrails"
+msgstr "Tools & guardrails"
+
+msgid "Top agents"
+msgstr "Top-agenter"
+
+msgid "Total duration"
+msgstr "Samlet varighed"
+
+msgid "Total skills"
+msgstr "Skills i alt"
+
+msgid "Total spend"
+msgstr "Samlet forbrug"
+
+msgid "Total tokens"
+msgstr "Tokens i alt"
+
+msgid "Try again"
+msgstr "Prøv igen"
+
+msgid "Try again in a moment."
+msgstr "Prøv igen om et øjeblik."
+
+msgid "Turn off"
+msgstr "Slå fra"
+
+msgid "Turn on"
+msgstr "Slå til"
+
+msgid "Two-factor authentication"
+msgstr "Tofaktorgodkendelse"
+
+msgid "Two-factor authentication enabled"
+msgstr "Tofaktorgodkendelse aktiveret"
+
+msgid "Type"
+msgstr "Type"
+
+msgid "Type a message…"
+msgstr "Skriv en besked…"
+
+msgid "Type this company's name to confirm"
+msgstr "Skriv denne virksomheds navn for at bekræfte"
+
+msgid "Type your answer…"
+msgstr "Skriv dit svar…"
+
+msgid "Unassign this provider's models from every agent before removing it."
+msgstr "Fjern tildelingen af denne udbyders modeller fra alle agenter, før du fjerner den."
+
+msgid "Unassigned"
+msgstr "Ikke tildelt"
+
+msgid "unassigned"
+msgstr "ikke tildelt"
+
+msgid "unassigned agent"
+msgstr "utildelt agent"
+
+msgid "Unknown"
+msgstr "Ukendt"
+
+msgid "Unknown widget type"
+msgstr "Ukendt widget-type"
+
+msgid "Unnamed department"
+msgstr "Unavngiven afdeling"
+
+msgid "Unregistered"
+msgstr "Ikke registreret"
+
+msgid "Untested"
+msgstr "Utestet"
+
+msgid "Untitled chat"
+msgstr "Unavngiven chat"
+
+msgid "Update"
+msgstr "Opdatér"
+
+msgid "Update pending"
+msgstr "Opdatering afventer"
+
+msgid "Updating…"
+msgstr "Opdaterer…"
+
+msgid "Uploading…"
+msgstr "Uploader…"
+
+msgid "Usage (est.)"
+msgstr "Forbrug (est.)"
+
+msgid "Usage below is an estimate from the editable pricing model (see Models), not the platform's recorded spend — see the Overview/By Agent/By Department tabs for metered figures."
+msgstr "Forbruget nedenfor er et estimat fra den redigerbare prismodel (se Modeller), ikke platformens registrerede forbrug — se fanerne Oversigt/Pr. agent/Pr. afdeling for målte tal."
+
+msgid "USD per 1M tokens — editable"
+msgstr "USD pr. 1 mio. tokens — redigerbar"
+
+msgid "Use sign-in default"
+msgstr "Brug login-standard"
+
+msgid "Use the built-in default"
+msgstr "Brug den indbyggede standard"
+
+msgid "use the department's"
+msgstr "brug afdelingens"
+
+msgid "Use this model for the Copilot"
+msgstr "Brug denne model til copiloten"
+
+msgid "Use your authenticator app, or a backup code."
+msgstr "Brug Deres authenticator-app eller en backupkode."
+
+msgid "Used by"
+msgstr "Brugt af"
+
+msgid "used this month"
+msgstr "brugt denne måned"
+
+msgid "User created"
+msgstr "Bruger oprettet"
+
+msgid "User created — an invite was emailed to them"
+msgstr "Bruger oprettet — en invitation er sendt pr. e-mail"
+
+msgid "User not found."
+msgstr "Bruger ikke fundet."
+
+msgid "Users"
+msgstr "Brugere"
+
+msgid "Uses your personal subscription — agents on it can only be started manually."
+msgstr "Bruger dit personlige abonnement — agenter på det kan kun startes manuelt."
+
+msgid "value"
+msgstr "værdi"
+
+msgid "Verification failed"
+msgstr "Verificering mislykkedes"
+
+msgid "Verify"
+msgstr "Verificér"
+
+msgid "Verify now"
+msgstr "Verificér nu"
+
+msgid "Verifying…"
+msgstr "Verificerer…"
+
+msgid "Version"
+msgstr "Version"
+
+msgid "Version loaded — click Save to restore it"
+msgstr "Version indlæst — klik på Gem for at gendanne den"
+
+msgid "Versions"
+msgstr "Versioner"
+
+msgid "via department lead"
+msgstr "via afdelingsleder"
+
+msgid "Visibility"
+msgstr "Synlighed"
+
+msgid "visual output"
+msgstr "visuelt output"
+
+msgid "Waiting"
+msgstr "Venter"
+
+msgid "waiting"
+msgstr "venter"
+
+msgid "Waiting for confirmation…"
+msgstr "Venter på bekræftelse…"
+
+msgid "Waiting for task"
+msgstr "Venter på opgave"
+
+msgid "waiting for task"
+msgstr "venter på opgave"
+
+msgid "Waiting on your answer"
+msgstr "Venter på dit svar"
+
+msgid "warning"
+msgstr "advarsel"
+
+msgid "Webhook"
+msgstr "Webhook"
+
+msgid "Webhook created"
+msgstr "Webhook oprettet"
+
+msgid "Webhook removed"
+msgstr "Webhook fjernet"
+
+msgid "Week"
+msgstr "Uge"
+
+msgid "Weekly oversight report"
+msgstr "Ugentlig overvågningsrapport"
+
+msgid "What does it do?"
+msgstr "Hvad gør den?"
+
+msgid "What happens if you agree"
+msgstr "Hvad sker der, hvis du accepterer"
+
+msgid "What may I do?"
+msgstr "Hvad må jeg?"
+
+msgid "What powers this agent?"
+msgstr "Hvad driver denne agent?"
+
+msgid "What should the team lead do?"
+msgstr "Hvad skal teamlederen gøre?"
+
+msgid "What should this agent do? Sent with every run."
+msgstr "Hvad skal denne agent gøre? Sendes med hver kørsel."
+
+msgid "What should this agent do? This becomes its standing instructions — you can refine them later on the agent's own page."
+msgstr "Hvad skal denne agent gøre? Dette bliver dens faste instruktioner — du kan forfine dem senere på agentens egen side."
+
+msgid "What this role is for"
+msgstr "Hvad denne rolle er til"
+
+msgid "when this agent runs"
+msgstr "hvornår denne agent kører"
+
+msgid "When two agents in this department ask the model the same thing, serve the cached answer instead of asking again."
+msgstr "Når to agenter i denne afdeling spørger modellen om det samme, serveres det cachede svar i stedet for at spørge igen."
+
+msgid "Where the money goes"
+msgstr "Hvor pengene går hen"
+
+msgid "Where this person stands, and at which level."
+msgstr "Hvor denne person står, og på hvilket niveau."
+
+msgid "Which visual components (charts, tables, record cards) may be used when responding."
+msgstr "Hvilke visuelle komponenter (diagrammer, tabeller, postkort) må bruges ved svar."
+
+msgid "Who may do what — and why you were refused."
+msgstr "Hvem må hvad — og hvorfor De blev afvist."
+
+msgid "Who watches the thinking of"
+msgstr "Hvem overvåger tænkningen hos"
+
+msgid "With limits"
+msgstr "Med grænser"
+
+msgid "With recommendation"
+msgstr "Med anbefaling"
+
+msgid "Working..."
+msgstr "Arbejder..."
+
+msgid "Yes, approve"
+msgstr "Ja, godkend"
+
+msgid "you"
+msgstr "De"
+
+msgid "You are not assigned to a department"
+msgstr "Du er ikke tildelt en afdeling"
+
+msgid "You can read every department, but decide in none — your role is read-only."
+msgstr "Du kan læse alle afdelinger, men beslutte i ingen — din rolle er skrivebeskyttet."
+
+msgid "You can read every department's questions, but answer none — your role is read-only."
+msgstr "Du kan læse alle afdelingers spørgsmål, men besvare ingen — din rolle er skrivebeskyttet."
+
+msgid "You can read this one, but not decide it — your seat in this department is view-only."
+msgstr "Du kan læse denne, men ikke afgøre den — din plads i denne afdeling er kun til visning."
+
+msgid "You can read this question, but not answer it — your seat in this department is view-only."
+msgstr "Du kan læse dette spørgsmål, men ikke besvare det — din plads i denne afdeling er kun til visning."
+
+msgid "You can rearrange, resize, or remove any tile afterwards."
+msgstr "Du kan bagefter flytte, ændre størrelsen på eller fjerne enhver flise."
+
+msgid "you define these"
+msgstr "defineres af Dem"
+
+msgid "You don't have access to Copilot chat."
+msgstr "Du har ikke adgang til Copilot-chat."
+
+msgid "You don't have permission to view this content."
+msgstr "De har ikke tilladelse til at se dette indhold."
+
+msgid "You hold no seat in any department."
+msgstr "De har ingen plads i nogen afdeling."
+
+msgid "You may not have permission to view this page, or the server could not be reached."
+msgstr "De har muligvis ikke tilladelse til at se denne side, eller serveren kunne ikke nås."
+
+msgid "Your access"
+msgstr "Deres adgang"
+
+msgid "Your answer"
+msgstr "Dit svar"
+
+msgid "Your answer…"
+msgstr "Dit svar…"
+
+msgid "Your assigned role could not be read from the database just now. What follows is what your token carries; an assignment on top of it would not be shown. Nothing was changed."
+msgstr "Deres tildelte rolle kunne ikke læses fra databasen lige nu. Det følgende er, hvad Deres token bærer; en tildeling oven på det ville ikke blive vist. Intet blev ændret."
+
+msgid "Your company"
+msgstr "Din virksomhed"
+
+msgid "Your company as a living floor — each department a room."
+msgstr "Deres virksomhed som en levende etage — hver afdeling et rum."
+
+msgid "Your dashboard could not be loaded."
+msgstr "Dit dashboard kunne ikke indlæses."
+
+msgid "Your email"
+msgstr "Din e-mail"
+
+msgid "Your email has been updated."
+msgstr "Din e-mail er blevet opdateret."
+
+msgid "Your model providers. Add more via the wizard — cloud accounts or local servers."
+msgstr "Deres modeludbydere. Tilføj flere via guiden — cloud-konti eller lokale servere."
+
+msgid "Your name"
+msgstr "Deres navn"
+
+msgid "Your office is open!"
+msgstr "Dit kontor er åbnet!"
+
+msgid "Your password"
+msgstr "Deres adgangskode"
+
+msgid "Your queue could not be loaded"
+msgstr "Din kø kunne ikke indlæses"
+
+msgid "Your role does not include agent:manage, so this assignment is read-only for you."
+msgstr "Deres rolle indeholder ikke agent:manage, så denne tildeling er skrivebeskyttet for Dem."
+
+msgid "Your role does not include agent:manage, so this field is read-only for you."
+msgstr "Deres rolle indeholder ikke agent:manage, så dette felt er skrivebeskyttet for Dem."
+
+msgid "Your role does not include member:manage, so you cannot manage users."
+msgstr "Deres rolle indeholder ikke member:manage, så De kan ikke administrere brugere."
+
+msgid "Your role does not include member:manage, so you cannot manage users. Ask your administrator for access."
+msgstr "Deres rolle indeholder ikke member:manage, så De kan ikke administrere brugere. Bed Deres administrator om adgang."
+
+msgid "Your role does not include role:view, so which roles this company has invented and who holds them is not shown to you. What you yourself may do is at the top of this page and needs no permission at all."
+msgstr "Deres rolle indeholder ikke role:view, så hvilke roller denne virksomhed har oprettet, og hvem der har dem, vises ikke til Dem. Hvad De selv må, står øverst på denne side og kræver slet ingen tilladelse."
+
+msgid "Your role does not include secret:view."
+msgstr "Deres rolle indeholder ikke secret:view."
+
+msgid "Your seats"
+msgstr "Deres pladser"
+
+msgid "Your work is next door"
+msgstr "Dit arbejde er lige ved siden af"
