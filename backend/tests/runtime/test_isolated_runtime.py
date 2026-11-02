@@ -672,3 +672,56 @@ async def test_container_wait_timeout_scales_with_the_agents_own_max_steps_overr
 
     assert result.status == "done"
     assert driver.waited_with == 500 * 60
+
+
+async def test_a_run_the_provider_will_not_serve_fails_with_the_reason(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The quota is used up mid-run: /step answers 429, the shell dies on it and
+    the container exits 1. The run must end failed with the reason /step gave,
+    not with an empty output and a container exit code in the log."""
+    import datetime as dt
+
+    from asgi_lifespan import LifespanManager
+    from httpx import ASGITransport, AsyncClient
+
+    from oc8.main import create_app
+    from oc8.modelrouter.fallback import ProviderBudgetExceeded
+    from tests.api.test_internal_agent import _agent_token
+
+    tenant = uuid.uuid4()
+    agent_id, run_id = await _agent_and_run(app_session, tenant)
+
+    async def _quota_used_up(*args: object, **kw: object) -> Any:
+        raise ProviderBudgetExceeded("openai_compatible", dt.datetime(2026, 11, 1, tzinfo=dt.UTC))
+        yield  # pragma: no cover -- makes this an async generator
+
+    monkeypatch.setattr("oc8.api.v1.internal_agent.stream_completion_with_fallback", _quota_used_up)
+
+    class _ShellDiesOnStep(_FakeDriver):
+        async def wait(self, handle: SandboxHandle, timeout_s: float) -> int:
+            app = create_app()
+            async with LifespanManager(app):
+                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+                    r = await c.post(
+                        f"/api/v1/internal/agent/{run_id}/step",
+                        headers={
+                            "Authorization": f"Bearer {_agent_token(tenant, agent_id, run_id)}"
+                        },
+                    )
+            assert r.status_code == 429, r.text
+            return 1
+
+    monkeypatch.setattr("oc8.runtime.isolated.get_sandbox_driver", lambda: _ShellDiesOnStep())
+
+    async with app_session(tenant) as db:
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        result = await DockerIsolatedRuntime().execute(
+            db, agent=agent, task_text="verkauf etwas", tenant_id=tenant, run_id=run_id
+        )
+
+    assert result.status == "failed"
+    assert result.output == (
+        "The monthly token quota for openai_compatible is used up until 2026-11-01."
+    )

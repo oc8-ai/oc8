@@ -54,6 +54,24 @@ def is_retryable(exc: Exception) -> bool:
     return isinstance(exc, (httpx.TimeoutException, httpx.ConnectError))
 
 
+def limit_reason(exc: Exception) -> str | None:
+    """What an operator should read when a turn hit a limit, else None.
+
+    Two failures are limits rather than faults: the tenant's monthly quota for
+    the provider is spent, or the provider itself throttles (429, after the
+    fallback chain is exhausted). Neither is fixed by reading a stack trace,
+    and the two need different answers -- one waits for a date, the other for
+    a moment -- so each gets a sentence of its own.
+    """
+    if isinstance(exc, ProviderBudgetExceeded):
+        return (
+            f"The monthly token quota for {exc.provider} is used up until {exc.resets_at:%Y-%m-%d}."
+        )
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
+        return "The model provider is rate-limiting requests; try again shortly."
+    return None
+
+
 async def complete_with_fallback(
     db: AsyncSession,
     router: ModelRouter,

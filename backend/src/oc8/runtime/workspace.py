@@ -67,7 +67,6 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
-import mimetypes
 import os
 import posixpath
 import tarfile
@@ -90,6 +89,7 @@ from oc8.storage.attachments import (
     ALLOWED_CONTENT_TYPES,
     MAX_ATTACHMENT_BYTES,
     AttachmentRejected,
+    content_type_for,
     store_attachment_bytes,
 )
 
@@ -190,7 +190,7 @@ async def _store_one(
     """Store one output file inside a savepoint. Never raises: a rejected or
     failing file is logged and skipped, and the savepoint keeps the caller's
     transaction (and its tenant binding) usable."""
-    content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+    content_type = content_type_for(name)
     try:
         async with db.begin_nested():
             return await store_attachment_bytes(
@@ -440,7 +440,7 @@ async def sync_sandbox_output(
                 size,
             )
             continue
-        content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        content_type = content_type_for(name)
         if content_type not in ALLOWED_CONTENT_TYPES:
             logger.info("run %s: skipped output file %r: type %s", run_id, name, content_type)
             continue

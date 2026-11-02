@@ -115,6 +115,7 @@ from oc8.modelrouter import (
     stream_completion_with_fallback,
 )
 from oc8.modelrouter.accumulate import StreamTiming, accumulate_stream
+from oc8.modelrouter.fallback import limit_reason
 from oc8.modelrouter.keys import resolve_model_base_url
 from oc8.modelrouter.sampling import bumped_for_length_retry, resolve_params
 from oc8.modelrouter.trim import overflow_tokens
@@ -610,7 +611,27 @@ async def step(
     principal: CurrentPrincipal,
 ) -> StepResult:
     run = await _run_for_token(run_id, db, principal)
+    try:
+        return await _step(run_id, db, run)
+    except Exception as exc:
+        reason = limit_reason(exc)
+        if reason is None:
+            raise
+        # A spent quota or a throttling provider is a limit, not a fault: the
+        # shell gets a 429 that says which one, and the run gets the same
+        # sentence as its failed verdict. The shell dies on the 429 and never
+        # reaches /finish, so without this the run would end with nothing but
+        # a non-zero container exit for an operator to go on.
+        logger.warning("run %s: model turn refused: %s", run_id, exc)
+        run.context = {
+            **run.context,
+            "isolated_result": {"status": "failed", "output": reason},
+        }
+        await db.commit()
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, reason) from exc
 
+
+async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult:
     # The in-process engine's per-step cancel probe (§7.2), for a container
     # run: an operator cancel or an organisation that may no longer run ends
     # the run here, before another model call. An operator cancel wins; when
