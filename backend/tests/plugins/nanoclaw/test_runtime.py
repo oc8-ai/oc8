@@ -313,6 +313,11 @@ def _say(session: str, *, seq: int, text: str, ack: str | None = None) -> None:
     open(f"{session}/.heartbeat", "w").close()
 
 
+def _task_of(wake_text: str) -> str:
+    """A wake message minus the run context block in front of it."""
+    return wake_text.split("\n\n", 1)[1]
+
+
 def _task_message_id(session: str) -> str:
     """The FIRST inbound row: the task. A later steering message must not be what
     the adapter's ack is looking for."""
@@ -575,12 +580,14 @@ async def test_claude_md_holds_only_what_the_agent_itself_implies(
     assert _mode(group_dir(str(tmp_path), agent.id, second_run), "CLAUDE.md") == "0o600"
 
     # The task reaches the harness the only way it may: as an inbound message.
-    # startswith, not equality: every wake message now carries the delivery
-    # reminder appended after the instruction (see _DELIVERY_REMINDER). What this
-    # asserts is which TASK the harness was woken with.
+    # Not equality: every wake message carries the run context (date, person)
+    # before the instruction and the delivery reminder after it (see
+    # _DELIVERY_REMINDER). What this asserts is which TASK the harness was woken
+    # with.
     inbound = _inbound(session_dir(str(tmp_path), agent.id, first_run))
     assert [seq for seq, _text in inbound] == [2]
-    assert inbound[0][1].startswith("Erstelle ein Angebot")
+    assert inbound[0][1].startswith("Current date and time: ")
+    assert _task_of(inbound[0][1]).startswith("Erstelle ein Angebot")
 
 
 async def test_a_dead_container_fails_the_run_instead_of_waiting_out_the_deadline(
@@ -809,7 +816,7 @@ async def test_an_answer_that_arrives_over_several_polls_is_streamed_exactly_onc
     # what this asserts is the SEQUENCE, not the wording.
     inbound = _inbound(session_dir(str(tmp_path), agent.id, run_id))
     assert [seq for seq, _text in inbound] == [2, 4]
-    assert inbound[0][1].startswith("Angebot")
+    assert _task_of(inbound[0][1]).startswith("Angebot")
     assert inbound[1][1].startswith("mach es kleiner")
 
     async with app_session(tenant) as db:

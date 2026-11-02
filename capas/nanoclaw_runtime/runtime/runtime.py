@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agent.engine import CancelCheck, InboxCheck, RunResult, open_run_task
-from oc8.agent.preamble import roster_block, system_prompt
+from oc8.agent.preamble import roster_block, run_context, system_prompt
 from oc8.auth import get_identity_provider
 from oc8.config import get_settings
 from oc8.realtime.emit import record_activity
@@ -471,6 +471,10 @@ class NanoclawRuntime:
         # agent's assigned skills, and that read is RLS-scoped by the GUC the
         # commit below drops.
         standing = await self._standing_instructions(db, agent=agent, tenant_id=tenant_id)
+        # Run-scoped, so it travels with the wake message, never in CLAUDE.md --
+        # the same date/person context build_run_preamble gives the built-in
+        # runtimes. Composed here for the same RLS reason as `standing`.
+        context = await run_context(db, tenant_id=tenant_id, task=task, run_id=run_id)
         # Release the executor's lock before the container runs: the gateways
         # write to this run's rows from their own sessions, and would otherwise
         # block on our uncommitted transaction for the whole run.
@@ -524,8 +528,11 @@ class NanoclawRuntime:
             else []
         )
         wake_text = (
-            resume_instruction(entries) if entries else task_text
-        ) + _DELIVERY_REMINDER
+            context
+            + "\n\n"
+            + (resume_instruction(entries) if entries else task_text)
+            + _DELIVERY_REMINDER
+        )
         message_id = await asyncio.to_thread(
             write_message_in,
             session,

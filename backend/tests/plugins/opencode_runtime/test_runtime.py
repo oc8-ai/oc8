@@ -349,7 +349,11 @@ async def test_task_text_cannot_be_parsed_as_a_flag(
         )
 
     fresh_spec = driver.specs[0]
-    assert fresh_spec.command[-2:] == ["--", hostile_task_text]
+    # The run context (date, person) is prepended to the prompt, which
+    # still sits after `--` as one positional: it cannot become a flag.
+    assert fresh_spec.command[-2] == "--"
+    assert fresh_spec.command[-1].startswith("Current date and time: ")
+    assert fresh_spec.command[-1].endswith("\n\n" + hostile_task_text)
 
     driver.specs.clear()
     agent2, run_id2 = await _seed_agent(
@@ -366,7 +370,11 @@ async def test_task_text_cannot_be_parsed_as_a_flag(
         )
 
     resume_spec = driver.specs[0]
-    assert resume_spec.command[-2:] == ["--", hostile_task_text]
+    # The run context (date, person) is prepended to the prompt, which
+    # still sits after `--` as one positional: it cannot become a flag.
+    assert resume_spec.command[-2] == "--"
+    assert resume_spec.command[-1].startswith("Current date and time: ")
+    assert resume_spec.command[-1].endswith("\n\n" + hostile_task_text)
     assert "opencode-sess-9" in resume_spec.command
 
 

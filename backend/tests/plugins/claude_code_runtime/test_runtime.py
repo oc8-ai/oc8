@@ -699,7 +699,11 @@ async def test_task_text_cannot_be_parsed_as_a_flag(
         await ClaudeCodeRuntime().execute(
             db, agent=agent, task_text=hostile, tenant_id=tenant, run_id=run_id
         )
-    assert driver.specs[0].command[-2:] == ["--", hostile]
+    # The run context (date, person) is prepended to the prompt, which
+    # still sits after `--` as one positional: it cannot become a flag.
+    assert driver.specs[0].command[-2] == "--"
+    assert driver.specs[0].command[-1].startswith("Current date and time: ")
+    assert driver.specs[0].command[-1].endswith("\n\n" + hostile)
 
     driver.specs.clear()
     agent2, run_id2 = await _seed_agent(
@@ -711,7 +715,11 @@ async def test_task_text_cannot_be_parsed_as_a_flag(
             db, agent=agent2, task_text=hostile, tenant_id=tenant, run_id=run_id2
         )
     resume_spec = driver.specs[0]
-    assert resume_spec.command[-2:] == ["--", hostile]
+    # The run context (date, person) is prepended to the prompt, which
+    # still sits after `--` as one positional: it cannot become a flag.
+    assert resume_spec.command[-2] == "--"
+    assert resume_spec.command[-1].startswith("Current date and time: ")
+    assert resume_spec.command[-1].endswith("\n\n" + hostile)
     assert "claude-sess-9" in resume_spec.command
 
 
