@@ -188,3 +188,74 @@ def test_a_length_retry_carries_extra_through() -> None:
         ModelParams(temperature=0.5, max_tokens=100, extra={"top_p": 0.9})
     )
     assert bumped.extra == {"top_p": 0.9}
+
+
+# --- answer budget: OC8_DEFAULT_MAX_TOKENS and per-provider caps ---------------
+
+
+def _use(monkeypatch: Any, **kw: Any) -> None:
+    import oc8.modelrouter.sampling as sampling
+    from oc8.config import Settings
+
+    settings = Settings(**kw)
+    monkeypatch.setattr(sampling, "get_settings", lambda: settings)
+
+
+def test_the_default_budget_comes_from_the_setting(monkeypatch: Any) -> None:
+    _use(monkeypatch, default_max_tokens=16384)
+    assert resolve_params(None, agent=_agent()).max_tokens == 16384
+
+
+def test_the_code_default_is_4096() -> None:
+    from oc8.config import Settings
+
+    assert Settings.model_fields["default_max_tokens"].default == 4096
+    assert DEFAULT_MAX_TOKENS == 4096
+
+
+def test_an_unusable_default_setting_falls_back_to_the_code_default(monkeypatch: Any) -> None:
+    _use(monkeypatch, default_max_tokens=0)
+    assert resolve_params(None, agent=_agent()).max_tokens == DEFAULT_MAX_TOKENS
+
+
+def test_an_agent_budget_still_beats_the_setting(monkeypatch: Any) -> None:
+    _use(monkeypatch, default_max_tokens=16384)
+    p = resolve_params(None, agent=_agent({"model_params": {"max_tokens": 2000}}))
+    assert p.max_tokens == 2000
+
+
+def test_a_provider_cap_cuts_the_budget_down_instead_of_failing(monkeypatch: Any) -> None:
+    _use(monkeypatch, default_max_tokens=16384, provider_max_tokens="opaas_ai=4096, other=100")
+    assert resolve_params(_config({}), agent=_agent()).max_tokens == 4096
+
+
+def test_a_provider_cap_does_not_touch_other_providers(monkeypatch: Any) -> None:
+    _use(monkeypatch, default_max_tokens=16384, provider_max_tokens="ollama=4096")
+    assert resolve_params(_config({}), agent=_agent()).max_tokens == 16384
+
+
+def test_malformed_cap_pairs_are_skipped(monkeypatch: Any) -> None:
+    _use(monkeypatch, provider_max_tokens="opaas_ai=lots,=5,ollama=-1,litellm=4096")
+    from oc8.modelrouter.sampling import provider_max_tokens
+
+    assert provider_max_tokens("opaas_ai") is None
+    assert provider_max_tokens("ollama") is None
+    assert provider_max_tokens("litellm") == 4096
+
+
+def test_the_length_retry_never_goes_above_the_provider_cap(monkeypatch: Any) -> None:
+    _use(monkeypatch, provider_max_tokens="opaas_ai=6000")
+    bumped = bumped_for_length_retry(ModelParams(max_tokens=4096), provider="opaas_ai")
+    assert bumped.max_tokens == 6000
+    at_cap = bumped_for_length_retry(ModelParams(max_tokens=6000), provider="opaas_ai")
+    assert at_cap.max_tokens == 6000  # same budget: the caller skips the retry
+
+
+def test_the_budget_message_says_what_to_do() -> None:
+    from oc8.modelrouter.sampling import budget_exhausted_message
+
+    message = budget_exhausted_message(8192)
+    assert "8,192 tokens" in message
+    assert "max_tokens" in message
+    assert "OC8_DEFAULT_MAX_TOKENS" in message
+    assert "reasoning effort" in message

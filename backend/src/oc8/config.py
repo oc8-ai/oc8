@@ -60,6 +60,19 @@ class Settings(BaseSettings):
     # deliberately a large finite number, not literal infinity.
     agent_max_steps: int = 200
 
+    # Answer budget (max_tokens) for each model call of an agent step when
+    # neither the agent nor its model connection sets one
+    # (oc8.modelrouter.sampling.resolve_params). A reasoning model spends part
+    # of it thinking before it answers, so a low value fails runs with "the
+    # model used its whole answer budget"; one empty, cut-off answer is
+    # retried once with twice the budget.
+    default_max_tokens: int = 4096
+    # Highest max_tokens a provider accepts, as `provider=tokens` pairs
+    # separated by commas (e.g. "litellm=4096,ollama=8192"). A call above it is
+    # cut down to it instead of being rejected, the length retry included.
+    # Empty: no cap.
+    provider_max_tokens: str = ""
+
     # Isolated agent runtime (§8.5): the control-plane internal base URL an
     # isolated agent container calls back on (compose service name by default),
     # the runtime image, and a flag to route ALL runs through the isolated
@@ -403,6 +416,22 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def provider_max_tokens_map(self) -> dict[str, int]:
+        """`provider_max_tokens` parsed; malformed pairs are skipped."""
+        caps: dict[str, int] = {}
+        for pair in self.provider_max_tokens.split(","):
+            name, sep, value = pair.partition("=")
+            if not sep or not name.strip():
+                continue
+            try:
+                cap = int(value.strip())
+            except ValueError:
+                continue
+            if cap > 0:
+                caps[name.strip()] = cap
+        return caps
 
     @property
     def capas_path_list(self) -> list[str]:

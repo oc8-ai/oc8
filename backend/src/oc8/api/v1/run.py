@@ -35,6 +35,32 @@ class RunMessageRequest(BaseModel):
     body: str
 
 
+#: `repr(exc)` of an exception the executor stored as `context["error"]`:
+#: `RuntimeError('provider said no')` -> the message alone.
+_EXC_REPR = re.compile(r"^[A-Za-z_][\w.]*\((['\"])(?P<message>.*)\1\)$", re.DOTALL)
+
+
+def failure_reason(run: m.AgentRun) -> str | None:
+    """Why a failed run failed, or None.
+
+    A runtime that gives up on its own (the answer budget, a spent quota, a
+    rate limit) records a sentence for the operator as the run's `output`; an
+    exception that escaped the runtime is recorded as `error`, as its repr.
+    The sentence wins, and the repr is cut down to its message.
+    """
+    if run.state != RunState.FAILED.value:
+        return None
+    ctx = run.context or {}
+    output = ctx.get("output")
+    if isinstance(output, str) and output.strip():
+        return output.strip()
+    error = ctx.get("error")
+    if isinstance(error, str) and error.strip():
+        match = _EXC_REPR.match(error.strip())
+        return match.group("message") if match else error.strip()
+    return None
+
+
 def run_to_dto(run: m.AgentRun, *, agent_version_no: int | None = None) -> RunDTO:
     """`agent_version_no` is passed IN rather than resolved here.
 
@@ -55,6 +81,7 @@ def run_to_dto(run: m.AgentRun, *, agent_version_no: int | None = None) -> RunDT
         state=run.state,
         phase=run.phase,
         output=ctx.get("output"),
+        failure_reason=failure_reason(run),
         steps=int(ctx.get("steps", 0)),
         tool_calls=ctx.get("toolCalls", []),
         task_id=str(run.task_id) if run.task_id else None,

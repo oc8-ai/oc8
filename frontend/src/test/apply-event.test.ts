@@ -188,6 +188,41 @@ describe("run.token_delta", () => {
   });
 });
 
+describe("run.reasoning_delta", () => {
+  it("concatenates fragments of the same step", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(["run", "r1"], { id: "r1", state: "running", steps: 1, toolCalls: [] });
+
+    applyEvent(qc, event("run.reasoning_delta", { run_id: "r1", step: 1, text: "Let me " }));
+    applyEvent(qc, event("run.reasoning_delta", { run_id: "r1", step: 1, text: "think." }));
+
+    const run = qc.getQueryData(["run", "r1"]) as { liveReasoning?: unknown };
+    expect(run.liveReasoning).toEqual({ step: 1, text: "Let me think." });
+  });
+
+  it("starts over when the next step begins", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(["run", "r1"], {
+      id: "r1",
+      state: "running",
+      steps: 1,
+      toolCalls: [],
+      liveReasoning: { step: 1, text: "old" },
+    });
+
+    applyEvent(qc, event("run.reasoning_delta", { run_id: "r1", step: 2, text: "new" }));
+
+    const run = qc.getQueryData(["run", "r1"]) as { liveReasoning?: unknown };
+    expect(run.liveReasoning).toEqual({ step: 2, text: "new" });
+  });
+
+  it("does nothing for a run that is not in the cache", () => {
+    const qc = new QueryClient();
+    applyEvent(qc, event("run.reasoning_delta", { run_id: "unknown", step: 1, text: "x" }));
+    expect(qc.getQueryData(["run", "unknown"])).toBeUndefined();
+  });
+});
+
 describe("mcp.test.log", () => {
   it("appends the first line even with no prior cache entry", () => {
     const qc = new QueryClient();

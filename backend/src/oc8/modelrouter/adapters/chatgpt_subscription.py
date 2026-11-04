@@ -88,7 +88,10 @@ What that adds up to
    {"input_tokens", "output_tokens", "total_tokens", ...}}`. Text lives in
    `output[].content[]` where `type == "output_text"`; a tool call is its own
    `output[]` item with `type == "function_call"`. `output` may also hold
-   `reasoning` items, which carry nothing this adapter forwards.
+   `reasoning` items; their `summary[]` (`summary_text`) and `content[]`
+   (`reasoning_text`) parts become `CompletionResult.reasoning`, for display
+   only. `usage.output_tokens_details.reasoning_tokens` is the reasoning
+   share of `output_tokens`.
 6. **Streaming** is SSE framed as `event: <type>` + `data: <json>`, and every
    payload repeats its own `type`, so only the `data:` lines need reading.
    There is no `[DONE]` sentinel -- the stream simply ends after
@@ -105,7 +108,12 @@ What that adds up to
    - `response.completed` -> `{"response": {... "usage": {...}}}`: the only
      place a stream reports usage. Missing it bills every streamed
      subscription run at zero.
+   - `response.reasoning_summary_text.delta` and
+     `response.reasoning_text.delta` -> `{"delta": "..."}` (reasoning).
    - `response.failed` -> `{"response": {"error": {"code", "message"}}}`.
+   - `response.incomplete` -> like `response.completed`, with
+     `response.incomplete_details.reason == "max_output_tokens"` when the
+     answer was cut off.
 """
 
 from __future__ import annotations
@@ -119,6 +127,7 @@ from typing import Any
 import httpx
 
 from oc8.modelrouter.http_errors import araise_for_status_with_body, raise_for_status_with_body
+from oc8.modelrouter.reasoning import reasoning_tokens_from
 from oc8.modelrouter.types import (
     CompletionChunk,
     CompletionRequest,
@@ -267,6 +276,7 @@ def build_responses_payload(req: CompletionRequest) -> dict[str, Any]:
 
 def parse_responses_result(data: dict[str, Any], *, provider: str, model: str) -> CompletionResult:
     text_parts: list[str] = []
+    reasoning_parts: list[str] = []
     tool_calls: list[ToolCall] = []
     for item in data.get("output") or []:
         if not isinstance(item, dict):
@@ -278,7 +288,10 @@ def parse_responses_result(data: dict[str, Any], *, provider: str, model: str) -
                     text_parts.append(str(part.get("text") or ""))
         elif kind == "function_call":
             tool_calls.append(_tool_call_from_item(item))
-        # `reasoning` and every other item type carry nothing neutral.
+        elif kind == "reasoning":
+            reasoning_parts.extend(_reasoning_texts(item))
+        # Every other item type carries nothing neutral.
+    reasoning = "\n\n".join(reasoning_parts).strip()
     return CompletionResult(
         text="".join(text_parts),
         tool_calls=tool_calls,
@@ -287,10 +300,33 @@ def parse_responses_result(data: dict[str, Any], *, provider: str, model: str) -
         # holds the request and can price it itself. Only the STREAMED chunk
         # has to distinguish zero from unknown; see `_chunk_from_event`.
         usage=_usage_from(data.get("usage")) or Usage(),
-        stop_reason="tool_use" if tool_calls else "stop",
+        stop_reason=_stop_reason(data, saw_tool_call=bool(tool_calls)),
         provider=provider,
         model=model,
+        reasoning=reasoning or None,
     )
+
+
+def _reasoning_texts(item: dict[str, Any]) -> list[str]:
+    """The readable text of a `reasoning` output item: its summary parts,
+    then any full `reasoning_text` content the backend chose to return."""
+    texts: list[str] = []
+    for key, part_type in (("summary", "summary_text"), ("content", "reasoning_text")):
+        for part in item.get(key) or []:
+            if isinstance(part, dict) and part.get("type") == part_type and part.get("text"):
+                texts.append(str(part["text"]))
+    return texts
+
+
+def _stop_reason(response: dict[str, Any], *, saw_tool_call: bool) -> str:
+    if saw_tool_call:
+        return "tool_use"
+    # An `incomplete` response cut off by its output cap is "length", which the
+    # runtimes' length retry tells apart from a finished answer.
+    details = response.get("incomplete_details")
+    if isinstance(details, dict) and details.get("reason") == "max_output_tokens":
+        return "length"
+    return "stop"
 
 
 def _tool_call_from_item(item: dict[str, Any]) -> ToolCall:
@@ -327,6 +363,7 @@ def _usage_from(raw: Any) -> Usage | None:
     return Usage(
         tokens_in=int(raw.get("input_tokens", 0) or 0),
         tokens_out=int(raw.get("output_tokens", 0) or 0),
+        reasoning_tokens=reasoning_tokens_from(raw, "output_tokens_details"),
     )
 
 
@@ -389,6 +426,15 @@ def _chunk_from_event(event: dict[str, Any], *, saw_tool_call: bool) -> Completi
         delta = event.get("delta")
         return CompletionChunk(text=str(delta)) if delta else None
 
+    if kind in ("response.reasoning_summary_text.delta", "response.reasoning_text.delta"):
+        delta = event.get("delta")
+        return CompletionChunk(reasoning=str(delta)) if delta else None
+
+    if kind == "response.reasoning_summary_part.done":
+        # Separate one summary paragraph from the next, as the non-streamed
+        # result does.
+        return CompletionChunk(reasoning="\n\n")
+
     if kind == "response.output_item.done":
         item = event.get("item")
         if not isinstance(item, dict) or item.get("type") != "function_call":
@@ -407,13 +453,17 @@ def _chunk_from_event(event: dict[str, Any], *, saw_tool_call: bool) -> Completi
             ]
         )
 
-    if kind == "response.completed":
+    if kind in ("response.completed", "response.incomplete"):
         response = event.get("response")
+        if not isinstance(response, dict):
+            response = {}
         # None, never Usage(0, 0), when this event carries no parseable usage:
         # a zero here is indistinguishable from a real zero-token response and
         # silently bills the whole streamed run at nothing (see `_usage_from`).
-        usage = _usage_from(response.get("usage")) if isinstance(response, dict) else None
-        return CompletionChunk(usage=usage, stop_reason="tool_use" if saw_tool_call else "stop")
+        usage = _usage_from(response.get("usage"))
+        return CompletionChunk(
+            usage=usage, stop_reason=_stop_reason(response, saw_tool_call=saw_tool_call)
+        )
 
     return None
 

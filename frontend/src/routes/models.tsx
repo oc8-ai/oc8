@@ -1412,15 +1412,15 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
                       <input
                         type="number"
                         min={1}
-                        placeholder="1536"
+                        placeholder="4096"
                         value={maxTokens}
                         onChange={(e) => setMaxTokens(e.target.value)}
                         className="w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
                       />
                       <p className="mt-1 text-[11px] text-muted-foreground">
                         {t(
-                          "How much an agent on this model may write per turn, before oc8 cuts it off. Leave blank for the framework default (1536). Raise this for reasoning-heavy models on large tasks — hidden reasoning tokens count against this budget too.",
-                          "Wie viel ein Agent auf diesem Modell pro Zug schreiben darf, bevor oc8 abschneidet. Leer lassen für den Standard (1536). Bei reasoning-lastigen Modellen und großen Aufgaben höher setzen — auch unsichtbare Reasoning-Tokens zählen gegen dieses Budget.",
+                          "How much an agent on this model may write per turn, before oc8 cuts it off. Leave blank for the server default (4096, or OC8_DEFAULT_MAX_TOKENS). Raise this for reasoning-heavy models on large tasks — hidden reasoning tokens count against this budget too.",
+                          "Wie viel ein Agent auf diesem Modell pro Zug schreiben darf, bevor oc8 abschneidet. Leer lassen für den Server-Standard (4096 oder OC8_DEFAULT_MAX_TOKENS). Bei reasoning-lastigen Modellen und großen Aufgaben höher setzen — auch unsichtbare Reasoning-Tokens zählen gegen dieses Budget.",
                         )}
                       </p>
                     </label>

@@ -119,6 +119,7 @@ import { AgentInstructionsPanel } from "@/components/agent-instructions-panel";
 import { KnowledgeAssignment } from "@/components/knowledge-assignment";
 import { MemoryPanel } from "@/components/memory-panel";
 import { RUN_COMPONENT_REGISTRY } from "@/components/run-record-card";
+import { RunFailureReason, RunModelSteps } from "@/components/run-reasoning";
 import { StatCard } from "@/components/stat-card";
 import { formatMs } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -2623,6 +2624,12 @@ function RunTranscript({ run, pending }: { run: RunDTO | undefined; pending: boo
         )}
       </div>
       {run.state === "waiting_for_input" && <WaitingForInputCallout run={run} />}
+      {run.state === "failed" && <RunFailureReason reason={run.failureReason ?? run.output} />}
+      <RunModelSteps
+        stepTimings={run.stepTimings}
+        liveReasoning={run.liveReasoning}
+        live={!isTerminalRunState(run.state)}
+      />
       {run.liveAnswer && (
         <LiveAnswerPane text={run.liveAnswer} live={!isTerminalRunState(run.state)} />
       )}

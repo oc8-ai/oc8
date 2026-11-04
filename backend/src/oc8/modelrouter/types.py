@@ -37,6 +37,12 @@ class NeutralMessage:
     tool_calls: list[ToolCall] = field(default_factory=list)
     tool_call_id: str | None = None  # set on role="tool" results
     name: str | None = None  # tool name on role="tool"
+    #: Provider blocks an assistant turn must carry back verbatim on the next
+    #: call (`CompletionResult.replay_blocks`), e.g. Anthropic's signed
+    #: `thinking` blocks ahead of a `tool_use`. Opaque to everything except the
+    #: adapter that produced them; every other adapter ignores the field, so
+    #: reasoning is never fed back to a provider that does not require it.
+    replay_blocks: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -51,6 +57,9 @@ class NeutralTool:
 class Usage:
     tokens_in: int = 0
     tokens_out: int = 0
+    #: The part of `tokens_out` the model spent on reasoning, where the
+    #: provider reports it separately. None means "not reported", never zero.
+    reasoning_tokens: int | None = None
 
 
 @dataclass
@@ -61,6 +70,15 @@ class CompletionResult:
     stop_reason: str
     provider: str
     model: str
+    #: What the model thought before answering, as plain text, for display
+    #: only -- `reasoning_content`/`reasoning`, inline `<think>` tags or
+    #: Anthropic `thinking` blocks, whichever the provider uses. None when the
+    #: model reported none. Never sent back to a provider; see `replay_blocks`.
+    reasoning: str | None = None
+    #: Opaque provider blocks the NEXT call must repeat on this assistant turn
+    #: (see `NeutralMessage.replay_blocks`). Empty for every provider that has
+    #: no such continuity rule.
+    replay_blocks: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -92,6 +110,11 @@ class CompletionChunk:
     tool_calls: list[ToolCallDelta] = field(default_factory=list)
     usage: Usage | None = None
     stop_reason: str | None = None
+    #: A fragment of the model's reasoning, streamed separately from `text`.
+    reasoning: str = ""
+    #: Whole replay blocks (`CompletionResult.replay_blocks`), emitted by an
+    #: adapter once a block is complete -- never as fragments.
+    replay_blocks: list[dict[str, Any]] = field(default_factory=list)
     #: Stamped by ModelRouter.stream() with whatever resolve() actually
     #: decided (not every adapter sets these itself) so a caller
     #: reconstructing a CompletionResult from a stream -- oc8.modelrouter.

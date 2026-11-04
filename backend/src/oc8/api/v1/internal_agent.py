@@ -81,7 +81,14 @@ from oc8.agent.harness.stages.c_ledger import (
     render_ledger_block,
 )
 from oc8.agent.harness.stages.c_spill import persist_spill
-from oc8.agent.harness.step_timing import finish_step, note_model, note_tools, start_step
+from oc8.agent.harness.step_timing import (
+    finish_step,
+    note_model,
+    note_reasoning,
+    note_tools,
+    note_usage,
+    start_step,
+)
 from oc8.agent.mcp_client import resolve_auth_header
 from oc8.agent.mcp_env import has_oauth_ref, resolve_mcp_env
 from oc8.agent.mcp_requirements import wrap_with_requirements
@@ -117,11 +124,16 @@ from oc8.modelrouter import (
 from oc8.modelrouter.accumulate import StreamTiming, accumulate_stream
 from oc8.modelrouter.fallback import limit_reason
 from oc8.modelrouter.keys import resolve_model_base_url
-from oc8.modelrouter.sampling import bumped_for_length_retry, resolve_params
+from oc8.modelrouter.sampling import (
+    budget_exhausted_message,
+    bumped_for_length_retry,
+    resolve_params,
+)
 from oc8.modelrouter.trim import overflow_tokens
 from oc8.modelrouter.types import ImagePart, ModelParams, TextPart, with_prompt_cache_key
 from oc8.realtime.emit import (
     note_focus,
+    publish_run_reasoning_delta,
     publish_run_step_timing,
     publish_run_token_delta,
     publish_run_tool_call,
@@ -250,6 +262,7 @@ def _to_messages(raw: list[dict[str, Any]]) -> list[NeutralMessage]:
                 ],
                 tool_call_id=d.get("tool_call_id"),
                 name=d.get("name"),
+                replay_blocks=list(d.get("replay_blocks") or []),
             )
         )
     return out
@@ -265,6 +278,8 @@ def _from_message(msg: NeutralMessage) -> dict[str, Any]:
         d["tool_call_id"] = msg.tool_call_id
     if msg.name:
         d["name"] = msg.name
+    if msg.replay_blocks:
+        d["replay_blocks"] = msg.replay_blocks
     return d
 
 
@@ -946,6 +961,16 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         # completes (ctx["transcript"] + the final db.commit()).
         await publish_run_token_delta(run.tenant_id, run_id=run.id, text=text)
 
+    # The step a live reasoning fragment belongs to; set as each step opens.
+    live_step = {"no": 0}
+
+    async def _live_reasoning_delta(text: str) -> None:
+        # Same no-DB-write rule as _live_token_delta: the step's reasoning
+        # lands on its stepTimings entry (note_reasoning) when it ends.
+        await publish_run_reasoning_delta(
+            run.tenant_id, run_id=run.id, step=live_step["no"], text=text
+        )
+
     async def _complete(
         msgs: list[NeutralMessage],
         sampling_params: ModelParams,
@@ -970,6 +995,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
                 contains_restricted=contains_restricted,
             ),
             on_text=_live_token_delta if publish else None,
+            on_reasoning=_live_reasoning_delta if publish else None,
             timing=timing,
         )
 
@@ -1049,6 +1075,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
             finished_step_timings.append(finish_step(step_timings[-1]))
         step_rec = start_step(harness.state.step_no)
         step_timings.append(step_rec)
+        live_step["no"] = harness.state.step_no
         step_probe = StreamTiming()
 
         # Department prompt caching, through the SAME helper the in-process engine
@@ -1141,7 +1168,16 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
                 request_id,
             )
             await _record(result, request_id)
-            if result.stop_reason == "length" and not result.tool_calls and not result.text.strip():
+            note_usage(step_rec, result.usage, max_tokens=resolved_params.max_tokens)
+            retry_params = bumped_for_length_retry(resolved_params, provider=provider)
+            if (
+                result.stop_reason == "length"
+                and not result.tool_calls
+                and not result.text.strip()
+                # Already at the provider's cap: a retry could only fail the
+                # same way again.
+                and retry_params.max_tokens > resolved_params.max_tokens
+            ):
                 # See engine.py's identical check: a reasoning-capable model can
                 # spend its whole completion budget on hidden reasoning and hit
                 # max_tokens before writing anything visible. One retry with
@@ -1149,11 +1185,13 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
                 # finished with nothing actually done.
                 retry_request_id = uuid.uuid4()
                 result, retry_request_id = await _complete_with_overflow_retry(
-                    bumped_for_length_retry(resolved_params),
+                    retry_params,
                     retry_request_id,
                 )
                 await _record(result, retry_request_id)
+                note_usage(step_rec, result.usage, max_tokens=retry_params.max_tokens)
             await cache_flow.store_if_matching(key, result, provider=provider, model=model)
+            note_reasoning(step_rec, result.reasoning)
             note_model(
                 step_rec,
                 model_wait_ms=step_probe.model_wait_ms,
@@ -1176,7 +1214,14 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         )
         transcript.append(
             _from_message(
-                NeutralMessage(role="assistant", content=result.text, tool_calls=result.tool_calls)
+                NeutralMessage(
+                    role="assistant",
+                    content=result.text,
+                    tool_calls=result.tool_calls,
+                    # Anthropic's signed thinking blocks, which the next call
+                    # must repeat ahead of these tool calls.
+                    replay_blocks=list(result.replay_blocks),
+                )
             )
         )
         ctx["steps"] = int(ctx.get("steps", 0)) + 1
@@ -1230,7 +1275,9 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         # the run closes with no diagnosable reason anywhere -- see
         # engine.py's identical check, whose RunResult.output already carries
         # this same message for the in-process path.
-        step_text = "Model exceeded its token budget without producing an answer or tool call."
+        step_text = budget_exhausted_message(
+            int(step_rec.get("max_tokens") or resolved_params.max_tokens)
+        )
 
     # Spec §3.5: a turn's leading run of ALLOW-decision, read-tier,
     # non-control, non-outward tool calls may dispatch concurrently instead

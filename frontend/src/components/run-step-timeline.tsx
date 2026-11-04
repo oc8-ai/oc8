@@ -18,7 +18,9 @@ import {
   TriangleAlert,
 } from "lucide-react";
 
+import { RunModelSteps } from "@/components/run-reasoning";
 import { formatMs } from "@/lib/format";
+import type { LiveReasoning } from "@/lib/hooks";
 import { useLang, useT } from "@/lib/i18n";
 import { buildRunSteps, type RunStepRow, type StepState } from "@/lib/run-steps";
 import { resolveToolLabel, useToolLabels } from "@/lib/tool-labels";
@@ -32,6 +34,7 @@ export interface TimelineRun {
   phase?: string | null;
   toolCalls: Array<Record<string, unknown>>;
   stepTimings?: Array<Record<string, unknown>>;
+  liveReasoning?: LiveReasoning;
 }
 
 function StateGlyph({ state }: { state: StepState }) {
@@ -266,6 +269,12 @@ export function RunStepTimeline({
               )}
             </p>
           )}
+          <RunModelSteps
+            stepTimings={run.stepTimings}
+            liveReasoning={run.liveReasoning}
+            live={steps.live}
+            className="px-3 pb-2"
+          />
           {steps.truncated > 0 && (
             <p className="px-3 pb-1 text-muted-foreground">
               {t(

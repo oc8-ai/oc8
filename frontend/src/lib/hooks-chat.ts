@@ -6,7 +6,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, uploadChatAttachment, type FileAttachmentDTO } from "@/lib/api";
-import type { RunComponentDTO } from "@/lib/hooks";
+import type { LiveReasoning, RunComponentDTO } from "@/lib/hooks";
 
 export type { FileAttachmentDTO } from "@/lib/api";
 
@@ -151,6 +151,8 @@ export interface RunActivityDTO {
   state: string;
   phase: string | null;
   output: string | null;
+  // See RunDTO.failureReason (lib/hooks.ts): both routes share run_to_dto.
+  failureReason?: string | null;
   steps: number;
   toolCalls: Record<string, unknown>[];
   // Same list GET /runs/{id} returns (both routes share run_to_dto) --
@@ -164,6 +166,9 @@ export interface RunActivityDTO {
   // "run.token_delta" WS patcher (live/apply-event.ts) has concatenated at
   // least one fragment onto this cache entry. Absent (not "") until then.
   liveAnswer?: string;
+  // Same WS-only rule, from "run.reasoning_delta": the reasoning of the step
+  // in progress.
+  liveReasoning?: LiveReasoning;
 }
 
 // Seeds the exact ["run", runId] cache entry the WS patchers in

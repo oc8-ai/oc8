@@ -1079,6 +1079,10 @@ class RunDTO(CamelModel):
     state: str
     phase: str | None = None
     output: str | None = None
+    #: Why a `failed` run failed, in words an operator can act on (see
+    #: `oc8.api.v1.run.failure_reason`). None for every other state, and for a
+    #: failed run that recorded no reason.
+    failure_reason: str | None = None
     steps: int = 0
     tool_calls: list[dict[str, object]] = []
     task_id: str | None = None

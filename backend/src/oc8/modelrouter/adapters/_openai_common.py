@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 
 from oc8.modelrouter.http_errors import raise_for_status_with_body
+from oc8.modelrouter.reasoning import reasoning_field, reasoning_tokens_from, split_think_tags
 from oc8.modelrouter.types import (
     CompletionRequest,
     CompletionResult,
@@ -192,18 +193,33 @@ def parse_response(data: dict[str, Any], *, provider: str, model: str) -> Comple
         except (ValueError, TypeError):
             args = {}
         tool_calls.append(ToolCall(id=c.get("id", ""), name=fn.get("name", ""), arguments=args))
-    usage_raw = data.get("usage", {})
+    usage_raw = data.get("usage") or {}
     usage = Usage(
         tokens_in=int(usage_raw.get("prompt_tokens", 0)),
         tokens_out=int(usage_raw.get("completion_tokens", 0)),
+        reasoning_tokens=reasoning_tokens_from(usage_raw, "completion_tokens_details"),
     )
+    # A model may write its reasoning into the answer as <think>...</think>
+    # instead of (or as well as) a separate field; either way it is not the
+    # answer.
+    text, inline_reasoning = split_think_tags(message.get("content") or "")
+    reasoning = "\n\n".join(r for r in (reasoning_field(message), inline_reasoning) if r)
+    if tool_calls:
+        stop_reason = "tool_use"
+    elif choice.get("finish_reason") == "length":
+        # Kept distinct from "stop": a call cut off by max_tokens is what the
+        # runtimes' length retry looks for.
+        stop_reason = "length"
+    else:
+        stop_reason = "stop"
     return CompletionResult(
-        text=message.get("content") or "",
+        text=text,
         tool_calls=tool_calls,
         usage=usage,
-        stop_reason="tool_use" if tool_calls else "stop",
+        stop_reason=stop_reason,
         provider=provider,
         model=model,
+        reasoning=reasoning or None,
     )
 
 

@@ -98,6 +98,24 @@ async def publish_run_token_delta(
     )
 
 
+async def publish_run_reasoning_delta(
+    tenant_id: uuid.UUID, *, run_id: uuid.UUID, step: int, text: str
+) -> None:
+    """One fragment of the model's reasoning as it streams in, for the step
+    numbered `step`. The `run.token_delta` of reasoning, with the same
+    no-DB-write rule: the step's reasoning lands durably on its `stepTimings`
+    entry once the step finishes, so only an already-open tab needs these.
+    """
+    if not text:
+        return
+    await get_event_bus().publish_event(
+        tenant_id,
+        "run.reasoning_delta",
+        {"run_id": str(run_id), "step": step, "text": text},
+        source=f"oc8/run/{run_id}",
+    )
+
+
 async def publish_run_tool_call(
     tenant_id: uuid.UUID, *, run_id: uuid.UUID, call: dict[str, Any]
 ) -> None:

@@ -105,7 +105,7 @@ async def _coding_agent(db: Any, tenant: uuid.UUID) -> m.Agent:
     return agent
 
 
-async def test_a_two_step_run_records_one_timing_per_step_with_the_five_expected_keys(
+async def test_a_two_step_run_records_one_timing_per_step_with_timing_and_budget_keys(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("oc8.agent.engine.get_model_router", lambda: _ScriptedRouter())
@@ -126,13 +126,19 @@ async def test_a_two_step_run_records_one_timing_per_step_with_the_five_expected
 
     assert [t["step"] for t in result.step_timings] == [1, 2]
     for entry in result.step_timings:
+        # The five timing keys, plus what the step used against its answer
+        # budget. No reasoning keys: the scripted model reports none.
         assert set(entry) == {
             "step",
             "model_wait_ms",
             "ttft_ms",
             "tool_wait_ms",
             "step_wall_ms",
+            "tokens_in",
+            "tokens_out",
+            "max_tokens",
         }
+        assert entry["max_tokens"] > 0
         assert isinstance(entry["step_wall_ms"], int) and entry["step_wall_ms"] >= 0
         assert isinstance(entry["model_wait_ms"], int)
 
