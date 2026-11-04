@@ -18,8 +18,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.config import get_settings
+from oc8.knowledge.embedding_policy import (
+    LOCAL_AGENT_REASON,
+    agent_runs_locally,
+    model_receives_local_content,
+)
 from oc8.memory.policy import authorize_memory_read
-from oc8.modelrouter import EmbeddingUnavailable, get_model_router, locality_for_provider
+from oc8.modelrouter import EmbeddingUnavailable, get_model_router
 from oc8.modelrouter.router import embedding_local_tag
 
 logger = logging.getLogger(__name__)
@@ -112,10 +117,15 @@ async def _candidates(
     store_id: uuid.UUID,
     query_embedding: list[float] | None,
     member_id: uuid.UUID | None = None,
+    include_local_only: bool = False,
 ) -> list[m.MemoryRecord]:
     stmt = select(m.MemoryRecord).where(
         m.MemoryRecord.store_id == store_id, m.MemoryRecord.status == "approved"
     )
+    if not include_local_only:
+        stmt = stmt.where(
+            m.MemoryRecord.record_metadata[LOCAL_ONLY_KEY].astext.is_distinct_from("true")
+        )
     if member_id is not None:
         stmt = stmt.where(m.MemoryRecord.record_metadata["member_id"].astext == str(member_id))
     if query_embedding is not None:
@@ -126,24 +136,10 @@ async def _candidates(
     return list((await db.execute(stmt)).scalars().all())
 
 
-_LOCAL_AGENT_REASON = (
-    "the agent runs on a local model, so what it reads and writes may hold restricted "
-    "material that chat keeps off cloud models"
-)
-
-
-async def _agent_runs_locally(db: AsyncSession, agent: m.Agent, model_locality: str | None) -> bool:
-    """True if this agent's model is local, by the run's pinned locality
-    (`model_locality`) or by the live row. Either one being local is enough:
-    a local model is what lets restricted material into an agent's context."""
-    if model_locality == "local":
-        return True
-    if agent.model_config_id is not None:
-        config = await db.get(m.ModelConfig, agent.model_config_id)
-        if config is not None:
-            return config.locality == "local"
-    provider = (agent.presentation or {}).get("provider", get_settings().default_model_provider)
-    return locality_for_provider(str(provider)) == "local"
+#: Set on a record written by an agent on a local model. Such an agent may
+#: hold restricted material (chat lets it reach local models only), so what it
+#: notes is recalled only into a run whose model is local too.
+LOCAL_ONLY_KEY = "local_only"
 
 
 async def _embed_memory(
@@ -162,7 +158,7 @@ async def _embed_memory(
     settings = get_settings()
     router = get_model_router()
     require_local = (
-        _LOCAL_AGENT_REASON if await _agent_runs_locally(db, agent, model_locality) else None
+        LOCAL_AGENT_REASON if await agent_runs_locally(db, agent, model_locality) else None
     )
     model = settings.default_embedding_model
     if embedding_local_tag(model) is None:
@@ -203,6 +199,8 @@ async def retrieve_context(
         )
     except EmbeddingUnavailable:
         query_embedding = None
+    # What a local-model agent noted reaches only a run on a local model.
+    include_local_only = await model_receives_local_content(db, agent, model_locality)
 
     sections: list[str] = []
     personal = agent.is_tenant_assistant
@@ -224,6 +222,7 @@ async def retrieve_context(
             store_id=store.id,
             query_embedding=query_embedding,
             member_id=member_id if (personal and tier == "agent") else None,
+            include_local_only=include_local_only,
         )
         if not candidates:
             continue
@@ -260,6 +259,12 @@ async def write_memory(
         if member_id is None:
             raise MemoryWriteError("no member behind this Copilot turn -- nothing to note for")
         metadata = {**(metadata or {}), "member_id": str(member_id)}
+
+    if await agent_runs_locally(db, agent, model_locality):
+        metadata = {**(metadata or {}), LOCAL_ONLY_KEY: True}
+    elif metadata and LOCAL_ONLY_KEY in metadata:
+        # Only this module decides the mark; a caller cannot set or clear it.
+        metadata = {k: v for k, v in metadata.items() if k != LOCAL_ONLY_KEY}
 
     owner_id = _owner_id(tier, agent=agent, tenant_id=tenant_id)
     store = await _get_or_create_store(db, tenant_id=tenant_id, tier=tier, owner_id=owner_id)

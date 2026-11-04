@@ -1983,6 +1983,10 @@ async def _dispatch_one_tool(
                 message=control.output.removeprefix("ERROR: ").strip(),
             )
         suspend = control.suspend
+        if control.contains_restricted:
+            # Read by every later /step's completion (see above): the router
+            # then refuses a cloud model or fallback for this run.
+            ctx["contains_restricted"] = True
         if control.pending_run is not None:
             # The executor publishes it after committing -- never this request: the
             # worker could otherwise read a run whose row isn't durably visible.

@@ -2679,3 +2679,32 @@ async def test_tools_refuses_an_organisation_that_may_not_run(app_session: Any) 
             )
     assert r.status_code == 403, r.text
     assert r.json() == {"detail": "tenant_inactive"}
+
+
+@pytest.mark.asyncio
+async def test_restricted_knowledge_fetched_through_the_tool_endpoint_marks_the_run(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The isolated runtime's /step reads `contains_restricted` off the run, and
+    every completion it sends carries it. A lookup that returned restricted text
+    has to set it, or the next step goes out as unrestricted -- past the
+    router's ClassificationViolation and onto any cloud fallback."""
+    from oc8 import models as m
+
+    async def restricted_hit(*a: Any, **kw: Any) -> tuple[str, bool]:
+        return "Gehaltstabelle", True
+
+    monkeypatch.setattr("oc8.agent.control_tools.retrieve_kb_context", restricted_hit)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent, _task, run = await _plain_agent_run(db, tenant)
+        agent_id, run_id = agent.id, run.id
+
+    code, body = await _post_tool(
+        tenant, agent_id, run_id, "search_knowledge", {"query": "Gehalt"}
+    )
+    assert code == 200, body
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        row = await db.get(m.AgentRun, run_id)
+        assert row is not None
+        assert row.context.get("contains_restricted") is True

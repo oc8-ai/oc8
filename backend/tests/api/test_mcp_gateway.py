@@ -2228,3 +2228,30 @@ async def test_a_connection_without_requirements_is_launched_verbatim(
     code, body = await _rpc(_token(tenant, agent_id, run_id), "tools/list")
     assert code == 200, body
     assert launched[-1] == ("python", ["-m", "bridge"])
+
+
+async def test_restricted_knowledge_fetched_through_the_gateway_marks_the_run(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The LLM gateway decides from the run whether a completion carries
+    restricted material. A lookup that returned restricted text has to leave
+    that mark, or the next completion goes out as unrestricted."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+
+    async def fake_retrieve(*a: Any, **kw: Any) -> tuple[str, bool]:
+        return "salary table", True
+
+    monkeypatch.setattr("oc8.agent.control_tools.retrieve_kb_context", fake_retrieve)
+    code, body = await _rpc(
+        _token(tenant, agent_id, run_id),
+        "tools/call",
+        {"name": "search_knowledge", "arguments": {"query": "salary"}},
+    )
+    assert code == 200, body
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        assert run.context.get("contains_restricted") is True

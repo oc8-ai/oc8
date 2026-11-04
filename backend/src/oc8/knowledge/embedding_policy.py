@@ -12,10 +12,51 @@ provider with it.
 
 from __future__ import annotations
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from oc8 import models as m
+from oc8.config import get_settings
+from oc8.modelrouter import locality_for_provider
 
 #: Least to most sensitive -- the order of `ck_source_classification`.
 CLASSIFICATIONS = ("public", "internal", "confidential", "restricted")
+
+LOCAL_AGENT_REASON = (
+    "the agent runs on a local model, so what it reads and writes may hold restricted "
+    "material that chat keeps off cloud models"
+)
+
+
+async def live_model_locality(db: AsyncSession, agent: m.Agent) -> str:
+    """Where the agent's live row says its model runs: "local" or "cloud"."""
+    if agent.model_config_id is not None:
+        config = await db.get(m.ModelConfig, agent.model_config_id)
+        if config is not None:
+            return "local" if config.locality == "local" else "cloud"
+    provider = (agent.presentation or {}).get("provider", get_settings().default_model_provider)
+    return locality_for_provider(str(provider))
+
+
+async def agent_runs_locally(db: AsyncSession, agent: m.Agent, model_locality: str | None) -> bool:
+    """For what the agent SENDS (an embedding of its question or note): true if
+    its model is local by the run's pinned locality (`model_locality`) or by the
+    live row. Either one being local is enough -- a local model is what lets
+    restricted material into an agent's context."""
+    if model_locality == "local":
+        return True
+    return await live_model_locality(db, agent) == "local"
+
+
+async def model_receives_local_content(
+    db: AsyncSession, agent: m.Agent, model_locality: str | None
+) -> bool:
+    """For what the agent RECEIVES: true only if the model this run talks to is
+    local -- the pinned locality when the caller has one, else the live row. A
+    run pinned to a cloud model gets nothing local-only, whatever the live row
+    has been switched to since."""
+    if model_locality is not None:
+        return model_locality == "local"
+    return await live_model_locality(db, agent) == "local"
 
 
 def strictest(*labels: str | None) -> str:

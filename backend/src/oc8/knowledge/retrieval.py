@@ -22,7 +22,12 @@ from oc8 import models as m
 from oc8.authz import Effect, classification_rule, effective_cleared_classes
 from oc8.knowledge.chunks import live_chunks
 from oc8.knowledge.connectors.context import SourceAuthContext
-from oc8.knowledge.embedding_policy import require_local_reason
+from oc8.knowledge.embedding_policy import (
+    LOCAL_AGENT_REASON,
+    agent_runs_locally,
+    require_local_reason,
+    strictest,
+)
 from oc8.knowledge.vector_indexes.base import VectorIndexError
 from oc8.knowledge.vector_indexes.registry import INTERNAL_INDEX_TYPE, resolve_vector_index
 from oc8.modelrouter import EmbeddingUnavailable, get_model_router
@@ -83,19 +88,30 @@ def _trim_hits_to_budget(hits: list[_Hit], token_budget: int) -> list[_Hit]:
 
 
 async def _embed_for_kb(
-    db: AsyncSession, *, tenant_id: uuid.UUID, kb: m.KnowledgeBase, query_text: str
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    kb: m.KnowledgeBase,
+    query_text: str,
+    local_agent: bool,
 ) -> list[float] | None:
     """Query embedding with the KB's own model, through the tenant's own
     provider credentials. Skip this KB on failure -- at WARNING with the
     reason, because a base that silently returns nothing is otherwise
-    indistinguishable from one that has no relevant content."""
+    indistinguishable from one that has no relevant content.
+
+    The query stays local when the base must (restricted, local-only) and
+    when the agent runs on a local model: such an agent may hold restricted
+    material, and the question it searches with is derived from it -- the
+    same rule memory embeddings follow."""
+    require_local = require_local_reason(kb=kb) or (LOCAL_AGENT_REASON if local_agent else None)
     try:
         return await get_model_router().embed(
             query_text,
             model=kb.embedding_model,
             tenant_id=tenant_id,
             db=db,
-            require_local=require_local_reason(kb=kb),
+            require_local=require_local,
         )
     except EmbeddingUnavailable as exc:
         logger.warning(
@@ -124,6 +140,23 @@ async def _search_internal(
         .limit(_CANDIDATE_LIMIT)
     )
     chunks = list((await db.execute(stmt)).scalars().all())
+    # A chunk's own label may be looser than its source's or its base's: chunks
+    # stored before ingest copied those labels read `internal`, and a label
+    # changed later on the base or source is not rewritten into every chunk.
+    # Judge each hit by the strictest of the three.
+    source_ids = {c.data_source_id for c in chunks if c.data_source_id is not None}
+    source_labels: dict[uuid.UUID, str] = {}
+    if source_ids:
+        source_labels = {
+            row.id: row.classification
+            for row in (
+                await db.execute(
+                    select(m.DataSource.id, m.DataSource.classification).where(
+                        m.DataSource.tenant_id == tenant_id, m.DataSource.id.in_(source_ids)
+                    )
+                )
+            ).all()
+        }
     hits: list[_Hit] = []
     for c in chunks:
         score = 0.0
@@ -134,7 +167,11 @@ async def _search_internal(
                 kb_id=kb.id,
                 content=c.content,
                 source_uri=c.source_uri,
-                classification=c.classification,
+                classification=strictest(
+                    c.classification,
+                    kb.classification,
+                    source_labels.get(c.data_source_id) if c.data_source_id else None,
+                ),
                 score=score,
                 local_only=kb.local_only,
             )
@@ -173,7 +210,8 @@ async def _search_external(
 
     hits: list[_Hit] = []
     for r in remote:
-        classification = r.classification or kb.classification
+        # The index may label its own hits, but never more loosely than the base.
+        classification = strictest(r.classification, kb.classification)
         hits.append(
             _Hit(
                 kb_id=kb.id,
@@ -199,7 +237,9 @@ async def retrieve_kb_context(
     token_budget: int = KB_TOKEN_BUDGET,
     only_kb_ids: frozenset[uuid.UUID] | None = None,
 ) -> tuple[str, bool]:
-    """Returns (context, contains_restricted). frame/model_locality default
+    """Returns (context, contains_restricted). `contains_restricted` is true
+    when any returned text is restricted or from a local-only base: text that
+    may only reach a local model. frame/model_locality default
     to the safe/conservative values (no cleared_classes override, cloud
     locality) so existing callers that don't pass them get the strictest
     behavior — run_agent (the only production caller) always passes both
@@ -236,9 +276,12 @@ async def retrieve_kb_context(
     if not bases:
         return "", False
 
+    local_agent = await agent_runs_locally(db, agent, model_locality)
     all_hits: list[_Hit] = []
     for kb in bases:
-        query_embedding = await _embed_for_kb(db, tenant_id=tenant_id, kb=kb, query_text=query_text)
+        query_embedding = await _embed_for_kb(
+            db, tenant_id=tenant_id, kb=kb, query_text=query_text, local_agent=local_agent
+        )
         if query_embedding is None:
             continue
         index_type = kb.index_type or INTERNAL_INDEX_TYPE
@@ -263,10 +306,12 @@ async def retrieve_kb_context(
         return "", False
 
     cleared = effective_cleared_classes(frame or {})
+    # A local-only base's text reaches a local model only, like restricted text.
     cleared_hits = [
         h
         for h in all_hits
         if classification_rule(h.classification, cleared, model_locality).effect is Effect.ALLOW
+        and (not h.local_only or model_locality == "local")
     ]
     if not cleared_hits:
         return "", False
@@ -275,7 +320,9 @@ async def retrieve_kb_context(
     if not selected:
         return "", False
 
-    contains_restricted = any(h.classification == "restricted" for h in selected)
+    # Marks the run: the router then refuses a cloud model for it (and for any
+    # fallback), and the department cache skips it.
+    contains_restricted = any(h.classification == "restricted" or h.local_only for h in selected)
 
     by_kb: dict[uuid.UUID, list[_Hit]] = {}
     for h in selected:

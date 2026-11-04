@@ -47,13 +47,14 @@ from oc8.authz.permissions import AGENT, APPROVAL, BUDGET, DEPARTMENT, STATISTIC
 from oc8.authz.scope import AgentActor, scope_for_member
 from oc8.capas.discovery import find_plugin
 from oc8.chat.modes import WRITING_CONTROL_TOOLS, ChatMode
+from oc8.config import get_settings
 from oc8.copilot.notes import member_behind_run_task
 from oc8.departments.repo import visible_department, visible_departments
 from oc8.knowledge.retrieval import retrieve_kb_context
 from oc8.kpis.aggregate import compute_kpis
 from oc8.memory.router import MemoryWriteError, retrieve_context, write_memory
 from oc8.metering.budget import current_month_tokens, get_budget
-from oc8.modelrouter import NeutralTool, ToolCall
+from oc8.modelrouter import NeutralTool, ToolCall, locality_for_provider
 from oc8.realtime.emit import record_activity
 from oc8.runtime.repository import RunRepository
 from oc8.skills.runtime import LoadedSkill, instruction_block, skill_tool_schemas
@@ -1146,6 +1147,12 @@ class ControlOutcome:
     #: an empty list is a real call that cleared the list. The CALLER stores
     #: it -- same reasoning as rendered_component above.
     todos: list[dict[str, str]] | None = None
+    #: True when `output` holds text that may only reach a local model
+    #: (restricted, or from a local-only knowledge base). The CALLER marks the
+    #: run, which is what the router's ClassificationViolation and the cache
+    #: read on every later completion -- one-way, a run never becomes
+    #: unrestricted again.
+    contains_restricted: bool = False
 
 
 async def _member_behind_task(
@@ -1424,12 +1431,21 @@ async def _model_locality(
     Read off the run's PINNED model (`pinned`, from `resolve_version`), the one
     this run's completions actually go to: a mid-run switch of the live row to
     a local model must not unlock restricted material for a run still talking
-    to a cloud one."""
+    to a cloud one.
+
+    An agent with no model config is not unknown: its completions go to its
+    provider (the agent's own, else the deployment default), and that is what
+    the engine's preamble judges by too (`locality_for_provider`). Answering
+    "cloud" here instead made the tools disagree with the preamble and with
+    memory, which marks what a local-model agent writes as local-only."""
     model_config_id = (
         pinned_model_config_id(pinned) if pinned is not None else agent.model_config_id
     )
     if model_config_id is None:
-        return "cloud"
+        provider = (agent.presentation or {}).get(
+            "provider", get_settings().default_model_provider
+        )
+        return locality_for_provider(str(provider))
     config = await db.get(m.ModelConfig, model_config_id)
     return str(getattr(config, "locality", "cloud") or "cloud")
 
@@ -1754,7 +1770,7 @@ async def execute_control_tool(
         # model runs locally. Passing the real locality matters -- text handed
         # back here goes on to the model through the LLM gateway, which cannot
         # tell what it is carrying.
-        context, _restricted = await retrieve_kb_context(
+        context, contains_restricted = await retrieve_kb_context(
             db,
             agent=agent,
             tenant_id=tenant_id,
@@ -1808,7 +1824,10 @@ async def execute_control_tool(
                     "gib an einen Menschen ab."
                 )
             )
-        return ControlOutcome(output=context)
+        # The caller marks the run: every later completion then carries
+        # contains_restricted, so the router refuses a cloud model or fallback
+        # and the department cache skips it.
+        return ControlOutcome(output=context, contains_restricted=contains_restricted)
 
     if tc.name == FETCH_URL.name:
         url = str(tc.arguments.get("url", "")).strip()

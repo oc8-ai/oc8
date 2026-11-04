@@ -113,7 +113,16 @@ async def test_ingest_and_retrieval_embed_through_the_tenants_provider(
         vectors = await _vectors(db, tenant, kb.id)
         assert vectors and all(v is not None and len(v) == EMBED_DIM for v in vectors)
 
-        agent = m.Agent(tenant_id=tenant, department_id=uuid.uuid4(), name="A")
+        # A cloud-model agent: a local-model agent's question stays local
+        # (test_retrieval_policy.py), so it would not reach this provider.
+        cfg = m.ModelConfig(
+            tenant_id=tenant, provider="anthropic", model="claude", locality="cloud"
+        )
+        db.add(cfg)
+        await db.flush()
+        agent = m.Agent(
+            tenant_id=tenant, department_id=uuid.uuid4(), name="A", model_config_id=cfg.id
+        )
         db.add(agent)
         await db.flush()
         db.add(
