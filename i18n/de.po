@@ -562,6 +562,9 @@ msgstr "Runtime ändern"
 msgid "Changing the model takes effect for the next run. Manage model configurations under Models."
 msgstr "Die Änderung gilt für den nächsten Lauf. Modellkonfigurationen verwaltest du unter Modelle."
 
+msgid "chat"
+msgstr "Chat"
+
 msgid "Chat"
 msgstr "Chat"
 
@@ -973,6 +976,9 @@ msgstr "Angehängte Dateien konnten nicht geladen werden."
 msgid "Couldn't load runtime information."
 msgstr "Runtime-Informationen konnten nicht geladen werden."
 
+msgid "Couldn't load the run history."
+msgstr "Der Ausführungsverlauf konnte nicht geladen werden."
+
 msgid "Couldn't reach the copilot"
 msgstr "Copilot war nicht erreichbar"
 
@@ -1126,6 +1132,9 @@ msgstr "Tag"
 msgid "Decided by you"
 msgstr "Von dir entschieden"
 
+msgid "decision"
+msgstr "Entscheidung"
+
 msgid "Decision"
 msgstr "Entscheidung"
 
@@ -1140,6 +1149,9 @@ msgstr "Im Code definiert — nicht änderbar"
 
 msgid "Definition"
 msgstr "Definition"
+
+msgid "delegation"
+msgstr "Delegation"
 
 msgid "Delete"
 msgstr ""
@@ -1306,6 +1318,9 @@ msgstr "Mit Copilot entwerfen"
 msgid "Drift guard — pause on off-role actions"
 msgstr "Drift-Schutz — pausieren bei rollenfremden Aktionen"
 
+msgid "Duration"
+msgstr "Dauer"
+
 msgid "e.g. \"Handles first-level IT support tickets, replies to users, escalates hardware issues.\""
 msgstr "z. B. „Bearbeitet First-Level-IT-Support-Tickets, antwortet Anwendern, eskaliert Hardware-Probleme.“"
 
@@ -1456,6 +1471,9 @@ msgstr "Ø / 1k Anfr."
 msgid "Estimate assumes ~1,500 input + 500 output tokens per request. Cost totals per agent and department use these prices."
 msgstr "Schätzung geht von ~1.500 Input + 500 Output Token pro Anfrage aus. Kostenauswertungen pro Agent und Abteilung verwenden diese Preise."
 
+msgid "event"
+msgstr "Ereignis"
+
 msgid "Every action, every timestamp."
 msgstr "Jede Aktion, jeder Zeitstempel."
 
@@ -1509,6 +1527,9 @@ msgstr "Exportiere dein gesamtes Unternehmen in eine Datei oder ersetze es anhan
 
 msgid "Exporting…"
 msgstr "Exportiere…"
+
+msgid "failed"
+msgstr "fehlgeschlagen"
 
 msgid "Failed"
 msgstr "Fehlgeschlagen"
@@ -1648,6 +1669,9 @@ msgstr "Guardrails gespeichert"
 msgid "Guided setup"
 msgstr "Geführte Einrichtung"
 
+msgid "handoff"
+msgstr "Übergabe"
+
 msgid "Handoffs"
 msgstr "Übergaben"
 
@@ -1773,6 +1797,9 @@ msgstr ""
 
 msgid "Instructions saved"
 msgstr "Anweisungen gespeichert"
+
+msgid "interrupted"
+msgstr "abgebrochen"
 
 msgid "Invalid"
 msgstr "Ungültig"
@@ -1933,6 +1960,9 @@ msgstr "Rollen werden geladen…"
 msgid "Loading run…"
 msgstr "Lauf wird geladen…"
 
+msgid "Loading runs…"
+msgstr "Läufe werden geladen…"
+
 msgid "Loading the permission model…"
 msgstr "Berechtigungsmodell wird geladen…"
 
@@ -2001,6 +2031,9 @@ msgstr "Wird von Ihrem Identity-Provider verwaltet; hier nicht bearbeitbar."
 
 msgid "Manages agents"
 msgstr "Verwaltet Agenten"
+
+msgid "manual"
+msgstr "manuell"
 
 msgid "Max output tokens (optional)"
 msgstr "Max. Output-Tokens (optional)"
@@ -2181,6 +2214,9 @@ msgstr "Neue Aufgabe"
 
 msgid "New user"
 msgstr "Neuer Benutzer"
+
+msgid "Newer"
+msgstr "Neuere"
 
 msgid "Next"
 msgstr "Weiter"
@@ -2433,6 +2469,9 @@ msgstr "Büro"
 
 msgid "OK"
 msgstr "OK"
+
+msgid "Older"
+msgstr "Ältere"
 
 msgid "One sentence"
 msgstr "Ein Satz"
@@ -2854,8 +2893,8 @@ msgstr "Lauf"
 msgid "Run"
 msgstr "Ausführen"
 
-msgid "Run history browsing is not yet available."
-msgstr "Das Durchsuchen des Ausführungsverlaufs ist noch nicht verfügbar."
+msgid "Run history"
+msgstr "Ausführungsverlauf"
 
 msgid "Run not found."
 msgstr "Lauf nicht gefunden."
@@ -2931,6 +2970,9 @@ msgstr "Sag Hallo, um loszulegen."
 
 msgid "Scan with your authenticator app"
 msgstr "Mit Ihrer Authenticator-App scannen"
+
+msgid "schedule"
+msgstr "Zeitplan"
 
 msgid "Schedule"
 msgstr "Zeitplan"
@@ -3409,6 +3451,9 @@ msgstr "Denkt nach…"
 msgid "This action is blocked by an OC8 security policy."
 msgstr "Diese Aktion ist durch eine OC8-Sicherheitsrichtlinie gesperrt."
 
+msgid "This agent has not run yet. Its runs will appear here."
+msgstr "Dieser Agent ist noch nicht gelaufen. Seine Läufe erscheinen hier."
+
 msgid "This agent hasn't written any memories yet."
 msgstr "Dieser Agent hat noch keine Erinnerungen gespeichert."
 
@@ -3733,8 +3778,14 @@ msgstr "wartet"
 msgid "Waiting"
 msgstr "Wartet"
 
+msgid "waiting for approval"
+msgstr "wartet auf Freigabe"
+
 msgid "Waiting for confirmation…"
 msgstr "Warte auf Bestätigung …"
+
+msgid "waiting for input"
+msgstr "wartet auf Eingabe"
 
 msgid "waiting for task"
 msgstr "wartet auf Aufgabe"
@@ -3747,6 +3798,9 @@ msgstr "Wartet auf deine Antwort"
 
 msgid "warning"
 msgstr "Warnung"
+
+msgid "webhook"
+msgstr "Webhook"
 
 msgid "Webhook"
 msgstr "Webhook"

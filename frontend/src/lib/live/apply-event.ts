@@ -35,14 +35,38 @@ export function mcpTestLogKey(connectionId: string): unknown[] {
   return ["mcp-test-log", connectionId];
 }
 
+/** The state the last "run.status" event announced for a run. */
+export interface RunLiveState {
+  state: string;
+  phase: string | null;
+}
+
+// Not in liveQueryKeys either: written only by the "run.status" patcher below,
+// read by useRun (lib/hooks.ts) over every fetch, and dropped on reconnect,
+// when an event may have been missed and the server is the better source again.
+export function runLiveStateKey(runId: string): unknown[] {
+  return ["run-live-state", runId];
+}
+
 type Patcher = (qc: QueryClient, data: Record<string, unknown>) => void;
 
 const patchers: Record<string, Patcher> = {
   "run.status": (qc, d) => {
     const runId = d.run_id as string | undefined;
-    if (runId) {
+    if (runId && typeof d.state === "string") {
+      const live: RunLiveState = {
+        state: d.state,
+        phase: (d.phase as string | null | undefined) ?? null,
+      };
+      // Kept apart from the run itself, and written even when the run is not
+      // cached yet: the event can land while the first GET /runs/{id} is still
+      // in flight, and that GET can answer with the state from BEFORE this
+      // transition -- the executor publishes it before it commits, and an
+      // in-process run commits only when it ends. useRun lays this over every
+      // fetch, so a poll can no longer put a running run back to "queued".
+      qc.setQueryData(runLiveStateKey(runId), live);
       qc.setQueryData(["run", runId], (prev: unknown) =>
-        prev ? { ...(prev as object), state: d.state, phase: d.phase } : prev,
+        prev ? { ...(prev as object), state: live.state, phase: live.phase } : prev,
       );
     }
     // The list a state filter selects from -- a run that just parked or just

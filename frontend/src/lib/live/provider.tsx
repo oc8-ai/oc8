@@ -40,6 +40,11 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const onOpen = useCallback(() => {
     setStatus("connected");
     // reconnect-resync: refetch the live queries so any pub/sub gap is closed
+    // Events may have been missed while the socket was down, so the last
+    // state one announced is no longer worth more than what the server says.
+    // Dropped before the refetch below, so it cannot override it.
+    qc.removeQueries({ queryKey: ["run-live-state"] });
+    qc.invalidateQueries({ queryKey: ["run"] });
     for (const key of liveQueryKeys) {
       qc.invalidateQueries({ queryKey: key });
     }

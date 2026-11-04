@@ -5,6 +5,8 @@ import {
   BookOpen,
   Check,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Circle,
   CircleDot,
   Clock,
@@ -55,6 +57,7 @@ import {
   isTerminalRunState,
   useKnowledgeBases,
   useRenameAgent,
+  useAgentRuns,
   useRun,
   useRunAgent,
   useSetAgentSupervisor,
@@ -70,6 +73,7 @@ import {
   type McpLoginDTO,
   type ModelDTO,
   type RunDTO,
+  type RunSummaryDTO,
   type RunTodoDTO,
   type TriggerDTO,
 } from "@/lib/hooks";
@@ -120,10 +124,11 @@ import { KnowledgeAssignment } from "@/components/knowledge-assignment";
 import { MemoryPanel } from "@/components/memory-panel";
 import { RUN_COMPONENT_REGISTRY } from "@/components/run-record-card";
 import { RunFailureReason, RunModelSteps } from "@/components/run-reasoning";
+import { RunStateBadge } from "@/components/run-state-badge";
 import { StatCard } from "@/components/stat-card";
 import { formatMs } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { useT } from "@/lib/i18n";
+import { useLang, useT } from "@/lib/i18n";
 import { useMayManageAgent } from "@/lib/governance-hooks";
 import { useConfirm } from "@/hooks/use-confirm";
 
@@ -535,15 +540,7 @@ function AgentDetail() {
       {tab === "memory" && <AgentMemoryTab agentId={agent.id} mayManage={mayManage} />}
 
       {tab === "history" && (
-        <Panel className="p-10 text-center">
-          <Clock className="mx-auto mb-3 h-6 w-6 text-muted-foreground/60" />
-          <p className="text-sm text-muted-foreground">
-            {t(
-              "Run history browsing is not yet available.",
-              "Das Durchsuchen des Ausführungsverlaufs ist noch nicht verfügbar.",
-            )}
-          </p>
-        </Panel>
+        <AgentRunHistory agentId={agent.id} onOpenVersions={() => setTab("versions")} />
       )}
 
       {tab === "skills" && (
@@ -2480,7 +2477,8 @@ export function RunPinnedVersion({
   );
 }
 
-function LiveLog({
+// Exported for its own test, like RunPinnedVersion above.
+export function LiveLog({
   agentId,
   runId,
   onOpenVersions,
@@ -2630,8 +2628,13 @@ function RunTranscript({ run, pending }: { run: RunDTO | undefined; pending: boo
         liveReasoning={run.liveReasoning}
         live={!isTerminalRunState(run.state)}
       />
-      {run.liveAnswer && (
+      {run.liveAnswer ? (
         <LiveAnswerPane text={run.liveAnswer} live={!isTerminalRunState(run.state)} />
+      ) : (
+        // A run opened after it finished (the History tab, a reload) never saw
+        // the answer stream in; its stored output is the same text. A failed
+        // run's output is its failure reason, already shown above.
+        run.output && run.state === "done" && <LiveAnswerPane text={run.output} live={false} />
       )}
       {run.transcript && run.transcript.length > 0 && (
         <LiveTranscriptPane transcript={run.transcript} live={!isTerminalRunState(run.state)} />
@@ -2810,59 +2813,6 @@ function WaitingForInputCallout({ run }: { run: RunDTO }) {
   );
 }
 
-function RunStateBadge({ state }: { state: string }) {
-  const map: Record<string, { icon: React.ReactNode; color: string }> = {
-    queued: {
-      icon: <Clock className="h-3 w-3" />,
-      color: "text-muted-foreground border-border bg-background/40",
-    },
-    running: {
-      icon: <Play className="h-3 w-3" />,
-      color:
-        "text-[color:var(--status-running)] border-[color:var(--status-running)]/40 bg-[color:var(--status-running)]/10",
-    },
-    waiting_for_input: {
-      icon: <AlertTriangle className="h-3 w-3" />,
-      color:
-        "text-[color:var(--status-warning)] border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10",
-    },
-    waiting_for_approval: {
-      icon: <AlertTriangle className="h-3 w-3" />,
-      color:
-        "text-[color:var(--status-warning)] border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10",
-    },
-    done: {
-      icon: <CheckCircle2 className="h-3 w-3" />,
-      color: "text-primary border-primary/40 bg-primary/10",
-    },
-    failed: {
-      icon: <XCircle className="h-3 w-3" />,
-      color:
-        "text-[color:var(--status-error)] border-[color:var(--status-error)]/40 bg-[color:var(--status-error)]/10",
-    },
-    interrupted: {
-      icon: <XCircle className="h-3 w-3" />,
-      color:
-        "text-[color:var(--status-error)] border-[color:var(--status-error)]/40 bg-[color:var(--status-error)]/10",
-    },
-  };
-  const m = map[state] ?? {
-    icon: <Clock className="h-3 w-3" />,
-    color: "text-muted-foreground border-border bg-background/40",
-  };
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium",
-        m.color,
-      )}
-    >
-      {m.icon}
-      {state}
-    </span>
-  );
-}
-
 // toolCalls is `Array<Record<string, unknown>>` with no fixed schema on the
 // wire yet — render whichever recognizable keys are present and fall back to
 // the raw JSON so nothing silently disappears.
@@ -3014,5 +2964,189 @@ function ActivityRow({ item }: { item: ActivityItem }) {
         item.detail && <p className="mt-1 text-xs text-muted-foreground">{item.detail}</p>
       )}
     </li>
+  );
+}
+
+// ---------- History ----------
+//
+// Every run of this agent, newest first, a page at a time (GET
+// /agents/{id}/runs). A row opens into the SAME transcript the Live Log shows
+// for the current run -- RunTranscript, with its per-step "Thought" blocks,
+// token budgets, tool calls, answer and failure reason -- fetched through
+// useRun, so a run that is still going keeps updating here too.
+
+const HISTORY_PAGE_SIZE = 20;
+
+function useRunSourceLabel(): (source: string) => string {
+  const t = useT();
+  return (source) =>
+    ({
+      manual: t("manual", "manuell"),
+      cron: t("schedule", "Zeitplan"),
+      event: t("event", "Ereignis"),
+      webhook: t("webhook", "Webhook"),
+      delegation: t("delegation", "Delegation"),
+      decision: t("decision", "Entscheidung"),
+      handoff: t("handoff", "Übergabe"),
+      chat: t("chat", "Chat"),
+    })[source] ?? source;
+}
+
+export function AgentRunHistory({
+  agentId,
+  onOpenVersions,
+}: {
+  agentId: string;
+  onOpenVersions: () => void;
+}) {
+  const t = useT();
+  const [offset, setOffset] = useState(0);
+  const [openRunId, setOpenRunId] = useState<string | null>(null);
+  const runs = useAgentRuns(agentId, { limit: HISTORY_PAGE_SIZE, offset });
+  const items = runs.data?.items ?? [];
+  const total = runs.data?.totalCount ?? 0;
+  const from = total === 0 ? 0 : offset + 1;
+  const to = offset + items.length;
+
+  return (
+    <Panel className="p-5">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="text-xs uppercase tracking-wider text-muted-foreground">
+          {t("Run history", "Ausführungsverlauf")}
+        </div>
+        {total > 0 && (
+          <span className="font-mono text-[10px] text-muted-foreground" data-testid="history-range">
+            {t(`${from}–${to} of ${total}`, `${from}–${to} von ${total}`)}
+          </span>
+        )}
+      </div>
+      {runs.isPending ? (
+        <div className="py-10 text-center text-xs text-muted-foreground">
+          {t("Loading runs…", "Läufe werden geladen…")}
+        </div>
+      ) : runs.isError ? (
+        <div className="py-10 text-center text-xs text-muted-foreground">
+          {t(
+            "Couldn't load the run history.",
+            "Der Ausführungsverlauf konnte nicht geladen werden.",
+          )}
+        </div>
+      ) : items.length === 0 ? (
+        <div className="py-10 text-center">
+          <Clock className="mx-auto mb-3 h-6 w-6 text-muted-foreground/60" />
+          <p className="text-sm text-muted-foreground">
+            {t(
+              "This agent has not run yet. Its runs will appear here.",
+              "Dieser Agent ist noch nicht gelaufen. Seine Läufe erscheinen hier.",
+            )}
+          </p>
+        </div>
+      ) : (
+        <ul className="divide-y divide-border rounded-md border border-border">
+          {items.map((run) => (
+            <RunHistoryRow
+              key={run.id}
+              run={run}
+              open={openRunId === run.id}
+              onToggle={() => setOpenRunId((cur) => (cur === run.id ? null : run.id))}
+              onOpenVersions={onOpenVersions}
+            />
+          ))}
+        </ul>
+      )}
+      {total > HISTORY_PAGE_SIZE && (
+        <div className="mt-3 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => setOffset((o) => Math.max(0, o - HISTORY_PAGE_SIZE))}
+            disabled={offset === 0}
+            className="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {t("Newer", "Neuere")}
+          </button>
+          <button
+            type="button"
+            onClick={() => setOffset((o) => o + HISTORY_PAGE_SIZE)}
+            disabled={to >= total}
+            className="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {t("Older", "Ältere")}
+          </button>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function RunHistoryRow({
+  run,
+  open,
+  onToggle,
+  onOpenVersions,
+}: {
+  run: RunSummaryDTO;
+  open: boolean;
+  onToggle: () => void;
+  onOpenVersions: () => void;
+}) {
+  const t = useT();
+  const { lang } = useLang();
+  const sourceLabel = useRunSourceLabel();
+  const started = new Date(run.startedAt ?? run.createdAt).toLocaleString(
+    lang === "de" ? "de-DE" : "en-US",
+    { dateStyle: "medium", timeStyle: "short" },
+  );
+  const excerpt = run.taskExcerpt ?? run.outputExcerpt ?? run.failureReason;
+  return (
+    <li data-testid="run-history-row">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-left text-xs transition hover:bg-muted/40"
+      >
+        {open ? (
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        ) : (
+          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        )}
+        <RunStateBadge state={run.state} />
+        <span className="tabular-nums text-foreground/90">{started}</span>
+        <span className="tabular-nums text-muted-foreground" title={t("Duration", "Dauer")}>
+          {formatMs(run.durationMs)}
+        </span>
+        <span className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
+          {sourceLabel(run.source)}
+        </span>
+        {excerpt && (
+          <span className="min-w-0 flex-1 basis-48 truncate text-muted-foreground">{excerpt}</span>
+        )}
+      </button>
+      {open && (
+        <div className="border-t border-border bg-background/30 p-3">
+          <RunHistoryDetail runId={run.id} onOpenVersions={onOpenVersions} />
+        </div>
+      )}
+    </li>
+  );
+}
+
+function RunHistoryDetail({
+  runId,
+  onOpenVersions,
+}: {
+  runId: string;
+  onOpenVersions: () => void;
+}) {
+  const run = useRun(runId);
+  return (
+    <div className="space-y-2">
+      {run.data && (
+        <div className="flex justify-end">
+          <RunPinnedVersion versionNo={run.data.agentVersionNo} onOpenVersions={onOpenVersions} />
+        </div>
+      )}
+      <RunTranscript run={run.data} pending={run.isPending} />
+    </div>
   );
 }
