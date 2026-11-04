@@ -17,7 +17,9 @@ from httpx import ASGITransport, AsyncClient
 
 from oc8 import models as m
 from oc8.auth import get_identity_provider
+from oc8.knowledge.chunks import live_chunks
 from oc8.main import create_app
+from oc8.models.knowledge import EMBED_DIM
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -140,12 +142,15 @@ async def test_patch_base_changes_embedding_model_before_any_content(
         assert reloaded.embedding_model == "local/other-model"
 
 
-async def test_patch_base_refuses_embedding_model_change_once_content_exists(
+async def test_patch_base_refuses_embedding_model_change_on_a_populated_external_index(
     app_session: AppSessionFactory,
 ) -> None:
+    """An external index's vectors live outside oc8 and cannot be re-embedded
+    from here, so its model stays locked once it holds content."""
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         kb = await _base(db, tenant, name="Populated Base")
+        kb.index_type = "qdrant"
         kb.freshness = {"docs": 1, "chunks": 5}
         kb_id = kb.id
 
@@ -163,6 +168,130 @@ async def test_patch_base_refuses_embedding_model_change_once_content_exists(
         reloaded = await db.get(m.KnowledgeBase, kb_id)
         assert reloaded is not None
         assert reloaded.embedding_model == "nomic-embed-text"
+
+
+class _EmbedAs:
+    """Every text embeds to `value` repeated; remembers the models asked for."""
+
+    def __init__(self, value: float) -> None:
+        self.value = value
+        self.models: list[str | None] = []
+        self.tenants: list[object] = []
+
+    async def embed(self, text: str, model: str | None = None, **kw: object) -> list[float]:
+        self.models.append(model)
+        self.tenants.append(kw.get("tenant_id"))
+        return [self.value] * EMBED_DIM
+
+
+async def _populated(db: object, tenant: uuid.UUID, *, embedding: list[float] | None) -> uuid.UUID:
+    kb = await _base(db, tenant, name="Populated Base")
+    kb.freshness = {"docs": 1, "chunks": 2}
+    for i in range(2):
+        db.add(
+            m.KbChunk(
+                tenant_id=tenant,
+                kb_id=kb.id,
+                content=f"chunk {i}",
+                embedding=embedding,
+                source_uri="upload://a.txt",
+                chunk_metadata={"chunk_index": i},
+            )
+        )
+    await db.flush()
+    return kb.id
+
+
+async def _embeddings(db: object, kb_id: uuid.UUID) -> list[list[float] | None]:
+    rows = (await db.execute(live_chunks().where(m.KbChunk.kb_id == kb_id))).scalars().all()
+    return [None if r.embedding is None else list(r.embedding) for r in rows]
+
+
+async def test_patch_base_changing_the_model_re_embeds_existing_chunks(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _EmbedAs(2.0)
+    monkeypatch.setattr("oc8.knowledge.ingest.get_model_router", lambda: fake)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        kb_id = await _populated(db, tenant, embedding=[1.0] * EMBED_DIM)
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            r = await c.patch(
+                f"/api/v1/knowledge/bases/{kb_id}",
+                json={"embeddingModel": "acme/embed-768"},
+                headers=_headers(tenant),
+            )
+            assert r.status_code == 200, r.text
+            assert r.json()["embeddingModel"] == "acme/embed-768"
+
+    assert fake.models == ["acme/embed-768", "acme/embed-768"]
+    assert fake.tenants == [tenant, tenant]
+    async with app_session(tenant) as db:
+        assert await _embeddings(db, kb_id) == [[2.0] * EMBED_DIM] * 2
+
+
+async def test_reembed_endpoint_fills_missing_vectors(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _EmbedAs(3.0)
+    monkeypatch.setattr("oc8.knowledge.ingest.get_model_router", lambda: fake)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        kb_id = await _populated(db, tenant, embedding=None)
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            r = await c.post(f"/api/v1/knowledge/bases/{kb_id}/reembed", headers=_headers(tenant))
+            assert r.status_code == 200, r.text
+            assert r.json() == {"embedded": 2, "remaining": 0, "error": None}
+            # Idempotent: nothing left to do the second time.
+            r = await c.post(f"/api/v1/knowledge/bases/{kb_id}/reembed", headers=_headers(tenant))
+            assert r.json() == {"embedded": 0, "remaining": 0, "error": None}
+            # Another tenant cannot see the base at all.
+            r = await c.post(
+                f"/api/v1/knowledge/bases/{kb_id}/reembed", headers=_headers(uuid.uuid4())
+            )
+            assert r.status_code == 404
+
+    async with app_session(tenant) as db:
+        assert await _embeddings(db, kb_id) == [[3.0] * EMBED_DIM] * 2
+
+
+async def test_embedding_models_lists_the_deployment_default_first(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8 import config
+
+    monkeypatch.setattr(config.get_settings(), "default_embedding_model", "acme_ai/embed-768")
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            r = await c.get("/api/v1/knowledge/embedding-models", headers=_headers(uuid.uuid4()))
+            assert r.status_code == 200, r.text
+            assert r.json() == {
+                "defaultModel": "acme_ai/embed-768",
+                "models": ["acme_ai/embed-768", "local/nomic-embed-text"],
+            }
+
+
+async def test_create_base_without_a_model_uses_the_deployment_default(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8 import config
+
+    monkeypatch.setattr(config.get_settings(), "default_embedding_model", "acme/embed-768")
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            r = await c.post(
+                "/api/v1/knowledge/bases", json={"name": "KB"}, headers=_headers(uuid.uuid4())
+            )
+            assert r.status_code == 201, r.text
+            assert r.json()["embeddingModel"] == "acme/embed-768"
 
 
 async def test_patch_base_not_found_404(app_session: AppSessionFactory) -> None:

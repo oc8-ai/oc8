@@ -141,7 +141,9 @@ async def retrieve_context(
     if narrowing is None:
         narrowing = agent.narrowing or {}
     try:
-        query_embedding = await get_model_router().embed(query_text)
+        query_embedding = await get_model_router().embed(
+            query_text, tenant_id=tenant_id, db=db
+        )
     except EmbeddingUnavailable:
         query_embedding = None
 
@@ -205,7 +207,7 @@ async def write_memory(
     store = await _get_or_create_store(db, tenant_id=tenant_id, tier=tier, owner_id=owner_id)
 
     try:
-        embedding = await get_model_router().embed(content)
+        embedding = await get_model_router().embed(content, tenant_id=tenant_id, db=db)
     except EmbeddingUnavailable:
         embedding = None
 

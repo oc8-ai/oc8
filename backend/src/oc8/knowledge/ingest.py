@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import logging
 import uuid
 from datetime import UTC, datetime
 from html.parser import HTMLParser
@@ -18,11 +19,12 @@ from typing import Any
 
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
-from sqlalchemy import update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.config import get_settings
+from oc8.knowledge.chunks import live_chunks
 from oc8.knowledge.connectors.base import AuthContext, Connector, RawDocument
 from oc8.knowledge.connectors.context import SourceAuthContext
 from oc8.knowledge.connectors.registry import resolve_connector
@@ -36,6 +38,8 @@ from oc8.knowledge.tombstone import (
 from oc8.modelrouter import EmbeddingUnavailable, get_model_router
 from oc8.models.knowledge import EMBED_DIM
 from oc8.observability import record_ingestion_job
+
+logger = logging.getLogger(__name__)
 
 MAX_DOCUMENT_LENGTH = 200_000
 CHUNK_SIZE = 1000
@@ -231,16 +235,40 @@ async def ingest_raw_document(
     embedding_model = (
         kb.embedding_model if kb is not None else get_settings().default_embedding_model
     )
+    local_only = bool(kb.local_only) if kb is not None else False
     embeddings: list[list[float] | None] = []
+    unavailable: str | None = None
     for chunk in chunks:
         try:
             embeddings.append(
                 check_embedding_fits(
-                    await router.embed(chunk, model=embedding_model), model=embedding_model
+                    await router.embed(
+                        chunk,
+                        model=embedding_model,
+                        tenant_id=tenant_id,
+                        db=db,
+                        local_only=local_only,
+                    ),
+                    model=embedding_model,
                 )
             )
-        except EmbeddingUnavailable:
+        except EmbeddingUnavailable as exc:
+            unavailable = unavailable or str(exc)
             embeddings.append(None)
+    if unavailable is not None:
+        # Once per document, not per chunk. The chunks are still stored, so the
+        # text is not lost; POST /knowledge/bases/{id}/reembed fills the
+        # vectors in once the model is reachable.
+        logger.warning(
+            "embedding unavailable for kb %s model %s; %d of %d chunks of %s stored "
+            "without a vector: %s",
+            kb_id,
+            embedding_model,
+            sum(1 for e in embeddings if e is None),
+            len(chunks),
+            raw.source_uri,
+            unavailable,
+        )
 
     if chunks:
         # Only when this re-ingest actually produced something. A document that
@@ -621,3 +649,69 @@ async def ingest_document(
     record_ingestion_job(job.status)
     await db.flush()
     return job
+
+
+async def reembed_knowledge_base(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    kb: m.KnowledgeBase,
+    limit: int | None = None,
+    reset: bool = False,
+) -> dict[str, Any]:
+    """Embed this base's live chunks that have no vector, with its current
+    `embedding_model`. Idempotent: a chunk that already has a vector is never
+    touched, so calling it again only does what is still missing.
+
+    `reset=True` first clears every live vector of the base -- what a change
+    of `embedding_model` needs, because vectors from two models in one base
+    are not comparable. A cleared chunk is simply "missing" until it is
+    embedded again, never wrongly ranked.
+
+    Stops at the first chunk the model cannot embed: if the provider is down,
+    every further call would fail the same way. Flush-only, like the rest of
+    this module; the caller owns the commit. Returns
+    `{"embedded", "remaining", "error"}`.
+    """
+    scope = (
+        m.KbChunk.tenant_id == tenant_id,
+        m.KbChunk.kb_id == kb.id,
+        m.KbChunk.deleted_at.is_(None),
+    )
+    if reset:
+        await db.execute(update(m.KbChunk).where(*scope).values(embedding=None))
+    stmt = (
+        live_chunks()
+        .where(m.KbChunk.tenant_id == tenant_id, m.KbChunk.kb_id == kb.id)
+        .where(m.KbChunk.embedding.is_(None))
+        .order_by(m.KbChunk.id)
+    )
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    router = get_model_router()
+    embedded = 0
+    error: str | None = None
+    for chunk in (await db.execute(stmt)).scalars().all():
+        try:
+            chunk.embedding = check_embedding_fits(
+                await router.embed(
+                    chunk.content,
+                    model=kb.embedding_model,
+                    tenant_id=tenant_id,
+                    db=db,
+                    local_only=kb.local_only,
+                ),
+                model=kb.embedding_model,
+            )
+        except (EmbeddingUnavailable, IngestionError) as exc:
+            error = str(exc)
+            logger.warning(
+                "re-embed of kb %s with model %s stopped: %s", kb.id, kb.embedding_model, exc
+            )
+            break
+        embedded += 1
+    await db.flush()
+    remaining = await db.scalar(
+        select(func.count()).select_from(m.KbChunk).where(*scope, m.KbChunk.embedding.is_(None))
+    )
+    return {"embedded": embedded, "remaining": int(remaining or 0), "error": error}

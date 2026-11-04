@@ -216,7 +216,8 @@ class AssignSkillRequest(CamelModel):
 class CreateKnowledgeBaseRequest(CamelModel):
     name: str
     description: str = ""
-    embedding_model: str = "nomic-embed-text"
+    #: None means the deployment default (OC8_DEFAULT_EMBEDDING_MODEL).
+    embedding_model: str | None = None
     #: ``internal`` (default) or a capa vector-index ``type_id``.
     index_type: str = "internal"
     #: Non-secret mapping (collection, table, field keys). Never secrets.
@@ -231,12 +232,10 @@ class UpdateKnowledgeBaseRequest(CamelModel):
     plan, Task 5). All fields optional and applied only when present, same
     tri-state-adjacent shape as `UpdateSourceRequest`.
 
-    `embedding_model` is here too, but the route only honours it while the
-    base has never ingested a chunk: switching models after real content
-    exists would leave old and new chunks embedded by different models in
-    the same base, and a vector search can't meaningfully compare across
-    them. Once chunks exist, changing models means deleting and recreating
-    the base."""
+    Changing `embedding_model` on a base that already holds content clears
+    its vectors and re-embeds them with the new model (an internal base
+    only; an external index's vectors live outside oc8 and refuse the
+    change), so old and new models' vectors never sit side by side."""
 
     name: str | None = None
     description: str | None = None

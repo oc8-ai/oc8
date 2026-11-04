@@ -1518,7 +1518,7 @@ async def test_restricted_content_reaches_the_model_call_on_every_step(
     from oc8.runtime.states import RunState
 
     class _FakeEmbedRouter:
-        async def embed(self, text: str, model: str | None = None) -> list[float]:
+        async def embed(self, text: str, model: str | None = None, **_: object) -> list[float]:
             seed = sum(ord(ch) for ch in text) or 1
             return [float((seed + i) % 23) for i in range(EMBED_DIM)]
 

@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from collections.abc import AsyncIterator
 from dataclasses import replace
+from typing import TYPE_CHECKING
 
 import httpx
 
@@ -27,6 +29,9 @@ from oc8.modelrouter.types import (
 )
 from oc8.observability import record_model_latency
 
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
 
 def locality_for_provider(provider: str) -> str:
     """'local' if the provider string resolves to the ollama adapter via
@@ -39,7 +44,9 @@ def locality_for_provider(provider: str) -> str:
 
 
 class EmbeddingUnavailable(RuntimeError):
-    """Raised when the embedding backend (Ollama) is unreachable or errors."""
+    """Raised when no vector can be produced: the embedding backend is
+    unreachable or errors, or a cloud provider is unknown, not enabled for the
+    tenant, has no key, or has no embeddings endpoint."""
 
 
 class ClassificationViolation(RuntimeError):
@@ -203,33 +210,153 @@ class ModelRouter:
                 provider=canonical, model=model, ms=(time.monotonic() - started) * 1000
             )
 
-    async def embed(self, text: str, model: str | None = None) -> list[float]:
-        """Always routed to Ollama — no per-tenant provider choice for
-        embeddings in v1 (Anthropic has no embeddings API).
+    async def embed(
+        self,
+        text: str,
+        model: str | None = None,
+        *,
+        tenant_id: uuid.UUID | None = None,
+        db: AsyncSession | None = None,
+        local_only: bool = False,
+    ) -> list[float]:
+        """Embed `text` with `model` (a knowledge base's own `embedding_model`,
+        or the deployment default).
 
-        `model` is a knowledge base's own `embedding_model` choice (e.g. what
-        a knowledge base was created with). `"local/<tag>"` is oc8's own UI
-        label for "on-prem" — Ollama has no such namespace, so the `local/`
-        is stripped before the tag ever reaches it. Anything else carrying a
-        `/` (`openai/text-embedding-3-large`, `google/gemini-embedding-2`) is
-        a real cloud provider this v1 has no route to — refused with a plain
-        EmbeddingUnavailable rather than sent to Ollama as a nonsense model
-        name, where it would 404 with nothing to say why.
+        - A bare tag (`nomic-embed-text`), `local/<tag>` or `ollama/<tag>` goes
+          to Ollama. `local/` is oc8's own UI label for "on-prem"; Ollama has no
+          such namespace, so it is stripped before the tag reaches it.
+        - `<provider>/<model>` goes to that provider, resolved for `tenant_id`
+          exactly as a chat completion is: the tenant must be entitled to the
+          provider (a plugin provider only once its capa is enabled), and the
+          key and base URL come from the tenant's bound credential. The model
+          part may itself contain `/` (`openrouter/openai/text-embedding-3-small`).
+
+        Anything that keeps the vector from being produced -- an unknown
+        provider, no key, an adapter that cannot embed, an HTTP failure --
+        raises `EmbeddingUnavailable` naming the provider and model, so callers
+        that degrade (ingest stores the chunk without a vector, retrieval skips
+        the base) can say why.
+
+        `local_only` refuses a cloud provider outright: a base promised to keep
+        its content on-prem must not ship it to a cloud embedding endpoint.
+
+        Cloud token usage is recorded per tenant when `db` is given, the same
+        `token_usage_record` row a completion writes, so embeddings count
+        toward the tenant's and the provider's monthly budgets.
         """
         resolved = model or self._settings.default_embedding_model
-        if "/" in resolved:
-            namespace, _, tag = resolved.partition("/")
-            if namespace != "local":
-                raise EmbeddingUnavailable(
-                    f"embedding model {resolved!r} needs a cloud provider this deployment "
-                    "does not yet route embeddings through — pick a local/on-prem model"
-                )
-            resolved = tag
+        namespace, sep, tag = resolved.partition("/")
+        if not sep:
+            return await self._embed_ollama(text, resolved)
+        canonical = canonical_provider(namespace)
+        if canonical == "ollama":
+            return await self._embed_ollama(text, tag)
+        return await self._embed_cloud(
+            text,
+            provider=namespace,
+            model=tag,
+            label=resolved,
+            tenant_id=tenant_id,
+            db=db,
+            local_only=local_only,
+        )
+
+    async def _embed_ollama(self, text: str, model: str) -> list[float]:
         adapter = OllamaAdapter(self._settings.ollama_base_url)
         try:
-            return await adapter.embed(text, resolved)
+            return await adapter.embed(text, model)
         except httpx.HTTPError as exc:
             raise EmbeddingUnavailable(str(exc)) from exc
+
+    async def _embed_cloud(
+        self,
+        text: str,
+        *,
+        provider: str,
+        model: str,
+        label: str,
+        tenant_id: uuid.UUID | None,
+        db: AsyncSession | None,
+        local_only: bool,
+    ) -> list[float]:
+        from oc8.modelrouter.keys import resolve_model_base_url, resolve_model_key
+        from oc8.modelrouter.registry import resolve_provider
+
+        if local_only:
+            raise EmbeddingUnavailable(
+                f"embedding model {label!r} would send local-only content to cloud "
+                f"provider {provider!r}; pick a local model for this knowledge base"
+            )
+        if tenant_id is None or db is None:
+            raise EmbeddingUnavailable(
+                f"embedding model {label!r} uses provider {provider!r}, whose key is "
+                "resolved per tenant, but no tenant was given"
+            )
+        entry = await resolve_provider(db, tenant_id=tenant_id, name=provider)
+        if entry is None:
+            raise EmbeddingUnavailable(
+                f"embedding provider {provider!r} (model {label!r}) is unknown or not "
+                "enabled for this tenant"
+            )
+        canonical = entry.canonical
+        api_key = await resolve_model_key(db, tenant_id=tenant_id, provider=canonical)
+        if self._settings.require_tenant_model_key and not api_key:
+            raise EmbeddingUnavailable(
+                f"embedding provider {canonical!r} (model {label!r}) requires a per-tenant "
+                f"API key (credential type '{canonical}_api_key'); none is configured"
+            )
+        if not entry.available(self._settings, api_key):
+            raise EmbeddingUnavailable(
+                f"embedding provider {canonical!r} (model {label!r}) has no API key "
+                f"configured for this tenant (credential type '{canonical}_api_key')"
+            )
+        base_url = await resolve_model_base_url(db, tenant_id=tenant_id, provider=canonical)
+        adapter = self._adapter(canonical, base_url=base_url, api_key=api_key)
+        embed_with_usage = getattr(adapter, "embed_with_usage", None)
+        if embed_with_usage is None:
+            raise EmbeddingUnavailable(
+                f"embedding provider {canonical!r} (model {label!r}) cannot embed: "
+                "its adapter has no embeddings endpoint"
+            )
+        try:
+            vector, tokens = await embed_with_usage(text, model)
+        except (httpx.HTTPError, ValueError) as exc:
+            raise EmbeddingUnavailable(
+                f"embedding provider {canonical!r} (model {label!r}) failed: {exc}"
+            ) from exc
+        await self._record_embedding_usage(
+            db, tenant_id=tenant_id, provider=canonical, model=model, tokens=tokens
+        )
+        return vector
+
+    @staticmethod
+    async def _record_embedding_usage(
+        db: AsyncSession, *, tenant_id: uuid.UUID, provider: str, model: str, tokens: int
+    ) -> None:
+        """One usage row per cloud embedding call, inside a SAVEPOINT so a
+        failed metering write can never abort the caller's transaction (an
+        ingest or an agent run). Logged, not raised: losing a usage row is
+        better than losing the document."""
+        from oc8.metering.usage import record_usage
+
+        try:
+            async with db.begin_nested():
+                await record_usage(
+                    db,
+                    tenant_id=tenant_id,
+                    request_id=uuid.uuid4(),
+                    model=model,
+                    provider=provider,
+                    tokens_in=tokens,
+                    tokens_out=0,
+                )
+        except Exception:
+            logger.warning(
+                "could not record embedding usage for provider %s model %s",
+                provider,
+                model,
+                exc_info=True,
+            )
 
 
 def get_model_router() -> ModelRouter:

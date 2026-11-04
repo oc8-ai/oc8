@@ -81,15 +81,27 @@ def _trim_hits_to_budget(hits: list[_Hit], token_budget: int) -> list[_Hit]:
     return out
 
 
-async def _embed_for_kb(kb: m.KnowledgeBase, query_text: str) -> list[float] | None:
-    """Query embedding with the KB's own model. Skip this KB on failure."""
+async def _embed_for_kb(
+    db: AsyncSession, *, tenant_id: uuid.UUID, kb: m.KnowledgeBase, query_text: str
+) -> list[float] | None:
+    """Query embedding with the KB's own model, through the tenant's own
+    provider credentials. Skip this KB on failure -- at WARNING with the
+    reason, because a base that silently returns nothing is otherwise
+    indistinguishable from one that has no relevant content."""
     try:
-        return await get_model_router().embed(query_text, model=kb.embedding_model)
-    except EmbeddingUnavailable:
-        logger.info(
-            "embedding unavailable for kb %s model %s — skipping",
+        return await get_model_router().embed(
+            query_text,
+            model=kb.embedding_model,
+            tenant_id=tenant_id,
+            db=db,
+            local_only=kb.local_only,
+        )
+    except EmbeddingUnavailable as exc:
+        logger.warning(
+            "embedding unavailable for kb %s model %s, skipping: %s",
             kb.id,
             kb.embedding_model,
+            exc,
         )
         return None
     except Exception:
@@ -225,7 +237,7 @@ async def retrieve_kb_context(
 
     all_hits: list[_Hit] = []
     for kb in bases:
-        query_embedding = await _embed_for_kb(kb, query_text)
+        query_embedding = await _embed_for_kb(db, tenant_id=tenant_id, kb=kb, query_text=query_text)
         if query_embedding is None:
             continue
         index_type = kb.index_type or INTERNAL_INDEX_TYPE

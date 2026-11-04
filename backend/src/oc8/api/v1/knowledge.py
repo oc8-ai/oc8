@@ -23,6 +23,7 @@ from oc8.api.v1._serializers import (
 )
 from oc8.authz.permissions import KNOWLEDGE, MANAGE, VIEW, perm
 from oc8.caching.department_cache import purge_tenant
+from oc8.config import get_settings
 from oc8.knowledge.chunks import linked_source_ids, list_chunks, list_documents
 from oc8.knowledge.connectors.base import ConnectorError
 from oc8.knowledge.connectors.context import SourceAuthContext
@@ -34,6 +35,7 @@ from oc8.knowledge.ingest import (
     KnowledgeBaseNotFoundError,
     extract_text,
     ingest_document,
+    reembed_knowledge_base,
 )
 from oc8.knowledge.retrieval import similar_chunks
 from oc8.knowledge.sources import SourceRejected, validate_source_config
@@ -153,6 +155,34 @@ async def list_vector_indexes(
         )
         for type_id, index in sorted(indexes.items())
     ]
+
+
+#: Embedding models offered for a new base. Only models whose vectors are
+#: EMBED_DIM wide belong here (see check_embedding_fits).
+_LOCAL_EMBEDDING_MODELS = ("local/nomic-embed-text",)
+
+
+class EmbeddingModelsDTO(CamelModel):
+    default_model: str
+    models: list[str]
+
+
+@router.get(
+    "/knowledge/embedding-models",
+    response_model=EmbeddingModelsDTO,
+    dependencies=[Depends(require_permission(perm(KNOWLEDGE, VIEW)))],
+)
+async def list_embedding_models() -> EmbeddingModelsDTO:
+    """The deployment's default embedding model (OC8_DEFAULT_EMBEDDING_MODEL)
+    first, then the local ones. A bare tag is an Ollama model and is shown
+    with the `local/` prefix the rest of the UI uses."""
+    default = get_settings().default_embedding_model
+    if "/" not in default:
+        default = f"local/{default}"
+    return EmbeddingModelsDTO(
+        default_model=default,
+        models=list(dict.fromkeys([default, *_LOCAL_EMBEDDING_MODELS])),
+    )
 
 
 async def _live_base(db: DbSession, kb_id: uuid.UUID) -> m.KnowledgeBase:
@@ -284,7 +314,7 @@ async def create_base(
         tenant_id=principal.tenant_id,
         name=body.name,
         description=body.description,
-        embedding_model=body.embedding_model,
+        embedding_model=body.embedding_model or get_settings().default_embedding_model,
         status="current",
         classification=body.classification or "internal",
         index_type=index_type,
@@ -319,7 +349,13 @@ async def preview_index(
         index = await resolve_vector_index(
             db, tenant_id=principal.tenant_id, type_id=kb.index_type
         )
-        query_embedding = await get_model_router().embed(body.query, model=kb.embedding_model)
+        query_embedding = await get_model_router().embed(
+            body.query,
+            model=kb.embedding_model,
+            tenant_id=principal.tenant_id,
+            db=db,
+            local_only=kb.local_only,
+        )
         hits = await index.search(
             kb.index_config or {},
             SourceAuthContext(db, tenant_id=principal.tenant_id),
@@ -331,7 +367,7 @@ async def preview_index(
     except EmbeddingUnavailable as exc:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
-            f"embedding unavailable for model {kb.embedding_model!r}",
+            f"embedding unavailable for model {kb.embedding_model!r}: {exc}",
         ) from exc
     except VectorIndexError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
@@ -354,11 +390,17 @@ async def preview_index(
     dependencies=[Depends(require_permission(perm(KNOWLEDGE, MANAGE)))],
 )
 async def update_base(
-    kb_id: uuid.UUID, body: UpdateKnowledgeBaseRequest, db: DbSession
+    kb_id: uuid.UUID, body: UpdateKnowledgeBaseRequest, db: DbSession, principal: CurrentPrincipal
 ) -> KnowledgeBaseDTO:
-    """Edit a base's name, description, or (only before it has any content)
-    its embedding model. Not the DELETE below: that one is irreversible by
-    design (§12.5.1). This is an ordinary metadata edit."""
+    """Edit a base's name, description, or embedding model. Not the DELETE
+    below: that one is irreversible by design (§12.5.1). This is an ordinary
+    metadata edit.
+
+    Changing the embedding model of an internal base that already holds
+    content clears every live vector (old and new models' vectors are not
+    comparable) and re-embeds a first batch with the new model; the rest is
+    filled by `POST /knowledge/bases/{id}/reembed`. An external index's
+    vectors live outside oc8, so its model cannot change under content."""
     kb = await _live_base(db, kb_id)
     if body.name is not None:
         kb.name = body.name
@@ -366,14 +408,23 @@ async def update_base(
         kb.description = body.description
     if body.embedding_model is not None and body.embedding_model != kb.embedding_model:
         chunks = (kb.freshness or {}).get("chunks", 0)
-        if chunks:
+        internal = (kb.index_type or INTERNAL_INDEX_TYPE) == INTERNAL_INDEX_TYPE
+        if chunks and not internal:
             raise HTTPException(
                 status.HTTP_409_CONFLICT,
-                "this base already has ingested content under its current embedding "
-                "model -- changing models now would leave old and new chunks "
-                "incomparable in the same base. Delete and recreate it instead.",
+                "this base is connected to an external vector index whose vectors were "
+                "made with its current embedding model -- changing models would leave "
+                "them incomparable. Delete and recreate it instead.",
             )
         kb.embedding_model = body.embedding_model
+        if chunks:
+            await reembed_knowledge_base(
+                db,
+                tenant_id=principal.tenant_id,
+                kb=kb,
+                limit=_REEMBED_BATCH,
+                reset=True,
+            )
     await db.flush()
     # Build the DTO from data already fetched, not a post-commit re-fetch: a
     # commit here unbinds the tenant GUC that RLS relies on (see
@@ -385,6 +436,43 @@ async def update_base(
     dto = kb_to_dto(kb, *grants.get(kb.id, ([], [])), sources.get(kb.id, []))
     await db.commit()
     return dto
+
+
+#: Chunks embedded per request. Bounded so one call stays well inside a request
+#: timeout against a remote provider; the endpoint is idempotent, so a large
+#: base is finished by calling it again until `remaining` is 0.
+_REEMBED_BATCH = 200
+
+
+class ReembedResultDTO(CamelModel):
+    embedded: int
+    remaining: int
+    error: str | None = None
+
+
+@router.post(
+    "/knowledge/bases/{kb_id}/reembed",
+    response_model=ReembedResultDTO,
+    dependencies=[Depends(require_permission(perm(KNOWLEDGE, MANAGE)))],
+)
+async def reembed_base(
+    kb_id: uuid.UUID, db: DbSession, principal: CurrentPrincipal
+) -> ReembedResultDTO:
+    """Embed the base's chunks that have no vector yet, with its current
+    embedding model -- e.g. documents ingested while the model was
+    unreachable or not yet configured. Idempotent and tenant-scoped; does up
+    to `_REEMBED_BATCH` chunks per call and reports how many are left."""
+    kb = await _live_base(db, kb_id)
+    if (kb.index_type or INTERNAL_INDEX_TYPE) != INTERNAL_INDEX_TYPE:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "re-embedding is only for internal knowledge bases",
+        )
+    result = await reembed_knowledge_base(
+        db, tenant_id=principal.tenant_id, kb=kb, limit=_REEMBED_BATCH
+    )
+    await db.commit()
+    return ReembedResultDTO(**result)
 
 
 @router.post(

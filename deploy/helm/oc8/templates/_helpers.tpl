@@ -161,6 +161,10 @@ app.kubernetes.io/component: {{ .component }}
 - name: OC8_OLLAMA_BASE_URL
   value: {{ $ollamaUrl | quote }}
 {{- end }}
+{{- if .Values.oc8.defaultEmbeddingModel }}
+- name: OC8_DEFAULT_EMBEDDING_MODEL
+  value: {{ .Values.oc8.defaultEmbeddingModel | quote }}
+{{- end }}
 {{- end }}
 
 {{- define "oc8.waitForPostgresInit" -}}

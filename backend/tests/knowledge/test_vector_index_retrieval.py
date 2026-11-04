@@ -29,7 +29,7 @@ FIXTURES = Path(__file__).resolve().parents[1] / "plugins" / "fixtures"
 
 
 class _FakeEmbedRouter:
-    async def embed(self, text: str, model: str | None = None) -> list[float]:
+    async def embed(self, text: str, model: str | None = None, **_: object) -> list[float]:
         seed = sum(ord(c) for c in (text + (model or ""))) or 1
         return [float((seed + i) % 23) for i in range(EMBED_DIM)]
 
@@ -229,7 +229,7 @@ async def test_embed_failure_skips_kb_not_whole_retrieve(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     class _SelectiveEmbed:
-        async def embed(self, text: str, model: str | None = None) -> list[float]:
+        async def embed(self, text: str, model: str | None = None, **_: object) -> list[float]:
             if model and "fail" in model:
                 raise EmbeddingUnavailable("boom")
             seed = sum(ord(c) for c in text) or 1

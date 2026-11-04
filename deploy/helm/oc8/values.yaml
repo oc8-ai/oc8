@@ -63,6 +63,11 @@ oc8:
     retentionDays: 0
 
   ollamaBaseUrl: "" # set automatically when ollama.enabled=true
+  # Embedding model for new knowledge bases and for memory. Empty keeps the
+  # backend default (nomic-embed-text on Ollama). Any `<provider>/<model>`
+  # whose provider can embed (OpenAI-compatible) works too; each organisation
+  # then needs its own key for that provider. Must produce 768-dim vectors.
+  defaultEmbeddingModel: ""
 
   otelSdkDisabled: true
 
