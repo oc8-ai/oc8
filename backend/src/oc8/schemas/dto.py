@@ -1135,6 +1135,34 @@ class RunDTO(CamelModel):
     step_timings: list[dict[str, object]] = []
 
 
+class RunSummaryDTO(CamelModel):
+    """One row of an agent's run history (`GET /agents/{id}/runs`).
+
+    Deliberately NOT a `RunDTO`: that one carries every tool call and every
+    step's reasoning, which is what the detail view fetches for the ONE run an
+    operator opens (`GET /runs/{id}`), not what a page of twenty rows needs.
+    """
+
+    id: str
+    agent_id: str
+    state: str
+    #: What started the run: manual, cron, event, webhook, delegation,
+    #: decision, handoff or chat (`agent_run.source`).
+    source: str
+    created_at: str
+    #: The first transition into `running`; None for a run that never started.
+    started_at: str | None = None
+    #: The transition into a terminal state; None while the run is still open.
+    finished_at: str | None = None
+    #: finished_at - started_at, or None while either is missing.
+    duration_ms: int | None = None
+    steps: int = 0
+    #: The first characters of the task / answer, never the whole text.
+    task_excerpt: str | None = None
+    output_excerpt: str | None = None
+    failure_reason: str | None = None
+
+
 class ChatSessionDTO(CamelModel):
     id: str
     agent_id: str

@@ -17,7 +17,12 @@ import {
 } from "@/lib/api";
 import type { RuntimeOption } from "@/components/runtime-picker";
 import type { GuardrailLibraryEntry, GuardrailPreset } from "@/components/guardrail-preset-picker";
-import { mcpTestLogKey, type McpTestLogLine } from "@/lib/live/apply-event";
+import {
+  mcpTestLogKey,
+  runLiveStateKey,
+  type McpTestLogLine,
+  type RunLiveState,
+} from "@/lib/live/apply-event";
 import type {
   ActivityItem,
   Agent,
@@ -402,9 +407,25 @@ export function isTerminalRunState(state: string): boolean {
 // GET /runs/{id} never carries liveAnswer (it arrives only on run.token_delta).
 // A poll that replaced the cache would wipe the text the model is still
 // streaming. Keep the fragments already on screen.
-export function mergePolledRun(previous: RunDTO | undefined, fresh: RunDTO): RunDTO {
-  if (!previous?.liveAnswer && !previous?.liveReasoning) return fresh;
-  return { ...fresh, liveAnswer: previous.liveAnswer, liveReasoning: previous.liveReasoning };
+//
+// Nor can it be trusted on `state` once a "run.status" event has spoken: the
+// executor publishes a transition before committing it, and an in-process run
+// keeps its RUNNING transition uncommitted until it ends -- so the GET keeps
+// reading "queued" for a run the header already shows as running. The event
+// is the newer word, and wins.
+export function mergePolledRun(
+  previous: RunDTO | undefined,
+  fresh: RunDTO,
+  live?: RunLiveState,
+): RunDTO {
+  let merged = fresh;
+  if (previous?.liveAnswer || previous?.liveReasoning) {
+    merged = { ...merged, liveAnswer: previous.liveAnswer, liveReasoning: previous.liveReasoning };
+  }
+  if (live && live.state !== fresh.state) {
+    merged = { ...merged, state: live.state, phase: live.phase ?? fresh.phase };
+  }
+  return merged;
 }
 
 const keys = {
@@ -1677,7 +1698,8 @@ export function useRun(runId: string | null) {
       // Read after the fetch so fragments that arrived while it was in
       // flight stay in the string.
       const previous = client.getQueryData<RunDTO>(["run", runId]);
-      return mergePolledRun(previous, fresh);
+      const live = client.getQueryData<RunLiveState>(runLiveStateKey(runId!));
+      return mergePolledRun(previous, fresh, live);
     },
     enabled: !!runId,
     // Live runs only: keeps `updatedAt` fresh enough for the staleness
@@ -1703,6 +1725,43 @@ export function useRuns(opts: { state?: string; limit?: number } = {}) {
   return useQuery({
     queryKey: ["runs", opts.state ?? "all", opts.limit ?? 10],
     queryFn: () => api.get<RunDTO[]>(`/runs?${query}`),
+  });
+}
+
+/** One row of an agent's run history (GET /agents/{id}/runs). The full run
+ *  -- steps, reasoning, tool calls -- is fetched with useRun when a row is
+ *  opened. */
+export interface RunSummaryDTO {
+  id: string;
+  agentId: string;
+  state: string;
+  /** manual | cron | event | webhook | delegation | decision | handoff | chat */
+  source: string;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  durationMs: number | null;
+  steps: number;
+  taskExcerpt: string | null;
+  outputExcerpt: string | null;
+  failureReason: string | null;
+}
+
+// Under the "runs" prefix on purpose: the "run.status" patcher invalidates
+// ["runs"] on every transition, so an open history page follows a run that
+// starts or finishes without a poll of its own.
+export function useAgentRuns(agentId: string, opts: { limit: number; offset: number }) {
+  return useQuery({
+    queryKey: ["runs", "agent", agentId, opts.limit, opts.offset],
+    queryFn: () =>
+      api.get<Page<RunSummaryDTO>>(
+        `/agents/${agentId}/runs?limit=${opts.limit}&offset=${opts.offset}`,
+      ),
+    enabled: !!agentId,
+    // Keep the current page on screen while the next one loads -- but never
+    // another agent's page.
+    placeholderData: (previous, previousQuery) =>
+      previousQuery?.queryKey[2] === agentId ? previous : undefined,
   });
 }
 

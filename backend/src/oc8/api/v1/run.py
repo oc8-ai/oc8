@@ -6,10 +6,11 @@ from __future__ import annotations
 import datetime as dt
 import re
 import uuid
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from oc8 import models as m
 from oc8.agents.versioning import pinned_version_no
@@ -20,7 +21,8 @@ from oc8.runtime.clarification import resolve_clarification
 from oc8.runtime.intake import enqueue_run, publish_run
 from oc8.runtime.states import TERMINAL, RunState
 from oc8.runtime.step_record import step_timing_dto
-from oc8.schemas.dto import RunDTO, WorkspaceFileDTO, WorkspaceFilesDTO
+from oc8.schemas.dto import RunDTO, RunSummaryDTO, WorkspaceFileDTO, WorkspaceFilesDTO
+from oc8.schemas.paging import Page
 from oc8.schemas.requests import RunAgentRequest
 
 router = APIRouter()
@@ -151,6 +153,128 @@ async def list_runs(
         .all()
     )
     return [run_to_dto(row) for row in rows]
+
+
+#: How many history rows one page may hold. A summary is a small row, but the
+#: tab shows one page at a time and twenty is already more than fits on screen.
+_MAX_HISTORY = 50
+#: Characters of task / answer a history row carries -- enough to recognise the
+#: run, not to read it. The detail view fetches the whole run.
+_EXCERPT_CHARS = 160
+
+
+def _excerpt(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = " ".join(value.split())
+    if not text:
+        return None
+    return text if len(text) <= _EXCERPT_CHARS else text[: _EXCERPT_CHARS - 1].rstrip() + "…"
+
+
+def run_to_summary(
+    run: m.AgentRun, *, started_at: dt.datetime | None, finished_at: dt.datetime | None
+) -> RunSummaryDTO:
+    ctx = run.context or {}
+    duration_ms = (
+        int((finished_at - started_at).total_seconds() * 1000)
+        if started_at is not None and finished_at is not None
+        else None
+    )
+    return RunSummaryDTO(
+        id=str(run.id),
+        agent_id=str(run.agent_id),
+        state=run.state,
+        source=run.source,
+        created_at=run.created_at.isoformat(),
+        started_at=started_at.isoformat() if started_at else None,
+        finished_at=finished_at.isoformat() if finished_at else None,
+        duration_ms=duration_ms,
+        steps=int(ctx.get("steps", 0)),
+        task_excerpt=_excerpt(ctx.get("task")),
+        output_excerpt=_excerpt(ctx.get("output")) if run.state != RunState.FAILED.value else None,
+        failure_reason=failure_reason(run),
+    )
+
+
+@router.get(
+    "/agents/{agent_id}/runs",
+    response_model=Page[RunSummaryDTO],
+    dependencies=[Depends(require_permission(perm(RUN, VIEW)))],
+)
+async def list_agent_runs(
+    agent_id: uuid.UUID,
+    db: DbSession,
+    principal: CurrentPrincipal,
+    limit: Annotated[int, Query(ge=1, le=_MAX_HISTORY)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> Page[RunSummaryDTO]:
+    """One agent's runs, newest first, a page at a time (the History tab).
+
+    Ordered by `created_at`, not `updated_at` like `GET /runs`: a history is
+    read in the order things were started, and a heartbeat must not move a run
+    up the list while somebody is paging through it.
+
+    Same gate as `GET /runs/{id}` -- `run:view` plus the tenant -- for the same
+    reason `list_runs` gives: two answers to "may I see this run" is how one of
+    them ends up wrong. A deleted agent's history stays readable here; an agent
+    of another tenant is a 404.
+    """
+    agent = await db.get(m.Agent, agent_id)
+    if agent is None or agent.tenant_id != principal.tenant_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
+
+    base = select(m.AgentRun).where(
+        m.AgentRun.tenant_id == principal.tenant_id, m.AgentRun.agent_id == agent_id
+    )
+    total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
+    rows = list(
+        (
+            await db.execute(
+                base.order_by(m.AgentRun.created_at.desc(), m.AgentRun.id.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    # Start and end come from the transition log, not from created_at /
+    # updated_at: a queued run waits before it starts, and updated_at moves on
+    # every heartbeat and every later bookkeeping write (the evidence sweep).
+    started: dict[uuid.UUID, dt.datetime] = {}
+    finished: dict[uuid.UUID, dt.datetime] = {}
+    terminal = [s.value for s in TERMINAL]
+    if rows:
+        tr = m.RunStateTransition
+        spans = await db.execute(
+            select(
+                tr.run_id,
+                func.min(tr.at).filter(tr.to_state == RunState.RUNNING.value),
+                func.max(tr.at).filter(tr.to_state.in_(terminal)),
+            )
+            .where(tr.run_id.in_([r.id for r in rows]))
+            .group_by(tr.run_id)
+        )
+        for run_id, first_running, last_terminal in spans.all():
+            if first_running is not None:
+                started[run_id] = first_running
+            if last_terminal is not None:
+                finished[run_id] = last_terminal
+
+    return Page(
+        items=[
+            run_to_summary(
+                r,
+                started_at=started.get(r.id),
+                # Only a run that is terminal NOW has an end.
+                finished_at=finished.get(r.id) if r.state in terminal else None,
+            )
+            for r in rows
+        ],
+        total_count=int(total),
+    )
 
 
 @router.post(

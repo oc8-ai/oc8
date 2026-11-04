@@ -42,6 +42,7 @@ import { NotificationsSheet, OPEN_NOTIFICATIONS_EVENT } from "@/components/inbox
 import { GlobalSearch } from "@/components/global-search";
 import { CopilotDock } from "@/components/copilot-dock";
 import { CopilotAvatar } from "@/components/copilot-persona";
+import { TonePill } from "@/components/run-state-badge";
 import { useCopilotProfile } from "@/lib/hooks-copilot";
 import { mascotState } from "@/lib/copilot-status";
 import { cn } from "@/lib/utils";
@@ -1176,23 +1177,5 @@ export function StatusPill({
       color: "var(--status-waiting-for-task)",
     },
   }[status];
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium",
-        className,
-      )}
-      style={{
-        color: meta.color,
-        borderColor: `color-mix(in oklab, ${meta.color} 35%, transparent)`,
-        background: `color-mix(in oklab, ${meta.color} 10%, transparent)`,
-      }}
-    >
-      <span
-        className="h-1.5 w-1.5 rounded-full"
-        style={{ background: meta.color, boxShadow: `0 0 8px ${meta.color}` }}
-      />
-      {meta.label}
-    </span>
-  );
+  return <TonePill label={meta.label} color={meta.color} className={className} />;
 }

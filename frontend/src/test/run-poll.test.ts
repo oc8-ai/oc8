@@ -29,3 +29,21 @@ describe("mergePolledRun", () => {
     expect(mergePolledRun(undefined, fresh)).toBe(fresh);
   });
 });
+
+describe("mergePolledRun with a run.status state", () => {
+  it("keeps the state the last event announced over a stale poll", () => {
+    // The executor publishes RUNNING before it commits it, so the GET still
+    // reads "queued" for a run the header already shows as running.
+    const merged = mergePolledRun(undefined, run({ state: "queued" }), {
+      state: "running",
+      phase: "step",
+    });
+    expect(merged.state).toBe("running");
+    expect(merged.phase).toBe("step");
+  });
+
+  it("leaves a poll that agrees with the event alone", () => {
+    const fresh = run({ state: "done" });
+    expect(mergePolledRun(undefined, fresh, { state: "done", phase: null })).toBe(fresh);
+  });
+});
