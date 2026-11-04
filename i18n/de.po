@@ -1666,8 +1666,8 @@ msgstr "Verlauf"
 msgid "How many tool-using steps this agent may take in one run before it stops. Blank inherits the framework default (currently high, not unlimited -- budget/token metering only checks once per run)."
 msgstr "Wie viele Tool-Schritte dieser Agent pro Lauf ausführen darf, bevor er stoppt. Leer übernimmt den Framework-Standard (aktuell hoch, aber nicht unbegrenzt -- Budget-/Token-Metering wird nur einmal pro Lauf geprüft)."
 
-msgid "How much an agent on this model may write per turn, before oc8 cuts it off. Leave blank for the framework default (1536). Raise this for reasoning-heavy models on large tasks — hidden reasoning tokens count against this budget too."
-msgstr "Wie viel ein Agent auf diesem Modell pro Zug schreiben darf, bevor oc8 abschneidet. Leer lassen für den Standard (1536). Bei reasoning-lastigen Modellen und großen Aufgaben höher setzen — auch unsichtbare Reasoning-Tokens zählen gegen dieses Budget."
+msgid "How much an agent on this model may write per turn, before oc8 cuts it off. Leave blank for the server default (4096, or OC8_DEFAULT_MAX_TOKENS). Raise this for reasoning-heavy models on large tasks — hidden reasoning tokens count against this budget too."
+msgstr "Wie viel ein Agent auf diesem Modell pro Zug schreiben darf, bevor oc8 abschneidet. Leer lassen für den Server-Standard (4096 oder OC8_DEFAULT_MAX_TOKENS). Bei reasoning-lastigen Modellen und großen Aufgaben höher setzen — auch unsichtbare Reasoning-Tokens zählen gegen dieses Budget."
 
 msgid "Human oversight"
 msgstr "Menschliche Aufsicht"

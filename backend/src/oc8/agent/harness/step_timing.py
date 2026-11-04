@@ -1,9 +1,17 @@
-"""Step timing records and nearest-rank percentiles. No I/O."""
+"""Step timing records and nearest-rank percentiles. No I/O.
+
+A record also carries what the step's model calls used against their answer
+budget (`note_usage`) and the reasoning the model reported (`note_reasoning`),
+so a run view can show both next to the step's timing.
+"""
 
 from __future__ import annotations
 
 import math
 import time
+from typing import Any
+
+from oc8.modelrouter.reasoning import bound_reasoning
 
 
 def percentile(values: list[int], p: float) -> int | None:
@@ -72,12 +80,36 @@ def note_model(record: dict, *, model_wait_ms: int, ttft_ms: int | None) -> None
     record["ttft_ms"] = ttft_ms
 
 
+def note_usage(record: dict[str, Any], usage: Any, *, max_tokens: int) -> None:
+    """Add one model call's usage to the step; `max_tokens` is that call's budget.
+
+    A step can make more than one call (the length retry, an escalation), so
+    tokens add up, and the budget is the last call's -- the one whose answer
+    the step went on with.
+    """
+    record["tokens_in"] = int(record.get("tokens_in") or 0) + int(usage.tokens_in or 0)
+    record["tokens_out"] = int(record.get("tokens_out") or 0) + int(usage.tokens_out or 0)
+    reasoning_tokens = getattr(usage, "reasoning_tokens", None)
+    if reasoning_tokens is not None:
+        record["reasoning_tokens"] = int(record.get("reasoning_tokens") or 0) + int(
+            reasoning_tokens
+        )
+    record["max_tokens"] = int(max_tokens)
+
+
+def note_reasoning(record: dict[str, Any], text: str | None) -> None:
+    """Keep the reasoning behind the step's answer, bounded for storage."""
+    bounded = bound_reasoning(text)
+    if bounded:
+        record["reasoning"] = bounded
+
+
 def note_tools(record: dict, tool_wait_ms: int) -> None:
     record["tool_wait_ms"] = tool_wait_ms
 
 
 def finish_step(record: dict) -> dict:
-    """Set step_wall_ms from _t0, drop _t0, return the public five-key dict."""
+    """Set step_wall_ms from _t0, drop _t0, return the public record."""
     elapsed = int((time.monotonic() - record["_t0"]) * 1000)
     waits = int(record["model_wait_ms"]) + int(record["tool_wait_ms"])
     record["step_wall_ms"] = max(waits, elapsed)

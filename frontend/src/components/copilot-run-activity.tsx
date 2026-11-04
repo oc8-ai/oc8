@@ -15,10 +15,9 @@
 // opposite of what this surface is for.
 
 import { useCopilotRunActivity } from "@/lib/hooks-chat";
-import { useT } from "@/lib/i18n";
 import { ChatMarkdown } from "@/components/chat-markdown";
+import { RunFailureReason } from "@/components/run-reasoning";
 import { RunStepTimeline } from "@/components/run-step-timeline";
-import { TriangleAlert } from "lucide-react";
 
 export function CopilotRunActivity({
   sessionId,
@@ -27,7 +26,6 @@ export function CopilotRunActivity({
   sessionId: string | null;
   runId: string | null;
 }) {
-  const t = useT();
   const { data: run } = useCopilotRunActivity(sessionId, runId);
 
   if (!run) return null;
@@ -35,13 +33,10 @@ export function CopilotRunActivity({
   return (
     <div className="border-b border-border bg-muted/30">
       {run.state === "failed" && (
-        <div className="flex flex-col gap-1 border-b border-destructive/30 bg-destructive/10 px-3 py-1.5 text-xs text-destructive">
-          <div className="flex items-center gap-2">
-            <TriangleAlert className="h-3.5 w-3.5" />
-            <span>{t("This run failed.", "Dieser Lauf ist fehlgeschlagen.")}</span>
-          </div>
-          {run.output && <span className="pl-6 text-destructive/80">{run.output}</span>}
-        </div>
+        <RunFailureReason
+          reason={run.failureReason ?? run.output}
+          className="rounded-none border-x-0 border-t-0"
+        />
       )}
       <RunStepTimeline
         run={{
@@ -52,6 +47,7 @@ export function CopilotRunActivity({
           phase: run.phase,
           toolCalls: run.toolCalls,
           stepTimings: run.stepTimings,
+          liveReasoning: run.liveReasoning,
         }}
         // Open while the run is going (somebody is watching it happen),
         // collapsed once it has finished (somebody is reading a transcript

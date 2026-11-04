@@ -247,8 +247,8 @@ export interface ModelDTO {
   locality: "cloud" | "local";
   displayName: string | null;
   // The completion budget resolve_params falls back to for any agent on this
-  // model that sets no per-agent override. null means "framework default"
-  // (1536), not "unlimited".
+  // model that sets no per-agent override. null means "server default"
+  // (OC8_DEFAULT_MAX_TOKENS, 4096 unless set), not "unlimited".
   maxTokens?: number | null;
   // Free-form reasoning-effort knob forwarded verbatim to providers that
   // support it (e.g. Anthropic). Not validated against a fixed set of
@@ -329,6 +329,11 @@ export interface RunTodoDTO {
   status: "pending" | "in_progress" | "completed";
 }
 
+export interface LiveReasoning {
+  step: number;
+  text: string;
+}
+
 export interface RunDTO {
   id: string;
   agentId: string;
@@ -336,6 +341,9 @@ export interface RunDTO {
   question?: string;
   phase?: string | null;
   output?: string | null;
+  // Why a failed run failed, in words an operator can act on (the runtime's
+  // own sentence, or the error that stopped it). Null for every other state.
+  failureReason?: string | null;
   steps: number;
   toolCalls: Array<Record<string, unknown>>;
   taskId?: string | null;
@@ -344,7 +352,8 @@ export interface RunDTO {
   // GET /runs/{id} fetch, no WS-live patcher exists for it yet).
   todos?: RunTodoDTO[];
   // One entry per model step, in step order: {step, modelWaitMs, ttftMs,
-  // toolWaitMs, stepWallMs}. From GET /runs/{id}, and kept current by the
+  // toolWaitMs, stepWallMs}, plus {tokensIn, tokensOut, reasoningTokens,
+  // maxTokens, reasoning} where the step recorded them. From GET /runs/{id}, and kept current by the
   // "run.step_timing" patcher (lib/live/apply-event.ts) as each step ends.
   // Typed loosely on purpose, exactly like toolCalls above: this is a
   // pass-through of a JSONB list, and lib/run-steps.ts is the one place that
@@ -367,6 +376,11 @@ export interface RunDTO {
   // every runtime, in-process or isolated. Same "never from GET, WS-only"
   // rule: absent until the first fragment lands.
   liveAnswer?: string;
+  // The model's reasoning for the step in progress, filled in by the
+  // "run.reasoning_delta" patcher and reset when a new step starts. Same
+  // "never from GET, WS-only" rule as liveAnswer: a finished step's reasoning
+  // is on its stepTimings entry instead.
+  liveReasoning?: LiveReasoning;
   // The version this run is pinned to, by NUMBER -- what the Versions tab shows
   // and what GET /agents/{id}/versions/{n} is addressed by. Null for a run
   // created before pinning existed: migration 0099 deliberately did not
@@ -389,8 +403,8 @@ export function isTerminalRunState(state: string): boolean {
 // A poll that replaced the cache would wipe the text the model is still
 // streaming. Keep the fragments already on screen.
 export function mergePolledRun(previous: RunDTO | undefined, fresh: RunDTO): RunDTO {
-  if (!previous?.liveAnswer) return fresh;
-  return { ...fresh, liveAnswer: previous.liveAnswer };
+  if (!previous?.liveAnswer && !previous?.liveReasoning) return fresh;
+  return { ...fresh, liveAnswer: previous.liveAnswer, liveReasoning: previous.liveReasoning };
 }
 
 const keys = {

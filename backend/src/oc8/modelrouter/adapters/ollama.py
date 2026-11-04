@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 
 from oc8.modelrouter.http_errors import araise_for_status_with_body, raise_for_status_with_body
+from oc8.modelrouter.reasoning import ThinkTagSplitter, split_think_tags
 from oc8.modelrouter.types import (
     CompletionChunk,
     CompletionRequest,
@@ -80,6 +81,14 @@ def _build_payload(req: CompletionRequest, *, stream: bool) -> dict[str, Any]:
     return payload
 
 
+def _stop_reason(data: dict[str, Any], *, saw_tool_call: bool) -> str:
+    if saw_tool_call:
+        return "tool_use"
+    # `done_reason: "length"` is a cut-off answer, which the runtimes' length
+    # retry needs to tell apart from a finished one.
+    return "length" if data.get("done_reason") == "length" else "stop"
+
+
 class OllamaAdapter:
     provider = "ollama"
 
@@ -108,12 +117,20 @@ class OllamaAdapter:
             tokens_in=int(data.get("prompt_eval_count", 0)),
             tokens_out=int(data.get("eval_count", 0)),
         )
-        stop_reason = "tool_use" if tool_calls else "stop"
+        stop_reason = _stop_reason(data, saw_tool_call=bool(tool_calls))
+        # Ollama returns a thinking model's reasoning in `message.thinking`
+        # when asked to; a model it runs without that support writes <think>
+        # tags into the content instead.
+        text, inline = split_think_tags(message.get("content", "") or "")
+        reasoning = "\n\n".join(
+            r for r in (str(message.get("thinking") or "").strip(), inline) if r
+        )
         return CompletionResult(
-            text=message.get("content", "") or "",
+            text=text,
             tool_calls=tool_calls,
             usage=usage,
             stop_reason=stop_reason,
+            reasoning=reasoning or None,
             provider=self.provider,
             model=req.model,
         )
@@ -132,6 +149,7 @@ class OllamaAdapter:
         """
         seen_calls = 0
         saw_tool_call = False
+        think = ThinkTagSplitter()
         async with httpx.AsyncClient(timeout=180.0) as client:
             async with client.stream(
                 "POST", f"{self._base_url}/api/chat", json=_build_payload(req, stream=True)
@@ -150,7 +168,11 @@ class OllamaAdapter:
                     chunk = CompletionChunk()
                     carries = False
                     if message.get("content"):
-                        chunk.text = str(message["content"])
+                        chunk.text, inline = think.feed(str(message["content"]))
+                        chunk.reasoning = inline
+                        carries = True
+                    if message.get("thinking"):
+                        chunk.reasoning += str(message["thinking"])
                         carries = True
                     for raw_call in message.get("tool_calls") or []:
                         fn = raw_call.get("function") or {}
@@ -166,11 +188,14 @@ class OllamaAdapter:
                         saw_tool_call = True
                         carries = True
                     if data.get("done"):
+                        held_text, held_reasoning = think.flush()
+                        chunk.text += held_text
+                        chunk.reasoning += held_reasoning
                         chunk.usage = Usage(
                             tokens_in=int(data.get("prompt_eval_count", 0) or 0),
                             tokens_out=int(data.get("eval_count", 0) or 0),
                         )
-                        chunk.stop_reason = "tool_use" if saw_tool_call else "stop"
+                        chunk.stop_reason = _stop_reason(data, saw_tool_call=saw_tool_call)
                         carries = True
                     if carries:
                         yield chunk

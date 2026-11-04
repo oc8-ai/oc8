@@ -72,10 +72,26 @@ def step_timing_dto(entry: dict[str, object]) -> dict[str, object]:
     read them directly. This function is the one seam where the two shapes
     meet, so a fresh `GET` and a live-patched entry always agree on casing.
     """
-    return {
+    dto: dict[str, object] = {
         "step": entry.get("step"),
         "modelWaitMs": entry.get("model_wait_ms"),
         "ttftMs": entry.get("ttft_ms"),
         "toolWaitMs": entry.get("tool_wait_ms"),
         "stepWallMs": entry.get("step_wall_ms"),
     }
+    # Usage against the answer budget, and the model's reasoning: only where
+    # the step recorded them. Records written before they existed, and a step
+    # answered from the prompt cache, have none.
+    for stored, wire in _OPTIONAL_KEYS:
+        if entry.get(stored) is not None:
+            dto[wire] = entry[stored]
+    return dto
+
+
+_OPTIONAL_KEYS: tuple[tuple[str, str], ...] = (
+    ("tokens_in", "tokensIn"),
+    ("tokens_out", "tokensOut"),
+    ("reasoning_tokens", "reasoningTokens"),
+    ("max_tokens", "maxTokens"),
+    ("reasoning", "reasoning"),
+)

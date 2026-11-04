@@ -96,7 +96,16 @@ async def test_step_publishes_a_live_step_timing_when_the_step_finishes(
     assert timing_events[0]["run_id"] == str(run_id)
     timing = timing_events[0]["timing"]
     assert timing["step"] == 1
-    assert set(timing) == {"step", "modelWaitMs", "ttftMs", "toolWaitMs", "stepWallMs"}
+    assert set(timing) == {
+        "step",
+        "modelWaitMs",
+        "ttftMs",
+        "toolWaitMs",
+        "stepWallMs",
+        "tokensIn",
+        "tokensOut",
+        "maxTokens",
+    }
 
     async with app_session(tenant) as db:
         stored = await db.get(m.AgentRun, run_id)
@@ -107,6 +116,9 @@ async def test_step_publishes_a_live_step_timing_when_the_step_finishes(
             "ttft_ms",
             "tool_wait_ms",
             "step_wall_ms",
+            "tokens_in",
+            "tokens_out",
+            "max_tokens",
         }
         assert step_timing_dto(stored.context["stepTimings"][0]) == timing
 

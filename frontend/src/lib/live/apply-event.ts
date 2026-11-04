@@ -180,6 +180,23 @@ const patchers: Record<string, Patcher> = {
         : prev,
     );
   },
+  // One fragment of the model's reasoning for step `step`, as it streams in
+  // -- see backend/src/oc8/realtime/emit.py's publish_run_reasoning_delta.
+  // Concatenated like run.token_delta, but per step: a fragment for a new
+  // step starts the text over, since the finished step's reasoning already
+  // lands on its stepTimings entry (run.step_timing).
+  "run.reasoning_delta": (qc, d) => {
+    const runId = d.run_id as string | undefined;
+    const text = d.text as string | undefined;
+    const step = typeof d.step === "number" ? d.step : 0;
+    if (!runId || !text) return;
+    qc.setQueryData(["run", runId], (prev: unknown) => {
+      if (!prev) return prev;
+      const current = (prev as { liveReasoning?: { step: number; text: string } }).liveReasoning;
+      const base = current && current.step === step ? current.text : "";
+      return { ...(prev as object), liveReasoning: { step, text: base + text } };
+    });
+  },
   // The agent's whole to-do list as of the last todo_write call (whole-list
   // replace, not appended like toolCalls/components above) -- see
   // backend/src/oc8/agent/control_tools.py's ControlOutcome.todos and its

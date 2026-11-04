@@ -79,7 +79,14 @@ from oc8.agent.harness.stages.c_ledger import (
 )
 from oc8.agent.harness.stages.c_reminders import track_repeat_tool_call
 from oc8.agent.harness.stages.c_spill import persist_spill
-from oc8.agent.harness.step_timing import finish_step, note_model, note_tools, start_step
+from oc8.agent.harness.step_timing import (
+    finish_step,
+    note_model,
+    note_reasoning,
+    note_tools,
+    note_usage,
+    start_step,
+)
 from oc8.agent.mcp_client import open_tool_session, resolve_auth_header
 from oc8.agent.mcp_env import resolve_mcp_env
 from oc8.agent.mcp_requirements import wrap_with_requirements
@@ -140,13 +147,18 @@ from oc8.modelrouter.auto_router import (
     tier_map,
 )
 from oc8.modelrouter.keys import resolve_model_base_url
-from oc8.modelrouter.sampling import bumped_for_length_retry, resolve_params
+from oc8.modelrouter.sampling import (
+    budget_exhausted_message,
+    bumped_for_length_retry,
+    resolve_params,
+)
 from oc8.modelrouter.trim import overflow_tokens
 from oc8.modelrouter.types import ImagePart, ModelParams, with_prompt_cache_key
 from oc8.observability import get_tracer, record_budget_exceeded, record_tool_call
 from oc8.realtime.emit import (
     note_focus,
     publish_agent_status,
+    publish_run_reasoning_delta,
     publish_run_step_timing,
     publish_run_token_delta,
     publish_run_tool_call,
@@ -713,6 +725,8 @@ async def run_agent(
         # (see RunResult.todos) -- not accumulated like rendered_components.
         todos: list[dict[str, str]] = []
         session_state = {"started": False}
+        # The step a live reasoning fragment belongs to; set as each step opens.
+        live_step = {"no": 0}
 
         def _hook_ctx(**extra: Any) -> dict[str, Any]:
             return base_payload(
@@ -762,6 +776,15 @@ async def run_agent(
             if run_id is None:
                 return
             await publish_run_token_delta(tenant_id, run_id=run_id, text=text)
+
+        async def _live_reasoning_delta(text: str) -> None:
+            # Same no-DB-write rule as _live_token_delta: the step's reasoning
+            # lands on its stepTimings entry (note_reasoning) when it ends.
+            if run_id is None:
+                return
+            await publish_run_reasoning_delta(
+                tenant_id, run_id=run_id, step=live_step["no"], text=text
+            )
 
         startup_unavailable: list[dict[str, str]] = []
 
@@ -1109,6 +1132,7 @@ async def run_agent(
                             contains_restricted=contains_restricted,
                         ),
                         on_text=_live_token_delta if publish else None,
+                        on_reasoning=_live_reasoning_delta if publish else None,
                         timing=timing,
                     )
 
@@ -1169,6 +1193,7 @@ async def run_agent(
 
                 step_rec = start_step(steps)
                 step_timings.append(step_rec)
+                live_step["no"] = steps
                 step_probe = StreamTiming()
 
                 async def _cache_lookup(
@@ -1313,12 +1338,18 @@ async def run_agent(
                             request_id,
                         )
                     await _record(result, request_id)
+                    step_budget = resolved_params.max_tokens
+                    note_usage(step_rec, result.usage, max_tokens=step_budget)
                     if not result.tool_calls:
                         result.tool_calls = _salvage_tool_calls(result.text, _offered())
+                    retry_params = bumped_for_length_retry(resolved_params, provider=provider)
                     if (
                         result.stop_reason == "length"
                         and not result.tool_calls
                         and not result.text.strip()
+                        # Already at the provider's cap: a retry could only
+                        # fail the same way again.
+                        and retry_params.max_tokens > resolved_params.max_tokens
                     ):
                         # A reasoning-capable model can spend its whole completion
                         # budget on hidden reasoning and hit max_tokens before
@@ -1328,10 +1359,12 @@ async def run_agent(
                         # agent finished" with nothing actually done.
                         retry_request_id = uuid.uuid4()
                         result, retry_request_id = await _complete_with_overflow_retry(
-                            bumped_for_length_retry(resolved_params),
+                            retry_params,
                             retry_request_id,
                         )
                         await _record(result, retry_request_id)
+                        step_budget = retry_params.max_tokens
+                        note_usage(step_rec, result.usage, max_tokens=step_budget)
                         if not result.tool_calls:
                             result.tool_calls = _salvage_tool_calls(result.text, _offered())
                     # Phase-2 cascade: heuristic or cheap self-check, then escalate once.
@@ -1368,9 +1401,12 @@ async def run_agent(
                                 cascade_request_id,
                             )
                             await _record(result, cascade_request_id)
+                            step_budget = resolved_params.max_tokens
+                            note_usage(step_rec, result.usage, max_tokens=step_budget)
                             if not result.tool_calls:
                                 result.tool_calls = _salvage_tool_calls(result.text, _offered())
                     await cache_flow.store_if_matching(key, result, provider=provider, model=model)
+                    note_reasoning(step_rec, result.reasoning)
                     note_model(
                         step_rec,
                         model_wait_ms=step_probe.model_wait_ms,
@@ -1401,7 +1437,7 @@ async def run_agent(
                             agent_id=agent.id,
                             status="warning",
                             message=(
-                                f"{agent.name}: model exceeded its token budget "
+                                f"{agent.name}: the model used its whole answer budget "
                                 "without producing an answer"
                             ),
                         )
@@ -1421,8 +1457,9 @@ async def run_agent(
                             task.id,
                             agent.id,
                             "failed",
-                            "Model exceeded its token budget without producing an answer or "
-                            "tool call.",
+                            budget_exhausted_message(
+                                int(step_rec.get("max_tokens") or resolved_params.max_tokens)
+                            ),
                             tool_trace,
                             steps,
                             pending_runs,
@@ -1511,7 +1548,12 @@ async def run_agent(
 
                 messages.append(
                     NeutralMessage(
-                        role="assistant", content=result.text, tool_calls=result.tool_calls
+                        role="assistant",
+                        content=result.text,
+                        tool_calls=result.tool_calls,
+                        # Anthropic's signed thinking blocks, which the next
+                        # call must repeat ahead of these tool calls.
+                        replay_blocks=list(result.replay_blocks),
                     )
                 )
                 # A skill's value_threshold guardrail declares BOTH its threshold

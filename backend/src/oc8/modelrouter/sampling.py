@@ -24,14 +24,17 @@ from __future__ import annotations
 from typing import Any
 
 from oc8 import models as m
+from oc8.config import get_settings
 from oc8.modelrouter.types import ModelParams
 
 # Slightly above zero: enough variation that an agent doesn't repeat itself word
 # for word, low enough to stay reliable at tool calling.
 DEFAULT_TEMPERATURE = 0.3
-# Room for a multi-line tool call (several order lines plus a note) and a short
-# summary. The old 512 truncated exactly that kind of call.
-DEFAULT_MAX_TOKENS = 1536
+# Fallback answer budget when the settings cannot be read. The real default is
+# `Settings.default_max_tokens` (OC8_DEFAULT_MAX_TOKENS): room for a multi-line
+# tool call plus the reasoning a thinking model does before it. 1536 used to be
+# the default and was spent entirely on reasoning by such models.
+DEFAULT_MAX_TOKENS = 4096
 
 # Providers hard-error outside this range, which would surface as a failed run
 # rather than as the configuration mistake it is.
@@ -47,12 +50,60 @@ _MAX_TEMPERATURE = 2.0
 LENGTH_RETRY_MAX_TOKENS_MULTIPLIER = 2
 
 
-def bumped_for_length_retry(params: ModelParams) -> ModelParams:
+def default_max_tokens() -> int:
+    """`OC8_DEFAULT_MAX_TOKENS`, or `DEFAULT_MAX_TOKENS` if it is unusable."""
+    try:
+        configured = get_settings().default_max_tokens
+    except Exception:  # settings that fail to load must not fail a run
+        return DEFAULT_MAX_TOKENS
+    return _max_tokens(configured) or DEFAULT_MAX_TOKENS
+
+
+def provider_max_tokens(provider: str | None) -> int | None:
+    """The most max_tokens `provider` accepts (`OC8_PROVIDER_MAX_TOKENS`), or None."""
+    if not provider:
+        return None
+    try:
+        return get_settings().provider_max_tokens_map.get(provider)
+    except Exception:
+        return None
+
+
+def cap_for_provider(max_tokens: int, provider: str | None) -> int:
+    """`max_tokens` cut down to the provider's cap, if it has one."""
+    cap = provider_max_tokens(provider)
+    return min(max_tokens, cap) if cap is not None else max_tokens
+
+
+def bumped_for_length_retry(params: ModelParams, *, provider: str | None = None) -> ModelParams:
+    """`params` with twice the budget, never above `provider`'s cap.
+
+    The result may carry the same budget as `params` when that is already at
+    the cap; a caller should then skip the retry, which could only fail the
+    same way again.
+    """
     return ModelParams(
         temperature=params.temperature,
-        max_tokens=params.max_tokens * LENGTH_RETRY_MAX_TOKENS_MULTIPLIER,
+        max_tokens=cap_for_provider(
+            params.max_tokens * LENGTH_RETRY_MAX_TOKENS_MULTIPLIER, provider
+        ),
         effort=params.effort,
         extra=params.extra,
+    )
+
+
+def budget_exhausted_message(max_tokens: int) -> str:
+    """Why a step failed with nothing to show, and what the operator can do.
+
+    Stored as the run's output and shown as its failure reason, so it names the
+    budget the last attempt had and the three settings that move it.
+    """
+    return (
+        f"The model used its whole answer budget ({max_tokens:,} tokens) without "
+        "producing an answer or tool call, even after one retry. Reasoning models "
+        "spend part of this budget thinking. To fix it, raise max_tokens for this "
+        "agent or its model connection (or OC8_DEFAULT_MAX_TOKENS for all), or "
+        "lower the model's reasoning effort."
     )
 
 
@@ -111,7 +162,7 @@ def resolve_params(
     if definition is None and agent is not None:
         definition = agent.definition
     temperature = DEFAULT_TEMPERATURE
-    max_tokens = DEFAULT_MAX_TOKENS
+    max_tokens = default_max_tokens()
     effort: str | None = None
     extra: dict[str, Any] = {}
 
@@ -137,7 +188,9 @@ def resolve_params(
 
     return ModelParams(
         temperature=temperature,
-        max_tokens=max_tokens,
+        # A provider that accepts fewer tokens gets its cap instead of an
+        # error that would fail the run.
+        max_tokens=cap_for_provider(max_tokens, config.provider if config is not None else None),
         effort=effort,
         extra=extra or None,
     )

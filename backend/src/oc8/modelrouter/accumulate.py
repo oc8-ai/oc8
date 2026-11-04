@@ -16,6 +16,7 @@ import json
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from oc8.modelrouter.types import CompletionChunk, CompletionResult, ToolCall, Usage
 
@@ -38,6 +39,8 @@ class _PendingCall:
 @dataclass
 class _Accumulator:
     text_parts: list[str] = field(default_factory=list)
+    reasoning_parts: list[str] = field(default_factory=list)
+    replay_blocks: list[dict[str, Any]] = field(default_factory=list)
     calls: dict[int, _PendingCall] = field(default_factory=dict)
     usage: Usage = field(default_factory=Usage)
     stop_reason: str = "stop"
@@ -47,6 +50,9 @@ class _Accumulator:
     def absorb(self, chunk: CompletionChunk) -> None:
         if chunk.text:
             self.text_parts.append(chunk.text)
+        if chunk.reasoning:
+            self.reasoning_parts.append(chunk.reasoning)
+        self.replay_blocks.extend(chunk.replay_blocks)
         for delta in chunk.tool_calls:
             call = self.calls.setdefault(delta.index, _PendingCall())
             if delta.id:
@@ -79,6 +85,7 @@ class _Accumulator:
             )
             for index, call in sorted(self.calls.items())
         ]
+        reasoning = "".join(self.reasoning_parts).strip()
         return CompletionResult(
             text="".join(self.text_parts),
             tool_calls=tool_calls,
@@ -86,6 +93,8 @@ class _Accumulator:
             stop_reason=self.stop_reason,
             provider=self.provider or "",
             model=self.model or "",
+            reasoning=reasoning or None,
+            replay_blocks=self.replay_blocks,
         )
 
 
@@ -94,10 +103,11 @@ async def accumulate_stream(
     *,
     on_text: OnText | None = None,
     timing: StreamTiming | None = None,
+    on_reasoning: OnText | None = None,
 ) -> CompletionResult:
-    """Drain `chunks`, calling `on_text` with each text fragment as it
-    arrives, and return the fully assembled CompletionResult once the
-    stream ends."""
+    """Drain `chunks`, calling `on_text` with each text fragment (and
+    `on_reasoning` with each reasoning fragment) as it arrives, and return the
+    fully assembled CompletionResult once the stream ends."""
     started = time.monotonic() if timing is not None else None
     acc = _Accumulator()
     try:
@@ -107,6 +117,8 @@ async def accumulate_stream(
             acc.absorb(chunk)
             if chunk.text and on_text is not None:
                 await on_text(chunk.text)
+            if chunk.reasoning and on_reasoning is not None:
+                await on_reasoning(chunk.reasoning)
         return acc.result()
     finally:
         if timing is not None:

@@ -2066,8 +2066,19 @@ async def test_step_reports_status_override_failed_when_still_truncated_after_re
             )
             assert r.status_code == 200, r.text
             assert r.json()["status_override"] == "failed"
+            # The reason names the retry's budget and what to change.
+            assert "OC8_DEFAULT_MAX_TOKENS" in r.json()["text"]
+            assert "max_tokens" in r.json()["text"]
     # Exactly one retry, never an unbounded loop.
     assert calls["n"] == 2
+    from oc8 import models as m
+
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        stored = await db.get(m.AgentRun, run_id)
+        assert stored is not None
+        step = stored.context["stepTimings"][-1]
+        assert step["tokens_out"] == 2 * 1536
+        assert step["max_tokens"] > 0
 
 
 @pytest.mark.asyncio
