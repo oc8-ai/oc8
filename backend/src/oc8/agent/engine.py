@@ -769,6 +769,14 @@ async def run_agent(
             nonlocal model_config, provider, model, model_locality
             active_skills: list[LoadedSkill] = []
 
+            def _mark_restricted() -> None:
+                # One-way: restricted text is in the transcript from here on, so
+                # every later completion says so and the router refuses a cloud
+                # model or fallback. The step helpers below read the flag late,
+                # on purpose -- each call sees the run's current state.
+                nonlocal contains_restricted
+                contains_restricted = True
+
             def _offered() -> list[NeutralTool]:
                 # Shared with the isolated runtime so both offer the same list --
                 # see oc8.agent.control_tools.
@@ -1843,6 +1851,7 @@ async def run_agent(
                                     tier=str(tc.arguments.get("tier", "")),
                                     content=str(tc.arguments.get("content", "")),
                                     metadata={"task_id": str(task.id)},
+                                    model_locality=model_locality,
                                     member_id=(
                                         await member_behind_run_task(
                                             db, tenant_id=tenant_id, task=task, run_id=run_id
@@ -2103,6 +2112,8 @@ async def run_agent(
                                     kind="control",
                                     message=control.output.removeprefix("ERROR: ").strip(),
                                 )
+                            if control.contains_restricted:
+                                _mark_restricted()
                             if control.pending_run is not None:
                                 pending_runs.append(control.pending_run)
                             if control.activated_skill is not None:

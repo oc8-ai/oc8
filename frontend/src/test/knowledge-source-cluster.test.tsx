@@ -174,6 +174,7 @@ const EXISTING_CREDENTIAL = { id: "cred-1", name: "Prod S3", credentialType: "s3
 
 const knowledgeConnectorsMock = vi.fn();
 const knowledgeVectorIndexesMock = vi.fn();
+const embeddingModelsMock = vi.fn();
 
 vi.mock("@/lib/knowledge-connector-hooks", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/knowledge-connector-hooks")>();
@@ -185,6 +186,7 @@ vi.mock("@/lib/knowledge-connector-hooks", async (importOriginal) => {
     useCreateSource: () => ({ mutate: createSourceMock, isPending: false }),
     useKnowledgeConnectors: () => knowledgeConnectorsMock(),
     useKnowledgeVectorIndexes: () => knowledgeVectorIndexesMock(),
+    useEmbeddingModels: () => embeddingModelsMock(),
     useOAuthConnections: () => EMPTY_OAUTH_RESPONSE,
   };
 });
@@ -209,6 +211,8 @@ beforeEach(() => {
   knowledgeConnectorsMock.mockReturnValue(STUB_CONNECTORS_RESPONSE);
   knowledgeVectorIndexesMock.mockReset();
   knowledgeVectorIndexesMock.mockReturnValue({ data: [], isLoading: false });
+  embeddingModelsMock.mockReset();
+  embeddingModelsMock.mockReturnValue({ data: undefined });
 });
 
 describe("SourceEditDrawer", () => {
@@ -543,10 +547,11 @@ describe("KbDetailDrawer delete", () => {
 });
 
 // Regression coverage for the reported bug: the embedding-model picker
-// offered google/openai options even though this deployment can never
-// route embeddings to a cloud provider (ModelRouter.embed() always uses
-// the local Ollama instance) -- and the wizard offered no way to add
-// sources at creation time, only afterward.
+// offered hardcoded google/openai options that no tenant was set up to use
+// -- and the wizard offered no way to add sources at creation time, only
+// afterward. The picker now offers the deployment's own default (which may
+// be a cloud provider, from GET /knowledge/embedding-models) plus the local
+// models, and only the local ones until that answers.
 describe("BaseWizard", () => {
   beforeEach(() => {
     createKnowledgeBaseMock.mockReset();
@@ -572,6 +577,22 @@ describe("BaseWizard", () => {
     expect(values).toEqual(["local/nomic-embed-text"]);
     expect(values.some((v) => v.includes("bge-large"))).toBe(false);
     expect(values.some((v) => v.includes("google") || v.includes("openai"))).toBe(false);
+  });
+
+  it("puts the deployment's default embedding model first and creates the base with it", () => {
+    embeddingModelsMock.mockReturnValue({
+      data: {
+        defaultModel: "acme_ai/embed-768",
+        models: ["acme_ai/embed-768", "local/nomic-embed-text"],
+      },
+    });
+    renderWithClient(<BaseWizard onClose={vi.fn()} onCreate={vi.fn()} />);
+    goToStep(3);
+
+    const select = screen.getByRole("combobox") as HTMLSelectElement;
+    expect(select.value).toBe("acme_ai/embed-768");
+    const values = (screen.getAllByRole("option") as HTMLOptionElement[]).map((o) => o.value);
+    expect(values).toEqual(["acme_ai/embed-768", "local/nomic-embed-text"]);
   });
 
   it("syncs each selected source into the newly created base", () => {

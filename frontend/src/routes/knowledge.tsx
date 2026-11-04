@@ -49,6 +49,7 @@ import {
   useCreateSource,
   useDeleteSource,
   useIngestionJob,
+  useEmbeddingModels,
   useKnowledgeConnectors,
   useKnowledgeVectorIndexes,
   useOAuthConnections,
@@ -1339,8 +1340,9 @@ export function SourceWizard({
   const targetKbId = kbsForCreate[0]?.id;
   const createKb = useCreateKnowledgeBase();
   const [newKbName, setNewKbName] = useState("");
-  const [newKbModel, setNewKbModel] =
-    useState<(typeof LOCAL_EMBEDDING_MODELS)[number]>("local/nomic-embed-text");
+  const embeddingChoices = useEmbeddingModelChoices();
+  const [chosenKbModel, setNewKbModel] = useState("");
+  const newKbModel = chosenKbModel || embeddingChoices.defaultModel;
   // A toast alone was too easy to miss for a validation message the user
   // needs to actually act on (e.g. "prefix is the same as the bucket
   // name") -- this stays visible on whatever step they're on until they
@@ -1537,13 +1539,11 @@ export function SourceWizard({
                 />
                 <select
                   value={newKbModel}
-                  onChange={(e) =>
-                    setNewKbModel(e.target.value as (typeof LOCAL_EMBEDDING_MODELS)[number])
-                  }
+                  onChange={(e) => setNewKbModel(e.target.value)}
                   title="Embedding model"
                   className="rounded-md border border-border bg-background/40 px-2 py-1.5 text-xs outline-none focus:border-primary/50"
                 >
-                  {LOCAL_EMBEDDING_MODELS.map((m) => (
+                  {embeddingChoices.models.map((m) => (
                     <option key={m} value={m}>
                       {m}
                     </option>
@@ -1761,13 +1761,10 @@ function DynamicConnectorFields({
   );
 }
 
-// Embedding is ALWAYS routed to the local Ollama instance in this deployment
-// (ModelRouter.embed() -- Anthropic has no embeddings API, and no cloud
-// provider is wired through for embeddings yet, so `google/...` or
-// `openai/...` would raise EmbeddingUnavailable the moment a document is
-// actually ingested). Not a live discovery call (no endpoint for that exists
-// yet), but at least honest about what "local/" means here instead of
-// listing providers that can never work.
+// The fallback until GET /knowledge/embedding-models answers. That endpoint
+// puts the deployment's own default first (OC8_DEFAULT_EMBEDDING_MODEL, which
+// an operator may point at a cloud `<provider>/<model>` the tenant has a key
+// for), followed by these local models.
 //
 // bge-large was offered here too until live-verified (2026-08-20, via
 // POST /api/embed against this deployment's Ollama) to produce 1024-dim
@@ -1778,6 +1775,12 @@ function DynamicConnectorFields({
 // bge-large lost data -- but every document synced into one would fail to
 // ingest. Only list models whose output width actually matches EMBED_DIM.
 const LOCAL_EMBEDDING_MODELS = ["local/nomic-embed-text"] as const;
+
+function useEmbeddingModelChoices(): { defaultModel: string; models: string[] } {
+  const { data } = useEmbeddingModels();
+  const models = data?.models?.length ? data.models : [...LOCAL_EMBEDDING_MODELS];
+  return { defaultModel: data?.defaultModel || models[0], models };
+}
 
 export function BaseWizard({
   onClose,
@@ -1795,8 +1798,9 @@ export function BaseWizard({
   const [step, setStep] = useState(1);
   const [name, setName] = useState("");
   const [mode, setMode] = useState<"ingest" | "connect">("ingest");
-  const [model, setModel] =
-    useState<(typeof LOCAL_EMBEDDING_MODELS)[number]>("local/nomic-embed-text");
+  const embeddingChoices = useEmbeddingModelChoices();
+  const [chosenModel, setModel] = useState("");
+  const model = chosenModel || embeddingChoices.defaultModel;
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
   const [indexType, setIndexType] = useState("");
   const [credentialId, setCredentialId] = useState("");
@@ -2119,12 +2123,12 @@ export function BaseWizard({
             </div>
             <select
               value={model}
-              onChange={(e) => setModel(e.target.value as (typeof LOCAL_EMBEDDING_MODELS)[number])}
+              onChange={(e) => setModel(e.target.value)}
               className="mt-1 w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
             >
-              {LOCAL_EMBEDDING_MODELS.map((m) => (
+              {embeddingChoices.models.map((m) => (
                 <option key={m} value={m}>
-                  {m} (on-prem)
+                  {m.startsWith("local/") ? `${m} (on-prem)` : m}
                 </option>
               ))}
             </select>

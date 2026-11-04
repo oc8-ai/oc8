@@ -107,6 +107,22 @@ export function useKnowledgeVectorIndexes() {
   });
 }
 
+/** The deployment's embedding-model choices for a new knowledge base: its
+ * configured default (OC8_DEFAULT_EMBEDDING_MODEL, which may be a cloud
+ * `<provider>/<model>`) first, then the local ones. */
+export interface EmbeddingModelChoices {
+  defaultModel: string;
+  models: string[];
+}
+
+export function useEmbeddingModels() {
+  return useQuery({
+    queryKey: ["knowledge", "embedding-models"],
+    queryFn: () => api.get<EmbeddingModelChoices>("/knowledge/embedding-models"),
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
 export function useOAuthConnections() {
   return useQuery({
     queryKey: ["oauth", "connections"],

@@ -155,15 +155,17 @@ class BudgetCheck:
 
 
 async def check_budget(
-    db: AsyncSession, *, tenant_id: uuid.UUID, department_id: uuid.UUID
+    db: AsyncSession, *, tenant_id: uuid.UUID, department_id: uuid.UUID | None
 ) -> BudgetCheck:
     """Evaluates both the tenant-wide budget and the department's own budget
     (if configured); either's hard limit being exceeded makes the whole
-    check hard_exceeded -- whichever scope is stricter governs."""
+    check hard_exceeded -- whichever scope is stricter governs.
+    `department_id=None` checks the tenant-wide budget only (work that belongs
+    to no department, such as embedding a knowledge base)."""
     soft_exceeded = False
     hard_exceeded = False
     now = datetime.now(tz=UTC)
-    for scope_department_id in (None, department_id):
+    for scope_department_id in dict.fromkeys((None, department_id)):
         budget = await get_budget(db, tenant_id=tenant_id, department_id=scope_department_id)
         if budget is None:
             continue

@@ -553,3 +553,33 @@ async def test_a_stream_that_dies_says_why_in_the_log_too(
     frames = [json.loads(p) for p in payloads if p != "[DONE]"]
     assert any(reason in json.dumps(f.get("error", {})) for f in frames), "in-band error frame"
     assert any(reason in r.getMessage() for r in caplog.records), "and a server-side log line"
+
+
+async def test_a_run_marked_restricted_keeps_its_completions_off_cloud_models(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A container-run agent pulls knowledge in mid-run through `search_knowledge`
+    on the tool gateway, which marks the run when that text is restricted. The
+    gateway used to send every completion as unrestricted, so the router's
+    ClassificationViolation never fired and a cloud fallback received it."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _dept = await _agent_run(db, tenant)
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {**run.context, "contains_restricted": True}
+        await db.flush()
+
+    seen: dict[str, Any] = {}
+
+    async def fake_complete(*a: object, **kw: Any) -> CompletionResult:
+        seen.update(kw)
+        return _result()
+
+    monkeypatch.setattr("oc8.api.llm_gateway.complete_with_fallback", fake_complete)
+    code, body, _h = await _post(
+        _agent_token(tenant, agent_id, run_id),
+        {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert code == 200, body
+    assert seen["contains_restricted"] is True

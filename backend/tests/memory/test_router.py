@@ -24,13 +24,13 @@ class _FakeEmbedRouter:
     """Deterministic EMBED_DIM-dim fake embedding: identical text -> identical
     vector, so cosine similarity is reproducible without a real model."""
 
-    async def embed(self, text: str, model: str | None = None) -> list[float]:
+    async def embed(self, text: str, model: str | None = None, **_: object) -> list[float]:
         seed = sum(ord(c) for c in text) or 1
         return [float((seed + i) % 23) for i in range(EMBED_DIM)]
 
 
 class _FailingEmbedRouter:
-    async def embed(self, text: str, model: str | None = None) -> list[float]:
+    async def embed(self, text: str, model: str | None = None, **_: object) -> list[float]:
         from oc8.modelrouter import EmbeddingUnavailable
 
         raise EmbeddingUnavailable("ollama unreachable")

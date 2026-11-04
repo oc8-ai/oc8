@@ -71,6 +71,10 @@ class GatewayCaller(BaseModel):
     #: sampling come from here, never the live row: a container calls this
     #: gateway once per turn, and a model switch must not reach a running run.
     pinned: dict[str, Any]
+    #: Set once restricted or local-only text entered this run (a
+    #: `search_knowledge` lookup through the tool gateway marks it). Every
+    #: completion carries it, so the router refuses a cloud model or fallback.
+    contains_restricted: bool = False
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -106,6 +110,7 @@ async def _caller(db: DbSession, principal: CurrentPrincipal) -> GatewayCaller:
         agent=agent,
         run_id=run_id,
         pinned=await resolve_version(db, run, agent),
+        contains_restricted=bool((run.context or {}).get("contains_restricted", False)),
     )
 
 
@@ -310,7 +315,7 @@ async def _prepare(
         tools=tools,
         params=resolve_params(model_config, agent=agent, definition=caller.pinned["definition"]),
         request_id=request_id,
-        contains_restricted=False,
+        contains_restricted=caller.contains_restricted,
     )
     return common, request_id, provider, model, model_config
 

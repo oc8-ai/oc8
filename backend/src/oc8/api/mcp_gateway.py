@@ -766,6 +766,10 @@ async def _call_tool(
             pinned=pinned,
         )
         assert outcome is not None
+        if outcome.contains_restricted:
+            # The LLM gateway reads this off the run for every later completion,
+            # so the router refuses a cloud model or fallback for it.
+            await merge_context(db, run, {"contains_restricted": True})
         if outcome.pending_run is not None:
             # The sub-run exists but nothing is listening for it yet: publishing
             # from here would race the commit, and an entry on the stream whose
