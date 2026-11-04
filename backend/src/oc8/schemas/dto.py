@@ -253,7 +253,12 @@ class SeatDTO(CamelModel):
 
 class MemberDTO(CamelModel):
     id: str
+    #: The identity provider's stable id for this person (the token's `sub`).
+    #: With an external OIDC provider this is often a uuid, not an address.
     subject: str
+    #: The address they sign in with, as the identity provider last reported
+    #: it. `null` when it never has; the screen then falls back to `subject`.
+    email: str | None = None
     display_name: str = ""
     #: Sees and decides in every department, including ones created after the row
     #: was written. Written at an authenticated moment and revocable; never
@@ -327,6 +332,9 @@ class MeDTO(CamelModel):
     #: an empty list costs nothing.
     scopes: list[str] = []
     display_name: str = ""
+    #: The caller's sign-in address, from the token's `email` claim or the
+    #: member row. `null` when neither has one.
+    email: str | None = None
     #: `null` only for a principal that cannot stand in a department at all (a
     #: plugin token). Every operator has one from their first request on, which is
     #: also what keeps `approval_request.decided_by` from being NULL.
@@ -1269,6 +1277,11 @@ class AuthConfig(CamelModel):
     #: logout), if it has one. None for the dev/community provider, which has
     #: no external session to terminate.
     sso_logout_url: str | None = None
+    #: Where a person manages their own sign-in email and password at the
+    #: identity provider (for example Keycloak's account console), from
+    #: `OC8_ACCOUNT_MANAGEMENT_URL`. None when not configured; the screen then
+    #: only says those details are managed elsewhere.
+    account_management_url: str | None = None
 
 
 class SecretDTO(CamelModel):

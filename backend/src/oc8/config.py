@@ -334,6 +334,12 @@ class Settings(BaseSettings):
     # Where the callback sends the browser back to.
     frontend_base_url: str = "http://localhost:8080"
 
+    # Where people change their own sign-in email and password when an external
+    # identity provider owns them (for example an OIDC provider's account page,
+    # such as Keycloak's `/realms/<realm>/account`). Empty: the members screen
+    # only says those details are managed by the identity provider.
+    account_management_url: str = ""
+
     # Audit chain MAC (§12.5 hardening): when enabled, audit_event rows are
     # hashed with HMAC-SHA256 under a key derived from secret_kek instead of a
     # bare sha256, so database access alone no longer suffices to forge

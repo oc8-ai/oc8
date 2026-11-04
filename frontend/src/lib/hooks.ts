@@ -494,6 +494,9 @@ export const useAuthConfig = () =>
         demo?: boolean;
         initialized?: boolean;
         memberInvites?: "local" | "external";
+        /** The identity provider's self-service account page
+         *  (`OC8_ACCOUNT_MANAGEMENT_URL`); `null` when not configured. */
+        accountManagementUrl?: string | null;
       }>("/auth/config"),
     staleTime: Infinity,
   });
@@ -618,6 +621,8 @@ export const useDepartmentAgents = (id: string) =>
 
 export interface CurrentUser {
   subject: string;
+  /** The sign-in address from the token's `email` claim or the member row. */
+  email?: string | null;
   role: string;
   kind: string;
   // ---- department-scoped workspace (§5, additive; every field has a default

@@ -28,6 +28,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { ExternalSignInHint, UserIdLine } from "@/components/sign-in-identity";
 import { Switch } from "@/components/ui/switch";
 import { useConfirm } from "@/hooks/use-confirm";
 import { useMay } from "@/lib/governance-hooks";
@@ -138,6 +139,10 @@ export function MemberDetailForm({ member }: { member: Member }) {
   // With an external inviter the deployment's sign-in service owns
   // passwords and sign-in emails; core refuses to set either locally.
   const localAuth = authConfig?.mode === "community" && authConfig?.memberInvites !== "external";
+  // The token's `sub` is the identity, but with an external OIDC provider it
+  // is often a uuid: show the address the provider reports, and the subject
+  // only as a secondary user id.
+  const signInEmail = member.email || member.subject;
 
   const [displayName, setDisplayName] = useState(member.displayName ?? "");
   useEffect(() => setDisplayName(member.displayName ?? ""), [member.displayName]);
@@ -406,7 +411,7 @@ export function MemberDetailForm({ member }: { member: Member }) {
             <UserCog className="h-4 w-4" />
           </div>
           <div>
-            <h3 className="font-serif text-lg">{member.displayName || member.subject}</h3>
+            <h3 className="font-serif text-lg">{member.displayName || signInEmail}</h3>
             {isAdmin && (
               <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
                 <ShieldCheck className="size-3" />
@@ -463,19 +468,17 @@ export function MemberDetailForm({ member }: { member: Member }) {
               </div>
             ) : (
               <input
-                value={member.subject}
+                value={signInEmail}
                 readOnly
                 disabled
                 className="rounded-md border border-input bg-muted/30 px-3 py-2 text-muted-foreground"
               />
             )}
+            {!localAuth && signInEmail !== member.subject && (
+              <UserIdLine subject={member.subject} />
+            )}
             {!localAuth && (
-              <span className="text-xs text-muted-foreground">
-                {t(
-                  "Managed by your identity provider; not editable here.",
-                  "Wird von Ihrem Identity-Provider verwaltet; hier nicht bearbeitbar.",
-                )}
-              </span>
+              <ExternalSignInHint accountUrl={authConfig?.accountManagementUrl} isSelf={isSelf} />
             )}
           </label>
         </div>

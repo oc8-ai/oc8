@@ -68,6 +68,12 @@ oc8:
   # whose provider can embed (OpenAI-compatible) works too; each organisation
   # then needs its own key for that provider. Must produce 768-dim vectors.
   defaultEmbeddingModel: ""
+  # With an external OIDC identity provider: the page where people change
+  # their own sign-in email and password (e.g. Keycloak's
+  # https://id.example.com/realms/<realm>/account). The members and profile
+  # screens link to it. Empty shows only a "managed by your identity
+  # provider" hint.
+  accountManagementUrl: ""
 
   otelSdkDisabled: true
 

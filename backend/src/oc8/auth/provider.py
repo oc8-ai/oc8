@@ -43,6 +43,11 @@ class InvalidToken(Exception):
     pass
 
 
+def _email_claim(data: Mapping[str, Any]) -> str | None:
+    value = data.get("email")
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
 def _principal_from_claims(data: Mapping[str, Any]) -> Principal:
     try:
         return Principal(
@@ -51,6 +56,7 @@ def _principal_from_claims(data: Mapping[str, Any]) -> Principal:
             role=cast(str, data["role"]),
             kind=cast(PrincipalKind, data.get("kind", "operator")),
             scopes=cast(list[str], data.get("scopes", [])),
+            email=_email_claim(data),
         )
     except (KeyError, ValueError) as exc:
         raise InvalidToken("malformed claims") from exc

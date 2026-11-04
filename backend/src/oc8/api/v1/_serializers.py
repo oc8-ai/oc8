@@ -359,6 +359,7 @@ def member_to_dto(row: MemberRow) -> MemberDTO:
         seats=[seat_to_dto(s) for s in row.seats],
         role_id=None if row.role_id is None else str(row.role_id),
         role_name=row.role_name,
+        email=row.email,
     )
 
 

@@ -1296,6 +1296,7 @@ async def _seed_demo_admin(session: AsyncSession) -> None:
             id=det(tid, "member", "demo-admin"),
             tenant_id=tid,
             subject=email,
+            email=email,
             # Match password_setup's subject_uuid derivation (local auth, not
             # subject_uuid_for / messenger door).
             subject_uuid=uuid.uuid5(uuid.NAMESPACE_URL, f"oc8:local:{email}"),

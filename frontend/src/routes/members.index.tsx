@@ -454,7 +454,7 @@ function MembersTable() {
                     {t("Name", "Name")}
                   </th>
                   <th className="py-3 text-left font-medium text-muted-foreground">
-                    {t("Sign-in", "Anmeldung")}
+                    {t("Sign-in email", "Anmelde-E-Mail")}
                   </th>
                   <th className="py-3 text-left font-medium text-muted-foreground">
                     {t("Role", "Rolle")}
@@ -483,6 +483,9 @@ interface MemberRowProps {
 }
 
 function MemberRow({ member, t }: MemberRowProps) {
+  // `subject` is the identity provider's id for the person -- with an external
+  // OIDC provider often a uuid -- so the address it reports comes first.
+  const signInEmail = member.email || member.subject;
   const currentRoleName = member.roleName
     ? roleLabel(member.roleName, t)
     : t("from their sign-in", "aus ihrer Anmeldung");
@@ -491,13 +494,10 @@ function MemberRow({ member, t }: MemberRowProps) {
     <tr className="border-b border-border/50 hover:bg-muted/20">
       <td className="py-3">
         <Link to="/members/$memberId" params={{ memberId: member.id }} className="block hover:underline">
-          <div className="font-medium">{member.displayName || member.subject}</div>
-          {member.displayName && (
-            <div className="text-xs text-muted-foreground">{member.subject}</div>
-          )}
+          <div className="font-medium">{member.displayName || signInEmail}</div>
         </Link>
       </td>
-      <td className="py-3 text-muted-foreground">{member.subject}</td>
+      <td className="py-3 text-muted-foreground">{signInEmail}</td>
       <td className="py-3">
         <span className="text-sm">{currentRoleName}</span>
       </td>

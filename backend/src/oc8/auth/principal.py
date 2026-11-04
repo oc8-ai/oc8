@@ -18,6 +18,9 @@ class Principal(BaseModel):
     role: str
     kind: PrincipalKind = "operator"
     scopes: list[str] = []
+    #: The token's `email` claim, when the identity provider sends one. Display
+    #: data copied onto `org_member.email`; never an identity -- `subject` is.
+    email: str | None = None
 
     @property
     def is_agent(self) -> bool:

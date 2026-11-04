@@ -165,6 +165,10 @@ app.kubernetes.io/component: {{ .component }}
 - name: OC8_DEFAULT_EMBEDDING_MODEL
   value: {{ .Values.oc8.defaultEmbeddingModel | quote }}
 {{- end }}
+{{- if .Values.oc8.accountManagementUrl }}
+- name: OC8_ACCOUNT_MANAGEMENT_URL
+  value: {{ .Values.oc8.accountManagementUrl | quote }}
+{{- end }}
 {{- end }}
 
 {{- define "oc8.waitForPostgresInit" -}}
