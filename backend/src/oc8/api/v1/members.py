@@ -50,6 +50,7 @@ from oc8.workspace.members import (
     get_member,
     grant_seat,
     list_members,
+    looks_like_email,
     revoke_seat,
     role_names_for,
     seats_for,
@@ -153,6 +154,7 @@ async def _member_dto(db: AsyncSession, member: m.OrgMember) -> MemberDTO:
             seats=tuple(await seats_for(db, member.id)),
             role_id=member.role_id,
             role_name="" if member.role_id is None else names.get(member.role_id, ""),
+            email=member.email,
         )
     )
 
@@ -274,6 +276,9 @@ async def create_member(
         subject=subject,
         display_name=body.display_name,
         all_departments=body.all_departments,
+        # With an inviter `body.subject` is the address it was asked to invite;
+        # locally the subject is the address.
+        email=body.subject if inviter is not None or looks_like_email(subject) else None,
     )
     if inviter is not None:
         # Same audit trail as a local invitation: who invited whom, as what.
@@ -483,6 +488,9 @@ async def rename_member_subject(
         old_subject = member.subject
         member.subject = new_subject
         member.subject_uuid = subject_uuid_for(new_subject)
+        # Local sign-in only (refused above with an external inviter), where the
+        # subject IS the address.
+        member.email = new_subject if looks_like_email(new_subject) else None
         await append_event(
             db,
             tenant_id=principal.tenant_id,

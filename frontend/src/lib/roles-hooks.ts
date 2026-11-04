@@ -134,7 +134,12 @@ export interface MemberSeat {
  *  so both can read from the same `GET /members` response. */
 export interface RoleAssignee {
   id: string;
+  /** The identity provider's stable id (the token's `sub`). With an external
+   *  OIDC provider often a uuid: show it as a user id, never as an email. */
   subject: string;
+  /** The sign-in address the identity provider last reported; `null` when it
+   *  never has, and then the screens fall back to `subject`. */
+  email?: string | null;
   displayName: string;
   /** What they hold TODAY. `null` is the token floor and is not "no
    *  permissions": the picker has to be able to say "Anna — Abteilungsleitung"

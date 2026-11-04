@@ -54,6 +54,9 @@ x-backend-env: &backend-env
   # :8080), neither of which is actually reachable in this compose stack.
   OC8_OAUTH_REDIRECT_BASE_URL: ${OC8_OAUTH_REDIRECT_BASE_URL:-http://localhost}
   OC8_FRONTEND_BASE_URL: ${OC8_FRONTEND_BASE_URL:-http://localhost}
+  # External OIDC identity provider's self-service account page, linked from
+  # the members and profile screens. Empty: no link (see .env.example).
+  OC8_ACCOUNT_MANAGEMENT_URL: ${OC8_ACCOUNT_MANAGEMENT_URL:-}
   # arm64 hosts only (ignored on x86_64): cryptography's vendored OpenSSL
   # probes CPU crypto features via an `mrs` instruction at import time, which
   # some virtualization stacks running a Linux arm64 guest under Apple's

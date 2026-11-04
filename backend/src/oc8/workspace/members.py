@@ -18,6 +18,7 @@ unique index is partial ON, so the history costs nothing.
 from __future__ import annotations
 
 import datetime as dt
+import re
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -88,6 +89,22 @@ class MemberRow:
     #: assignment points at a row that is gone: a uuid on a screen is not a name,
     #: and the resolver already treats that row as granting nothing.
     role_name: str = ""
+    #: The sign-in address as the identity provider last reported it, or `None`
+    #: when it never has. Display data; `subject` is the identity.
+    email: str | None = None
+
+
+_EMAIL_SHAPE = re.compile(r"[^@\s]+@[^@\s]+")
+
+
+def looks_like_email(value: str) -> bool:
+    """Whether a local-sign-in subject is an address, and so also the email.
+
+    Local password sign-in uses the address as the subject; a dev-login
+    subject such as `alice` is not one and must not be shown as an email.
+    The same shape migration 0105 backfills with.
+    """
+    return _EMAIL_SHAPE.fullmatch(value) is not None
 
 
 def validated_seat_role(seat_role: str) -> str:
@@ -196,7 +213,7 @@ async def list_members(
     Returns `(rows, total_count)` for the Design System Consistency plan's
     uniform search/filter/group/pagination contract (spec §1.1) -- same shape
     as `agents.repo.visible_agents` and `departments.repo.visible_departments`.
-    `search` matches against `display_name`. `group_by` is accepted for
+    `search` matches against `display_name` and `email`. `group_by` is accepted for
     contract-uniformity with those two callers even though `group_fields` is
     empty: the only other candidate, the assigned role's name, is resolved
     from a second query in `role_names_for` (see `MemberRow.role_name`'s own
@@ -206,7 +223,9 @@ async def list_members(
     anyway gets `ValueError`.
     """
     stmt = select(OrgMember).where(OrgMember.tenant_id == tenant_id, OrgMember.deleted_at.is_(None))
-    stmt = apply_search(stmt, model=OrgMember, columns=[OrgMember.display_name], search=search)
+    stmt = apply_search(
+        stmt, model=OrgMember, columns=[OrgMember.display_name, OrgMember.email], search=search
+    )
     stmt = apply_group_order(
         stmt,
         model=OrgMember,
@@ -233,6 +252,7 @@ async def list_members(
             seats=tuple(by_member.get(p.id, [])),
             role_id=p.role_id,
             role_name="" if p.role_id is None else names.get(p.role_id, ""),
+            email=p.email,
         )
         for p in people
     ]
@@ -294,6 +314,7 @@ async def upsert_member(
     subject: str,
     display_name: str = "",
     all_departments: bool | None = None,
+    email: str | None = None,
 ) -> tuple[OrgMember, bool]:
     """Enrol a person by subject, or adopt the row the gate already minted.
 
@@ -316,6 +337,9 @@ async def upsert_member(
     `None` and not a `False` default, because the symmetric mistake is just as
     bad: a POST sent to correct somebody's display name must not strip a CEO of
     his company-wide view as a side effect.
+
+    `email` is display data only (see `OrgMember.email`); like `display_name`,
+    an empty value leaves the stored one alone.
     """
     existing = (
         (
@@ -335,6 +359,8 @@ async def upsert_member(
             existing.display_name = display_name
         if all_departments is not None:
             existing.all_departments = all_departments
+        if email:
+            existing.email = email
         await db.flush()
         return existing, False
 
@@ -354,6 +380,7 @@ async def upsert_member(
                 subject=subject,
                 subject_uuid=subject_uuid_for(subject),
                 display_name=display_name,
+                email=email or None,
                 # `None` means "unsaid", and an unsaid grant on a row that does
                 # not exist yet is no grant: the column is NOT NULL with a `false`
                 # server default, so writing the coalesced value keeps the two
@@ -396,6 +423,8 @@ async def upsert_member(
             minted.display_name = display_name
         if all_departments is not None:
             minted.all_departments = all_departments
+        if email:
+            minted.email = email
         await db.flush()
     return minted, inserted is not None
 

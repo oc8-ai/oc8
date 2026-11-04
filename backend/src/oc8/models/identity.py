@@ -59,6 +59,12 @@ class OrgMember(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     display_name: Mapped[str] = mapped_column(
         Text, nullable=False, default="", server_default=text("''")
     )
+    #: The address this person signs in with, for display only. Copied from the
+    #: token's `email` claim whenever it is present and differs; for local
+    #: password sign-in it is the subject itself. NEVER an identity: nothing
+    #: looks a person up by it, because an IdP lets people change it and two
+    #: subjects can report the same address.
+    email: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     #: "Sees and decides in every department, including ones created after this
     #: row was written." A boolean rather than a set holding every department id:
     #: a set has to be remembered every time a department is created, and the one

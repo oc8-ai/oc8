@@ -254,6 +254,7 @@ async def me(principal: CurrentPrincipal, db: DbSession) -> MeDTO:
             role=principal.role,
             kind=principal.kind,
             scopes=list(principal.scopes),
+            email=principal.email,
             onboarding_status=onboarding_status,
         )
 
@@ -271,6 +272,7 @@ async def me(principal: CurrentPrincipal, db: DbSession) -> MeDTO:
         kind=principal.kind,
         scopes=list(principal.scopes),
         display_name=member.display_name if member is not None else "",
+        email=principal.email or (member.email if member is not None else None),
         member_id=str(member.id) if member is not None else None,
         # The scope's own answer, not `role == "org_admin"`: an auditor holds
         # `approval:view_any` and an `all_departments` row-CEO holds no role at
@@ -626,6 +628,7 @@ async def change_own_email(
         old_subject = member.subject
         member.subject = new_email
         member.subject_uuid = subject_uuid_for(new_email)
+        member.email = new_email
         await append_event(
             db,
             tenant_id=principal.tenant_id,
@@ -777,6 +780,7 @@ async def auth_config() -> AuthConfig:
             demo=s.is_demo,
             sso_logout_url=sso_logout_url,
             member_invites=_member_invites(),
+            account_management_url=s.account_management_url or None,
         )
     return AuthConfig(
         mode="community",
@@ -787,6 +791,7 @@ async def auth_config() -> AuthConfig:
         demo=s.is_demo,
         sso_logout_url=sso_logout_url,
         member_invites=_member_invites(),
+        account_management_url=s.account_management_url or None,
     )
 
 
@@ -1008,6 +1013,7 @@ async def password_setup(body: PasswordSetupRequest) -> PasswordSessionResponse:
             tenant_id=org.id,
             subject=body.email,  # Email as subject for local auth
             subject_uuid=uuid.uuid5(uuid.NAMESPACE_URL, f"oc8:local:{body.email}"),
+            email=body.email,
             display_name=body.display_name or body.email,
             password_hash=password_hash,
             all_departments=True,  # Initial admin sees all departments
@@ -1417,6 +1423,7 @@ async def confirm_email_change(body: ConfirmEmailChangeRequest) -> MemberDTO:
         old_subject = member.subject
         member.subject = row.new_email
         member.subject_uuid = subject_uuid_for(row.new_email)
+        member.email = row.new_email
         await append_event(
             db,
             tenant_id=org.id,

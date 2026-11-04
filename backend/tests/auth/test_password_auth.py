@@ -260,6 +260,22 @@ async def test_setup_creates_first_admin(
     assert principal["kind"] == "operator"
 
 
+async def test_setup_stores_the_sign_in_address_as_the_email(
+    client: AsyncClient, app_session: AppSessionFactory, org_in_db: m.Organization
+) -> None:
+    """Local sign-in uses the address as the subject, so it is the email too."""
+    response = await client.post(
+        "/api/v1/auth/setup",
+        json={"email": "first@example.com", "password": "SecurePassword123!"},
+    )
+    assert response.status_code == 201, response.text
+    async with app_session(org_in_db.id) as db:
+        member = (
+            await db.execute(select(m.OrgMember).where(m.OrgMember.subject == "first@example.com"))
+        ).scalar_one()
+    assert member.email == "first@example.com"
+
+
 async def test_first_admin_keeps_admin_permissions_after_a_later_login(
     client: AsyncClient, org_in_db: m.Organization
 ) -> None:

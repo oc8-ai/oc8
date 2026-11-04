@@ -544,6 +544,9 @@ msgstr "Firma wechseln"
 msgid "Change email"
 msgstr "E-Mail ändern"
 
+msgid "Change email or password"
+msgstr "E-Mail oder Passwort ändern"
+
 msgid "Change key"
 msgstr "Schlüssel ändern"
 
@@ -706,6 +709,9 @@ msgstr "Kopieren"
 msgid "Copy this key now — it will not be shown again."
 msgstr "Kopieren Sie diesen Key jetzt — er wird nicht erneut angezeigt."
 
+msgid "Copy user ID"
+msgstr "Benutzer-ID kopieren"
+
 msgid "Cost"
 msgstr "Kosten"
 
@@ -753,6 +759,9 @@ msgstr "Modell konnte nicht verbunden werden"
 
 msgid "Could not connect tool"
 msgstr "Tool konnte nicht verbunden werden"
+
+msgid "Could not copy."
+msgstr "Konnte nicht kopiert werden."
 
 msgid "Could not create agent"
 msgstr "Agent konnte nicht erstellt werden"
@@ -1332,6 +1341,9 @@ msgstr "z. B. Freigabe Vertrieb"
 
 msgid "Each code works once. Store them somewhere safe — you will not see them again."
 msgstr "Jeder Code funktioniert einmal. Bewahren Sie sie sicher auf — Sie sehen sie nicht erneut."
+
+msgid "Each person changes their email and password in their own account."
+msgstr "Jede Person ändert ihre E-Mail-Adresse und ihr Passwort selbst in ihrem eigenen Konto."
 
 msgid "Edit"
 msgstr "Bearbeiten"
@@ -3660,6 +3672,9 @@ msgstr "Verwenden Sie Ihre Authenticator-App oder einen Backup-Code."
 
 msgid "Used by"
 msgstr "Verwendet von"
+
+msgid "User ID"
+msgstr "Benutzer-ID"
 
 msgid "used this month"
 msgstr "verbraucht diesen Monat"
