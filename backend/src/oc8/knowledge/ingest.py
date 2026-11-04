@@ -28,6 +28,7 @@ from oc8.knowledge.chunks import live_chunks
 from oc8.knowledge.connectors.base import AuthContext, Connector, RawDocument
 from oc8.knowledge.connectors.context import SourceAuthContext
 from oc8.knowledge.connectors.registry import resolve_connector
+from oc8.knowledge.embedding_policy import require_local_reason, strictest
 from oc8.knowledge.reconcile import observe_listing
 from oc8.knowledge.tombstone import (
     SUPERSEDED,
@@ -235,7 +236,13 @@ async def ingest_raw_document(
     embedding_model = (
         kb.embedding_model if kb is not None else get_settings().default_embedding_model
     )
-    local_only = bool(kb.local_only) if kb is not None else False
+    # The strictest label on the way in -- base or source -- travels with every
+    # chunk, so retrieval's classification_rule sees it, and decides whether a
+    # cloud embedding model may see this text at all.
+    classification = strictest(
+        kb.classification if kb is not None else None, data_source.classification
+    )
+    require_local = require_local_reason(kb=kb, classification=classification)
     embeddings: list[list[float] | None] = []
     unavailable: str | None = None
     for chunk in chunks:
@@ -247,7 +254,7 @@ async def ingest_raw_document(
                         model=embedding_model,
                         tenant_id=tenant_id,
                         db=db,
-                        local_only=local_only,
+                        require_local=require_local,
                     ),
                     model=embedding_model,
                 )
@@ -292,6 +299,7 @@ async def ingest_raw_document(
                 embedding=embedding,
                 source_uri=raw.source_uri,
                 chunk_metadata={"chunk_index": i, **metadata},
+                classification=classification,
             )
         )
     await db.flush()
@@ -689,9 +697,26 @@ async def reembed_knowledge_base(
     if limit is not None:
         stmt = stmt.limit(limit)
     router = get_model_router()
+    pending = list((await db.execute(stmt)).scalars().all())
+    source_ids = {c.data_source_id for c in pending if c.data_source_id is not None}
+    source_labels: dict[uuid.UUID, str] = {}
+    if source_ids:
+        rows = await db.execute(
+            select(m.DataSource.id, m.DataSource.classification).where(
+                m.DataSource.tenant_id == tenant_id, m.DataSource.id.in_(source_ids)
+            )
+        )
+        source_labels = {sid: label for sid, label in rows.all()}
     embedded = 0
     error: str | None = None
-    for chunk in (await db.execute(stmt)).scalars().all():
+    for chunk in pending:
+        require_local = require_local_reason(
+            kb=kb,
+            classification=strictest(
+                chunk.classification,
+                source_labels.get(chunk.data_source_id) if chunk.data_source_id else None,
+            ),
+        )
         try:
             chunk.embedding = check_embedding_fits(
                 await router.embed(
@@ -699,7 +724,7 @@ async def reembed_knowledge_base(
                     model=kb.embedding_model,
                     tenant_id=tenant_id,
                     db=db,
-                    local_only=kb.local_only,
+                    require_local=require_local,
                 ),
                 model=kb.embedding_model,
             )

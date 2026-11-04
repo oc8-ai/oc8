@@ -1843,6 +1843,7 @@ async def run_agent(
                                     tier=str(tc.arguments.get("tier", "")),
                                     content=str(tc.arguments.get("content", "")),
                                     metadata={"task_id": str(task.id)},
+                                    model_locality=model_locality,
                                     member_id=(
                                         await member_behind_run_task(
                                             db, tenant_id=tenant_id, task=task, run_id=run_id

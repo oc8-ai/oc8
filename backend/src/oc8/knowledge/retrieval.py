@@ -22,6 +22,7 @@ from oc8 import models as m
 from oc8.authz import Effect, classification_rule, effective_cleared_classes
 from oc8.knowledge.chunks import live_chunks
 from oc8.knowledge.connectors.context import SourceAuthContext
+from oc8.knowledge.embedding_policy import require_local_reason
 from oc8.knowledge.vector_indexes.base import VectorIndexError
 from oc8.knowledge.vector_indexes.registry import INTERNAL_INDEX_TYPE, resolve_vector_index
 from oc8.modelrouter import EmbeddingUnavailable, get_model_router
@@ -94,7 +95,7 @@ async def _embed_for_kb(
             model=kb.embedding_model,
             tenant_id=tenant_id,
             db=db,
-            local_only=kb.local_only,
+            require_local=require_local_reason(kb=kb),
         )
     except EmbeddingUnavailable as exc:
         logger.warning(

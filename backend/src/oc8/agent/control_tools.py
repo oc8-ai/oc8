@@ -1715,6 +1715,7 @@ async def execute_control_tool(
             tenant_id=tenant_id,
             frame=await _department_frame(db, agent),
             query_text=query,
+            model_locality=await _model_locality(db, agent, pinned),
             narrowing=(pinned["narrowing"] or {}) if pinned is not None else None,
             member_id=(
                 await member_behind_run_task(db, tenant_id=tenant_id, task=task, run_id=run_id)
@@ -2303,6 +2304,7 @@ async def execute_control_tool(
                     tier=str(tc.arguments.get("tier", "")),
                     content=str(tc.arguments.get("content", "")),
                     metadata={"task_id": str(task.id)},
+                    model_locality=await _model_locality(db, agent, pinned),
                     member_id=(
                         await member_behind_run_task(
                             db, tenant_id=tenant_id, task=task, run_id=run_id
@@ -2344,6 +2346,7 @@ async def execute_control_tool(
                 tier=str(tc.arguments.get("tier", "")),
                 content=str(tc.arguments.get("content", "")),
                 metadata={"task_id": str(task.id)},
+                model_locality=await _model_locality(db, agent, pinned),
                 member_id=(
                     await member_behind_run_task(db, tenant_id=tenant_id, task=task, run_id=run_id)
                     if agent.is_tenant_assistant

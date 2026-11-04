@@ -7,6 +7,7 @@ to "approved"/"rejected" via resolve_memory_write_approval."""
 
 from __future__ import annotations
 
+import logging
 import math
 import uuid
 from datetime import UTC, datetime
@@ -16,8 +17,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.config import get_settings
 from oc8.memory.policy import authorize_memory_read
-from oc8.modelrouter import EmbeddingUnavailable, get_model_router
+from oc8.modelrouter import EmbeddingUnavailable, get_model_router, locality_for_provider
+from oc8.modelrouter.router import embedding_local_tag
+
+logger = logging.getLogger(__name__)
 
 MAX_MEMORY_CONTENT_LENGTH = 4000
 _CANDIDATE_LIMIT = 50
@@ -121,6 +126,57 @@ async def _candidates(
     return list((await db.execute(stmt)).scalars().all())
 
 
+_LOCAL_AGENT_REASON = (
+    "the agent runs on a local model, so what it reads and writes may hold restricted "
+    "material that chat keeps off cloud models"
+)
+
+
+async def _agent_runs_locally(db: AsyncSession, agent: m.Agent, model_locality: str | None) -> bool:
+    """True if this agent's model is local, by the run's pinned locality
+    (`model_locality`) or by the live row. Either one being local is enough:
+    a local model is what lets restricted material into an agent's context."""
+    if model_locality == "local":
+        return True
+    if agent.model_config_id is not None:
+        config = await db.get(m.ModelConfig, agent.model_config_id)
+        if config is not None:
+            return config.locality == "local"
+    provider = (agent.presentation or {}).get("provider", get_settings().default_model_provider)
+    return locality_for_provider(str(provider)) == "local"
+
+
+async def _embed_memory(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    agent: m.Agent,
+    text: str,
+    model_locality: str | None,
+) -> list[float]:
+    """Memory has no per-store model choice, so it follows the deployment
+    default -- but a cloud default never overrides policy. It is used only
+    when this tenant may use that provider (enabled, keyed, within budget)
+    and the agent is not on a local model; otherwise the local fallback
+    model, so content that chat would keep local stays local."""
+    settings = get_settings()
+    router = get_model_router()
+    require_local = (
+        _LOCAL_AGENT_REASON if await _agent_runs_locally(db, agent, model_locality) else None
+    )
+    model = settings.default_embedding_model
+    if embedding_local_tag(model) is None:
+        refusal = await router.cloud_embedding_refusal(
+            model, tenant_id=tenant_id, db=db, require_local=require_local
+        )
+        if refusal is not None:
+            logger.info("memory embeds with the local model instead: %s", refusal)
+            model = settings.local_embedding_model
+    return await router.embed(
+        text, model=model, tenant_id=tenant_id, db=db, require_local=require_local
+    )
+
+
 async def retrieve_context(
     db: AsyncSession,
     *,
@@ -131,6 +187,7 @@ async def retrieve_context(
     token_budget_per_tier: int = 800,
     narrowing: dict[str, Any] | None = None,
     member_id: uuid.UUID | None = None,
+    model_locality: str | None = None,
 ) -> str:
     """Recalled memory for `query_text`, from every tier the agent may read.
 
@@ -141,8 +198,8 @@ async def retrieve_context(
     if narrowing is None:
         narrowing = agent.narrowing or {}
     try:
-        query_embedding = await get_model_router().embed(
-            query_text, tenant_id=tenant_id, db=db
+        query_embedding = await _embed_memory(
+            db, tenant_id=tenant_id, agent=agent, text=query_text, model_locality=model_locality
         )
     except EmbeddingUnavailable:
         query_embedding = None
@@ -188,6 +245,7 @@ async def write_memory(
     content: str,
     metadata: dict[str, Any] | None = None,
     member_id: uuid.UUID | None = None,
+    model_locality: str | None = None,
 ) -> m.MemoryRecord:
     if tier not in ("agent", "department", "company"):
         raise MemoryWriteError(f"unknown tier '{tier}'")
@@ -207,7 +265,9 @@ async def write_memory(
     store = await _get_or_create_store(db, tenant_id=tenant_id, tier=tier, owner_id=owner_id)
 
     try:
-        embedding = await get_model_router().embed(content, tenant_id=tenant_id, db=db)
+        embedding = await _embed_memory(
+            db, tenant_id=tenant_id, agent=agent, text=content, model_locality=model_locality
+        )
     except EmbeddingUnavailable:
         embedding = None
 

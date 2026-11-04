@@ -43,6 +43,21 @@ def locality_for_provider(provider: str) -> str:
     return "local" if canonical_provider(provider) in (None, "ollama") else "cloud"
 
 
+def embedding_local_tag(model: str) -> str | None:
+    """The Ollama tag `model` names, or None if it names a cloud provider.
+
+    A bare tag, `local/<tag>` and `ollama/<tag>` (or any alias of the ollama
+    provider) are local. Everything else is `<provider>/<model>` and leaves
+    the deployment -- the same line chat's restricted-content guard draws
+    (canonical provider other than ollama)."""
+    namespace, sep, tag = model.partition("/")
+    if not sep:
+        return model
+    if canonical_provider(namespace) == "ollama":
+        return tag
+    return None
+
+
 class EmbeddingUnavailable(RuntimeError):
     """Raised when no vector can be produced: the embedding backend is
     unreachable or errors, or a cloud provider is unknown, not enabled for the
@@ -217,7 +232,7 @@ class ModelRouter:
         *,
         tenant_id: uuid.UUID | None = None,
         db: AsyncSession | None = None,
-        local_only: bool = False,
+        require_local: str | None = None,
     ) -> list[float]:
         """Embed `text` with `model` (a knowledge base's own `embedding_model`,
         or the deployment default).
@@ -225,67 +240,101 @@ class ModelRouter:
         - A bare tag (`nomic-embed-text`), `local/<tag>` or `ollama/<tag>` goes
           to Ollama. `local/` is oc8's own UI label for "on-prem"; Ollama has no
           such namespace, so it is stripped before the tag reaches it.
-        - `<provider>/<model>` goes to that provider, resolved for `tenant_id`
-          exactly as a chat completion is: the tenant must be entitled to the
-          provider (a plugin provider only once its capa is enabled), and the
-          key and base URL come from the tenant's bound credential. The model
-          part may itself contain `/` (`openrouter/openai/text-embedding-3-small`).
+        - `<provider>/<model>` goes to that provider, but only after the same
+          checks a chat completion passes before content leaves for it
+          (`cloud_embedding_refusal`). The model part may itself contain `/`.
 
-        Anything that keeps the vector from being produced -- an unknown
-        provider, no key, an adapter that cannot embed, an HTTP failure --
-        raises `EmbeddingUnavailable` naming the provider and model, so callers
-        that degrade (ingest stores the chunk without a vector, retrieval skips
-        the base) can say why.
+        `require_local` is the caller's reason this content may only be
+        embedded by a local model (a `restricted` label, a local-only base, an
+        agent on a local model). With it set, any cloud provider is refused --
+        the embedding counterpart of chat's ClassificationViolation.
 
-        `local_only` refuses a cloud provider outright: a base promised to keep
-        its content on-prem must not ship it to a cloud embedding endpoint.
+        Anything that keeps the vector from being produced raises
+        `EmbeddingUnavailable` naming the provider, the model and the reason,
+        so callers that degrade (ingest stores the chunk without a vector,
+        retrieval skips the base) can say why.
 
-        Cloud token usage is recorded per tenant when `db` is given, the same
-        `token_usage_record` row a completion writes, so embeddings count
-        toward the tenant's and the provider's monthly budgets.
+        Cloud token usage is recorded per tenant, the same `token_usage_record`
+        row a completion writes, so embeddings count toward the tenant's and
+        the provider's monthly budgets.
         """
         resolved = model or self._settings.default_embedding_model
-        namespace, sep, tag = resolved.partition("/")
-        if not sep:
-            return await self._embed_ollama(text, resolved)
-        canonical = canonical_provider(namespace)
-        if canonical == "ollama":
+        tag = embedding_local_tag(resolved)
+        if tag is not None:
             return await self._embed_ollama(text, tag)
-        return await self._embed_cloud(
-            text,
-            provider=namespace,
-            model=tag,
+        provider, _, cloud_model = resolved.partition("/")
+        canonical, api_key, base_url = await self._admit_cloud_embedding(
+            provider=provider,
             label=resolved,
             tenant_id=tenant_id,
             db=db,
-            local_only=local_only,
+            require_local=require_local,
         )
-
-    async def _embed_ollama(self, text: str, model: str) -> list[float]:
-        adapter = OllamaAdapter(self._settings.ollama_base_url)
+        assert db is not None and tenant_id is not None  # _admit_cloud_embedding checked
+        adapter = self._adapter(canonical, base_url=base_url, api_key=api_key)
+        embed_with_usage = getattr(adapter, "embed_with_usage", None)
+        if embed_with_usage is None:
+            raise EmbeddingUnavailable(
+                f"embedding provider {canonical!r} (model {resolved!r}) cannot embed: "
+                "its adapter has no embeddings endpoint"
+            )
         try:
-            return await adapter.embed(text, model)
-        except httpx.HTTPError as exc:
-            raise EmbeddingUnavailable(str(exc)) from exc
+            vector, tokens = await embed_with_usage(text, cloud_model)
+        except (httpx.HTTPError, ValueError) as exc:
+            raise EmbeddingUnavailable(
+                f"embedding provider {canonical!r} (model {resolved!r}) failed: {exc}"
+            ) from exc
+        await self._record_embedding_usage(
+            db, tenant_id=tenant_id, provider=canonical, model=cloud_model, tokens=tokens
+        )
+        return vector
 
-    async def _embed_cloud(
+    async def cloud_embedding_refusal(
         self,
-        text: str,
+        model: str,
+        *,
+        tenant_id: uuid.UUID | None,
+        db: AsyncSession | None,
+        require_local: str | None = None,
+    ) -> str | None:
+        """Why `model` may not embed this tenant's content, or None if it may.
+        Local models are always allowed. Makes no call to the provider."""
+        if embedding_local_tag(model) is not None:
+            return None
+        try:
+            await self._admit_cloud_embedding(
+                provider=model.partition("/")[0],
+                label=model,
+                tenant_id=tenant_id,
+                db=db,
+                require_local=require_local,
+            )
+        except EmbeddingUnavailable as exc:
+            return str(exc)
+        return None
+
+    async def _admit_cloud_embedding(
+        self,
         *,
         provider: str,
-        model: str,
         label: str,
         tenant_id: uuid.UUID | None,
         db: AsyncSession | None,
-        local_only: bool,
-    ) -> list[float]:
+        require_local: str | None,
+    ) -> tuple[str, str | None, str | None]:
+        """Every check chat applies before content reaches a cloud provider,
+        in the same order: data that must stay local, tenant entitlement to
+        the provider, strict BYOK, a usable key, the provider's monthly limit
+        and the tenant's hard budget. Returns (canonical, api_key, base_url)."""
+        from oc8.metering.budget import check_budget
+        from oc8.metering.provider_budget import check_provider_budget
         from oc8.modelrouter.keys import resolve_model_base_url, resolve_model_key
         from oc8.modelrouter.registry import resolve_provider
 
-        if local_only:
+        if require_local:
             raise EmbeddingUnavailable(
-                f"embedding model {label!r} would send local-only content to cloud "
-                f"provider {provider!r}; pick a local model for this knowledge base"
+                f"embedding model {label!r} uses cloud provider {provider!r}, but this "
+                f"content must stay on a local model: {require_local}"
             )
         if tenant_id is None or db is None:
             raise EmbeddingUnavailable(
@@ -310,24 +359,26 @@ class ModelRouter:
                 f"embedding provider {canonical!r} (model {label!r}) has no API key "
                 f"configured for this tenant (credential type '{canonical}_api_key')"
             )
-        base_url = await resolve_model_base_url(db, tenant_id=tenant_id, provider=canonical)
-        adapter = self._adapter(canonical, base_url=base_url, api_key=api_key)
-        embed_with_usage = getattr(adapter, "embed_with_usage", None)
-        if embed_with_usage is None:
+        provider_budget = await check_provider_budget(db, tenant_id=tenant_id, provider=canonical)
+        if provider_budget.exhausted:
             raise EmbeddingUnavailable(
-                f"embedding provider {canonical!r} (model {label!r}) cannot embed: "
-                "its adapter has no embeddings endpoint"
+                f"embedding provider {canonical!r} (model {label!r}) has used up its "
+                f"monthly token limit for this tenant ({provider_budget.limit})"
             )
-        try:
-            vector, tokens = await embed_with_usage(text, model)
-        except (httpx.HTTPError, ValueError) as exc:
+        if (await check_budget(db, tenant_id=tenant_id, department_id=None)).hard_exceeded:
             raise EmbeddingUnavailable(
-                f"embedding provider {canonical!r} (model {label!r}) failed: {exc}"
-            ) from exc
-        await self._record_embedding_usage(
-            db, tenant_id=tenant_id, provider=canonical, model=model, tokens=tokens
-        )
-        return vector
+                f"embedding provider {canonical!r} (model {label!r}) refused: the tenant's "
+                "hard token budget is exceeded"
+            )
+        base_url = await resolve_model_base_url(db, tenant_id=tenant_id, provider=canonical)
+        return canonical, api_key, base_url
+
+    async def _embed_ollama(self, text: str, model: str) -> list[float]:
+        adapter = OllamaAdapter(self._settings.ollama_base_url)
+        try:
+            return await adapter.embed(text, model)
+        except httpx.HTTPError as exc:
+            raise EmbeddingUnavailable(str(exc)) from exc
 
     @staticmethod
     async def _record_embedding_usage(

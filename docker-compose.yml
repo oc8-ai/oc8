@@ -70,6 +70,7 @@ x-backend-env: &backend-env
   OC8_MISTRAL_API_KEY: ${OC8_MISTRAL_API_KEY:-}
   OC8_OLLAMA_BASE_URL: ${OC8_OLLAMA_BASE_URL:-http://ollama:11434}
   OC8_DEFAULT_EMBEDDING_MODEL: ${OC8_DEFAULT_EMBEDDING_MODEL:-nomic-embed-text}
+  OC8_LOCAL_EMBEDDING_MODEL: ${OC8_LOCAL_EMBEDDING_MODEL:-nomic-embed-text}
   OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-true}
   # Plugin folders (§13). WORKDIR is /app, so this matches the ./capas
   # bind mount on the backend and worker services below.

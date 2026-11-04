@@ -29,6 +29,7 @@ from oc8.knowledge.connectors.base import ConnectorError
 from oc8.knowledge.connectors.context import SourceAuthContext
 from oc8.knowledge.connectors.fetcher import safe_fetch
 from oc8.knowledge.connectors.registry import available_connectors, resolve_connector
+from oc8.knowledge.embedding_policy import require_local_reason
 from oc8.knowledge.external_index import ExternalIndexRejected, validate_external_index_binding
 from oc8.knowledge.ingest import (
     IngestionError,
@@ -55,6 +56,7 @@ from oc8.knowledge.vector_indexes.registry import (
 )
 from oc8.knowledge.worker import get_ingestion_queue
 from oc8.modelrouter import EmbeddingUnavailable, get_model_router
+from oc8.modelrouter.router import embedding_local_tag
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import (
     BaseRemovalDTO,
@@ -185,6 +187,27 @@ async def list_embedding_models() -> EmbeddingModelsDTO:
     )
 
 
+def _embedding_model_for(requested: str | None, *, require_local: str | None) -> str:
+    """The embedding model a base gets. With none requested, the deployment
+    default -- unless the base's content must stay local and the default is a
+    cloud model, in which case the local fallback. The default never loosens a
+    base's own policy, and an explicit cloud model for such a base is refused
+    rather than quietly swapped."""
+    settings = get_settings()
+    if requested is None:
+        default = settings.default_embedding_model
+        if require_local and embedding_local_tag(default) is None:
+            return settings.local_embedding_model
+        return default
+    if require_local and embedding_local_tag(requested) is None:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"embedding model {requested!r} is a cloud model, but this knowledge base's "
+            f"content must stay local: {require_local}",
+        )
+    return requested
+
+
 async def _live_base(db: DbSession, kb_id: uuid.UUID) -> m.KnowledgeBase:
     """The base, or a 404. A base another tenant owns is invisible under RLS and
     a deleted one is treated the same way: "no such base" and "you may not touch
@@ -310,13 +333,18 @@ async def create_base(
         except ExternalIndexRejected as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
+    classification = body.classification or "internal"
+    embedding_model = _embedding_model_for(
+        body.embedding_model, require_local=require_local_reason(classification=classification)
+    )
+
     kb = m.KnowledgeBase(
         tenant_id=principal.tenant_id,
         name=body.name,
         description=body.description,
-        embedding_model=body.embedding_model or get_settings().default_embedding_model,
+        embedding_model=embedding_model,
         status="current",
-        classification=body.classification or "internal",
+        classification=classification,
         index_type=index_type,
         index_config=index_config,
         credential_id=credential_id,
@@ -354,7 +382,7 @@ async def preview_index(
             model=kb.embedding_model,
             tenant_id=principal.tenant_id,
             db=db,
-            local_only=kb.local_only,
+            require_local=require_local_reason(kb=kb),
         )
         hits = await index.search(
             kb.index_config or {},
@@ -416,7 +444,9 @@ async def update_base(
                 "made with its current embedding model -- changing models would leave "
                 "them incomparable. Delete and recreate it instead.",
             )
-        kb.embedding_model = body.embedding_model
+        kb.embedding_model = _embedding_model_for(
+            body.embedding_model, require_local=require_local_reason(kb=kb)
+        )
         if chunks:
             await reembed_knowledge_base(
                 db,

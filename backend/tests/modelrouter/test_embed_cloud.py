@@ -271,12 +271,12 @@ async def test_cloud_model_without_a_tenant_raises() -> None:
 
 async def test_local_only_refuses_a_cloud_provider() -> None:
     router = ModelRouter(Settings())
-    with pytest.raises(EmbeddingUnavailable, match="local-only"):
+    with pytest.raises(EmbeddingUnavailable, match="must stay on a local model"):
         await router.embed(
             "hi",
             model="openai_compatible/nomic-embed-text",
             tenant_id=uuid.uuid4(),
-            local_only=True,
+            require_local="restricted classification requires a local model",
         )
 
 

@@ -271,6 +271,11 @@ class Settings(BaseSettings):
     default_model_provider: str = "ollama"
     default_model: str = "mistral:latest"
     default_embedding_model: str = "nomic-embed-text"
+    #: The local (Ollama) model used wherever the default above is a cloud
+    #: `<provider>/<model>` that policy or the tenant's setup does not allow:
+    #: memory of a tenant without that provider, a restricted base created
+    #: without an explicit model. Must produce the same 768-dim vectors.
+    local_embedding_model: str = "nomic-embed-text"
 
     # BYOK (§9): when True, a cloud completion with no per-tenant key is refused
     # rather than silently charged to the platform key. Off by default so dev and
