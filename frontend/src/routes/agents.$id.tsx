@@ -59,6 +59,7 @@ import {
   useRenameAgent,
   useAgentRuns,
   useRun,
+  useAgentActiveRunState,
   useRunAgent,
   useSetAgentSupervisor,
   useSkills,
@@ -345,7 +346,7 @@ function AgentDetail() {
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <StatusPill status={status} />
+            <HeaderStatusPill agentId={agent.id} status={status} runId={runId} />
             <DeleteAgentButton agent={agent} mayManage={mayManage} />
             <button
               type="button"
@@ -2478,6 +2479,22 @@ export function RunPinnedVersion({
 }
 
 // Exported for its own test, like RunPinnedVersion above.
+/** The pill in the agent header. While a run of this agent is active it shows
+ *  that run's live state (the same pill the Live Log uses); otherwise it falls
+ *  back to the agent's own status. */
+export function HeaderStatusPill({
+  agentId,
+  status,
+  runId,
+}: {
+  agentId: string;
+  status: import("@/lib/mock-data").AgentStatus;
+  runId: string | null;
+}) {
+  const active = useAgentActiveRunState(agentId, runId);
+  return active ? <RunStateBadge state={active} /> : <StatusPill status={status} />;
+}
+
 export function LiveLog({
   agentId,
   runId,

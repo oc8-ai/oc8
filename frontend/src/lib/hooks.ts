@@ -1,7 +1,13 @@
 // TanStack Query hooks over the oc8 control-plane API. Return shapes match the
 // existing TypeScript interfaces so screens swap mock imports for these hooks.
 
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQueries,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import {
   api,
   ApiError,
@@ -1763,6 +1769,49 @@ export function useAgentRuns(agentId: string, opts: { limit: number; offset: num
     placeholderData: (previous, previousQuery) =>
       previousQuery?.queryKey[2] === agentId ? previous : undefined,
   });
+}
+
+// How urgently a run state wants the reader's eye: a run that is working beats
+// one waiting on a person, which beats one still in the queue.
+const ACTIVE_RUN_RANK: Record<string, number> = {
+  running: 0,
+  waiting_for_input: 1,
+  waiting_for_approval: 1,
+  queued: 2,
+};
+
+/** The most relevant state among an agent's active runs (running before
+ *  waiting before queued), or null when none is active. `currentRunId` is the
+ *  run this page just started, known before the list has caught up.
+ *
+ *  Each state is the run's live "run.status" word where one has arrived, laid
+ *  over the listed state exactly as useRun does: the list can lag behind it. */
+export function useAgentActiveRunState(agentId: string, currentRunId: string | null) {
+  const runs = useAgentRuns(agentId, { limit: 20, offset: 0 });
+  const current = useRun(currentRunId);
+  const listed = (runs.data?.items ?? []).filter((r) => r.agentId === agentId);
+  const ids = [...new Set([...(currentRunId ? [currentRunId] : []), ...listed.map((r) => r.id)])];
+  // Observers only: the cache entry is written by the "run.status" patcher,
+  // never fetched, so the header re-renders when it changes.
+  const live = useQueries({
+    queries: ids.map((id) => ({
+      queryKey: runLiveStateKey(id),
+      queryFn: () => Promise.resolve<RunLiveState | null>(null),
+      enabled: false,
+    })),
+  });
+  const states = ids.map((id, i) => {
+    const fromEvent = (live[i]?.data as RunLiveState | null | undefined)?.state;
+    if (fromEvent) return fromEvent;
+    if (id === currentRunId && current.data) return current.data.state;
+    return listed.find((r) => r.id === id)?.state ?? "";
+  });
+  let best: string | null = null;
+  for (const state of states) {
+    const rank = ACTIVE_RUN_RANK[state];
+    if (rank !== undefined && (best === null || rank < ACTIVE_RUN_RANK[best])) best = state;
+  }
+  return best;
 }
 
 export interface ReportDTO {
