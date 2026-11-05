@@ -4,6 +4,7 @@
 // the same colour wherever it appears.
 
 import { useT } from "@/lib/i18n";
+import { RUN_STATE_COLOR } from "@/lib/run-state";
 import { cn } from "@/lib/utils";
 
 /** A rounded pill with a glowing dot, tinted by one CSS colour. */
@@ -45,29 +46,24 @@ export function TonePill({
 function useRunStateMeta(): (state: string) => { label: string; color: string } {
   const t = useT();
   return (state) => {
+    const color = RUN_STATE_COLOR[state] ?? "var(--muted-foreground)";
     switch (state) {
       case "queued":
-        return { label: t("queued", "eingereiht"), color: "var(--status-waiting-for-task)" };
+        return { label: t("queued", "eingereiht"), color };
       case "running":
-        return { label: t("running", "läuft"), color: "var(--status-running)" };
+        return { label: t("running", "läuft"), color };
       case "waiting_for_input":
-        return {
-          label: t("waiting for input", "wartet auf Eingabe"),
-          color: "var(--status-warning)",
-        };
+        return { label: t("waiting for input", "wartet auf Eingabe"), color };
       case "waiting_for_approval":
-        return {
-          label: t("waiting for approval", "wartet auf Freigabe"),
-          color: "var(--status-warning)",
-        };
+        return { label: t("waiting for approval", "wartet auf Freigabe"), color };
       case "done":
-        return { label: t("done", "erledigt"), color: "var(--primary)" };
+        return { label: t("done", "erledigt"), color };
       case "failed":
-        return { label: t("failed", "fehlgeschlagen"), color: "var(--status-error)" };
+        return { label: t("failed", "fehlgeschlagen"), color };
       case "interrupted":
-        return { label: t("interrupted", "abgebrochen"), color: "var(--status-paused)" };
+        return { label: t("interrupted", "abgebrochen"), color };
       default:
-        return { label: state, color: "var(--muted-foreground)" };
+        return { label: state, color };
     }
   };
 }
