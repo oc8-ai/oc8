@@ -4,7 +4,11 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
 import { ApiKeysPanel } from "@/components/api-keys-panel";
-import { AccountManagementLink, UserIdLine } from "@/components/sign-in-identity";
+import {
+  AccountManagementLink,
+  OrganisationIdLine,
+  UserIdLine,
+} from "@/components/sign-in-identity";
 import { BackupCodesReveal } from "@/components/totp-backup-codes";
 import { TotpEnroll } from "@/components/totp-enroll";
 import { useT } from "@/lib/i18n";
@@ -310,6 +314,12 @@ export function AccountPanel({ initialDisplayName }: { initialDisplayName: strin
             )}
           </div>
         </>
+      )}
+
+      {me?.tenantId && (
+        <div className="mt-4 border-t border-border pt-4">
+          <OrganisationIdLine tenantId={me.tenantId} />
+        </div>
       )}
     </Panel>
   );
