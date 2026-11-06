@@ -7,9 +7,54 @@ import { useT } from "@/lib/i18n";
  *  provider it is often a uuid. Copyable, because support needs it verbatim. */
 export function UserIdLine({ subject }: { subject: string }) {
   const t = useT();
+  return (
+    <CopyableIdLine
+      label={t("User ID", "Benutzer-ID")}
+      copyLabel={t("Copy user ID", "Benutzer-ID kopieren")}
+      value={subject}
+      testId="user-id"
+    />
+  );
+}
+
+/** The organisation (tenant) the person signed in to. Every member sees it on
+ *  their profile -- only administrators see the organisation's settings -- so
+ *  anyone can tell support which organisation they write from. */
+export function OrganisationIdLine({ tenantId }: { tenantId: string }) {
+  const t = useT();
+  return (
+    <div className="grid gap-0.5">
+      <CopyableIdLine
+        label={t("Organisation ID", "Organisations-ID")}
+        copyLabel={t("Copy organisation ID", "Organisations-ID kopieren")}
+        value={tenantId}
+        testId="organisation-id"
+      />
+      <span className="text-xs text-muted-foreground">
+        {t(
+          "Please include it when you contact support.",
+          "Bitte geben Sie sie bei Support-Anfragen an.",
+        )}
+      </span>
+    </div>
+  );
+}
+
+function CopyableIdLine({
+  label,
+  copyLabel,
+  value,
+  testId,
+}: {
+  label: string;
+  copyLabel: string;
+  value: string;
+  testId: string;
+}) {
+  const t = useT();
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(subject);
+      await navigator.clipboard.writeText(value);
       toast.success(t("Copied", "Kopiert"));
     } catch {
       toast.error(t("Could not copy.", "Konnte nicht kopiert werden."));
@@ -17,14 +62,14 @@ export function UserIdLine({ subject }: { subject: string }) {
   };
   return (
     <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-      <span>{t("User ID", "Benutzer-ID")}:</span>
-      <code className="truncate font-mono" data-testid="user-id">
-        {subject}
+      <span>{label}:</span>
+      <code className="truncate font-mono" data-testid={testId}>
+        {value}
       </code>
       <button
         type="button"
         onClick={copy}
-        aria-label={t("Copy user ID", "Benutzer-ID kopieren")}
+        aria-label={copyLabel}
         className="rounded p-0.5 transition hover:bg-muted hover:text-foreground"
       >
         <Copy className="size-3" />
