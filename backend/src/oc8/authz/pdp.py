@@ -52,7 +52,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any
 
@@ -177,6 +177,15 @@ class ToolPolicy:
     # design. Frame-level policies never set this (a department default has
     # no login of its own); only agent-level narrowing does.
     connection_id: str | None = None
+    #: The acting member's own approval rules (D3a, member guardrails). Kept
+    #: apart from `approval_actions`/`approval_eur`/`conditions` because they
+    #: route to a different person: the member, not the department's
+    #: approvers. Rights (`enabled`/`read`/`modify`/`only`) need no routing
+    #: and are ANDed straight into the fields above. Never read from or
+    #: written to JSON (`from_json`/`to_json` leave them alone).
+    member_approval_actions: frozenset[str] = frozenset()
+    member_approval_eur: int | None = None
+    member_conditions: tuple[Condition, ...] = ()
 
     @classmethod
     def from_json(cls, data: dict[str, Any] | None) -> ToolPolicy:
@@ -235,6 +244,10 @@ class Decision:
     #: DENY/no-grant path, which this pass leaves as free text only.
     reason_code: str | None = None
     context: dict[str, Any] = field(default_factory=dict)
+    #: Who must approve a REQUIRE_APPROVAL: "department" (frame or agent
+    #: narrowing, the department's approvers) and/or "member" (the acting
+    #: member's own guardrail). Empty for ALLOW and DENY.
+    approval_from: frozenset[str] = frozenset()
 
     @property
     def allowed(self) -> bool:
@@ -248,10 +261,15 @@ def _tools(frame: dict[str, Any]) -> dict[str, dict[str, Any]]:
 def effective_tool_policies(
     frame: dict[str, Any],
     narrowing: dict[str, Any],
+    member: dict[str, Any] | None = None,
 ) -> dict[str, ToolPolicy]:
     """§5.3's intersection, with frame and narrowing terms.
 
-        effective = frame ∩ narrowing
+        effective = frame ∩ narrowing ∩ member
+
+    The optional `member` term (D3a) is a third, tighten-only level: it can
+    switch rights off and add approval rules routed to the member, never
+    grant a tool or right the other two withhold.
 
     The frame and the narrowing intersect: each can only tighten, never widen.
     A tool the frame withholds cannot be granted by the narrowing; a right the
@@ -304,6 +322,23 @@ def effective_tool_policies(
             connection_id=exclusive.connection_id,
             conditions=exclusive.conditions,
         )
+    for key, raw in _tools(member or {}).items():
+        base = out.get(key)
+        if base is None:
+            # Tighten-only: a member cannot bring in a tool that department
+            # and agent do not grant.
+            continue
+        mp = ToolPolicy.from_json(raw)
+        out[key] = replace(
+            base,
+            enabled=base.enabled and mp.enabled,
+            read=base.read and mp.read,
+            modify=base.modify and mp.modify,
+            only=_narrower_surface(base.only, mp.only),
+            member_approval_actions=mp.approval_actions,
+            member_approval_eur=mp.approval_eur,
+            member_conditions=mp.conditions,
+        )
     return out
 
 
@@ -336,7 +371,7 @@ def _min_threshold(frame_eur: int | None, narrow_eur: int | None) -> int | None:
 #: between "department" and "capa_default" -- `tool_policy_source` walks an
 #: ordered list built from this shape rather than assuming exactly two
 #: levels, so adding one is an extra entry in that walk, not a rewrite of it.
-PROVENANCE_LEVELS: tuple[str, ...] = ("agent", "department", "capa_default")
+PROVENANCE_LEVELS: tuple[str, ...] = ("member", "agent", "department", "capa_default")
 
 
 def tool_policy_source(
@@ -345,6 +380,7 @@ def tool_policy_source(
     frame: dict[str, Any],
     capa_defaults: dict[str, Any] | None,
     narrowing_overridden_keys: Sequence[str] | frozenset[str],
+    member_keys: Sequence[str] | frozenset[str] = (),
 ) -> str:
     """Which level a tool policy key's effective value actually came from --
     the guardrails UX Source column (design: OC8 Guardrails UX spec
@@ -369,6 +405,7 @@ def tool_policy_source(
     reports "department".
     """
     levels: list[tuple[str, bool]] = [
+        ("member", key in member_keys),
         ("agent", key in narrowing_overridden_keys),
         (
             "department",
@@ -547,6 +584,25 @@ class SubsetViolation:
     reason: str
 
 
+def member_term_violations(
+    base: Mapping[str, ToolPolicy], member: dict[str, Any]
+) -> list[SubsetViolation]:
+    """Every way `member` would widen department ∩ agent (D3a: tighten only)."""
+    out: list[SubsetViolation] = []
+    for key, raw in _tools(member).items():
+        b = base.get(key)
+        if b is None:
+            out.append(SubsetViolation(key, "tool not granted by department or agent"))
+            continue
+        mp = ToolPolicy.from_json(raw)
+        if mp.connection_id is not None:
+            out.append(SubsetViolation(key, "a member guardrail cannot choose a login"))
+        for right in ("enabled", *RIGHTS):
+            if getattr(mp, right) and not getattr(b, right):
+                out.append(SubsetViolation(key, f"'{right}' not granted by department or agent"))
+    return out
+
+
 def narrowing_within_frame(
     frame: dict[str, Any], narrowing: dict[str, Any]
 ) -> list[SubsetViolation]:
@@ -629,6 +685,71 @@ def required_right(tool_name: str, scopes: Mapping[str, Any] | None) -> str:
     return "modify"
 
 
+def _approval_rules(
+    *,
+    right: str,
+    tool: str | None,
+    connection_key: str,
+    value: float | None,
+    attributes: Mapping[str, Any] | None,
+    approval_actions: frozenset[str],
+    conditions: tuple[Condition, ...],
+    thresholds: Sequence[float | None],
+) -> Decision | None:
+    """One level's approval rules; None when nothing asks for a human.
+
+    Moved out of `authorize_tool_call` unchanged so the department's and the
+    member's rules are evaluated by the same code (D3a)."""
+    if right in approval_actions or (tool is not None and tool in approval_actions):
+        # Deliberately AFTER every DENY check in the caller and BEFORE the euro
+        # threshold below -- same ordering and the same reasoning as
+        # `authorize_tool`. An action or tool this frame does not grant at
+        # all was already denied above; there is nothing to send to a human
+        # in something that is not permitted. And once we know it IS
+        # permitted, `approval_actions` wins over `approval_eur`/
+        # `extra_thresholds` without comparing the value at all: an operator
+        # who asked for a human on every action of this kind (or on this one
+        # tool) has already answered the question a threshold would ask.
+        # `approval_actions` may name a right (gates every tool granting it)
+        # or a tool name (gates only that tool, leaving others sharing the
+        # right alone).
+        reason = (
+            f"{right!r} always needs approval on {connection_key!r}"
+            if right in approval_actions
+            else f"{tool!r} always needs approval"
+        )
+        return Decision(
+            Effect.REQUIRE_APPROVAL,
+            reason,
+            reason_code="always_requires_approval",
+            context={"right": right, "tool": tool, "connection": connection_key},
+        )
+
+    if conditions:
+        condition_decision = evaluate_conditions(conditions, attributes or {})
+        if condition_decision is not None:
+            return condition_decision
+
+    present = [float(t) for t in thresholds if t is not None]
+    if present:
+        strictest = min(present)
+        # An unreadable value counts as ZERO, not as "exempt". Otherwise every
+        # action without a price -- a reply to a customer, a status change --
+        # bypasses approval no matter what the frame says, and a threshold of €0
+        # ("a human decides every outward action") cannot be expressed at all.
+        # A positive threshold is unaffected: 0 is under it, as before.
+        if (value if value is not None else 0.0) >= strictest:
+            return Decision(
+                Effect.REQUIRE_APPROVAL,
+                f"value €{value:g} meets threshold €{strictest:g}"
+                if value is not None
+                else f"every action needs approval (threshold €{strictest:g})",
+                reason_code="value_threshold_exceeded",
+                context={"threshold": strictest, "actual": value if value is not None else 0.0},
+            )
+    return None
+
+
 def authorize_tool_call(
     *,
     policies: Mapping[str, ToolPolicy],
@@ -678,51 +799,35 @@ def authorize_tool_call(
             Effect.DENY, f"{connection_key!r} does not grant the tool {tool!r} in this frame"
         )
 
-    if right in policy.approval_actions or (tool is not None and tool in policy.approval_actions):
-        # Deliberately AFTER every DENY check above and BEFORE the euro
-        # threshold below -- same ordering and the same reasoning as
-        # `authorize_tool`. An action or tool this frame does not grant at
-        # all was already denied above; there is nothing to send to a human
-        # in something that is not permitted. And once we know it IS
-        # permitted, `approval_actions` wins over `approval_eur`/
-        # `extra_thresholds` without comparing the value at all: an operator
-        # who asked for a human on every action of this kind (or on this one
-        # tool) has already answered the question a threshold would ask.
-        # `approval_actions` may name a right (gates every tool granting it)
-        # or a tool name (gates only that tool, leaving others sharing the
-        # right alone).
-        reason = (
-            f"{right!r} always needs approval on {connection_key!r}"
-            if right in policy.approval_actions
-            else f"{tool!r} always needs approval"
-        )
-        return Decision(
-            Effect.REQUIRE_APPROVAL,
-            reason,
-            reason_code="always_requires_approval",
-            context={"right": right, "tool": tool, "connection": connection_key},
-        )
-
-    if policy.conditions:
-        condition_decision = evaluate_conditions(policy.conditions, attributes or {})
-        if condition_decision is not None:
-            return condition_decision
-
-    thresholds = [t for t in (policy.approval_eur, *extra_thresholds) if t is not None]
-    if thresholds:
-        strictest = min(float(t) for t in thresholds)
-        # An unreadable value counts as ZERO, not as "exempt". Otherwise every
-        # action without a price -- a reply to a customer, a status change --
-        # bypasses approval no matter what the frame says, and a threshold of €0
-        # ("a human decides every outward action") cannot be expressed at all.
-        # A positive threshold is unaffected: 0 is under it, as before.
-        if (value if value is not None else 0.0) >= strictest:
-            return Decision(
-                Effect.REQUIRE_APPROVAL,
-                f"value €{value:g} meets threshold €{strictest:g}"
-                if value is not None
-                else f"every action needs approval (threshold €{strictest:g})",
-                reason_code="value_threshold_exceeded",
-                context={"threshold": strictest, "actual": value if value is not None else 0.0},
-            )
-    return Decision(Effect.ALLOW)
+    department = _approval_rules(
+        right=right,
+        tool=tool,
+        connection_key=connection_key,
+        value=value,
+        attributes=attributes,
+        approval_actions=policy.approval_actions,
+        conditions=policy.conditions,
+        thresholds=(policy.approval_eur, *extra_thresholds),
+    )
+    member = _approval_rules(
+        right=right,
+        tool=tool,
+        connection_key=connection_key,
+        value=value,
+        attributes=attributes,
+        approval_actions=policy.member_approval_actions,
+        conditions=policy.member_conditions,
+        thresholds=(policy.member_approval_eur,),
+    )
+    for d in (department, member):
+        if d is not None and d.effect is Effect.DENY:
+            return d
+    first = department or member
+    if first is None:
+        return Decision(Effect.ALLOW)
+    return replace(
+        first,
+        approval_from=frozenset(
+            name for name, d in (("department", department), ("member", member)) if d is not None
+        ),
+    )
