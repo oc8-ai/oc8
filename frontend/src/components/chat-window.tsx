@@ -626,7 +626,7 @@ export function ChatWindow({
                 }
               }}
               placeholder={t("Type a message…", "Nachricht eingeben…")}
-              className="max-h-32 flex-1 resize-none rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
+              className="edition-accent-focus max-h-32 flex-1 resize-none rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
             />
             <button
               type="button"

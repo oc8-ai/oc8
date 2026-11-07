@@ -25,7 +25,8 @@ import {
   useAuth,
   useOrganizationSettings,
 } from "@/lib/hooks";
-import { useCan, useMay } from "@/lib/governance-hooks";
+import { useCan, useGovernance, useMay } from "@/lib/governance-hooks";
+import { onboardingRedirect, useFrontendEdition } from "@/edition/composition";
 
 export const Route = createFileRoute("/")({
   component: OfficePage,
@@ -96,7 +97,15 @@ function OfficePage() {
   const showsTheFloor = can("department:view");
   const { data: me } = useAuth();
   const may = useMay();
-  const wantsOnboarding = me?.onboardingStatus === "pending" && may("department:manage");
+  const { data: governance } = useGovernance();
+  const edition = useFrontendEdition();
+  // null while the rights are loading, so an admin is never sent to the
+  // member welcome on the first paint.
+  const redirectTo = onboardingRedirect(
+    me,
+    governance ? may("department:manage") : null,
+    edition.onboarding,
+  );
   const efficiency =
     departments.length === 0
       ? 0
@@ -108,8 +117,9 @@ function OfficePage() {
           ),
         );
 
-  if (wantsOnboarding) {
-    return <Navigate to="/welcome" />;
+  if (redirectTo) {
+    // Edition routes are code-based and absent from the generated route types.
+    return <Navigate to={redirectTo as never} />;
   }
 
   if (!showsTheFloor) {

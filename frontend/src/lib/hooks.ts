@@ -668,6 +668,8 @@ export interface CurrentUser {
   seats?: Seat[];
   /** Drives the /welcome redirect (design: gamified-onboarding-wizard-design.md). */
   onboardingStatus?: "pending" | "completed" | "skipped";
+  /** The caller's own welcome, shown by an edition that greets members. */
+  memberOnboardingStatus?: "pending" | "completed" | "skipped" | null;
 }
 
 export function useAuth() {
@@ -1270,6 +1272,22 @@ export function useSkipOnboarding() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () => api.post<{ onboardingStatus: string }>("/onboarding/skip"),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["auth", "me"] }),
+  });
+}
+
+export function useCompleteMemberOnboarding() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.post<{ memberOnboardingStatus: string }>("/onboarding/member/complete"),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["auth", "me"] }),
+  });
+}
+
+export function useSkipMemberOnboarding() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.post<{ memberOnboardingStatus: string }>("/onboarding/member/skip"),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["auth", "me"] }),
   });
 }
