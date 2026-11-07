@@ -216,6 +216,7 @@ EXEMPT: dict[str, str] = {
     "oauth_connection.provider_metadata": "content column to encrypt as-is, not yet migrated -- generic non-secret per-connection facts a provider's own flow needs (e.g. chatgpt_account_id), same shape/rationale as credential.field_values above, design spec §6a",
     "org_member.subject": "encryptable with a defined workaround, not yet migrated (unique IdP identifier; explicitly deferred, left plaintext in v1 per spec section 6b), design spec §6b",
     "org_member.display_name": "encryptable with a defined workaround, not yet migrated (one ORDER BY display_name query -- sort in application code, then treat as (a)), design spec §6b",
+    "org_member.onboarding_status": "structural enum-like column (status/state/kind/classification/...), CHECK-constrained, not content, design spec §6c",
     "org_member.password_hash": "already a one-way hash or part of a uniqueness constraint, not raw content, design spec §6c",
     "org_member_department.seat_role": "authorization/policy input read directly by the permission decision point, design spec §6c",
     "organization.slug": "organization has no tenant scoping and must be readable by an unbound session, design spec §6c",
