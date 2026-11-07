@@ -572,7 +572,10 @@ async def run_agent(
             db,
             tenant_id=tenant_id,
             agent_id=agent.id,
-            context={"originating_operator": acting_operator},
+            context={
+                **((run_row.context or {}) if run_row is not None else {}),
+                "originating_operator": acting_operator,
+            },
         )
         tool_policies = effective_tool_policies(frame, pinned["narrowing"] or {}, member_policy)
         extra_conns: list[m.McpConnection] = list(mcp_conns) if mcp_conns else []

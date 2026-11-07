@@ -1,9 +1,14 @@
 """Loading the acting member's guardrails for a run (D3a).
 
 The acting member is the run's `originating_operator` -- the person who
-posted the turn, carried down delegations and wake-ups. Not the session
-owner: an admin posting into someone's session acts under the admin's own
-guardrails (spec §2.3, plan Review Focus 1).
+posted the turn, carried down delegations and wake-ups -- whenever one is
+recorded: an admin posting into someone's session acts under the admin's own
+guardrails, not the owner's (spec §2.3, plan Review Focus 1).
+
+Only when no operator is recorded does the run fall back to the owner of its
+chat session (`chat_session_id`). A messenger turn is started without an
+operator, yet it is the bound member talking to their own Copilot, so their
+guardrails must still apply.
 """
 
 from __future__ import annotations
@@ -53,6 +58,30 @@ async def member_term(
     return row.policy if row is not None and row.policy else None
 
 
+async def session_owner(
+    db: AsyncSession, *, tenant_id: uuid.UUID, chat_session_id: object
+) -> m.OrgMember | None:
+    """The live member who owns a chat session in this tenant, or None."""
+    if not chat_session_id:
+        return None
+    try:
+        session_id = uuid.UUID(str(chat_session_id))
+    except ValueError:
+        return None
+    return (
+        await db.execute(
+            select(m.OrgMember)
+            .join(m.ChatSession, m.ChatSession.member_id == m.OrgMember.id)
+            .where(
+                m.ChatSession.id == session_id,
+                m.ChatSession.tenant_id == tenant_id,
+                m.OrgMember.tenant_id == tenant_id,
+                m.OrgMember.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+
+
 async def member_term_for_run(
     db: AsyncSession,
     *,
@@ -60,9 +89,17 @@ async def member_term_for_run(
     agent_id: uuid.UUID,
     context: Mapping[str, Any] | None,
 ) -> tuple[m.OrgMember | None, dict[str, Any] | None]:
-    """Resolve the acting member from a run context, and their term on the agent."""
-    raw = (context or {}).get("originating_operator")
-    member = await acting_member(
-        db, tenant_id=tenant_id, originating_operator=str(raw) if raw else None
-    )
+    """Resolve the acting member from a run context, and their term on the agent.
+
+    The originating operator first; the session owner only when no operator
+    is recorded at all (never as a fallback for an operator who is unknown).
+    """
+    ctx = context or {}
+    raw = ctx.get("originating_operator")
+    if raw:
+        member = await acting_member(db, tenant_id=tenant_id, originating_operator=str(raw))
+    else:
+        member = await session_owner(
+            db, tenant_id=tenant_id, chat_session_id=ctx.get("chat_session_id")
+        )
     return member, await member_term(db, tenant_id=tenant_id, agent_id=agent_id, member=member)

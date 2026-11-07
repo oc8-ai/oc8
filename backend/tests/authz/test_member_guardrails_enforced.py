@@ -400,3 +400,76 @@ async def test_a_run_delegated_by_annas_run_carries_annas_term(
         )
         assert member is not None and member.subject == ANNA
         assert effective_tool_policies(frame, {}, term)["gmail"].modify is False
+
+
+# ------------------------------------------- messenger turns: the session owner
+
+
+async def _annas_session(db: AsyncSession, tenant: uuid.UUID, agent_id: uuid.UUID) -> uuid.UUID:
+    anna = await _subject(db, ANNA)
+    session = m.ChatSession(tenant_id=tenant, agent_id=agent_id, member_id=anna.id)
+    db.add(session)
+    await db.flush()
+    return session.id
+
+
+async def test_without_an_operator_the_session_owner_acts(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant, agent_id = await _seed_loader(app_session)
+    async with app_session(tenant) as db:
+        session_id = await _annas_session(db, tenant, agent_id)
+        member, term = await member_term_for_run(
+            db, tenant_id=tenant, agent_id=agent_id, context={"chat_session_id": str(session_id)}
+        )
+        assert member is not None and member.subject == ANNA
+        assert term == _rights("gmail", modify=False)
+
+
+@pytest.mark.parametrize("which", ["other_tenant", "unknown", "garbage"])
+async def test_a_foreign_or_unknown_session_gives_no_term(
+    app_session: AppSessionFactory, which: str
+) -> None:
+    tenant, agent_id = await _seed_loader(app_session)
+    other_tenant, other_agent = await _seed_loader(app_session)
+    async with app_session(other_tenant) as db:
+        foreign = await _annas_session(db, other_tenant, other_agent)
+    session_ref = {
+        "other_tenant": str(foreign),
+        "unknown": str(uuid.uuid4()),
+        "garbage": "not-a-uuid",
+    }[which]
+    async with app_session(tenant) as db:
+        member, term = await member_term_for_run(
+            db, tenant_id=tenant, agent_id=agent_id, context={"chat_session_id": session_ref}
+        )
+        assert member is None and term is None
+
+
+async def test_a_messenger_turn_in_annas_session_is_denied_the_modifying_call(
+    app_session: AppSessionFactory, _fake_mcp: Any
+) -> None:
+    """Channel dispatch starts the run with no originating operator but with the
+    bound member's chat session; her guardrails must still bite."""
+    from tests.api.test_mcp_gateway import _FakeMcp, _rpc, _token
+
+    tenant, agent_id, run_id = await _gateway_run(app_session, None)
+    async with app_session(tenant) as db:
+        session_id = await _annas_session(db, tenant, agent_id)
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {
+            **run.context,
+            "chat_session_id": str(session_id),
+            "chat_channel": "telegram",
+            "chat_channel_external_id": "12345",
+        }
+
+    code, body = await _rpc(
+        _token(tenant, agent_id, run_id),
+        "tools/call",
+        {"name": "create_record", "arguments": {"model": "res.partner"}},
+    )
+    assert code == 200, body
+    assert body["result"]["isError"] is True, body
+    assert _FakeMcp.calls == []
