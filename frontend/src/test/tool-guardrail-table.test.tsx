@@ -12,7 +12,15 @@ vi.mock("@/lib/hooks", async (importOriginal) => {
   };
 });
 
-const BLANK = { read: false, modify: false, approvalActions: [], approvalEur: null, only: [] };
+const BLANK = {
+  read: false,
+  modify: false,
+  approvalActions: [],
+  approvalEur: null,
+  only: [],
+  conditions: [],
+};
+const FULL = { ...BLANK, read: true, modify: true };
 
 describe("ToolGuardrailTable", () => {
   it("renders the Wie Department badge for an inherited row", () => {
@@ -129,7 +137,7 @@ describe("ToolGuardrailTable", () => {
         saving={false}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /bearbeiten|edit/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^(mehr|more)$/i }));
     fireEvent.click(screen.getByRole("button", { name: /speichern|save/i }));
     expect(onSave).toHaveBeenCalledWith("github", expect.any(Object));
   });
@@ -161,20 +169,20 @@ describe("ToolGuardrailTable", () => {
         saving={false}
       />,
     );
-    // No editor open yet -- only the two row-level "Bearbeiten"/"Edit" buttons exist.
+    // No editor open yet -- only the two row-level "Mehr"/"More" buttons exist.
     expect(screen.queryByRole("button", { name: /speichern|save/i })).toBeNull();
 
-    const editButtons = screen.getAllByRole("button", { name: /bearbeiten|edit/i });
+    const editButtons = screen.getAllByRole("button", { name: /^(mehr|more)$/i });
     fireEvent.click(editButtons[0]);
     expect(screen.getByRole("button", { name: /speichern|save/i })).toBeInTheDocument();
-    // The row being edited itself now reads "Cancel", not "Edit" -- only one
-    // "Edit" button remains, for the OTHER row, proving this expands in place
+    // The row being edited itself now reads "Cancel", not "More" -- only one
+    // "More" button remains, for the OTHER row, proving this expands in place
     // rather than opening something disconnected from the table.
-    expect(screen.getAllByRole("button", { name: /bearbeiten|edit/i })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: /^(mehr|more)$/i })).toHaveLength(1);
 
     fireEvent.click(screen.getByRole("button", { name: /abbrechen|cancel/i }));
     expect(screen.queryByRole("button", { name: /speichern|save/i })).toBeNull();
-    expect(screen.getAllByRole("button", { name: /bearbeiten|edit/i })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: /^(mehr|more)$/i })).toHaveLength(2);
   });
 
   it("keeps the row expanded when onSave resolves false, instead of discarding the edit", async () => {
@@ -198,13 +206,170 @@ describe("ToolGuardrailTable", () => {
         saving={false}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /bearbeiten|edit/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^(mehr|more)$/i }));
     fireEvent.click(screen.getByRole("button", { name: /speichern|save/i }));
     await waitFor(() => expect(onSave).toHaveBeenCalled());
     // A rejected save (e.g. the department's own ceiling doesn't allow the
     // edited value) must not also throw away what the operator was editing --
     // the row stays expanded so they can adjust and retry in place.
     expect(screen.getByRole("button", { name: /speichern|save/i })).toBeInTheDocument();
+  });
+
+  it("shows the plain level instead of the Rights and Approval columns", () => {
+    for (const level of ["department", "agent"] as const) {
+      const { unmount } = render(
+        <ToolGuardrailTable
+          level={level}
+          rows={[
+            {
+              toolKey: "github",
+              connection: undefined,
+              ceilingPolicy: null,
+              ownValue: FULL,
+              status: null,
+            },
+          ]}
+          addableNames={[]}
+          connections={[]}
+          onSave={vi.fn()}
+          onAdd={vi.fn()}
+          saving={false}
+        />,
+      );
+      expect(screen.getByRole("button", { name: /github.*allowed/i })).toBeInTheDocument();
+      expect(screen.queryByText(/^(rights|rechte)$/i)).toBeNull();
+      expect(screen.queryByText(/approval needed for|freigabe nötig für/i)).toBeNull();
+      unmount();
+    }
+  });
+
+  it("shows a quiet limits hint when the policy carries details", () => {
+    render(
+      <ToolGuardrailTable
+        level="department"
+        rows={[
+          {
+            toolKey: "odoo",
+            connection: undefined,
+            ceilingPolicy: null,
+            ownValue: { ...FULL, approvalEur: 5000 },
+            status: null,
+          },
+        ]}
+        addableNames={[]}
+        connections={[]}
+        onSave={vi.fn()}
+        onAdd={vi.fn()}
+        saving={false}
+      />,
+    );
+    expect(screen.getByText(/with limits|mit Grenzen/i)).toBeInTheDocument();
+  });
+
+  it("saves a picked level through onSave without loosening past the ceiling", async () => {
+    const onSave = vi.fn().mockResolvedValue(true);
+    render(
+      <ToolGuardrailTable
+        level="agent"
+        rows={[
+          {
+            toolKey: "github",
+            connection: undefined,
+            ceilingPolicy: { ...FULL, approvalEur: 100 },
+            ownValue: { ...FULL, approvalEur: 100 },
+            status: "inherited",
+          },
+        ]}
+        addableNames={[]}
+        connections={[]}
+        onSave={onSave}
+        onAdd={vi.fn()}
+        saving={false}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /github.*allowed/i }));
+    fireEvent.click(await screen.findByRole("radio", { name: /read only/i }));
+    await waitFor(() =>
+      expect(onSave).toHaveBeenCalledWith(
+        "github",
+        expect.objectContaining({ read: true, modify: false, approvalEur: 100 }),
+      ),
+    );
+  });
+
+  it("greys out levels the department rules out, on the agent level", async () => {
+    render(
+      <ToolGuardrailTable
+        level="agent"
+        rows={[
+          {
+            toolKey: "calendar",
+            connection: undefined,
+            ceilingPolicy: { ...FULL, modify: false },
+            ownValue: { ...FULL, modify: false },
+            status: "inherited",
+          },
+        ]}
+        addableNames={[]}
+        connections={[]}
+        onSave={vi.fn()}
+        onAdd={vi.fn()}
+        saving={false}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /calendar.*read only/i }));
+    expect(
+      await screen.findByRole("radio", { name: /needs approval.*set by department/i }),
+    ).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("radio", { name: /allowed.*set by department/i })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+  });
+
+  it("shows the member's level, effect sentence and source on level=member", async () => {
+    render(
+      <ToolGuardrailTable
+        level="member"
+        rows={[
+          {
+            toolKey: "gmail",
+            connection: undefined,
+            ceilingPolicy: FULL,
+            ownValue: { ...FULL, approvalActions: ["modify"] },
+            status: null,
+            effect: "The sales agent asks you before it sends a mail.",
+            source: "member",
+          },
+          {
+            toolKey: "calendar",
+            connection: undefined,
+            ceilingPolicy: { ...FULL, modify: false },
+            ownValue: { ...FULL, modify: false },
+            status: null,
+            source: "agent",
+            ceilingSource: "agent",
+          },
+        ]}
+        addableNames={[]}
+        connections={[]}
+        onSave={vi.fn()}
+        onAdd={vi.fn()}
+        saving={false}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /gmail.*ask me first/i })).toBeInTheDocument();
+    const effect = screen.getByText("The sales agent asks you before it sends a mail.");
+    expect(effect.closest("[aria-live]")).toHaveAttribute("aria-live", "polite");
+    expect(screen.getByText(/^(you|von dir)$/i)).toBeInTheDocument();
+    expect(screen.queryByText(/^(rights|rechte)$/i)).toBeNull();
+    // Members cannot add tools of their own.
+    expect(screen.queryByRole("button", { name: /add tool|tool hinzufügen/i })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /calendar.*read only/i }));
+    expect(await screen.findByRole("radio", { name: /allowed.*set by agent/i })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
   });
 });
 
