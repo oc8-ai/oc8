@@ -36,6 +36,9 @@ export function levelOf(v: LevelInput): Level {
 
 export function hasLimits(v: LevelInput): boolean {
   return (
+    // Write without read: the levels assume a modifying level can read too,
+    // so picking one would silently add read -- flag it before that.
+    (v.modify && !v.read) ||
     v.approvalEur != null ||
     v.approvalActions.some((a) => a !== ASK_ACTION) ||
     (v.conditions?.length ?? 0) > 0 ||

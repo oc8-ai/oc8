@@ -27,6 +27,7 @@ def test_level_of(policy: ToolPolicy, level: Level) -> None:
 def test_limits_hint() -> None:
     assert has_limits(ToolPolicy(enabled=True, read=True, modify=True, approval_eur=500))
     assert not has_limits(ToolPolicy(enabled=True, read=True, modify=True))
+    assert has_limits(ToolPolicy(enabled=True, read=False, modify=True))
 
 
 def test_member_entries() -> None:

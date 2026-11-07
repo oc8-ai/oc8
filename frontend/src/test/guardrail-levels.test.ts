@@ -34,6 +34,7 @@ describe("hasLimits", () => {
     expect(hasLimits({ ...base, approvalEur: 500 })).toBe(true);
     expect(hasLimits({ ...base, approvalActions: ["modify", "send_mail"] })).toBe(true);
     expect(hasLimits({ ...base, only: ["read_mail"] })).toBe(true);
+    expect(hasLimits({ ...base, read: false })).toBe(true);
     expect(hasLimits(base)).toBe(false);
     expect(hasLimits({ ...base, approvalActions: ["modify"] })).toBe(false);
   });

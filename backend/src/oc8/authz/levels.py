@@ -29,7 +29,9 @@ def has_limits(policy: ToolPolicy) -> bool:
     conditions, a narrowed surface."""
     extra_actions = (policy.approval_actions | policy.member_approval_actions) - {"modify"}
     return bool(
-        policy.approval_eur is not None
+        # Write without read: a modifying level assumes read too.
+        (policy.modify and not policy.read)
+        or policy.approval_eur is not None
         or policy.member_approval_eur is not None
         or extra_actions
         or policy.conditions
