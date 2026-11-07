@@ -14,11 +14,11 @@ from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.agent.assistant import get_or_create_assistant
-from oc8.chat.reach import assistant_visible
 from oc8.auth import get_identity_provider
 from oc8.authz.authority import Authority
 from oc8.authz.permissions import COPILOT, COPILOT_USE, MANAGE, perm
 from oc8.authz.scope import subject_uuid_for
+from oc8.chat.reach import assistant_visible
 from oc8.main import create_app
 from tests.conftest import AppSessionFactory
 
