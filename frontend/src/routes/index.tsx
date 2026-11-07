@@ -156,7 +156,6 @@ function OfficePage() {
         pendingApprovals={pendingApprovals}
       />
 
-
       <div className="relative rounded-2xl border border-border bg-background/60 p-4 md:p-6 grid-bg overflow-hidden">
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,color-mix(in_oklab,var(--primary)_10%,transparent),transparent_60%)]" />
 
