@@ -123,19 +123,25 @@ export function MemberGuardrailsPanel({ agentId }: { agentId: string }) {
     }
   }
 
-  async function saveAndReport(
+  /** Every write to one row goes through here: on failure that row says so
+   * in one sentence under it (never swallowed, never a toast alone). A picked
+   * level already gets the table's own "back to what it was" line, so it
+   * passes no `failure` and only clears an earlier one. */
+  async function report(
     toolKey: string,
-    body: { level: Level } | { policy: Record<string, unknown> },
+    write: () => Promise<unknown>,
+    failure?: string,
   ): Promise<boolean> {
     try {
-      await save.mutateAsync({ toolKey, ...body });
+      await write();
       setRowError(({ [toolKey]: _gone, ...rest }) => rest);
       return true;
     } catch (error) {
-      // A picked level already says so under its row (the table snaps it
-      // back); a "More" edit has no such line, so it gets this one.
-      if ("policy" in body) {
-        setRowError((e) => ({ ...e, [toolKey]: describeGuardrailSaveError(error, t) }));
+      if (failure !== undefined) {
+        setRowError((e) => ({
+          ...e,
+          [toolKey]: `${failure} ${describeGuardrailSaveError(error, t)}`,
+        }));
       }
       return false;
     }
@@ -152,6 +158,7 @@ export function MemberGuardrailsPanel({ agentId }: { agentId: string }) {
     ceilingLevel: tool.baseLevel,
     limits: tool.hasLimits,
     effect: effectSentence(tool.level, tool.toolKey, agentName, t),
+    error: rowError[tool.toolKey],
     source: rowSource(tool.source),
     ceilingSource: tool.source === "agent" ? "agent" : "department",
   }));
@@ -266,19 +273,31 @@ export function MemberGuardrailsPanel({ agentId }: { agentId: string }) {
               rows={rows}
               addableNames={[]}
               connections={[]}
-              onSave={(toolKey, next) => saveAndReport(toolKey, { policy: toEntry(next) })}
-              onSaveLevel={(toolKey, level) => saveAndReport(toolKey, { level })}
-              onReset={(toolKey) => void reset.mutateAsync({ toolKey }).catch(() => {})}
+              onSave={(toolKey, next) =>
+                report(
+                  toolKey,
+                  () => save.mutateAsync({ toolKey, policy: toEntry(next) }),
+                  t("Couldn't save this rule.", "Diese Regel konnte nicht gespeichert werden."),
+                )
+              }
+              onSaveLevel={(toolKey, level) =>
+                report(toolKey, () => save.mutateAsync({ toolKey, level }))
+              }
+              onReset={(toolKey) =>
+                void report(
+                  toolKey,
+                  () => reset.mutateAsync({ toolKey }),
+                  t(
+                    "Couldn't reset this rule, so it still applies.",
+                    "Diese Regel konnte nicht zurückgesetzt werden, sie gilt weiter.",
+                  ),
+                )
+              }
               onAdd={() => {}}
               saving={save.isPending}
               agentId={agentId}
             />
           )}
-          {Object.entries(rowError).map(([toolKey, message]) => (
-            <p key={toolKey} className="text-xs text-destructive">
-              {toolKey}: {message}
-            </p>
-          ))}
         </>
       )}
     </div>

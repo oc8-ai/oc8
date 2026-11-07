@@ -94,6 +94,9 @@ export interface ToolGuardrailRow {
   ceilingLevel?: Level;
   /** Backend-computed "with limits" -- same reason as `level`. */
   limits?: boolean;
+  /** A failed write the caller reports for this row (e.g. a member's Reset):
+   * one sentence under it, in place of the effect sentence. */
+  error?: string;
 }
 
 function StatusBadge({
@@ -262,6 +265,8 @@ export function ToolGuardrailTable({
                             "Die neue Stufe konnte nicht gespeichert werden, sie ist wieder wie vorher.",
                           )}
                         </span>
+                      ) : row.error ? (
+                        <span className="text-destructive">{row.error}</span>
                       ) : (
                         row.effect && <span>{row.effect}</span>
                       )}

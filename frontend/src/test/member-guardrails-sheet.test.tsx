@@ -218,6 +218,36 @@ describe("MemberGuardrailsPanel", () => {
     expect(screen.getByRole("button", { name: /gmail.*Allowed/ })).toBeInTheDocument();
   });
 
+  it("a failed Reset keeps my rule and says so in one sentence under that row", async () => {
+    m.reset.mockRejectedValue(new Error("boom"));
+    m.data = data({
+      tools: [
+        tool({ mine: { ...POLICY, modify: false }, level: "read_only", source: "member" }),
+        tool({ toolKey: "calendar", connectionName: "calendar" }),
+      ],
+    });
+    render(<MemberGuardrailsPanel agentId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Reset" }));
+    await waitFor(() => expect(m.reset).toHaveBeenCalledWith({ toolKey: "gmail" }));
+    const sentence = await screen.findByText(/Couldn't reset this rule/);
+    expect(sentence.closest("tr")).toHaveTextContent("gmail");
+    expect(sentence.closest("tr")).not.toHaveTextContent("calendar");
+    expect(screen.getAllByText(/Couldn't reset this rule/)).toHaveLength(1);
+    expect(screen.getByRole("button", { name: /gmail.*Read only/ })).toBeInTheDocument();
+  });
+
+  it("a successful Reset clears an earlier failure", async () => {
+    m.reset.mockRejectedValueOnce(new Error("boom")).mockResolvedValueOnce(data());
+    m.data = data({
+      tools: [tool({ mine: { ...POLICY, modify: false }, level: "read_only", source: "member" })],
+    });
+    render(<MemberGuardrailsPanel agentId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Reset" }));
+    await screen.findByText(/Couldn't reset this rule/);
+    fireEvent.click(screen.getByRole("button", { name: "Reset" }));
+    await waitFor(() => expect(screen.queryByText(/Couldn't reset this rule/)).toBeNull());
+  });
+
   it("greys out levels the agent's own guardrail rules out", async () => {
     m.data = data({ tools: [tool({ baseLevel: "read_only", level: "read_only" })] });
     render(<MemberGuardrailsPanel agentId="a1" />);

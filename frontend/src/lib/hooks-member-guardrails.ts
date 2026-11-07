@@ -150,19 +150,28 @@ export function useMyApprovals({ poll = false }: { poll?: number | false } = {})
   });
 }
 
-/** The department stage that follows a member's approval
- * (`previousApprovalId === approvalId`), in whatever state it is in. `null`
- * while there is none the caller can see: a member without a seat in the
- * department is never shown its queue. Polled until it is decided. */
-export function useApprovalFollowUp(approvalId: string | null) {
+export type NextStageStatus = "pending" | "approved" | "rejected" | "expired" | null;
+
+/** How often to look again at a member's approved row: only while the
+ * department's stage is still open. Decided, or no stage at all -> stop. */
+export function stagePollInterval(status: NextStageStatus | undefined): number | false {
+  return status === "pending" ? 5000 : false;
+}
+
+/** The member's own approved row, re-read for its `nextStageStatus` -- how the
+ * department's second stage stands. Reads only the member's own row (the
+ * `status=approved` listing shows a member their own rows), never the
+ * department's. Enabled only while a department stage is known to be open;
+ * polls until it is decided. */
+export function useApprovalStage(approvalId: string, enabled: boolean) {
   return useQuery({
-    queryKey: ["approvals", "follow-up", approvalId],
-    queryFn: async () => {
-      const lists = await Promise.all(["pending", "approved", "rejected"].map(approvalsOrNone));
-      return lists.flat().find((row) => row.previousApprovalId === approvalId) ?? null;
-    },
-    enabled: !!approvalId,
+    queryKey: ["approvals", "stage", approvalId],
+    queryFn: async () =>
+      (await approvalsOrNone("approved")).find((row) => row.id === approvalId) ?? null,
+    enabled: enabled && !!approvalId,
     refetchInterval: (query) =>
-      query.state.data && query.state.data.status !== "pending" ? false : 5000,
+      query.state.data === undefined
+        ? 5000
+        : stagePollInterval(query.state.data?.nextStageStatus ?? null),
   });
 }

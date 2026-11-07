@@ -1,38 +1,65 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, fireEvent, render as rtlRender, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Approval } from "@/lib/hooks";
 
 const m = vi.hoisted(() => ({
   decide: vi.fn(),
-  followUp: null as Record<string, unknown> | null,
-  followUpArg: [] as unknown[],
+  get: vi.fn(),
   lang: "en" as "en" | "de",
 }));
 
-vi.mock("@/lib/hooks", () => ({
-  useDecideApproval: () => ({ mutateAsync: m.decide, isPending: false }),
-}));
+vi.mock("@/lib/hooks", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/hooks")>();
+  return { ...actual, useDecideApproval: () => ({ mutateAsync: m.decide, isPending: false }) };
+});
 
-vi.mock("@/lib/hooks-member-guardrails", () => ({
-  useApprovalFollowUp: (id: string | null) => {
-    m.followUpArg.push(id);
-    return { data: id ? m.followUp : null };
-  },
-  useMyGuardrails: () => ({
-    data: {
-      agentId: "a1",
-      agentName: "Sales agent",
-      summary: [],
-      tools: [{ toolKey: "gmail", level: "ask_first", source: "member" }],
-    },
-  }),
-}));
+// The data source, not the hook: the card reads the member's own row through
+// the real `useApprovalStage` / `useMyGuardrails` over this `api.get`.
+vi.mock("@/lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api")>();
+  return { ...actual, api: { ...actual.api, get: m.get } };
+});
 
-vi.mock("@/lib/i18n", () => ({
-  useT: () => (en: string, de?: string) => (m.lang === "de" ? (de ?? en) : en),
-}));
+vi.mock("@/lib/i18n", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/i18n")>();
+  return {
+    ...actual,
+    useT: () => (en: string, de?: string) => (m.lang === "de" ? (de ?? en) : en),
+  };
+});
 
 import { ChatApprovalCard } from "@/components/chat-approval-card";
+import { ApiError } from "@/lib/api";
+import { stagePollInterval } from "@/lib/hooks-member-guardrails";
+
+function render(ui: React.ReactElement) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return rtlRender(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
+}
+
+/** `api.get` by path: my guardrails, and the approved listing with my own row. */
+function serve(ownRow: Record<string, unknown> | "forbidden" | null) {
+  m.get.mockImplementation(async (path: string) => {
+    if (path.startsWith("/agents/")) {
+      return {
+        agentId: "a1",
+        agentName: "Sales agent",
+        summary: [],
+        tools: [{ toolKey: "gmail", level: "ask_first", source: "member" }],
+      };
+    }
+    if (path === "/approvals?status=approved") {
+      if (ownRow === "forbidden") throw new ApiError("forbidden", 403);
+      return ownRow ? [ownRow] : [];
+    }
+    throw new Error(`unexpected ${path}`);
+  });
+}
+
+function approvalsCalls(): number {
+  return m.get.mock.calls.filter(([path]) => String(path).startsWith("/approvals")).length;
+}
 
 const APPROVAL: Approval = {
   id: "ap1",
@@ -54,9 +81,8 @@ const APPROVAL: Approval = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  m.followUp = null;
-  m.followUpArg = [];
   m.lang = "en";
+  serve(null);
 });
 
 describe("ChatApprovalCard", () => {
@@ -81,7 +107,8 @@ describe("ChatApprovalCard", () => {
   });
 
   it("after approving with a department stage behind it, says who is next", async () => {
-    m.decide.mockResolvedValue({ ...APPROVAL, status: "approved", resumed: false });
+    m.decide.mockResolvedValue({ ...APPROVAL, status: "approved", nextStageStatus: "pending" });
+    serve({ ...APPROVAL, status: "approved", nextStageStatus: "pending" });
     render(<ChatApprovalCard approval={APPROVAL} onChangeRule={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Approve: send mail to kunde@x.de" }));
     await waitFor(() =>
@@ -89,39 +116,63 @@ describe("ChatApprovalCard", () => {
     );
     expect(await screen.findByText("Approved by you · waiting for Sales")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Approve/ })).toBeNull();
-    // The department stage is followed by the member's row id.
-    expect(m.followUpArg).toContain("ap1");
   });
 
   it("says the same in German", async () => {
     m.lang = "de";
-    m.decide.mockResolvedValue({ ...APPROVAL, status: "approved", resumed: false });
+    m.decide.mockResolvedValue({ ...APPROVAL, status: "approved", nextStageStatus: "pending" });
+    serve({ ...APPROVAL, status: "approved", nextStageStatus: "pending" });
     render(
       <ChatApprovalCard
         approval={{ ...APPROVAL, departmentName: "Vertrieb" }}
         onChangeRule={vi.fn()}
       />,
     );
-    expect(screen.getByText("Deine Regel: Gmail · Erst mich fragen")).toBeInTheDocument();
+    expect(await screen.findByText("Deine Regel: Gmail · Erst mich fragen")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /^Freigeben: / }));
     expect(
       await screen.findByText("Von dir freigegeben · wartet auf Vertrieb"),
     ).toBeInTheDocument();
   });
 
-  it("shows a department rejection of the second stage", async () => {
-    m.decide.mockResolvedValue({ ...APPROVAL, status: "approved", resumed: false });
-    m.followUp = { ...APPROVAL, id: "ap2", previousApprovalId: "ap1", status: "rejected" };
+  it("reads the department's rejection off my own row", async () => {
+    m.decide.mockResolvedValue({ ...APPROVAL, status: "approved", nextStageStatus: "pending" });
+    serve({ ...APPROVAL, status: "approved", nextStageStatus: "rejected" });
     render(<ChatApprovalCard approval={APPROVAL} onChangeRule={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Approve: send mail to kunde@x.de" }));
     expect(await screen.findByText("Rejected by Sales")).toBeInTheDocument();
+    // Only my own listing was read -- never the department's queue.
+    expect(m.get).toHaveBeenCalledWith("/approvals?status=approved");
+    expect(m.get).not.toHaveBeenCalledWith("/approvals?status=pending");
+    expect(m.get).not.toHaveBeenCalledWith("/approvals?status=rejected");
   });
 
-  it("a plain approval with nobody behind it just says approved", async () => {
-    m.decide.mockResolvedValue({ ...APPROVAL, status: "approved", resumed: true });
+  it("an already-decided stage on a listed row needs no reading at all", async () => {
+    render(
+      <ChatApprovalCard
+        approval={{ ...APPROVAL, status: "approved", nextStageStatus: "approved" }}
+        onChangeRule={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText("Approved by Sales")).toBeInTheDocument();
+    expect(approvalsCalls()).toBe(0);
+  });
+
+  it("a plain approval with no department stage reads nothing further", async () => {
+    m.decide.mockResolvedValue({ ...APPROVAL, status: "approved", nextStageStatus: null });
     render(<ChatApprovalCard approval={APPROVAL} onChangeRule={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Approve: send mail to kunde@x.de" }));
     expect(await screen.findByText("Approved by you")).toBeInTheDocument();
+    expect(approvalsCalls()).toBe(0);
+  });
+
+  it("a 403 on my own listing is nothing to show, not an error", async () => {
+    m.decide.mockResolvedValue({ ...APPROVAL, status: "approved", nextStageStatus: "pending" });
+    serve("forbidden");
+    render(<ChatApprovalCard approval={APPROVAL} onChangeRule={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Approve: send mail to kunde@x.de" }));
+    expect(await screen.findByText("Approved by you · waiting for Sales")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("rejecting records it and says so", async () => {
@@ -142,5 +193,40 @@ describe("ChatApprovalCard", () => {
     expect(
       screen.getByRole("button", { name: "Approve: send mail to kunde@x.de" }),
     ).toBeInTheDocument();
+  });
+});
+
+describe("polling the department's stage", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("re-reads while open and stops once the department decided", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    m.decide.mockResolvedValue({ ...APPROVAL, status: "approved", nextStageStatus: "pending" });
+    serve({ ...APPROVAL, status: "approved", nextStageStatus: "pending" });
+    render(<ChatApprovalCard approval={APPROVAL} onChangeRule={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Approve: send mail to kunde@x.de" }));
+    await screen.findByText("Approved by you · waiting for Sales");
+    await waitFor(() => expect(approvalsCalls()).toBe(1));
+
+    serve({ ...APPROVAL, status: "approved", nextStageStatus: "rejected" });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(await screen.findByText("Rejected by Sales")).toBeInTheDocument();
+    const settled = approvalsCalls();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30000);
+    });
+    expect(approvalsCalls()).toBe(settled);
+  });
+});
+
+describe("stagePollInterval", () => {
+  it("polls only while the department's stage is open", () => {
+    expect(stagePollInterval("pending")).toBe(5000);
+    expect(stagePollInterval("approved")).toBe(false);
+    expect(stagePollInterval("rejected")).toBe(false);
+    expect(stagePollInterval("expired")).toBe(false);
+    expect(stagePollInterval(null)).toBe(false);
   });
 });

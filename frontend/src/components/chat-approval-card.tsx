@@ -4,17 +4,16 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { levelLabel } from "@/lib/guardrail-levels";
 import { useDecideApproval, type Approval } from "@/lib/hooks";
-import { useApprovalFollowUp, useMyGuardrails } from "@/lib/hooks-member-guardrails";
+import { useApprovalStage, useMyGuardrails } from "@/lib/hooks-member-guardrails";
 import { useT } from "@/lib/i18n";
 import { approvalActionText, toolLabel } from "@/lib/member-guardrail-text";
 
 // The approval a member's own rule asked for, where they are (D3a, design
 // review D4): in the conversation, in the Copilot's "Waiting" tab. Decides
 // through the same `useDecideApproval` the inbox's `ApprovalPane` uses. After
-// the member's yes, the department's second stage (a new row whose
-// `previousApprovalId` is this one) is followed when the member can see it;
-// when they cannot -- no seat in that department -- a decision that did not
-// resume the run is what says the department is next.
+// the member's yes, the member's OWN row says how the department's second
+// stage stands (`nextStageStatus`), so a member without a seat in that
+// department -- never shown its row -- still learns how it was decided.
 export function ChatApprovalCard({
   approval,
   onChangeRule,
@@ -28,7 +27,15 @@ export function ChatApprovalCard({
   const [result, setResult] = useState<Approval | null>(null);
   const [failed, setFailed] = useState(false);
   const own = result ?? approval;
-  const { data: followUp } = useApprovalFollowUp(own.status === "approved" ? own.id : null);
+  // `nextStageStatus` rides on the member's OWN row (decision response or
+  // listing): the department's row itself is never shown to a member without
+  // a seat there. Re-read only while that stage is open.
+  const knownStage = own.nextStageStatus ?? null;
+  const { data: fresh } = useApprovalStage(
+    approval.id,
+    own.status === "approved" && knownStage === "pending",
+  );
+  const stage = fresh?.nextStageStatus ?? knownStage;
   const { data: guardrails } = useMyGuardrails(approval.agentId);
 
   const action = approvalActionText(approval, t);
@@ -51,14 +58,16 @@ export function ChatApprovalCard({
   }
 
   let outcome: string | null = null;
-  if (followUp?.status === "rejected") {
+  if (own.status === "approved" && stage === "rejected") {
     outcome = t("Rejected by {dept}", "Abgelehnt von {dept}").replace("{dept}", department);
-  } else if (followUp?.status === "approved") {
+  } else if (own.status === "approved" && stage === "expired") {
+    outcome = t(
+      "Expired before {dept} decided",
+      "Abgelaufen, bevor {dept} entschieden hat",
+    ).replace("{dept}", department);
+  } else if (own.status === "approved" && stage === "approved") {
     outcome = t("Approved by {dept}", "Freigegeben von {dept}").replace("{dept}", department);
-  } else if (
-    own.status === "approved" &&
-    (followUp?.status === "pending" || result?.resumed === false)
-  ) {
+  } else if (own.status === "approved" && stage === "pending") {
     outcome = t(
       "Approved by you · waiting for {dept}",
       "Von dir freigegeben · wartet auf {dept}",
