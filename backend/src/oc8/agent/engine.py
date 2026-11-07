@@ -103,6 +103,7 @@ from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_
 from oc8.agents.versioning import pinned_model_config_id, resolve_version
 from oc8.approvals import raise_approval, record_url_for_connection
 from oc8.audit import append_event
+from oc8.authz.member_guardrails import member_term_for_run
 from oc8.authz.pdp import Decision, Effect, effective_tool_policies, required_right
 from oc8.capas.claude_hooks import dispatch_claude_event
 from oc8.capas.claude_hooks.context import (
@@ -562,7 +563,18 @@ async def run_agent(
         ]
         department = await db.get(m.Department, agent.department_id)
         frame: dict[str, Any] = department.frame if department is not None else {}
-        tool_policies = effective_tool_policies(frame, pinned["narrowing"] or {})
+        # The acting member's guardrail (D3a): whoever posted this turn,
+        # resolved once per run like the pinned narrowing beside it.
+        acting_operator = originating_operator
+        if acting_operator is None and run_row is not None:
+            acting_operator = (run_row.context or {}).get("originating_operator")
+        _member, member_policy = await member_term_for_run(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent.id,
+            context={"originating_operator": acting_operator},
+        )
+        tool_policies = effective_tool_policies(frame, pinned["narrowing"] or {}, member_policy)
         extra_conns: list[m.McpConnection] = list(mcp_conns) if mcp_conns else []
         if not extra_conns and run_row is not None:
             raw_ids = run_row.context.get("mcp_connection_ids")

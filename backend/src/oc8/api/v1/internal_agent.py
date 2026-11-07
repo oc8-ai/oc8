@@ -102,6 +102,7 @@ from oc8.api.deps import CurrentPrincipal, DbSession, unguarded
 from oc8.approvals import raise_approval
 from oc8.approvals.record_url import record_url_for_connection
 from oc8.audit import append_event
+from oc8.authz.member_guardrails import member_term_for_run
 from oc8.authz.pdp import (
     Decision,
     Effect,
@@ -375,7 +376,10 @@ async def _discover_connection_tools(
     the model, and the other connections stay in the list.
     """
     frame = dept.frame if dept is not None else {}
-    policies = effective_tool_policies(frame, pinned["narrowing"] or {})
+    _member, member_policy = await member_term_for_run(
+        db, tenant_id=run.tenant_id, agent_id=agent.id, context=run.context
+    )
+    policies = effective_tool_policies(frame, pinned["narrowing"] or {}, member_policy)
 
     async def _one(
         conn: m.McpConnection,
@@ -1298,6 +1302,10 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
     outward_tools = cfg.get("outward_tools") if isinstance(cfg.get("outward_tools"), list) else None
     tool_tiers: dict[str, str] = {}
     if caps.parallel_tool_calls:
+        _member, member_policy = await member_term_for_run(
+            db, tenant_id=run.tenant_id, agent_id=agent.id, context=run.context
+        )
+        step_policies = effective_tool_policies(frame, pinned["narrowing"] or {}, member_policy)
         for t in result.tool_calls:
             if t.name in CONTROL_TOOL_NAMES or t.name in skill_tool_names:
                 break
@@ -1313,7 +1321,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
                     for g in s.definition.guardrails
                     if g.type == "value_threshold" and g.then == "require_approval"
                 ),
-                tool_policies=effective_tool_policies(frame, pinned["narrowing"] or {}),
+                tool_policies=step_policies,
                 connection_key=conn.name if conn is not None else None,
                 tool_scopes=scopes,
                 value_spec=value_spec,
@@ -1436,6 +1444,10 @@ async def _precompute_leading_reads(
     active_ids = {str(s) for s in ctx.get("active_skill_ids", [])}
     active_skills = [s for s in assigned_skills if str(s.skill_version_id) in active_ids]
     schemas = ctx.get("tool_schemas", [])
+    _member, member_policy = await member_term_for_run(
+        db, tenant_id=run.tenant_id, agent_id=agent.id, context=ctx
+    )
+    policies = effective_tool_policies(frame, pinned["narrowing"] or {}, member_policy)
     batch: list[tuple[ToolBody, dict[str, Any]]] = []
     for call in calls:
         if call.local_result is not None:
@@ -1462,7 +1474,7 @@ async def _precompute_leading_reads(
                 for g in s.definition.guardrails
                 if g.type == "value_threshold" and g.then == "require_approval"
             ),
-            tool_policies=effective_tool_policies(frame, pinned["narrowing"] or {}),
+            tool_policies=policies,
             connection_key=conn.name,
             tool_scopes=scopes,
             value_spec=value_spec,
@@ -1675,6 +1687,9 @@ async def _dispatch_one_tool(
 
     active_ids = {str(s) for s in run.context.get("active_skill_ids", [])}
     active_skills = [s for s in assigned_skills if str(s.skill_version_id) in active_ids]
+    _member, member_policy = await member_term_for_run(
+        db, tenant_id=run.tenant_id, agent_id=agent.id, context=run.context
+    )
 
     decision = _authorize(
         agent,
@@ -1692,7 +1707,7 @@ async def _dispatch_one_tool(
             for g in s.definition.guardrails
             if g.type == "value_threshold" and g.then == "require_approval"
         ),
-        tool_policies=effective_tool_policies(frame, pinned["narrowing"] or {}),
+        tool_policies=effective_tool_policies(frame, pinned["narrowing"] or {}, member_policy),
         connection_key=conn.name if conn is not None else None,
         tool_scopes=scopes,
         value_spec=value_spec,

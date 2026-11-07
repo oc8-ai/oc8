@@ -454,6 +454,7 @@ async def _agent_detail_dto(db: DbSession, agent: m.Agent) -> AgentDetailDTO:
         else None
     )
 
+    # No member term: the admin view shows the agent itself, not any member's run.
     effective = effective_tool_policies(frame, agent.narrowing)
     overridden_keys = frozenset(agent.narrowing_overridden_keys or [])
     tool_policy_sources = {
