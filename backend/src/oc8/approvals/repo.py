@@ -24,7 +24,7 @@ import datetime as dt
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ColumnElement, extract, func, select
+from sqlalchemy import ColumnElement, and_, extract, func, or_, select
 
 from oc8.models.ops import ApprovalRequest
 
@@ -61,21 +61,33 @@ async def visible_approvals(
     scope = actor.scope
     stmt = select(ApprovalRequest).where(ApprovalRequest.status == status)
 
+    # A row routed to one member -- their own guardrail asked them (D3a) -- is
+    # theirs alone: not the department's queue, and not an unrestricted
+    # caller's either. Everything else keeps the department term below.
+    unassigned = ApprovalRequest.assignee_member_id.is_(None)
+    own = ApprovalRequest.assignee_member_id == actor.member.id
     if scope.is_unrestricted:
         # No department predicate at all. This is the ONLY way `department_id IS
         # NULL` -- the tenant-scope budget incident -- is ever visible to anybody,
         # and `viewable` is empty for an unrestricted caller by design, so a
         # filter built from it would show a CEO nothing.
-        pass
+        stmt = stmt.where(or_(unassigned, own))
     elif scope.viewable:
-        stmt = stmt.where(ApprovalRequest.department_id.in_(scope.viewable))
+        stmt = stmt.where(
+            or_(and_(unassigned, ApprovalRequest.department_id.in_(scope.viewable)), own)
+        )
     else:
-        return []
+        # No seat anywhere still leaves the rows routed to this member. The
+        # empty-`IN ()` hazard the module docstring names does not arise: the
+        # predicate is an equality on the member, never the empty set.
+        stmt = stmt.where(own)
 
     if department_id is not None:
+        # The department picker filters the department QUEUE; a member's own
+        # rows are not in it.
         if not scope.may_view(department_id):
             return []
-        stmt = stmt.where(ApprovalRequest.department_id == department_id)
+        stmt = stmt.where(ApprovalRequest.department_id == department_id, unassigned)
 
     # `id` breaks the tie. `created_at` defaults to `now()`, which in Postgres is
     # TRANSACTION start time, so several approvals raised inside one request --
@@ -165,6 +177,10 @@ async def load_for_actor(
     ).scalar_one_or_none()
     if row is None:
         return None
+    if row.assignee_member_id is not None:
+        # Routed to one member (D3a): visible to them and to nobody else,
+        # whatever seat or `view_any` the caller holds.
+        return row if row.assignee_member_id == actor.member.id else None
     if not actor.scope.may_view(row.department_id):
         return None
     return row

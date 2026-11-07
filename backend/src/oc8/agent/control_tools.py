@@ -32,6 +32,7 @@ from oc8.agents.repo import visible_agent, visible_agents
 from oc8.agents.versioning import pinned_model_config_id
 from oc8.approvals import (
     AlreadyDecided,
+    NotYourApproval,
     NotYourDepartment,
     NotYourSayAtAll,
     UnknownDecision,
@@ -2506,6 +2507,13 @@ async def execute_control_tool(
             )
         except NotYourDepartment:
             return ControlOutcome(output="ERROR: approval not found")
+        except NotYourApproval:
+            # The person's own guardrail asked them (D3a): the assistant may
+            # point at it but never answer it in their name.
+            return ControlOutcome(
+                output="ERROR: this approval comes from your own guardrail — "
+                "decide it yourself in 'Waiting on me'"
+            )
         except NotYourSayAtAll as exc:
             return ControlOutcome(output=f"ERROR: {exc}")
         except UnknownDecision:

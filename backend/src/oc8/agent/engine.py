@@ -101,7 +101,7 @@ from oc8.agent.tool_notes import apply_tool_notes
 from oc8.agent.tool_routing import RoutedToolset
 from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_identity
 from oc8.agents.versioning import pinned_model_config_id, resolve_version
-from oc8.approvals import raise_approval, record_url_for_connection
+from oc8.approvals import approval_routing, raise_approval, record_url_for_connection
 from oc8.audit import append_event
 from oc8.authz.member_guardrails import member_term_for_run
 from oc8.authz.pdp import Decision, Effect, effective_tool_policies, required_right
@@ -568,7 +568,7 @@ async def run_agent(
         acting_operator = originating_operator
         if acting_operator is None and run_row is not None:
             acting_operator = (run_row.context or {}).get("originating_operator")
-        _member, member_policy = await member_term_for_run(
+        acting_member, member_policy = await member_term_for_run(
             db,
             tenant_id=tenant_id,
             agent_id=agent.id,
@@ -1948,6 +1948,11 @@ async def run_agent(
                                 held_record = record_identity(
                                     auth_tc.name, tc.arguments, call_focus
                                 )
+                                # A member's own rule asks that member first,
+                                # then the department when it asked too (D3a).
+                                assignee_id, department_follows = approval_routing(
+                                    decision, acting_member
+                                )
                                 ar = await raise_approval(
                                     db,
                                     tenant_id=tenant_id,
@@ -1964,7 +1969,11 @@ async def run_agent(
                                             gate_verdict.preview if gate_verdict is not None else ""
                                         ),
                                         **({"record_url": link} if link else {}),
+                                        **(
+                                            {"department_stage": True} if department_follows else {}
+                                        ),
                                     },
+                                    assignee_member_id=assignee_id,
                                     reason_code=decision.reason_code,
                                     reason_context=decision.context,
                                     record_url=(

@@ -99,7 +99,7 @@ from oc8.agent.tool_routing import build_routes
 from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_identity
 from oc8.agents.versioning import pinned_model_config_id, resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession, unguarded
-from oc8.approvals import raise_approval
+from oc8.approvals import approval_routing, raise_approval
 from oc8.approvals.record_url import record_url_for_connection
 from oc8.audit import append_event
 from oc8.authz.member_guardrails import member_term_for_run
@@ -1687,7 +1687,7 @@ async def _dispatch_one_tool(
 
     active_ids = {str(s) for s in run.context.get("active_skill_ids", [])}
     active_skills = [s for s in assigned_skills if str(s.skill_version_id) in active_ids]
-    _member, member_policy = await member_term_for_run(
+    acting_member, member_policy = await member_term_for_run(
         db, tenant_id=run.tenant_id, agent_id=agent.id, context=run.context
     )
 
@@ -1806,6 +1806,9 @@ async def _dispatch_one_tool(
         # the containerized gateway's equivalent branch uses -- so a held
         # write looks identical to an operator whichever runtime raised it.
         held_record = record_identity(tc.name, tc.arguments, focus_spec)
+        # A member's own rule asks that member first, then the department when
+        # it asked too (D3a).
+        assignee_id, department_follows = approval_routing(decision, acting_member)
         ar = await raise_approval(
             db,
             tenant_id=run.tenant_id,
@@ -1820,7 +1823,9 @@ async def _dispatch_one_tool(
                 "justification": justification,
                 "preview": gate_verdict.preview if gate_verdict is not None else "",
                 **({"record_url": link} if link else {}),
+                **({"department_stage": True} if department_follows else {}),
             },
+            assignee_member_id=assignee_id,
             record_url=(
                 record_url_for_connection(conn, entity=held_record[0], ref=held_record[1])
                 if held_record is not None

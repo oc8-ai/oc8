@@ -11,6 +11,7 @@ from oc8.api.deps import DbSession, require_departmental
 from oc8.api.v1._serializers import approval_to_dto
 from oc8.approvals import (
     AlreadyDecided,
+    NotYourApproval,
     NotYourDepartment,
     NotYourSayAtAll,
     UnknownDecision,
@@ -55,12 +56,13 @@ async def decide(
             reason=body.reason,
             option=body.option,
         )
-    except NotYourDepartment as exc:
+    except (NotYourDepartment, NotYourApproval) as exc:
         # The funnel's defence in depth, and unreachable while `load_for_actor`
         # above is the only load: a viewer seat can VIEW this row, so if this
         # route ever stops asking the repository first, this is what stops the
         # decision -- with the same sentence as a missing row, not a 403 that
-        # confirms it exists.
+        # confirms it exists. Likewise a row routed to another member (D3a),
+        # which `load_for_actor` already hides from everyone but its assignee.
         raise HTTPException(status.HTTP_404_NOT_FOUND, _NOT_FOUND) from exc
     except NotYourSayAtAll as exc:
         # 403 and NOT the `_NOT_FOUND` 404, deliberately: this only ever escapes

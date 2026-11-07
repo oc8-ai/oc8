@@ -120,6 +120,8 @@ async def announce(
                 # tool call on every phone in the company before anybody decided
                 # anything.
                 department_id=approval.department_id,
+                # A member's own guardrail asked them alone (D3a).
+                assignee_member_id=approval.assignee_member_id,
             )
             sent: dict[str, str] = {}
             for person in people:
@@ -187,6 +189,8 @@ async def close_out(
                 tenant_id=approval.tenant_id,
                 channel=channel_id,
                 department_id=approval.department_id,
+                # The same audience it was announced to (D3a).
+                assignee_member_id=approval.assignee_member_id,
             )
             known = by_channel.get(channel_id) or {}
             for person in people:
@@ -229,7 +233,7 @@ async def decision_from(
     Until this slice the only question asked was whether a live binding existed,
     so any bound phone in the tenant could decide every approval in it.
     """
-    from oc8.approvals import NotYourSayAtAll, decide_approval
+    from oc8.approvals import NotYourApproval, NotYourSayAtAll, decide_approval
     from oc8.approvals.repo import load_for_actor
     from oc8.authz.scope import ChannelActor, scope_for_binding
 
@@ -255,8 +259,10 @@ async def decision_from(
     # `load_for_actor` answers may_VIEW; a dept_viewer may be told and may not
     # answer. Checked here rather than left to `decide_approval` because the
     # funnel's refusal is a different exception with a different message, and at
-    # this door every refusal has to read the same.
-    if not scope.may_decide(approval.department_id):
+    # this door every refusal has to read the same. A row routed to one member
+    # (D3a) has already been narrowed to that member by `load_for_actor`, and
+    # their own rule is theirs to answer whatever seat they hold.
+    if approval.assignee_member_id is None and not scope.may_decide(approval.department_id):
         raise PermissionError(REFUSED)
 
     try:
@@ -269,6 +275,10 @@ async def decision_from(
             reason=reason,
             option=option_key,
         )
+    except NotYourApproval as exc:
+        # Unreachable while `load_for_actor` above narrows an assignee row to its
+        # assignee; collapsed into the same refusal if that ever drifts.
+        raise PermissionError(REFUSED) from exc
     except NotYourSayAtAll as exc:
         # Collapsed into this door's ONE refusal, rather than allowed out with the
         # permission it names. `NotYourSayAtAll` is answerable out loud over HTTP
