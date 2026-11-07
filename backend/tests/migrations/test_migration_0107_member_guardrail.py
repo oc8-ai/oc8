@@ -1,4 +1,4 @@
-"""Migration 0106: `member_guardrail` (a member's own tightening of one agent's
+"""Migration 0107: `member_guardrail` (a member's own tightening of one agent's
 tools, D3a) and the approval routing columns."""
 
 from __future__ import annotations
