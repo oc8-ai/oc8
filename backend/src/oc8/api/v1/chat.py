@@ -12,14 +12,14 @@ from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.agent.assistant import get_or_create_assistant
-from oc8.agents.repo import visible_agent
 from oc8.agents.versioning import pinned_version_no
 from oc8.api.deps import CurrentPrincipal, DbSession, require_departmental, require_permission
 from oc8.api.v1.run import run_to_dto
-from oc8.authz.authority import Authority, authority_for_principal, tenant_wide_read
+from oc8.authz.authority import authority_for_principal
 from oc8.authz.permissions import AGENT, COPILOT, COPILOT_USE, MANAGE, RUN_START, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.chat.modes import MODES
+from oc8.chat.reach import assistant_visible, reachable_chat_agent
 from oc8.chat.service import (
     create_session,
     delete_session,
@@ -136,31 +136,6 @@ async def get_chat_modes() -> list[ChatModeDTO]:
     ]
 
 
-async def _assistant_visible(
-    db: DbSession,
-    *,
-    tenant_id: uuid.UUID,
-    authority: Authority,
-    agent_id: uuid.UUID,
-    permission: str = COPILOT_USE,
-) -> bool:
-    """Whether `agent_id` is the tenant's singleton Assistant AND the caller
-    holds `permission` tenant-wide.
-
-    Two callers, two different questions: `create_chat_session` asks "can this
-    caller open THEIR OWN Assistant session at all" (default `COPILOT_USE`,
-    held by every human role) while `_owned_session`'s foreign-session branch
-    asks "can this caller read/reply in SOMEONE ELSE's Assistant session"
-    (explicit `perm(COPILOT, MANAGE)`, held only by org_admin) -- the same
-    function, two different bars, so a caller holding only `copilot:use`
-    cannot walk through the second, stricter door.
-    """
-    if permission not in authority.tenant_wide:
-        return False
-    assistant = await get_or_create_assistant(db, tenant_id=tenant_id)
-    return assistant.id == agent_id
-
-
 async def chat_agent_for(
     request: Request, db: DbSession, actor: HumanActor, agent_id: uuid.UUID
 ) -> m.Agent | None:
@@ -168,24 +143,16 @@ async def chat_agent_for(
     to chat with -- the caller 404s on both alike).
 
     Also the gate of a member's own guardrails (`member_guardrails.py`): a
-    member sets rules on exactly the agents they can talk to.
+    member sets rules on exactly the agents they can talk to. The rule itself
+    lives in `chat.reach`, shared with the Copilot's `guardrail_suggest`.
     """
     authority = await authority_for_principal(request, db, actor.principal)
-    is_assistant = await _assistant_visible(
-        db, tenant_id=actor.principal.tenant_id, authority=authority, agent_id=agent_id
-    )
-    tenant_wide = tenant_wide_read(authority, perm(AGENT, VIEW)) or is_assistant
-    return await visible_agent(
+    return await reachable_chat_agent(
         db,
+        tenant_id=actor.principal.tenant_id,
         scope=actor.scope,
-        tenant_wide=tenant_wide,
+        authority=authority,
         agent_id=agent_id,
-        # `visible_agents`/`visible_agent` hide the Assistant from every screen
-        # that browses agents, so this -- the one door that is deliberately
-        # ABOUT the Assistant -- has to say so. `_assistant_visible` has already
-        # established both halves: this caller holds copilot:use, and this id
-        # is the tenant's Assistant and nothing else.
-        include_tenant_assistant=is_assistant,
     )
 
 
@@ -240,7 +207,7 @@ async def _owned_session(
     owned = session is not None and session.member_id == actor.member.id
     if session is not None and not owned:
         authority = await authority_for_principal(request, db, actor.principal)
-        owned = await _assistant_visible(
+        owned = await assistant_visible(
             db,
             tenant_id=actor.principal.tenant_id,
             authority=authority,
@@ -316,7 +283,7 @@ async def post_message(
 ) -> ChatMessageDTO:
     session = await _owned_session(request, session_id, db, actor)
     authority = await authority_for_principal(request, db, actor.principal)
-    is_assistant_session = await _assistant_visible(
+    is_assistant_session = await assistant_visible(
         db, tenant_id=actor.principal.tenant_id, authority=authority, agent_id=session.agent_id
     )
     # RUN_START is a tenant-wide permission a bare copilot:use member does not

@@ -59,7 +59,9 @@ def test_plan_withholds_the_dot_tools_and_authorize_agrees() -> None:
     a = _copilot()
     common: dict[str, Any] = {"assigned_skills": [], "active_skills": [], "mcp_tools": []}
     plan = _names(offered_tools(a, copilot_door="web", chat_mode=MODES["plan"], **common))
-    assert not ({t.name for t in COPILOT_TOOLS} & plan)
+    # guardrail_suggest only shows a card the member confirms: it stays offered.
+    assert not ({t.name for t in COPILOT_TOOLS if t.name != "guardrail_suggest"} & plan)
+    assert "guardrail_suggest" in plan
 
     def decide(mode_key: str | None) -> Effect:
         return _authorize(

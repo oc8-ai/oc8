@@ -923,12 +923,29 @@ CANCEL_FOLLOWUP = NeutralTool(
         "required": ["followup_id"],
     },
 )
+GUARDRAIL_SUGGEST = NeutralTool(
+    name="guardrail_suggest",
+    description=(
+        "Suggest one of the member's own guardrails for an agent; shows a card the "
+        "member confirms. Writes nothing."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "agent_id": {"type": "string"},
+            "tool_key": {"type": "string"},
+            "level": {"type": "string", "enum": ["off", "read_only", "ask_first"]},
+        },
+        "required": ["agent_id", "tool_key", "level"],
+    },
+)
 COPILOT_TOOLS: tuple[NeutralTool, ...] = (
     RESPONSIBILITY_OPEN,
     RESPONSIBILITY_UPDATE,
     RESPONSIBILITY_CLOSE,
     SCHEDULE_FOLLOWUP,
     CANCEL_FOLLOWUP,
+    GUARDRAIL_SUGGEST,
 )
 COPILOT_TOOL_NAMES: frozenset[str] = frozenset(t.name for t in COPILOT_TOOLS)
 

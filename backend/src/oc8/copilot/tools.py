@@ -17,15 +17,18 @@ from oc8.agent.control_tools import (
     CANCEL_FOLLOWUP,
     COPILOT_TOOL_NAMES,
     COPILOT_TOOLS,
+    GUARDRAIL_SUGGEST,
     RESPONSIBILITY_CLOSE,
     RESPONSIBILITY_OPEN,
     RESPONSIBILITY_UPDATE,
     SCHEDULE_FOLLOWUP,
     ControlOutcome,
+    _acting_token_role,
     _resolve_agent_actor,
 )
 from oc8.copilot.door import door_of
 from oc8.copilot.followups import cancel_followup, list_followups, schedule_followup
+from oc8.copilot.guardrail_suggest import suggest_guardrail
 from oc8.copilot.responsibilities import (
     ResponsibilityError,
     close_responsibility,
@@ -119,6 +122,18 @@ async def execute_copilot_tool(
         )
     member = actor.member
     args = tc.arguments if isinstance(tc.arguments, dict) else {}
+    if tc.name == GUARDRAIL_SUGGEST.name:
+        # Writes nothing, so nothing to announce either: the card's Confirm is
+        # the member's own PUT.
+        text, card = await suggest_guardrail(
+            db,
+            tenant_id=tenant_id,
+            member=member,
+            scope=actor.scope,
+            token_role=await _acting_token_role(db, tenant_id=tenant_id, run_id=run_id),
+            args=args,
+        )
+        return ControlOutcome(output=text, rendered_component=card)
     run = await db.get(m.AgentRun, run_id) if run_id else None
     context: dict[str, Any] = (run.context or {}) if run is not None else {}
     door = door_of(context)

@@ -140,6 +140,7 @@ def test_plan_allows_the_control_tools_that_only_read_or_show() -> None:
         "read_resource",
         "read_run_file",
         "procedure_step_done",
+        "guardrail_suggest",
     ):
         assert mode_refusal(MODES["plan"], name, tool_scopes=None) is None, name
         assert mode_refusal(MODES["plan"], name, tool_scopes=SCOPES) is None, name
