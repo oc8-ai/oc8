@@ -352,6 +352,10 @@ class MeDTO(CamelModel):
     #: with no member/scope at all (the existing PermissionError branch in
     #: `me()`) -- never a human admin, so the redirect check never sees it.
     onboarding_status: str | None = None
+    #: The caller's own first-run welcome ('pending'/'completed'/'skipped'),
+    #: read by an edition that greets members. None only for a principal with
+    #: no member row at all (a plugin token).
+    member_onboarding_status: str | None = None
 
 
 class IntegrationDTO(CamelModel):

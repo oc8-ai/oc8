@@ -285,6 +285,7 @@ async def me(principal: CurrentPrincipal, db: DbSession) -> MeDTO:
         decides_all_departments=scope.decides_everywhere,
         seats=[seat_to_dto(s) for s in seats],
         onboarding_status=onboarding_status,
+        member_onboarding_status=member.onboarding_status if member is not None else None,
     )
 
 
