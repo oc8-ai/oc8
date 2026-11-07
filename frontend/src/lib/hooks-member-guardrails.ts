@@ -158,16 +158,26 @@ export function stagePollInterval(status: NextStageStatus | undefined): number |
   return status === "pending" ? 5000 : false;
 }
 
+/** One approval the caller may see, or null when it is gone or not theirs
+ * (`GET /approvals/{id}` answers 404/403 alike for both). */
+async function approvalOrNone(approvalId: string): Promise<Approval | null> {
+  try {
+    return await api.get<Approval>(`/approvals/${approvalId}`);
+  } catch (error) {
+    if (error instanceof ApiError && (error.status === 403 || error.status === 404)) return null;
+    throw error;
+  }
+}
+
 /** The member's own approved row, re-read for its `nextStageStatus` -- how the
- * department's second stage stands. Reads only the member's own row (the
- * `status=approved` listing shows a member their own rows), never the
- * department's. Enabled only while a department stage is known to be open;
- * polls until it is decided. */
+ * department's second stage stands. Reads that one row (`GET /approvals/{id}`
+ * shows an assignee row to its assignee only), never the department's.
+ * Enabled only while a department stage is known to be open; polls until it
+ * is decided, and stops when the row is gone or names no stage. */
 export function useApprovalStage(approvalId: string, enabled: boolean) {
   return useQuery({
     queryKey: ["approvals", "stage", approvalId],
-    queryFn: async () =>
-      (await approvalsOrNone("approved")).find((row) => row.id === approvalId) ?? null,
+    queryFn: () => approvalOrNone(approvalId),
     enabled: enabled && !!approvalId,
     refetchInterval: (query) =>
       query.state.data === undefined

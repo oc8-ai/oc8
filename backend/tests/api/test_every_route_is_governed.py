@@ -175,6 +175,7 @@ def test_every_declared_permission_is_a_known_one() -> None:
 #: a seat quietly gaining a tenant-wide right.
 _WORKSPACE_ROUTES: dict[tuple[str, str], str] = {
     ("GET", "/api/v1/approvals"): "approval:view",
+    ("GET", "/api/v1/approvals/{}"): "approval:view",
     ("POST", "/api/v1/approvals/{}/decision"): "approval:decide",
     ("GET", "/api/v1/clarifications"): "clarification:view",
     ("POST", "/api/v1/clarifications/{}/answer"): "clarification:answer",

@@ -38,7 +38,7 @@ function render(ui: React.ReactElement) {
   return rtlRender(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
 }
 
-/** `api.get` by path: my guardrails, and the approved listing with my own row. */
+/** `api.get` by path: my guardrails, and my own row read on its own. */
 function serve(ownRow: Record<string, unknown> | "forbidden" | null) {
   m.get.mockImplementation(async (path: string) => {
     if (path.startsWith("/agents/")) {
@@ -49,9 +49,10 @@ function serve(ownRow: Record<string, unknown> | "forbidden" | null) {
         tools: [{ toolKey: "gmail", level: "ask_first", source: "member" }],
       };
     }
-    if (path === "/approvals?status=approved") {
+    if (path === "/approvals/ap1") {
       if (ownRow === "forbidden") throw new ApiError("forbidden", 403);
-      return ownRow ? [ownRow] : [];
+      if (ownRow === null) throw new ApiError("approval not found", 404);
+      return ownRow;
     }
     throw new Error(`unexpected ${path}`);
   });
@@ -141,10 +142,11 @@ describe("ChatApprovalCard", () => {
     render(<ChatApprovalCard approval={APPROVAL} onChangeRule={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Approve: send mail to kunde@x.de" }));
     expect(await screen.findByText("Rejected by Sales")).toBeInTheDocument();
-    // Only my own listing was read -- never the department's queue.
-    expect(m.get).toHaveBeenCalledWith("/approvals?status=approved");
-    expect(m.get).not.toHaveBeenCalledWith("/approvals?status=pending");
-    expect(m.get).not.toHaveBeenCalledWith("/approvals?status=rejected");
+    // Only my own row was read -- never a listing, never the department's queue.
+    expect(m.get).toHaveBeenCalledWith("/approvals/ap1");
+    expect(approvalsCalls()).toBe(
+      m.get.mock.calls.filter(([path]) => path === "/approvals/ap1").length,
+    );
   });
 
   it("an already-decided stage on a listed row needs no reading at all", async () => {
@@ -166,7 +168,7 @@ describe("ChatApprovalCard", () => {
     expect(approvalsCalls()).toBe(0);
   });
 
-  it("a 403 on my own listing is nothing to show, not an error", async () => {
+  it("a 403 on my own row is nothing to show, not an error", async () => {
     m.decide.mockResolvedValue({ ...APPROVAL, status: "approved", nextStageStatus: "pending" });
     serve("forbidden");
     render(<ChatApprovalCard approval={APPROVAL} onChangeRule={vi.fn()} />);
@@ -218,6 +220,20 @@ describe("polling the department's stage", () => {
       await vi.advanceTimersByTimeAsync(30000);
     });
     expect(approvalsCalls()).toBe(settled);
+  });
+
+  it("stops when my own row is gone instead of polling forever", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    m.decide.mockResolvedValue({ ...APPROVAL, status: "approved", nextStageStatus: "pending" });
+    serve(null);
+    render(<ChatApprovalCard approval={APPROVAL} onChangeRule={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Approve: send mail to kunde@x.de" }));
+    await screen.findByText("Approved by you · waiting for Sales");
+    await waitFor(() => expect(approvalsCalls()).toBe(1));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30000);
+    });
+    expect(approvalsCalls()).toBe(1);
   });
 });
 

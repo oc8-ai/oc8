@@ -8,7 +8,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from oc8.api.deps import DbSession, holds_departmental, require_departmental
-from oc8.api.v1._serializers import approval_to_dto
+from oc8.api.v1._serializers import approval_to_dto, resolve_approval_names
 from oc8.approvals import (
     AlreadyDecided,
     NotYourApproval,
@@ -20,7 +20,7 @@ from oc8.approvals import (
 )
 from oc8.approvals.repo import load_for_actor, next_stage_statuses
 from oc8.authz.permissions import APPROVAL_DECIDE, COPILOT_USE
-from oc8.authz.scope import HumanActor
+from oc8.authz.scope import APPROVAL_VIEW, HumanActor
 from oc8.schemas.dto import ApprovalDTO
 from oc8.schemas.requests import ApprovalDecisionRequest
 
@@ -32,6 +32,32 @@ router = APIRouter()
 #: the realtime socket (§10 item 5) -- so a route that told the two apart would
 #: let anyone holding ids off that socket ask which of them exist.
 _NOT_FOUND = "approval not found"
+
+
+@router.get("/approvals/{approval_id}", response_model=ApprovalDTO)
+async def get_approval(
+    approval_id: uuid.UUID,
+    request: Request,
+    db: DbSession,
+    # The list route's gate (`api/v1/feed.py`), seatless `copilot:use`
+    # admission included: a member re-reads the approval their own rule routed
+    # to them -- the card polls how the department's stage stands (D3a).
+    actor: Annotated[
+        HumanActor, Depends(require_departmental(APPROVAL_VIEW, or_tenant_wide=COPILOT_USE))
+    ],
+) -> ApprovalDTO:
+    # `load_for_actor`: an assignee row for its assignee only, any other row
+    # within the caller's department scope -- None for both "missing" and
+    # "not yours", which this route does not tell apart.
+    ar = await load_for_actor(db, approval_id, actor=actor)
+    if not await holds_departmental(request, db, actor, APPROVAL_VIEW):
+        # Admitted only for their own rows, refused like the gate refused
+        # before -- the same answer for every other row, so it is no oracle.
+        if ar is None or ar.assignee_member_id != actor.member.id:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, f"requires permission: {APPROVAL_VIEW}")
+    if ar is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _NOT_FOUND)
+    return approval_to_dto(ar, await resolve_approval_names(db, [ar]))
 
 
 @router.post("/approvals/{approval_id}/decision", response_model=ApprovalDTO)

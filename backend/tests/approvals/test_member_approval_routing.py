@@ -624,3 +624,58 @@ async def test_a_member_without_a_seat_opens_and_decides_their_own_approval(
         assert rows[own_id].decided_by == office.anna.id
         dept = await db.get(m.ApprovalRequest, department_row_id)
         assert dept is not None and dept.status == "pending"
+
+
+async def test_one_approval_reads_back_for_its_assignee_and_nobody_else(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """`GET /approvals/{id}` -- what the member's card polls for the department
+    stage. A seatless member reads their own row (and sees the department's
+    stage move); another member's row and the department's are refused alike;
+    the department's approver cannot read the member's row at all."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await _office(db, tenant)
+        own = await _raise_member_stage(db, tenant, office, department_follows=True)
+        department_row = await raise_approval(
+            db,
+            tenant_id=tenant,
+            agent_id=office.agent,
+            action_type="tool_send",
+            title="Nora wants to call erp.cancel_order",
+            payload={"tool": "erp.cancel_order", "arguments": {}},
+        )
+        own_id, department_row_id = own.id, department_row.id
+
+    def _as(subject: str) -> dict[str, str]:
+        token = get_identity_provider().mint(tenant_id=tenant, subject=subject, role="member")
+        return {"Authorization": f"Bearer {token}"}
+
+    async with _http() as http:
+        mine = await http.get(f"/api/v1/approvals/{own_id}", headers=_as("anna"))
+        assert mine.status_code == 200, mine.text
+        assert mine.json()["id"] == str(own_id)
+        assert mine.json()["nextStageStatus"] is None
+
+        refused = await http.get(f"/api/v1/approvals/{department_row_id}", headers=_as("anna"))
+        unknown = await http.get(f"/api/v1/approvals/{uuid.uuid4()}", headers=_as("anna"))
+        assert refused.status_code == 403, refused.text
+        assert unknown.status_code == refused.status_code, "no oracle for a seatless caller"
+
+        # Dana approves for Sales and may see its row -- never Anna's own.
+        assert (
+            await http.get(f"/api/v1/approvals/{department_row_id}", headers=_as("dana"))
+        ).status_code == 200
+        hidden = await http.get(f"/api/v1/approvals/{own_id}", headers=_as("dana"))
+        assert hidden.status_code == 404, hidden.text
+
+        decided = await http.post(
+            f"/api/v1/approvals/{own_id}/decision",
+            json={"decision": "approve"},
+            headers=_as("anna"),
+        )
+        assert decided.status_code == 200, decided.text
+        after = await http.get(f"/api/v1/approvals/{own_id}", headers=_as("anna"))
+        assert after.status_code == 200, after.text
+        assert after.json()["status"] == "approved"
+        assert after.json()["nextStageStatus"] == "pending"
