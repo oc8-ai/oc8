@@ -11,22 +11,28 @@ and the trail records both.
 from __future__ import annotations
 
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
 import pytest
+from asgi_lifespan import LifespanManager
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.approvals import NotYourApproval, decide_approval, raise_approval
 from oc8.approvals.repo import load_for_actor, visible_approvals
 from oc8.approvals.service import approval_routing
+from oc8.auth import get_identity_provider
 from oc8.auth.principal import Principal
 from oc8.authz.pdp import Decision, Effect
 from oc8.authz.permissions import ORG_ADMIN, SEAT_APPROVER
 from oc8.authz.scope import AgentActor, HumanActor, scope_for_principal, subject_uuid_for
 from oc8.channels import binding as channel_binding
 from oc8.channels.dispatch import decision_from
+from oc8.main import create_app
 from oc8.runtime.states import RunState
 from tests.conftest import AppSessionFactory
 
@@ -412,3 +418,75 @@ async def test_the_member_is_told_and_answers_on_their_phone(
         )
         assert result.approval.decided_by == office.anna.id
         assert result.resumed_run_id == office.run
+
+
+# --------------------------------------------------------------- HTTP doors
+
+
+@asynccontextmanager
+async def _http() -> AsyncIterator[AsyncClient]:
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            yield c
+
+
+async def test_a_member_without_a_seat_opens_and_decides_their_own_approval(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """Anna holds no seat and only the `member` role (`copilot:use`). Her own
+    guardrail's approval is hers to open and answer; nothing else about the
+    approval routes changes for her.
+
+    `redis_url` because approving re-queues the run for real."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await _office(db, tenant)
+        own = await _raise_member_stage(db, tenant, office, department_follows=False)
+        department_row = await raise_approval(
+            db,
+            tenant_id=tenant,
+            agent_id=office.agent,
+            action_type="tool_send",
+            title="Nora wants to call erp.cancel_order",
+            payload={"tool": "erp.cancel_order", "arguments": {}},
+        )
+        own_id, department_row_id = own.id, department_row.id
+
+    token = get_identity_provider().mint(tenant_id=tenant, subject="anna", role="member")
+    hers = {"Authorization": f"Bearer {token}"}
+    async with _http() as http:
+        listed = await http.get("/api/v1/approvals", headers=hers)
+        assert listed.status_code == 200, listed.text
+        assert [r["id"] for r in listed.json()] == [str(own_id)]
+
+        # The department's row answers exactly as the seat gate always did.
+        refused = await http.post(
+            f"/api/v1/approvals/{department_row_id}/decision",
+            json={"decision": "approve"},
+            headers=hers,
+        )
+        assert refused.status_code == 403, refused.text
+        unknown = await http.post(
+            f"/api/v1/approvals/{uuid.uuid4()}/decision",
+            json={"decision": "approve"},
+            headers=hers,
+        )
+        assert unknown.status_code == refused.status_code, "no oracle for a seatless caller"
+
+        decided = await http.post(
+            f"/api/v1/approvals/{own_id}/decision",
+            json={"decision": "approve"},
+            headers=hers,
+        )
+        assert decided.status_code == 200, decided.text
+        assert decided.json()["resumed"] is True
+
+        # Nothing left that is hers: the same "ask an administrator" refusal.
+        assert (await http.get("/api/v1/approvals", headers=hers)).status_code == 403
+
+    async with app_session(tenant) as db:
+        rows = {r.id: r for r in await _rows(db, office.task)}
+        assert rows[own_id].decided_by == office.anna.id
+        dept = await db.get(m.ApprovalRequest, department_row_id)
+        assert dept is not None and dept.status == "pending"

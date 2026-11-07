@@ -11,12 +11,12 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import Select, and_, func, or_, select
 
 from oc8 import models as m
-from oc8.api.deps import DbSession, require_departmental, require_permission
+from oc8.api.deps import DbSession, holds_departmental, require_departmental, require_permission
 from oc8.api.v1._export_utils import csv_safe as _csv_safe
 from oc8.api.v1._export_utils import parse_date_bound as _parse_bound
 from oc8.api.v1._serializers import activity_to_dto, approval_to_dto, resolve_approval_names
@@ -24,7 +24,7 @@ from oc8.approvals.repo import DEFAULT_LIMIT, visible_approvals
 from oc8.audit.integrity import (
     BATCH as BATCH,  # re-exported: tests monkeypatch this name, same as audit.py
 )
-from oc8.authz.permissions import BUDGET, RUN, VIEW, perm
+from oc8.authz.permissions import BUDGET, COPILOT_USE, RUN, VIEW, perm
 from oc8.authz.scope import APPROVAL_VIEW, HumanActor
 from oc8.metering.pricing import active_price_rows, cost_micros_from_price, price_as_of
 from oc8.schemas.dto import ActivityDTO, ApprovalDTO, PrincipalUsageDTO, TokenUsageExportRowDTO
@@ -76,10 +76,18 @@ async def list_activity(
 
 @router.get("/approvals", response_model=list[ApprovalDTO])
 async def list_approvals(
+    request: Request,
     db: DbSession,
     # A ROUTE PARAMETER and not `dependencies=[...]`: the body needs the actor,
     # and a dependency in the decorator list is resolved and then thrown away.
-    actor: Annotated[HumanActor, Depends(require_departmental(APPROVAL_VIEW))],
+    #
+    # `or_tenant_wide=COPILOT_USE` admits a member with no seat, because an
+    # approval their own guardrail asked for (D3a) is routed to them and they
+    # have to be able to open it. What such a caller then SEES is narrowed in
+    # the body below, not here.
+    actor: Annotated[
+        HumanActor, Depends(require_departmental(APPROVAL_VIEW, or_tenant_wide=COPILOT_USE))
+    ],
     status: str = "pending",
     department_id: uuid.UUID | None = Query(default=None, alias="departmentId"),
     limit: int = DEFAULT_LIMIT,
@@ -101,10 +109,20 @@ async def list_approvals(
     anywhere is refused at the gate with a sentence telling him to ask an
     administrator. Those two states are the same blank screen today, and "the
     system is broken" must not look like "nobody has added me yet" (§7).
+
+    A caller admitted only through `copilot:use` sees the approvals assigned to
+    them and nothing else; with none, they get the same refusal the narrower
+    gate gave, so that empty state still reads "ask an administrator".
     """
     rows = await visible_approvals(
         db, actor=actor, status=status, department_id=department_id, limit=limit
     )
+    if not await holds_departmental(request, db, actor, APPROVAL_VIEW):
+        # `visible_approvals` already narrows a seatless caller to their own
+        # rows; filtered again so this branch never depends on that.
+        rows = [r for r in rows if r.assignee_member_id == actor.member.id]
+        if not rows:
+            raise HTTPException(403, f"requires permission: {APPROVAL_VIEW}")
     # Four batched lookups for the whole page, not four per row: the detail pane
     # names the agent, the department and the task, and resolving those while
     # rendering is how a queue of a hundred becomes four hundred and one requests.

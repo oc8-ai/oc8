@@ -5,9 +5,9 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
-from oc8.api.deps import DbSession, require_departmental
+from oc8.api.deps import DbSession, holds_departmental, require_departmental
 from oc8.api.v1._serializers import approval_to_dto
 from oc8.approvals import (
     AlreadyDecided,
@@ -19,7 +19,7 @@ from oc8.approvals import (
     decide_approval,
 )
 from oc8.approvals.repo import load_for_actor
-from oc8.authz.permissions import APPROVAL_DECIDE
+from oc8.authz.permissions import APPROVAL_DECIDE, COPILOT_USE
 from oc8.authz.scope import HumanActor
 from oc8.schemas.dto import ApprovalDTO
 from oc8.schemas.requests import ApprovalDecisionRequest
@@ -38,12 +38,27 @@ _NOT_FOUND = "approval not found"
 async def decide(
     approval_id: uuid.UUID,
     body: ApprovalDecisionRequest,
+    request: Request,
     db: DbSession,
-    actor: Annotated[HumanActor, Depends(require_departmental(APPROVAL_DECIDE))],
+    # `or_tenant_wide=COPILOT_USE`: a member with no seat must be able to answer
+    # the approval their own guardrail routed to them (D3a). Everything else is
+    # answered below exactly as the narrower gate answered it.
+    actor: Annotated[
+        HumanActor, Depends(require_departmental(APPROVAL_DECIDE, or_tenant_wide=COPILOT_USE))
+    ],
 ) -> ApprovalDTO:
     # `load_for_actor`, never `db.get`: the load is the security boundary, and it
     # answers None for "not yours" as well as for "no such row".
     ar = await load_for_actor(db, approval_id, actor=actor)
+    if not await holds_departmental(request, db, actor, APPROVAL_DECIDE):
+        # Admitted only to answer their own rows. Anything else -- missing,
+        # someone else's, a department row they can see but not decide -- gets
+        # the refusal the gate used to give, the same for all three, so this
+        # branch is no oracle either.
+        if ar is None or ar.assignee_member_id != actor.member.id:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN, f"requires permission: {APPROVAL_DECIDE}"
+            )
     if ar is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, _NOT_FOUND)
     try:

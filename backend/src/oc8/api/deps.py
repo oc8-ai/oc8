@@ -359,6 +359,22 @@ def require_departmental(
     return _dep
 
 
+async def holds_departmental(
+    request: Request, db: AsyncSession, actor: HumanActor, permission: str
+) -> bool:
+    """Would `require_departmental(permission)` have admitted this actor on its own?
+
+    For a route gated with `or_tenant_wide` that must still tell the two kinds
+    of caller apart inside its body. The approval routes are the case: they
+    admit a member holding only `copilot:use` so the person a member-routed
+    approval (D3a) was assigned to can reach it, and everything that is NOT
+    such a row must answer that member exactly as the narrower gate did.
+    Same formula as `_dep` above, off the same memoised `Authority`.
+    """
+    authority = await _authority(request, db, actor.principal)
+    return permission in authority.tenant_wide or actor.scope.holds_anywhere(permission)
+
+
 def require_agent_write() -> Callable[..., Awaitable[HumanActor]]:
     """The coarse door for `agent:manage`-parity write routes. Decision 1
     originally named exactly six: `POST /agents` plus five `agents_write.py`
