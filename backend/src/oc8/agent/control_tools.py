@@ -44,7 +44,16 @@ from oc8.approvals.repo import load_for_actor, visible_approvals
 from oc8.audit import append_event
 from oc8.authz.authority import authority_for_member, tenant_wide_read
 from oc8.authz.pdp import Decision, Effect
-from oc8.authz.permissions import AGENT, APPROVAL, BUDGET, DEPARTMENT, STATISTICS, VIEW, perm
+from oc8.authz.permissions import (
+    AGENT,
+    APPROVAL,
+    BUDGET,
+    COPILOT_USE,
+    DEPARTMENT,
+    STATISTICS,
+    VIEW,
+    perm,
+)
 from oc8.authz.scope import AgentActor, scope_for_member
 from oc8.capas.discovery import find_plugin
 from oc8.chat.modes import WRITING_CONTROL_TOOLS, ChatMode
@@ -2558,7 +2567,11 @@ async def execute_control_tool(
         )
         view_perm = perm(APPROVAL, VIEW)
         admitted = view_perm in authority.tenant_wide or agent_actor.scope.holds_anywhere(view_perm)
-        if not admitted:
+        # Without a view seat the person still has the approvals their own
+        # guardrail routed to them (D3a) -- and only those, as on
+        # `GET /approvals` for a seatless caller.
+        own_only = not admitted
+        if own_only and COPILOT_USE not in authority.tenant_wide:
             return ControlOutcome(output="ERROR: you don't have permission to view approvals")
         status = str(tc.arguments.get("status") or "pending").strip()
         department_id: uuid.UUID | None = None
@@ -2573,6 +2586,8 @@ async def execute_control_tool(
         rows = await visible_approvals(
             db, actor=agent_actor, status=status, department_id=department_id, limit=limit
         )
+        if own_only:
+            rows = [r for r in rows if r.assignee_member_id == agent_actor.member.id]
         if not rows:
             return ControlOutcome(output=f"No {status} approvals.")
         lines = [
