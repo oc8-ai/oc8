@@ -1,5 +1,12 @@
-import { createContext, useContext, type ReactNode } from "react";
-import type { EditionBanner, EditionNavigationItem, FrontendEditionExtension } from "./contracts";
+import { createContext, useContext, type ComponentType, type ReactNode } from "react";
+import type {
+  EditionBanner,
+  EditionNavigationItem,
+  EditionOnboarding,
+  EditionProfileSection,
+  EditionSidebarSlotProps,
+  FrontendEditionExtension,
+} from "./contracts";
 
 export interface FrontendEditionComposition {
   readonly navigation: readonly EditionNavigationItem[];
@@ -7,6 +14,10 @@ export interface FrontendEditionComposition {
   readonly banners: readonly EditionBanner[];
   /** Navigation targets whose extension declares capabilities. */
   readonly gates: readonly EditionCapabilityGateRule[];
+  readonly onboarding: EditionOnboarding | null;
+  readonly sidebarHeader: ComponentType<EditionSidebarSlotProps> | null;
+  readonly sidebarFooter: ComponentType<EditionSidebarSlotProps> | null;
+  readonly profileSections: readonly EditionProfileSection[];
 }
 
 export interface EditionCapabilityGateRule {
@@ -59,6 +70,10 @@ const emptyComposition: FrontendEditionComposition = {
   capabilities: new Set(),
   banners: [],
   gates: [],
+  onboarding: null,
+  sidebarHeader: null,
+  sidebarFooter: null,
+  profileSections: [],
 };
 
 const EditionCompositionContext = createContext<FrontendEditionComposition>(emptyComposition);
@@ -74,6 +89,11 @@ export function composeFrontendEdition(
   const bannerIds = new Set<string>();
   const banners: EditionBanner[] = [];
   const gates: EditionCapabilityGateRule[] = [];
+  let onboarding: EditionOnboarding | null = null;
+  let sidebarHeader: ComponentType<EditionSidebarSlotProps> | null = null;
+  let sidebarFooter: ComponentType<EditionSidebarSlotProps> | null = null;
+  const profileSectionIds = new Set<string>();
+  const profileSections: EditionProfileSection[] = [];
 
   for (const extension of extensions) {
     if (extensionIds.has(extension.id))
@@ -93,9 +113,68 @@ export function composeFrontendEdition(
       bannerIds.add(banner.id);
       banners.push(banner);
     }
+    if (extension.onboarding) {
+      if (onboarding) throw new Error(`Duplicate edition onboarding: ${extension.id}`);
+      onboarding = extension.onboarding;
+    }
+    if (extension.sidebarHeader) {
+      if (sidebarHeader) throw new Error(`Duplicate edition sidebar header: ${extension.id}`);
+      sidebarHeader = extension.sidebarHeader;
+    }
+    if (extension.sidebarFooter) {
+      if (sidebarFooter) throw new Error(`Duplicate edition sidebar footer: ${extension.id}`);
+      sidebarFooter = extension.sidebarFooter;
+    }
+    for (const section of extension.profileSections ?? []) {
+      if (profileSectionIds.has(section.id))
+        throw new Error(`Duplicate edition profile section: ${section.id}`);
+      profileSectionIds.add(section.id);
+      profileSections.push(section);
+    }
   }
 
-  return { navigation, capabilities, banners, gates };
+  return {
+    navigation,
+    capabilities,
+    banners,
+    gates,
+    onboarding,
+    sidebarHeader,
+    sidebarFooter,
+    profileSections,
+  };
+}
+
+/** Paths an edition's onboarding owns; they render without the app shell. */
+export function editionBarePaths(
+  composition: Pick<FrontendEditionComposition, "onboarding">,
+): readonly string[] {
+  const onboarding = composition.onboarding;
+  if (!onboarding) return [];
+  return onboarding.memberRoute
+    ? [onboarding.adminRoute, onboarding.memberRoute]
+    : [onboarding.adminRoute];
+}
+
+export interface OnboardingCaller {
+  readonly onboardingStatus?: string | null;
+  readonly memberOnboardingStatus?: string | null;
+}
+
+/** Where `/` sends the caller first, or null to stay. `managesDepartments` is
+ *  null while the caller's rights are still loading: deciding then could send
+ *  an admin to the member welcome. */
+export function onboardingRedirect(
+  me: OnboardingCaller | undefined,
+  managesDepartments: boolean | null,
+  onboarding: EditionOnboarding | null,
+): string | null {
+  if (!me || managesDepartments === null) return null;
+  if (me.onboardingStatus === "pending" && managesDepartments)
+    return onboarding?.adminRoute ?? "/welcome";
+  if (onboarding?.memberRoute && me.memberOnboardingStatus === "pending")
+    return onboarding.memberRoute;
+  return null;
 }
 
 export function EditionCompositionProvider({

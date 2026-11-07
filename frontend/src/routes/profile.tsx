@@ -22,6 +22,7 @@ import {
   useRevokeChannelBinding,
 } from "@/lib/hooks";
 import { useCan } from "@/lib/governance-hooks";
+import { EditionProfileSections } from "@/edition/slots";
 import { cn } from "@/lib/utils";
 import {
   getPushSubscriptionStatus,
@@ -511,6 +512,7 @@ export function ProfilePage() {
       </Panel>
       <ApiKeysPanel />
       <ApprovalChannelsPanel />
+      <EditionProfileSections />
     </div>
   );
 }

@@ -55,8 +55,17 @@ const GATE_PUBLIC_ROUTES = new Set([
 // still declared in exactly one place.
 const SHELL_PUBLIC_ROUTES = new Set([...GATE_PUBLIC_ROUTES, "/welcome"]);
 
-import { EditionCompositionProvider } from "../edition/composition";
+import {
+  EditionCompositionProvider,
+  composeFrontendEdition,
+  editionBarePaths,
+} from "../edition/composition";
 import { editionExtensions } from "@oc8/edition-entry";
+
+// An edition's onboarding screens are full-page like `/welcome`: no app shell.
+// They still need a session (unlike GATE_PUBLIC_ROUTES), and they follow the
+// stored theme, so they are not part of SHELL_PUBLIC_ROUTES.
+const EDITION_BARE_ROUTES = new Set(editionBarePaths(composeFrontendEdition(editionExtensions)));
 
 function AuthGate({ children }: { children: ReactNode }) {
   const t = useT();
@@ -251,7 +260,8 @@ function RootComponent() {
   // Single source of truth for "which UI wrapper does this route get". Computed
   // synchronously from the pathname so `/login` is never wrapped in `AppShell`,
   // regardless of auth state, session staleness or hydration timing.
-  const gatedContent = publicRoute ? <Outlet /> : <AppShell />;
+  const bareRoute = publicRoute || EDITION_BARE_ROUTES.has(pathname);
+  const gatedContent = bareRoute ? <Outlet /> : <AppShell />;
 
   // `AppShell` owns the theme toggle and persists it to localStorage("bf-theme")
   // (plus the `dark` class on <html>). The Toaster below lives ABOVE `AppShell`,

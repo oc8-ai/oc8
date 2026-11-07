@@ -602,3 +602,9 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+/* An edition may tint the chat composer's focus glow by setting
+   --edition-accent-glow on :root; without one there is no glow, as before. */
+.edition-accent-focus:focus {
+  box-shadow: 0 0 0 3px var(--edition-accent-glow, transparent);
+}

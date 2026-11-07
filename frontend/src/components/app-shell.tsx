@@ -57,6 +57,7 @@ import {
 } from "@/lib/push-notifications";
 import { isPathBlocked, useFrontendEdition, visibleEditionNavigation } from "@/edition/composition";
 import type { EditionNavigationItem } from "@/edition/contracts";
+import { EditionSidebarFooter, EditionSidebarHeader } from "@/edition/slots";
 
 /** Hand this device's push subscription back before the session ends.
  *
@@ -872,6 +873,7 @@ export function AppShell() {
             </>
           )}
         </div>
+        <EditionSidebarHeader collapsed={collapsed} />
 
         <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-2">
           {nav.map((entry) => {
@@ -906,6 +908,7 @@ export function AppShell() {
             );
           })}
         </nav>
+        <EditionSidebarFooter collapsed={collapsed} />
 
         <div
           className={cn(
