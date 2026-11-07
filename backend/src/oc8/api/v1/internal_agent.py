@@ -99,7 +99,7 @@ from oc8.agent.tool_routing import build_routes
 from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_identity
 from oc8.agents.versioning import pinned_model_config_id, resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession, unguarded
-from oc8.approvals import approval_routing, raise_approval
+from oc8.approvals import approval_created_event, held_call, raise_approval
 from oc8.approvals.record_url import record_url_for_connection
 from oc8.audit import append_event
 from oc8.authz.member_guardrails import member_term_for_run
@@ -1808,7 +1808,7 @@ async def _dispatch_one_tool(
         held_record = record_identity(tc.name, tc.arguments, focus_spec)
         # A member's own rule asks that member first, then the department when
         # it asked too (D3a).
-        assignee_id, department_follows = approval_routing(decision, acting_member)
+        held = held_call(decision, acting_member)
         ar = await raise_approval(
             db,
             tenant_id=run.tenant_id,
@@ -1816,16 +1816,18 @@ async def _dispatch_one_tool(
             task_id=run.task_id,
             action_type="tool_send",
             title=f"{agent.name} wants to call {tc.name}",
-            detail=decision.reason,
+            detail=held.detail,
             payload={
                 "tool": tc.name,
                 "arguments": tc.arguments,
                 "justification": justification,
                 "preview": gate_verdict.preview if gate_verdict is not None else "",
                 **({"record_url": link} if link else {}),
-                **({"department_stage": True} if department_follows else {}),
+                **held.payload,
             },
-            assignee_member_id=assignee_id,
+            assignee_member_id=held.assignee_member_id,
+            reason_code=held.reason_code,
+            reason_context=held.reason_context,
             record_url=(
                 record_url_for_connection(conn, entity=held_record[0], ref=held_record[1])
                 if held_record is not None
@@ -1868,16 +1870,7 @@ async def _dispatch_one_tool(
         await get_event_bus().publish_event(
             run.tenant_id,
             "approval.created",
-            {
-                "approval_id": str(ar.id),
-                "action_type": ar.action_type,
-                "status": ar.status,
-                # title/detail travel in the envelope so the push hook never
-                # has to re-read this row from a fresh, uncommitted-blind
-                # session (see EventBus._push_payload).
-                "title": ar.title,
-                "detail": ar.detail,
-            },
+            approval_created_event(ar),
             source=f"oc8/approval/{ar.id}",
         )
         return ToolResult(status="waiting_for_approval", output=decision.reason or "")

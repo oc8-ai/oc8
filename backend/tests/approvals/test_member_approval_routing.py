@@ -22,9 +22,9 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from oc8 import models as m
-from oc8.approvals import NotYourApproval, decide_approval, raise_approval
+from oc8.approvals import NotYourApproval, decide_approval, raise_approval, service
 from oc8.approvals.repo import load_for_actor, visible_approvals
-from oc8.approvals.service import approval_routing
+from oc8.approvals.service import approval_routing, held_call
 from oc8.auth import get_identity_provider
 from oc8.auth.principal import Principal
 from oc8.authz.pdp import Decision, Effect
@@ -161,6 +161,62 @@ async def test_routing_follows_who_the_decision_asked() -> None:
     assert approval_routing(asked("member", "department"), anna) == (anna.id, True)
     assert approval_routing(asked("department"), anna) == (None, False)
     assert approval_routing(asked("member"), None) == (None, False)
+
+
+def test_a_held_call_records_who_asked_and_each_stage_its_own_reason() -> None:
+    anna = m.OrgMember(id=uuid.uuid4(), subject="anna")
+    mine = Decision(
+        Effect.REQUIRE_APPROVAL,
+        "your own rule asks you",
+        reason_code="always_requires_approval",
+        context={"connection": "gmail"},
+    )
+    both = Decision(
+        Effect.REQUIRE_APPROVAL,
+        "value €500 meets threshold €100",
+        reason_code="value_threshold_exceeded",
+        context={"threshold": 100.0, "actual": 500.0},
+        approval_from=frozenset({"member", "department"}),
+        member_stage=mine,
+    )
+    held = held_call(both, anna)
+    assert held.assignee_member_id == anna.id
+    assert held.detail == "your own rule asks you"
+    assert held.reason_code == "always_requires_approval"
+    assert held.reason_context == {
+        "connection": "gmail",
+        "approval_from": ["department", "member"],
+    }
+    assert held.payload == {
+        "department_stage": True,
+        "department_reason": {
+            "detail": "value €500 meets threshold €100",
+            "code": "value_threshold_exceeded",
+            "context": {
+                "threshold": 100.0,
+                "actual": 500.0,
+                "approval_from": ["department", "member"],
+            },
+        },
+    }
+
+    department_only = Decision(
+        Effect.REQUIRE_APPROVAL,
+        "value €500 meets threshold €100",
+        reason_code="value_threshold_exceeded",
+        context={"threshold": 100.0, "actual": 500.0},
+        approval_from=frozenset({"department"}),
+    )
+    held = held_call(department_only, anna)
+    assert held.assignee_member_id is None
+    assert held.detail == department_only.reason
+    assert held.reason_code == "value_threshold_exceeded"
+    assert held.reason_context == {
+        "threshold": 100.0,
+        "actual": 500.0,
+        "approval_from": ["department"],
+    }
+    assert held.payload == {}
 
 
 # ------------------------------------------------------------ member alone
@@ -326,6 +382,84 @@ async def test_a_member_who_also_approves_for_the_department_clicks_once(
             [str(first.id), str(second.id)]
         )
         assert all(e.actor_id == office.anna.id for e in events)
+
+
+async def test_the_department_stage_shows_the_departments_own_reason(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await _office(db, tenant)
+        dept_reason = {
+            "detail": "value €12480 meets threshold €5000",
+            "code": "value_threshold_exceeded",
+            "context": {"threshold": 5000.0, "approval_from": ["department", "member"]},
+        }
+        first = await raise_approval(
+            db,
+            tenant_id=tenant,
+            agent_id=office.agent,
+            task_id=office.task,
+            action_type="tool_send",
+            title="Nora wants to call erp.confirm_order",
+            detail="your own rule asks you",
+            payload={**PAYLOAD, "department_stage": True, "department_reason": dept_reason},
+            reason_code="always_requires_approval",
+            reason_context={"approval_from": ["department", "member"]},
+            assignee_member_id=office.anna.id,
+        )
+        anna = await _actor(db, tenant, office.anna, "member")
+        result = await decide_approval(db, first, decision="approve", tenant_id=tenant, actor=anna)
+        second = next(r for r in await _rows(db, office.task) if r.id == result.next_stage_id)
+        assert second.detail == "value €12480 meets threshold €5000"
+        assert second.reason_context == {
+            "code": "value_threshold_exceeded",
+            "threshold": 5000.0,
+            "approval_from": ["department", "member"],
+        }
+        assert {k: v for k, v in second.payload.items() if k != "channel_handles"} == PAYLOAD
+        assert first.reason_context == {
+            "code": "always_requires_approval",
+            "approval_from": ["department", "member"],
+        }
+
+
+async def test_one_click_never_announces_the_department_stage(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The member also approves for the department: the second stage is
+    decided in the same click, so no channel is told about it -- neither a
+    question nor its withdrawal -- and no `approval.created` goes out."""
+    announced: list[uuid.UUID] = []
+    closed: list[uuid.UUID] = []
+    events: list[dict[str, Any]] = []
+
+    async def _announce(db: Any, approval: m.ApprovalRequest) -> None:
+        announced.append(approval.id)
+
+    async def _close_out(db: Any, approval: m.ApprovalRequest) -> None:
+        closed.append(approval.id)
+
+    class _Bus:
+        async def publish_event(
+            self, tenant_id: uuid.UUID, type_: str, data: dict[str, Any], *, source: str
+        ) -> None:
+            events.append({"type": type_, **data})
+
+    monkeypatch.setattr(service, "_announce", _announce)
+    monkeypatch.setattr(service, "_close_out", _close_out)
+    monkeypatch.setattr("oc8.realtime.bus.get_event_bus", lambda: _Bus())
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await _office(db, tenant, anna_approves_too=True)
+        first = await _raise_member_stage(db, tenant, office, department_follows=True)
+        anna = await _actor(db, tenant, office.anna, "member")
+        result = await decide_approval(db, first, decision="approve", tenant_id=tenant, actor=anna)
+        second = result.next_stage_id
+        assert second is not None
+        assert announced == [first.id]
+        assert second not in closed
+        assert not [e for e in events if e["type"] == "approval.created"]
 
 
 # --------------------------------------------------------------- visibility

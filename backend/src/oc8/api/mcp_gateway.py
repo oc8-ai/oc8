@@ -69,7 +69,7 @@ from oc8.agent.tool_semantics import (
 )
 from oc8.agents.versioning import resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession
-from oc8.approvals import approval_routing, raise_approval
+from oc8.approvals import approval_created_event, held_call, raise_approval
 from oc8.approvals.record_url import record_url_for_connection
 from oc8.audit import append_event
 from oc8.authz.member_guardrails import member_term_for_run
@@ -882,7 +882,7 @@ async def _call_tool(
         held_record = record_identity(tc.name, tc.arguments, focus_spec)
         # A member's own rule asks that member first, then the department when
         # it asked too (D3a).
-        assignee_id, department_follows = approval_routing(decision, acting_member)
+        held = held_call(decision, acting_member)
         ar = await raise_approval(
             db,
             tenant_id=run.tenant_id,
@@ -890,15 +890,15 @@ async def _call_tool(
             task_id=run.task_id,
             action_type="tool_send",
             title=f"{agent.name} wants to call {tc.name}",
-            detail=decision.reason,
+            detail=held.detail,
             payload={
                 "tool": tc.name,
                 "arguments": tc.arguments,
-                **({"department_stage": True} if department_follows else {}),
+                **held.payload,
             },
-            assignee_member_id=assignee_id,
-            reason_code=decision.reason_code,
-            reason_context=decision.context,
+            assignee_member_id=held.assignee_member_id,
+            reason_code=held.reason_code,
+            reason_context=held.reason_context,
             record_url=(
                 record_url_for_connection(conn, entity=held_record[0], ref=held_record[1])
                 if held_record is not None
@@ -934,16 +934,7 @@ async def _call_tool(
         await get_event_bus().publish_event(
             run.tenant_id,
             "approval.created",
-            {
-                "approval_id": str(ar.id),
-                "action_type": ar.action_type,
-                "status": ar.status,
-                # title/detail travel in the envelope so the push hook never
-                # has to re-read this row from a fresh, uncommitted-blind
-                # session (see EventBus._push_payload).
-                "title": ar.title,
-                "detail": ar.detail,
-            },
+            approval_created_event(ar),
             source=f"oc8/approval/{ar.id}",
         )
         return _tool_result(

@@ -101,7 +101,12 @@ from oc8.agent.tool_notes import apply_tool_notes
 from oc8.agent.tool_routing import RoutedToolset
 from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_identity
 from oc8.agents.versioning import pinned_model_config_id, resolve_version
-from oc8.approvals import approval_routing, raise_approval, record_url_for_connection
+from oc8.approvals import (
+    approval_created_event,
+    held_call,
+    raise_approval,
+    record_url_for_connection,
+)
 from oc8.audit import append_event
 from oc8.authz.member_guardrails import member_term_for_run
 from oc8.authz.pdp import Decision, Effect, effective_tool_policies, required_right
@@ -1950,9 +1955,7 @@ async def run_agent(
                                 )
                                 # A member's own rule asks that member first,
                                 # then the department when it asked too (D3a).
-                                assignee_id, department_follows = approval_routing(
-                                    decision, acting_member
-                                )
+                                held = held_call(decision, acting_member)
                                 ar = await raise_approval(
                                     db,
                                     tenant_id=tenant_id,
@@ -1960,7 +1963,7 @@ async def run_agent(
                                     task_id=task.id,
                                     action_type="tool_send",
                                     title=f"{agent.name} wants to call {tc.name}",
-                                    detail=decision.reason,
+                                    detail=held.detail,
                                     payload={
                                         "tool": tc.name,
                                         "arguments": tc.arguments,
@@ -1969,13 +1972,11 @@ async def run_agent(
                                             gate_verdict.preview if gate_verdict is not None else ""
                                         ),
                                         **({"record_url": link} if link else {}),
-                                        **(
-                                            {"department_stage": True} if department_follows else {}
-                                        ),
+                                        **held.payload,
                                     },
-                                    assignee_member_id=assignee_id,
-                                    reason_code=decision.reason_code,
-                                    reason_context=decision.context,
+                                    assignee_member_id=held.assignee_member_id,
+                                    reason_code=held.reason_code,
+                                    reason_context=held.reason_context,
                                     record_url=(
                                         record_url_for_connection(
                                             owner, entity=held_record[0], ref=held_record[1]
@@ -1990,17 +1991,10 @@ async def run_agent(
                             await get_event_bus().publish_event(
                                 ar.tenant_id,
                                 "approval.created",
-                                {
-                                    "approval_id": str(ar.id),
-                                    "action_type": ar.action_type,
-                                    "status": ar.status,
-                                    # Carried in the envelope on purpose: the
-                                    # executor commits, not us, so a fresh
-                                    # session reading this row would see
-                                    # nothing (see EventBus._push_payload).
-                                    "title": ar.title,
-                                    "detail": ar.detail,
-                                },
+                                # Carries title/detail on purpose: the executor
+                                # commits, not us, so a fresh session reading
+                                # this row would see nothing.
+                                approval_created_event(ar),
                                 source=f"oc8/approval/{ar.id}",
                             )
                             tool_trace.append(

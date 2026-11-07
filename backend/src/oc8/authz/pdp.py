@@ -248,6 +248,11 @@ class Decision:
     #: narrowing, the department's approvers) and/or "member" (the acting
     #: member's own guardrail). Empty for ALLOW and DENY.
     approval_from: frozenset[str] = frozenset()
+    #: The member's own decision when BOTH levels ask (two stages): this
+    #: Decision then carries the department's reason, and the member stage --
+    #: raised first -- reads its own from here (`approvals.held_call_reason`).
+    #: None whenever only one level asks, so a one-level reason is unchanged.
+    member_stage: Decision | None = None
 
     @property
     def allowed(self) -> bool:
@@ -830,7 +835,13 @@ def authorize_tool_call(
     if asking:
         # A matched `then: allow` condition only settles its own level; it
         # must never hide another level's request for a human.
-        return replace(asking[0][1], approval_from=frozenset(n for n, _ in asking))
+        first = replace(asking[0][1], approval_from=frozenset(n for n, _ in asking))
+        if len(asking) > 1:
+            # Both asked: the department's reason stays the Decision's own (what
+            # the agent is told, and the department stage's), the member's
+            # rides along for the member stage.
+            first = replace(first, member_stage=asking[1][1])
+        return first
     if department is not None:
         return department
     return Decision(Effect.ALLOW)

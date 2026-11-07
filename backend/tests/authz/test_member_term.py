@@ -65,6 +65,37 @@ def test_department_and_member_both_require_approval() -> None:
     assert d.approval_from == frozenset({"member", "department"})
 
 
+def test_both_levels_asking_keeps_the_members_own_reason_for_its_stage() -> None:
+    frame = {"tools": {"gmail": {**_BASE, "approval_eur": 100}}}
+    member = {"tools": {"gmail": {**_BASE, "approval_actions": ["modify"]}}}
+    d = authorize_tool_call(
+        policies=effective_tool_policies(frame, {}, member),
+        connection_key="gmail",
+        right="modify",
+        value=500,
+    )
+    assert d.approval_from == frozenset({"member", "department"})
+    # The Decision's own reason stays the department's ...
+    assert d.reason_code == "value_threshold_exceeded"
+    # ... and the member's rides along for the member stage.
+    assert d.member_stage is not None
+    assert d.member_stage.reason_code == "always_requires_approval"
+    assert d.member_stage.context["connection"] == "gmail"
+
+
+def test_one_level_asking_carries_no_member_stage() -> None:
+    member = {"tools": {"gmail": {**_BASE, "approval_actions": ["modify"]}}}
+    assert _call(member).member_stage is None
+    frame = {"tools": {"gmail": {**_BASE, "approval_eur": 0}}}
+    d = authorize_tool_call(
+        policies=effective_tool_policies(frame, {}, None),
+        connection_key="gmail",
+        right="modify",
+        value=10,
+    )
+    assert d.member_stage is None
+
+
 def test_department_only_approval_stays_department() -> None:
     frame = {"tools": {"gmail": {"enabled": True, "read": True, "modify": True, "approval_eur": 0}}}
     d = authorize_tool_call(
