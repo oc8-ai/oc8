@@ -361,7 +361,7 @@ describe("ToolGuardrailTable", () => {
     expect(screen.getByRole("button", { name: /gmail.*ask me first/i })).toBeInTheDocument();
     const effect = screen.getByText("The sales agent asks you before it sends a mail.");
     expect(effect.closest("[aria-live]")).toHaveAttribute("aria-live", "polite");
-    expect(screen.getByText(/^(you|von dir)$/i)).toBeInTheDocument();
+    expect(screen.getByText(/^(set by you|von dir)$/i)).toBeInTheDocument();
     expect(screen.queryByText(/^(rights|rechte)$/i)).toBeNull();
     // Members cannot add tools of their own.
     expect(screen.queryByRole("button", { name: /add tool|tool hinzufügen/i })).toBeNull();

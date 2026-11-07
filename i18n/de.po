@@ -3796,6 +3796,9 @@ msgstr "vom Agenten festgelegt"
 msgid "set by department"
 msgstr "von der Abteilung festgelegt"
 
+msgid "set by you"
+msgstr "von dir"
+
 msgid "Set new password"
 msgstr "Neues Passwort setzen"
 

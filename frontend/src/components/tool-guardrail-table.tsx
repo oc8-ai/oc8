@@ -136,7 +136,7 @@ function sourceLabel(
 ): string {
   switch (source) {
     case "member":
-      return t("you", "von dir");
+      return t("set by you", "von dir");
     case "agent":
       return t("agent", "Agent");
     case "department":
