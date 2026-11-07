@@ -161,6 +161,34 @@ async def _assistant_visible(
     return assistant.id == agent_id
 
 
+async def chat_agent_for(
+    request: Request, db: DbSession, actor: HumanActor, agent_id: uuid.UUID
+) -> m.Agent | None:
+    """The agent `actor` may chat with, or None (no such agent, or not theirs
+    to chat with -- the caller 404s on both alike).
+
+    Also the gate of a member's own guardrails (`member_guardrails.py`): a
+    member sets rules on exactly the agents they can talk to.
+    """
+    authority = await authority_for_principal(request, db, actor.principal)
+    is_assistant = await _assistant_visible(
+        db, tenant_id=actor.principal.tenant_id, authority=authority, agent_id=agent_id
+    )
+    tenant_wide = tenant_wide_read(authority, perm(AGENT, VIEW)) or is_assistant
+    return await visible_agent(
+        db,
+        scope=actor.scope,
+        tenant_wide=tenant_wide,
+        agent_id=agent_id,
+        # `visible_agents`/`visible_agent` hide the Assistant from every screen
+        # that browses agents, so this -- the one door that is deliberately
+        # ABOUT the Assistant -- has to say so. `_assistant_visible` has already
+        # established both halves: this caller holds copilot:use, and this id
+        # is the tenant's Assistant and nothing else.
+        include_tenant_assistant=is_assistant,
+    )
+
+
 @router.get("/chat/sessions", response_model=list[ChatSessionDTO])
 async def get_sessions(
     db: DbSession,
@@ -189,23 +217,7 @@ async def create_chat_session(
         Depends(require_departmental(perm(AGENT, VIEW), or_tenant_wide=COPILOT_USE)),
     ],
 ) -> ChatSessionDTO:
-    authority = await authority_for_principal(request, db, actor.principal)
-    is_assistant = await _assistant_visible(
-        db, tenant_id=actor.principal.tenant_id, authority=authority, agent_id=body.agent_id
-    )
-    tenant_wide = tenant_wide_read(authority, perm(AGENT, VIEW)) or is_assistant
-    agent = await visible_agent(
-        db,
-        scope=actor.scope,
-        tenant_wide=tenant_wide,
-        agent_id=body.agent_id,
-        # `visible_agents`/`visible_agent` hide the Assistant from every screen
-        # that browses agents, so this -- the one door that is deliberately
-        # ABOUT the Assistant -- has to say so. `_assistant_visible` has already
-        # established both halves: this caller holds copilot:use, and this id
-        # is the tenant's Assistant and nothing else.
-        include_tenant_assistant=is_assistant,
-    )
+    agent = await chat_agent_for(request, db, actor, body.agent_id)
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
     session = await create_session(

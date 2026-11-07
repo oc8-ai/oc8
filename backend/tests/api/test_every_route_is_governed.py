@@ -184,6 +184,13 @@ _WORKSPACE_ROUTES: dict[tuple[str, str], str] = {
     ("DELETE", "/api/v1/members/{}/departments/{}"): "member:manage",
     ("DELETE", "/api/v1/members/{}"): "member:manage",
     ("POST", "/api/v1/members/{}/password-reset"): "member:manage",
+    # A member's own guardrails (D3a): chat's gate -- an agent:view seat, or
+    # copilot:use for the tenant's Copilot -- and the route resolves the agent
+    # through `chat.chat_agent_for` before it answers.
+    ("GET", "/api/v1/agents/{}/guardrails/me"): "agent:view",
+    ("PUT", "/api/v1/agents/{}/guardrails/me/{}"): "agent:view",
+    ("DELETE", "/api/v1/agents/{}/guardrails/me/{}"): "agent:view",
+    ("GET", "/api/v1/copilot/guardrails"): "agent:view",
 }
 
 
@@ -323,6 +330,9 @@ _AGENT_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("PUT", "/api/v1/agents/{}/runtime"),
         ("PATCH", "/api/v1/agents/{}/model-config"),
         ("POST", "/api/v1/agents/{}/skills"),
+        # Read only, but it shows every member's own rules on the agent, so
+        # it is for whoever manages the agent and nobody else.
+        ("GET", "/api/v1/agents/{}/guardrails/members"),
     }
 )
 

@@ -5,7 +5,14 @@ from __future__ import annotations
 import uuid
 from typing import Any, Literal
 
-from pydantic import AwareDatetime, ConfigDict, EmailStr, Field, field_validator
+from pydantic import (
+    AwareDatetime,
+    ConfigDict,
+    EmailStr,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import WidgetInstanceDTO
@@ -77,6 +84,20 @@ class CreateAgentRequest(CamelModel):
 
 class NarrowingRequest(CamelModel):
     narrowing: dict[str, Any] = {}
+
+
+class MyGuardrailRequest(CamelModel):
+    """A member's own guardrail for one tool: a plain level, or a policy for
+    the rare case the four levels cannot say. Exactly one of the two."""
+
+    level: Literal["off", "read_only", "ask_first", "allowed"] | None = None
+    policy: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one(self) -> MyGuardrailRequest:
+        if (self.level is None) == (self.policy is None):
+            raise ValueError("set exactly one of level and policy")
+        return self
 
 
 class GuardrailInterpretRequest(CamelModel):

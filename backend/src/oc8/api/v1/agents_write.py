@@ -47,6 +47,7 @@ from oc8.api.v1.agents import _agent_detail_dto
 from oc8.api.v1.files import _attachment_dto, _store_upload
 from oc8.audit import append_event
 from oc8.authz.authority import authority_for_principal
+from oc8.authz.member_guardrail_store import prune_redundant
 from oc8.authz.pdp import ToolPolicy, missing_skill_requirements, narrowing_within_frame
 from oc8.authz.permissions import AGENT_VERSION_PUBLISH, KNOWLEDGE, MANAGE, perm
 from oc8.authz.scope import HumanActor
@@ -443,6 +444,7 @@ async def set_narrowing(
     )
     agent.narrowing = body.narrowing
     await db.flush()
+    await prune_redundant(db, tenant_id=principal.tenant_id, agent=agent, principal=principal)
     await append_event(
         db,
         tenant_id=principal.tenant_id,
@@ -509,6 +511,7 @@ async def reset_agent_narrowing(
     agent.narrowing_overridden_keys = sorted(overridden)
 
     await db.flush()
+    await prune_redundant(db, tenant_id=principal.tenant_id, agent=agent, principal=principal)
     await append_event(
         db,
         tenant_id=principal.tenant_id,

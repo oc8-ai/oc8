@@ -658,6 +658,50 @@ class ToolPolicyDTO(CamelModel):
     conditions: list[ConditionDTO] = []
 
 
+GuardrailLevel = Literal["off", "read_only", "ask_first", "allowed"]
+
+
+class SummaryLineDTO(CamelModel):
+    """One plain sentence of "what may this agent do for me" (D3a), as a code
+    the frontend renders with `t()` -- deterministic, never the model's words.
+    `code` is one of may_read, may_modify, asks_you, asks_department, off;
+    `params` carries `tools` (tool keys) and, where one applies, `threshold`
+    (the lowest euro threshold among those tools)."""
+
+    code: str
+    params: dict[str, Any] = {}
+
+
+class MyToolGuardrailDTO(CamelModel):
+    tool_key: str
+    connection_name: str
+    #: Department ∩ agent -- what the member may only tighten.
+    base: ToolPolicyDTO
+    base_level: GuardrailLevel
+    #: The member's own entry for this tool, verbatim; None when they set none.
+    mine: ToolPolicyDTO | None = None
+    #: The level with the member's entry applied.
+    level: GuardrailLevel
+    has_limits: bool
+    #: "member" / "agent" / "department" / "capa_default" -- `tool_policy_source`.
+    source: str
+
+
+class MyGuardrailsDTO(CamelModel):
+    agent_id: str
+    agent_name: str
+    summary: list[SummaryLineDTO] = []
+    tools: list[MyToolGuardrailDTO] = []
+
+
+class MemberGuardrailDTO(CamelModel):
+    """One member's guardrail on an agent, read only for whoever manages it."""
+
+    member_id: str
+    member_name: str
+    tools: dict[str, ToolPolicyDTO] = {}
+
+
 class AgentDetailDTO(AgentDTO):
     mission: str = ""
     department_name: str | None = None
