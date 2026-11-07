@@ -43,7 +43,14 @@ vi.mock("@/components/credential-picker", () => ({
   ),
 }));
 
-import { AgentGuardrailsPanel } from "@/routes/agents.$id";
+vi.mock("@/components/member-guardrails-sheet", () => ({
+  MemberGuardrailsPanel: ({ agentId }: { agentId: string }) => (
+    <div data-testid="member-panel">{agentId}</div>
+  ),
+  MemberGuardrailsInsight: () => <div data-testid="member-insight" />,
+}));
+
+import { AgentGuardrailsPanel, AgentGuardrailsScopes } from "@/routes/agents.$id";
 
 const AGENT: Partial<AgentDetail> = {
   id: "agent-1",
@@ -150,5 +157,34 @@ describe("AgentGuardrailsPanel", () => {
     await waitFor(() => expect(updateMutate).toHaveBeenCalled());
     const [payload] = updateMutate.mock.calls[updateMutate.mock.calls.length - 1];
     expect(payload.narrowing.tools.github.connection_id).toBe("login-abc");
+  });
+});
+
+describe("AgentGuardrailsScopes", () => {
+  function renderScopes(mayManage: boolean) {
+    const qc = new QueryClient();
+    return render(
+      <QueryClientProvider client={qc}>
+        <AgentGuardrailsScopes agent={AGENT as AgentDetail} mayManage={mayManage} />
+      </QueryClientProvider>,
+    );
+  }
+
+  it("gives a manager both 'For the agent' and 'For me', with the member insight", () => {
+    renderScopes(true);
+    expect(screen.getByRole("tab", { name: "For the agent" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByTestId("member-insight")).toBeInTheDocument();
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "For me" }), { button: 0 });
+    expect(screen.getByTestId("member-panel")).toHaveTextContent("agent-1");
+  });
+
+  it("shows a member without manage rights only 'For me'", () => {
+    renderScopes(false);
+    expect(screen.queryByRole("tab", { name: "For the agent" })).toBeNull();
+    expect(screen.queryByTestId("member-insight")).toBeNull();
+    expect(screen.getByTestId("member-panel")).toHaveTextContent("agent-1");
   });
 });

@@ -83,6 +83,11 @@ import { CredentialPicker } from "@/components/credential-picker";
 import type { GuardrailValue } from "@/components/guardrail-preset-picker";
 import { ToolGuardrailTable, describeGuardrailSaveError } from "@/components/tool-guardrail-table";
 import {
+  MemberGuardrailsInsight,
+  MemberGuardrailsPanel,
+} from "@/components/member-guardrails-sheet";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
   AutoRouterBadge,
   isAutoProvider,
   modelAssignmentLabel,
@@ -527,7 +532,7 @@ function AgentDetail() {
       )}
 
       {tab === "guardrails" && agent.departmentId && (
-        <AgentGuardrailsPanel agent={agent} mayManage={mayManage} />
+        <AgentGuardrailsScopes agent={agent} mayManage={mayManage} />
       )}
       {tab === "guardrails" && !agent.departmentId && (
         <Panel className="p-5 text-sm text-muted-foreground">
@@ -1612,6 +1617,48 @@ export function AgentGuardrailsPanel({
         />
       </div>
     </Panel>
+  );
+}
+
+// "For the agent | For me" (D3a): one table, two levels. Whoever manages the
+// agent sees both, plus how many members tightened it for themselves; a
+// member without manage rights sees only their own guardrails.
+export function AgentGuardrailsScopes({
+  agent,
+  mayManage,
+}: {
+  agent: AgentDetailData;
+  mayManage: boolean;
+}) {
+  const t = useT();
+  const mine = (
+    <Panel className="p-5">
+      <ConfigSectionHeader
+        hint={t("only for you", "nur für dich")}
+        title={t("Your guardrails", "Deine Guardrails")}
+      />
+      <div className="mt-3">
+        <MemberGuardrailsPanel agentId={agent.id} />
+      </div>
+    </Panel>
+  );
+  if (!mayManage) return mine;
+  return (
+    <Tabs defaultValue="agent" className="space-y-3">
+      <TabsList aria-label={t("Guardrails for", "Guardrails für")}>
+        <TabsTrigger value="agent" className="min-h-11">
+          {t("For the agent", "Für den Agenten")}
+        </TabsTrigger>
+        <TabsTrigger value="me" className="min-h-11">
+          {t("For me", "Für mich")}
+        </TabsTrigger>
+      </TabsList>
+      <TabsContent value="agent" className="space-y-3">
+        <MemberGuardrailsInsight agentId={agent.id} />
+        <AgentGuardrailsPanel agent={agent} mayManage={mayManage} />
+      </TabsContent>
+      <TabsContent value="me">{mine}</TabsContent>
+    </Tabs>
   );
 }
 

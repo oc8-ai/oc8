@@ -8,6 +8,7 @@ import { ToolGuardrailEditorPanel } from "@/components/tool-guardrail-editor-pan
 import { AddToolPicker } from "@/components/add-tool-picker";
 import { GuardrailLevelPicker } from "@/components/guardrail-level-picker";
 import {
+  LEVELS,
   disabledLevelsFor,
   hasLimits,
   levelOf,
@@ -86,6 +87,13 @@ export interface ToolGuardrailRow {
   /** Member level only: who set the ceiling, for the "set by …" reason on
    * greyed-out levels. Defaults to the department. */
   ceilingSource?: "agent" | "department";
+  /** Member level: the level and ceiling level the backend computed. They
+   * include the member's own approval rules, which `ownValue`'s shape cannot
+   * carry, so they win over `levelOf(ownValue)` / `levelOf(ceilingPolicy)`. */
+  level?: Level;
+  ceilingLevel?: Level;
+  /** Backend-computed "with limits" -- same reason as `level`. */
+  limits?: boolean;
 }
 
 function StatusBadge({
@@ -145,6 +153,8 @@ export function ToolGuardrailTable({
   saving,
   departmentId,
   agentId,
+  onSaveLevel,
+  onReset,
 }: {
   // "member" is a member's own tightening on top of department ∩ agent
   // (D3a): same four levels, "Ask me first" wording, no "Add tool".
@@ -169,6 +179,13 @@ export function ToolGuardrailTable({
   // undefined at the department level, which has no per-agent identity to
   // interpret against (see that panel's own comment on this prop).
   agentId?: string;
+  // Member level: a picked level is saved as `{level}`, never as a policy
+  // built from `ownValue` (the backend maps it, approval rules included).
+  // Same contract as `onSave`: resolves false on a failed save.
+  onSaveLevel?: (toolKey: string, level: Level) => Promise<boolean>;
+  // Member level: removes only the member's own entry ("Reset"), offered on
+  // rows whose source is the member.
+  onReset?: (toolKey: string) => void;
 }) {
   const t = useT();
   const [editingKey, setEditingKey] = useState<string | null>(null);
@@ -185,6 +202,14 @@ export function ToolGuardrailTable({
     return level === "department" ? null : row.ceilingPolicy;
   }
 
+  function disabledLevels(row: ToolGuardrailRow): Level[] {
+    if (row.ceilingLevel) {
+      const max = LEVELS.indexOf(row.ceilingLevel);
+      return LEVELS.filter((_, i) => i > max);
+    }
+    return disabledLevelsFor(ceilingOf(row));
+  }
+
   function disabledReason(row: ToolGuardrailRow): string {
     if (level === "member" && row.ceilingSource === "agent") {
       return t("set by agent", "vom Agenten festgelegt");
@@ -193,11 +218,16 @@ export function ToolGuardrailTable({
   }
 
   async function pickLevel(row: ToolGuardrailRow, picked: Level) {
-    const next = valueForLevel(picked, ceilingOf(row), row.ownValue);
     setPending((p) => ({ ...p, [row.toolKey]: picked }));
     setFailed((f) => ({ ...f, [row.toolKey]: false }));
-    if (editingKey === row.toolKey) setDraft(next);
-    const ok = await onSave(row.toolKey, next);
+    let ok: boolean;
+    if (onSaveLevel) {
+      ok = await onSaveLevel(row.toolKey, picked);
+    } else {
+      const next = valueForLevel(picked, ceilingOf(row), row.ownValue);
+      if (editingKey === row.toolKey) setDraft(next);
+      ok = await onSave(row.toolKey, next);
+    }
     setPending(({ [row.toolKey]: _done, ...rest }) => rest);
     if (!ok) setFailed((f) => ({ ...f, [row.toolKey]: true }));
   }
@@ -218,7 +248,7 @@ export function ToolGuardrailTable({
         <tbody>
           {rows.map((row) => {
             const isEditing = row.toolKey === editingKey;
-            const current = pending[row.toolKey] ?? levelOf(row.ownValue);
+            const current = pending[row.toolKey] ?? row.level ?? levelOf(row.ownValue);
             return (
               <Fragment key={row.toolKey}>
                 <tr className="border-b border-border/60 last:border-0">
@@ -247,13 +277,13 @@ export function ToolGuardrailTable({
                       <GuardrailLevelPicker
                         name={row.toolKey}
                         value={current}
-                        disabledLevels={disabledLevelsFor(ceilingOf(row))}
+                        disabledLevels={disabledLevels(row)}
                         disabledReason={disabledReason(row)}
                         scope={scope}
                         busy={row.toolKey in pending}
                         onChange={(picked) => void pickLevel(row, picked)}
                       />
-                      {hasLimits(row.ownValue) && (
+                      {(row.limits ?? hasLimits(row.ownValue)) && (
                         <span className="text-xs text-muted-foreground">
                           {t("with limits", "mit Grenzen")}
                         </span>
@@ -280,6 +310,15 @@ export function ToolGuardrailTable({
                     {/* While this row is expanded, the panel below owns Save/Cancel --
                         a second row-level toggle here would be a duplicate control
                         with the identical label and action. */}
+                    {onReset && row.source === "member" && !isEditing && (
+                      <button
+                        type="button"
+                        onClick={() => onReset(row.toolKey)}
+                        className="min-h-11 rounded-md px-2.5 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
+                      >
+                        {t("Reset", "Zurücksetzen")}
+                      </button>
+                    )}
                     {!isEditing && (
                       <button
                         type="button"

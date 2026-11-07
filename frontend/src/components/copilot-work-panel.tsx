@@ -1,6 +1,8 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { ChatApprovalCard } from "@/components/chat-approval-card";
 import { NeedsMeWidget } from "@/components/dashboard/widgets/needs-me-widget";
+import { MemberGuardrailsSheet } from "@/components/member-guardrails-sheet";
 import { RunStepTimeline } from "@/components/run-step-timeline";
 import {
   AlertDialog,
@@ -30,7 +32,10 @@ import {
   type FollowupDTO,
   type ResponsibilityDTO,
 } from "@/lib/hooks-copilot";
+import { levelLabel } from "@/lib/guardrail-levels";
+import { useCopilotGuardrails, useMyApprovals } from "@/lib/hooks-member-guardrails";
 import { useLang, useT } from "@/lib/i18n";
+import { toolLabel } from "@/lib/member-guardrail-text";
 
 const ACTIVE_RUN_STATES = new Set([
   "queued",
@@ -353,18 +358,79 @@ function NotesTab() {
   );
 }
 
+/** Every personal guardrail across agents, grouped by agent; a row opens
+ * that agent's "Your guardrails" sheet. */
+function GuardrailsTab({ onOpen }: { onOpen: (agentId: string, agentName: string) => void }) {
+  const t = useT();
+  const { data: agents = [] } = useCopilotGuardrails();
+  const groups = agents
+    .map((agent) => ({ ...agent, tools: agent.tools.filter((tool) => tool.mine !== null) }))
+    .filter((agent) => agent.tools.length > 0);
+  if (groups.length === 0) {
+    return (
+      <p className="p-3 text-xs text-muted-foreground">
+        {t(
+          "No guardrails of your own yet. Tell your Copilot what should never happen without you.",
+          "Noch keine eigenen Guardrails. Sag deinem Copilot, was nie ohne dich passieren soll.",
+        )}
+      </p>
+    );
+  }
+  return (
+    <div className="space-y-4 p-3">
+      {groups.map((agent) => (
+        <section key={agent.agentId} className="space-y-1">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            {agent.agentName}
+          </h3>
+          {agent.tools.map((tool) => (
+            <button
+              key={tool.toolKey}
+              type="button"
+              onClick={() => onOpen(agent.agentId, agent.agentName)}
+              className="flex min-h-11 w-full items-center justify-between gap-2 rounded-md border border-border px-3 text-left text-sm transition hover:bg-accent"
+            >
+              <span className="font-medium">{toolLabel(tool.toolKey)}</span>
+              <span className="text-muted-foreground">{levelLabel(tool.level, "member", t)}</span>
+            </button>
+          ))}
+        </section>
+      ))}
+    </div>
+  );
+}
+
+/** Approvals the member's own rules routed to them, across every agent. */
+function MyApprovals({ onChangeRule }: { onChangeRule: (agentId: string) => void }) {
+  const t = useT();
+  const { data: approvals = [] } = useMyApprovals();
+  if (approvals.length === 0) return null;
+  return (
+    <div className="space-y-2 p-3 pb-0">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        {t("Your rules asked you", "Deine Regeln fragen dich")}
+      </h3>
+      {approvals.map((approval) => (
+        <ChatApprovalCard key={approval.id} approval={approval} onChangeRule={onChangeRule} />
+      ))}
+    </div>
+  );
+}
+
 export function CopilotWorkPanel() {
   const t = useT();
   const { data: profile } = useCopilotProfile();
   const [tab, setTab] = useState("activity");
+  const [sheet, setSheet] = useState<{ agentId: string; agentName: string } | null>(null);
   return (
     <div className="flex h-full min-h-0 flex-col">
       <Tabs value={tab} onValueChange={setTab} className="flex min-h-0 flex-1 flex-col">
-        <TabsList className="mx-3 mt-3 grid grid-cols-4">
+        <TabsList className="mx-3 mt-3 grid grid-cols-5">
           <TabsTrigger value="activity">{t("Activity", "Aktivität")}</TabsTrigger>
           <TabsTrigger value="scheduled">{t("Scheduled", "Geplant")}</TabsTrigger>
           <TabsTrigger value="waiting">{t("Waiting", "Wartet")}</TabsTrigger>
           <TabsTrigger value="notes">{t("Notes", "Notizen")}</TabsTrigger>
+          <TabsTrigger value="guardrails">{t("Guardrails", "Guardrails")}</TabsTrigger>
         </TabsList>
         <div className="min-h-0 flex-1 overflow-y-auto">
           <TabsContent value="activity">
@@ -374,6 +440,7 @@ export function CopilotWorkPanel() {
             <ScheduledTab />
           </TabsContent>
           <TabsContent value="waiting">
+            <MyApprovals onChangeRule={(agentId) => setSheet({ agentId, agentName: "" })} />
             {profile?.agentId ? (
               <NeedsMeWidget config={{}} onConfigChange={() => {}} agentId={profile.agentId} />
             ) : (
@@ -383,8 +450,19 @@ export function CopilotWorkPanel() {
           <TabsContent value="notes">
             <NotesTab />
           </TabsContent>
+          <TabsContent value="guardrails">
+            <GuardrailsTab onOpen={(agentId, agentName) => setSheet({ agentId, agentName })} />
+          </TabsContent>
         </div>
       </Tabs>
+      {sheet && (
+        <MemberGuardrailsSheet
+          agentId={sheet.agentId}
+          agentName={sheet.agentName}
+          open
+          onOpenChange={(open) => !open && setSheet(null)}
+        />
+      )}
       <p className="border-t border-border px-3 py-2 text-[11px] text-muted-foreground">
         {t(
           "Stopping work does not undo actions already taken.",

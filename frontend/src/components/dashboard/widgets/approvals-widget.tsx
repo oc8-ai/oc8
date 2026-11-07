@@ -674,6 +674,12 @@ export function ApprovalPane({
                 <span className="truncate">{approval.taskTitle}</span>
               </>
             )}
+            {/* D3a: the member's own guardrail asked -- same approval, marked. */}
+            {approval.assigneeMemberId && (
+              <span className="rounded-full border border-border px-2 py-0.5 text-[11px]">
+                {t("Your rule", "Deine Regel")}
+              </span>
+            )}
           </div>
           <h2 className="mt-2 font-serif text-2xl leading-tight">{approval.title}</h2>
           {reasonSentence ? (

@@ -29,6 +29,8 @@ import {
   type SigilItem,
   type SigilToken,
 } from "@/components/composer-sigils";
+import { ChatApprovalCard } from "@/components/chat-approval-card";
+import { MemberGuardrailsSheet, YourGuardrailsButton } from "@/components/member-guardrails-sheet";
 import { RUN_COMPONENT_REGISTRY } from "@/components/run-record-card";
 import {
   DropdownMenu,
@@ -46,7 +48,12 @@ import {
 } from "@/lib/chat-commands";
 import { nextStepChips } from "@/lib/chat-suggestions";
 import { useCan } from "@/lib/governance-hooks";
-import { useAnswerClarification, useClarifications, useKnowledgeBases } from "@/lib/hooks";
+import {
+  useAnswerClarification,
+  useClarifications,
+  useKnowledgeBases,
+  type Approval,
+} from "@/lib/hooks";
 import {
   useChatSessions,
   useCreateChatSession,
@@ -58,6 +65,7 @@ import {
   type ChatSessionDTO,
   type FileAttachmentDTO,
 } from "@/lib/hooks-chat";
+import { useMyApprovals } from "@/lib/hooks-member-guardrails";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -70,6 +78,8 @@ export function ChatWindow({
   sessionId: controlledSessionId,
   onSessionChange,
   emptyIntro,
+  guardrailsOpen: controlledGuardrailsOpen,
+  onGuardrailsOpenChange,
 }: {
   agentId: string;
   agentName: string;
@@ -86,6 +96,11 @@ export function ChatWindow({
   onSessionChange?: (sessionId: string | null) => void;
   /** Shown above the starters, only on an empty transcript. */
   emptyIntro?: ReactNode;
+  /** "Your guardrails", controlled by a page that renders the header entry
+   * itself (the Copilot page hides this header): an approval card's "Change
+   * rule" then opens THAT sheet, and focus returns to its entry. */
+  guardrailsOpen?: boolean;
+  onGuardrailsOpenChange?: (open: boolean) => void;
 }) {
   const t = useT();
   const { data: sessions, isLoading: sessionsLoading } = useChatSessions(agentId);
@@ -247,6 +262,27 @@ export function ChatWindow({
   const openClarification = clarifications?.find((c) => c.agentId === agentId);
   const answerClarification = useAnswerClarification();
 
+  // An approval the member's OWN guardrail asked for (D3a) is answered here,
+  // in the conversation, not in an inbox somewhere else. Kept once seen, so a
+  // decided card stays and can show what happened next ("waiting for Sales").
+  const [innerGuardrailsOpen, setInnerGuardrailsOpen] = useState(false);
+  const guardrailsControlled = controlledGuardrailsOpen !== undefined;
+  const guardrailsOpen = controlledGuardrailsOpen ?? innerGuardrailsOpen;
+  const setGuardrailsOpen = onGuardrailsOpenChange ?? setInnerGuardrailsOpen;
+  const { data: myApprovals } = useMyApprovals({ poll: waitingOnAgent ? 3000 : false });
+  const [shownApprovals, setShownApprovals] = useState<Approval[]>([]);
+  useEffect(() => {
+    const mine = (myApprovals ?? []).filter((a) => a.agentId === agentId);
+    if (mine.some((a) => !shownApprovals.some((s) => s.id === a.id))) {
+      setShownApprovals((prev) => [
+        ...prev,
+        ...mine.filter((a) => !prev.some((p) => p.id === a.id)),
+      ]);
+    }
+  }, [myApprovals, agentId, shownApprovals]);
+  const approvalCards = shownApprovals.filter((a) => a.agentId === agentId);
+  const waitingOnMe = (myApprovals ?? []).some((a) => a.agentId === agentId);
+
   function submitClarificationAnswer() {
     const trimmed = clarificationAnswer.trim();
     if (!trimmed || !openClarification) return;
@@ -279,12 +315,26 @@ export function ChatWindow({
 
   return (
     <Panel className={cn("flex flex-col overflow-hidden", className ?? "h-[560px]")}>
+      {hideHeader && !guardrailsControlled && guardrailsOpen && (
+        <MemberGuardrailsSheet
+          agentId={agentId}
+          agentName={agentName}
+          open
+          onOpenChange={setGuardrailsOpen}
+        />
+      )}
       {!hideHeader && (
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <div className="text-sm font-medium">
             {t(`Chat with ${agentName}`, `Chat mit ${agentName}`)}
           </div>
           <div className="flex items-center gap-2">
+            <YourGuardrailsButton
+              agentId={agentId}
+              agentName={agentName}
+              open={guardrailsOpen}
+              onOpenChange={setGuardrailsOpen}
+            />
             {sessions && sessions.length > 0 && (
               <ChatSessionPicker
                 agentId={agentId}
@@ -474,7 +524,14 @@ export function ChatWindow({
             </div>
           </div>
         )}
-        {waitingOnAgent && !openClarification && (
+        {approvalCards.map((approval) => (
+          <div key={approval.id} className="flex justify-start">
+            <div className="w-full max-w-[80%]">
+              <ChatApprovalCard approval={approval} onChangeRule={() => setGuardrailsOpen(true)} />
+            </div>
+          </div>
+        ))}
+        {waitingOnAgent && !openClarification && !waitingOnMe && (
           <div className="flex justify-start">
             <div className="max-w-[80%] rounded-lg border border-border bg-background/60 px-3 py-2 text-xs text-muted-foreground">
               {t(`${agentName} is thinking…`, `${agentName} überlegt…`)}
