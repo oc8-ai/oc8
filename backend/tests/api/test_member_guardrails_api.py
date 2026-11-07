@@ -4,6 +4,7 @@ entry once the agent's own guardrails cover it (plan Review Focus 5)."""
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -16,8 +17,9 @@ from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.agent.assistant import get_or_create_assistant
+from oc8.agents.versioning import publish_version
 from oc8.auth import get_identity_provider
-from oc8.authz.member_guardrail_store import _adds_nothing
+from oc8.authz.member_guardrail_store import _adds_nothing, prune_redundant, set_member_tool
 from oc8.authz.pdp import ToolPolicy
 from oc8.authz.permissions import SEAT_VIEWER
 from oc8.authz.scope import subject_uuid_for
@@ -401,3 +403,122 @@ async def test_the_overview_lists_only_agents_i_have_rules_on(
     assert listed.status_code == 200, listed.text
     assert [a["agentId"] for a in listed.json()] == [str(office.agent)]
     assert olaf_sees.json() == []
+
+
+# ------------------------------------------------------------------ concurrency
+
+READ_ONLY: dict[str, Any] = {"enabled": True, "read": True, "modify": False}
+
+
+async def _two_tools(app_session: AppSessionFactory, office: Office) -> None:
+    async with app_session(office.tenant) as db:
+        dept = await db.get(m.Department, office.sales)
+        assert dept is not None
+        dept.frame = {"tools": {"gmail": GMAIL_FULL, "calendar": GMAIL_FULL}}
+
+
+async def _set_in_own_session(
+    app_session: AppSessionFactory, office: Office, tool_key: str
+) -> None:
+    async with app_session(office.tenant) as db:
+        member = await db.get(m.OrgMember, office.anna)
+        agent = await db.get(m.Agent, office.agent)
+        assert member is not None and agent is not None
+        await set_member_tool(
+            db,
+            tenant_id=office.tenant,
+            member=member,
+            agent=agent,
+            tool_key=tool_key,
+            entry=READ_ONLY,
+        )
+
+
+async def test_two_first_rules_at_once_both_land(app_session: AppSessionFactory) -> None:
+    """Two tabs, two tools, no row yet: the second insert must merge into the
+    first, not die on the unique constraint."""
+    office = await _office(app_session)
+    await _two_tools(app_session, office)
+    async with app_session(office.tenant) as first:
+        member = await first.get(m.OrgMember, office.anna)
+        agent = await first.get(m.Agent, office.agent)
+        assert member is not None and agent is not None
+        await set_member_tool(
+            first,
+            tenant_id=office.tenant,
+            member=member,
+            agent=agent,
+            tool_key="gmail",
+            entry=READ_ONLY,
+        )
+        second = asyncio.create_task(_set_in_own_session(app_session, office, "calendar"))
+        await asyncio.sleep(0.3)
+    await second
+    [row] = await _rows(app_session, office)
+    assert sorted(row.policy["tools"]) == ["calendar", "gmail"]
+
+
+async def test_two_rules_at_once_over_http_both_land(app_session: AppSessionFactory) -> None:
+    office = await _office(app_session)
+    await _two_tools(app_session, office)
+    anna = _headers(office.tenant, "anna")
+    base = f"/api/v1/agents/{office.agent}/guardrails/me"
+    async with _http() as http:
+        results = await asyncio.gather(
+            http.put(f"{base}/gmail", json={"level": "read_only"}, headers=anna),
+            http.put(f"{base}/calendar", json={"level": "read_only"}, headers=anna),
+        )
+    assert [r.status_code for r in results] == [200, 200], [r.text for r in results]
+    [row] = await _rows(app_session, office)
+    assert sorted(row.policy["tools"]) == ["calendar", "gmail"]
+
+
+async def test_a_prune_never_drops_a_rule_set_meanwhile(app_session: AppSessionFactory) -> None:
+    """The admin's save prunes gmail while Anna adds calendar: the prune holds
+    the row, Anna's write waits for it and then merges into what is left."""
+    office = await _office(app_session)
+    await _two_tools(app_session, office)
+    await _set_in_own_session(app_session, office, "gmail")
+    async with app_session(office.tenant) as admin:
+        agent = await admin.get(m.Agent, office.agent)
+        assert agent is not None
+        agent.narrowing = {"tools": {"gmail": READ_ONLY}}
+        await admin.flush()
+        removed = await prune_redundant(admin, tenant_id=office.tenant, agent=agent)
+        assert removed == [(office.anna, "gmail")]
+        anna = asyncio.create_task(_set_in_own_session(app_session, office, "calendar"))
+        await asyncio.sleep(0.3)
+    await anna
+    [row] = await _rows(app_session, office)
+    assert sorted(row.policy["tools"]) == ["calendar"]
+
+
+# ------------------------------------------------------------------ rollback
+
+
+async def test_rolling_back_to_a_tighter_version_prunes(app_session: AppSessionFactory) -> None:
+    office = await _office(app_session)
+    async with app_session(office.tenant) as db:
+        agent = await db.get(m.Agent, office.agent)
+        assert agent is not None
+        agent.narrowing = {"tools": {"gmail": READ_ONLY}}
+        await db.flush()
+        tight = await publish_version(db, agent, note="read only")
+        agent.narrowing = {"tools": {"gmail": GMAIL_FULL}}
+        await db.flush()
+        await publish_version(db, agent, note="full")
+        tight_no = tight.version_no
+    async with _http() as http:
+        r = await http.put(
+            f"/api/v1/agents/{office.agent}/guardrails/me/gmail",
+            json={"level": "read_only"},
+            headers=_headers(office.tenant, "anna"),
+        )
+        assert r.status_code == 200, r.text
+        assert len(await _rows(app_session, office)) == 1
+        rolled = await http.post(
+            f"/api/v1/agents/{office.agent}/versions/{tight_no}/rollback",
+            headers=_headers(office.tenant, "admin", "org_admin"),
+        )
+        assert rolled.status_code == 201, rolled.text
+    assert await _rows(app_session, office) == []

@@ -12,6 +12,7 @@ import uuid
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -23,6 +24,7 @@ from oc8.authz.pdp import (
     effective_tool_policies,
     member_term_violations,
 )
+from oc8.db.base import uuid7
 
 
 class MemberGuardrailWidens(Exception):
@@ -76,6 +78,55 @@ def _checked(entry: dict[str, Any]) -> None:
         raise MemberGuardrailInvalid(str(exc)) from exc
 
 
+async def _locked_row(
+    db: AsyncSession, *, tenant_id: uuid.UUID, member_id: uuid.UUID, agent_id: uuid.UUID
+) -> m.MemberGuardrail | None:
+    """The member's row, locked until this transaction ends, read fresh.
+
+    Every writer goes through this lock -- the member's own PUT and an admin's
+    prune alike -- so neither rewrites the tools JSON from a stale copy and
+    drops what the other just wrote."""
+    return (
+        await db.execute(
+            select(m.MemberGuardrail)
+            .where(
+                m.MemberGuardrail.tenant_id == tenant_id,
+                m.MemberGuardrail.member_id == member_id,
+                m.MemberGuardrail.agent_id == agent_id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+
+
+async def _ensured_row(
+    db: AsyncSession, *, tenant_id: uuid.UUID, member_id: uuid.UUID, agent_id: uuid.UUID
+) -> m.MemberGuardrail:
+    """The member's row, created empty if missing, locked.
+
+    `ON CONFLICT DO NOTHING` so two first writes at once (two tabs) meet on one
+    row instead of the second dying on `uq_member_guardrail`. Retried because a
+    concurrent prune may delete the row between our insert finding it and our
+    lock reaching it."""
+    for _ in range(3):
+        await db.execute(
+            pg_insert(m.MemberGuardrail)
+            .values(
+                id=uuid7(),
+                tenant_id=tenant_id,
+                member_id=member_id,
+                agent_id=agent_id,
+                policy={"tools": {}},
+            )
+            .on_conflict_do_nothing(constraint="uq_member_guardrail")
+        )
+        row = await _locked_row(db, tenant_id=tenant_id, member_id=member_id, agent_id=agent_id)
+        if row is not None:
+            return row
+    raise RuntimeError("member guardrail row vanished three times in a row")
+
+
 async def set_member_tool(
     db: AsyncSession,
     *,
@@ -90,33 +141,28 @@ async def set_member_tool(
     Tighten only: raises `MemberGuardrailWidens` for anything department ∩
     agent does not grant. An entry that adds nothing to what the agent already
     does is not stored, for the same reason `prune_redundant` drops one.
+    Merges into the locked row, so other tools' entries are never lost.
     """
-    row = await member_row(db, tenant_id=tenant_id, member_id=member.id, agent_id=agent.id)
-    tools = dict((row.policy if row else {}).get("tools", {}))
-    if entry is None:
-        tools.pop(tool_key, None)
-    else:
+    store = False
+    if entry is not None:
         _checked(entry)
         base = await base_policies(db, agent)
         violations = member_term_violations(base, {"tools": {tool_key: entry}})
         if violations:
             raise MemberGuardrailWidens(violations)
-        if _adds_nothing(base, tool_key, entry):
-            tools.pop(tool_key, None)
-        else:
-            tools[tool_key] = entry
-    if row is None and tools:
-        db.add(
-            m.MemberGuardrail(
-                tenant_id=tenant_id,
-                member_id=member.id,
-                agent_id=agent.id,
-                policy={"tools": tools},
-            )
-        )
-    elif row is not None and tools:
+        store = not _adds_nothing(base, tool_key, entry)
+    keys = {"tenant_id": tenant_id, "member_id": member.id, "agent_id": agent.id}
+    row = await (_ensured_row(db, **keys) if store else _locked_row(db, **keys))
+    if row is None:
+        return
+    tools = dict((row.policy or {}).get("tools", {}))
+    if store and entry is not None:
+        tools[tool_key] = entry
+    else:
+        tools.pop(tool_key, None)
+    if tools:
         row.policy = {"tools": tools}
-    elif row is not None:
+    else:
         await db.delete(row)
     await db.flush()
 
@@ -140,10 +186,16 @@ async def prune_redundant(
     rows = (
         (
             await db.execute(
-                select(m.MemberGuardrail).where(
+                select(m.MemberGuardrail)
+                .where(
                     m.MemberGuardrail.tenant_id == tenant_id,
                     m.MemberGuardrail.agent_id == agent.id,
                 )
+                # Locked like every member write (`_locked_row`), in one order
+                # so two prunes of the same agent cannot deadlock.
+                .order_by(m.MemberGuardrail.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
             )
         )
         .scalars()
