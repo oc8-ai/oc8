@@ -14,8 +14,7 @@ from typing import Any, get_args
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.auth.principal import Principal
-from oc8.authz.authority import resolve_authority
+from oc8.authz.authority import authority_for_member
 from oc8.authz.levels import Level, level_of, member_entry_for_level
 from oc8.authz.member_guardrail_store import base_policies
 from oc8.authz.pdp import member_term_violations
@@ -52,10 +51,7 @@ async def suggest_guardrail(
     # The member's authority as every other door resolves it. No token exists
     # inside a run, so the claim the chat API recorded stands in; none means the
     # row terms alone decide, which is the fail-closed direction.
-    authority = await resolve_authority(
-        db,
-        Principal(subject=member.subject, tenant_id=tenant_id, role=token_role or ""),
-    )
+    authority = await authority_for_member(db, member, token_role=token_role)
     agent = await reachable_chat_agent(
         db, tenant_id=tenant_id, scope=scope, authority=authority, agent_id=agent_id
     )
