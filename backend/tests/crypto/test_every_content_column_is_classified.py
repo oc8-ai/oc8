@@ -228,6 +228,7 @@ EXEMPT: dict[str, str] = {
     "permission.resource_type": "authorization/policy input read directly by the permission decision point, design spec §6c",
     "permission.action": "authorization/policy input read directly by the permission decision point, design spec §6c",
     "permission.constraint_expr": "authorization/policy input read directly by the permission decision point, design spec §6c",
+    "member_guardrail.policy": "D3a member guardrails: tool policy shape like agent.narrowing, no content",
     "provider_budget.provider": "structural identifier: a canonical model-provider name from the router registry, not customer free text, design spec §6c",
     "push_subscription.endpoint": "Web Push protocol delivery URL assigned by the browser's push service; structural/config/identifier column, not customer free text -- see design spec §6",
     "push_subscription.p256dh": "Web Push public key material the browser publishes so payloads can be encrypted TO it; structural/config/identifier column, not customer free text -- see design spec §6",

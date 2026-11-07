@@ -90,6 +90,11 @@ class ApprovalRequest(Base, PkMixin, TenantMixin, TimestampMixin):
     #: Which of the agent's proposed options a human picked (action_type
     #: "decision"). NULL for a plain yes/no on a held tool call, which has none.
     decision_option: Mapped[str | None] = mapped_column(Text)
+    #: D3a: set when the acting member's own guardrail asked for approval.
+    #: Only this member may decide; NULL keeps the department queue.
+    assignee_member_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    #: D3a: the member stage this department stage follows.
+    previous_approval_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
     #: Structured sibling of `detail`: `{"code": "<Decision.reason_code>",
     #: **Decision.context}` when this approval was raised from a PDP
     #: `authorize_tool_call` REQUIRE_APPROVAL decision, letting the approval
