@@ -371,11 +371,49 @@ async def test_a_department_change_prunes_too(app_session: AppSessionFactory) ->
         assert r.status_code == 200, r.text
         dept = await http.put(
             f"/api/v1/departments/{office.sales}/tools",
-            json={"tools": {}},
+            json={"tools": {"gmail": {"enabled": False, "read": False, "modify": False}}},
             headers=_headers(office.tenant, "admin", "org_admin"),
         )
         assert dept.status_code == 200, dept.text
     assert await _rows(app_session, office) == []
+
+
+async def test_a_rule_for_a_withdrawn_tool_waits_for_it_to_return(
+    app_session: AppSessionFactory,
+) -> None:
+    """Ruling 9: a withdrawn tool is not "redundant". The member's entry stays
+    (inert while neither department nor agent grants the tool) and protects
+    again once the department grants the tool back."""
+    office = await _office(app_session)
+    anna = _headers(office.tenant, "anna")
+    async with _http() as http:
+        r = await http.put(
+            f"/api/v1/agents/{office.agent}/guardrails/me/gmail",
+            json={"level": "ask_first"},
+            headers=anna,
+        )
+        assert r.status_code == 200, r.text
+    async with app_session(office.tenant) as db:
+        sales = await db.get(m.Department, office.sales)
+        agent = await db.get(m.Agent, office.agent)
+        assert sales is not None and agent is not None
+        sales.frame = {"tools": {}}
+        agent.narrowing = {}
+        await db.flush()
+        assert await prune_redundant(db, tenant_id=office.tenant, agent=agent) == []
+    rows = await _rows(app_session, office)
+    assert len(rows) == 1
+    assert rows[0].policy["tools"]["gmail"]["approval_actions"] == ["modify"]
+    async with app_session(office.tenant) as db:
+        sales = await db.get(m.Department, office.sales)
+        assert sales is not None
+        sales.frame = {"tools": {"gmail": GMAIL_FULL}}
+    async with _http() as http:
+        mine = await http.get(f"/api/v1/agents/{office.agent}/guardrails/me", headers=anna)
+    assert mine.status_code == 200, mine.text
+    gmail = _tool(mine.json(), "gmail")
+    assert gmail["level"] == "ask_first"
+    assert gmail["source"] == "member"
 
 
 async def test_a_rule_the_agent_still_lacks_survives(app_session: AppSessionFactory) -> None:

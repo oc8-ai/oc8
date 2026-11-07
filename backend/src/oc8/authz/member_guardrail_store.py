@@ -175,7 +175,8 @@ async def prune_redundant(
     principal: Principal | None = None,
 ) -> list[tuple[uuid.UUID, str]]:
     """Drop member entries the agent's own guardrails now cover (design
-    review D5: "rule became redundant"). Called by every writer of the
+    review D5: "rule became redundant"). Entries for a tool the agent no
+    longer has at all are kept (Ruling 9). Called by every writer of the
     frame or the narrowing, in the same transaction.
 
     One audit line per member who lost an entry -- the Copilot keeps no
@@ -203,10 +204,13 @@ async def prune_redundant(
     )
     for row in rows:
         tools = dict((row.policy or {}).get("tools", {}))
+        # A tool neither department nor agent grants any more is not
+        # "redundant" (Ruling 9): its entry is inert in the PDP and protects
+        # again if the tool comes back, so only entries the base now covers go.
         gone = [
             key
             for key, raw in tools.items()
-            if key not in base or not isinstance(raw, dict) or _adds_nothing(base, key, raw)
+            if key in base and (not isinstance(raw, dict) or _adds_nothing(base, key, raw))
         ]
         if not gone:
             continue
