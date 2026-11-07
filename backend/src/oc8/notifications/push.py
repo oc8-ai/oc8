@@ -37,14 +37,21 @@ _PUSH_TIMEOUT_SECONDS = 10
 
 
 async def send_push_for_tenant(
-    db: AsyncSession, *, tenant_id: uuid.UUID, payload: dict[str, Any]
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    payload: dict[str, Any],
+    member_id: uuid.UUID | None = None,
 ) -> None:
+    """Push `payload` to the tenant's subscribed browsers -- or, with
+    `member_id`, to that member's alone (a member's own approval, D3a)."""
     settings = get_settings()
     if not settings.vapid_public_key or not settings.vapid_private_key:
         return
-    result = await db.execute(
-        select(m.PushSubscription).where(m.PushSubscription.tenant_id == tenant_id)
-    )
+    query = select(m.PushSubscription).where(m.PushSubscription.tenant_id == tenant_id)
+    if member_id is not None:
+        query = query.where(m.PushSubscription.member_id == member_id)
+    result = await db.execute(query)
     subs = list(result.scalars().all())
     if not subs:
         return

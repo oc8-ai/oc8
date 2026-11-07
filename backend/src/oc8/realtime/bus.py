@@ -42,7 +42,15 @@ class EventBus:
     async def publish_event(
         self, tenant_id: uuid.UUID, type_: str, data: dict[str, Any], *, source: str
     ) -> None:
-        env = build_envelope(tenant_id, type_, data, source)
+        # A member's own approval (D3a) is theirs alone. The socket is
+        # tenant-wide -- `ConnectionManager` fans out per tenant, with no
+        # per-member delivery -- so its words stay out of the envelope: other
+        # sockets learn only that some approval exists (the id, for a refetch
+        # the server then scopes). The push below still carries them, to the
+        # assignee's own devices only.
+        assignee = data.get("assignee_member_id") if type_ == "approval.created" else None
+        wire = {k: v for k, v in data.items() if k not in ("title", "detail")} if assignee else data
+        env = build_envelope(tenant_id, type_, wire, source)
         try:
             await self._client.publish(channel_for(tenant_id), json.dumps(env))
         except Exception:
@@ -68,7 +76,16 @@ class EventBus:
                 payload = await self._push_payload(db, approval_id, data)
                 if payload is None:
                     return
-                await send_push_for_tenant(db, tenant_id=tenant_id, payload=payload)
+                assignee = data.get("assignee_member_id")
+                if assignee:
+                    await send_push_for_tenant(
+                        db,
+                        tenant_id=tenant_id,
+                        payload=payload,
+                        member_id=uuid.UUID(str(assignee)),
+                    )
+                else:
+                    await send_push_for_tenant(db, tenant_id=tenant_id, payload=payload)
         except Exception:
             logger.warning("push send failed for approval %s", approval_id, exc_info=True)
 
