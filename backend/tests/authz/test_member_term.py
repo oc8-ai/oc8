@@ -147,3 +147,63 @@ def test_source_reports_member_first() -> None:
         member_keys=["gmail"],
     )
     assert src == "member"
+
+
+_ALLOW_COND: dict[str, Any] = {
+    "attribute": "recipient_domain",
+    "datatype": "string",
+    "operator": "==",
+    "value": "firma.de",
+    "then": "allow",
+}
+_ATTRS: dict[str, Any] = {"recipient_domain": "firma.de"}
+
+
+def _decide(
+    frame_entry: dict[str, Any],
+    member_entry: dict[str, Any] | None,
+    value: float | None = None,
+) -> Decision:
+    member = {"tools": {"gmail": member_entry}} if member_entry is not None else None
+    return authorize_tool_call(
+        policies=effective_tool_policies({"tools": {"gmail": frame_entry}}, {}, member),
+        connection_key="gmail",
+        right="modify",
+        value=value,
+        attributes=_ATTRS,
+    )
+
+
+_BASE: dict[str, Any] = {"enabled": True, "read": True, "modify": True}
+
+
+def test_department_allow_condition_does_not_skip_member_approval() -> None:
+    d = _decide(
+        {**_BASE, "conditions": [_ALLOW_COND]},
+        {**_BASE, "approval_actions": ["modify"]},
+    )
+    assert d.effect is Effect.REQUIRE_APPROVAL
+    assert d.approval_from == frozenset({"member"})
+
+
+def test_department_allow_condition_alone_is_allow_without_approvers() -> None:
+    d = _decide({**_BASE, "conditions": [_ALLOW_COND], "approval_eur": 0}, None)
+    assert d.effect is Effect.ALLOW
+    assert d.reason_code == "condition_matched"
+    assert d.approval_from == frozenset()
+
+
+def test_member_allow_condition_does_not_skip_department_approval() -> None:
+    d = _decide(
+        {**_BASE, "approval_eur": 0},
+        {**_BASE, "conditions": [_ALLOW_COND]},
+    )
+    assert d.effect is Effect.REQUIRE_APPROVAL
+    assert d.approval_from == frozenset({"department"})
+
+
+def test_approval_from_is_empty_on_plain_allow_and_deny() -> None:
+    assert _call(None).approval_from == frozenset()
+    denied = _call({"tools": {"gmail": {"enabled": False}}})
+    assert denied.effect is Effect.DENY
+    assert denied.approval_from == frozenset()

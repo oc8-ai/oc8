@@ -822,12 +822,15 @@ def authorize_tool_call(
     for d in (department, member):
         if d is not None and d.effect is Effect.DENY:
             return d
-    first = department or member
-    if first is None:
-        return Decision(Effect.ALLOW)
-    return replace(
-        first,
-        approval_from=frozenset(
-            name for name, d in (("department", department), ("member", member)) if d is not None
-        ),
-    )
+    asking = [
+        (n, d)
+        for n, d in (("department", department), ("member", member))
+        if d is not None and d.effect is Effect.REQUIRE_APPROVAL
+    ]
+    if asking:
+        # A matched `then: allow` condition only settles its own level; it
+        # must never hide another level's request for a human.
+        return replace(asking[0][1], approval_from=frozenset(n for n, _ in asking))
+    if department is not None:
+        return department
+    return Decision(Effect.ALLOW)
