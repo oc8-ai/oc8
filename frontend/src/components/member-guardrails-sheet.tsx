@@ -2,7 +2,6 @@ import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { CornerDownLeft, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import type { GuardrailValue } from "@/components/guardrail-preset-picker";
 import {
   ToolGuardrailTable,
   describeGuardrailSaveError,
@@ -20,6 +19,7 @@ import {
   type MyToolGuardrail,
 } from "@/lib/hooks-member-guardrails";
 import { useT } from "@/lib/i18n";
+import { seedValue, toEntry, toValue } from "@/lib/member-guardrail-entry";
 import {
   effectSentence,
   instructionExamples,
@@ -35,31 +35,6 @@ import { cn } from "@/lib/utils";
 // Copilot's "Guardrails" tab, and "For me" on the agent page. One body
 // (`MemberGuardrailsPanel`) in all three: the summary sentences, the
 // "never … without you" field, then the shared table at `level="member"`.
-
-function toValue(policy: ToolPolicy): GuardrailValue {
-  return {
-    read: policy.read,
-    modify: policy.modify,
-    approvalActions: policy.approvalActions ?? [],
-    approvalEur: policy.approvalEur ?? null,
-    only: policy.only ?? [],
-    conditions: policy.conditions ?? [],
-  };
-}
-
-/** A "More" edit as the stored member entry (snake_case, like the agent's
- * narrowing save). The server refuses anything looser than department ∩ agent. */
-function toEntry(value: GuardrailValue): Record<string, unknown> {
-  return {
-    enabled: value.read || value.modify,
-    read: value.read,
-    modify: value.modify,
-    approval_actions: value.approvalActions,
-    approval_eur: value.approvalEur ?? null,
-    ...(value.only && value.only.length > 0 ? { only: value.only } : {}),
-    conditions: value.conditions ?? [],
-  };
-}
 
 function rowSource(source: string): ToolGuardrailRow["source"] {
   return source === "member" || source === "agent" || source === "capa_default"
@@ -148,11 +123,24 @@ export function MemberGuardrailsPanel({ agentId }: { agentId: string }) {
   }
 
   const agentName = data?.agentName ?? "";
+  const baseOf = (toolKey: string): ToolPolicy => {
+    const tool = tools.find((x) => x.toolKey === toolKey);
+    return tool
+      ? tool.base
+      : {
+          enabled: false,
+          read: false,
+          modify: false,
+          approvalEur: null,
+          approvalActions: [],
+          only: null,
+        };
+  };
   const rows: ToolGuardrailRow[] = tools.map((tool: MyToolGuardrail) => ({
     toolKey: tool.toolKey,
     connection: undefined,
     ceilingPolicy: toValue(tool.base),
-    ownValue: toValue(tool.mine ?? tool.base),
+    ownValue: seedValue(tool),
     status: null,
     level: tool.level,
     ceilingLevel: tool.baseLevel,
@@ -276,7 +264,11 @@ export function MemberGuardrailsPanel({ agentId }: { agentId: string }) {
               onSave={(toolKey, next) =>
                 report(
                   toolKey,
-                  () => save.mutateAsync({ toolKey, policy: toEntry(next) }),
+                  () =>
+                    save.mutateAsync({
+                      toolKey,
+                      policy: toEntry(next, baseOf(toolKey)),
+                    }),
                   t("Couldn't save this rule.", "Diese Regel konnte nicht gespeichert werden."),
                 )
               }
