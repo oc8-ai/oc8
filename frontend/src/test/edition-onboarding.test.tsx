@@ -7,26 +7,41 @@ import {
   editionBarePaths,
   onboardingRedirect,
 } from "@/edition/composition";
-import { EditionProfileSections, EditionSidebarFooter, EditionSidebarHeader } from "@/edition/slots";
+import {
+  EditionProfileSections,
+  EditionSidebarFooter,
+  EditionSidebarHeader,
+} from "@/edition/slots";
 
 const onboarding = { adminRoute: "/edition-setup", memberRoute: "/edition-hello" };
 
 describe("edition onboarding composition", () => {
   it("takes the one extension that supplies onboarding", () => {
-    expect(composeFrontendEdition([{ id: "a" }, { id: "b", onboarding }]).onboarding).toEqual(onboarding);
+    expect(composeFrontendEdition([{ id: "a" }, { id: "b", onboarding }]).onboarding).toEqual(
+      onboarding,
+    );
     expect(composeFrontendEdition([]).onboarding).toBeNull();
   });
 
   it("refuses a second onboarding, sidebar header, sidebar footer or profile section id", () => {
     const C = () => null;
-    expect(() => composeFrontendEdition([{ id: "a", onboarding }, { id: "b", onboarding }])).toThrow(
-      "Duplicate edition onboarding: b",
-    );
     expect(() =>
-      composeFrontendEdition([{ id: "a", sidebarHeader: C }, { id: "b", sidebarHeader: C }]),
+      composeFrontendEdition([
+        { id: "a", onboarding },
+        { id: "b", onboarding },
+      ]),
+    ).toThrow("Duplicate edition onboarding: b");
+    expect(() =>
+      composeFrontendEdition([
+        { id: "a", sidebarHeader: C },
+        { id: "b", sidebarHeader: C },
+      ]),
     ).toThrow("Duplicate edition sidebar header: b");
     expect(() =>
-      composeFrontendEdition([{ id: "a", sidebarFooter: C }, { id: "b", sidebarFooter: C }]),
+      composeFrontendEdition([
+        { id: "a", sidebarFooter: C },
+        { id: "b", sidebarFooter: C },
+      ]),
     ).toThrow("Duplicate edition sidebar footer: b");
     expect(() =>
       composeFrontendEdition([
@@ -38,7 +53,9 @@ describe("edition onboarding composition", () => {
 
   it("lists the onboarding routes as paths without the app shell", () => {
     expect(editionBarePaths({ onboarding })).toEqual(["/edition-setup", "/edition-hello"]);
-    expect(editionBarePaths({ onboarding: { adminRoute: "/only-admin" } })).toEqual(["/only-admin"]);
+    expect(editionBarePaths({ onboarding: { adminRoute: "/only-admin" } })).toEqual([
+      "/only-admin",
+    ]);
     expect(editionBarePaths({ onboarding: null })).toEqual([]);
   });
 });
@@ -49,31 +66,53 @@ describe("onboarding redirect", () => {
   });
 
   it("sends a pending admin to the edition's admin route", () => {
-    expect(onboardingRedirect({ onboardingStatus: "pending" }, true, onboarding)).toBe("/edition-setup");
+    expect(onboardingRedirect({ onboardingStatus: "pending" }, true, onboarding)).toBe(
+      "/edition-setup",
+    );
   });
 
   it("sends a member whose own welcome is pending to the member route", () => {
     expect(
-      onboardingRedirect({ onboardingStatus: "completed", memberOnboardingStatus: "pending" }, false, onboarding),
+      onboardingRedirect(
+        { onboardingStatus: "completed", memberOnboardingStatus: "pending" },
+        false,
+        onboarding,
+      ),
     ).toBe("/edition-hello");
     expect(
-      onboardingRedirect({ onboardingStatus: "pending", memberOnboardingStatus: "pending" }, false, onboarding),
+      onboardingRedirect(
+        { onboardingStatus: "pending", memberOnboardingStatus: "pending" },
+        false,
+        onboarding,
+      ),
     ).toBe("/edition-hello");
   });
 
   it("does nothing for a pending member without a member route (Community)", () => {
     expect(onboardingRedirect({ memberOnboardingStatus: "pending" }, false, null)).toBeNull();
-    expect(onboardingRedirect({ memberOnboardingStatus: "pending" }, false, { adminRoute: "/x" })).toBeNull();
+    expect(
+      onboardingRedirect({ memberOnboardingStatus: "pending" }, false, { adminRoute: "/x" }),
+    ).toBeNull();
   });
 
   it("waits while the caller or their rights are unknown", () => {
     expect(onboardingRedirect(undefined, true, onboarding)).toBeNull();
-    expect(onboardingRedirect({ onboardingStatus: "pending", memberOnboardingStatus: "pending" }, null, onboarding)).toBeNull();
+    expect(
+      onboardingRedirect(
+        { onboardingStatus: "pending", memberOnboardingStatus: "pending" },
+        null,
+        onboarding,
+      ),
+    ).toBeNull();
   });
 
   it("does nothing once both are finished", () => {
     expect(
-      onboardingRedirect({ onboardingStatus: "skipped", memberOnboardingStatus: "completed" }, true, onboarding),
+      onboardingRedirect(
+        { onboardingStatus: "skipped", memberOnboardingStatus: "completed" },
+        true,
+        onboarding,
+      ),
     ).toBeNull();
   });
 });
@@ -109,7 +148,10 @@ describe("edition slots", () => {
         <EditionProfileSections />
       </EditionCompositionProvider>,
     );
-    expect(screen.getAllByText(/First|Second/).map((n) => n.textContent)).toEqual(["First", "Second"]);
+    expect(screen.getAllByText(/First|Second/).map((n) => n.textContent)).toEqual([
+      "First",
+      "Second",
+    ]);
   });
 
   it("renders nothing without an edition", () => {

@@ -58,7 +58,9 @@ def test_existing_members_are_completed_and_new_ones_pending(pg_url: str) -> Non
     engine = sa.create_engine(pg_url)
     with engine.connect() as conn:
         # Back to the schema before 0106, inside this transaction only.
-        conn.execute(sa.text("ALTER TABLE org_member DROP CONSTRAINT ck_org_member_onboarding_status"))
+        conn.execute(
+            sa.text("ALTER TABLE org_member DROP CONSTRAINT ck_org_member_onboarding_status")
+        )
         conn.execute(sa.text("ALTER TABLE org_member DROP COLUMN onboarding_status"))
         _member(conn, tenant, "already-here@acme.test")
 

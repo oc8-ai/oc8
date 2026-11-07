@@ -32,7 +32,9 @@ def add_onboarding_status(conn: sa.Connection) -> None:
             "NOT NULL DEFAULT 'completed'"
         )
     )
-    conn.execute(sa.text("ALTER TABLE org_member ALTER COLUMN onboarding_status SET DEFAULT 'pending'"))
+    conn.execute(
+        sa.text("ALTER TABLE org_member ALTER COLUMN onboarding_status SET DEFAULT 'pending'")
+    )
     conn.execute(
         sa.text(
             "ALTER TABLE org_member ADD CONSTRAINT ck_org_member_onboarding_status "
