@@ -197,6 +197,34 @@ async def test_a_rule_that_would_widen_is_refused(app_session: AppSessionFactory
     assert await _rows(app_session, office) == []
 
 
+async def test_a_write_only_tool_asks_first_without_adding_read(
+    app_session: AppSessionFactory,
+) -> None:
+    """Sales lets the agent send mail but not read it: "ask me first" stays
+    write-only, and "read only" -- which would add read -- is refused."""
+    office = await _office(app_session)
+    async with app_session(office.tenant) as db:
+        sales = await db.get(m.Department, office.sales)
+        assert sales is not None
+        sales.frame = {"tools": {"gmail": {"enabled": True, "read": False, "modify": True}}}
+    anna = _headers(office.tenant, "anna")
+    url = f"/api/v1/agents/{office.agent}/guardrails/me/gmail"
+    async with _http() as http:
+        r = await http.put(url, json={"level": "ask_first"}, headers=anna)
+        assert r.status_code == 200, r.text
+        assert _tool(r.json(), "gmail")["level"] == "ask_first"
+        refused = await http.put(url, json={"level": "read_only"}, headers=anna)
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["detail"]["error"] == "member_guardrail_widens"
+    rows = await _rows(app_session, office)
+    assert rows[0].policy["tools"]["gmail"] == {
+        "enabled": True,
+        "read": False,
+        "modify": True,
+        "approval_actions": ["modify"],
+    }
+
+
 async def test_a_tool_the_agent_does_not_have_is_refused(app_session: AppSessionFactory) -> None:
     office = await _office(app_session)
     async with _http() as http:

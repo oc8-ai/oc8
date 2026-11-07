@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.authz.authority import authority_for_member
-from oc8.authz.levels import Level, level_of, member_entry_for_level
+from oc8.authz.levels import Level, LevelNotOffered, level_of, member_entry_for_level
 from oc8.authz.member_guardrail_store import base_policies
 from oc8.authz.pdp import member_term_violations
 from oc8.authz.scope import DepartmentScope
@@ -66,7 +66,10 @@ async def suggest_guardrail(
     base = await base_policies(db, agent)
     if tool_key not in base:
         return f"ERROR: {agent.name} has no tool {tool_key!r}", None
-    entry = member_entry_for_level(level)
+    try:
+        entry = member_entry_for_level(level, base[tool_key])
+    except LevelNotOffered as exc:
+        return f"ERROR: {exc}", None
     violations = member_term_violations(base, {"tools": {tool_key: entry}})
     if violations:
         return f"ERROR: {violations[0].reason}", None

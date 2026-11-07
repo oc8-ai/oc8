@@ -71,6 +71,13 @@ it("disables every level looser than the ceiling", () => {
   expect(disabledLevelsFor(null)).toEqual([]);
 });
 
+it("rules out read only under a write-only ceiling", () => {
+  const writeOnly = { ...base, read: false, modify: true };
+  expect(disabledLevelsFor(writeOnly)).toEqual(["read_only"]);
+  expect(disabledLevelsFor(writeOnly, "ask_first")).toEqual(["read_only", "allowed"]);
+  expect(disabledLevelsFor(base, "read_only")).toEqual(["ask_first", "allowed"]);
+});
+
 it("names the third level by scope", () => {
   expect(levelLabel("ask_first", "member", en)).toBe("Ask me first");
   expect(levelLabel("ask_first", "other", en)).toBe("Needs approval");

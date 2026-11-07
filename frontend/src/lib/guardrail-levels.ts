@@ -47,11 +47,15 @@ export function hasLimits(v: LevelInput): boolean {
 }
 
 /** Levels looser than what `ceiling` already allows -- the ones a picker
- * greys out. `null` (no ceiling above this level) rules nothing out. */
-export function disabledLevelsFor(ceiling: LevelInput | null): Level[] {
-  if (!ceiling) return [];
-  const max = LEVELS.indexOf(levelOf(ceiling));
-  return LEVELS.filter((_, i) => i > max);
+ * greys out. `null` (no ceiling above this level) rules nothing out.
+ * `ceilingLevel` overrides the level read off `ceiling` when the backend sent
+ * one. A write-only ceiling (modify without read) also rules out "Read only":
+ * that level would have to add read (backend `member_entry_for_level`). */
+export function disabledLevelsFor(ceiling: LevelInput | null, ceilingLevel?: Level): Level[] {
+  if (!ceiling && !ceilingLevel) return [];
+  const max = LEVELS.indexOf(ceilingLevel ?? levelOf(ceiling!));
+  const writeOnly = !!ceiling && !ceiling.read;
+  return LEVELS.filter((level, i) => i > max || (writeOnly && level === "read_only"));
 }
 
 const FULL: GuardrailValue = {

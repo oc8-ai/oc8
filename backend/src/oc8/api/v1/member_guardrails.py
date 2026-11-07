@@ -19,7 +19,7 @@ from oc8 import models as m
 from oc8.api.deps import DbSession, authorize_agent_write, require_agent_write, require_departmental
 from oc8.api.v1.agents_write import _load_agent
 from oc8.api.v1.chat import chat_agent_for
-from oc8.authz.levels import has_limits, level_of, member_entry_for_level
+from oc8.authz.levels import LevelNotOffered, has_limits, level_of, member_entry_for_level
 from oc8.authz.member_guardrail_store import (
     MemberGuardrailInvalid,
     MemberGuardrailWidens,
@@ -196,11 +196,18 @@ async def set_my_guardrail(
     actor: Actor,
 ) -> MyGuardrailsDTO:
     agent = await _my_agent(request, db, actor, agent_id)
-    if tool_key not in await base_policies(db, agent):
+    base = await base_policies(db, agent)
+    if tool_key not in base:
         # Every level -- "allowed" too, which otherwise only removes an entry
         # -- is refused alike for a tool the agent does not have.
         raise _widens([SubsetViolation(tool_key, "tool not granted by department or agent")])
-    entry = member_entry_for_level(body.level) if body.level is not None else body.policy
+    if body.level is None:
+        entry = body.policy
+    else:
+        try:
+            entry = member_entry_for_level(body.level, base[tool_key])
+        except LevelNotOffered as exc:
+            raise _widens([SubsetViolation(tool_key, str(exc))]) from exc
     return await _write(db, actor, agent, tool_key, entry)
 
 

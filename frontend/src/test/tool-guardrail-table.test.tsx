@@ -327,6 +327,40 @@ describe("ToolGuardrailTable", () => {
     );
   });
 
+  it("greys out read only for a member when the agent may only write", async () => {
+    render(
+      <ToolGuardrailTable
+        level="member"
+        rows={[
+          {
+            toolKey: "gmail",
+            connection: undefined,
+            ceilingPolicy: { ...FULL, read: false },
+            ownValue: { ...FULL, read: false },
+            status: null,
+            level: "allowed",
+            ceilingLevel: "allowed",
+            source: "department",
+            ceilingSource: "department",
+          },
+        ]}
+        addableNames={[]}
+        connections={[]}
+        onSave={vi.fn()}
+        onAdd={vi.fn()}
+        saving={false}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /gmail.*allowed/i }));
+    expect(await screen.findByRole("radio", { name: /read only/i })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    expect(screen.getByRole("radio", { name: /ask me first/i })).not.toHaveAttribute(
+      "aria-disabled",
+    );
+  });
+
   it("shows the member's level, effect sentence and source on level=member", async () => {
     render(
       <ToolGuardrailTable

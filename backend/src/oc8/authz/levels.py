@@ -40,12 +40,25 @@ def has_limits(policy: ToolPolicy) -> bool:
     )
 
 
-def member_entry_for_level(level: Level) -> dict[str, Any] | None:
-    """The member-term entry for a picked level; None removes the entry."""
+class LevelNotOffered(ValueError):
+    """The picked level needs a right the base does not grant -- "read only"
+    on a tool the department and agent only let the agent write with."""
+
+
+def member_entry_for_level(level: Level, base: ToolPolicy) -> dict[str, Any] | None:
+    """The member-term entry for a picked level on `base` (department ∩ agent);
+    None removes the entry.
+
+    Read and modify are capped by the base, so a level never asks for a right
+    the base withholds: on a write-only base "ask first" stays write-only, and
+    "read only" -- which would have to add read -- is not offered at all
+    (`LevelNotOffered`)."""
     if level == "allowed":
         return None
     if level == "off":
         return {"enabled": False, "read": False, "modify": False}
     if level == "read_only":
+        if not base.read:
+            raise LevelNotOffered("read only is not offered: the agent cannot read with this tool")
         return {"enabled": True, "read": True, "modify": False}
-    return {"enabled": True, "read": True, "modify": True, "approval_actions": ["modify"]}
+    return {"enabled": True, "read": base.read, "modify": True, "approval_actions": ["modify"]}

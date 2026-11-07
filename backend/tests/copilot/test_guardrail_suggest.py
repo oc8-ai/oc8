@@ -154,6 +154,29 @@ async def test_a_suggestion_that_would_widen_names_the_reason(
         assert await _rows(db) == 0
 
 
+async def test_a_write_only_tool_can_ask_first_but_not_read_only(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        cop = await get_or_create_assistant(db, tenant_id=tenant)
+        seat = await copilot_seat(db, tenant, "lisa@example.com")
+        agent = await _agent(
+            db,
+            tenant,
+            tools={"gmail": {"enabled": True, "read": False, "modify": True}},
+            seat_for=seat.member_id,
+        )
+        args = {"agent_id": str(agent.id), "tool_key": "gmail"}
+        ask = await _suggest(db, tenant, seat, cop, {**args, "level": "ask_first"})
+        assert ask is not None and not ask.output.startswith("ERROR"), ask.output
+        assert ask.rendered_component is not None
+        read = await _suggest(db, tenant, seat, cop, {**args, "level": "read_only"})
+        assert read is not None and read.output.startswith("ERROR: read only is not offered")
+        assert read.rendered_component is None
+        assert await _rows(db) == 0
+
+
 async def test_allowed_is_not_a_suggestion_and_an_unknown_tool_is_refused(
     app_session: AppSessionFactory,
 ) -> None:

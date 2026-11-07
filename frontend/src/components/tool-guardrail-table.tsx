@@ -206,11 +206,7 @@ export function ToolGuardrailTable({
   }
 
   function disabledLevels(row: ToolGuardrailRow): Level[] {
-    if (row.ceilingLevel) {
-      const max = LEVELS.indexOf(row.ceilingLevel);
-      return LEVELS.filter((_, i) => i > max);
-    }
-    return disabledLevelsFor(ceilingOf(row));
+    return disabledLevelsFor(ceilingOf(row), row.ceilingLevel);
   }
 
   function disabledReason(row: ToolGuardrailRow): string {
