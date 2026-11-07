@@ -186,7 +186,7 @@ describe("MemberGuardrailsPanel", () => {
     expect(container.querySelector(".animate-spin")).toBeNull();
   });
 
-  it("shows the source as 'you' and the backend's level for my own row", () => {
+  it("shows the source as 'set by you' and the backend's level for my own row", () => {
     m.data = data({
       tools: [
         tool({
@@ -197,7 +197,7 @@ describe("MemberGuardrailsPanel", () => {
       ],
     });
     render(<MemberGuardrailsPanel agentId="a1" />);
-    expect(screen.getByText("you")).toBeInTheDocument();
+    expect(screen.getByText("set by you")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /gmail.*Ask me first/ })).toBeInTheDocument();
   });
 
