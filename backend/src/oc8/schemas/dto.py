@@ -184,6 +184,11 @@ class ApprovalDTO(CamelModel):
     #: The member's approval this department stage follows, when it is the
     #: second stage of a member-routed call.
     previous_approval_id: str | None = None
+    #: On a member's own approval only: how the department's second stage
+    #: stands -- "pending", "approved", "rejected" (or "expired") -- and `null`
+    #: when there is none. The member is never shown the department's row
+    #: itself, so this one status is all of it that reaches them.
+    next_stage_status: str | None = None
 
 
 class ClarificationDTO(CamelModel):

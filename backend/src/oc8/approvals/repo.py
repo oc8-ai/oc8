@@ -184,3 +184,24 @@ async def load_for_actor(
     if not actor.scope.may_view(row.department_id):
         return None
     return row
+
+
+async def next_stage_statuses(db: AsyncSession, ids: set[uuid.UUID]) -> dict[uuid.UUID, str]:
+    """Member approval id -> status of the department stage that follows it (D3a).
+
+    `ids` are member-routed rows the caller was already admitted to (through
+    `visible_approvals` / `load_for_actor`, which show a member their own rows).
+    Only the follow-up's STATUS comes back, keyed by the member's row: a member
+    without a seat learns how the department decided their call, and nothing
+    else of the department's row. One batched query on the tenant-bound session.
+    """
+    if not ids:
+        return {}
+    found = (
+        await db.execute(
+            select(ApprovalRequest.previous_approval_id, ApprovalRequest.status).where(
+                ApprovalRequest.previous_approval_id.in_(ids)
+            )
+        )
+    ).all()
+    return {row[0]: row[1] for row in found if row[0] is not None}

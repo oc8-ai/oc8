@@ -18,7 +18,7 @@ from oc8.approvals import (
     UnknownOption,
     decide_approval,
 )
-from oc8.approvals.repo import load_for_actor
+from oc8.approvals.repo import load_for_actor, next_stage_statuses
 from oc8.authz.permissions import APPROVAL_DECIDE, COPILOT_USE
 from oc8.authz.scope import HumanActor
 from oc8.schemas.dto import ApprovalDTO
@@ -94,6 +94,12 @@ async def decide(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
 
     dto = approval_to_dto(result.approval)
+    if result.next_stage_id is not None:
+        # The member's yes opened (and maybe, for a member who approves for the
+        # department too, also answered) the department stage: say how it stands.
+        dto.next_stage_status = (await next_stage_statuses(db, {result.approval.id})).get(
+            result.approval.id
+        )
     # Only a tool_send decision suspends and resumes a run; the other action types
     # apply their effect directly, so they are never "resumed".
     dto.resumed = result.resumed_run_id is not None
