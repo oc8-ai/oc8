@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.agents.versioning import version_meta, version_payload
+from oc8.approvals.repo import next_stage_statuses
 from oc8.knowledge.chunks import ChunkRow, DocumentSummary
 from oc8.knowledge.retrieval import SimilarChunkRow
 from oc8.modelrouter.registry import canonical_provider
@@ -194,6 +195,9 @@ class ApprovalNames:
     #: queue must sort by how much work they block. One batched query like
     #: every other field here, never one per row.
     runs: dict[uuid.UUID, uuid.UUID] = field(default_factory=dict)
+    #: member approval id -> status of the department stage that follows it
+    #: (D3a). Only looked up for rows routed to a member.
+    next_stages: dict[uuid.UUID, str] = field(default_factory=dict)
 
 
 _NO_NAMES = ApprovalNames()
@@ -217,6 +221,7 @@ async def resolve_approval_names(
     agent_ids = {a.agent_id for a in rows}
     task_ids = {a.task_id for a in rows if a.task_id is not None}
     member_ids = {a.decided_by for a in rows if a.decided_by is not None}
+    assigned_ids = {a.id for a in rows if a.assignee_member_id is not None}
 
     async def _names(column: Any, label: Any, ids: set[uuid.UUID]) -> dict[uuid.UUID, str]:
         if not ids:
@@ -249,6 +254,7 @@ async def resolve_approval_names(
         # raw uuid printed under "entschieden von" is worse than a blank.
         members=await _names(m.OrgMember.id, m.OrgMember.display_name, member_ids),
         runs=await _runs(task_ids),
+        next_stages=await next_stage_statuses(db, assigned_ids),
     )
 
 
@@ -304,6 +310,11 @@ def approval_to_dto(a: m.ApprovalRequest, names: ApprovalNames | None = None) ->
         # (and any raiser that still only writes the payload).
         record_url=a.record_url
         or (payload.get("record_url") if isinstance(payload.get("record_url"), str) else None),
+        assignee_member_id=str(a.assignee_member_id) if a.assignee_member_id else None,
+        previous_approval_id=str(a.previous_approval_id) if a.previous_approval_id else None,
+        next_stage_status=(
+            resolved.next_stages.get(a.id) if a.assignee_member_id is not None else None
+        ),
     )
 
 

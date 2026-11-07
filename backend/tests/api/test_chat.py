@@ -14,11 +14,11 @@ from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.agent.assistant import get_or_create_assistant
-from oc8.api.v1.chat import _assistant_visible
 from oc8.auth import get_identity_provider
 from oc8.authz.authority import Authority
 from oc8.authz.permissions import COPILOT, COPILOT_USE, MANAGE, perm
 from oc8.authz.scope import subject_uuid_for
+from oc8.chat.reach import assistant_visible
 from oc8.main import create_app
 from tests.conftest import AppSessionFactory
 
@@ -392,12 +392,12 @@ async def test_create_chat_session_actually_calls_the_assistant_visible_bypass(
     app_session: AppSessionFactory,
 ) -> None:
     """The previous test cannot, by itself, prove `create_chat_session`'s
-    `tenant_wide_read(...) or await _assistant_visible(...)` line is wired in
+    `tenant_wide_read(...) or await assistant_visible(...)` line is wired in
     correctly -- `org_admin` (the only real copilot:manage holder in today's
     permission catalog) already satisfies `tenant_wide_read` on its own, so
     that `or` never even needs to evaluate its right-hand side for org_admin.
     This test forces `tenant_wide_read` to return False, so the ONLY way the
-    request can still succeed is if `_assistant_visible` is actually being
+    request can still succeed is if `assistant_visible` is actually being
     called, actually being awaited, and its result actually being OR'd in --
     catching a reverted or dropped `or` clause that the helper's own unit
     test (`test_assistant_visible_requires_...`) cannot catch."""
@@ -409,7 +409,7 @@ async def test_create_chat_session_actually_calls_the_assistant_visible_bypass(
             assert assistant_r.status_code == 200, assistant_r.text
             assistant_agent_id = assistant_r.json()["agentId"]
 
-            with patch("oc8.api.v1.chat.tenant_wide_read", return_value=False):
+            with patch("oc8.chat.reach.tenant_wide_read", return_value=False):
                 create_r = await c.post(
                     "/api/v1/chat/sessions",
                     json={"agentId": assistant_agent_id},
@@ -578,7 +578,7 @@ async def test_a_foreign_seat_only_member_without_copilot_manage_still_cannot_re
 async def test_assistant_visible_defaults_to_copilot_use(
     app_session: AppSessionFactory,
 ) -> None:
-    """Direct test of `_assistant_visible`'s DEFAULT parameter: copilot:use
+    """Direct test of `assistant_visible`'s DEFAULT parameter: copilot:use
     alone is necessary but not sufficient -- it must also name the tenant's
     actual Assistant agent, never any other agent, even one the same caller
     could otherwise see."""
@@ -594,7 +594,7 @@ async def test_assistant_visible_defaults_to_copilot_use(
 
         no_grant = Authority(tenant_wide=frozenset(), unrestricted=False, decides_everywhere=False)
         assert (
-            await _assistant_visible(
+            await assistant_visible(
                 db, tenant_id=tenant, authority=no_grant, agent_id=assistant.id
             )
             is False
@@ -604,13 +604,13 @@ async def test_assistant_visible_defaults_to_copilot_use(
             tenant_wide=frozenset({COPILOT_USE}), unrestricted=False, decides_everywhere=False
         )
         assert (
-            await _assistant_visible(
+            await assistant_visible(
                 db, tenant_id=tenant, authority=with_grant, agent_id=assistant.id
             )
             is True
         )
         assert (
-            await _assistant_visible(
+            await assistant_visible(
                 db, tenant_id=tenant, authority=with_grant, agent_id=other_agent.id
             )
             is False
@@ -630,7 +630,7 @@ async def test_assistant_visible_with_an_explicit_copilot_manage_requirement(
             tenant_wide=frozenset({COPILOT_USE}), unrestricted=False, decides_everywhere=False
         )
         assert (
-            await _assistant_visible(
+            await assistant_visible(
                 db,
                 tenant_id=tenant,
                 authority=use_only,
@@ -646,7 +646,7 @@ async def test_assistant_visible_with_an_explicit_copilot_manage_requirement(
             decides_everywhere=False,
         )
         assert (
-            await _assistant_visible(
+            await assistant_visible(
                 db,
                 tenant_id=tenant,
                 authority=manage_grant,

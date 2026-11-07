@@ -2238,6 +2238,35 @@ async def test_list_pending_approvals_refuses_without_approval_view(app_session:
 
 
 @pytest.mark.asyncio
+async def test_list_pending_approvals_shows_a_seatless_member_their_own_approvals(
+    app_session: Any,
+) -> None:
+    """D3a, parity with `GET /approvals` for a seatless caller: a member with
+    only `copilot:use` lists the approvals their own guardrail routed to them
+    -- and nothing of the department's."""
+    from oc8.authz.permissions import MEMBER_ROLE
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        assistant, task = await _assistant_and_task(db, tenant)
+        member = await _human_behind(db, tenant, task)
+        member.role_id = (await _builtin_role(db, tenant, MEMBER_ROLE)).id
+        department_row = await _pending_approval(db, tenant, department_id=task.department_id)
+        own = await _pending_approval(db, tenant, department_id=task.department_id)
+        own.assignee_member_id = member.id
+        await db.flush()
+
+        outcome = await _list_approvals(db, tenant, assistant, task, {})
+        assert str(own.id) in outcome.output, outcome.output
+        assert str(department_row.id) not in outcome.output
+
+        own.status = "approved"
+        await db.flush()
+        nothing = await _list_approvals(db, tenant, assistant, task, {})
+        assert nothing.output == "No pending approvals."
+
+
+@pytest.mark.asyncio
 async def test_list_pending_approvals_is_visible_to_a_seat_only_member(
     app_session: Any,
 ) -> None:

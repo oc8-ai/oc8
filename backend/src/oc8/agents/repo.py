@@ -130,9 +130,10 @@ async def visible_agent(
 
     `include_tenant_assistant` is off by default, matching `visible_agents`: the
     Assistant is not something a person manages, so every agent screen 404s on
-    it. Exactly one caller passes True -- `POST /chat/sessions`
-    (`api/v1/chat.py`), which has ALREADY established through
-    `_assistant_visible` that this caller holds `copilot:manage` and that this
+    it. Exactly one caller passes True -- `chat_agent_for` (`api/v1/chat.py`,
+    behind `POST /chat/sessions` and a member's own guardrail routes), which
+    has ALREADY established through
+    `assistant_visible` (`oc8/chat/reach.py`) that this caller holds `copilot:manage` and that this
     id is the tenant's Assistant. It is a parameter and not a second function
     so the sweep in `tests/agents/test_reads_go_through_the_scoped_repository.py`
     keeps covering the one door that can see it.

@@ -69,9 +69,10 @@ from oc8.agent.tool_semantics import (
 )
 from oc8.agents.versioning import resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession
-from oc8.approvals import raise_approval
+from oc8.approvals import approval_created_event, held_call, raise_approval
 from oc8.approvals.record_url import record_url_for_connection
 from oc8.audit import append_event
+from oc8.authz.member_guardrails import member_term_for_run
 from oc8.authz.pdp import (
     Decision,
     Effect,
@@ -335,7 +336,11 @@ async def _list_tools(
     """
     frame = dept.frame if dept is not None else {}
     pinned = await resolve_version(db, run, agent)
-    policies = effective_tool_policies(frame, pinned["narrowing"] or {})
+    # The acting member's guardrail (D3a) withholds what it switches off, too.
+    _member, member_policy = await member_term_for_run(
+        db, tenant_id=run.tenant_id, agent_id=agent.id, context=run.context
+    )
+    policies = effective_tool_policies(frame, pinned["narrowing"] or {}, member_policy)
     chat_mode = mode_from_context(run.context)
     if chat_mode is not None and not chat_mode.allows_tools:
         # /ask and /summarise take no tools at all -- returning early also
@@ -583,6 +588,12 @@ async def _call_tool(
     # Resolved once, beside the frame, which alone stays a live read.
     pinned = await resolve_version(db, run, agent)
     narrowing: dict[str, Any] = pinned["narrowing"] or {}
+    # The acting member's guardrail (D3a), resolved once per request for
+    # whichever branch below authorizes the call.
+    acting_member, member_policy = await member_term_for_run(
+        db, tenant_id=run.tenant_id, agent_id=agent.id, context=run.context
+    )
+    tool_policies = effective_tool_policies(frame, narrowing, member_policy)
     # Which system this call belongs to, and what it is called THERE. Every
     # seam below -- the right classification, the value, the record, whether it
     # reaches a person -- belongs to that connection and to no other, which is
@@ -730,7 +741,7 @@ async def _call_tool(
                 skill_tool_names=skill_tool_names,
                 delegation_depth=int(run.context.get("delegation_depth", 0)),
                 skill_thresholds=(),
-                tool_policies=effective_tool_policies(frame, narrowing),
+                tool_policies=tool_policies,
                 narrowing=narrowing,
                 is_team_lead=bool(pinned["is_team_lead"]),
                 # A core tool belongs to no connection, so it has neither scopes
@@ -832,7 +843,7 @@ async def _call_tool(
             for g in s.definition.guardrails
             if g.type == "value_threshold" and g.then == "require_approval"
         ),
-        tool_policies=effective_tool_policies(frame, narrowing),
+        tool_policies=tool_policies,
         narrowing=narrowing,
         is_team_lead=bool(pinned["is_team_lead"]),
         connection_key=conn.name if conn is not None else None,
@@ -869,6 +880,9 @@ async def _call_tool(
         # never disagree. A search names a kind of record rather than one and
         # gets None here, which resolves to no link.
         held_record = record_identity(tc.name, tc.arguments, focus_spec)
+        # A member's own rule asks that member first, then the department when
+        # it asked too (D3a).
+        held = held_call(decision, acting_member)
         ar = await raise_approval(
             db,
             tenant_id=run.tenant_id,
@@ -876,10 +890,15 @@ async def _call_tool(
             task_id=run.task_id,
             action_type="tool_send",
             title=f"{agent.name} wants to call {tc.name}",
-            detail=decision.reason,
-            payload={"tool": tc.name, "arguments": tc.arguments},
-            reason_code=decision.reason_code,
-            reason_context=decision.context,
+            detail=held.detail,
+            payload={
+                "tool": tc.name,
+                "arguments": tc.arguments,
+                **held.payload,
+            },
+            assignee_member_id=held.assignee_member_id,
+            reason_code=held.reason_code,
+            reason_context=held.reason_context,
             record_url=(
                 record_url_for_connection(conn, entity=held_record[0], ref=held_record[1])
                 if held_record is not None
@@ -915,16 +934,7 @@ async def _call_tool(
         await get_event_bus().publish_event(
             run.tenant_id,
             "approval.created",
-            {
-                "approval_id": str(ar.id),
-                "action_type": ar.action_type,
-                "status": ar.status,
-                # title/detail travel in the envelope so the push hook never
-                # has to re-read this row from a fresh, uncommitted-blind
-                # session (see EventBus._push_payload).
-                "title": ar.title,
-                "detail": ar.detail,
-            },
+            approval_created_event(ar),
             source=f"oc8/approval/{ar.id}",
         )
         return _tool_result(

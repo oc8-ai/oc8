@@ -40,7 +40,12 @@ SRC = pathlib.Path(__file__).resolve().parents[2] / "src" / "oc8"
 #: breach is genuinely company-wide: there is no department it belongs to, and
 #: filing it under the breaching agent's would hide the company's problem inside
 #: one team's queue.
-_MAY_OVERRIDE = {"metering/budget.py"}
+#:
+#: `approvals/service.py` passes one for the other reason this file exists: the
+#: department stage of a member-routed approval (D3a) copies the department the
+#: member stage was PINNED to. Re-deriving it would read the agent's department
+#: now, which is exactly the drag-along this test forbids.
+_MAY_OVERRIDE = {"approvals/service.py", "metering/budget.py"}
 
 
 def _subject_uuid(subject: str) -> uuid.UUID:

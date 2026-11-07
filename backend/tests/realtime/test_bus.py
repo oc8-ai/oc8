@@ -220,3 +220,65 @@ async def test_publish_event_does_not_trigger_push_for_other_types(
         assert called is False
     finally:
         await bus.close()
+
+
+async def test_a_members_own_approval_is_pushed_to_them_and_kept_off_the_socket(
+    redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D3a: an approval addressed to one member reaches that member's devices
+    only, and the tenant-wide socket carries no title or detail for it."""
+    from oc8.realtime import bus as bus_module
+
+    tenant_id = uuid.uuid4()
+    anna = uuid.uuid4()
+    calls: list[dict[str, object]] = []
+
+    async def _fake_send_push_for_tenant(
+        db: object, *, tenant_id: object, payload: dict, member_id: object = None
+    ) -> None:
+        calls.append({"payload": payload, "member_id": member_id})
+
+    monkeypatch.setattr(bus_module, "send_push_for_tenant", _fake_send_push_for_tenant)
+    sub = redis.from_url(redis_url, decode_responses=True)
+    pubsub = sub.pubsub()
+    await pubsub.subscribe(channel_for(tenant_id))
+    await pubsub.get_message(timeout=1.0)
+    bus = bus_module.EventBus(redis_url)
+    try:
+        await bus.publish_event(
+            tenant_id,
+            "approval.created",
+            {
+                "approval_id": str(uuid.uuid4()),
+                "action_type": "tool_send",
+                "status": "pending",
+                "title": "Nora wants to call gmail_send",
+                "detail": "your own rule asks you",
+                "assignee_member_id": str(anna),
+            },
+            source="test",
+        )
+        await asyncio.gather(*bus._background_tasks)
+        msg = None
+        for _ in range(20):
+            msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.5)
+            if msg is not None:
+                break
+        assert msg is not None
+        data = json.loads(msg["data"])["data"]
+        assert "title" not in data and "detail" not in data
+        assert data["assignee_member_id"] == str(anna)
+        assert calls == [
+            {
+                "payload": {
+                    "title": "Nora wants to call gmail_send",
+                    "body": "your own rule asks you",
+                    "url": "/workspace",
+                },
+                "member_id": anna,
+            }
+        ]
+    finally:
+        await pubsub.aclose()  # type: ignore[no-untyped-call]
+        await sub.aclose()
+        await bus.close()

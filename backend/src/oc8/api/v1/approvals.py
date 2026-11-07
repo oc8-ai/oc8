@@ -5,21 +5,22 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
-from oc8.api.deps import DbSession, require_departmental
-from oc8.api.v1._serializers import approval_to_dto
+from oc8.api.deps import DbSession, holds_departmental, require_departmental
+from oc8.api.v1._serializers import approval_to_dto, resolve_approval_names
 from oc8.approvals import (
     AlreadyDecided,
+    NotYourApproval,
     NotYourDepartment,
     NotYourSayAtAll,
     UnknownDecision,
     UnknownOption,
     decide_approval,
 )
-from oc8.approvals.repo import load_for_actor
-from oc8.authz.permissions import APPROVAL_DECIDE
-from oc8.authz.scope import HumanActor
+from oc8.approvals.repo import load_for_actor, next_stage_statuses
+from oc8.authz.permissions import APPROVAL_DECIDE, COPILOT_USE
+from oc8.authz.scope import APPROVAL_VIEW, HumanActor
 from oc8.schemas.dto import ApprovalDTO
 from oc8.schemas.requests import ApprovalDecisionRequest
 
@@ -33,16 +34,57 @@ router = APIRouter()
 _NOT_FOUND = "approval not found"
 
 
+@router.get("/approvals/{approval_id}", response_model=ApprovalDTO)
+async def get_approval(
+    approval_id: uuid.UUID,
+    request: Request,
+    db: DbSession,
+    # The list route's gate (`api/v1/feed.py`), seatless `copilot:use`
+    # admission included: a member re-reads the approval their own rule routed
+    # to them -- the card polls how the department's stage stands (D3a).
+    actor: Annotated[
+        HumanActor, Depends(require_departmental(APPROVAL_VIEW, or_tenant_wide=COPILOT_USE))
+    ],
+) -> ApprovalDTO:
+    # `load_for_actor`: an assignee row for its assignee only, any other row
+    # within the caller's department scope -- None for both "missing" and
+    # "not yours", which this route does not tell apart.
+    ar = await load_for_actor(db, approval_id, actor=actor)
+    if not await holds_departmental(request, db, actor, APPROVAL_VIEW):
+        # Admitted only for their own rows, refused like the gate refused
+        # before -- the same answer for every other row, so it is no oracle.
+        if ar is None or ar.assignee_member_id != actor.member.id:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, f"requires permission: {APPROVAL_VIEW}")
+    if ar is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _NOT_FOUND)
+    return approval_to_dto(ar, await resolve_approval_names(db, [ar]))
+
+
 @router.post("/approvals/{approval_id}/decision", response_model=ApprovalDTO)
 async def decide(
     approval_id: uuid.UUID,
     body: ApprovalDecisionRequest,
+    request: Request,
     db: DbSession,
-    actor: Annotated[HumanActor, Depends(require_departmental(APPROVAL_DECIDE))],
+    # `or_tenant_wide=COPILOT_USE`: a member with no seat must be able to answer
+    # the approval their own guardrail routed to them (D3a). Everything else is
+    # answered below exactly as the narrower gate answered it.
+    actor: Annotated[
+        HumanActor, Depends(require_departmental(APPROVAL_DECIDE, or_tenant_wide=COPILOT_USE))
+    ],
 ) -> ApprovalDTO:
     # `load_for_actor`, never `db.get`: the load is the security boundary, and it
     # answers None for "not yours" as well as for "no such row".
     ar = await load_for_actor(db, approval_id, actor=actor)
+    if not await holds_departmental(request, db, actor, APPROVAL_DECIDE):
+        # Admitted only to answer their own rows. Anything else -- missing,
+        # someone else's, a department row they can see but not decide -- gets
+        # the refusal the gate used to give, the same for all three, so this
+        # branch is no oracle either.
+        if ar is None or ar.assignee_member_id != actor.member.id:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN, f"requires permission: {APPROVAL_DECIDE}"
+            )
     if ar is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, _NOT_FOUND)
     try:
@@ -55,12 +97,13 @@ async def decide(
             reason=body.reason,
             option=body.option,
         )
-    except NotYourDepartment as exc:
+    except (NotYourDepartment, NotYourApproval) as exc:
         # The funnel's defence in depth, and unreachable while `load_for_actor`
         # above is the only load: a viewer seat can VIEW this row, so if this
         # route ever stops asking the repository first, this is what stops the
         # decision -- with the same sentence as a missing row, not a 403 that
-        # confirms it exists.
+        # confirms it exists. Likewise a row routed to another member (D3a),
+        # which `load_for_actor` already hides from everyone but its assignee.
         raise HTTPException(status.HTTP_404_NOT_FOUND, _NOT_FOUND) from exc
     except NotYourSayAtAll as exc:
         # 403 and NOT the `_NOT_FOUND` 404, deliberately: this only ever escapes
@@ -77,6 +120,12 @@ async def decide(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
 
     dto = approval_to_dto(result.approval)
+    if result.next_stage_id is not None:
+        # The member's yes opened (and maybe, for a member who approves for the
+        # department too, also answered) the department stage: say how it stands.
+        dto.next_stage_status = (await next_stage_statuses(db, {result.approval.id})).get(
+            result.approval.id
+        )
     # Only a tool_send decision suspends and resumes a run; the other action types
     # apply their effect directly, so they are never "resumed".
     dto.resumed = result.resumed_run_id is not None

@@ -110,6 +110,38 @@ async def test_send_push_for_tenant_sends_to_every_subscription(
     get_settings.cache_clear()
 
 
+async def test_send_push_for_one_member_reaches_only_their_devices(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D3a: a member's own approval is pushed to that member's browsers, never
+    to a colleague's in the same tenant."""
+    from oc8.config import get_settings
+
+    monkeypatch.setenv("OC8_VAPID_PUBLIC_KEY", "pub")
+    monkeypatch.setenv("OC8_VAPID_PRIVATE_KEY", "priv")
+    get_settings.cache_clear()
+    tenant = uuid.uuid4()
+    anna_sub, anna_endpoint = await _seed_subscription(app_session, tenant)
+    await _seed_subscription(app_session, tenant)
+    async with app_session(tenant) as db:
+        row = await db.get(m.PushSubscription, anna_sub)
+        assert row is not None
+        anna = row.member_id
+
+    calls: list[dict[str, Any]] = []
+
+    async def _fake_webpush_async(**kwargs: Any) -> None:
+        calls.append(kwargs)
+
+    monkeypatch.setattr(push, "webpush_async", _fake_webpush_async)
+    async with app_session(tenant) as db:
+        await push.send_push_for_tenant(
+            db, tenant_id=tenant, payload={"title": "t", "body": "b", "url": "/x"}, member_id=anna
+        )
+    assert [c["subscription_info"]["endpoint"] for c in calls] == [anna_endpoint]
+    get_settings.cache_clear()
+
+
 async def test_send_push_for_tenant_prunes_410_subscription(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

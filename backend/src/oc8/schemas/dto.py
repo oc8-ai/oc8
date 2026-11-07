@@ -178,6 +178,17 @@ class ApprovalDTO(CamelModel):
     reason_context: dict[str, Any] | None = None
     #: The record in the source system, when the held call names one.
     record_url: str | None = None
+    #: D3a routing: set when a member's own guardrail asked -- only that member
+    #: decides it. `null` for a department (or tenant) approval.
+    assignee_member_id: str | None = None
+    #: The member's approval this department stage follows, when it is the
+    #: second stage of a member-routed call.
+    previous_approval_id: str | None = None
+    #: On a member's own approval only: how the department's second stage
+    #: stands -- "pending", "approved", "rejected" (or "expired") -- and `null`
+    #: when there is none. The member is never shown the department's row
+    #: itself, so this one status is all of it that reaches them.
+    next_stage_status: str | None = None
 
 
 class ClarificationDTO(CamelModel):
@@ -656,6 +667,50 @@ class ToolPolicyDTO(CamelModel):
     #: `**ToolPolicy.to_json()` need this present or `conditions` never
     #: reaches the frontend at all.
     conditions: list[ConditionDTO] = []
+
+
+GuardrailLevel = Literal["off", "read_only", "ask_first", "allowed"]
+
+
+class SummaryLineDTO(CamelModel):
+    """One plain sentence of "what may this agent do for me" (D3a), as a code
+    the frontend renders with `t()` -- deterministic, never the model's words.
+    `code` is one of may_read, may_modify, asks_you, asks_department, off;
+    `params` carries `tools` (tool keys) and, where one applies, `threshold`
+    (the lowest euro threshold among those tools)."""
+
+    code: str
+    params: dict[str, Any] = {}
+
+
+class MyToolGuardrailDTO(CamelModel):
+    tool_key: str
+    connection_name: str
+    #: Department ∩ agent -- what the member may only tighten.
+    base: ToolPolicyDTO
+    base_level: GuardrailLevel
+    #: The member's own entry for this tool, verbatim; None when they set none.
+    mine: ToolPolicyDTO | None = None
+    #: The level with the member's entry applied.
+    level: GuardrailLevel
+    has_limits: bool
+    #: "member" / "agent" / "department" / "capa_default" -- `tool_policy_source`.
+    source: str
+
+
+class MyGuardrailsDTO(CamelModel):
+    agent_id: str
+    agent_name: str
+    summary: list[SummaryLineDTO] = []
+    tools: list[MyToolGuardrailDTO] = []
+
+
+class MemberGuardrailDTO(CamelModel):
+    """One member's guardrail on an agent, read only for whoever manages it."""
+
+    member_id: str
+    member_name: str
+    tools: dict[str, ToolPolicyDTO] = {}
 
 
 class AgentDetailDTO(AgentDTO):

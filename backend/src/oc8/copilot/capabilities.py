@@ -24,6 +24,7 @@ from oc8.agents.publish_hooks import PublishHookFailed
 from oc8.agents.versioning import NoChangesToPublish, draft_status, publish_version
 from oc8.auth import Principal
 from oc8.authz import pdp
+from oc8.authz.member_guardrail_store import prune_redundant
 from oc8.automation.catalogue import list_installed_automation_events
 from oc8.capas.discovery import (
     connection_supports_value_spec,
@@ -794,6 +795,7 @@ async def apply_operation(db: AsyncSession, *, tenant_id: uuid.UUID, data: dict[
         had_no_draft = await _has_no_draft(db, agent)
         agent.narrowing = operation.narrowing
         await db.flush()
+        await prune_redundant(db, tenant_id=tenant_id, agent=agent)
         await _publish_copilot_change(db, agent, had_no_draft=had_no_draft, what="tool access")
         return
     if isinstance(operation, AgentNarrowingReset):
@@ -813,6 +815,7 @@ async def apply_operation(db: AsyncSession, *, tenant_id: uuid.UUID, data: dict[
         overridden.discard(operation.connectionName)
         agent.narrowing_overridden_keys = sorted(overridden)
         await db.flush()
+        await prune_redundant(db, tenant_id=tenant_id, agent=agent)
         await _publish_copilot_change(
             db, agent, had_no_draft=had_no_draft, what="tool access reset"
         )
@@ -1103,4 +1106,5 @@ async def _apply_guardrail_set(
         overridden.append(operation.connectionName)
     agent.narrowing_overridden_keys = overridden
     await db.flush()
+    await prune_redundant(db, tenant_id=tenant_id, agent=agent)
     await _publish_copilot_change(db, agent, had_no_draft=had_no_draft, what="guardrail")

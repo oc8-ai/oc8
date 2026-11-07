@@ -72,6 +72,7 @@ def decide_for_actor(
     and calls `authorize_tool_call` -- the live gate every real tool call
     already goes through. No agent-shaped branching here on purpose.
     """
+    # No member term: a coding-sandbox actor has no acting member (D3a).
     policies = effective_tool_policies(actor.frame, actor.narrowing)
     return authorize_tool_call(
         policies=policies,

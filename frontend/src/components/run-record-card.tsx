@@ -2,6 +2,7 @@ import type { ReactElement } from "react";
 import { DataTable } from "@/components/run-data-table";
 import { BarChart, LineChart } from "@/components/run-chart";
 import { FollowupCard, ResponsibilityCard } from "@/components/copilot-cards";
+import { GuardrailCard } from "@/components/guardrail-card";
 
 interface RecordCardField {
   label: string;
@@ -86,4 +87,5 @@ export const RUN_COMPONENT_REGISTRY: Record<
   line_chart: LineChart,
   responsibility_card: ResponsibilityCard,
   followup_card: FollowupCard,
+  guardrail_card: GuardrailCard,
 };

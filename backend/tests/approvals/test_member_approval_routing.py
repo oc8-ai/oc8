@@ -1,0 +1,681 @@
+"""An approval a member's own guardrail asked for goes to that member first (D3a).
+
+The member's rule is theirs: nobody else -- not the department's approver, not
+an administrator who sees every department -- answers it in their name. When
+the department ALSO requires approval, the member's yes opens a second stage
+in the department's queue, and only that second yes resumes the run. A member
+who is also an approver of that department answers both stages with one click,
+and the trail records both.
+"""
+
+from __future__ import annotations
+
+import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from typing import Any
+
+import pytest
+from asgi_lifespan import LifespanManager
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
+
+from oc8 import models as m
+from oc8.approvals import NotYourApproval, decide_approval, raise_approval, service
+from oc8.approvals.repo import load_for_actor, visible_approvals
+from oc8.approvals.service import approval_routing, held_call
+from oc8.auth import get_identity_provider
+from oc8.auth.principal import Principal
+from oc8.authz.pdp import Decision, Effect
+from oc8.authz.permissions import ORG_ADMIN, SEAT_APPROVER
+from oc8.authz.scope import AgentActor, HumanActor, scope_for_principal, subject_uuid_for
+from oc8.channels import binding as channel_binding
+from oc8.channels.dispatch import decision_from
+from oc8.main import create_app
+from oc8.runtime.states import RunState
+from tests.conftest import AppSessionFactory
+
+pytestmark = pytest.mark.asyncio
+
+PAYLOAD: dict[str, Any] = {"tool": "erp.confirm_order", "arguments": {"order": "SO-1"}}
+
+
+@dataclass
+class Office:
+    sales: uuid.UUID
+    agent: uuid.UUID
+    task: uuid.UUID
+    run: uuid.UUID
+    anna: m.OrgMember
+    dana: m.OrgMember
+    olaf: m.OrgMember
+
+
+def _member(tenant: uuid.UUID, subject: str, **kw: Any) -> m.OrgMember:
+    return m.OrgMember(
+        tenant_id=tenant, subject=subject, subject_uuid=subject_uuid_for(subject), **kw
+    )
+
+
+async def _office(db: Any, tenant: uuid.UUID, *, anna_approves_too: bool = False) -> Office:
+    sales = m.Department(tenant_id=tenant, name="Sales", frame={})
+    db.add(sales)
+    await db.flush()
+    agent = m.Agent(
+        tenant_id=tenant,
+        department_id=sales.id,
+        name="Nora",
+        status="waiting_for_approval",
+        narrowing={},
+        definition={},
+    )
+    anna = _member(tenant, "anna", display_name="Anna")
+    dana = _member(tenant, "dana", display_name="Dana")
+    olaf = _member(tenant, "olaf", display_name="Olaf", all_departments=True)
+    db.add_all([agent, anna, dana, olaf])
+    await db.flush()
+    seats = [dana] + ([anna] if anna_approves_too else [])
+    for seated in seats:
+        db.add(
+            m.OrgMemberDepartment(
+                tenant_id=tenant,
+                member_id=seated.id,
+                department_id=sales.id,
+                seat_role=SEAT_APPROVER,
+            )
+        )
+    task = m.Task(tenant_id=tenant, department_id=sales.id, title="t", state="waiting_for_approval")
+    db.add(task)
+    await db.flush()
+    run = m.AgentRun(
+        tenant_id=tenant,
+        agent_id=agent.id,
+        task_id=task.id,
+        state=RunState.WAITING_FOR_APPROVAL.value,
+        context={"task": "original"},
+    )
+    db.add(run)
+    await db.flush()
+    return Office(sales.id, agent.id, task.id, run.id, anna, dana, olaf)
+
+
+async def _actor(db: Any, tenant: uuid.UUID, member: m.OrgMember, role: str) -> HumanActor:
+    principal = Principal(subject=member.subject, tenant_id=tenant, role=role)
+    resolved, scope = await scope_for_principal(db, principal)
+    assert resolved is not None
+    return HumanActor(principal=principal, member=resolved, scope=scope)
+
+
+async def _raise_member_stage(
+    db: Any, tenant: uuid.UUID, office: Office, *, department_follows: bool
+) -> m.ApprovalRequest:
+    payload = {**PAYLOAD, **({"department_stage": True} if department_follows else {})}
+    return await raise_approval(
+        db,
+        tenant_id=tenant,
+        agent_id=office.agent,
+        task_id=office.task,
+        action_type="tool_send",
+        title="Nora wants to call erp.confirm_order",
+        detail="your own rule asks you",
+        amount_text="12.480,00 EUR",
+        payload=payload,
+        reason_code="condition_matched",
+        reason_context={"limit": 5000},
+        assignee_member_id=office.anna.id,
+    )
+
+
+async def _run_state(db: Any, run_id: uuid.UUID) -> str:
+    run: m.AgentRun | None = await db.get(m.AgentRun, run_id, populate_existing=True)
+    assert run is not None
+    return run.state
+
+
+async def _rows(db: Any, task_id: uuid.UUID) -> list[m.ApprovalRequest]:
+    return list(
+        (
+            await db.execute(
+                select(m.ApprovalRequest)
+                .where(m.ApprovalRequest.task_id == task_id)
+                .order_by(m.ApprovalRequest.created_at, m.ApprovalRequest.id)
+                .execution_options(populate_existing=True)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+# ------------------------------------------------------------------ routing
+
+
+async def test_routing_follows_who_the_decision_asked() -> None:
+    anna = m.OrgMember(id=uuid.uuid4(), subject="anna")
+
+    def asked(*who: str) -> Decision:
+        return Decision(Effect.REQUIRE_APPROVAL, approval_from=frozenset(who))
+
+    assert approval_routing(asked("member"), anna) == (anna.id, False)
+    assert approval_routing(asked("member", "department"), anna) == (anna.id, True)
+    assert approval_routing(asked("department"), anna) == (None, False)
+    assert approval_routing(asked("member"), None) == (None, False)
+
+
+def test_a_held_call_records_who_asked_and_each_stage_its_own_reason() -> None:
+    anna = m.OrgMember(id=uuid.uuid4(), subject="anna")
+    mine = Decision(
+        Effect.REQUIRE_APPROVAL,
+        "your own rule asks you",
+        reason_code="always_requires_approval",
+        context={"connection": "gmail"},
+    )
+    both = Decision(
+        Effect.REQUIRE_APPROVAL,
+        "value €500 meets threshold €100",
+        reason_code="value_threshold_exceeded",
+        context={"threshold": 100.0, "actual": 500.0},
+        approval_from=frozenset({"member", "department"}),
+        member_stage=mine,
+    )
+    held = held_call(both, anna)
+    assert held.assignee_member_id == anna.id
+    assert held.detail == "your own rule asks you"
+    assert held.reason_code == "always_requires_approval"
+    assert held.reason_context == {
+        "connection": "gmail",
+        "approval_from": ["department", "member"],
+    }
+    assert held.payload == {
+        "department_stage": True,
+        "department_reason": {
+            "detail": "value €500 meets threshold €100",
+            "code": "value_threshold_exceeded",
+            "context": {
+                "threshold": 100.0,
+                "actual": 500.0,
+                "approval_from": ["department", "member"],
+            },
+        },
+    }
+
+    department_only = Decision(
+        Effect.REQUIRE_APPROVAL,
+        "value €500 meets threshold €100",
+        reason_code="value_threshold_exceeded",
+        context={"threshold": 100.0, "actual": 500.0},
+        approval_from=frozenset({"department"}),
+    )
+    held = held_call(department_only, anna)
+    assert held.assignee_member_id is None
+    assert held.detail == department_only.reason
+    assert held.reason_code == "value_threshold_exceeded"
+    assert held.reason_context == {
+        "threshold": 100.0,
+        "actual": 500.0,
+        "approval_from": ["department"],
+    }
+    assert held.payload == {}
+
+
+# ------------------------------------------------------------ member alone
+
+
+async def test_the_member_approves_their_own_stage_and_the_run_resumes(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await _office(db, tenant)
+        approval = await _raise_member_stage(db, tenant, office, department_follows=False)
+        anna = await _actor(db, tenant, office.anna, "member")
+
+        result = await decide_approval(
+            db, approval, decision="approve", tenant_id=tenant, actor=anna
+        )
+
+        assert result.resumed_run_id == office.run
+        assert result.next_stage_id is None
+        assert await _run_state(db, office.run) == RunState.QUEUED.value
+        rows = await _rows(db, office.task)
+        assert [r.id for r in rows] == [approval.id]
+        assert rows[0].decided_by == office.anna.id
+
+
+async def test_nobody_else_decides_the_members_stage(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await _office(db, tenant)
+        approval = await _raise_member_stage(db, tenant, office, department_follows=False)
+        dana = await _actor(db, tenant, office.dana, "member")
+        olaf = await _actor(db, tenant, office.olaf, ORG_ADMIN)
+
+        for other in (dana, olaf):
+            with pytest.raises(NotYourApproval):
+                await decide_approval(
+                    db, approval, decision="approve", tenant_id=tenant, actor=other
+                )
+
+        # Not even the member themself through the Copilot door: an assistant
+        # deciding the guardrail its own user set is the guardrail deciding
+        # nothing.
+        copilot = AgentActor(member=office.anna, scope=dana.scope)
+        with pytest.raises(NotYourApproval):
+            await decide_approval(db, approval, decision="approve", tenant_id=tenant, actor=copilot)
+
+        row = (await _rows(db, office.task))[0]
+        assert row.status == "pending"
+        assert row.decided_by is None
+        assert await _run_state(db, office.run) == RunState.WAITING_FOR_APPROVAL.value
+
+
+# --------------------------------------------------------------- two stages
+
+
+async def test_the_members_yes_opens_the_department_stage(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await _office(db, tenant)
+        first = await _raise_member_stage(db, tenant, office, department_follows=True)
+        anna = await _actor(db, tenant, office.anna, "member")
+        dana = await _actor(db, tenant, office.dana, "member")
+
+        result = await decide_approval(db, first, decision="approve", tenant_id=tenant, actor=anna)
+
+        assert result.resumed_run_id is None
+        assert result.next_stage_id is not None
+        assert await _run_state(db, office.run) == RunState.WAITING_FOR_APPROVAL.value
+        run = await db.get(m.AgentRun, office.run)
+        assert run is not None
+        assert not (run.context or {}).get("resolved_tool_approvals"), (
+            "the member's yes alone must not pre-decide the held call"
+        )
+
+        rows = await _rows(db, office.task)
+        assert len(rows) == 2
+        second = next(r for r in rows if r.id == result.next_stage_id)
+        assert second.status == "pending"
+        assert second.previous_approval_id == first.id
+        assert second.assignee_member_id is None
+        assert second.department_id == office.sales
+        assert {k: v for k, v in second.payload.items() if k != "channel_handles"} == PAYLOAD
+        assert second.action_type == "tool_send"
+        assert second.title == first.title
+        assert second.amount_text == first.amount_text
+        assert second.reason_context == first.reason_context
+
+        final = await decide_approval(db, second, decision="approve", tenant_id=tenant, actor=dana)
+        assert final.resumed_run_id == office.run
+        assert await _run_state(db, office.run) == RunState.QUEUED.value
+
+
+async def test_the_department_rejecting_stage_two_rejects_the_run(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await _office(db, tenant)
+        first = await _raise_member_stage(db, tenant, office, department_follows=True)
+        anna = await _actor(db, tenant, office.anna, "member")
+        dana = await _actor(db, tenant, office.dana, "member")
+
+        result = await decide_approval(db, first, decision="approve", tenant_id=tenant, actor=anna)
+        second = next(r for r in await _rows(db, office.task) if r.id == result.next_stage_id)
+        final = await decide_approval(db, second, decision="reject", tenant_id=tenant, actor=dana)
+
+        assert final.resumed_run_id == office.run
+        run = await db.get(m.AgentRun, office.run, populate_existing=True)
+        assert run is not None
+        entries = run.context["resolved_tool_approvals"]
+        assert [e["decision"] for e in entries] == ["reject"]
+
+
+async def test_the_member_rejecting_stage_one_rejects_the_run(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await _office(db, tenant)
+        first = await _raise_member_stage(db, tenant, office, department_follows=True)
+        anna = await _actor(db, tenant, office.anna, "member")
+
+        result = await decide_approval(db, first, decision="reject", tenant_id=tenant, actor=anna)
+
+        assert result.resumed_run_id == office.run
+        assert result.next_stage_id is None
+        assert len(await _rows(db, office.task)) == 1
+        run = await db.get(m.AgentRun, office.run, populate_existing=True)
+        assert run is not None
+        assert [e["decision"] for e in run.context["resolved_tool_approvals"]] == ["reject"]
+
+
+async def test_a_member_who_also_approves_for_the_department_clicks_once(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await _office(db, tenant, anna_approves_too=True)
+        first = await _raise_member_stage(db, tenant, office, department_follows=True)
+        anna = await _actor(db, tenant, office.anna, "member")
+
+        result = await decide_approval(db, first, decision="approve", tenant_id=tenant, actor=anna)
+
+        assert result.resumed_run_id == office.run
+        assert result.next_stage_id is not None
+        rows = await _rows(db, office.task)
+        assert len(rows) == 2
+        second = next(r for r in rows if r.id == result.next_stage_id)
+        assert second.previous_approval_id == first.id
+        assert second.status == "approved"
+        assert second.decided_by == office.anna.id
+        assert second.decided_at is not None
+
+        events = (
+            (await db.execute(select(m.AuditEvent).where(m.AuditEvent.category == "approval")))
+            .scalars()
+            .all()
+        )
+        assert sorted(e.resource["approval_id"] for e in events) == sorted(
+            [str(first.id), str(second.id)]
+        )
+        assert all(e.actor_id == office.anna.id for e in events)
+
+
+async def test_the_department_stage_shows_the_departments_own_reason(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await _office(db, tenant)
+        dept_reason = {
+            "detail": "value €12480 meets threshold €5000",
+            "code": "value_threshold_exceeded",
+            "context": {"threshold": 5000.0, "approval_from": ["department", "member"]},
+        }
+        first = await raise_approval(
+            db,
+            tenant_id=tenant,
+            agent_id=office.agent,
+            task_id=office.task,
+            action_type="tool_send",
+            title="Nora wants to call erp.confirm_order",
+            detail="your own rule asks you",
+            payload={**PAYLOAD, "department_stage": True, "department_reason": dept_reason},
+            reason_code="always_requires_approval",
+            reason_context={"approval_from": ["department", "member"]},
+            assignee_member_id=office.anna.id,
+        )
+        anna = await _actor(db, tenant, office.anna, "member")
+        result = await decide_approval(db, first, decision="approve", tenant_id=tenant, actor=anna)
+        second = next(r for r in await _rows(db, office.task) if r.id == result.next_stage_id)
+        assert second.detail == "value €12480 meets threshold €5000"
+        assert second.reason_context == {
+            "code": "value_threshold_exceeded",
+            "threshold": 5000.0,
+            "approval_from": ["department", "member"],
+        }
+        assert {k: v for k, v in second.payload.items() if k != "channel_handles"} == PAYLOAD
+        assert first.reason_context == {
+            "code": "always_requires_approval",
+            "approval_from": ["department", "member"],
+        }
+
+
+async def test_one_click_never_announces_the_department_stage(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The member also approves for the department: the second stage is
+    decided in the same click, so no channel is told about it -- neither a
+    question nor its withdrawal -- and no `approval.created` goes out."""
+    announced: list[uuid.UUID] = []
+    closed: list[uuid.UUID] = []
+    events: list[dict[str, Any]] = []
+
+    async def _announce(db: Any, approval: m.ApprovalRequest) -> None:
+        announced.append(approval.id)
+
+    async def _close_out(db: Any, approval: m.ApprovalRequest) -> None:
+        closed.append(approval.id)
+
+    class _Bus:
+        async def publish_event(
+            self, tenant_id: uuid.UUID, type_: str, data: dict[str, Any], *, source: str
+        ) -> None:
+            events.append({"type": type_, **data})
+
+    monkeypatch.setattr(service, "_announce", _announce)
+    monkeypatch.setattr(service, "_close_out", _close_out)
+    monkeypatch.setattr("oc8.realtime.bus.get_event_bus", lambda: _Bus())
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await _office(db, tenant, anna_approves_too=True)
+        first = await _raise_member_stage(db, tenant, office, department_follows=True)
+        anna = await _actor(db, tenant, office.anna, "member")
+        result = await decide_approval(db, first, decision="approve", tenant_id=tenant, actor=anna)
+        second = result.next_stage_id
+        assert second is not None
+        assert announced == [first.id]
+        assert second not in closed
+        assert not [e for e in events if e["type"] == "approval.created"]
+
+
+# --------------------------------------------------------------- visibility
+
+
+async def test_only_the_member_sees_their_stage(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await _office(db, tenant)
+        first = await _raise_member_stage(db, tenant, office, department_follows=True)
+        anna = await _actor(db, tenant, office.anna, "member")
+        dana = await _actor(db, tenant, office.dana, "member")
+        olaf = await _actor(db, tenant, office.olaf, ORG_ADMIN)
+
+        async def pending(actor: HumanActor) -> list[uuid.UUID]:
+            rows = await visible_approvals(db, actor=actor, status="pending")
+            return [r.id for r in rows]
+
+        assert await pending(anna) == [first.id]
+        assert await pending(dana) == []
+        assert await pending(olaf) == [], "an unrestricted admin is not the member"
+        assert await load_for_actor(db, first.id, actor=anna) is not None
+        assert await load_for_actor(db, first.id, actor=dana) is None
+        assert await load_for_actor(db, first.id, actor=olaf) is None
+        assert (
+            await visible_approvals(db, actor=anna, status="pending", department_id=office.sales)
+            == []
+        ), "a department filter is a filter over the department queue"
+
+        result = await decide_approval(db, first, decision="approve", tenant_id=tenant, actor=anna)
+        assert result.next_stage_id is not None
+
+        assert await pending(dana) == [result.next_stage_id]
+        assert await pending(olaf) == [result.next_stage_id]
+        assert await pending(anna) == [], "Anna holds no seat in Sales"
+
+
+# ---------------------------------------------------------- messenger door
+
+
+async def test_the_member_is_told_and_answers_on_their_phone(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await _office(db, tenant)
+        for who, chat in ((office.anna, "chat-anna"), (office.dana, "chat-dana")):
+            db.add(
+                m.ApprovalChannelBinding(
+                    tenant_id=tenant,
+                    channel="fake",
+                    user_id=who.subject_uuid,
+                    external_id=chat,
+                    member_id=who.id,
+                )
+            )
+        await db.flush()
+
+        told = await channel_binding.recipients(
+            db,
+            tenant_id=tenant,
+            channel="fake",
+            department_id=office.sales,
+            assignee_member_id=office.anna.id,
+        )
+        assert [b.external_id for b in told] == ["chat-anna"]
+
+        first = await _raise_member_stage(db, tenant, office, department_follows=False)
+        approval_id = first.id
+
+    async with app_session(tenant) as db:
+        with pytest.raises(PermissionError):
+            await decision_from(
+                db,
+                tenant_id=tenant,
+                channel_id="fake",
+                external_id="chat-dana",
+                approval_id=approval_id,
+                verdict="approve",
+            )
+
+    async with app_session(tenant) as db:
+        result = await decision_from(
+            db,
+            tenant_id=tenant,
+            channel_id="fake",
+            external_id="chat-anna",
+            approval_id=approval_id,
+            verdict="approve",
+        )
+        assert result.approval.decided_by == office.anna.id
+        assert result.resumed_run_id == office.run
+
+
+# --------------------------------------------------------------- HTTP doors
+
+
+@asynccontextmanager
+async def _http() -> AsyncIterator[AsyncClient]:
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            yield c
+
+
+async def test_a_member_without_a_seat_opens_and_decides_their_own_approval(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """Anna holds no seat and only the `member` role (`copilot:use`). Her own
+    guardrail's approval is hers to open and answer; nothing else about the
+    approval routes changes for her.
+
+    `redis_url` because approving re-queues the run for real."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await _office(db, tenant)
+        own = await _raise_member_stage(db, tenant, office, department_follows=False)
+        department_row = await raise_approval(
+            db,
+            tenant_id=tenant,
+            agent_id=office.agent,
+            action_type="tool_send",
+            title="Nora wants to call erp.cancel_order",
+            payload={"tool": "erp.cancel_order", "arguments": {}},
+        )
+        own_id, department_row_id = own.id, department_row.id
+
+    token = get_identity_provider().mint(tenant_id=tenant, subject="anna", role="member")
+    hers = {"Authorization": f"Bearer {token}"}
+    async with _http() as http:
+        listed = await http.get("/api/v1/approvals", headers=hers)
+        assert listed.status_code == 200, listed.text
+        assert [r["id"] for r in listed.json()] == [str(own_id)]
+
+        # The department's row answers exactly as the seat gate always did.
+        refused = await http.post(
+            f"/api/v1/approvals/{department_row_id}/decision",
+            json={"decision": "approve"},
+            headers=hers,
+        )
+        assert refused.status_code == 403, refused.text
+        unknown = await http.post(
+            f"/api/v1/approvals/{uuid.uuid4()}/decision",
+            json={"decision": "approve"},
+            headers=hers,
+        )
+        assert unknown.status_code == refused.status_code, "no oracle for a seatless caller"
+
+        decided = await http.post(
+            f"/api/v1/approvals/{own_id}/decision",
+            json={"decision": "approve"},
+            headers=hers,
+        )
+        assert decided.status_code == 200, decided.text
+        assert decided.json()["resumed"] is True
+
+        # Nothing left that is hers: the same "ask an administrator" refusal.
+        assert (await http.get("/api/v1/approvals", headers=hers)).status_code == 403
+
+    async with app_session(tenant) as db:
+        rows = {r.id: r for r in await _rows(db, office.task)}
+        assert rows[own_id].decided_by == office.anna.id
+        dept = await db.get(m.ApprovalRequest, department_row_id)
+        assert dept is not None and dept.status == "pending"
+
+
+async def test_one_approval_reads_back_for_its_assignee_and_nobody_else(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """`GET /approvals/{id}` -- what the member's card polls for the department
+    stage. A seatless member reads their own row (and sees the department's
+    stage move); another member's row and the department's are refused alike;
+    the department's approver cannot read the member's row at all."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await _office(db, tenant)
+        own = await _raise_member_stage(db, tenant, office, department_follows=True)
+        department_row = await raise_approval(
+            db,
+            tenant_id=tenant,
+            agent_id=office.agent,
+            action_type="tool_send",
+            title="Nora wants to call erp.cancel_order",
+            payload={"tool": "erp.cancel_order", "arguments": {}},
+        )
+        own_id, department_row_id = own.id, department_row.id
+
+    def _as(subject: str) -> dict[str, str]:
+        token = get_identity_provider().mint(tenant_id=tenant, subject=subject, role="member")
+        return {"Authorization": f"Bearer {token}"}
+
+    async with _http() as http:
+        mine = await http.get(f"/api/v1/approvals/{own_id}", headers=_as("anna"))
+        assert mine.status_code == 200, mine.text
+        assert mine.json()["id"] == str(own_id)
+        assert mine.json()["nextStageStatus"] is None
+
+        refused = await http.get(f"/api/v1/approvals/{department_row_id}", headers=_as("anna"))
+        unknown = await http.get(f"/api/v1/approvals/{uuid.uuid4()}", headers=_as("anna"))
+        assert refused.status_code == 403, refused.text
+        assert unknown.status_code == refused.status_code, "no oracle for a seatless caller"
+
+        # Dana approves for Sales and may see its row -- never Anna's own.
+        assert (
+            await http.get(f"/api/v1/approvals/{department_row_id}", headers=_as("dana"))
+        ).status_code == 200
+        hidden = await http.get(f"/api/v1/approvals/{own_id}", headers=_as("dana"))
+        assert hidden.status_code == 404, hidden.text
+
+        decided = await http.post(
+            f"/api/v1/approvals/{own_id}/decision",
+            json={"decision": "approve"},
+            headers=_as("anna"),
+        )
+        assert decided.status_code == 200, decided.text
+        after = await http.get(f"/api/v1/approvals/{own_id}", headers=_as("anna"))
+        assert after.status_code == 200, after.text
+        assert after.json()["status"] == "approved"
+        assert after.json()["nextStageStatus"] == "pending"

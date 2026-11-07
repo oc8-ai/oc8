@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.agents.publish_hooks import run_publish_hooks
 from oc8.audit import append_event
+from oc8.authz.member_guardrail_store import prune_redundant
 
 #: The behavioural subset of `Agent` that a version snapshots. Anything NOT
 #: named here (status, pause_reason, paused_at, presentation, trust_level,
@@ -573,6 +574,11 @@ async def apply_payload(db: AsyncSession, agent: m.Agent, payload: dict[str, Any
         await _apply_skill_assignments(db, agent, payload["skill_assignments"] or [])
     if "knowledge_grants" in payload:
         await _apply_knowledge_grants(db, agent, payload["knowledge_grants"] or [])
+    if "narrowing" in payload:
+        # A restored narrowing is a narrowing write like any other: member
+        # rules it now covers go, in this same transaction.
+        await db.flush()
+        await prune_redundant(db, tenant_id=agent.tenant_id, agent=agent)
 
 
 async def _apply_skill_assignments(

@@ -99,9 +99,10 @@ from oc8.agent.tool_routing import build_routes
 from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_identity
 from oc8.agents.versioning import pinned_model_config_id, resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession, unguarded
-from oc8.approvals import raise_approval
+from oc8.approvals import approval_created_event, held_call, raise_approval
 from oc8.approvals.record_url import record_url_for_connection
 from oc8.audit import append_event
+from oc8.authz.member_guardrails import member_term_for_run
 from oc8.authz.pdp import (
     Decision,
     Effect,
@@ -375,7 +376,10 @@ async def _discover_connection_tools(
     the model, and the other connections stay in the list.
     """
     frame = dept.frame if dept is not None else {}
-    policies = effective_tool_policies(frame, pinned["narrowing"] or {})
+    _member, member_policy = await member_term_for_run(
+        db, tenant_id=run.tenant_id, agent_id=agent.id, context=run.context
+    )
+    policies = effective_tool_policies(frame, pinned["narrowing"] or {}, member_policy)
 
     async def _one(
         conn: m.McpConnection,
@@ -1298,6 +1302,10 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
     outward_tools = cfg.get("outward_tools") if isinstance(cfg.get("outward_tools"), list) else None
     tool_tiers: dict[str, str] = {}
     if caps.parallel_tool_calls:
+        _member, member_policy = await member_term_for_run(
+            db, tenant_id=run.tenant_id, agent_id=agent.id, context=run.context
+        )
+        step_policies = effective_tool_policies(frame, pinned["narrowing"] or {}, member_policy)
         for t in result.tool_calls:
             if t.name in CONTROL_TOOL_NAMES or t.name in skill_tool_names:
                 break
@@ -1313,7 +1321,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
                     for g in s.definition.guardrails
                     if g.type == "value_threshold" and g.then == "require_approval"
                 ),
-                tool_policies=effective_tool_policies(frame, pinned["narrowing"] or {}),
+                tool_policies=step_policies,
                 connection_key=conn.name if conn is not None else None,
                 tool_scopes=scopes,
                 value_spec=value_spec,
@@ -1436,6 +1444,10 @@ async def _precompute_leading_reads(
     active_ids = {str(s) for s in ctx.get("active_skill_ids", [])}
     active_skills = [s for s in assigned_skills if str(s.skill_version_id) in active_ids]
     schemas = ctx.get("tool_schemas", [])
+    _member, member_policy = await member_term_for_run(
+        db, tenant_id=run.tenant_id, agent_id=agent.id, context=ctx
+    )
+    policies = effective_tool_policies(frame, pinned["narrowing"] or {}, member_policy)
     batch: list[tuple[ToolBody, dict[str, Any]]] = []
     for call in calls:
         if call.local_result is not None:
@@ -1462,7 +1474,7 @@ async def _precompute_leading_reads(
                 for g in s.definition.guardrails
                 if g.type == "value_threshold" and g.then == "require_approval"
             ),
-            tool_policies=effective_tool_policies(frame, pinned["narrowing"] or {}),
+            tool_policies=policies,
             connection_key=conn.name,
             tool_scopes=scopes,
             value_spec=value_spec,
@@ -1675,6 +1687,9 @@ async def _dispatch_one_tool(
 
     active_ids = {str(s) for s in run.context.get("active_skill_ids", [])}
     active_skills = [s for s in assigned_skills if str(s.skill_version_id) in active_ids]
+    acting_member, member_policy = await member_term_for_run(
+        db, tenant_id=run.tenant_id, agent_id=agent.id, context=run.context
+    )
 
     decision = _authorize(
         agent,
@@ -1692,7 +1707,7 @@ async def _dispatch_one_tool(
             for g in s.definition.guardrails
             if g.type == "value_threshold" and g.then == "require_approval"
         ),
-        tool_policies=effective_tool_policies(frame, pinned["narrowing"] or {}),
+        tool_policies=effective_tool_policies(frame, pinned["narrowing"] or {}, member_policy),
         connection_key=conn.name if conn is not None else None,
         tool_scopes=scopes,
         value_spec=value_spec,
@@ -1791,6 +1806,9 @@ async def _dispatch_one_tool(
         # the containerized gateway's equivalent branch uses -- so a held
         # write looks identical to an operator whichever runtime raised it.
         held_record = record_identity(tc.name, tc.arguments, focus_spec)
+        # A member's own rule asks that member first, then the department when
+        # it asked too (D3a).
+        held = held_call(decision, acting_member)
         ar = await raise_approval(
             db,
             tenant_id=run.tenant_id,
@@ -1798,14 +1816,18 @@ async def _dispatch_one_tool(
             task_id=run.task_id,
             action_type="tool_send",
             title=f"{agent.name} wants to call {tc.name}",
-            detail=decision.reason,
+            detail=held.detail,
             payload={
                 "tool": tc.name,
                 "arguments": tc.arguments,
                 "justification": justification,
                 "preview": gate_verdict.preview if gate_verdict is not None else "",
                 **({"record_url": link} if link else {}),
+                **held.payload,
             },
+            assignee_member_id=held.assignee_member_id,
+            reason_code=held.reason_code,
+            reason_context=held.reason_context,
             record_url=(
                 record_url_for_connection(conn, entity=held_record[0], ref=held_record[1])
                 if held_record is not None
@@ -1848,16 +1870,7 @@ async def _dispatch_one_tool(
         await get_event_bus().publish_event(
             run.tenant_id,
             "approval.created",
-            {
-                "approval_id": str(ar.id),
-                "action_type": ar.action_type,
-                "status": ar.status,
-                # title/detail travel in the envelope so the push hook never
-                # has to re-read this row from a fresh, uncommitted-blind
-                # session (see EventBus._push_payload).
-                "title": ar.title,
-                "detail": ar.detail,
-            },
+            approval_created_event(ar),
             source=f"oc8/approval/{ar.id}",
         )
         return ToolResult(status="waiting_for_approval", output=decision.reason or "")

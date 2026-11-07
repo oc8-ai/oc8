@@ -28,8 +28,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.audit import append_event
 from oc8.authz.authority import granted_for_member
+from oc8.authz.pdp import Decision
 from oc8.authz.permissions import AGENT, APPROVAL_DECIDE_ANY, BUDGET, MANAGE, perm
-from oc8.authz.scope import DecisionActor, HumanActor
+from oc8.authz.scope import ChannelActor, DecisionActor, HumanActor
 from oc8.realtime.emit import record_activity
 
 Verdict = Literal["approve", "reject"]
@@ -195,6 +196,97 @@ class NotYourDepartment(ApprovalError):
     """
 
 
+class NotYourApproval(ApprovalError):
+    """A member's own guardrail asked this member, and only them (D3a).
+
+    Raised for anybody else -- the department's approver, an administrator who
+    sees every department, and the member's own Copilot: an assistant answering
+    the rule its user set for it is the rule answering nothing. Callers answer
+    it with the same words as "no such approval", for the reason
+    `NotYourDepartment` gives.
+    """
+
+
+def approval_routing(
+    decision: Decision, member: m.OrgMember | None
+) -> tuple[uuid.UUID | None, bool]:
+    """Who answers a held call first: `(assignee_member_id, department_stage_follows)`.
+
+    A member's own rule asked -> the member answers it, and when the department
+    asked too, its approvers answer a second stage once the member said yes.
+    Without an acting member there is nobody to route to; the PDP only puts
+    "member" into `approval_from` when there is one, so the `(None, False)` for
+    that case is a safe fallback rather than a path.
+    """
+    if member is None or "member" not in decision.approval_from:
+        return None, False
+    return member.id, "department" in decision.approval_from
+
+
+@dataclass(frozen=True)
+class HeldCall:
+    """What a raise site writes for a held tool call (D3a): who answers it
+    first, the reason that row shows, and the payload keys the routing adds."""
+
+    assignee_member_id: uuid.UUID | None
+    detail: str
+    reason_code: str | None
+    reason_context: dict[str, Any]
+    payload: dict[str, Any]
+
+
+def held_call(decision: Decision, member: m.OrgMember | None) -> HeldCall:
+    """The routing and the "why" of a held call, for every raise site alike.
+
+    `approval_from` is recorded with the reason (spec §3 Audit). When both
+    levels asked, the member stage -- raised first, answered by the member --
+    shows the member's own rule (`Decision.member_stage`), and the
+    department's reason waits in the payload for the department stage
+    (`_raise_department_stage`). With one level asking, the reason is the
+    Decision's own, unchanged.
+    """
+    assignee, department_follows = approval_routing(decision, member)
+    asked = {"approval_from": sorted(decision.approval_from)}
+    context: dict[str, Any] = {**decision.context, **asked}
+    department = {"detail": decision.reason, "code": decision.reason_code, "context": context}
+    own = decision.member_stage if assignee is not None and department_follows else None
+    if own is None:
+        return HeldCall(
+            assignee_member_id=assignee,
+            detail=decision.reason,
+            reason_code=decision.reason_code,
+            reason_context=context,
+            payload={"department_stage": True} if department_follows else {},
+        )
+    return HeldCall(
+        assignee_member_id=assignee,
+        detail=own.reason,
+        reason_code=own.reason_code,
+        reason_context={**own.context, **asked},
+        payload={"department_stage": True, "department_reason": department},
+    )
+
+
+def approval_created_event(approval: m.ApprovalRequest) -> dict[str, Any]:
+    """The `approval.created` envelope data for `approval`.
+
+    `title`/`detail` travel in it so the push hook never has to re-read a row
+    its publisher has not committed yet (see `EventBus._push_payload`).
+    `assignee_member_id` marks a member's own approval: the bus pushes it to
+    that member's devices only and keeps its words off the tenant-wide socket.
+    """
+    data: dict[str, Any] = {
+        "approval_id": str(approval.id),
+        "action_type": approval.action_type,
+        "status": approval.status,
+        "title": approval.title,
+        "detail": approval.detail,
+    }
+    if approval.assignee_member_id is not None:
+        data["assignee_member_id"] = str(approval.assignee_member_id)
+    return data
+
+
 @dataclass
 class DecisionResult:
     approval: m.ApprovalRequest
@@ -202,6 +294,9 @@ class DecisionResult:
     #: commits: a stream entry whose run row is not yet visible is a run a worker
     #: picks up and cannot find.
     resumed_run_id: uuid.UUID | None = None
+    #: The department stage a member's yes opened (or, when the member is also
+    #: one of its approvers, opened and answered in the same click).
+    next_stage_id: uuid.UUID | None = None
 
 
 async def raise_approval(
@@ -220,6 +315,9 @@ async def raise_approval(
     reason_code: str | None = None,
     reason_context: dict[str, Any] | None = None,
     record_url: str | None = None,
+    assignee_member_id: uuid.UUID | None = None,
+    previous_approval_id: uuid.UUID | None = None,
+    announce: bool = True,
 ) -> m.ApprovalRequest:
     """Create a request for a human, and tell the people who can answer it.
 
@@ -255,6 +353,13 @@ async def raise_approval(
     arrive in -- somebody is looking at the old queue right now. `Task` is
     deliberately never consulted: `task_id` is nullable (a held tool call raised
     outside a task would land nowhere) while `Agent.department_id` is NOT NULL.
+
+    `assignee_member_id` routes the request to ONE member -- the one whose own
+    guardrail asked (D3a) -- and nobody else sees or decides it; the department
+    is still pinned so a second stage knows whose queue it goes to.
+    `previous_approval_id` links a department stage to the member stage it
+    follows. `announce=False` keeps it off every channel -- only for a stage
+    that is decided in the same breath it is raised.
     """
     if isinstance(department_id, _Derive):
         department_id = await _department_of(db, tenant_id=tenant_id, agent_id=agent_id)
@@ -274,10 +379,13 @@ async def raise_approval(
         if reason_code is not None
         else None,
         record_url=record_url,
+        assignee_member_id=assignee_member_id,
+        previous_approval_id=previous_approval_id,
     )
     db.add(approval)
     await db.flush()
-    await _announce(db, approval)
+    if announce:
+        await _announce(db, approval)
     return approval
 
 
@@ -304,6 +412,70 @@ async def _department_of(
             )
         )
     ).scalar_one_or_none()
+
+
+async def _raise_department_stage(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    approval: m.ApprovalRequest,
+    announce: bool = True,
+) -> m.ApprovalRequest:
+    """The department's half of a two-stage approval, raised once the member said yes.
+
+    The same question, pinned to the department the member stage was pinned
+    to (not re-derived: the agent may have moved since), with the routing
+    keys and the member stage's channel handles left behind -- they described
+    the first row's routing, not this one's. It gives the department's own
+    reason when the raise site kept one (`held_call`), else the member
+    stage's.
+
+    `announce=False` when the member answers for the department in the same
+    click: the stage is decided before anybody could look at it, so no channel
+    is told and no event is sent for it.
+    """
+    payload = dict(approval.payload or {})
+    kept = payload.get("department_reason")
+    if isinstance(kept, dict):
+        detail = str(kept.get("detail") or approval.detail)
+        code = kept.get("code")
+        reason = dict(kept.get("context") or {})
+    else:
+        detail = approval.detail
+        reason = dict(approval.reason_context or {})
+        code = reason.pop("code", None)
+    second = await raise_approval(
+        db,
+        tenant_id=tenant_id,
+        agent_id=approval.agent_id,
+        action_type=approval.action_type,
+        title=approval.title,
+        detail=detail,
+        task_id=approval.task_id,
+        amount_text=approval.amount_text,
+        payload={
+            k: v
+            for k, v in payload.items()
+            if k not in ("department_stage", "department_reason", "channel_handles")
+        },
+        expires_at=approval.expires_at,
+        department_id=approval.department_id,
+        reason_code=code,
+        reason_context=reason,
+        record_url=approval.record_url,
+        previous_approval_id=approval.id,
+        announce=announce,
+    )
+    if announce:
+        from oc8.realtime.bus import get_event_bus
+
+        await get_event_bus().publish_event(
+            second.tenant_id,
+            "approval.created",
+            approval_created_event(second),
+            source=f"oc8/approval/{second.id}",
+        )
+    return second
 
 
 async def _announce(db: AsyncSession, approval: m.ApprovalRequest) -> None:
@@ -428,13 +600,26 @@ async def decide_approval(
     # the status and the time, so checking it first would answer "does this
     # approval exist and when was it answered" for a department the caller may
     # not see.
-    if not actor.scope.may_decide(approval.department_id):
+    #
+    # A row with an assignee is the member's own guardrail asking them (D3a):
+    # it is theirs and nobody else's -- no seat, no `decide_any`, and not their
+    # own Copilot (an `AgentActor`), which would be the rule deciding itself.
+    if approval.assignee_member_id is not None:
+        if (
+            not isinstance(actor, HumanActor | ChannelActor)
+            or actor.member.id != approval.assignee_member_id
+        ):
+            raise NotYourApproval("this approval belongs to the member whose rule asked")
+    elif not actor.scope.may_decide(approval.department_id):
         raise NotYourDepartment("this approval belongs to another department")
     # SECOND: what `approval:decide` means depends on what is being decided, and
     # for two of the five action types it means a `:manage` act the seat
     # vocabulary is closed against. Checked in the funnel and not at the route,
     # because the action_type is on the ROW -- a gate cannot see it, which is the
-    # same reason the department term lives here.
+    # same reason the department term lives here. Asked of an assignee row too:
+    # only `tool_send` is ever routed to a member and it costs a seat, so this
+    # changes nothing for one today -- and an assignee row of some other kind
+    # stays fail-closed rather than inheriting a pass from its routing.
     if not await _may_apply_the_effect(db, actor, approval.action_type):
         raise NotYourSayAtAll(
             f"deciding a {approval.action_type!r} approval requires "
@@ -476,6 +661,7 @@ async def decide_approval(
     )
 
     resumed_run: m.AgentRun | None = None
+    next_stage: m.ApprovalRequest | None = None
     if approval.action_type == "memory_write":
         from oc8.memory.router import resolve_memory_write_approval
 
@@ -504,6 +690,54 @@ async def decide_approval(
             text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": str(tenant_id)}
         )
     elif approval.action_type == "tool_send":
+        if (
+            approval.assignee_member_id is not None
+            and decision == "approve"
+            and (approval.payload or {}).get("department_stage")
+        ):
+            # The member said yes to their own rule; the department asked too,
+            # so its approvers answer next and the run stays parked until they do.
+            # The member may also decide for the department: then one click
+            # covers both stages, and the second is never announced -- it is
+            # decided before anybody could open it.
+            one_click = actor.scope.may_decide(approval.department_id)
+            next_stage = await _raise_department_stage(
+                db, tenant_id=tenant_id, approval=approval, announce=not one_click
+            )
+            if not one_click:
+                # NOT resolved on the run: a pre-decided "approve" would let the
+                # held call through before the department said anything.
+                await _close_out(db, approval)
+                await _audit_decision(
+                    db,
+                    tenant_id=tenant_id,
+                    approval=approval,
+                    actor=actor,
+                    decision=decision,
+                    reason=reason,
+                )
+                return DecisionResult(approval=approval, next_stage_id=next_stage.id)
+            # The member may also approve for the department: one click covers
+            # both stages, and the trail records both (spec §3).
+            next_stage.status = approval.status
+            next_stage.decided_at = approval.decided_at
+            next_stage.decided_by = actor.member.id
+            next_stage.reason = reason
+            await db.flush()
+            await get_event_bus().publish_event(
+                next_stage.tenant_id,
+                "approval.decided",
+                {"approval_id": str(next_stage.id), "status": next_stage.status},
+                source=f"oc8/approval/{next_stage.id}",
+            )
+            await _audit_decision(
+                db,
+                tenant_id=tenant_id,
+                approval=next_stage,
+                actor=actor,
+                decision=decision,
+                reason=reason,
+            )
         # Resume the suspended run: on approve it executes the held tool call, on
         # reject it moves past it. The run is re-queued and published by the caller.
         from oc8.runtime.approval_resume import resolve_tool_approval
@@ -519,6 +753,27 @@ async def decide_approval(
             await _abandon_unresumable(db, approval=approval)
 
     await _close_out(db, approval)
+    await _audit_decision(
+        db, tenant_id=tenant_id, approval=approval, actor=actor, decision=decision, reason=reason
+    )
+    return DecisionResult(
+        approval=approval,
+        resumed_run_id=resumed_run.id if resumed_run else None,
+        next_stage_id=next_stage.id if next_stage is not None else None,
+    )
+
+
+async def _audit_decision(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    approval: m.ApprovalRequest,
+    actor: DecisionActor,
+    decision: str,
+    reason: str | None,
+) -> None:
+    """The decision's line in the trail -- one per row decided, so a click that
+    answers both stages of a member-routed approval leaves two."""
     await append_event(
         db,
         tenant_id=tenant_id,
@@ -538,6 +793,18 @@ async def decide_approval(
             "task_id": str(approval.task_id) if approval.task_id else None,
             "member_id": str(actor.member.id),
             "via": actor.via,
+            # Which stage of a member-routed approval this was (D3a): the
+            # member's own, or the department's that followed it.
+            **(
+                {"stage": "member", "assignee_member_id": str(approval.assignee_member_id)}
+                if approval.assignee_member_id is not None
+                else {}
+            ),
+            **(
+                {"stage": "department", "previous_approval_id": str(approval.previous_approval_id)}
+                if approval.previous_approval_id is not None
+                else {}
+            ),
         },
         decision=approval.status,
         reason=reason or None,
@@ -547,4 +814,3 @@ async def decide_approval(
         # `member_id IS NULL` decides nothing.
         principal=actor.principal if isinstance(actor, HumanActor) else None,
     )
-    return DecisionResult(approval=approval, resumed_run_id=resumed_run.id if resumed_run else None)

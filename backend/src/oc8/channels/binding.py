@@ -220,7 +220,12 @@ async def has_ever_been_bound(
 
 
 async def recipients(
-    db: AsyncSession, *, tenant_id: uuid.UUID, channel: str, department_id: uuid.UUID | None
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    channel: str,
+    department_id: uuid.UUID | None,
+    assignee_member_id: uuid.UUID | None = None,
 ) -> list[m.ApprovalChannelBinding]:
     """Everyone bound to this channel who may be told about THIS department's
     approval.
@@ -254,6 +259,11 @@ async def recipients(
     withdrawals with nothing logged and `raise_approval` succeeding. The only
     trace was a comment in migration 0046. One small indexed count per announce
     buys a line that names the row and the fix.
+
+    `assignee_member_id` narrows the audience to that one member: an approval
+    their own guardrail asked for (D3a) is theirs to answer, and telling the
+    department's approvers about it would hand them a button they may not press
+    and a disclosure they were never owed.
     """
     seat = (
         select(OrgMemberDepartment.id)
@@ -272,6 +282,8 @@ async def recipients(
     covers = (
         OrgMember.all_departments if department_id is None else or_(OrgMember.all_departments, seat)
     )
+    if assignee_member_id is not None:
+        covers = OrgMember.id == assignee_member_id
 
     orphans = (
         await db.scalar(

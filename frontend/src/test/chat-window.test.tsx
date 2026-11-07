@@ -83,6 +83,35 @@ vi.mock("@/lib/governance-hooks", async (importOriginal) => {
   return { ...actual, useCan: () => () => true };
 });
 
+const myApprovalsMock = vi.fn(() => ({ data: [] as { id: string; agentId: string }[] }));
+vi.mock("@/lib/hooks-member-guardrails", () => ({
+  useMyApprovals: () => myApprovalsMock(),
+}));
+vi.mock("@/components/chat-approval-card", () => ({
+  ChatApprovalCard: ({
+    approval,
+    onChangeRule,
+  }: {
+    approval: { id: string; agentId: string };
+    onChangeRule?: (agentId: string) => void;
+  }) => (
+    <button
+      type="button"
+      data-testid="approval-card"
+      onClick={() => onChangeRule?.(approval.agentId)}
+    >
+      {approval.id}
+    </button>
+  ),
+}));
+vi.mock("@/components/member-guardrails-sheet", () => ({
+  YourGuardrailsButton: ({ open }: { open?: boolean }) => (
+    <span data-testid="your-guardrails">{open ? "open" : "closed"}</span>
+  ),
+  MemberGuardrailsSheet: ({ open }: { open: boolean }) =>
+    open ? <div data-testid="guardrails-sheet" /> : null,
+}));
+
 import { ChatWindow } from "@/components/chat-window";
 
 function renderChat() {
@@ -811,5 +840,63 @@ describe("ChatWindow composer sigils", () => {
     const listbox = screen.getByRole("listbox", { name: /attach context/i });
     expect(listbox).toBeInTheDocument();
     expect(within(listbox).queryByText(/attach a file/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("ChatWindow and the member's own guardrails", () => {
+  beforeEach(() => {
+    sessionsMock.mockReturnValue({
+      data: [{ id: "s1", agentId: "agent-1", title: "", createdAt: "2026-08-27T00:00:00Z" }],
+      isLoading: false,
+    });
+    messagesMock.mockReturnValue({
+      data: [
+        {
+          id: "m1",
+          sessionId: "s1",
+          role: "user",
+          content: "Schreib dem Kunden",
+          runId: null,
+          renderedComponents: [],
+          createdAt: "2026-08-27T00:00:00Z",
+          mode: null,
+          contextRefs: [],
+        },
+      ],
+      isLoading: false,
+    });
+    myApprovalsMock.mockReturnValue({ data: [] });
+  });
+
+  it("carries the 'Your guardrails' entry in its header", () => {
+    renderChat();
+    expect(screen.getByTestId("your-guardrails")).toHaveTextContent("closed");
+  });
+
+  it("shows my own pending approval for this agent in the conversation, not 'thinking'", () => {
+    myApprovalsMock.mockReturnValue({
+      data: [
+        { id: "ap1", agentId: "agent-1" },
+        { id: "ap2", agentId: "agent-2" },
+      ],
+    });
+    renderChat();
+    expect(screen.getAllByTestId("approval-card").map((el) => el.textContent)).toEqual(["ap1"]);
+    expect(screen.queryByText(/is thinking/i)).toBeNull();
+    fireEvent.click(screen.getByTestId("approval-card"));
+    expect(screen.getByTestId("your-guardrails")).toHaveTextContent("open");
+  });
+
+  it("without a header, Change rule opens the sheet on its own", () => {
+    myApprovalsMock.mockReturnValue({ data: [{ id: "ap1", agentId: "agent-1" }] });
+    const qc = new QueryClient();
+    render(
+      <QueryClientProvider client={qc}>
+        <ChatWindow agentId="agent-1" agentName="Copilot" hideHeader />
+      </QueryClientProvider>,
+    );
+    expect(screen.queryByTestId("your-guardrails")).toBeNull();
+    fireEvent.click(screen.getByTestId("approval-card"));
+    expect(screen.getByTestId("guardrails-sheet")).toBeInTheDocument();
   });
 });

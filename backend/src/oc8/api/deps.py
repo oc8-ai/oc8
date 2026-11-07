@@ -293,7 +293,7 @@ def require_departmental(
     session routes, which resolve a `HumanActor` (for its `member`/`scope`,
     used for session OWNERSHIP) via `require_departmental(perm(AGENT, VIEW))`
     even for a caller who holds no `agent:view` seat anywhere, as long as they
-    hold `copilot:use` tenant-wide -- see `_assistant_visible`. It is boxed in
+    hold `copilot:use` tenant-wide -- see `assistant_visible` in `oc8/chat/reach.py`. It is boxed in
     a 1-tuple and read back through a local inside `_dep` rather than closed
     over directly: `test_every_route_is_governed._closed_over_permission`
     returns the FIRST string-valued freevar cell it finds on the closure, and
@@ -357,6 +357,22 @@ def require_departmental(
         return HumanActor(principal=principal, member=member, scope=scope)
 
     return _dep
+
+
+async def holds_departmental(
+    request: Request, db: AsyncSession, actor: HumanActor, permission: str
+) -> bool:
+    """Would `require_departmental(permission)` have admitted this actor on its own?
+
+    For a route gated with `or_tenant_wide` that must still tell the two kinds
+    of caller apart inside its body. The approval routes are the case: they
+    admit a member holding only `copilot:use` so the person a member-routed
+    approval (D3a) was assigned to can reach it, and everything that is NOT
+    such a row must answer that member exactly as the narrower gate did.
+    Same formula as `_dep` above, off the same memoised `Authority`.
+    """
+    authority = await _authority(request, db, actor.principal)
+    return permission in authority.tenant_wide or actor.scope.holds_anywhere(permission)
 
 
 def require_agent_write() -> Callable[..., Awaitable[HumanActor]]:

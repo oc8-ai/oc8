@@ -59,6 +59,11 @@ ALLOWED: dict[str, str] = {
         "function is already gated the same way copilot/capabilities.py is above"
     ),
     "api/v1/run.py": "loads the agent that owns the run being started or controlled",
+    "authz/member_guardrail_store.py": (
+        "reads the frame of an agent the caller was already shown -- the member "
+        "routes resolve the agent through chat's gate, every other caller is a "
+        "frame or narrowing writer that authorized the agent first"
+    ),
     "api/v1/knowledge.py": "resolves the grantee (agent or department) of a KB share",
     "api/v1/components.py": "resolves the grantee (agent or department) of a component grant",
     "agent/control_tools.py": "the agent runtime reading its own department; no human here",

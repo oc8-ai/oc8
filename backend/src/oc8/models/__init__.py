@@ -40,6 +40,7 @@ from oc8.models.knowledge import (
     MemoryStore,
 )
 from oc8.models.kpi import RunStateTransition
+from oc8.models.member_guardrails import MemberGuardrail
 from oc8.models.notifications import PushSubscription
 from oc8.models.oauth import OAuthConnection
 from oc8.models.ops import (
@@ -108,6 +109,7 @@ __all__ = [
     "KnowledgeGrant",
     "McpConnection",
     "MemberDashboardLayout",
+    "MemberGuardrail",
     "MemoryRecord",
     "MemoryStore",
     "ModelConfig",

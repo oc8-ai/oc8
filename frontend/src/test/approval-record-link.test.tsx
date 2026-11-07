@@ -58,3 +58,15 @@ describe("the approval pane's record link", () => {
     expect(screen.getByText("Nora wants to create a quotation")).toBeInTheDocument();
   });
 });
+
+describe("a personal approval in the inbox", () => {
+  it("is marked as the member's own rule", () => {
+    renderPane({ ...BASE, assigneeMemberId: "me" });
+    expect(screen.getByText("Your rule")).toBeInTheDocument();
+  });
+
+  it("a department approval carries no such mark", () => {
+    renderPane(BASE);
+    expect(screen.queryByText("Your rule")).toBeNull();
+  });
+});

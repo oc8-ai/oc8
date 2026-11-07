@@ -32,6 +32,7 @@ from oc8.agents.repo import visible_agent, visible_agents
 from oc8.agents.versioning import pinned_model_config_id
 from oc8.approvals import (
     AlreadyDecided,
+    NotYourApproval,
     NotYourDepartment,
     NotYourSayAtAll,
     UnknownDecision,
@@ -43,7 +44,16 @@ from oc8.approvals.repo import load_for_actor, visible_approvals
 from oc8.audit import append_event
 from oc8.authz.authority import authority_for_member, tenant_wide_read
 from oc8.authz.pdp import Decision, Effect
-from oc8.authz.permissions import AGENT, APPROVAL, BUDGET, DEPARTMENT, STATISTICS, VIEW, perm
+from oc8.authz.permissions import (
+    AGENT,
+    APPROVAL,
+    BUDGET,
+    COPILOT_USE,
+    DEPARTMENT,
+    STATISTICS,
+    VIEW,
+    perm,
+)
 from oc8.authz.scope import AgentActor, scope_for_member
 from oc8.capas.discovery import find_plugin
 from oc8.chat.modes import WRITING_CONTROL_TOOLS, ChatMode
@@ -922,12 +932,29 @@ CANCEL_FOLLOWUP = NeutralTool(
         "required": ["followup_id"],
     },
 )
+GUARDRAIL_SUGGEST = NeutralTool(
+    name="guardrail_suggest",
+    description=(
+        "Suggest one of the member's own guardrails for an agent; shows a card the "
+        "member confirms. Writes nothing."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "agent_id": {"type": "string"},
+            "tool_key": {"type": "string"},
+            "level": {"type": "string", "enum": ["off", "read_only", "ask_first"]},
+        },
+        "required": ["agent_id", "tool_key", "level"],
+    },
+)
 COPILOT_TOOLS: tuple[NeutralTool, ...] = (
     RESPONSIBILITY_OPEN,
     RESPONSIBILITY_UPDATE,
     RESPONSIBILITY_CLOSE,
     SCHEDULE_FOLLOWUP,
     CANCEL_FOLLOWUP,
+    GUARDRAIL_SUGGEST,
 )
 COPILOT_TOOL_NAMES: frozenset[str] = frozenset(t.name for t in COPILOT_TOOLS)
 
@@ -2506,6 +2533,13 @@ async def execute_control_tool(
             )
         except NotYourDepartment:
             return ControlOutcome(output="ERROR: approval not found")
+        except NotYourApproval:
+            # The person's own guardrail asked them (D3a): the assistant may
+            # point at it but never answer it in their name.
+            return ControlOutcome(
+                output="ERROR: this approval comes from your own guardrail — "
+                "decide it yourself in 'Waiting on me'"
+            )
         except NotYourSayAtAll as exc:
             return ControlOutcome(output=f"ERROR: {exc}")
         except UnknownDecision:
@@ -2533,7 +2567,11 @@ async def execute_control_tool(
         )
         view_perm = perm(APPROVAL, VIEW)
         admitted = view_perm in authority.tenant_wide or agent_actor.scope.holds_anywhere(view_perm)
-        if not admitted:
+        # Without a view seat the person still has the approvals their own
+        # guardrail routed to them (D3a) -- and only those, as on
+        # `GET /approvals` for a seatless caller.
+        own_only = not admitted
+        if own_only and COPILOT_USE not in authority.tenant_wide:
             return ControlOutcome(output="ERROR: you don't have permission to view approvals")
         status = str(tc.arguments.get("status") or "pending").strip()
         department_id: uuid.UUID | None = None
@@ -2548,6 +2586,8 @@ async def execute_control_tool(
         rows = await visible_approvals(
             db, actor=agent_actor, status=status, department_id=department_id, limit=limit
         )
+        if own_only:
+            rows = [r for r in rows if r.assignee_member_id == agent_actor.member.id]
         if not rows:
             return ControlOutcome(output=f"No {status} approvals.")
         lines = [

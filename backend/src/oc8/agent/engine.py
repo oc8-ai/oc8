@@ -101,8 +101,14 @@ from oc8.agent.tool_notes import apply_tool_notes
 from oc8.agent.tool_routing import RoutedToolset
 from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_identity
 from oc8.agents.versioning import pinned_model_config_id, resolve_version
-from oc8.approvals import raise_approval, record_url_for_connection
+from oc8.approvals import (
+    approval_created_event,
+    held_call,
+    raise_approval,
+    record_url_for_connection,
+)
 from oc8.audit import append_event
+from oc8.authz.member_guardrails import member_term_for_run
 from oc8.authz.pdp import Decision, Effect, effective_tool_policies, required_right
 from oc8.capas.claude_hooks import dispatch_claude_event
 from oc8.capas.claude_hooks.context import (
@@ -562,7 +568,21 @@ async def run_agent(
         ]
         department = await db.get(m.Department, agent.department_id)
         frame: dict[str, Any] = department.frame if department is not None else {}
-        tool_policies = effective_tool_policies(frame, pinned["narrowing"] or {})
+        # The acting member's guardrail (D3a): whoever posted this turn,
+        # resolved once per run like the pinned narrowing beside it.
+        acting_operator = originating_operator
+        if acting_operator is None and run_row is not None:
+            acting_operator = (run_row.context or {}).get("originating_operator")
+        acting_member, member_policy = await member_term_for_run(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent.id,
+            context={
+                **((run_row.context or {}) if run_row is not None else {}),
+                "originating_operator": acting_operator,
+            },
+        )
+        tool_policies = effective_tool_policies(frame, pinned["narrowing"] or {}, member_policy)
         extra_conns: list[m.McpConnection] = list(mcp_conns) if mcp_conns else []
         if not extra_conns and run_row is not None:
             raw_ids = run_row.context.get("mcp_connection_ids")
@@ -1933,6 +1953,9 @@ async def run_agent(
                                 held_record = record_identity(
                                     auth_tc.name, tc.arguments, call_focus
                                 )
+                                # A member's own rule asks that member first,
+                                # then the department when it asked too (D3a).
+                                held = held_call(decision, acting_member)
                                 ar = await raise_approval(
                                     db,
                                     tenant_id=tenant_id,
@@ -1940,7 +1963,7 @@ async def run_agent(
                                     task_id=task.id,
                                     action_type="tool_send",
                                     title=f"{agent.name} wants to call {tc.name}",
-                                    detail=decision.reason,
+                                    detail=held.detail,
                                     payload={
                                         "tool": tc.name,
                                         "arguments": tc.arguments,
@@ -1949,9 +1972,11 @@ async def run_agent(
                                             gate_verdict.preview if gate_verdict is not None else ""
                                         ),
                                         **({"record_url": link} if link else {}),
+                                        **held.payload,
                                     },
-                                    reason_code=decision.reason_code,
-                                    reason_context=decision.context,
+                                    assignee_member_id=held.assignee_member_id,
+                                    reason_code=held.reason_code,
+                                    reason_context=held.reason_context,
                                     record_url=(
                                         record_url_for_connection(
                                             owner, entity=held_record[0], ref=held_record[1]
@@ -1966,17 +1991,10 @@ async def run_agent(
                             await get_event_bus().publish_event(
                                 ar.tenant_id,
                                 "approval.created",
-                                {
-                                    "approval_id": str(ar.id),
-                                    "action_type": ar.action_type,
-                                    "status": ar.status,
-                                    # Carried in the envelope on purpose: the
-                                    # executor commits, not us, so a fresh
-                                    # session reading this row would see
-                                    # nothing (see EventBus._push_payload).
-                                    "title": ar.title,
-                                    "detail": ar.detail,
-                                },
+                                # Carries title/detail on purpose: the executor
+                                # commits, not us, so a fresh session reading
+                                # this row would see nothing.
+                                approval_created_event(ar),
                                 source=f"oc8/approval/{ar.id}",
                             )
                             tool_trace.append(

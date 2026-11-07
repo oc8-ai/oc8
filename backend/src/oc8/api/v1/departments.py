@@ -49,6 +49,7 @@ from oc8.api.deps import CurrentPrincipal, DbSession, require_departmental, requ
 from oc8.api.v1._serializers import agent_to_dto, department_to_dto, task_to_dto
 from oc8.audit import append_event
 from oc8.authz.authority import authority_for_principal, tenant_wide_read
+from oc8.authz.member_guardrail_store import prune_redundant
 from oc8.authz.pdp import ConditionDatatype, ConditionOperator, Effect
 from oc8.authz.permissions import DEPARTMENT, MANAGE, VIEW, perm
 from oc8.authz.scope import HumanActor
@@ -684,6 +685,8 @@ async def set_department_tools(
     await _cascade_department_tools_change(
         db, old_tools=old_tools, new_tools=frame["tools"], agents=agents
     )
+    for agent in agents:
+        await prune_redundant(db, tenant_id=_p.tenant_id, agent=agent, principal=_p)
 
     await db.flush()
     return DepartmentToolsDTO(
@@ -747,6 +750,8 @@ async def reset_department_tool(
     await _cascade_department_tools_change(
         db, old_tools=old_tools, new_tools=new_tools, agents=agents
     )
+    for agent in agents:
+        await prune_redundant(db, tenant_id=_p.tenant_id, agent=agent, principal=_p)
 
     await db.flush()
     await append_event(

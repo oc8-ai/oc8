@@ -4,6 +4,7 @@ import { useState } from "react";
 import { ChatSessionPicker, ChatWindow } from "@/components/chat-window";
 import { CopilotAvatar, CopilotPersonaHeader } from "@/components/copilot-persona";
 import { CopilotWorkPanel } from "@/components/copilot-work-panel";
+import { YourGuardrailsButton } from "@/components/member-guardrails-sheet";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -23,6 +24,7 @@ export function CopilotPage() {
   const { data: sessions = [] } = useChatSessions(agentId || undefined);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [panelOpen, setPanelOpen] = useState(true);
+  const [guardrailsOpen, setGuardrailsOpen] = useState(false);
   const mobile = useIsMobile();
   if (!may("copilot:use")) return null; // nav is the main gate; defense in depth
   const name = profile?.displayName ?? "Copilot";
@@ -34,6 +36,8 @@ export function CopilotPage() {
       className="h-full min-h-0 flex-1 rounded-none border-0"
       sessionId={sessionId}
       onSessionChange={setSessionId}
+      guardrailsOpen={guardrailsOpen}
+      onGuardrailsOpenChange={setGuardrailsOpen}
       promptStarters={[
         t("Keep an eye on something for me", "Behalte etwas für mich im Blick"),
         t("What are you working on for me?", "Woran arbeitest du gerade für mich?"),
@@ -67,6 +71,14 @@ export function CopilotPage() {
               sessionId={sessionId}
               onSelect={setSessionId}
             />
+            {agentId && (
+              <YourGuardrailsButton
+                agentId={agentId}
+                agentName={name}
+                open={guardrailsOpen}
+                onOpenChange={setGuardrailsOpen}
+              />
+            )}
             {mobile ? (
               <Sheet>
                 <SheetTrigger asChild>

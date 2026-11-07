@@ -131,6 +131,14 @@ export interface Approval {
   // remains the only "why" for those.
   reasonContext?: Record<string, unknown> | null;
   recordUrl?: string | null;
+  // D3a routing: set when the member's own guardrail asked -- only that member
+  // decides it. `null` for a department approval.
+  assigneeMemberId?: string | null;
+  // The member approval a department stage follows (its second stage).
+  previousApprovalId?: string | null;
+  // On a member's own approval only: how the department's second stage
+  // stands; `null` when there is none. Nothing else of that stage is shown.
+  nextStageStatus?: "pending" | "approved" | "rejected" | "expired" | null;
 }
 
 /** A question an agent parked mid-run. The other half of the workspace queue. */

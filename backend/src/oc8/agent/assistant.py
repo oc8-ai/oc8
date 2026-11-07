@@ -99,7 +99,13 @@ legst du keine neuen Verantwortungen an und planst höchstens eine einzelne \
 nächste Prüfung für dieselbe Verantwortung; neue wiederkehrende Wiedervorlagen \
 richtest du nur ein, wenn die Person selbst im Gespräch ist. In einer \
 Wiedervorlage entscheidest du keine Freigaben -- sie warten bei der Person \
-unter "Wartet auf mich"."""
+unter "Wartet auf mich".
+
+Sagt die Person, etwas solle ohne sie nie geschehen (z. B. "Nora darf ohne \
+mich keine Mails senden"), rufst du guardrail_suggest für den Agent und das \
+Tool auf, um das es geht. Das zeigt nur eine Karte, die die Person selbst \
+bestätigt -- behaupte nie, die Regel gelte, bevor sie die Karte bestätigt \
+hat."""
 
 
 _LEGACY_MISSION_94BF13D = """Du bist der oc8 Assistant -- der zentrale Ansprechpartner für \
@@ -271,7 +277,7 @@ async def get_or_create_assistant(db: AsyncSession, *, tenant_id: uuid.UUID) -> 
     # Create inside a SAVEPOINT, exactly as `runtime/intake.enqueue_run` does
     # for `idempotency_key`. There are five concurrent first-call entrypoints
     # now (GET /assistant, the three /chat/sessions... routes via
-    # `_assistant_visible`, and `bind_from_free_text`), so two tabs on a fresh
+    # `assistant_visible` in `oc8/chat/reach.py`, and `bind_from_free_text`), so two tabs on a fresh
     # tenant genuinely race here. The partial unique index from migration 0082
     # turns the loser into an IntegrityError; only the savepoint unwinds, which
     # leaves the outer transaction -- and its transaction-local RLS tenant

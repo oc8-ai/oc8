@@ -13,6 +13,8 @@ const m = vi.hoisted(() => ({
   cron: "0 9 * * *",
   followupEnabled: true,
   lastSkipReason: null as string | null,
+  guardrails: [] as unknown[],
+  myApprovals: [] as unknown[],
 }));
 
 vi.mock("@/lib/hooks-copilot", () => ({
@@ -80,6 +82,34 @@ vi.mock("@/components/run-step-timeline", () => ({
   RunStepTimeline: () => <div data-testid="timeline" />,
 }));
 
+vi.mock("@/lib/hooks-member-guardrails", () => ({
+  useCopilotGuardrails: () => ({ data: m.guardrails, isLoading: false }),
+  useMyApprovals: () => ({ data: m.myApprovals }),
+}));
+
+vi.mock("@/components/chat-approval-card", () => ({
+  ChatApprovalCard: ({
+    approval,
+    onChangeRule,
+  }: {
+    approval: { id: string; agentId: string };
+    onChangeRule?: (agentId: string) => void;
+  }) => (
+    <button
+      type="button"
+      data-testid="approval-card"
+      onClick={() => onChangeRule?.(approval.agentId)}
+    >
+      {approval.id}
+    </button>
+  ),
+}));
+
+vi.mock("@/components/member-guardrails-sheet", () => ({
+  MemberGuardrailsSheet: ({ agentId, open }: { agentId: string; open: boolean }) =>
+    open ? <div data-testid="guardrails-sheet">{agentId}</div> : null,
+}));
+
 vi.mock("@/components/dashboard/widgets/needs-me-widget", () => ({
   NeedsMeWidget: ({ agentId }: { agentId?: string }) => <div data-testid="needs-me">{agentId}</div>,
 }));
@@ -101,6 +131,8 @@ beforeEach(() => {
   m.cron = "0 9 * * *";
   m.followupEnabled = true;
   m.lastSkipReason = null;
+  m.guardrails = [];
+  m.myApprovals = [];
 });
 
 describe("CopilotWorkPanel", () => {
@@ -211,5 +243,54 @@ describe("CopilotWorkPanel", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));
     expect(spy).toHaveBeenCalledWith({ queryKey: ["copilot", "delegations"] });
+  });
+
+  it("guardrails tab lists my own rules grouped by agent and opens that agent's sheet", () => {
+    const policy = { enabled: true, read: true, modify: true, approvalActions: [], conditions: [] };
+    m.guardrails = [
+      {
+        agentId: "a1",
+        agentName: "Sales agent",
+        summary: [],
+        tools: [
+          { toolKey: "gmail", level: "ask_first", source: "member", mine: policy, base: policy },
+          { toolKey: "calendar", level: "allowed", source: "agent", mine: null, base: policy },
+        ],
+      },
+      {
+        agentId: "a2",
+        agentName: "Support agent",
+        summary: [],
+        tools: [
+          { toolKey: "odoo", level: "read_only", source: "member", mine: policy, base: policy },
+        ],
+      },
+    ];
+    wrap(<CopilotWorkPanel />);
+    openTab(/guardrails/i);
+    expect(screen.getByRole("heading", { name: "Sales agent" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Support agent" })).toBeInTheDocument();
+    expect(screen.queryByText(/calendar/i)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Gmail.*Ask me first/ }));
+    expect(screen.getByTestId("guardrails-sheet")).toHaveTextContent("a1");
+  });
+
+  it("guardrails tab without rules of my own says how to get one", () => {
+    wrap(<CopilotWorkPanel />);
+    openTab(/guardrails/i);
+    expect(
+      screen.getByText(
+        "No guardrails of your own yet. Tell your Copilot what should never happen without you.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("waiting tab lists my personal approvals across agents, and Change rule opens the sheet", () => {
+    m.myApprovals = [{ id: "ap1", agentId: "a2" }];
+    wrap(<CopilotWorkPanel />);
+    openTab(/waiting/i);
+    fireEvent.click(screen.getByTestId("approval-card"));
+    expect(screen.getByTestId("guardrails-sheet")).toHaveTextContent("a2");
+    expect(screen.getByTestId("needs-me")).toBeInTheDocument();
   });
 });
