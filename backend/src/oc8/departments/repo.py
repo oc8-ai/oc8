@@ -94,7 +94,7 @@ async def visible_department(
     The Assistant's department 404s like anything else nobody may see. Unlike
     `visible_agent` there is no opt-in: nothing in the Assistant's own machinery
     loads its department through this funnel (`get_or_create_assistant` holds
-    the row it just made, and `_assistant_visible` asks about the agent), so a
+    the row it just made, and `assistant_visible` in `oc8/chat/reach.py` asks about the agent), so a
     bypass here would have no caller."""
     row = (
         await db.execute(

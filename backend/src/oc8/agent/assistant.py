@@ -277,7 +277,7 @@ async def get_or_create_assistant(db: AsyncSession, *, tenant_id: uuid.UUID) -> 
     # Create inside a SAVEPOINT, exactly as `runtime/intake.enqueue_run` does
     # for `idempotency_key`. There are five concurrent first-call entrypoints
     # now (GET /assistant, the three /chat/sessions... routes via
-    # `_assistant_visible`, and `bind_from_free_text`), so two tabs on a fresh
+    # `assistant_visible` in `oc8/chat/reach.py`, and `bind_from_free_text`), so two tabs on a fresh
     # tenant genuinely race here. The partial unique index from migration 0082
     # turns the loser into an IntegrityError; only the savepoint unwinds, which
     # leaves the outer transaction -- and its transaction-local RLS tenant

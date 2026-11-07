@@ -293,7 +293,7 @@ def require_departmental(
     session routes, which resolve a `HumanActor` (for its `member`/`scope`,
     used for session OWNERSHIP) via `require_departmental(perm(AGENT, VIEW))`
     even for a caller who holds no `agent:view` seat anywhere, as long as they
-    hold `copilot:use` tenant-wide -- see `_assistant_visible`. It is boxed in
+    hold `copilot:use` tenant-wide -- see `assistant_visible` in `oc8/chat/reach.py`. It is boxed in
     a 1-tuple and read back through a local inside `_dep` rather than closed
     over directly: `test_every_route_is_governed._closed_over_permission`
     returns the FIRST string-valued freevar cell it finds on the closure, and
