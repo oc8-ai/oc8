@@ -304,6 +304,8 @@ def approval_to_dto(a: m.ApprovalRequest, names: ApprovalNames | None = None) ->
         # (and any raiser that still only writes the payload).
         record_url=a.record_url
         or (payload.get("record_url") if isinstance(payload.get("record_url"), str) else None),
+        assignee_member_id=str(a.assignee_member_id) if a.assignee_member_id else None,
+        previous_approval_id=str(a.previous_approval_id) if a.previous_approval_id else None,
     )
 
 

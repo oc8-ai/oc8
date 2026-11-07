@@ -178,6 +178,12 @@ class ApprovalDTO(CamelModel):
     reason_context: dict[str, Any] | None = None
     #: The record in the source system, when the held call names one.
     record_url: str | None = None
+    #: D3a routing: set when a member's own guardrail asked -- only that member
+    #: decides it. `null` for a department (or tenant) approval.
+    assignee_member_id: str | None = None
+    #: The member's approval this department stage follows, when it is the
+    #: second stage of a member-routed call.
+    previous_approval_id: str | None = None
 
 
 class ClarificationDTO(CamelModel):
