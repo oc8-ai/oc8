@@ -404,7 +404,7 @@ function HandoffDrawer({
             </button>
             <button
               onClick={onApprove}
-              className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground"
+              className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90"
             >
               <CheckCircle2 className="h-3.5 w-3.5" /> Approve gate
             </button>
@@ -413,7 +413,7 @@ function HandoffDrawer({
         {h.status === "accepted" && (
           <button
             onClick={onAccept}
-            className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground"
+            className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90"
           >
             <Zap className="h-3.5 w-3.5" /> Start work
           </button>
@@ -421,7 +421,7 @@ function HandoffDrawer({
         {h.status === "in_progress" && (
           <button
             onClick={onComplete}
-            className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground"
+            className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90"
           >
             <CheckCircle2 className="h-3.5 w-3.5" /> Mark complete
           </button>

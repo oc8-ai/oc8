@@ -108,7 +108,7 @@ export function CredentialPicker({
             type="button"
             disabled={!name.trim() || createCredential.isPending}
             onClick={submit}
-            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {createCredential.isPending
               ? t("Saving…", "Wird gespeichert …")

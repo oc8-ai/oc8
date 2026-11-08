@@ -171,7 +171,7 @@ export function PendingProposals({ de }: { de: boolean }) {
                   onClick={() =>
                     answer(proposal.id, (options) => apply.mutate(proposal.id, options))
                   }
-                  className="rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground disabled:opacity-50"
+                  className="rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                 >
                   {de ? "Anwenden" : "Apply"}
                 </button>

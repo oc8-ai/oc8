@@ -869,7 +869,7 @@ function CapaCard({
               onClick={onInstall}
               disabled={busy}
               className={cn(
-                "inline-flex shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground",
+                "inline-flex shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90",
                 busy && "opacity-60",
               )}
             >
@@ -898,7 +898,7 @@ function CapaCard({
               onClick={onEnable}
               disabled={busy || !plugin.databaseId}
               className={cn(
-                "inline-flex shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground",
+                "inline-flex shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90",
                 busy && "opacity-60",
               )}
             >
@@ -911,7 +911,7 @@ function CapaCard({
               onClick={onInstall}
               disabled={busy}
               className={cn(
-                "inline-flex shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground",
+                "inline-flex shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90",
                 busy && "opacity-60",
               )}
             >

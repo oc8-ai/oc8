@@ -149,7 +149,7 @@ function TenantPicker({
         <button
           onClick={create}
           disabled={busy || !name.trim() || !slug.trim()}
-          className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-40"
+          className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
         >
           <Plus className="h-4 w-4" />
           {t("Create company", "Firma anlegen")}
@@ -306,7 +306,7 @@ function PersonaPicker({ tenant, onBack }: { tenant: DevTenant; onBack: () => vo
             <button
               onClick={() => signInAs(manualSubject, manualRole)}
               disabled={busy || !manualSubject.trim()}
-              className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-40"
+              className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
             >
               {t("Continue", "Weiter")}
             </button>

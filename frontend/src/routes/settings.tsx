@@ -251,7 +251,7 @@ function OrganizationPanel() {
             type="button"
             onClick={save}
             disabled={!name.trim() || !region.trim() || update.isPending}
-            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-40"
+            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
           >
             {update.isPending ? (
               <Loader2 className="h-3 w-3 animate-spin" />
@@ -471,7 +471,7 @@ export function CopilotSettingsPanel() {
           type="button"
           onClick={save}
           disabled={!valid || update.isPending || value === data?.maxActiveFollowups}
-          className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-40"
+          className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
         >
           {update.isPending ? (
             <Loader2 className="h-3 w-3 animate-spin" />

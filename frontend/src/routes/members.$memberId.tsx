@@ -448,7 +448,7 @@ export function MemberDetailForm({ member }: { member: Member }) {
                 type="button"
                 onClick={saveDisplayName}
                 disabled={updateMember.isPending || displayName === (member.displayName ?? "")}
-                className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >
                 <Save className="size-3.5" />
                 {t("Save", "Speichern")}
@@ -469,7 +469,7 @@ export function MemberDetailForm({ member }: { member: Member }) {
                   type="button"
                   onClick={saveSubject}
                   disabled={renameSubject.isPending || subject.trim() === member.subject}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                 >
                   <Save className="size-3.5" />
                   {t("Save", "Speichern")}
@@ -520,7 +520,7 @@ export function MemberDetailForm({ member }: { member: Member }) {
               type="button"
               onClick={submitPassword}
               disabled={setPassword.isPending || newPassword.length === 0}
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground disabled:opacity-50"
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
             >
               {setPassword.isPending
                 ? t("Setting…", "Wird gesetzt…")
@@ -700,7 +700,7 @@ export function MemberDetailForm({ member }: { member: Member }) {
               type="button"
               onClick={addSeat}
               disabled={grantSeat.isPending}
-              className="rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground disabled:opacity-50"
+              className="rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
             >
               {t("Add seat", "Sitz hinzufügen")}
             </button>
@@ -793,7 +793,7 @@ function ResetLinkDialog({
         <div className="flex justify-end">
           <button
             onClick={() => onOpenChange(false)}
-            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground"
+            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
           >
             {t("Done", "Fertig")}
           </button>

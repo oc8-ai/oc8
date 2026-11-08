@@ -122,7 +122,7 @@ function FlowsPage() {
           <h3 className="font-serif text-lg">Flows</h3>
           <button
             onClick={() => setCreateOpen(true)}
-            className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground"
+            className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
           >
             <Plus className="h-3.5 w-3.5" /> New flow
           </button>
@@ -164,7 +164,7 @@ function FlowsPage() {
               </p>
               <button
                 onClick={() => setCreateOpen(true)}
-                className="mt-4 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground"
+                className="mt-4 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
               >
                 Create first flow
               </button>
@@ -414,7 +414,7 @@ function CreateFlowDialog({
           <button
             onClick={submit}
             disabled={publish.isPending || departments.length < 2}
-            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {publish.isPending ? "Publishing…" : "Publish flow"}
           </button>

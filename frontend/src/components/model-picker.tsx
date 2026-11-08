@@ -179,7 +179,7 @@ function ConnectModelInline({
         type="button"
         onClick={submit}
         disabled={createModel.isPending}
-        className="w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+        className="w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
       >
         {createModel.isPending
           ? t("Connecting…", "Wird verbunden …")

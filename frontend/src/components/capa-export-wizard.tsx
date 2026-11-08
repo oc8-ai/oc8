@@ -279,7 +279,7 @@ export function CapaExportWizard({
             type="button"
             disabled={!hasSelection}
             onClick={() => setStep("details")}
-            className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
+            className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {t("Next", "Weiter")}
           </button>
@@ -289,7 +289,7 @@ export function CapaExportWizard({
           <button
             type="button"
             onClick={goToPreview}
-            className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground"
+            className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90"
           >
             {t("Preview", "Vorschau")}
           </button>
@@ -300,7 +300,7 @@ export function CapaExportWizard({
             type="button"
             disabled={preview.isPending}
             onClick={() => setStep("export")}
-            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {preview.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
             {t("Continue to export", "Weiter zum Export")}
@@ -312,7 +312,7 @@ export function CapaExportWizard({
             type="button"
             disabled={exporting || preview.isPending || !preview.isSuccess}
             onClick={handleExport}
-            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {exporting && <Loader2 className="h-3 w-3 animate-spin" />}
             {exporting ? t("Exporting…", "Exportiere…") : t("Export", "Export")}

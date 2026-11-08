@@ -151,7 +151,7 @@ export function ApiKeysPanel() {
               type="button"
               onClick={handleCreate}
               disabled={!name.trim() || createKey.isPending}
-              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-40"
+              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
             >
               {createKey.isPending ? (
                 <Loader2 className="h-3 w-3 animate-spin" />

@@ -1356,7 +1356,7 @@ function CollaborationTab({ deptId }: { deptId: string }) {
           />
           <button
             onClick={addEmit}
-            className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground"
+            className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90"
           >
             <Plus className="h-3 w-3" /> Add
           </button>
@@ -1399,7 +1399,7 @@ function CollaborationTab({ deptId }: { deptId: string }) {
             </button>
             <button
               onClick={addIntake}
-              className="rounded-md bg-primary px-3 py-1 text-xs text-primary-foreground"
+              className="rounded-md bg-primary px-3 py-1 text-xs text-primary-foreground hover:bg-primary/90"
             >
               Add
             </button>

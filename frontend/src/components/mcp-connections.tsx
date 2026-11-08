@@ -46,7 +46,7 @@ export function McpConnectionsPanel() {
         </span>
         <button
           onClick={() => setCreateOpen(true)}
-          className="ml-auto inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1.5 text-xs font-medium text-primary-foreground"
+          className="ml-auto inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
         >
           <Plus className="h-3 w-3" /> {t("Add connection", "Verbindung anlegen")}
         </button>
@@ -197,7 +197,7 @@ function CreateConnectionDialog({ onClose }: { onClose: () => void }) {
           <button
             onClick={submit}
             disabled={create.isPending}
-            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-40"
+            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
           >
             Create & test next
           </button>

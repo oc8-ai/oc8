@@ -166,7 +166,7 @@ function InviteLinkDialog({
         <div className="flex justify-end">
           <button
             onClick={() => onOpenChange(false)}
-            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground"
+            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
           >
             {t("Done", "Fertig")}
           </button>
@@ -384,7 +384,7 @@ function CreateMemberDialog({
           <button
             onClick={submit}
             disabled={createMember.isPending}
-            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {createMember.isPending
               ? t("Creating…", "Wird angelegt…")
