@@ -7,8 +7,11 @@ around it.
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import importlib
+import json
+import logging
 import uuid
 from typing import Any, Literal
 
@@ -18,7 +21,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.capas.loader import TRUSTED, import_entry_point
 from oc8.credentials.registry import find_credential_type_owner, get_credential_type
+from oc8.net.outbound import OutboundBlocked, guard_outbound_url
 from oc8.secrets.service import resolve_secret, store_secret
+
+logger = logging.getLogger(__name__)
 
 #: Which owner a lookup accepts. "any": internal callers holding an id the
 #: system itself stored (a running bridge, the mailer). "organisation": every
@@ -263,6 +269,64 @@ async def resolve_credential_field(
     return str(value)
 
 
+class CredentialCheckFailed(ValueError):
+    """A live check did not pass.
+
+    `detail` is text that is safe to show a person: the validator's own
+    ValueError, or one of ours. It is None whenever the failure came from
+    anywhere else (a transport error, an HTTP error, a parse error): that text
+    can carry an upstream response body or an internal address, so it is only
+    logged. `reason` ("auth" | "unreachable" | "invalid") is the class of
+    failure when we know it; `internal` is for classifying and logging only.
+    """
+
+    def __init__(
+        self, detail: str | None, *, reason: str | None = None, internal: str = ""
+    ) -> None:
+        super().__init__(detail or "The check failed.")
+        self.detail = detail
+        self.reason = reason
+        self.internal = internal or detail or ""
+
+
+#: ValueError subclasses that come from parsing/serialising a foreign
+#: response, not from a validator choosing its words.
+_NOT_USER_FACING = (json.JSONDecodeError, UnicodeError)
+
+
+def _guard_url_fields(cred_type: Any, values: dict[str, str]) -> None:
+    """Refuse a url field that points at an internal or non-http address,
+    before any validator makes a request with it."""
+    for field in cred_type.fields:
+        if field.kind != "url":
+            continue
+        value = values.get(field.key)
+        if not value:
+            continue
+        try:
+            guard_outbound_url(value)
+        except OutboundBlocked as exc:
+            raise CredentialCheckFailed(
+                None, reason="unreachable", internal=f"unreachable: {exc}"
+            ) from exc
+
+
+async def _load_validator(
+    db: AsyncSession, *, tenant_id: uuid.UUID, credential_type: str, cred_type: Any
+) -> Any:
+    """The type's own `validate_entry_point`. A core-owned type resolves it
+    via a plain dotted import; a Capa-owned type's entry point names a module
+    path relative to the owning plugin's folder, found through
+    `find_credential_type_owner` (matching the DECLARED type name)."""
+    discovered = await find_credential_type_owner(
+        db, tenant_id=tenant_id, credential_type=credential_type
+    )
+    if discovered is not None and discovered.trust in TRUSTED:
+        return import_entry_point(discovered.path, cred_type.validate_entry_point)
+    module_path, _, attr = cred_type.validate_entry_point.partition(":")
+    return getattr(importlib.import_module(module_path), attr)
+
+
 async def _run_validate(
     db: AsyncSession,
     *,
@@ -271,21 +335,26 @@ async def _run_validate(
     cred_type: Any,
     values: dict[str, str],
 ) -> None:
-    """Call the type's own `validate_entry_point`. A core-owned type resolves
-    it via a plain dotted import; a Capa-owned type's entry point names a
-    module path relative to the owning plugin's folder, found through
-    `find_credential_type_owner` (matching the DECLARED type name)."""
+    """Run the type's validator. Raises CredentialCheckFailed only."""
     if not cred_type.validate_entry_point:
         return
-    discovered = await find_credential_type_owner(
-        db, tenant_id=tenant_id, credential_type=credential_type
-    )
-    if discovered is not None and discovered.trust in TRUSTED:
-        validate = import_entry_point(discovered.path, cred_type.validate_entry_point)
-    else:
-        module_path, _, attr = cred_type.validate_entry_point.partition(":")
-        validate = getattr(importlib.import_module(module_path), attr)
-    await validate(values)  # type: ignore[operator]
+    await asyncio.to_thread(_guard_url_fields, cred_type, values)
+    try:
+        validate = await _load_validator(
+            db, tenant_id=tenant_id, credential_type=credential_type, cred_type=cred_type
+        )
+        await validate(values)
+    except CredentialCheckFailed:
+        raise
+    except _NOT_USER_FACING as exc:
+        logger.warning("credential check %s failed: %r", credential_type, exc)
+        raise CredentialCheckFailed(None, internal=repr(exc)) from exc
+    except ValueError as exc:
+        # Raised by the validator on purpose: its words are for the person.
+        raise CredentialCheckFailed(str(exc)) from exc
+    except Exception as exc:
+        logger.warning("credential check %s failed: %r", credential_type, exc)
+        raise CredentialCheckFailed(None, internal=f"{type(exc).__name__}: {exc}") from exc
 
 
 async def check_credential_values(
@@ -296,8 +365,17 @@ async def check_credential_values(
     field_values: dict[str, Any],
 ) -> None:
     """Validate values that are not stored ("Verbindung prüfen"). Raises
-    ValueError with the validator's message; stores nothing."""
+    CredentialCheckFailed; stores nothing."""
     cred_type = await get_credential_type(db, tenant_id=tenant_id, name=credential_type)
+    values = collect_required_values(cred_type, field_values)
+    await _run_validate(
+        db, tenant_id=tenant_id, credential_type=credential_type, cred_type=cred_type, values=values
+    )
+
+
+def collect_required_values(cred_type: Any, field_values: dict[str, Any]) -> dict[str, str]:
+    """Trimmed values with declared defaults filled in; a required field left
+    empty raises CredentialCheckFailed (reason "invalid")."""
     values: dict[str, str] = {}
     for field in cred_type.fields:
         raw = field_values.get(field.key)
@@ -307,17 +385,8 @@ async def check_credential_values(
         if value:
             values[field.key] = value
         elif field.required:
-            raise ValueError(f"{field.label} is required")
-    try:
-        await _run_validate(
-            db,
-            tenant_id=tenant_id,
-            credential_type=credential_type,
-            cred_type=cred_type,
-            values=values,
-        )
-    except Exception as exc:
-        raise ValueError(str(exc)) from exc
+            raise CredentialCheckFailed(f"{field.label} is required", reason="invalid")
+    return values
 
 
 async def test_credential(
@@ -359,11 +428,11 @@ async def test_credential(
             cred_type=cred_type,
             values=values,
         )
-    except Exception as exc:
+    except CredentialCheckFailed:
         cred.last_tested_at = dt.datetime.now(tz=dt.UTC)
         cred.last_test_ok = False
         await db.flush()
-        raise ValueError(str(exc)) from exc
+        raise
     cred.last_tested_at = dt.datetime.now(tz=dt.UTC)
     cred.last_test_ok = True
     await db.flush()

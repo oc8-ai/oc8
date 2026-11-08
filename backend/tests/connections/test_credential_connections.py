@@ -24,14 +24,16 @@ def odoo_validator(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, str]]:
     """Replace the Odoo type's live login check: wrong password -> an auth error."""
     seen: list[dict[str, str]] = []
 
-    async def fake(
-        db: Any, *, tenant_id: Any, credential_type: str, cred_type: Any, values: dict[str, str]
-    ) -> None:
+    async def validate(values: dict[str, str]) -> None:
         seen.append(values)
         if values.get("password") != "s3cret":
-            raise RuntimeError("Access Denied: wrong login/password")
+            raise ValueError("Access Denied: wrong login/password")
 
-    monkeypatch.setattr("oc8.credentials.service._run_validate", fake)
+    async def load(db: Any, *, tenant_id: Any, credential_type: str, cred_type: Any) -> Any:
+        return validate
+
+    monkeypatch.setattr("oc8.credentials.service._load_validator", load)
+    monkeypatch.setattr("oc8.net.outbound.resolve_ips", lambda host: ["93.184.216.34"])
     return seen
 
 
@@ -44,6 +46,10 @@ def test_errors_are_sorted_into_what_a_person_can_fix() -> None:
     )
     assert classify_check_error("timed out") == "unreachable"
     assert classify_check_error("database 'acme' does not exist") == "invalid"
+    # whole words only: a digit run or a longer word must not trigger a class
+    assert classify_check_error("record 14013 not found") == "invalid"
+    assert classify_check_error("the sslab module is missing") == "invalid"
+    assert classify_check_error("field url is required") == "invalid"
 
 
 async def test_a_member_checks_then_saves_their_own_login(

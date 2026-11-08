@@ -13,6 +13,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -30,12 +31,14 @@ from oc8.connections.revoke import (
     delete_secret_refs,
     revoke_oauth_connection,
 )
-from oc8.credentials.registry import list_credential_types_with_i18n
+from oc8.credentials.registry import get_credential_type, list_credential_types_with_i18n
 from oc8.credentials.service import (
+    CredentialCheckFailed,
     CredentialFieldNotSet,
     CredentialInUse,
     CredentialNotFound,
     check_credential_values,
+    collect_required_values,
     create_credential,
     delete_credential,
     get_credential,
@@ -370,11 +373,14 @@ async def _credential_integration(db: AsyncSession, name: str) -> Integration:
     raise HTTPException(status.HTTP_404_NOT_FOUND, "integration not available")
 
 
-async def _free_name(db: AsyncSession, owner: uuid.UUID | None, base: str) -> str:
+async def _free_name(
+    db: AsyncSession, tenant_id: uuid.UUID, owner: uuid.UUID | None, base: str
+) -> str:
     stmt = select(m.Credential.name).where(
+        m.Credential.tenant_id == tenant_id,
         m.Credential.owner_member_id.is_(None)
         if owner is None
-        else m.Credential.owner_member_id == owner
+        else m.Credential.owner_member_id == owner,
     )
     taken = set((await db.execute(stmt)).scalars().all())
     if base not in taken:
@@ -388,8 +394,11 @@ async def _free_name(db: AsyncSession, owner: uuid.UUID | None, base: str) -> st
 def _check_result(exc: Exception | None) -> CredentialCheckDTO:
     if exc is None:
         return CredentialCheckDTO(ok=True)
-    message = str(exc)
-    return CredentialCheckDTO(ok=False, reason=classify_check_error(message), detail=message[:300])
+    if isinstance(exc, CredentialCheckFailed):
+        detail = exc.detail[:300] if exc.detail else None
+        reason = exc.reason or classify_check_error(exc.internal)
+        return CredentialCheckDTO(ok=False, reason=reason, detail=detail)
+    return CredentialCheckDTO(ok=False, reason="invalid", detail=None)
 
 
 @router.post("/connections/credentials/check", response_model=CredentialCheckDTO, dependencies=_OWN)
@@ -405,7 +414,7 @@ async def check_credential(
             credential_type=integration.credential_type,
             field_values=body.field_values,
         )
-    except ValueError as exc:
+    except CredentialCheckFailed as exc:
         return _check_result(exc)
     return _check_result(None)
 
@@ -428,25 +437,59 @@ async def create_credential_connection(
     integration = await _credential_integration(db, body.integration)
     assert integration.credential_type is not None
     owner = None if body.owner == "organisation" else me.id
-    name = await _free_name(db, owner, (body.name or "").strip() or integration.label)
-    cred = await create_credential(
-        db,
-        tenant_id=principal.tenant_id,
-        name=name,
-        credential_type=integration.credential_type,
-        field_values=body.field_values,
-        owner_member_id=owner,
+    cred_type = await get_credential_type(
+        db, tenant_id=principal.tenant_id, name=integration.credential_type
     )
+    try:
+        collect_required_values(cred_type, body.field_values)
+    except CredentialCheckFailed as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, exc.detail) from exc
+    base = (body.name or "").strip() or integration.label
+    cred = None
+    for _attempt in range(5):
+        name = await _free_name(db, principal.tenant_id, owner, base)
+        try:
+            # A savepoint: a name taken by a concurrent request since the
+            # lookup must retry with the next suffix, not fail the request.
+            async with db.begin_nested():
+                cred = await create_credential(
+                    db,
+                    tenant_id=principal.tenant_id,
+                    name=name,
+                    credential_type=integration.credential_type,
+                    field_values=body.field_values,
+                    owner_member_id=owner,
+                )
+        except IntegrityError:
+            continue
+        break
+    if cred is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "name already in use")
     # Records last_tested_at/last_test_ok; a failing login is still saved
     # (the person asked to save) and shows as "failed" with its own Test button.
     try:
         await test_credential(db, tenant_id=principal.tenant_id, credential_id=cred.id)
-    except (ValueError, CredentialFieldNotSet):
+    except (CredentialCheckFailed, CredentialFieldNotSet):
         pass
     # Before the commit: the tenant binding is transaction-local, so a read
     # after it would see nothing under RLS.
     names = await _names(db, {me.id})
     dto = credential_dto(cred, me.id, names, {integration.credential_type: integration.name})
+    await append_event(
+        db,
+        tenant_id=principal.tenant_id,
+        actor_type="operator",
+        actor_id=None,
+        category="connection",
+        action="connection.created",
+        resource={
+            "kind": "credential",
+            "id": str(cred.id),
+            "integration": integration.name,
+            "owner_member_id": str(owner) if owner else None,
+        },
+        principal=principal,
+    )
     await db.commit()
     return dto
 
@@ -468,7 +511,7 @@ async def test_credential_connection(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "credential not found")
     try:
         await test_credential(db, tenant_id=principal.tenant_id, credential_id=credential_id)
-    except (ValueError, CredentialFieldNotSet) as exc:
+    except (CredentialCheckFailed, CredentialFieldNotSet) as exc:
         await db.commit()
         return _check_result(exc)
     await db.commit()

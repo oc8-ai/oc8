@@ -23,7 +23,13 @@ against, so it is the one call whose verdict matches real usage.
 
 from __future__ import annotations
 
+import asyncio
+
 import httpx
+
+# This plugin ships with the core and runs in its process, so it uses the
+# core's outbound guard rather than carrying a second copy of the block-list.
+from oc8.net.outbound import OutboundBlocked, PinnedTransport, guard_outbound_url
 
 _TIMEOUT = 15.0
 
@@ -51,17 +57,36 @@ async def validate_odoo_login(values: dict[str, str]) -> None:
             "args": [database, username, password, {}],
         },
     }
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+    # Resolve once, refuse internal addresses, then connect to exactly that
+    # address (Host header and TLS name unchanged): a second lookup at connect
+    # time could answer differently (DNS rebinding).
+    try:
+        ip = await asyncio.to_thread(guard_outbound_url, url)
+    except OutboundBlocked as exc:
+        raise ValueError("The Odoo address is not reachable from here") from exc
+    async with httpx.AsyncClient(
+        timeout=_TIMEOUT, transport=PinnedTransport(ip), follow_redirects=False
+    ) as client:
         try:
             resp = await client.post(f"{url}/jsonrpc", json=payload)
         except httpx.HTTPError as exc:
-            raise ValueError(f"could not reach {url}: {exc}") from exc
-    resp.raise_for_status()
-    data = resp.json()
+            raise ValueError("could not reach the Odoo server") from exc
+    # Error text below is fixed wording: an upstream body or URL is never
+    # copied into a message a person will read.
+    if resp.status_code != 200:
+        raise ValueError(f"Odoo answered with HTTP {resp.status_code}")
+    try:
+        data = resp.json()
+    except ValueError as exc:
+        raise ValueError("Odoo did not answer with a JSON-RPC response") from exc
+    if not isinstance(data, dict):
+        raise ValueError("Odoo did not answer with a JSON-RPC response")
     error = data.get("error")
     if error is not None:
-        message = error.get("data", {}).get("message") or error.get("message") or "Access Denied"
-        raise ValueError(f"Odoo rejected this login: {message}")
+        detail = error.get("data", {}).get("message") if isinstance(error, dict) else None
+        if isinstance(detail, str) and "access denied" in detail.lower():
+            raise ValueError("Odoo rejected this login: Access Denied")
+        raise ValueError("Odoo rejected this login")
     # common.authenticate returns the uid (truthy int) on success, or the
     # bare literal `false` on bad credentials -- never an error envelope.
     if not data.get("result"):
