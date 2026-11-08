@@ -129,3 +129,21 @@ def test_messenger_numbering_and_parsing() -> None:
     assert parse_messenger_answer(questions, "Switzerland, please") == {
         "region": "Switzerland, please"
     }
+
+
+def test_each_answer_is_capped_on_every_door() -> None:
+    """Enforced here, not only in the chat request schema: the inbox, the admin
+    door and a messenger reply all end up in `validate_answers`."""
+    from oc8.chat.questions import MAX_ANSWER_TEXT
+
+    questions = parse_questions(TWO)
+    with pytest.raises(QuestionError, match="at most 2000 characters"):
+        validate_answers(questions, {"region": "x" * (MAX_ANSWER_TEXT + 1)})
+    with pytest.raises(QuestionError, match="at most 8 options"):
+        validate_answers(questions, {"region": ["eu"], "channels": ["mail"] * 9})
+    with pytest.raises(QuestionError, match="unknown question id"):
+        validate_answers(questions, {"region": ["eu"], "nope": "x"})
+    # A messenger reply is free text too, and hits the same cap.
+    long_reply = parse_messenger_answer(questions, "y" * (MAX_ANSWER_TEXT + 1))
+    with pytest.raises(QuestionError, match="at most 2000 characters"):
+        validate_answers(questions, long_reply)

@@ -283,6 +283,23 @@ def format_input_message(author_name: str, text: str) -> str:
     )
 
 
+def format_clarification_answers(clarifications: Sequence[Mapping[str, Any]]) -> str:
+    """The questions a run asked and the answers it got, for its resume prompt.
+
+    Fenced and attributed exactly like `format_input_message`: an answer is what
+    a person wrote, so a newline in it must not be able to forge another
+    "question and answer" line, or pass itself off as system or tool text."""
+    blocks: list[str] = []
+    for entry in clarifications:
+        question = " ".join(str(entry.get("question", "")).split())
+        answer = _FENCE_CLOSE.sub(f"<\\/{_FENCE_TAG}", str(entry.get("answer", "")))
+        blocks.append(
+            f"You asked: {question}\n"
+            f"Answer from the person you asked:\n<{_FENCE_TAG}>\n{answer}\n</{_FENCE_TAG}>"
+        )
+    return "\n\n".join(blocks)
+
+
 def step_hint(context: Mapping[str, Any]) -> int:
     """The step an input consumed now is taken into account in."""
     transcript = context.get("transcript") or []

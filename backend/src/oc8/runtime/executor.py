@@ -897,8 +897,12 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             task_images_raw = run.context.get("task_images", [])
             clarifications = run.context.get("clarifications", [])
             if clarifications:
-                lines = "\n".join(f"- Q: {c['question']} A: {c['answer']}" for c in clarifications)
-                task_text = f"{task_text}\n\nClarifications:\n{lines}"
+                from oc8.runtime.run_inputs import format_clarification_answers
+
+                task_text = (
+                    f"{task_text}\n\nClarifications:\n"
+                    f"{format_clarification_answers(clarifications)}"
+                )
 
             # Resume after a value-gated tool approval: replace the task with a
             # focused instruction to perform exactly the approved calls (and skip

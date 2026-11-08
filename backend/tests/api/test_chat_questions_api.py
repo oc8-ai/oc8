@@ -117,6 +117,9 @@ async def test_session_shows_the_question_and_only_its_owner_answers(
             assert published.called
             again = await c.post(url, json={"text": "eu"}, headers=alice)
             assert again.status_code == 409
+            # Answered beats empty: the state is reported, not the body.
+            empty_again = await c.post(url, json={}, headers=alice)
+            assert empty_again.status_code == 409
 
             detail = (await c.get(f"/api/v1/chat/sessions/{sid}", headers=alice)).json()
             assert detail["pendingQuestion"] is None
@@ -297,3 +300,45 @@ async def test_a_secret_in_an_answer_to_the_assistant_is_refused_like_a_message(
         assert "hunter2" not in str(run.context)
         clar = await db.get(m.Clarification, clar_id)
         assert clar is not None and clar.status == "open" and clar.answer is None
+
+
+async def test_the_inbox_and_admin_doors_also_write_the_answered_turn(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """Spec §4.1: whichever door answers a chat run's question, its chat keeps
+    the answered card -- not only the chat's own door."""
+    tenant = uuid.uuid4()
+    agent_id = await _agent(app_session, tenant)
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            alice = _h(tenant, "alice")
+            sid, _run, clar_id = await _session_with_parked_question(
+                c, app_session, tenant, agent_id, alice
+            )
+            with patch("oc8.api.v1.clarifications.publish_run"):
+                inbox = await c.post(
+                    f"/api/v1/clarifications/{clar_id}/answer",
+                    json={"answer": "1: 2"},
+                    headers=alice,
+                )
+            assert inbox.status_code == 200, inbox.text
+
+            sid2, run2, _clar2 = await _session_with_parked_question(
+                c, app_session, tenant, agent_id, alice, structured=False
+            )
+            with patch("oc8.api.v1.run.publish_run"):
+                admin = await c.post(
+                    f"/api/v1/runs/{run2}/answer", json={"answer": "4711"}, headers=alice
+                )
+            assert admin.status_code == 200, admin.text
+
+            first = (await c.get(f"/api/v1/chat/sessions/{sid}/messages", headers=alice)).json()
+            second = (await c.get(f"/api/v1/chat/sessions/{sid2}/messages", headers=alice)).json()
+
+    assert first[-1]["role"] == "user"
+    assert first[-1]["content"] == "Region?: US"
+    assert first[-1]["parts"][0]["answers"] == {"r": ["us"]}
+    assert "[step" not in first[-1]["content"]
+    assert second[-1]["content"] == "Order number?: 4711"
+    assert second[-1]["parts"][0]["answers"] == {"q1": "4711"}

@@ -2378,7 +2378,10 @@ async def _dispatch_one_tool(
         # The verdict the isolated runtime reads after the container exits, so the
         # executor opens the Clarification and parks the run (same shape as the
         # approval suspend above).
-        ctx["isolated_result"] = {"status": suspend, "output": output}
+        # The UNSTAMPED text: this becomes the Clarification's question (and the
+        # approval's reason), which a person reads -- the "[step N/max ...]"
+        # stamp is for the model's transcript only.
+        ctx["isolated_result"] = {"status": suspend, "output": _tool_call_output_for_state}
         if suspend == "waiting_for_input" and pending_questions:
             # A structured ask_user (spec §4.1): its questions ride beside the
             # readable output, never inside it.

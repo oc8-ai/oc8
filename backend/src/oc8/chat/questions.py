@@ -174,6 +174,8 @@ def validate_answers(questions: Sequence[Question], answers: Mapping[str, Any]) 
             continue
         if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
             raise QuestionError(f"{q.prompt!r}: answer with option keys or text")
+        if len(value) > MAX_OPTIONS:
+            raise QuestionError(f"{q.prompt!r}: at most {MAX_OPTIONS} options")
         if q.kind == "text":
             raise QuestionError(f"{q.prompt!r} takes a written answer")
         keys = {o.key for o in q.options}

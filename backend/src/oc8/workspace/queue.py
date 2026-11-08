@@ -242,7 +242,25 @@ async def answer_clarification(
     # The one shared implementation, so the departmental door and the admin door
     # cannot fold the answer into `run.context` in two different shapes -- the
     # executor reads exactly one of them.
-    await resolve_clarification(db, run=run, answer=answer)
+    pending = (run.context or {}).get("pending_questions")
+    structured = await resolve_clarification(db, run=run, answer=answer)
+    # A chat run's question answered from the inbox still shows in its chat as
+    # the answered card (spec §4.1) -- the same turn every door writes.
+    from oc8.authz.scope import HumanActor
+    from oc8.chat.service import record_answer_turn
+
+    principal = actor.principal if isinstance(actor, HumanActor) else None
+    await record_answer_turn(
+        db,
+        run=run,
+        question=row.question,
+        pending=pending,
+        structured=structured,
+        text=answer,
+        author_member_id=actor.member.id,
+        acting_subject=principal.subject if principal is not None else None,
+        acting_role=principal.role if principal is not None else None,
+    )
 
     # WHO answered. There was no trail at all: `Clarification` has no
     # `answered_by` column and neither this door nor `POST /runs/{id}/answer`

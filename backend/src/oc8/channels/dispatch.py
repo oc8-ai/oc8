@@ -487,8 +487,13 @@ async def bind_from_free_text(
     await tell_sender_gated(impl, text.external_id, "Bin dran, melde mich gleich.")
 
 
-#: Sent once a messenger reply has answered a parked question.
-_ANSWER_TAKEN = "Thanks -- carrying on."
+#: Sent once a messenger reply has answered a parked question. German, like
+#: the door's other acknowledgement ("Bin dran, melde mich gleich.").
+_ANSWER_TAKEN = "Danke, ich mache weiter."
+
+#: A reply that means "not an answer -- let me say something else". It starts
+#: an ordinary turn; the question stays open in oc8.
+_ESCAPE_WORDS = frozenset({"abbrechen", "abbruch", "cancel", "stop", "/cancel", "/abbrechen"})
 
 
 async def _answer_parked_question(
@@ -514,6 +519,14 @@ async def _answer_parked_question(
     from sqlalchemy import select
 
     from oc8.chat.questions import QuestionError, format_for_messenger, questions_from_json
+
+    if text.text.strip().lower() in _ESCAPE_WORDS:
+        return False
+    if outranks("internal", impl.capabilities().max_classification):
+        # The numbered questions were withheld on this channel (`_tell_channel`
+        # sends `_CONTENT_WITHHELD` instead), so the sender never saw what a
+        # "1,3" would pick: nothing here can be an answer to them.
+        return False
     from oc8.chat.service import AnswerRefused, QuestionNotAnswerable, answer_parked_question
 
     own_sessions = [

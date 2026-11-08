@@ -17,6 +17,7 @@ from oc8.agents.versioning import pinned_version_no
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
 from oc8.authz.permissions import RUN, RUN_CONTROL, RUN_START, VIEW, perm
 from oc8.chat.questions import QuestionError
+from oc8.chat.service import record_answer_turn
 from oc8.runtime.cancellation import record_operator_cancel
 from oc8.runtime.clarification import resolve_clarification
 from oc8.runtime.intake import enqueue_run, publish_run
@@ -392,20 +393,53 @@ async def answer_run(
     run_row = await db.get(m.AgentRun, run_id)
     if run_row is None or run_row.tenant_id != principal.tenant_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
-    if run_row.state != RunState.WAITING_FOR_INPUT.value:
+    # The same lock the inbox and chat doors take, on the CLARIFICATION rows
+    # (never the run, which a running executor holds): two answers to the same
+    # question serialise, and the second finds it already answered.
+    open_rows = list(
+        (
+            await db.execute(
+                select(m.Clarification)
+                .where(m.Clarification.run_id == run_row.id, m.Clarification.status == "open")
+                .order_by(m.Clarification.created_at.desc())
+                .execution_options(populate_existing=True)
+                .with_for_update()
+            )
+        ).scalars()
+    )
+    await db.refresh(run_row)
+    if run_row.state != RunState.WAITING_FOR_INPUT.value or not open_rows:
         raise HTTPException(status.HTTP_409_CONFLICT, "run is not waiting for input")
     # Record the answer, fold it into the run context, and re-queue the
     # already-existing run (not a new one, so publish_run, not enqueue_run).
+    pending = (run_row.context or {}).get("pending_questions")
     try:
-        await resolve_clarification(db, run=run_row, answer=body.answer)
+        structured = await resolve_clarification(db, run=run_row, answer=body.answer)
     except QuestionError as exc:
         # Structured questions (spec §4.1): the written answer must fit them.
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
-    # No further DB query after commit (the transaction-local tenant binding
-    # ends); run_to_dto only reads already-loaded attributes.
+    # A chat run's question answered here still shows in its chat (spec §4.1).
+    await record_answer_turn(
+        db,
+        run=run_row,
+        question=open_rows[0].question,
+        pending=pending,
+        structured=structured,
+        text=body.answer,
+        author_member_id=None,
+        acting_subject=principal.subject,
+        acting_role=principal.role,
+    )
+    # Built BEFORE the commit: the commit expires the row, and reading it
+    # afterwards is IO outside the request's greenlet (MissingGreenlet) -- and
+    # would run without the transaction-local tenant binding anyway.
+    # `updated_at` is server-set on the flush, so reload it first.
+    await db.refresh(run_row)
+    dto = run_to_dto(run_row)
+    run_id = run_row.id
     await db.commit()
-    await publish_run(run_id=run_row.id, tenant_id=principal.tenant_id)
-    return run_to_dto(run_row)
+    await publish_run(run_id=run_id, tenant_id=principal.tenant_id)
+    return dto
 
 
 @router.post(

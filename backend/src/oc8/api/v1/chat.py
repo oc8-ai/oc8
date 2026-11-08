@@ -376,8 +376,9 @@ async def answer_chat_question(
         or (operator is not None and operator != actor.principal.subject)
     ):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "question not found")
-    if body.answers is None and not (body.text or "").strip():
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "an answer is required")
+    # An empty body is refused by `answer_parked_question` AFTER it has checked
+    # the question is still open -- an answered question is a 409 whatever the
+    # body says.
     try:
         await answer_parked_question(
             db,

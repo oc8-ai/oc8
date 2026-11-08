@@ -812,6 +812,75 @@ class AnswerRefused(RuntimeError):
     commits, so the redacted turn and the refusal are kept."""
 
 
+async def record_answer_turn(
+    db: AsyncSession,
+    *,
+    run: m.AgentRun,
+    question: str,
+    pending: Any,
+    structured: Answer | None,
+    text: str,
+    author_member_id: uuid.UUID | None,
+    acting_subject: str | None = None,
+    acting_role: str | None = None,
+) -> m.ChatMessage | None:
+    """The answered question as a USER turn of the chat the run belongs to
+    (spec §4.1): readable `content` (one line per question) and an `answers`
+    part, so the answered card survives a reload. Every door that answers a
+    chat run's question calls this -- the chat, the messenger, the inbox and
+    the admin door -- right after `resolve_clarification`.
+
+    `pending` is `run.context["pending_questions"]` as it was BEFORE resolving;
+    `structured` is what `resolve_clarification` returned. Bumps the session's
+    `last_message_at`; `chat.message_created` goes out after the commit. Does
+    nothing (returns None) for a run that is not a chat turn.
+    """
+    session_raw = (run.context or {}).get("chat_session_id")
+    if run.source != "chat" or not session_raw:
+        return None
+    try:
+        session_id = uuid.UUID(str(session_raw))
+    except ValueError:
+        return None
+    session = await db.get(m.ChatSession, session_id)
+    if session is None:
+        return None
+    if pending and structured is not None:
+        questions_json: list[dict[str, Any]] = list(pending)
+        answer_map: Answer = structured
+    else:
+        plain_question = Question(
+            id=PLAIN_ID,
+            prompt=question,
+            kind="text",
+            options=(),
+            allow_other=False,
+            required=True,
+        )
+        questions_json = questions_to_json([plain_question])
+        answer_map = {PLAIN_ID: text.strip()}
+    message = m.ChatMessage(
+        tenant_id=session.tenant_id,
+        session_id=session.id,
+        role="user",
+        content=render_answers_text(questions_from_json(questions_json), answer_map),
+        author_member_id=author_member_id,
+        parts=[{"type": "answers", "questions": questions_json, "answers": answer_map}],
+    )
+    db.add(message)
+    session.last_message_at = dt.datetime.now(tz=dt.UTC)
+    await db.flush()
+    await publish_chat_message_created(
+        db,
+        session=session,
+        message=message,
+        run_id=run.id,
+        acting_subject=acting_subject,
+        acting_role=acting_role,
+    )
+    return message
+
+
 async def answer_parked_question(
     db: AsyncSession,
     *,
@@ -823,7 +892,7 @@ async def answer_parked_question(
     member: m.OrgMember,
     via: str,
     principal: Principal | None,
-) -> m.ChatMessage:
+) -> None:
     """Answer the question this session's run parked on (spec §4.1) and re-queue
     the run. One implementation for the chat's own door and the messenger door.
 
@@ -866,32 +935,17 @@ async def answer_parked_question(
         raise QuestionError("an answer is required")
 
     structured = await resolve_clarification(db, run=run, answer=text.strip(), answers=answers)
-    if pending and structured is not None:
-        questions_json: list[dict[str, Any]] = list(pending)
-        answer_map: Answer = structured
-    else:
-        plain_question = Question(
-            id=PLAIN_ID,
-            prompt=clarification.question,
-            kind="text",
-            options=(),
-            allow_other=False,
-            required=True,
-        )
-        questions_json = questions_to_json([plain_question])
-        answer_map = {PLAIN_ID: text.strip()}
-
-    message = m.ChatMessage(
-        tenant_id=session.tenant_id,
-        session_id=session.id,
-        role="user",
-        content=render_answers_text(questions_from_json(questions_json), answer_map),
+    await record_answer_turn(
+        db,
+        run=run,
+        question=clarification.question,
+        pending=pending,
+        structured=structured,
+        text=text,
         author_member_id=member.id,
-        parts=[{"type": "answers", "questions": questions_json, "answers": answer_map}],
+        acting_subject=principal.subject if principal is not None else None,
+        acting_role=principal.role if principal is not None else None,
     )
-    db.add(message)
-    session.last_message_at = dt.datetime.now(tz=dt.UTC)
-    await db.flush()
 
     department_id = await db.scalar(
         select(m.Agent.department_id).where(m.Agent.id == clarification.agent_id)
@@ -916,15 +970,6 @@ async def answer_parked_question(
         },
         principal=principal,
     )
-    await publish_chat_message_created(
-        db,
-        session=session,
-        message=message,
-        run_id=run.id,
-        acting_subject=principal.subject if principal is not None else None,
-        acting_role=principal.role if principal is not None else None,
-    )
-    return message
 
 
 async def _record_refused_turn(

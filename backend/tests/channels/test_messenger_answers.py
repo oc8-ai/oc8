@@ -199,3 +199,53 @@ async def test_a_secret_in_a_messenger_answer_is_refused_like_a_message(
         assert "hunter2" not in str(contents) and len(contents) == 2
     sent = impl.say.await_args
     assert sent is not None and "credential" in str(sent.args)
+
+
+async def test_cancel_escapes_to_a_normal_turn(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    run_id, _sid = await _bound_member_with_parked_run(app_session, tenant, structured=True)
+    impl = FakeChannel()
+
+    with patch("oc8.runtime.intake.publish_run"):
+        await _say(app_session, tenant, impl, "Abbrechen")
+
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None and run.state == "waiting_for_input"
+        runs = (
+            (await db.execute(select(m.AgentRun).where(m.AgentRun.tenant_id == tenant)))
+            .scalars()
+            .all()
+        )
+        assert len(runs) == 2, "the escape word starts an ordinary turn"
+
+
+async def test_a_channel_the_questions_were_withheld_on_is_not_intercepted(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    run_id, _sid = await _bound_member_with_parked_run(app_session, tenant, structured=True)
+    impl = FakeChannel(max_classification="public")
+
+    with patch("oc8.runtime.intake.publish_run"):
+        await _say(app_session, tenant, impl, "1,3")
+
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None and run.state == "waiting_for_input"
+
+
+async def test_the_acknowledgement_is_german(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    await _bound_member_with_parked_run(app_session, tenant, structured=True)
+    impl = FakeChannel()
+
+    with patch("oc8.runtime.intake.publish_run"):
+        await _say(app_session, tenant, impl, "2")
+
+    sent = impl.say.await_args
+    assert sent is not None and sent.args[1] == "Danke, ich mache weiter."
