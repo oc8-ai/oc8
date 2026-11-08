@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useRouterState } from "@tanstack/react-router";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ChatSessionPicker, ChatWindow } from "@/components/chat-window";
@@ -9,6 +9,10 @@ import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/s
 import { useIsMobile } from "@/hooks/use-mobile";
 import { mascotState } from "@/lib/copilot-status";
 import { useMay } from "@/lib/governance-hooks";
+import { isPlainClick } from "@/components/conversation/object-links";
+import { useObjectNavigation } from "@/components/conversation/use-object-navigation";
+import { useChatSession } from "@/lib/conversation-api";
+import { useAgent } from "@/lib/hooks";
 import { useChatSessions } from "@/lib/hooks-chat";
 import { useCopilotProfile } from "@/lib/hooks-copilot";
 import { useT } from "@/lib/i18n";
@@ -27,22 +31,60 @@ export const Route = createFileRoute("/copilot")({
 
 function CopilotRoute() {
   const { session } = Route.useSearch();
-  return <CopilotPage initialSessionId={session ?? null} />;
+  // Every navigation gets a fresh history key, so following the same link
+  // again (after switching conversations) selects it again.
+  const navKey = useRouterState({
+    select: (s) => s.location.state.__TSR_key ?? s.location.state.key ?? s.location.href,
+  });
+  return <CopilotPage initialSessionId={session ?? null} navKey={navKey} />;
+}
+
+/** A link named a conversation that is not the Copilot's: say whose it is
+ *  and link there rather than opening it under the Copilot's name. */
+function ForeignSessionNotice({ agentId }: { agentId: string }) {
+  const t = useT();
+  const { data: agent } = useAgent(agentId);
+  const openObject = useObjectNavigation();
+  const href = `/agents/${encodeURIComponent(agentId)}`;
+  return (
+    <p role="status" className="border-b border-border px-4 py-2 text-xs text-muted-foreground">
+      {t("This conversation belongs to ", "Dieses Gespräch gehört zu ")}
+      <a
+        href={href}
+        onClick={(e) => {
+          if (!openObject || !isPlainClick(e)) return;
+          e.preventDefault();
+          openObject(href);
+        }}
+        className="text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {agent?.name ?? t("another agent", "einem anderen Agenten")}
+      </a>
+      .
+    </p>
+  );
 }
 
 export function CopilotPage({
   initialSessionId = null,
-}: { initialSessionId?: string | null } = {}) {
+  navKey,
+}: { initialSessionId?: string | null; navKey?: string } = {}) {
   const t = useT();
   const may = useMay();
   const { data: profile } = useCopilotProfile();
   const agentId = profile?.agentId ?? "";
   const { data: sessions = [] } = useChatSessions(agentId || undefined);
-  const [sessionId, setSessionId] = useState<string | null>(initialSessionId);
-  // A second link while the page is open names another conversation.
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  // A linked conversation opens here only if it is the Copilot's own: known
+  // from its session list, else from the session itself.
+  const listed = !!initialSessionId && sessions.some((s) => s.id === initialSessionId);
+  const { data: linked } = useChatSession(initialSessionId && !listed ? initialSessionId : null);
+  const owner = listed ? agentId : (linked?.agentId ?? null);
+  const ownLink = !!initialSessionId && !!agentId && owner === agentId;
+  const foreignOwner = initialSessionId && owner && owner !== agentId ? owner : null;
   useEffect(() => {
-    if (initialSessionId) setSessionId(initialSessionId);
-  }, [initialSessionId]);
+    if (ownLink && initialSessionId) setSessionId(initialSessionId);
+  }, [ownLink, initialSessionId, navKey]);
   const [panelOpen, setPanelOpen] = useState(true);
   const mobile = useIsMobile();
   if (!may("copilot:use")) return null; // nav is the main gate; defense in depth
@@ -125,6 +167,7 @@ export function CopilotPage({
             )}
           </CopilotPersonaHeader>
         </div>
+        {foreignOwner && <ForeignSessionNotice agentId={foreignOwner} />}
         {chat}
       </section>
       {!mobile && panelOpen && (

@@ -54,7 +54,7 @@ function Step({ row, timings }: { row: RunStepRow; timings?: Array<Record<string
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
           aria-label={t(`Details: ${row.label}`, `Details: ${row.label}`)}
-          className="inline-flex shrink-0 items-center gap-0.5 rounded-md px-1 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="inline-flex min-h-9 shrink-0 items-center gap-0.5 rounded-md px-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <ChevronRight
             className={cn("size-3.5 transition-transform duration-150", open && "rotate-90")}

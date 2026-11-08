@@ -109,7 +109,7 @@ export function UserTurn({
         <button
           type="button"
           onClick={() => onEdit(m.content)}
-          className="inline-flex items-center gap-1 rounded-md px-1 text-xs text-muted-foreground opacity-0 transition-opacity duration-150 hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+          className="inline-flex min-h-9 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground opacity-0 transition-opacity duration-150 hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:min-h-11"
         >
           <Pencil className="size-3.5" aria-hidden />
           {t("Edit and resend", "Bearbeiten und erneut senden")}

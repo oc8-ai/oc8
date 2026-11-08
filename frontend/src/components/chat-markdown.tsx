@@ -5,14 +5,14 @@
 // literal HTML in an answer stays text. Every link goes through the `a`
 // renderer below, which only emits http(s) links (new tab), `#cite-n`
 // citations and resolved `oc8://` object chips; anything else is plain text.
-// Images load only over https.
+// Images are https only and load only when the member clicks to load them.
 
-import { useEffect, useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Check, Copy, ExternalLink } from "lucide-react";
+import { Check, Copy, ExternalLink, Image as ImageIcon } from "lucide-react";
 
-import { objectHref, parseObjectUrl } from "@/components/conversation/object-links";
+import { isPlainClick, objectHref, parseObjectUrl } from "@/components/conversation/object-links";
 import type { ChatSourceDTO } from "@/lib/hooks-chat";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -105,6 +105,48 @@ function CodeBlock({ children }: { children?: ReactNode }) {
   );
 }
 
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
+}
+
+/** An image the answer links to. Loading it would make the member's browser
+ *  contact a host the model chose (IP, timing, a tracking pixel), so it is a
+ *  button naming the host until they ask; then it loads without a referrer. */
+function ExternalImage({ src, alt }: { src: string; alt: string }) {
+  const t = useT();
+  const [load, setLoad] = useState(false);
+  const host = hostOf(src);
+  if (!load) {
+    return (
+      <button
+        type="button"
+        onClick={() => setLoad(true)}
+        className={cn(
+          "inline-flex min-h-9 items-center gap-1 rounded-md border border-border bg-muted px-2 text-xs text-muted-foreground hover:text-foreground",
+          FOCUS,
+        )}
+      >
+        <ImageIcon className="size-3.5" aria-hidden />
+        {t(`Load image from ${host}`, `Bild von ${host} laden`)}
+        {alt && <span className="sr-only">: {alt}</span>}
+      </button>
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt={alt}
+      referrerPolicy="no-referrer"
+      loading="lazy"
+      className="max-h-80 rounded-md border border-border"
+    />
+  );
+}
+
 const CITATION = /\[(\d{1,2})\](?!\()/g;
 // Fenced blocks (closed or still streaming) and inline code spans: `[1]`
 // there is code (an index), never a citation.
@@ -122,15 +164,6 @@ function withCitations(text: string, count: number): string {
           ),
     )
     .join("");
-}
-
-/** A plain left click -- no modifier, main button -- is the user asking to go
- *  there now; anything else (new tab, new window, download) the browser does
- *  with the href. */
-function isPlainClick(e: MouseEvent): boolean {
-  return (
-    e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey && !e.defaultPrevented
-  );
 }
 
 export function ChatMarkdown({
@@ -215,12 +248,7 @@ export function ChatMarkdown({
     },
     img: ({ src, alt }) =>
       typeof src === "string" && src.startsWith("https://") ? (
-        <img
-          src={src}
-          alt={alt ?? ""}
-          loading="lazy"
-          className="max-h-80 rounded-md border border-border"
-        />
+        <ExternalImage src={src} alt={alt ?? ""} />
       ) : (
         <span className="text-muted-foreground">{alt}</span>
       ),

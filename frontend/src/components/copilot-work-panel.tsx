@@ -17,6 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useCancelRun, type RunDTO } from "@/lib/hooks";
+import { stateLabel } from "@/lib/run-state";
 import {
   copilotKeys,
   useCopilotDelegations,
@@ -100,23 +101,6 @@ function cronWords(t: ReturnType<typeof useT>, cron: string, lang: string): stri
           .replace("{time}", time);
   }
   return cron;
-}
-
-function stateLabel(t: ReturnType<typeof useT>, state: string): string {
-  switch (state) {
-    case "active":
-      return t("active", "aktiv");
-    case "waiting":
-      return t("waiting", "wartet");
-    case "paused":
-      return t("paused", "pausiert");
-    case "done":
-      return t("done", "erledigt");
-    case "cancelled":
-      return t("cancelled", "abgebrochen");
-    default:
-      return state;
-  }
 }
 
 function skipReasonLabel(t: ReturnType<typeof useT>, reason: string): string {

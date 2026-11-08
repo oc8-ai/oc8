@@ -157,3 +157,118 @@ describe("AssistantTurn", () => {
     expect(screen.getByText("approval card")).toBeInTheDocument();
   });
 });
+
+describe("turn view fixes", () => {
+  const a1 = { ...base, id: "a1", content: "First answer" };
+  const a2 = { ...base, id: "a2", content: "Second answer" };
+
+  it("follows a new answer after Regenerate even when paged to an older one", () => {
+    const { rerender } = wrap(
+      <AssistantTurn
+        sessionId="s"
+        turn={{ kind: "assistant", key: "k", replyToId: "u1", variants: [a1, a2], liveRunId: null }}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Previous answer/ }));
+    expect(screen.getByText("1/2")).toBeInTheDocument();
+    rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <AssistantTurn
+          sessionId="s"
+          turn={{
+            kind: "assistant",
+            key: "k",
+            replyToId: "u1",
+            variants: [a1, a2],
+            liveRunId: "r2",
+          }}
+          run={{
+            id: "r2",
+            agentId: "a",
+            state: "running",
+            phase: null,
+            output: null,
+            steps: 1,
+            toolCalls: [],
+            taskId: null,
+            question: null,
+            renderedComponents: [],
+            liveAnswer: "Fresh take",
+          }}
+        />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByText("Fresh take")).toBeInTheDocument();
+  });
+
+  it("keeps the rating per answer and resets it on a variant switch", () => {
+    wrap(
+      <AssistantTurn
+        sessionId="s"
+        turn={{ kind: "assistant", key: "k", replyToId: "u1", variants: [a1, a2], liveRunId: null }}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Good answer/ }));
+    expect(screen.getByRole("button", { name: /Good answer/ })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Previous answer/ }));
+    expect(screen.getByRole("button", { name: /Good answer/ })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+  });
+
+  it("does not throw when the clipboard is unavailable", () => {
+    const original = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
+    try {
+      wrap(
+        <AssistantTurn
+          sessionId="s"
+          turn={{ kind: "assistant", key: "k", replyToId: "u1", variants: [a1], liveRunId: null }}
+        />,
+      );
+      const errors: unknown[] = [];
+      const onError = (e: ErrorEvent) => {
+        errors.push(e.error);
+        e.preventDefault();
+      };
+      window.addEventListener("error", onError);
+      fireEvent.click(screen.getByRole("button", { name: /Copy answer/ }));
+      window.removeEventListener("error", onError);
+      expect(errors).toEqual([]);
+    } finally {
+      if (original) Object.defineProperty(navigator, "clipboard", original);
+    }
+  });
+
+  it("gives the actions a 36px hit area", () => {
+    wrap(
+      <AssistantTurn
+        sessionId="s"
+        turn={{ kind: "assistant", key: "k", replyToId: "u1", variants: [a1], liveRunId: null }}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /Copy answer/ })).toHaveClass("size-9");
+  });
+
+  it("shows Edit and resend on touch screens with a large hit area", () => {
+    const message = { ...base, id: "u1", role: "user" as const, content: "typo" };
+    wrap(
+      <UserTurn
+        turn={{ kind: "user", key: "u1", message }}
+        viewerMemberId={null}
+        canEdit
+        onEdit={vi.fn()}
+      />,
+    );
+    const edit = screen.getByRole("button", { name: /Edit and resend/ });
+    expect(edit).toHaveClass(
+      "[@media(hover:none)]:opacity-100",
+      "min-h-9",
+      "[@media(pointer:coarse)]:min-h-11",
+    );
+  });
+});

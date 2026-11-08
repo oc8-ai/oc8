@@ -117,6 +117,7 @@ describe("chip targets select the object", () => {
     const focus = within(screen.getByRole("region", { name: /Run/ }));
     expect(focus.getByText("Stock agent")).toBeInTheDocument();
     expect(focus.getByText("All counted")).toBeInTheDocument();
+    expect(focus.getByText("done")).toBeInTheDocument();
   });
 
   it("/copilot?session= is a typed search param", () => {

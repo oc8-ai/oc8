@@ -57,6 +57,8 @@ describe("ChatMarkdown safety and features", () => {
 
   it("loads images only over https", () => {
     render(<ChatMarkdown text={"![a](http://x.test/a.png) ![b](https://x.test/b.png)"} />);
+    expect(screen.queryAllByRole("img")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: /Load image from x\.test/ }));
     const imgs = screen.getAllByRole("img");
     expect(imgs).toHaveLength(1);
     expect(imgs[0]).toHaveAttribute("src", "https://x.test/b.png");

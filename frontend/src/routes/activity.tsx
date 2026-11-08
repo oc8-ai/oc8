@@ -6,7 +6,7 @@ import { ChatMarkdown } from "@/components/chat-markdown";
 import { RunFailureReason } from "@/components/run-reasoning";
 import { RunStepTimeline } from "@/components/run-step-timeline";
 import { useActivity, useAgents, useRun } from "@/lib/hooks";
-import { RUN_STATE_COLOR } from "@/lib/run-state";
+import { RUN_STATE_COLOR, stateLabel } from "@/lib/run-state";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 
@@ -58,7 +58,7 @@ function RunFocus({
               className="rounded-full px-2 py-0.5 text-xs"
               style={{ color: RUN_STATE_COLOR[run.state] }}
             >
-              {run.state}
+              {stateLabel(t, run.state)}
             </span>
           )}
           <span className="truncate font-mono text-xs text-muted-foreground">{runId}</span>

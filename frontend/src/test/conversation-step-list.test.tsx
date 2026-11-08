@@ -2,6 +2,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
+const nav = vi.hoisted(() => ({ navigate: vi.fn() }));
+vi.mock("@tanstack/react-router", () => ({ useRouter: () => ({ navigate: nav.navigate }) }));
+
 vi.mock("@/lib/tool-labels", async (orig) => ({
   ...(await orig<typeof import("@/lib/tool-labels")>()),
   useToolLabels: () => ({ data: undefined }),
@@ -79,6 +82,17 @@ describe("StepList", () => {
       /^(https?:)?\/\//.test(img.getAttribute("src") ?? ""),
     );
     expect(external).toEqual([]);
+  });
+
+  it("opens a delegated agent in-app and gives Details a 36px hit area", () => {
+    wrap(<StepList run={run} />);
+    const link = screen.getByRole("link", { name: /Handed to/ });
+    expect(link).toHaveAttribute("href", "/agents/a2");
+    fireEvent.click(link, { button: 0 });
+    expect(nav.navigate).toHaveBeenCalledWith({ href: "/agents/a2" });
+    for (const button of screen.getAllByRole("button", { name: /Details/ })) {
+      expect(button).toHaveClass("min-h-9");
+    }
   });
 
   it("renders nothing for a run without tool calls", () => {

@@ -2,14 +2,25 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const m = vi.hoisted(() => ({ mobile: false }));
+const m = vi.hoisted(() => ({
+  mobile: false,
+  sessions: [] as Array<{ id: string; agentId: string }>,
+  linked: undefined as { id: string; agentId: string } | undefined,
+}));
 
 vi.mock("@tanstack/react-router", () => ({
   createFileRoute: () => (opts: unknown) => opts,
+  useRouter: () => null,
+}));
+vi.mock("@/lib/conversation-api", () => ({
+  useChatSession: (id: string | null) => ({ data: id ? m.linked : undefined }),
+}));
+vi.mock("@/lib/hooks", () => ({
+  useAgent: (id: string) => ({ data: { id, name: "Stock agent" } }),
 }));
 vi.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => m.mobile }));
 vi.mock("@/lib/governance-hooks", () => ({ useMay: () => () => true }));
-vi.mock("@/lib/hooks-chat", () => ({ useChatSessions: () => ({ data: [] }) }));
+vi.mock("@/lib/hooks-chat", () => ({ useChatSessions: () => ({ data: m.sessions }) }));
 vi.mock("@/lib/hooks-copilot", () => ({
   useCopilotProfile: () => ({
     data: {
@@ -25,8 +36,18 @@ vi.mock("@/lib/hooks-copilot", () => ({
   useResumeCopilot: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 vi.mock("@/components/chat-window", () => ({
-  ChatWindow: ({ sessionId }: { sessionId: string | null }) => (
-    <div data-testid="chat" data-session={sessionId ?? ""} />
+  ChatWindow: ({
+    sessionId,
+    onSessionChange,
+  }: {
+    sessionId: string | null;
+    onSessionChange: (id: string | null) => void;
+  }) => (
+    <div data-testid="chat" data-session={sessionId ?? ""}>
+      <button type="button" onClick={() => onSessionChange("s-8")}>
+        switch
+      </button>
+    </div>
   ),
   ChatSessionPicker: () => <div data-testid="picker" />,
 }));
@@ -46,15 +67,57 @@ function wrap() {
 
 beforeEach(() => {
   m.mobile = false;
+  m.sessions = [];
+  m.linked = undefined;
 });
 
 describe("CopilotPage", () => {
-  it("opens the session a /copilot?session= link names", () => {
+  it("opens the Copilot's own session a /copilot?session= link names", () => {
+    m.sessions = [{ id: "s-7", agentId: "agent-1" }];
     render(
       <QueryClientProvider client={new QueryClient()}>
         <CopilotPage initialSessionId="s-7" />
       </QueryClientProvider>,
     );
+    expect(screen.getByTestId("chat")).toHaveAttribute("data-session", "s-7");
+  });
+
+  it("adopts a linked session it learns belongs to the Copilot", () => {
+    m.linked = { id: "s-7", agentId: "agent-1" };
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <CopilotPage initialSessionId="s-7" />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByTestId("chat")).toHaveAttribute("data-session", "s-7");
+  });
+
+  it("does not open another agent's conversation and links to that agent instead", () => {
+    m.linked = { id: "s-9", agentId: "agent-2" };
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <CopilotPage initialSessionId="s-9" />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByTestId("chat")).toHaveAttribute("data-session", "");
+    expect(screen.getByText(/This conversation belongs to/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Stock agent" })).toHaveAttribute(
+      "href",
+      "/agents/agent-2",
+    );
+  });
+
+  it("re-selects the linked session when the same link is followed again", () => {
+    m.sessions = [{ id: "s-7", agentId: "agent-1" }];
+    const ui = (navKey: string) => (
+      <QueryClientProvider client={new QueryClient()}>
+        <CopilotPage initialSessionId="s-7" navKey={navKey} />
+      </QueryClientProvider>
+    );
+    const { rerender } = render(ui("k1"));
+    fireEvent.click(screen.getByRole("button", { name: "switch" }));
+    expect(screen.getByTestId("chat")).toHaveAttribute("data-session", "s-8");
+    rerender(ui("k2"));
     expect(screen.getByTestId("chat")).toHaveAttribute("data-session", "s-7");
   });
 

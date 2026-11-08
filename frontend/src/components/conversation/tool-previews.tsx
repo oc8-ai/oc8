@@ -7,6 +7,9 @@ import { BookOpen, FileText, Globe, Plug, Send, Wrench } from "lucide-react";
 import type { RunStepRow } from "@/lib/run-steps";
 import { useT } from "@/lib/i18n";
 
+import { isPlainClick } from "./object-links";
+import { useObjectNavigation } from "./use-object-navigation";
+
 export type ToolKind = "web" | "knowledge" | "file" | "connection" | "delegation" | "generic";
 
 const WEB = new Set(["web_search", "fetch_url"]);
@@ -113,12 +116,19 @@ function FilePreview({ row }: { row: RunStepRow }) {
 function DelegationPreview({ row }: { row: RunStepRow }) {
   const t = useT();
   const agentId = typeof row.args.agent_id === "string" ? row.args.agent_id : null;
+  const openObject = useObjectNavigation();
+  const href = agentId ? `/agents/${encodeURIComponent(agentId)}` : null;
   return (
     <span className="flex min-w-0 items-center gap-2">
       <Send className="size-3.5 shrink-0" aria-hidden />
-      {agentId ? (
+      {href ? (
         <a
-          href={`/agents/${encodeURIComponent(agentId)}`}
+          href={href}
+          onClick={(e) => {
+            if (!openObject || !isPlainClick(e)) return;
+            e.preventDefault();
+            openObject(href);
+          }}
           className="truncate text-primary hover:underline"
         >
           {row.result?.startsWith("Handed to")

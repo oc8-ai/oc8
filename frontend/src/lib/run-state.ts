@@ -11,3 +11,34 @@ export const RUN_STATE_COLOR: Record<string, string> = {
   failed: "var(--status-error)",
   interrupted: "var(--status-paused)",
 };
+
+/** The one state -> words mapping, for a responsibility's states and a run's.
+ *  An unknown state shows as itself rather than as nothing. */
+export function stateLabel(t: (en: string, de?: string) => string, state: string): string {
+  switch (state) {
+    case "active":
+      return t("active", "aktiv");
+    case "waiting":
+      return t("waiting", "wartet");
+    case "paused":
+      return t("paused", "pausiert");
+    case "done":
+      return t("done", "erledigt");
+    case "cancelled":
+      return t("cancelled", "abgebrochen");
+    case "queued":
+      return t("queued", "in der Warteschlange");
+    case "running":
+      return t("running", "läuft");
+    case "waiting_for_input":
+      return t("waiting for input", "wartet auf Eingabe");
+    case "waiting_for_approval":
+      return t("waiting for approval", "wartet auf Freigabe");
+    case "failed":
+      return t("failed", "fehlgeschlagen");
+    case "interrupted":
+      return t("interrupted", "unterbrochen");
+    default:
+      return state;
+  }
+}

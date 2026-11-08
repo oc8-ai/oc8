@@ -1,6 +1,6 @@
 // No bubble, full column width. Top to bottom: thought, steps, the answer
 // with a caret, cards, sources, then actions (spec §2.1).
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   Check,
   ChevronLeft,
@@ -44,7 +44,7 @@ function ActionButton({
       aria-label={label}
       aria-pressed={pressed}
       className={cn(
-        "grid size-8 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "grid size-9 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         pressed && "text-foreground",
       )}
     >
@@ -75,6 +75,11 @@ export function AssistantTurn({
   const t = useT();
   const total = turn.variants.length + (turn.liveRunId ? 1 : 0);
   const [picked, setPicked] = useState<number | null>(null);
+  // A new answer (a regenerate starting, or one landing) is what the user
+  // asked for: show it, even if they had paged back to an older one.
+  useEffect(() => {
+    setPicked(null);
+  }, [total, turn.liveRunId]);
   const index = picked === null ? total - 1 : Math.min(picked, total - 1);
   const showingLive = turn.liveRunId !== null && index === turn.variants.length;
   const message = showingLive ? null : (turn.variants[index] ?? null);
@@ -84,8 +89,11 @@ export function AssistantTurn({
   const live = showingLive && !!run && !TERMINAL.has(run.state);
   const answer = message ? message.content : (run?.liveAnswer ?? "");
   const thought = run ? thoughtOf(run) : { text: null, seconds: null };
-  const [copied, setCopied] = useState(false);
-  const [rating, setRating] = useState<"up" | "down" | null>(null);
+  // Copied and rated belong to the answer on screen, not to the turn.
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [ratings, setRatings] = useState<Record<string, "up" | "down">>({});
+  const copied = !!message && copiedId === message.id;
+  const rating = message ? (ratings[message.id] ?? null) : null;
   const [highlighted, setHighlighted] = useState<number | null>(null);
   const feedback = useMessageFeedback(sessionId);
   const openObject = useObjectNavigation();
@@ -93,15 +101,22 @@ export function AssistantTurn({
   const components = message ? message.renderedComponents : (run?.components ?? []);
 
   function copy() {
-    void navigator.clipboard.writeText(answer).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
+    if (!message) return;
+    const id = message.id;
+    // navigator.clipboard is undefined outside a secure context.
+    if (!navigator.clipboard) return;
+    navigator.clipboard
+      .writeText(answer)
+      .then(() => {
+        setCopiedId(id);
+        setTimeout(() => setCopiedId((current) => (current === id ? null : current)), 1500);
+      })
+      .catch(() => undefined);
   }
 
   function rate(value: "up" | "down") {
     if (!message) return;
-    setRating(value);
+    setRatings((prev) => ({ ...prev, [message.id]: value }));
     feedback.mutate({ messageId: message.id, rating: value });
   }
 

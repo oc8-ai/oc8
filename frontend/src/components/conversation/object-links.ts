@@ -36,3 +36,19 @@ export function parseObjectUrl(href: string): { kind: string; id: string } | nul
   const match = /^oc8:\/\/([a-z_]+)\/([A-Za-z0-9-]+)$/.exec(href);
   return match ? { kind: match[1], id: match[2] } : null;
 }
+
+/** A plain left click -- no modifier, main button -- is the user asking to go
+ *  there now; anything else (new tab, new window, download) the browser does
+ *  with the href. */
+export function isPlainClick(e: {
+  button: number;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+  defaultPrevented: boolean;
+}): boolean {
+  return (
+    e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey && !e.defaultPrevented
+  );
+}
