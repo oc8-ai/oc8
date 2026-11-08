@@ -123,7 +123,7 @@ import { InlineRename } from "@/components/inline-rename";
 import { AgentInstructionsPanel } from "@/components/agent-instructions-panel";
 import { KnowledgeAssignment } from "@/components/knowledge-assignment";
 import { MemoryPanel } from "@/components/memory-panel";
-import { RUN_COMPONENT_REGISTRY } from "@/components/run-record-card";
+import { RunComponents } from "@/components/run-record-card";
 import { RunFailureReason, RunModelSteps } from "@/components/run-reasoning";
 import { RunStateBadge } from "@/components/run-state-badge";
 import { StatCard } from "@/components/stat-card";
@@ -2656,19 +2656,7 @@ function RunTranscript({ run, pending }: { run: RunDTO | undefined; pending: boo
       {run.transcript && run.transcript.length > 0 && (
         <LiveTranscriptPane transcript={run.transcript} live={!isTerminalRunState(run.state)} />
       )}
-      {run.components && run.components.length > 0 && (
-        <div className="space-y-2">
-          {run.components.map((c, i) => {
-            const Renderer = Object.prototype.hasOwnProperty.call(
-              RUN_COMPONENT_REGISTRY,
-              c.componentKey,
-            )
-              ? RUN_COMPONENT_REGISTRY[c.componentKey]
-              : undefined;
-            return Renderer ? <Renderer key={i} props={c.props} /> : null;
-          })}
-        </div>
-      )}
+      <RunComponents components={run.components} />
       {run.todos && run.todos.length > 0 && <RunTodoList todos={run.todos} />}
       <div className="max-h-[360px] min-h-[160px] overflow-auto rounded-md border border-border bg-background/60 p-3 font-mono text-[12px] leading-relaxed">
         {run.toolCalls.length === 0 ? (

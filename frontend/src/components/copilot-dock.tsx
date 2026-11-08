@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 import { CopilotPersonaHeader } from "@/components/copilot-persona";
 import { ChatMarkdown } from "@/components/chat-markdown";
 import { CopilotRunActivity, CopilotStreamingAnswer } from "@/components/copilot-run-activity";
-import { RUN_COMPONENT_REGISTRY } from "@/components/run-record-card";
+import { RunComponents } from "@/components/run-record-card";
 import {
   ComposerHint,
   SigilPopover,
@@ -868,19 +868,7 @@ export function CopilotChatTab({
                 />
                 <ChatMarkdown text={m.content} className="max-w-[88%]" />
               </div>
-              {m.renderedComponents.length > 0 && (
-                <div className="ml-8 space-y-2">
-                  {m.renderedComponents.map((c, i) => {
-                    const Renderer = Object.prototype.hasOwnProperty.call(
-                      RUN_COMPONENT_REGISTRY,
-                      c.componentKey,
-                    )
-                      ? RUN_COMPONENT_REGISTRY[c.componentKey]
-                      : undefined;
-                    return Renderer ? <Renderer key={i} props={c.props} /> : null;
-                  })}
-                </div>
-              )}
+              <RunComponents components={m.renderedComponents} className="ml-8 space-y-2" />
             </div>
           ),
         )}

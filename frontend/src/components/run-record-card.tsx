@@ -1,4 +1,5 @@
 import type { ReactElement } from "react";
+import type { RunComponentDTO } from "@/lib/hooks";
 import { DataTable } from "@/components/run-data-table";
 import { BarChart, LineChart } from "@/components/run-chart";
 import { FollowupCard, ResponsibilityCard } from "@/components/copilot-cards";
@@ -87,3 +88,29 @@ export const RUN_COMPONENT_REGISTRY: Record<
   responsibility_card: ResponsibilityCard,
   followup_card: FollowupCard,
 };
+
+/** The one way a run's rendered components reach the screen: each through
+ *  RUN_COMPONENT_REGISTRY (an own key only -- never a prototype lookup), an
+ *  unknown componentKey rendering nothing. Nothing at all for an empty list. */
+export function RunComponents({
+  components,
+  className = "space-y-2",
+}: {
+  components: RunComponentDTO[] | null | undefined;
+  className?: string;
+}) {
+  if (!components || components.length === 0) return null;
+  return (
+    <div className={className}>
+      {components.map((c, i) => {
+        const Renderer = Object.prototype.hasOwnProperty.call(
+          RUN_COMPONENT_REGISTRY,
+          c.componentKey,
+        )
+          ? RUN_COMPONENT_REGISTRY[c.componentKey]
+          : undefined;
+        return Renderer ? <Renderer key={i} props={c.props} /> : null;
+      })}
+    </div>
+  );
+}

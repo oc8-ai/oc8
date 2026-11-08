@@ -29,7 +29,7 @@ import {
   type SigilItem,
   type SigilToken,
 } from "@/components/composer-sigils";
-import { RUN_COMPONENT_REGISTRY } from "@/components/run-record-card";
+import { RunComponents } from "@/components/run-record-card";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -402,19 +402,7 @@ export function ChatWindow({
                 ) : (
                   <ChatMarkdown text={m.content} />
                 )}
-                {m.renderedComponents.length > 0 && (
-                  <div className="space-y-2">
-                    {m.renderedComponents.map((c, i) => {
-                      const Renderer = Object.prototype.hasOwnProperty.call(
-                        RUN_COMPONENT_REGISTRY,
-                        c.componentKey,
-                      )
-                        ? RUN_COMPONENT_REGISTRY[c.componentKey]
-                        : undefined;
-                      return Renderer ? <Renderer key={i} props={c.props} /> : null;
-                    })}
-                  </div>
-                )}
+                <RunComponents components={m.renderedComponents} />
                 {m.attachments && m.attachments.length > 0 && (
                   <div className="flex flex-wrap gap-1.5">
                     {m.attachments.map((a) => (
