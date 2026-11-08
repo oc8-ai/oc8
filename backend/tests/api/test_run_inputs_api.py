@@ -160,9 +160,9 @@ async def test_autonomous_run_takes_input_from_a_manager_only(
         member = await c.post(
             f"/api/v1/runs/{run_id}/inputs", json={"text": "x"}, headers=_h(tenant, "emp", "member")
         )
-        assert member.status_code in (403, 404)
+        assert member.status_code == 404
         stop = await c.post(f"/api/v1/runs/{run_id}/stop", headers=_h(tenant, "emp", "member"))
-        assert stop.status_code in (403, 404)
+        assert stop.status_code == 404
 
 
 async def test_stop_records_a_cancellation_for_the_operator(app_session: AppSessionFactory) -> None:

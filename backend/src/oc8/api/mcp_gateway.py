@@ -1115,12 +1115,18 @@ async def _with_run_inputs(
     from oc8.runtime.run_inputs import (
         consume_run_inputs,
         format_input_message,
+        has_pending_run_inputs,
         publish_inputs_consumed,
         step_hint,
     )
 
-    # `_call_tool` may have committed, which drops the transaction-local GUC.
+    # `_call_tool` may have committed, which drops the transaction-local GUC;
+    # re-pinning it first is what lets the probe see the rows at all (RLS
+    # fails closed). The probe is a plain read: the common tool result, with
+    # nothing waiting, takes no consumer lock and locks no rows.
     await _rebind_tenant(db, run.tenant_id)
+    if not await has_pending_run_inputs(db, run_id=run.id):
+        return payload
     consumed = await consume_run_inputs(db, run_id=run.id, step=step_hint(run.context or {}))
     if not consumed:
         return payload

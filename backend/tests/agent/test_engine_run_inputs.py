@@ -12,9 +12,14 @@ from tests.conftest import AppSessionFactory
 
 from oc8 import models as m
 from oc8.agent.engine import run_agent
-from oc8.modelrouter import CompletionResult, Usage, chunk_from_result
+from oc8.modelrouter import CompletionResult, ToolCall, Usage, chunk_from_result
 
 pytestmark = pytest.mark.asyncio
+
+_TEXT_REPR = repr(
+    "Message from Alice (a person, during the run):\n"
+    "<person_message>\nuse the EU address\n</person_message>"
+)[1:-1]
 
 
 class _RecordingStream:
@@ -96,7 +101,7 @@ async def test_an_input_reaches_the_model_at_the_next_step(
             consumed = (
                 await other.execute(select(m.RunInput).where(m.RunInput.run_id == run_id))
             ).scalar_one()
-    assert any("Message from Alice during the run: use the EU address" in s for s in stream.sent)
+    assert any(_TEXT_REPR in s for s in stream.sent)
     assert consumed.consumed_at is not None and consumed.consumed_step == 1
 
 
@@ -116,5 +121,66 @@ async def test_an_input_an_earlier_leg_consumed_is_carried_into_a_new_leg(
         await run_agent(db, agent=agent, task_text="draft", tenant_id=tenant, run_id=run_id)
     async with app_session(tenant) as db:
         row = (await db.execute(select(m.RunInput).where(m.RunInput.run_id == run_id))).scalar_one()
-    assert any("Message from Alice during the run: use the EU address" in s for s in stream.sent)
+    assert any(_TEXT_REPR in s for s in stream.sent)
     assert row.consumed_step == 3
+
+
+async def test_an_input_written_during_a_step_is_taken_at_the_next_boundary(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Written while the model is already answering step 1 -- after that
+    step's boundary was read -- the input reaches the model on step 2."""
+    tenant = uuid.uuid4()
+    agent_id, run_id = await _seed(app_session, tenant, consumed_step=1)
+    async with app_session(tenant) as db:
+        author_id = (
+            await db.execute(select(m.RunInput.author_member_id).where(m.RunInput.run_id == run_id))
+        ).scalar_one()
+    sent: list[str] = []
+
+    def _stream(*args: Any, **kw: Any) -> Any:
+        sent.append(repr(args) + repr(kw))
+        step = len(sent)
+
+        async def _gen() -> Any:
+            if step == 1:
+                async with app_session(tenant) as writer:
+                    writer.add(
+                        m.RunInput(
+                            tenant_id=tenant,
+                            run_id=run_id,
+                            author_member_id=author_id,
+                            text="also cc finance",
+                        )
+                    )
+            calls = [ToolCall(id="c1", name="no_such_tool", arguments={})] if step == 1 else []
+            yield chunk_from_result(
+                CompletionResult(
+                    text="working" if step == 1 else "done",
+                    tool_calls=calls,
+                    usage=Usage(tokens_in=1, tokens_out=1),
+                    stop_reason="tool_use" if calls else "stop",
+                    provider="fake",
+                    model="fake",
+                )
+            )
+
+        return _gen()
+
+    monkeypatch.setattr("oc8.agent.engine.stream_completion_with_fallback", _stream)
+    async with app_session(tenant) as db:
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        await run_agent(db, agent=agent, task_text="draft", tenant_id=tenant, run_id=run_id)
+    async with app_session(tenant) as db:
+        late = (
+            await db.execute(
+                select(m.RunInput).where(
+                    m.RunInput.run_id == run_id, m.RunInput.text == "also cc finance"
+                )
+            )
+        ).scalar_one()
+    assert len(sent) >= 2
+    assert "also cc finance" not in sent[0]
+    assert "also cc finance" in sent[1]
+    assert late.consumed_at is not None and late.consumed_step == 2

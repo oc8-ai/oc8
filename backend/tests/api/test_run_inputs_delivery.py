@@ -23,7 +23,12 @@ from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
 
-_TEXT = "Message from Alice during the run: use the EU address"
+_TEXT = (
+    "Message from Alice (a person, during the run):\n"
+    "<person_message>\nuse the EU address\n</person_message>"
+)
+#: How `_TEXT` appears in a recorded `repr(...)` of the model call.
+_TEXT_REPR = repr(_TEXT)[1:-1]
 
 
 async def _queue(db: Any, tenant: uuid.UUID, run_id: uuid.UUID) -> uuid.UUID:
@@ -119,7 +124,7 @@ async def test_the_isolated_step_puts_the_message_in_the_transcript(
             )
             assert r.status_code == 200, r.text
 
-    assert any(_TEXT in s for s in sent)
+    assert any(_TEXT_REPR in s for s in sent)
     assert [[c.id for c in batch] for batch in published] == [[input_id]]
     stamped = await _stamp(app_session, tenant, input_id)
     assert stamped.consumed_at is not None and stamped.consumed_step == 1
