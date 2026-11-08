@@ -108,15 +108,19 @@ async def append_tool_call(
     return _adopt(run, stored)
 
 
-_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]+")
+# C0/C1 controls plus line/paragraph separators and bidi overrides/isolates,
+# which could visually reorder a chip.
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069]+")
 
 
 def clean_suggestions(raw: list[Any]) -> list[str]:
     """Model-written, untrusted: control characters out, trimmed, empties
-    dropped, 120 characters each, three at most."""
+    dropped, non-strings skipped, 120 characters each, three at most."""
     out: list[str] = []
     for item in raw:
-        chip = _CONTROL_CHARS.sub(" ", str(item)).strip()[:120].strip()
+        if not isinstance(item, str):
+            continue
+        chip = _CONTROL_CHARS.sub(" ", item).strip()[:120].strip()
         if chip:
             out.append(chip)
     return out[:3]

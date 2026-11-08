@@ -49,6 +49,10 @@ async def test_clean_suggestions() -> None:
         "x" * 120,
         "b",
     ]
+    assert clean_suggestions([None, {"a": 1}, 3, "ok\u202egnirts", "fine"]) == [
+        "ok gnirts",
+        "fine",
+    ]
 
 
 async def test_suggestions_land_on_the_answer_and_are_consumed(
