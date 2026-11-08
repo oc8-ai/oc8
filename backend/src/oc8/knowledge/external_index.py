@@ -36,9 +36,7 @@ async def validate_external_index_binding(
     """
     if index_type == INTERNAL_INDEX_TYPE:
         if credential_id is not None:
-            raise ExternalIndexRejected(
-                "internal knowledge bases do not take a credential_id"
-            )
+            raise ExternalIndexRejected("internal knowledge bases do not take a credential_id")
         return
 
     if credential_id is None:

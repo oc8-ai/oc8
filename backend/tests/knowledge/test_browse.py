@@ -27,7 +27,9 @@ class Browsing:
     async def browse(self, config: dict[str, Any], path: str, auth: Any) -> list[BrowseEntry]:
         return [BrowseEntry(id="f1", name="Q3.xlsx", is_folder=False, size=10)]
 
-    async def fetch_file(self, config: dict[str, Any], file_id: str, auth: Any) -> FetchedFile:
+    async def fetch_file(
+        self, config: dict[str, Any], file_id: str, max_bytes: int, auth: Any
+    ) -> FetchedFile:
         return FetchedFile(name="Q3.xlsx", content_type="text/csv", data=b"a,b", text="a,b")
 
 
@@ -50,7 +52,7 @@ async def test_a_browsing_connector_lists_and_fetches(app_session: AppSessionFac
         async with app_session(tenant) as db:
             src = await db.get(m.DataSource, sid)
             assert src is not None
-            entries = await browse_source(db, source=src, path="/")
+            entries = (await browse_source(db, source=src, path="/")).entries
             fetched = await fetch_source_file(db, source=src, file_id="f1")
     assert entries[0].name == "Q3.xlsx" and fetched.text == "a,b"
 
@@ -75,7 +77,9 @@ class Big(Browsing):
             for i in range(MAX_BROWSE_ENTRIES + 5)
         ]
 
-    async def fetch_file(self, config: dict[str, Any], file_id: str, auth: Any) -> FetchedFile:
+    async def fetch_file(
+        self, config: dict[str, Any], file_id: str, max_bytes: int, auth: Any
+    ) -> FetchedFile:
         return FetchedFile(
             name="x", content_type="text/plain", data=b"x" * (MAX_FETCH_BYTES + 1), text=""
         )
@@ -93,7 +97,8 @@ async def test_guards(app_session: AppSessionFactory) -> None:
         src = await db.get(m.DataSource, sid)
         assert src is not None
         with patch("oc8.knowledge.browse.resolve_connector", return_value=Big()):
-            assert len(await browse_source(db, source=src, path="/")) == MAX_BROWSE_ENTRIES
+            listing = await browse_source(db, source=src, path="/")
+            assert len(listing.entries) == MAX_BROWSE_ENTRIES and listing.truncated
             with pytest.raises(ConnectorError, match="too large"):
                 await fetch_source_file(db, source=src, file_id="f")
             for bad in ("../etc", "a/../../b", "a\\..\\b", "a\x00b"):
@@ -113,6 +118,60 @@ async def test_upload_connector_browses() -> None:
     entries = await up.browse(cfg, "/", None)
     assert [e.id for e in entries] == ["a.txt"] and entries[0].size == 5
     assert await up.browse(cfg, "/sub", None) == []
-    assert (await up.fetch_file(cfg, "a.txt", None)).text == "hello"
+    assert (await up.fetch_file(cfg, "a.txt", 100, None)).text == "hello"
     with pytest.raises(ConnectorError):
-        await up.fetch_file(cfg, "b.txt", None)
+        await up.fetch_file(cfg, "b.txt", 100, None)
+
+
+class Boom(Browsing):
+    async def fetch_file(
+        self, config: dict[str, Any], file_id: str, max_bytes: int, auth: Any
+    ) -> FetchedFile:
+        raise RuntimeError("token=hunter2")
+
+
+class Recorder(Browsing):
+    got: int | None = None
+
+    async def fetch_file(
+        self, config: dict[str, Any], file_id: str, max_bytes: int, auth: Any
+    ) -> FetchedFile:
+        self.got = max_bytes
+        return FetchedFile(name="x", content_type="t", data=b"", text="z" * (max_bytes + 1))
+
+
+async def test_fetch_failures_and_limits(
+    app_session: AppSessionFactory, caplog: pytest.LogCaptureFixture
+) -> None:
+    tenant = uuid.uuid4()
+    sid = await _source(app_session, tenant)
+    async with app_session(tenant) as db:
+        src = await db.get(m.DataSource, sid)
+        assert src is not None
+        with patch("oc8.knowledge.browse.resolve_connector", return_value=Boom()):
+            with caplog.at_level("WARNING"), pytest.raises(ConnectorError) as ei:
+                await fetch_source_file(db, source=src, file_id="f")
+            assert "hunter2" not in str(ei.value) and "hunter2" not in caplog.text
+            assert str(sid) in caplog.text and "Traceback" not in caplog.text
+            for bad in ("x" * 5000, "a\nb"):
+                with pytest.raises(ConnectorError, match="invalid file id"):
+                    await fetch_source_file(db, source=src, file_id=bad)
+        rec = Recorder()
+        with patch("oc8.knowledge.browse.resolve_connector", return_value=rec):
+            with pytest.raises(ConnectorError, match="too large"):
+                await fetch_source_file(db, source=src, file_id="f")
+            assert rec.got == MAX_FETCH_BYTES
+            rec.got = None
+            with pytest.raises(ConnectorError, match="too large"):
+                await fetch_source_file(db, source=src, file_id="f", known_size=MAX_FETCH_BYTES + 1)
+            assert rec.got is None
+
+
+async def test_upload_edge_cases() -> None:
+    up = UploadConnector()
+    assert await up.browse({"filename": "", "content": "x"}, "/", None) == []
+    cfg = {"filename": "a.txt", "content": "hello", "content_type": "text/plain"}
+    with pytest.raises(ConnectorError, match="too large"):
+        await up.fetch_file(cfg, "a.txt", 4, None)
+    with pytest.raises(ConnectorError):
+        await up.fetch_file({"filename": "", "content": "x"}, "", 10, None)

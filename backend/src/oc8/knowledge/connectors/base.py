@@ -191,14 +191,25 @@ class BrowsingConnector(Protocol):
     `fetch_file` and not `fetch`: `Connector.fetch` already streams every
     document for ingestion.
 
-    Implementations must treat `path` and `file_id` as untrusted input (core
-    only rejects traversal and control characters) and must never put config
-    values or credentials in an error message."""
+    Implementations must treat `path` and `file_id` as untrusted input. Core
+    only rejects literal `..` segments and control characters, so a connector
+    that decodes ids (URL-encoding, base64, ...) decodes them itself and
+    re-checks the DECODED value (this is what catches `%2e%2e`). They must never
+    put config values or credentials in an error message.
+
+    `fetch_file` must refuse (raise `ConnectorError`) or stop reading once the
+    file exceeds `max_bytes`; core re-checks as defence in depth. Both `data`
+    and `text` must be at most `max_bytes` (UTF-8 for `text`). A non-text file
+    decodes `text` with `errors="replace"` or raises `ConnectorError`."""
 
     async def browse(
         self, config: dict[str, Any], path: str, auth: AuthContext | None = None
     ) -> list[BrowseEntry]: ...
 
     async def fetch_file(
-        self, config: dict[str, Any], file_id: str, auth: AuthContext | None = None
+        self,
+        config: dict[str, Any],
+        file_id: str,
+        max_bytes: int,
+        auth: AuthContext | None = None,
     ) -> FetchedFile: ...

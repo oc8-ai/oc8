@@ -67,6 +67,8 @@ class UploadConnector:
             return []
         content = str(config.get("content", ""))
         filename = str(config.get("filename", ""))
+        if not filename:
+            return []
         return [
             BrowseEntry(
                 id=filename,
@@ -78,15 +80,26 @@ class UploadConnector:
         ]
 
     async def fetch_file(
-        self, config: dict[str, Any], file_id: str, auth: AuthContext | None = None
+        self,
+        config: dict[str, Any],
+        file_id: str,
+        max_bytes: int,
+        auth: AuthContext | None = None,
     ) -> FetchedFile:
-        if file_id != str(config.get("filename", "")):
+        filename = str(config.get("filename", ""))
+        if not filename or file_id != filename:
             raise ConnectorError("no such file in this source")
         content = str(config.get("content", ""))
+        # len(content) <= bytes, and >= bytes / 4: refuse before encoding.
+        if len(content) > max_bytes:
+            raise ConnectorError(f"file is too large to pin (limit {max_bytes} bytes)")
+        data = content.encode()
+        if len(data) > max_bytes:
+            raise ConnectorError(f"file is too large to pin (limit {max_bytes} bytes)")
         return FetchedFile(
             name=file_id,
             content_type=str(config.get("content_type", "")) or "text/plain",
-            data=content.encode(),
+            data=data,
             text=content,
         )
 
