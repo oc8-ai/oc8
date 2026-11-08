@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Iterable
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,17 +40,30 @@ async def revoke_oauth_connection(db: AsyncSession, conn: m.OAuthConnection) -> 
         except Exception as exc:  # best effort: a dead provider must not pin secrets forever
             logger.warning("provider revoke failed for %s: %s", conn.id, exc)
     await delete_tokens(db, tenant_id=conn.tenant_id, connection_id=conn.id)
+    # The stored tokens are only half of what this connection can still serve:
+    # delegated (domain-wide-delegation) tokens live in a process-local cache
+    # keyed by connection, not in the secret store, and would otherwise stay
+    # servable for up to an hour after the row was removed.
     invalidate_delegated_tokens(conn.id)
     await db.delete(conn)
     await db.flush()
 
 
-async def delete_credential_with_secrets(db: AsyncSession, cred: m.Credential) -> None:
-    for ref in dict(cred.secret_refs or {}).values():
+async def delete_secret_refs(
+    db: AsyncSession, *, tenant_id: uuid.UUID, refs: Iterable[str]
+) -> None:
+    """Delete the secrets behind a credential's refs; one already gone is fine."""
+    for ref in refs:
         try:
-            await delete_secret(db, tenant_id=cred.tenant_id, ref=ref)
+            await delete_secret(db, tenant_id=tenant_id, ref=ref)
         except SecretNotFound:
             continue
+
+
+async def delete_credential_with_secrets(db: AsyncSession, cred: m.Credential) -> None:
+    await delete_secret_refs(
+        db, tenant_id=cred.tenant_id, refs=dict(cred.secret_refs or {}).values()
+    )
     await db.delete(cred)
     await db.flush()
 

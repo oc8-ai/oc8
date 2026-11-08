@@ -227,26 +227,127 @@ async def test_revoking_a_personal_credential_deletes_its_secrets(
         ).scalars().all() == []
 
 
+class _FakeHttp:
+    """Stands in for the provider's revoke endpoint; records or fails."""
+
+    def __init__(self, *, fail: bool) -> None:
+        self.fail = fail
+        self.posted: list[dict[str, str]] = []
+
+    def __call__(self) -> _FakeHttp:
+        return self
+
+    async def __aenter__(self) -> _FakeHttp:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+    async def post(self, _url: str, *, data: dict[str, str]) -> None:
+        self.posted.append(data)
+        if self.fail:
+            raise RuntimeError("provider down")
+
+
 async def test_a_dead_provider_does_not_block_revoking(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from oc8.connections import revoke
 
-    def boom() -> None:
-        raise RuntimeError("provider down")
-
-    monkeypatch.setattr(revoke, "get_client", boom)
+    fake = _FakeHttp(fail=True)
+    monkeypatch.setattr(revoke, "get_client", fake)
     tenant = uuid.uuid4()
     anna = await member(app_session, tenant, "anna@acme.test")
-    conn = await oauth_row(app_session, tenant, owner=anna)
+    # google has a revoke endpoint (microsoft has none), so the call is attempted.
+    conn = await oauth_row(app_session, tenant, owner=anna, provider="google")
     await _with_tokens(app_session, tenant, conn)
     async with api() as c:
         r = await c.delete(
             f"/api/v1/connections/oauth/{conn}", headers=headers(tenant, "anna@acme.test")
         )
     assert r.status_code == 204, r.text
+    assert fake.posted == [{"token": "rt1"}]
     async with app_session(tenant) as db:
         assert await db.get(m.OAuthConnection, conn) is None
         assert (
             await db.execute(select(m.Secret).where(m.Secret.tenant_id == tenant))
         ).scalars().all() == []
+
+
+@pytest.mark.parametrize("grant_type", ["client_credentials", "service_account"])
+async def test_app_secrets_are_never_posted_to_the_provider(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch, grant_type: str
+) -> None:
+    from oc8.connections import revoke
+
+    fake = _FakeHttp(fail=False)
+    monkeypatch.setattr(revoke, "get_client", fake)
+    tenant = uuid.uuid4()
+    conn = await oauth_row(
+        app_session, tenant, owner=None, provider="google", grant_type=grant_type
+    )
+    await _with_tokens(app_session, tenant, conn)
+    async with api() as c:
+        r = await c.delete(
+            f"/api/v1/connections/oauth/{conn}",
+            headers=headers(tenant, "admin@acme.test", "org_admin"),
+        )
+    assert r.status_code == 204, r.text
+    assert fake.posted == []
+    async with app_session(tenant) as db:
+        assert await db.get(m.OAuthConnection, conn) is None
+
+
+async def test_organisation_credential_delete_and_in_use(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    await member(app_session, tenant, "anna@acme.test")
+    free = await credential_row(app_session, tenant, owner=None, name="Free")
+    used = await credential_row(app_session, tenant, owner=None, name="Used")
+    async with app_session(tenant) as db:
+        db.add(
+            m.DataSource(
+                tenant_id=tenant,
+                connector_type="s3",
+                name="bucket",
+                config={"credential": str(used)},
+            )
+        )
+    admin = headers(tenant, "admin@acme.test", "org_admin")
+    async with api() as c:
+        # A plain member cannot even see an organisation credential.
+        r = await c.delete(
+            f"/api/v1/connections/credentials/{free}", headers=headers(tenant, "anna@acme.test")
+        )
+        assert r.status_code == 404
+        assert (
+            await c.delete(f"/api/v1/connections/credentials/{free}", headers=admin)
+        ).status_code == 204
+        assert (
+            await c.delete(f"/api/v1/connections/credentials/{used}", headers=admin)
+        ).status_code == 409
+    async with app_session(tenant) as db:
+        assert await db.get(m.Credential, free) is None
+        assert await db.get(m.Credential, used) is not None
+
+
+async def test_mine_and_organisation_listings_carry_no_token_material(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    anna = await member(app_session, tenant, "anna@acme.test")
+    mine = await oauth_row(app_session, tenant, owner=anna)
+    shared = await oauth_row(app_session, tenant, owner=None, label="shared@acme.test")
+    await _with_tokens(app_session, tenant, mine)
+    await _with_tokens(app_session, tenant, shared)
+    async with api() as c:
+        responses = [
+            await c.get("/api/v1/connections/mine", headers=headers(tenant, "anna@acme.test")),
+            await c.get(
+                "/api/v1/connections/organisation",
+                headers=headers(tenant, "admin@acme.test", "org_admin"),
+            ),
+        ]
+    for r in responses:
+        assert r.status_code == 200 and r.json()
+        for needle in ("at1", "rt1", "oauth/", "secretRef", "accessSecretRef"):
+            assert needle not in r.text

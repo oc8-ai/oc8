@@ -24,11 +24,14 @@ from oc8.authz.authority import authority_for_principal
 from oc8.authz.permissions import CONNECTION_OWN, INTEGRATION, MANAGE, perm
 from oc8.authz.scope import scope_for_principal
 from oc8.connections.integrations import InstalledIntegration, installed_integrations
-from oc8.connections.revoke import delete_credential_with_secrets, revoke_oauth_connection
+from oc8.connections.revoke import (
+    delete_credential_with_secrets,
+    delete_secret_refs,
+    revoke_oauth_connection,
+)
 from oc8.credentials.registry import list_credential_types_with_i18n
 from oc8.credentials.service import CredentialInUse, delete_credential
 from oc8.schemas.dto import ConnectableIntegrationDTO, ConnectionDTO
-from oc8.secrets.service import SecretNotFound, delete_secret
 
 router = APIRouter()
 
@@ -338,11 +341,7 @@ async def delete_credential_connection(
             )
         except CredentialInUse as exc:
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
-        for ref in refs.values():
-            try:
-                await delete_secret(db, tenant_id=principal.tenant_id, ref=ref)
-            except SecretNotFound:
-                continue
+        await delete_secret_refs(db, tenant_id=principal.tenant_id, refs=refs.values())
     else:
         await delete_credential_with_secrets(db, cred)
     await _audit_revoked(db, principal, kind="credential", row_id=credential_id, owner=owner)
