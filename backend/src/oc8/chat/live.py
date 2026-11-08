@@ -64,57 +64,95 @@ async def get_or_create_live_session(
     return session
 
 
+_TRIGGER_KEY_PREFIX: Final = "trigger:"
+
+
 def trigger_of(
-    run: m.AgentRun, *, delegated_by: str | None = None, started_by: str | None = None
+    run: m.AgentRun,
+    *,
+    delegated_by: str | None = None,
+    started_by: str | None = None,
+    trigger: m.Trigger | None = None,
 ) -> dict[str, str | None]:
-    """The run's trigger line: `kind` is the run's source, `label` the name
-    beside it ("Delegated by <label>", "From <label>"). A schedule's time is
-    the item's own `at`, formatted in the viewer's zone by the client."""
+    """The run's trigger line: `kind` is the run's source, `label` what goes
+    beside it -- "Schedule · <cron>", "Event · <source>/<type>", "Webhook",
+    "Delegated by <agent>", "From <member>". `trigger` is the Trigger row
+    that fired the run, if any (`trigger_names` finds it)."""
     label: str | None = None
     if run.source == "delegation":
         label = delegated_by
     elif (run.context or {}).get("originating_operator"):
         label = started_by
+    elif trigger is not None and run.source == "cron":
+        label = trigger.cron_expression
+    elif trigger is not None and run.source == "event":
+        parts = [p for p in (trigger.event_source, trigger.event_type) if p]
+        label = "/".join(parts) or None
     return {"kind": run.source, "label": label}
 
 
+def _id_in(raw: object, *, prefix: str = "") -> uuid.UUID | None:
+    if not isinstance(raw, str) or not raw.startswith(prefix):
+        return None
+    try:
+        return uuid.UUID(raw[len(prefix) :])
+    except ValueError:
+        return None
+
+
 async def trigger_names(
-    db: AsyncSession, runs: Sequence[m.AgentRun]
+    db: AsyncSession, runs: Sequence[m.AgentRun], *, tenant_id: uuid.UUID
 ) -> dict[uuid.UUID, dict[str, str | None]]:
-    """`trigger_of` for each run, with the names it needs read in two queries:
-    the delegating agent (through the parent task) and the starting member."""
+    """`trigger_of` for each run, with what it needs read in three batched
+    queries, each held to `tenant_id` on top of RLS: the starting member, the
+    delegating agent (through the parent task), and the firing Trigger (the
+    run's `coalesce_key` is `trigger:<id>`, see triggers/scheduler.py)."""
     subjects = {str(op) for run in runs if (op := (run.context or {}).get("originating_operator"))}
-    parent_tasks: set[uuid.UUID] = set()
-    for run in runs:
-        raw = (run.context or {}).get("parent_task_id")
-        if run.source == "delegation" and raw:
-            try:
-                parent_tasks.add(uuid.UUID(str(raw)))
-            except ValueError:
-                pass
+    parent_tasks = {
+        tid
+        for run in runs
+        if run.source == "delegation"
+        and (tid := _id_in((run.context or {}).get("parent_task_id"))) is not None
+    }
+    trigger_ids = {
+        tid for run in runs if (tid := _id_in(run.coalesce_key, prefix=_TRIGGER_KEY_PREFIX))
+    }
     members: dict[str, str] = {}
     if subjects:
-        rows = await db.execute(
+        member_rows = await db.execute(
             select(m.OrgMember.subject, m.OrgMember.display_name).where(
-                m.OrgMember.subject.in_(subjects)
+                m.OrgMember.tenant_id == tenant_id, m.OrgMember.subject.in_(subjects)
             )
         )
-        members = {subject: (name or subject) for subject, name in rows}
-    agents: dict[str, str] = {}
+        members = {subject: (name or subject) for subject, name in member_rows}
+    agents: dict[uuid.UUID, str] = {}
     if parent_tasks:
-        rows = await db.execute(
+        agent_rows = await db.execute(
             select(m.Task.id, m.Agent.name)
             .join(m.Agent, m.Agent.id == m.Task.assigned_agent_id)
-            .where(m.Task.id.in_(parent_tasks))
+            .where(
+                m.Task.tenant_id == tenant_id,
+                m.Agent.tenant_id == tenant_id,
+                m.Task.id.in_(parent_tasks),
+            )
         )
-        agents = {str(task_id): name for task_id, name in rows}
+        agents = {task_id: name for task_id, name in agent_rows}
+    triggers: dict[uuid.UUID, m.Trigger] = {}
+    if trigger_ids:
+        trigger_rows = await db.execute(
+            select(m.Trigger).where(m.Trigger.tenant_id == tenant_id, m.Trigger.id.in_(trigger_ids))
+        )
+        triggers = {row.id: row for row in trigger_rows.scalars()}
     out: dict[uuid.UUID, dict[str, str | None]] = {}
     for run in runs:
         ctx = run.context or {}
+        task_id = _id_in(ctx.get("parent_task_id"))
+        trigger_id = _id_in(run.coalesce_key, prefix=_TRIGGER_KEY_PREFIX)
         out[run.id] = trigger_of(
             run,
-            delegated_by=agents.get(str(ctx.get("parent_task_id"))),
+            delegated_by=agents.get(task_id) if task_id else None,
             started_by=members.get(str(ctx.get("originating_operator"))),
+            trigger=triggers.get(trigger_id) if trigger_id else None,
         )
     return out
 

@@ -56,6 +56,11 @@ def upgrade() -> None:
     op.execute(
         "CREATE INDEX IF NOT EXISTS ix_run_input_run_pending ON run_input (run_id, consumed_at)"
     )
+    # The Live timeline pages an agent's runs newest first by (created_at, id).
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_agent_run_agent_created "
+        "ON agent_run (agent_id, created_at DESC, id DESC)"
+    )
     op.execute("ALTER TABLE run_input ENABLE ROW LEVEL SECURITY")
     op.execute("""
         DO $$ BEGIN
@@ -78,6 +83,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute("DROP TABLE IF EXISTS run_input")
+    op.execute("DROP INDEX IF EXISTS ix_agent_run_agent_created")
     op.execute("DROP INDEX IF EXISTS uq_chat_session_live")
     op.execute("ALTER TABLE chat_session DROP CONSTRAINT IF EXISTS ck_chat_session_kind")
     op.execute("ALTER TABLE chat_session DROP COLUMN IF EXISTS kind")

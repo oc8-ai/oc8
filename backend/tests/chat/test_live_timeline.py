@@ -18,6 +18,7 @@ from oc8.chat.live import (
     get_or_create_live_session,
     is_autonomous_run,
     live_timeline,
+    trigger_names,
     trigger_of,
 )
 from tests.conftest import AppSessionFactory
@@ -309,6 +310,12 @@ def test_trigger_lines() -> None:
 
     assert trigger_of(run("cron")) == {"kind": "cron", "label": None}
     assert trigger_of(run("webhook")) == {"kind": "webhook", "label": None}
+    cron = m.Trigger(kind="cron", cron_expression="0 9 * * 1-5", task_text="x")
+    event = m.Trigger(kind="event", event_source="sales", event_type="deal.won", task_text="x")
+    hook = m.Trigger(kind="webhook", task_text="x")
+    assert trigger_of(run("cron"), trigger=cron) == {"kind": "cron", "label": "0 9 * * 1-5"}
+    assert trigger_of(run("event"), trigger=event) == {"kind": "event", "label": "sales/deal.won"}
+    assert trigger_of(run("webhook"), trigger=hook) == {"kind": "webhook", "label": None}
     assert trigger_of(run("delegation"), delegated_by="Copilot") == {
         "kind": "delegation",
         "label": "Copilot",
@@ -365,3 +372,46 @@ def test_autonomous_means_no_person_behind_the_run() -> None:
     assert not is_autonomous_run(run("chat"))
     assert not is_autonomous_run(run("cron", originating_operator="bob"))
     assert not is_autonomous_run(run("delegation", chat_session_id=str(uuid.uuid4())))
+
+
+async def test_trigger_names_resolve_the_firing_trigger_and_stay_in_the_tenant(
+    app_session: AppSessionFactory,
+) -> None:
+    """Schedules, events and webhooks are labelled from the Trigger row the
+    run's `coalesce_key` (`trigger:<id>`) names -- read in one batch."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, _, _ = await _world(db, tenant)
+        cron = m.Trigger(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            kind="cron",
+            task_text="x",
+            cron_expression="0 9 * * *",
+        )
+        event = m.Trigger(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            kind="event",
+            task_text="x",
+            event_source="sales",
+            event_type="deal.won",
+        )
+        hook = m.Trigger(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            kind="webhook",
+            task_text="x",
+            webhook_token=uuid.uuid4().hex,
+        )
+        db.add_all([cron, event, hook])
+        await db.flush()
+        runs = [
+            _run(tenant, agent, t.kind, {}, coalesce_key=f"trigger:{t.id}")
+            for t in (cron, event, hook)
+        ]
+        runs.append(_run(tenant, agent, "cron", {}, coalesce_key="trigger:not-a-uuid"))
+        db.add_all(runs)
+        await db.flush()
+        names = await trigger_names(db, runs, tenant_id=tenant)
+    assert [names[r.id]["label"] for r in runs] == ["0 9 * * *", "sales/deal.won", None, None]

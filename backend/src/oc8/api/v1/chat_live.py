@@ -133,7 +133,9 @@ async def get_live(
     )
     has_more = len(items) > limit
     items = items[-limit:]
-    triggers = await trigger_names(db, [i.run for i in items if i.run is not None])
+    triggers = await trigger_names(
+        db, [i.run for i in items if i.run is not None], tenant_id=agent.tenant_id
+    )
     out: list[LiveItemDTO] = []
     for item in items:
         out.append(
