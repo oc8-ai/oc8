@@ -82,7 +82,7 @@ export interface AgentDetail {
 export function useAgent(agentId: string) {
   return useQuery({
     queryKey: ["agents", agentId],
-    queryFn: () => api.get<AgentDetail>(`/agents/${agentId}`),
+    queryFn: () => api.get<AgentDetail>(`/agents/${encodeURIComponent(agentId)}`),
     enabled: !!agentId,
   });
 }

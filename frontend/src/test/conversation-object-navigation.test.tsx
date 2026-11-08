@@ -111,8 +111,11 @@ describe("chip targets select the object", () => {
         options: { validateSearch: (s: Record<string, unknown>) => unknown };
       }
     ).options.validateSearch;
-    expect(validate({ run: "r-9" })).toEqual({ run: "r-9" });
+    const id = "6f1c2b9e-3d4a-4c5b-9e8f-0a1b2c3d4e5f";
+    expect(validate({ run: id })).toEqual({ run: id });
     expect(validate({ run: 4 })).toEqual({});
+    expect(validate({ run: "r-9" })).toEqual({});
+    expect(validate({ run: "../../members/x" })).toEqual({});
     wrap(<ActivityPage runId="r-9" />);
     const focus = within(screen.getByRole("region", { name: /Run/ }));
     expect(focus.getByText("Stock agent")).toBeInTheDocument();
@@ -126,7 +129,12 @@ describe("chip targets select the object", () => {
         options: { validateSearch: (s: Record<string, unknown>) => unknown };
       }
     ).options.validateSearch;
-    expect(validate({ session: "s-1" })).toEqual({ session: "s-1" });
+    const id = "6f1c2b9e-3d4a-4c5b-9e8f-0a1b2c3d4e5f";
+    expect(validate({ session: id })).toEqual({ session: id });
     expect(validate({})).toEqual({});
+    expect(validate({ session: "../../members/x" })).toEqual({});
+    expect(validate({ pin: `run:${id}` })).toEqual({ pin: `run:${id}` });
+    expect(validate({ pin: "run:../../members/x" })).toEqual({});
+    expect(validate({ pin: id })).toEqual({});
   });
 });

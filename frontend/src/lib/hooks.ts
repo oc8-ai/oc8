@@ -1722,7 +1722,7 @@ export function useRun(runId: string | null) {
   return useQuery({
     queryKey: ["run", runId],
     queryFn: async ({ client }) => {
-      const fresh = await api.get<RunDTO>(`/runs/${runId}`);
+      const fresh = await api.get<RunDTO>(`/runs/${encodeURIComponent(runId ?? "")}`);
       // Read after the fetch so fragments that arrived while it was in
       // flight stay in the string.
       const previous = client.getQueryData<RunDTO>(["run", runId]);

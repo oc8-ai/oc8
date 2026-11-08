@@ -47,7 +47,8 @@ export const conversationKeys = {
 export function useChatSession(sessionId: string | null) {
   return useQuery({
     queryKey: conversationKeys.session(sessionId ?? ""),
-    queryFn: () => api.get<ChatSessionDetailDTO>(`/chat/sessions/${sessionId}`),
+    queryFn: () =>
+      api.get<ChatSessionDetailDTO>(`/chat/sessions/${encodeURIComponent(sessionId ?? "")}`),
     enabled: !!sessionId,
   });
 }
@@ -247,7 +248,9 @@ export function useLiveTimeline(agentId: string, allRuns: boolean) {
       if (allRuns) params.set("allRuns", "true");
       if (pageParam) params.set("before", pageParam);
       const qs = params.toString();
-      return api.get<LiveTimelineDTO>(`/agents/${agentId}/live${qs ? `?${qs}` : ""}`);
+      return api.get<LiveTimelineDTO>(
+        `/agents/${encodeURIComponent(agentId)}/live${qs ? `?${qs}` : ""}`,
+      );
     },
     initialPageParam: null as string | null,
     getNextPageParam: (page) => page.nextBefore,
@@ -270,7 +273,7 @@ export const runSteeringKey = (runId: string | null) => ["run-steering", runId ?
 export function useRunSteering(runId: string | null) {
   return useQuery({
     queryKey: runSteeringKey(runId),
-    queryFn: () => api.get<RunSteeringDTO>(`/runs/${runId}/steering`),
+    queryFn: () => api.get<RunSteeringDTO>(`/runs/${encodeURIComponent(runId ?? "")}/steering`),
     enabled: !!runId,
   });
 }
@@ -281,7 +284,8 @@ export function useRunSteering(runId: string | null) {
 export function useSendRunInput(runId: string | null) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (text: string) => api.post<RunInputDTO>(`/runs/${runId}/inputs`, { text }),
+    mutationFn: (text: string) =>
+      api.post<RunInputDTO>(`/runs/${encodeURIComponent(runId ?? "")}/inputs`, { text }),
     onSuccess: (input) =>
       qc.setQueryData<RunSteeringDTO>(runSteeringKey(runId), (prev) =>
         prev && !prev.inputs.some((i) => i.id === input.id)
@@ -297,7 +301,7 @@ export function useSendRunInput(runId: string | null) {
 export function useStopRun() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (runId: string) => api.post<void>(`/runs/${runId}/stop`),
+    mutationFn: (runId: string) => api.post<void>(`/runs/${encodeURIComponent(runId)}/stop`),
     onSettled: (_data, _error, runId) => qc.invalidateQueries({ queryKey: runSteeringKey(runId) }),
   });
 }

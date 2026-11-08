@@ -118,6 +118,7 @@ import { AgentPublishBar } from "@/components/agent-publish-bar";
 import { AgentVersionsTab } from "@/components/agent-versions-tab";
 import { AgentRuntimePanel } from "@/components/agent-runtime-panel";
 import { LiveTimeline } from "@/components/conversation/live-timeline";
+import { urlId } from "@/lib/ids";
 import { ComponentGrantPanel } from "@/components/component-grant-panel";
 import { InlineRename } from "@/components/inline-rename";
 import { AgentInstructionsPanel } from "@/components/agent-instructions-panel";
@@ -160,7 +161,7 @@ export const Route = createFileRoute("/agents/$id")({
   validateSearch: (search: Record<string, unknown>): AgentSearch => {
     const raw = search.tab === "chat" ? "live" : search.tab;
     const tab = TAB_IDS.find((id) => id === raw);
-    const runId = typeof search.runId === "string" && search.runId ? search.runId : undefined;
+    const runId = urlId(search.runId);
     return { ...(tab ? { tab } : {}), ...(runId ? { runId } : {}) };
   },
   component: AgentDetail,
@@ -186,12 +187,14 @@ type TabId = (typeof TAB_IDS)[number];
 
 function AgentDetail() {
   const t = useT();
-  const { id } = Route.useParams();
+  // Not a UUID: nothing is fetched and the page says the agent wasn't found.
+  const { id: rawId } = Route.useParams();
+  const id = urlId(rawId) ?? "";
   const { data: agent, isLoading } = useAgent(id);
   // Suppress toasts (Toast v2) for events about this agent while its Live Log
   // is open — the user is already watching it live.
   useEffect(() => {
-    setViewedAgent(id);
+    setViewedAgent(id || null);
     return () => setViewedAgent(null);
   }, [id]);
   // KB-assignment picker for this agent, not a paginated list view.

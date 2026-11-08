@@ -17,6 +17,7 @@ import { useChatSession } from "@/lib/conversation-api";
 import { useAgent } from "@/lib/hooks";
 import { useChatSessions } from "@/lib/hooks-chat";
 import { useCopilotProfile } from "@/lib/hooks-copilot";
+import { isUuid, urlId } from "@/lib/ids";
 import { useT } from "@/lib/i18n";
 
 export interface CopilotSearch {
@@ -30,10 +31,14 @@ export interface CopilotSearch {
 }
 
 export const Route = createFileRoute("/copilot")({
-  validateSearch: (search: Record<string, unknown>): CopilotSearch => ({
-    ...(typeof search.session === "string" && search.session ? { session: search.session } : {}),
-    ...(typeof search.pin === "string" && search.pin ? { pin: search.pin } : {}),
-  }),
+  validateSearch: (search: Record<string, unknown>): CopilotSearch => {
+    const session = urlId(search.session);
+    const pin = typeof search.pin === "string" ? /^([a-z_]+):(.+)$/.exec(search.pin) : null;
+    return {
+      ...(session ? { session } : {}),
+      ...(pin && isUuid(pin[2]) ? { pin: `${pin[1]}:${pin[2]}` } : {}),
+    };
+  },
   component: CopilotRoute,
 });
 

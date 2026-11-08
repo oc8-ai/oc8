@@ -6,6 +6,7 @@ import { ChatMarkdown } from "@/components/chat-markdown";
 import { RunFailureReason } from "@/components/run-reasoning";
 import { RunStepTimeline } from "@/components/run-step-timeline";
 import { useActivity, useAgents, useRun } from "@/lib/hooks";
+import { urlId } from "@/lib/ids";
 import { RUN_STATE_COLOR, stateLabel } from "@/lib/run-state";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
@@ -17,8 +18,10 @@ export interface ActivitySearch {
 }
 
 export const Route = createFileRoute("/activity")({
-  validateSearch: (search: Record<string, unknown>): ActivitySearch =>
-    typeof search.run === "string" && search.run ? { run: search.run } : {},
+  validateSearch: (search: Record<string, unknown>): ActivitySearch => {
+    const run = urlId(search.run);
+    return run ? { run } : {};
+  },
   component: ActivityRoute,
 });
 
