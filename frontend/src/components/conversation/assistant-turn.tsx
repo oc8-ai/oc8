@@ -1,0 +1,193 @@
+// No bubble, full column width. Top to bottom: thought, steps, the answer
+// with a caret, cards, sources, then actions (spec §2.1).
+import { useState, type ReactNode } from "react";
+import {
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  RotateCcw,
+  ThumbsDown,
+  ThumbsUp,
+} from "lucide-react";
+
+import { RunComponents } from "@/components/run-record-card";
+import { useMessageFeedback, useTurnRun } from "@/lib/conversation-api";
+import { sourcesOf, type RunActivityDTO } from "@/lib/hooks-chat";
+import { useT } from "@/lib/i18n";
+import { cn } from "@/lib/utils";
+
+import { Sources } from "./sources";
+import { StepList } from "./step-list";
+import { StreamingText } from "./streaming-text";
+import { ThoughtDisclosure, thoughtOf } from "./thought-disclosure";
+import type { AssistantTurnModel } from "./types";
+import { useObjectNavigation } from "./use-object-navigation";
+
+const TERMINAL = new Set(["done", "failed", "interrupted"]);
+
+function ActionButton({
+  label,
+  onClick,
+  children,
+  pressed,
+}: {
+  label: string;
+  onClick: () => void;
+  children: ReactNode;
+  pressed?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      aria-pressed={pressed}
+      className={cn(
+        "grid size-8 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        pressed && "text-foreground",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+export function AssistantTurn({
+  sessionId,
+  turn,
+  run: suppliedRun,
+  trigger,
+  cards,
+  footer,
+  readOnly = false,
+  onRegenerate,
+}: {
+  sessionId: string | null;
+  turn: AssistantTurnModel;
+  run?: RunActivityDTO;
+  trigger?: ReactNode;
+  cards?: ReactNode;
+  footer?: ReactNode;
+  readOnly?: boolean;
+  onRegenerate?: (replyToId: string) => void;
+}) {
+  const t = useT();
+  const total = turn.variants.length + (turn.liveRunId ? 1 : 0);
+  const [picked, setPicked] = useState<number | null>(null);
+  const index = picked === null ? total - 1 : Math.min(picked, total - 1);
+  const showingLive = turn.liveRunId !== null && index === turn.variants.length;
+  const message = showingLive ? null : (turn.variants[index] ?? null);
+  const runId = showingLive ? turn.liveRunId : (message?.runId ?? null);
+  const { data: fetchedRun } = useTurnRun(suppliedRun ? null : sessionId, runId);
+  const run = suppliedRun ?? fetchedRun;
+  const live = showingLive && !!run && !TERMINAL.has(run.state);
+  const answer = message ? message.content : (run?.liveAnswer ?? "");
+  const thought = run ? thoughtOf(run) : { text: null, seconds: null };
+  const [copied, setCopied] = useState(false);
+  const [rating, setRating] = useState<"up" | "down" | null>(null);
+  const [highlighted, setHighlighted] = useState<number | null>(null);
+  const feedback = useMessageFeedback(sessionId);
+  const openObject = useObjectNavigation();
+  const sources = sourcesOf(message);
+  const components = message ? message.renderedComponents : (run?.components ?? []);
+
+  function copy() {
+    void navigator.clipboard.writeText(answer).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  }
+
+  function rate(value: "up" | "down") {
+    if (!message) return;
+    setRating(value);
+    feedback.mutate({ messageId: message.id, rating: value });
+  }
+
+  return (
+    <article className="turn-in space-y-2" aria-label={t("Answer", "Antwort")}>
+      {trigger}
+      <ThoughtDisclosure live={live && !answer} text={thought.text} seconds={thought.seconds} />
+      {run && <StepList run={run} />}
+      <StreamingText
+        text={answer}
+        streaming={live}
+        sources={sources}
+        onObjectClick={openObject}
+        onCitation={(n) => {
+          setHighlighted(n);
+          document.getElementById(`source-${n}`)?.scrollIntoView({ block: "nearest" });
+        }}
+      />
+      {run?.state === "waiting_for_input" && showingLive && (
+        <p className="text-xs text-status-warning" aria-live="polite">
+          {t("Waiting for answers…", "Wartet auf Antworten …")}
+        </p>
+      )}
+      <RunComponents components={components} />
+      {cards}
+      <Sources sources={sources} highlighted={highlighted} />
+      {footer}
+      {!live && (message || total > 1) && (
+        <div className="flex items-center gap-1">
+          {total > 1 && (
+            <span className="inline-flex items-center gap-0.5 text-xs text-muted-foreground">
+              <ActionButton
+                label={t("Previous answer", "Vorherige Antwort")}
+                onClick={() => setPicked(Math.max(0, index - 1))}
+              >
+                <ChevronLeft className="size-4" />
+              </ActionButton>
+              <span className="font-mono tabular-nums">
+                {index + 1}/{total}
+              </span>
+              <ActionButton
+                label={t("Next answer", "Nächste Antwort")}
+                onClick={() => setPicked(Math.min(total - 1, index + 1))}
+              >
+                <ChevronRight className="size-4" />
+              </ActionButton>
+            </span>
+          )}
+          {message && (
+            <>
+              <ActionButton
+                label={copied ? t("Copied", "Kopiert") : t("Copy answer", "Antwort kopieren")}
+                onClick={copy}
+              >
+                {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
+              </ActionButton>
+              {!readOnly && turn.replyToId && onRegenerate && (
+                <ActionButton
+                  label={t("Regenerate answer", "Antwort neu erzeugen")}
+                  onClick={() => onRegenerate(turn.replyToId as string)}
+                >
+                  <RotateCcw className="size-4" />
+                </ActionButton>
+              )}
+              {!readOnly && (
+                <>
+                  <ActionButton
+                    label={t("Good answer", "Gute Antwort")}
+                    pressed={rating === "up"}
+                    onClick={() => rate("up")}
+                  >
+                    <ThumbsUp className="size-4" />
+                  </ActionButton>
+                  <ActionButton
+                    label={t("Bad answer", "Schlechte Antwort")}
+                    pressed={rating === "down"}
+                    onClick={() => rate("down")}
+                  >
+                    <ThumbsDown className="size-4" />
+                  </ActionButton>
+                </>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </article>
+  );
+}

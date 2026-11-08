@@ -179,6 +179,8 @@ export interface RunActivityDTO {
   taskId: string | null;
   question: string | null;
   renderedComponents: RunComponentDTO[];
+  // filled by the run.component_rendered live patcher
+  components?: RunComponentDTO[];
   // Not part of the GET /runs/{id} response -- only ever appears once the
   // "run.token_delta" WS patcher (live/apply-event.ts) has concatenated at
   // least one fragment onto this cache entry. Absent (not "") until then.
