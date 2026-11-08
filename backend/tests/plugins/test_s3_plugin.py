@@ -321,6 +321,54 @@ async def test_a_denied_request_says_what_to_check() -> None:
     assert "access key" in (res.error or "").lower()
 
 
+@pytest.mark.parametrize("region", ["x@10.0.0.5:8443/#", "eu-central-1.evil.test#", "EU-1"])
+async def test_a_region_that_is_not_a_region_name_never_reaches_the_network(region: str) -> None:
+    s3 = _S3([])
+    _install(s3)
+    auth = _Secrets()
+    auth.credentials[("test-credential-id", "region")] = region
+    res = await _connector().validate(CFG, auth)
+    assert res.ok is False
+    assert "region" in (res.error or "")
+    assert region not in (res.error or "")
+    assert s3.requests == []
+
+
+@pytest.mark.parametrize(
+    "bucket",
+    ["x@10.0.0.5:8443/#", "10.0.0.5", "My-Bucket", "ab", "a" * 64, "-bucket", "bucket-", "a_b"],
+)
+async def test_a_bucket_that_is_not_an_s3_bucket_name_never_reaches_the_network(
+    bucket: str,
+) -> None:
+    s3 = _S3([])
+    _install(s3)
+    res = await _connector().validate({**CFG, "bucket": bucket}, _Secrets())
+    assert res.ok is False
+    assert "bucket" in (res.error or "")
+    assert bucket not in (res.error or "")
+    assert s3.requests == []
+
+
+async def test_a_dotted_bucket_name_is_fine() -> None:
+    s3 = _S3([])
+    _install(s3)
+    res = await _connector().validate({**CFG, "bucket": "logs.acme-2"}, _Secrets())
+    assert res.ok is True, res.error
+    assert s3.requests[0].url.host == "logs.acme-2.s3.eu-central-1.amazonaws.com"
+
+
+async def test_an_s3_error_does_not_repeat_the_upstream_body() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="<Error>internal 10.1.2.3 secret-ish</Error>")
+
+    oauth_http.set_transport_override(httpx.MockTransport(handler))
+    res = await _connector().validate(CFG, _Secrets())
+    assert res.ok is False
+    assert "500" in (res.error or "")
+    assert "10.1.2.3" not in (res.error or "")
+
+
 # ------------------------------------------------------------------ fetching
 
 async def test_fetch_pulls_text_objects() -> None:

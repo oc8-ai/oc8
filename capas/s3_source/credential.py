@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 
-from connector.connector import _Client
+from connector.connector import _Client, valid_region
 
 from oc8.credentials.errors import CredentialCheckFailed
 from oc8.net.outbound import OutboundBlocked, PinnedTransport, guard_outbound_url
@@ -24,18 +24,20 @@ async def validate_s3(values: dict[str, str]) -> None:
     # are well-formed and the signing succeeds against the given endpoint,
     # not that a specific bucket is reachable -- that proof happens
     # naturally the first time a DataSource using this credential syncs.
-    region = values.get("region", "us-east-1")
+    region = values.get("region", "") or "us-east-1"
+    # The region becomes part of the AWS host name: anything but a region
+    # name could point the request somewhere else entirely.
+    if not valid_region(region):
+        raise CredentialCheckFailed("The region is not a valid S3 region name", reason="invalid")
     endpoint = values.get("endpoint", "")
-    # A custom endpoint is a typed-in address: refuse internal targets and
-    # connect to exactly the address that was checked (DNS rebinding).
-    transport: PinnedTransport | None = None
-    if endpoint.strip():
-        try:
-            ip = await asyncio.to_thread(guard_outbound_url, endpoint)
-        except OutboundBlocked as exc:
-            raise CredentialCheckFailed(
-                "The endpoint is not reachable from here", reason="unreachable"
-            ) from exc
-        transport = PinnedTransport(ip, inner=current_override())
-    client = _Client("", region, endpoint, access_key, secret_key, transport=transport)
+    client = _Client("", region, endpoint, access_key, secret_key)
+    # Custom endpoint or AWS: refuse internal targets and connect to exactly
+    # the address that was checked (DNS rebinding).
+    try:
+        ip = await asyncio.to_thread(guard_outbound_url, f"{client.scheme}://{client.host}")
+    except OutboundBlocked as exc:
+        raise CredentialCheckFailed(
+            "The endpoint is not reachable from here", reason="unreachable"
+        ) from exc
+    client.transport = PinnedTransport(ip, inner=current_override())
     await client.get("/", [("list-type", "2"), ("max-keys", "1")])
