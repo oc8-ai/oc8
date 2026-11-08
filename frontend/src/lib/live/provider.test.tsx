@@ -13,7 +13,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
   };
 });
 
-import { LiveUpdatesProvider, useLiveConnectionStatus } from "@/lib/live/provider";
+import { LiveUpdatesProvider, useLiveConnectionStatus, useWatchRuns } from "@/lib/live/provider";
 
 // Same minimal fake as `connection.test.ts` -- see its comment for why
 // `vi.stubGlobal` is required for `connection.ts`'s `new WebSocket(...)` to
@@ -25,13 +25,24 @@ class FakeWebSocket {
   onmessage: ((ev: MessageEvent) => void) | null = null;
   onclose: ((ev: CloseEvent) => void) | null = null;
   onerror: (() => void) | null = null;
+  sent: string[] = [];
+  readyState = 0;
 
   constructor(public url: string) {
     FakeWebSocket.instances.push(this);
   }
 
   open() {
+    this.readyState = 1;
     this.onopen?.();
+  }
+
+  send(data: string) {
+    this.sent.push(data);
+  }
+
+  receive(frame: unknown) {
+    this.onmessage?.({ data: JSON.stringify(frame) } as MessageEvent);
   }
 
   close(code = 1000) {
@@ -83,5 +94,63 @@ describe("useLiveConnectionStatus", () => {
     // Unmount before the reconnect backoff timer this close scheduled can
     // fire and create another socket after the test has already finished.
     unmount();
+  });
+});
+
+function Watcher({ runIds }: { runIds: string[] }) {
+  useWatchRuns(runIds);
+  return null;
+}
+
+describe("useWatchRuns", () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = [];
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("watches the runs it is given on the provider's socket", async () => {
+    const qc = new QueryClient();
+    const { unmount } = render(
+      <QueryClientProvider client={qc}>
+        <LiveUpdatesProvider>
+          <Watcher runIds={["r1"]} />
+        </LiveUpdatesProvider>
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const ws = FakeWebSocket.instances[0];
+    act(() => ws.open());
+    expect(ws.sent.map((f) => JSON.parse(f) as unknown)).toEqual([
+      { type: "run.watch", runId: "r1" },
+    ]);
+    unmount();
+  });
+
+  it("refetches a run whose watch the server dropped", async () => {
+    const qc = new QueryClient();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    const { unmount } = render(
+      <QueryClientProvider client={qc}>
+        <LiveUpdatesProvider>
+          <Watcher runIds={["r1"]} />
+        </LiveUpdatesProvider>
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const ws = FakeWebSocket.instances[0];
+    act(() => ws.open());
+    spy.mockClear();
+    act(() => ws.receive({ type: "run.unwatched", runId: "r1", reason: "access" }));
+    const keys = spy.mock.calls.map((c) => JSON.stringify(c[0]?.queryKey));
+    expect(keys).toContain(JSON.stringify(["run", "r1"]));
+    unmount();
+  });
+
+  it("is a no-op outside the provider", () => {
+    expect(() => render(<Watcher runIds={["r1"]} />)).not.toThrow();
   });
 });

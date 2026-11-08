@@ -1,8 +1,16 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 import { applyEvent, liveQueryKeys } from "@/lib/live/apply-event";
-import { useLiveConnection } from "@/lib/live/connection";
+import { useLiveConnection, type LiveSocket } from "@/lib/live/connection";
 import { toastForEvent } from "@/lib/live/toast-for-event";
 import type { RealtimeEvent } from "@/lib/live/types";
 
@@ -16,6 +24,23 @@ const LiveConnectionStatusContext = createContext<LiveConnectionStatus>("connect
  * to know the timing of, only the current yes/no. */
 export function useLiveConnectionStatus(): LiveConnectionStatus {
   return useContext(LiveConnectionStatusContext);
+}
+
+const LiveSocketContext = createContext<LiveSocket | null>(null);
+
+/** Watch these runs for as long as the caller is mounted. Ids that drop out of
+ *  the list are unwatched. A no-op outside LiveUpdatesProvider (tests). */
+export function useWatchRuns(runIds: readonly string[]): void {
+  const socket = useContext(LiveSocketContext);
+  const key = runIds.join(",");
+  useEffect(() => {
+    if (!socket) return;
+    const ids = key ? key.split(",") : [];
+    for (const id of ids) socket.watch(id);
+    return () => {
+      for (const id of ids) socket.unwatch(id);
+    };
+  }, [socket, key]);
 }
 
 export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
@@ -52,10 +77,22 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
 
   const onClose = useCallback(() => setStatus("disconnected"), []);
 
-  useLiveConnection(onEvent, onOpen, onClose);
+  // The server stopped this run's events (the member lost access). Refetch
+  // it: the GET answers with what he may still see, and a view that keeps
+  // waiting for tokens that will never come would look stuck.
+  const onUnwatched = useCallback(
+    (runId: string) => {
+      qc.invalidateQueries({ queryKey: ["run", runId] });
+    },
+    [qc],
+  );
+
+  const socket = useLiveConnection(onEvent, onOpen, onClose, onUnwatched);
   return (
-    <LiveConnectionStatusContext.Provider value={status}>
-      {children}
-    </LiveConnectionStatusContext.Provider>
+    <LiveSocketContext.Provider value={socket}>
+      <LiveConnectionStatusContext.Provider value={status}>
+        {children}
+      </LiveConnectionStatusContext.Provider>
+    </LiveSocketContext.Provider>
   );
 }

@@ -84,6 +84,14 @@ const patchers: Record<string, Patcher> = {
     // old useRun poll's terminal-state agents invalidation)
     if (d.state === "done" || d.state === "failed" || d.state === "interrupted") {
       qc.invalidateQueries({ queryKey: ["agents"] });
+      // The answer lands as a chat message in the same commit that ends the
+      // run; chat.message_created normally says so, this is the backstop.
+      qc.invalidateQueries({ queryKey: ["chat", "session"] });
+      qc.invalidateQueries({ queryKey: ["chat", "messages"] });
+      // The server may have withheld this run's deltas while a watch's access
+      // re-check was failing (backend realtime/manager.py), so what streamed in
+      // can be short. The persisted run is complete once it has ended.
+      if (runId) qc.invalidateQueries({ queryKey: ["run", runId] });
     }
     // A run parking on a question is the only signal that a clarification
     // appeared — there is no `clarification.created` event. Narrowed to that one
@@ -275,6 +283,17 @@ const patchers: Record<string, Patcher> = {
     qc.invalidateQueries({ queryKey: ["copilot", "profile"] });
   },
   "copilot.followup": (qc) => qc.invalidateQueries({ queryKey: ["copilot", "followups"] }),
+  // A new turn in a chat this browser's member may open (backend
+  // realtime/emit.py publish_chat_message_created). Ids only, delivered per
+  // member: refetch rather than patch, so the message arrives with its
+  // attachments and author resolved exactly as GET returns them.
+  "chat.message_created": (qc, d) => {
+    const sessionId = d.session_id as string | undefined;
+    if (!sessionId) return;
+    qc.invalidateQueries({ queryKey: ["chat", "messages", sessionId] });
+    qc.invalidateQueries({ queryKey: ["chat", "session", sessionId] });
+    qc.invalidateQueries({ queryKey: ["chat", "sessions"] });
+  },
 };
 
 // backend agent.status -> mock UI AgentStatus (running|warning|error|paused|waiting_for_task)
