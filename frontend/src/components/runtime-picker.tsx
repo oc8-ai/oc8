@@ -120,7 +120,7 @@ export function RuntimePicker({
         <div className="flex-1">
           <div className="font-medium">{label}</div>
           <div className="mt-0.5 text-xs text-muted-foreground">{summary}</div>
-          <div className="mt-1.5 text-[11px] text-muted-foreground">
+          <div className="mt-1.5 text-xs text-muted-foreground">
             {t(
               "More runtimes appear here once installed as plugins.",
               "Weitere Runtimes erscheinen hier, sobald sie als Plugins installiert sind.",
@@ -169,7 +169,7 @@ export function RuntimePicker({
                   {rt.capabilities.map((cap) => (
                     <span
                       key={cap}
-                      className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                      className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-micro text-muted-foreground"
                     >
                       {cap}
                     </span>

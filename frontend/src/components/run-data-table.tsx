@@ -3,6 +3,14 @@
 // place they are trusted into a concrete shape, and only after the backend's
 // own pydantic validation (control_tools.py's render_component branch)
 // already accepted them. Mirrors run-record-card.tsx's asFields() pattern.
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 interface DataTableColumn {
   key: string;
@@ -35,30 +43,30 @@ export function DataTable({ props }: { props: Record<string, unknown> }) {
     <section className="rounded-lg border border-border bg-background/40 p-3 text-sm">
       {title && <div className="mb-2 font-medium">{title}</div>}
       <div className="overflow-x-auto">
-        <table className="w-full border-collapse text-xs">
-          <thead>
-            <tr className="border-b border-border text-left text-muted-foreground">
+        <Table className="border-collapse text-xs">
+          <TableHeader>
+            <TableRow className="border-b border-border hover:bg-transparent">
               {columns.map((c) => (
-                <th key={c.key} className="whitespace-nowrap px-2 py-1.5 font-medium">
+                <TableHead key={c.key} className="whitespace-nowrap px-2 py-1.5 micro-label">
                   {c.label}
-                </th>
+                </TableHead>
               ))}
-            </tr>
-          </thead>
-          <tbody>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {rows.map((row, i) => (
-              <tr key={i} className="border-b border-border/50 last:border-0">
+              <TableRow key={i} className="border-b border-border/50 last:border-0">
                 {columns.map((c) => (
-                  <td key={c.key} className="whitespace-nowrap px-2 py-1.5">
+                  <TableCell key={c.key} className="whitespace-nowrap px-2 py-1.5">
                     {row[c.key] ?? ""}
-                  </td>
+                  </TableCell>
                 ))}
-              </tr>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
-      {caption && <div className="mt-2 text-[11px] text-muted-foreground">{caption}</div>}
+      {caption && <div className="mt-2 text-xs text-muted-foreground">{caption}</div>}
     </section>
   );
 }

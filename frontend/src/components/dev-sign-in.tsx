@@ -98,7 +98,7 @@ function TenantPicker({
           <p className="mt-1 text-sm text-muted-foreground">
             {t(
               "Choose a company, or create a safely isolated one for local testing.",
-              "Wählen Sie eine Firma oder legen Sie eine isolierte Testfirma an.",
+              "Wähle eine Firma oder lege eine isolierte Testfirma an.",
             )}
           </p>
         </div>
@@ -121,7 +121,9 @@ function TenantPicker({
         ))}
       </div>
       <div className="mt-6 border-t border-border pt-5">
-        <h2 className="font-medium">{t("Create a local company", "Lokale Firma anlegen")}</h2>
+        <h2 className="font-serif text-xl">
+          {t("Create a local company", "Lokale Firma anlegen")}
+        </h2>
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
           <input
             value={name}
@@ -147,16 +149,16 @@ function TenantPicker({
         <button
           onClick={create}
           disabled={busy || !name.trim() || !slug.trim()}
-          className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-40"
+          className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
         >
           <Plus className="h-4 w-4" />
           {t("Create company", "Firma anlegen")}
         </button>
       </div>
       {(error || createError) && (
-        <p className="mt-3 text-sm text-[color:var(--status-error)]">{error || createError}</p>
+        <p className="mt-3 text-sm text-status-error">{error || createError}</p>
       )}
-      <p className="mt-5 text-[11px] text-muted-foreground">
+      <p className="mt-5 text-xs text-muted-foreground">
         {t(
           "Development only. Production instances are set up once through POST /auth/setup, not this picker.",
           "Nur für die Entwicklung. Produktivinstanzen werden einmalig über POST /auth/setup eingerichtet, nicht über diesen Dialog.",
@@ -216,9 +218,7 @@ function PersonaPicker({ tenant, onBack }: { tenant: DevTenant; onBack: () => vo
           <Users className="h-3.5 w-3.5" />
           {t("People", "Personen")}
         </h2>
-        {membersError && (
-          <p className="mt-2 text-sm text-[color:var(--status-error)]">{membersError}</p>
-        )}
+        {membersError && <p className="mt-2 text-sm text-status-error">{membersError}</p>}
         {members === null && !membersError && (
           <p className="mt-2 text-sm text-muted-foreground">{t("Loading…", "Lädt…")}</p>
         )}
@@ -226,7 +226,7 @@ function PersonaPicker({ tenant, onBack }: { tenant: DevTenant; onBack: () => vo
           <p className="mt-2 text-sm text-muted-foreground">
             {t(
               "Nobody has signed in to this company yet — use quick access below.",
-              "In dieser Firma hat sich noch niemand angemeldet — nutzen Sie den Schnellzugriff unten.",
+              "In dieser Firma hat sich noch niemand angemeldet — nutze den Schnellzugriff unten.",
             )}
           </p>
         )}
@@ -306,7 +306,7 @@ function PersonaPicker({ tenant, onBack }: { tenant: DevTenant; onBack: () => vo
             <button
               onClick={() => signInAs(manualSubject, manualRole)}
               disabled={busy || !manualSubject.trim()}
-              className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-40"
+              className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
             >
               {t("Continue", "Weiter")}
             </button>
@@ -314,8 +314,8 @@ function PersonaPicker({ tenant, onBack }: { tenant: DevTenant; onBack: () => vo
         )}
       </div>
 
-      {error && <p className="mt-4 text-sm text-[color:var(--status-error)]">{error}</p>}
-      <p className="mt-5 text-[11px] text-muted-foreground">
+      {error && <p className="mt-4 text-sm text-status-error">{error}</p>}
+      <p className="mt-5 text-xs text-muted-foreground">
         {t(
           "Development only. A person's authority comes from their seats and any tenant role assigned to them, never from this screen.",
           "Nur für die Entwicklung. Die Berechtigung kommt aus Sitzen und einer zugewiesenen Rolle, nie von diesem Bildschirm.",

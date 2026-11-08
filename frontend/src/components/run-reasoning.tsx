@@ -28,7 +28,7 @@ export function ReasoningBlock({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+        className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
         aria-expanded={open}
       >
         {open ? (
@@ -40,7 +40,7 @@ export function ReasoningBlock({
         <span>{live ? t("Thinking…", "Denkt nach …") : t("Thought", "Nachgedacht")}</span>
       </button>
       {open && (
-        <p className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words border-l border-border pl-3 text-[11px] italic leading-relaxed text-muted-foreground">
+        <p className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words border-l border-border pl-3 text-xs italic leading-relaxed text-muted-foreground">
           {text}
         </p>
       )}
@@ -73,7 +73,7 @@ export function StepBudget({ step }: { step: ModelStep }) {
     <span
       className={cn(
         "tabular-nums",
-        step.budgetUsedUp ? "text-[color:var(--status-warning)]" : "text-muted-foreground",
+        step.budgetUsedUp ? "text-status-warning-text" : "text-muted-foreground",
       )}
       title={
         step.budgetUsedUp
@@ -114,7 +114,7 @@ export function RunModelSteps({
     <ul className={cn("space-y-1.5", className)} data-testid="run-model-steps">
       {steps.map((step) => (
         <li key={step.step} className="space-y-0.5">
-          <div className="flex flex-wrap items-center gap-x-2 text-[11px]">
+          <div className="flex flex-wrap items-center gap-x-2 text-xs">
             <span className="text-muted-foreground">
               {t(`Step ${step.step}`, `Schritt ${step.step}`)}
             </span>
@@ -125,7 +125,7 @@ export function RunModelSteps({
       ))}
       {showLive && liveReasoning && (
         <li className="space-y-0.5">
-          <div className="text-[11px] text-muted-foreground">
+          <div className="text-xs text-muted-foreground">
             {t(`Step ${liveReasoning.step}`, `Schritt ${liveReasoning.step}`)}
           </div>
           <ReasoningBlock text={liveReasoning.text} live defaultOpen />

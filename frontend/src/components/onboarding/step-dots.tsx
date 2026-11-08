@@ -19,7 +19,7 @@ export function StepDots<StepId extends string>({
         <li key={s} className="flex items-center gap-2">
           <span
             className={cn(
-              "grid h-6 w-6 shrink-0 place-items-center rounded-full text-[11px] font-semibold transition-transform",
+              "grid h-6 w-6 shrink-0 place-items-center rounded-full text-xs font-semibold transition-transform",
               i < idx
                 ? "scale-100 bg-primary text-primary-foreground"
                 : i === idx

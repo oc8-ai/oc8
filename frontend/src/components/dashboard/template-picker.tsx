@@ -119,7 +119,7 @@ export function TemplatePicker({
                         onClick={() => handleDeletePreset(preset)}
                         disabled={deletePreset.isPending}
                         title={t("Delete preset", "Preset löschen")}
-                        className="shrink-0 rounded-md p-1.5 text-muted-foreground transition hover:text-[color:var(--status-error)] disabled:cursor-not-allowed disabled:opacity-50"
+                        className="shrink-0 rounded-md p-1.5 text-muted-foreground transition hover:text-status-error disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>

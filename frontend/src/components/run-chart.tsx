@@ -7,12 +7,12 @@
 import type { ReactNode } from "react";
 
 const SERIES_COLORS = [
-  "var(--primary)",
-  "var(--status-warning, #eab308)",
-  "var(--status-error, #ef4444)",
-  "var(--status-running, #22c55e)",
-  "#8b5cf6",
-  "#06b6d4",
+  "var(--chart-1)",
+  "var(--chart-3)",
+  "var(--chart-4)",
+  "var(--chart-2)",
+  "var(--chart-5)",
+  "var(--muted-foreground)",
 ];
 
 interface ChartSeries {
@@ -59,7 +59,7 @@ function computeChartGeometry(labels: string[], series: ChartSeries[]) {
 function ChartLegend({ series }: { series: ChartSeries[] }) {
   if (series.length <= 1) return null;
   return (
-    <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-muted-foreground">
+    <div className="mt-2 flex flex-wrap gap-3 text-xs text-muted-foreground">
       {series.map((s, i) => (
         <span key={s.name} className="inline-flex items-center gap-1.5">
           <span

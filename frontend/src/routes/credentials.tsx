@@ -17,6 +17,14 @@ import {
 import { useMay } from "@/lib/governance-hooks";
 import { resolveTranslation, useLang, useT } from "@/lib/i18n";
 import { useConfirm } from "@/hooks/use-confirm";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 export const Route = createFileRoute("/credentials")({
   component: CredentialsPage,
@@ -52,7 +60,7 @@ export function CredentialsPage() {
     return (
       <Panel className="p-6">
         <p className="text-sm text-muted-foreground">
-          {t("Your role does not include secret:view.", "Ihre Rolle enthält secret:view nicht.")}
+          {t("Your role does not include secret:view.", "Deine Rolle enthält secret:view nicht.")}
         </p>
       </Panel>
     );
@@ -92,36 +100,32 @@ export function CredentialsPage() {
           {t("No credentials yet.", "Noch keine Zugangsdaten.")}
         </p>
       ) : (
-        <table className="mt-6 w-full text-sm">
-          <thead>
-            <tr className="border-b border-border">
-              <th className="py-3 text-left font-medium text-muted-foreground">
-                {t("Name", "Name")}
-              </th>
-              <th className="py-3 text-left font-medium text-muted-foreground">
-                {t("Type", "Typ")}
-              </th>
-              <th className="py-3 text-left font-medium text-muted-foreground">
+        <Table className="mt-6 text-sm">
+          <TableHeader>
+            <TableRow className="border-b border-border hover:bg-transparent">
+              <TableHead className="py-3 micro-label">{t("Name", "Name")}</TableHead>
+              <TableHead className="py-3 micro-label">{t("Type", "Typ")}</TableHead>
+              <TableHead className="py-3 micro-label">
                 {t("Last tested", "Zuletzt getestet")}
-              </th>
-              <th className="py-3 text-right font-medium text-muted-foreground">
-                {t("Action", "Aktion")}
-              </th>
-            </tr>
-          </thead>
-          <tbody>
+              </TableHead>
+              <TableHead className="py-3 text-right micro-label">{t("Action", "Aktion")}</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {credentials.map((cred) => (
-              <tr key={cred.id} className="border-b border-border/50">
-                <td className="py-3 font-medium">{cred.name}</td>
-                <td className="py-3 text-muted-foreground">{typeLabel(cred.credentialType)}</td>
-                <td className="py-3 text-muted-foreground">
+              <TableRow key={cred.id} className="border-b border-border/50">
+                <TableCell className="py-3 font-medium">{cred.name}</TableCell>
+                <TableCell className="py-3 text-muted-foreground">
+                  {typeLabel(cred.credentialType)}
+                </TableCell>
+                <TableCell className="py-3 text-muted-foreground">
                   {cred.lastTestedAt == null
                     ? t("Never tested", "Nie getestet")
                     : cred.lastTestOk
                       ? t("OK", "OK")
                       : t("Failed", "Fehlgeschlagen")}
-                </td>
-                <td className="py-3 text-right">
+                </TableCell>
+                <TableCell className="py-3 text-right">
                   {mayManage && (
                     <>
                       <button
@@ -180,11 +184,11 @@ export function CredentialsPage() {
                       </button>
                     </>
                   )}
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       )}
 
       <CreateCredentialDialog open={createOpen} onOpenChange={setCreateOpen} types={types} />
@@ -305,7 +309,7 @@ function CreateCredentialDialog({
           <button
             onClick={submit}
             disabled={createCredential.isPending}
-            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {createCredential.isPending ? t("Creating…", "Wird angelegt…") : t("Create", "Anlegen")}
           </button>
@@ -435,7 +439,7 @@ function EditCredentialDialog({
           <button
             onClick={submit}
             disabled={updateCredential.isPending}
-            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {updateCredential.isPending
               ? t("Saving…", "Wird gespeichert…")

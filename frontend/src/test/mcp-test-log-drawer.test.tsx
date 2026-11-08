@@ -90,7 +90,7 @@ describe("McpTestLogDrawer", () => {
     fireEvent.click(screen.getByRole("button", { name: /connection log/i }));
 
     const line = screen.getByText("Error: 403 Forbidden");
-    expect(line.closest("div")).toHaveClass("text-[color:var(--status-error)]");
+    expect(line.closest("div")).toHaveClass("text-status-error");
   });
 
   it("keeps two connections' drawers independent", () => {

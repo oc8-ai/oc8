@@ -4,7 +4,6 @@ import {
   Check,
   Copy,
   KeyRound,
-  Loader2,
   Mail,
   Save,
   ShieldCheck,
@@ -48,6 +47,16 @@ import {
   type MemberSeat,
   type RoleAssignee,
 } from "@/lib/roles-hooks";
+import { SkeletonRows } from "@/components/skeleton-rows";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 export const Route = createFileRoute("/members/$memberId")({
   component: MemberDetail,
@@ -76,7 +85,7 @@ function MemberDetail() {
         <p className="text-sm text-muted-foreground">
           {t(
             "Your role does not include member:manage, so you cannot manage users.",
-            "Ihre Rolle enthält member:manage nicht, daher können Sie Benutzer nicht verwalten.",
+            "Deine Rolle enthält member:manage nicht, daher kannst du Benutzer nicht verwalten.",
           )}
         </p>
       </Panel>
@@ -85,9 +94,9 @@ function MemberDetail() {
 
   if (isLoading) {
     return (
-      <div className="flex items-center gap-2 p-6 text-sm text-muted-foreground">
-        <Loader2 className="size-4 animate-spin" />
-        {t("Loading…", "Wird geladen…")}
+      <div className="space-y-4 p-6">
+        <Skeleton className="h-8 w-64" />
+        <SkeletonRows label={t("Loading…", "Wird geladen…")} rows={4} rowClassName="h-10" />
       </div>
     );
   }
@@ -324,7 +333,7 @@ export function MemberDetailForm({ member }: { member: Member }) {
 
   const addSeat = () => {
     if (!newSeatDepartmentId) {
-      toast.error(t("Choose a department.", "Wählen Sie ein Department."));
+      toast.error(t("Choose a department.", "Wähle ein Department."));
       return;
     }
     grantSeat.mutate(
@@ -413,7 +422,7 @@ export function MemberDetailForm({ member }: { member: Member }) {
           <div>
             <h3 className="font-serif text-lg">{member.displayName || signInEmail}</h3>
             {isAdmin && (
-              <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
+              <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-primary/15 px-2 py-0.5 micro-label text-primary">
                 <ShieldCheck className="size-3" />
                 {t("Administrator", "Administrator")}
               </span>
@@ -439,7 +448,7 @@ export function MemberDetailForm({ member }: { member: Member }) {
                 type="button"
                 onClick={saveDisplayName}
                 disabled={updateMember.isPending || displayName === (member.displayName ?? "")}
-                className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >
                 <Save className="size-3.5" />
                 {t("Save", "Speichern")}
@@ -460,7 +469,7 @@ export function MemberDetailForm({ member }: { member: Member }) {
                   type="button"
                   onClick={saveSubject}
                   disabled={renameSubject.isPending || subject.trim() === member.subject}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                 >
                   <Save className="size-3.5" />
                   {t("Save", "Speichern")}
@@ -493,7 +502,7 @@ export function MemberDetailForm({ member }: { member: Member }) {
           <p className="mt-1 text-sm text-muted-foreground">
             {t(
               "Set a new password so this person can sign in. There is no way to view their current password.",
-              "Vergeben Sie ein neues Passwort, damit sich diese Person anmelden kann. Das aktuelle Passwort kann nicht eingesehen werden.",
+              "Vergib ein neues Passwort, damit sich diese Person anmelden kann. Das aktuelle Passwort kann nicht eingesehen werden.",
             )}
           </p>
           <div className="mt-4 flex max-w-md gap-2 text-sm">
@@ -511,7 +520,7 @@ export function MemberDetailForm({ member }: { member: Member }) {
               type="button"
               onClick={submitPassword}
               disabled={setPassword.isPending || newPassword.length === 0}
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground disabled:opacity-50"
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
             >
               {setPassword.isPending
                 ? t("Setting…", "Wird gesetzt…")
@@ -522,7 +531,7 @@ export function MemberDetailForm({ member }: { member: Member }) {
             <p className="text-sm text-muted-foreground">
               {t(
                 "Or send them a link to set their own password. The mail is tried first; if no mail server is configured, you get a copyable link instead.",
-                "Oder senden Sie ihnen einen Link, damit sie selbst ein Passwort setzen. Zuerst wird die E-Mail versucht; ist kein Mailserver konfiguriert, erhalten Sie stattdessen einen kopierbaren Link.",
+                "Oder sende ihnen einen Link, damit sie selbst ein Passwort setzen. Zuerst wird die E-Mail versucht; ist kein Mailserver konfiguriert, erhältst du stattdessen einen kopierbaren Link.",
               )}
             </p>
             <button
@@ -617,22 +626,20 @@ export function MemberDetailForm({ member }: { member: Member }) {
           </p>
         ) : (
           <div className="mt-4 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border">
-                  <th className="py-2 text-left font-medium text-muted-foreground">
+            <Table className="text-sm">
+              <TableHeader>
+                <TableRow className="border-b border-border hover:bg-transparent">
+                  <TableHead className="py-2 micro-label">
                     {t("Department", "Department")}
-                  </th>
-                  <th className="py-2 text-left font-medium text-muted-foreground">
-                    {t("Seat role", "Sitz-Rolle")}
-                  </th>
-                  <th className="py-2 text-left font-medium text-muted-foreground">
+                  </TableHead>
+                  <TableHead className="py-2 micro-label">{t("Seat role", "Sitz-Rolle")}</TableHead>
+                  <TableHead className="py-2 micro-label">
                     {t("Manages agents", "Verwaltet Agenten")}
-                  </th>
-                  <th className="py-2 text-right font-medium text-muted-foreground" />
-                </tr>
-              </thead>
-              <tbody>
+                  </TableHead>
+                  <TableHead className="py-2 text-right micro-label" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {seats.map((seat) => (
                   <SeatRow
                     key={seat.departmentId}
@@ -648,8 +655,8 @@ export function MemberDetailForm({ member }: { member: Member }) {
                     t={t}
                   />
                 ))}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           </div>
         )}
 
@@ -693,7 +700,7 @@ export function MemberDetailForm({ member }: { member: Member }) {
               type="button"
               onClick={addSeat}
               disabled={grantSeat.isPending}
-              className="rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground disabled:opacity-50"
+              className="rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
             >
               {t("Add seat", "Sitz hinzufügen")}
             </button>
@@ -763,7 +770,7 @@ function ResetLinkDialog({
           <DialogDescription>
             {t(
               "No mail server is configured for this instance, so the reset could not be emailed. Copy this link and send it to them yourself — it lets them set a new password.",
-              "Für diese Instanz ist kein Mailserver konfiguriert, daher konnte der Reset nicht per E-Mail versendet werden. Kopieren Sie diesen Link und senden Sie ihn selbst — damit kann ein neues Passwort gesetzt werden.",
+              "Für diese Instanz ist kein Mailserver konfiguriert, daher konnte der Reset nicht per E-Mail versendet werden. Kopiere diesen Link und sende ihn selbst — damit kann ein neues Passwort gesetzt werden.",
             )}
           </DialogDescription>
         </DialogHeader>
@@ -786,7 +793,7 @@ function ResetLinkDialog({
         <div className="flex justify-end">
           <button
             onClick={() => onOpenChange(false)}
-            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground"
+            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
           >
             {t("Done", "Fertig")}
           </button>
@@ -812,9 +819,9 @@ function SeatRow({
   t: (en: string, de: string) => string;
 }) {
   return (
-    <tr className="border-b border-border/50">
-      <td className="py-2">{seat.departmentName || seat.departmentId}</td>
-      <td className="py-2">
+    <TableRow className="border-b border-border/50">
+      <TableCell className="py-2">{seat.departmentName || seat.departmentId}</TableCell>
+      <TableCell className="py-2">
         <Select value={seat.seatRole} onValueChange={onChangeRole}>
           <SelectTrigger className="h-8 w-40 text-xs">
             <SelectValue />
@@ -827,15 +834,15 @@ function SeatRow({
             ))}
           </SelectContent>
         </Select>
-      </td>
-      <td className="py-2">
+      </TableCell>
+      <TableCell className="py-2">
         <Switch
           checked={seat.agentManage}
           onCheckedChange={onToggleAgentManage}
           disabled={pending}
         />
-      </td>
-      <td className="py-2 text-right">
+      </TableCell>
+      <TableCell className="py-2 text-right">
         <button
           type="button"
           onClick={onRemove}
@@ -845,7 +852,7 @@ function SeatRow({
         >
           <Trash2 className="size-3" />
         </button>
-      </td>
-    </tr>
+      </TableCell>
+    </TableRow>
   );
 }

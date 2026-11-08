@@ -138,9 +138,7 @@ export function AgentRuntimePanel({
     <Panel className="p-5">
       <div className="flex items-start justify-between gap-2">
         <div>
-          <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-            {t("execution environment", "Ausführungsumgebung")}
-          </div>
+          <div className="micro-label">{t("execution environment", "Ausführungsumgebung")}</div>
           <h3 className="mt-0.5 font-serif text-lg">{t("Runtime", "Runtime")}</h3>
         </div>
         <button
@@ -165,7 +163,7 @@ export function AgentRuntimePanel({
                   {current.capabilities.map((cap) => (
                     <span
                       key={cap}
-                      className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                      className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-micro text-muted-foreground"
                     >
                       {cap}
                     </span>
@@ -177,8 +175,8 @@ export function AgentRuntimePanel({
         })()}
 
       {unresolved && (
-        <div className="mt-4 flex items-start gap-2 rounded-md border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 p-3 text-xs">
-          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[color:var(--status-warning)]" />
+        <div className="mt-4 flex items-start gap-2 rounded-md border border-status-warning/40 bg-status-warning/10 p-3 text-xs">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-warning-text" />
           <div className="flex-1">
             <p className="text-foreground/90">
               {t("This runtime is no longer available.", "Diese Runtime ist nicht mehr verfügbar.")}
@@ -189,7 +187,7 @@ export function AgentRuntimePanel({
                 type="button"
                 onClick={resetToDefault}
                 disabled={updateRuntime.isPending}
-                className="mt-2 rounded-md border border-[color:var(--status-warning)]/50 bg-background/40 px-2.5 py-1 text-[11px] font-medium text-foreground/90 transition hover:bg-background/70 disabled:cursor-not-allowed disabled:opacity-50"
+                className="mt-2 rounded-md border border-status-warning/50 bg-background/40 px-2.5 py-1 text-xs font-medium text-foreground/90 transition hover:bg-background/70 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {updateRuntime.isPending
                   ? t("Resetting…", "Wird zurückgesetzt…")
@@ -207,7 +205,7 @@ export function AgentRuntimePanel({
       )}
 
       {runtimesQuery.isError && (
-        <p className="mt-4 text-sm text-[color:var(--status-error)]">
+        <p className="mt-4 text-sm text-status-error">
           {t(
             "Couldn't load runtime information.",
             "Runtime-Informationen konnten nicht geladen werden.",
@@ -232,9 +230,7 @@ export function AgentRuntimePanel({
           >
             <div className="flex items-center justify-between border-b border-border px-5 py-4">
               <div>
-                <div className="text-[11px] uppercase tracking-widest text-muted-foreground">
-                  {t("Runtime", "Runtime")}
-                </div>
+                <div className="micro-label">{t("Runtime", "Runtime")}</div>
                 <h2 className="font-serif text-xl">{t("Change runtime", "Runtime ändern")}</h2>
               </div>
               <button
@@ -255,9 +251,9 @@ export function AgentRuntimePanel({
               {violations && (
                 <div
                   role="alert"
-                  className="rounded-md border border-[color:var(--status-error)]/40 bg-[color:var(--status-error)]/10 p-3 text-xs text-foreground/90"
+                  className="rounded-md border border-status-error/40 bg-status-error/10 p-3 text-xs text-foreground/90"
                 >
-                  <p className="font-medium text-[color:var(--status-error)]">
+                  <p className="font-medium text-status-error">
                     {t(
                       "This runtime can't be used here:",
                       "Diese Runtime kann hier nicht verwendet werden:",

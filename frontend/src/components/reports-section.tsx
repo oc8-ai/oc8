@@ -20,7 +20,7 @@ export function ReportsSection() {
     <div className="space-y-3">
       <div className="flex items-center gap-2">
         <FileBarChart className="h-4 w-4 text-muted-foreground" />
-        <h2 className="text-sm font-medium">{t("Reports", "Berichte")}</h2>
+        <h2 className="font-serif text-xl">{t("Reports", "Berichte")}</h2>
       </div>
       <div className="space-y-3">
         {reports.map((report) => (

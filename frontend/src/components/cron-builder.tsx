@@ -130,9 +130,7 @@ export function CronBuilder({
     <div className="space-y-3 rounded-md border border-border bg-background/30 p-3">
       <div className="grid gap-2 sm:grid-cols-[minmax(0,180px)_minmax(0,1fr)]">
         <label className="block">
-          <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
-            Frequency
-          </span>
+          <span className="micro-label">Frequency</span>
           <select
             value={state.freq}
             onChange={(e) => update({ freq: e.target.value as CronFreq })}
@@ -188,9 +186,7 @@ export function CronBuilder({
 
       {state.freq === "weekly" && (
         <div>
-          <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-            Weekdays
-          </div>
+          <div className="micro-label">Weekdays</div>
           <div className="mt-1 flex flex-wrap gap-1.5">
             {WEEKDAY_LABELS.map((lbl, idx) => {
               const active = state.weekdays.includes(idx);
@@ -206,7 +202,7 @@ export function CronBuilder({
                     })
                   }
                   className={cn(
-                    "h-7 min-w-8 rounded-md border px-2 text-[11px] transition",
+                    "h-7 min-w-8 rounded-md border px-2 text-xs transition",
                     active
                       ? "border-primary/60 bg-primary/15 text-primary"
                       : "border-border bg-background/40 text-muted-foreground hover:text-foreground",
@@ -232,8 +228,8 @@ export function CronBuilder({
 
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
         <div className="min-w-0">
-          <div className="text-[11px] text-foreground/90">{human}</div>
-          <code className="font-mono text-[11px] text-muted-foreground">{cron}</code>
+          <div className="text-xs text-foreground/90">{human}</div>
+          <code className="font-mono text-xs text-muted-foreground">{cron}</code>
         </div>
         <button
           type="button"
@@ -262,7 +258,7 @@ function NumField({
 }) {
   return (
     <label className="block">
-      <span className="text-[10px] uppercase tracking-widest text-muted-foreground">{label}</span>
+      <span className="micro-label">{label}</span>
       <input
         type="number"
         min={min}

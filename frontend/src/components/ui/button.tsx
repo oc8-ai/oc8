@@ -10,6 +10,10 @@ const buttonVariants = cva(
     variants: {
       variant: {
         default: "bg-primary text-primary-foreground shadow hover:bg-primary/90",
+        // The one standout action on a screen (DESIGN.md "Buttons"): rare, at
+        // most one per screen. Dark ink, not white: white text falls below
+        // 3:1 on the gradient's cyan and orange stops.
+        highlight: "bg-brand-gradient text-brand-gradient-foreground shadow hover:brightness-110",
         destructive: "bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90",
         outline:
           "border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground",

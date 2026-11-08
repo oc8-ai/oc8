@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { Check, ChevronRight, Copy, Loader2, Plus, Users } from "lucide-react";
+import { Check, ChevronRight, Copy, Plus, Users } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Panel, roleLabel } from "@/components/app-shell";
@@ -16,6 +16,15 @@ import { ApiError } from "@/lib/api";
 import { useAuthConfig } from "@/lib/hooks";
 import { useMay } from "@/lib/governance-hooks";
 import { useT } from "@/lib/i18n";
+import { SkeletonRows } from "@/components/skeleton-rows";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 export const Route = createFileRoute("/members/")({
   component: MembersPage,
@@ -50,7 +59,7 @@ export function MembersPage() {
             <p className="mt-2 text-sm text-muted-foreground">
               {t(
                 "Your role does not include member:manage, so you cannot manage users. Ask your administrator for access.",
-                "Ihre Rolle enthält member:manage nicht, daher können Sie Benutzer nicht verwalten. Bitten Sie Ihren Administrator um Zugriff.",
+                "Deine Rolle enthält member:manage nicht, daher kannst du Benutzer nicht verwalten. Bitte deinen Administrator um Zugriff.",
               )}
             </p>
           </div>
@@ -71,7 +80,7 @@ export function MembersPage() {
             <p className="mt-1 text-sm text-muted-foreground">
               {t(
                 "Manage user roles for your organization.",
-                "Verwalten Sie Benutzerrollen für Ihre Organisation.",
+                "Verwalte Benutzerrollen für deine Organisation.",
               )}
             </p>
           </div>
@@ -134,7 +143,7 @@ function InviteLinkDialog({
           <DialogDescription>
             {t(
               "No mail server is configured for this instance, so the invite could not be emailed. Copy this link and send it to the new user yourself — it lets them set their own password.",
-              "Für diese Instanz ist kein Mailserver konfiguriert, daher konnte die Einladung nicht per E-Mail versendet werden. Kopieren Sie diesen Link und senden Sie ihn selbst an den neuen Benutzer — damit kann er sein eigenes Passwort festlegen.",
+              "Für diese Instanz ist kein Mailserver konfiguriert, daher konnte die Einladung nicht per E-Mail versendet werden. Kopiere diesen Link und sende ihn selbst an den neuen Benutzer — damit kann er sein eigenes Passwort festlegen.",
             )}
           </DialogDescription>
         </DialogHeader>
@@ -157,7 +166,7 @@ function InviteLinkDialog({
         <div className="flex justify-end">
           <button
             onClick={() => onOpenChange(false)}
-            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground"
+            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
           >
             {t("Done", "Fertig")}
           </button>
@@ -232,7 +241,7 @@ function CreateMemberDialog({
   const submit = () => {
     const trimmed = subject.trim();
     if (!trimmed) {
-      toast.error(t("Enter a sign-in email or username.", "Geben Sie eine Anmelde-E-Mail oder einen Benutzernamen ein."));
+      toast.error(t("Enter a sign-in email or username.", "Gib eine Anmelde-E-Mail oder einen Benutzernamen ein."));
       return;
     }
     if (localAuth && password.length > 0 && password.length < 8) {
@@ -271,7 +280,7 @@ function CreateMemberDialog({
           toast.error(
             err instanceof Error
               ? err.message
-              : t("Could not create user. Try again.", "Benutzer konnte nicht angelegt werden. Versuchen Sie es erneut."),
+              : t("Could not create user. Try again.", "Benutzer konnte nicht angelegt werden. Versuche es erneut."),
           );
         },
       },
@@ -292,7 +301,7 @@ function CreateMemberDialog({
           <DialogDescription>
             {t(
               "Enrol somebody by their sign-in identity. They can also be added automatically the first time they sign in — this just lets you set them up (and assign a role) ahead of time.",
-              "Legen Sie jemanden über seine Anmelde-Identität an. Personen werden auch automatisch beim ersten Anmelden hinzugefügt — so können Sie vorab einrichten (und eine Rolle zuweisen).",
+              "Lege jemanden über seine Anmelde-Identität an. Personen werden auch automatisch beim ersten Anmelden hinzugefügt — so kannst du vorab einrichten (und eine Rolle zuweisen).",
             )}
           </DialogDescription>
         </DialogHeader>
@@ -375,7 +384,7 @@ function CreateMemberDialog({
           <button
             onClick={submit}
             disabled={createMember.isPending}
-            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {createMember.isPending
               ? t("Creating…", "Wird angelegt…")
@@ -427,10 +436,12 @@ function MembersTable() {
       />
 
       {isLoading ? (
-        <div className="mt-6 flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="size-4 animate-spin" />
-          {t("Loading users…", "Benutzer werden geladen…")}
-        </div>
+        <SkeletonRows
+          label={t("Loading users…", "Benutzer werden geladen…")}
+          rows={5}
+          rowClassName="h-10"
+          className="mt-6"
+        />
       ) : error ? (
         <p className="mt-6 text-sm text-destructive">
           {t("The user list could not be loaded.", "Die Benutzerliste konnte nicht geladen werden.")}
@@ -447,29 +458,25 @@ function MembersTable() {
       ) : (
         <>
           <div className="mt-6 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border">
-                  <th className="py-3 text-left font-medium text-muted-foreground">
-                    {t("Name", "Name")}
-                  </th>
-                  <th className="py-3 text-left font-medium text-muted-foreground">
+            <Table className="text-sm">
+              <TableHeader>
+                <TableRow className="border-b border-border hover:bg-transparent">
+                  <TableHead className="py-3 micro-label">{t("Name", "Name")}</TableHead>
+                  <TableHead className="py-3 micro-label">
                     {t("Sign-in email", "Anmelde-E-Mail")}
-                  </th>
-                  <th className="py-3 text-left font-medium text-muted-foreground">
-                    {t("Role", "Rolle")}
-                  </th>
-                  <th className="py-3 text-right font-medium text-muted-foreground">
+                  </TableHead>
+                  <TableHead className="py-3 micro-label">{t("Role", "Rolle")}</TableHead>
+                  <TableHead className="py-3 text-right micro-label">
                     {t("Action", "Aktion")}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {assignees.map((member) => (
                   <MemberRow key={member.id} member={member} t={t} />
                 ))}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           </div>
         </>
       )}
@@ -491,17 +498,21 @@ function MemberRow({ member, t }: MemberRowProps) {
     : t("from their sign-in", "aus ihrer Anmeldung");
 
   return (
-    <tr className="border-b border-border/50 hover:bg-muted/20">
-      <td className="py-3">
-        <Link to="/members/$memberId" params={{ memberId: member.id }} className="block hover:underline">
+    <TableRow className="border-b border-border/50 hover:bg-muted/20">
+      <TableCell className="py-3">
+        <Link
+          to="/members/$memberId"
+          params={{ memberId: member.id }}
+          className="block hover:underline"
+        >
           <div className="font-medium">{member.displayName || signInEmail}</div>
         </Link>
-      </td>
-      <td className="py-3 text-muted-foreground">{signInEmail}</td>
-      <td className="py-3">
+      </TableCell>
+      <TableCell className="py-3 text-muted-foreground">{signInEmail}</TableCell>
+      <TableCell className="py-3">
         <span className="text-sm">{currentRoleName}</span>
-      </td>
-      <td className="py-3 text-right">
+      </TableCell>
+      <TableCell className="py-3 text-right">
         {/* Role changes live on the detail page now -- it already has the full
             picture (admin toggle, exact role override, per-department seats),
             so this was a second, more confusing way to do the same thing. */}
@@ -513,7 +524,7 @@ function MemberRow({ member, t }: MemberRowProps) {
           {t("Open", "Öffnen")}
           <ChevronRight className="size-3" />
         </Link>
-      </td>
-    </tr>
+      </TableCell>
+    </TableRow>
   );
 }

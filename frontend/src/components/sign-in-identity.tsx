@@ -31,10 +31,7 @@ export function OrganisationIdLine({ tenantId }: { tenantId: string }) {
         testId="organisation-id"
       />
       <span className="text-xs text-muted-foreground">
-        {t(
-          "Please include it when you contact support.",
-          "Bitte geben Sie sie bei Support-Anfragen an.",
-        )}
+        {t("Please include it when you contact support.", "Bitte gib sie bei Support-Anfragen an.")}
       </span>
     </div>
   );
@@ -111,7 +108,7 @@ export function ExternalSignInHint({
       <span className="text-xs text-muted-foreground">
         {t(
           "Managed by your identity provider; not editable here.",
-          "Wird von Ihrem Identity-Provider verwaltet; hier nicht bearbeitbar.",
+          "Wird von deinem Identity-Provider verwaltet; hier nicht bearbeitbar.",
         )}
       </span>
     );

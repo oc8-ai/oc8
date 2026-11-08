@@ -78,7 +78,7 @@ export function CopilotAvatar({
       {state === "waiting" && (
         <span
           data-testid="avatar-waiting-dot"
-          className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border-2 border-background bg-amber-500 motion-safe:animate-pulse"
+          className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border-2 border-background bg-status-warning motion-safe:animate-pulse"
         />
       )}
     </span>
@@ -111,7 +111,7 @@ export function CopilotPersonaHeader({
       <CopilotAvatar avatar={avatar} state={state} size={page ? 40 : 32} />
       <div className="min-w-0 flex-1 leading-tight">
         <div className={cn("truncate font-serif", page ? "text-lg" : "text-base")}>{name}</div>
-        <div className="text-[11px] text-muted-foreground">
+        <div className="text-xs text-muted-foreground">
           {statusLabel(t, status, profile?.activeCount ?? 0)}
         </div>
       </div>

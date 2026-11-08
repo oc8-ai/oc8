@@ -41,7 +41,7 @@ export function MemoryEditor({
                   <span className="font-medium">{e.title}</span>
                   <span
                     className={cn(
-                      "rounded-full border px-2 py-0.5 text-[10px]",
+                      "rounded-full border px-2 py-0.5 text-micro",
                       "border-border bg-background/40 text-muted-foreground",
                     )}
                     style={

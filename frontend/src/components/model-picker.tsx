@@ -70,7 +70,7 @@ export function ModelPicker({
           <span className="hidden max-w-[240px] text-right text-xs text-muted-foreground sm:inline">
             {isAutoProvider(m.provider) ? modelAssignmentLabel(m) : m.note}
             {m.usedByCopilot && (
-              <span className="ml-2 rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
+              <span className="ml-2 rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-micro text-primary">
                 Copilot
               </span>
             )}
@@ -129,9 +129,7 @@ function ConnectModelInline({
         )}
       </p>
       <label className="block">
-        <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
-          {t("Provider", "Anbieter")}
-        </span>
+        <span className="mb-1 block micro-label">{t("Provider", "Anbieter")}</span>
         <select
           value={provider}
           onChange={(e) => setProvider(e.target.value)}
@@ -147,9 +145,7 @@ function ConnectModelInline({
         </select>
       </label>
       <label className="block">
-        <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
-          {t("Model tag", "Modell-Tag")}
-        </span>
+        <span className="mb-1 block micro-label">{t("Model tag", "Modell-Tag")}</span>
         <input
           value={modelTag}
           onChange={(e) => setModelTag(e.target.value)}
@@ -158,9 +154,7 @@ function ConnectModelInline({
         />
       </label>
       <label className="block">
-        <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
-          {t("Locality", "Standort")}
-        </span>
+        <span className="mb-1 block micro-label">{t("Locality", "Standort")}</span>
         <select
           value={locality}
           onChange={(e) => setLocality(e.target.value as "cloud" | "local")}
@@ -171,7 +165,7 @@ function ConnectModelInline({
         </select>
       </label>
       <label className="block">
-        <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
+        <span className="mb-1 block micro-label">
           {t("Display name (optional)", "Anzeigename (optional)")}
         </span>
         <input
@@ -185,7 +179,7 @@ function ConnectModelInline({
         type="button"
         onClick={submit}
         disabled={createModel.isPending}
-        className="w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+        className="w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
       >
         {createModel.isPending
           ? t("Connecting…", "Wird verbunden …")

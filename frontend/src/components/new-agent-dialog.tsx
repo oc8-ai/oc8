@@ -387,7 +387,7 @@ export function NewAgentDialog({
                 <li key={s.title} className="flex min-w-0 items-center gap-2">
                   <span
                     className={cn(
-                      "grid h-5 w-5 shrink-0 place-items-center rounded-full text-[10px] font-semibold transition",
+                      "grid h-5 w-5 shrink-0 place-items-center rounded-full text-micro font-semibold transition",
                       i < step
                         ? "bg-primary text-primary-foreground"
                         : i === step
@@ -399,7 +399,7 @@ export function NewAgentDialog({
                   </span>
                   <span
                     className={cn(
-                      "truncate text-[11px]",
+                      "truncate text-xs",
                       i === step
                         ? "text-foreground"
                         : i < step
@@ -493,7 +493,7 @@ export function NewAgentDialog({
                         </div>
                         <div className="w-full min-w-0">
                           <div className="truncate text-sm font-medium">{i.name}</div>
-                          <div className="truncate text-[10px] text-muted-foreground">
+                          <div className="truncate text-xs text-muted-foreground">
                             {connectedNames.has(i.id) ? "via MCP" : "not connected"}
                           </div>
                         </div>
@@ -507,7 +507,7 @@ export function NewAgentDialog({
                               }
                             />
                             {!inFrame && (
-                              <p className="mt-1.5 text-[10px] text-muted-foreground">
+                              <p className="mt-1.5 text-xs text-muted-foreground">
                                 Not yet enabled for this department — the pick is saved, but won't
                                 grant access until it is.
                               </p>
@@ -543,7 +543,7 @@ export function NewAgentDialog({
                     placeholder="A short note for the profile card"
                     className="w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
                   />
-                  <p className="mt-1 text-[11px] text-muted-foreground">
+                  <p className="mt-1 text-xs text-muted-foreground">
                     Just a label for this card — it doesn't change what the agent can actually do.
                   </p>
                 </Field>
@@ -591,7 +591,7 @@ export function NewAgentDialog({
                     </div>
                   )}
                   {trigger === "webhook" && (
-                    <p className="mt-3 rounded-md border border-dashed border-border px-3 py-2 text-[11px] text-muted-foreground">
+                    <p className="mt-3 rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
                       A unique webhook URL is generated once the agent is hired. You'll land on the
                       agent's page to copy it — Odoo's Automation Rules or any other tool that can
                       send a POST request works.
@@ -690,12 +690,12 @@ function ProfileCard({
   return (
     <div className="relative overflow-hidden rounded-2xl border border-primary/40 bg-gradient-to-b from-primary/10 via-panel to-panel p-5 shadow-[0_0_0_1px_var(--primary)]/10">
       <div className="pointer-events-none absolute -right-10 -top-10 h-40 w-40 rounded-full bg-primary/15 blur-3xl" />
-      <div className="mb-4 flex items-center justify-between text-[10px] uppercase tracking-widest text-muted-foreground">
+      <div className="mb-4 flex items-center justify-between micro-label">
         <span className="inline-flex items-center gap-1.5">
           <Sparkles className="h-3 w-3 text-primary" />
           Agent profile
         </span>
-        <span className="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[9px] text-primary">
+        <span className="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-micro text-primary">
           ready to launch
         </span>
       </div>
@@ -733,11 +733,9 @@ function ProfileCard({
       </dl>
 
       <div className="mt-4">
-        <div className="mb-1.5 text-[10px] uppercase tracking-widest text-muted-foreground">
-          Tools ({selected.length})
-        </div>
+        <div className="mb-1.5 micro-label">Tools ({selected.length})</div>
         {selected.length === 0 ? (
-          <div className="rounded-md border border-dashed border-border px-2 py-1.5 text-[11px] text-muted-foreground">
+          <div className="rounded-md border border-dashed border-border px-2 py-1.5 text-xs text-muted-foreground">
             No tools selected yet.
           </div>
         ) : (
@@ -747,7 +745,7 @@ function ProfileCard({
               return (
                 <span
                   key={i.id}
-                  className="inline-flex items-center gap-1 rounded-full border border-border bg-background/40 px-2 py-0.5 text-[10px]"
+                  className="inline-flex items-center gap-1 rounded-full border border-border bg-background/40 px-2 py-0.5 text-micro"
                 >
                   <Icon className="h-3 w-3 text-primary" />
                   {i.name}
@@ -775,7 +773,7 @@ function Row({
       <span className="grid h-5 w-5 place-items-center rounded-md bg-background/40 text-muted-foreground">
         {icon}
       </span>
-      <span className="text-[10px] uppercase tracking-widest text-muted-foreground">{label}</span>
+      <span className="micro-label">{label}</span>
       <span className="truncate">{children}</span>
     </div>
   );

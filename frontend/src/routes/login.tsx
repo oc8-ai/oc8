@@ -109,7 +109,7 @@ export function LoginPage() {
           setMode("login");
           const notice = t(
             "Instance already initialized. Please log in.",
-            "Instanz bereits initialisiert. Bitte melden Sie sich an.",
+            "Instanz bereits initialisiert. Bitte melde dich an.",
           );
           setAlreadyInitializedNotice(notice);
           toast.info(notice);
@@ -157,7 +157,7 @@ export function LoginPage() {
           toast.info(
             t(
               "Instance not yet initialized. Please complete setup.",
-              "Instanz noch nicht initialisiert. Bitte führen Sie das Setup durch.",
+              "Instanz noch nicht initialisiert. Bitte führe das Setup durch.",
             ),
           );
         } else {
@@ -200,7 +200,7 @@ export function LoginPage() {
         toast.warning(
           t(
             `Set up two-factor authentication within ${days} day(s), or you will be locked out.`,
-            `Richten Sie die Zwei-Faktor-Authentifizierung innerhalb von ${days} Tag(en) ein, sonst werden Sie ausgesperrt.`,
+            `Richte die Zwei-Faktor-Authentifizierung innerhalb von ${days} Tag(en) ein, sonst wirst du ausgesperrt.`,
           ),
           { duration: 10000 },
         );
@@ -324,13 +324,11 @@ function SetupForm({
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       <div>
-        <h2 className="text-lg font-semibold">
-          {t("Create Admin Account", "Admin-Konto erstellen")}
-        </h2>
+        <h2 className="font-serif text-xl">{t("Create Admin Account", "Admin-Konto erstellen")}</h2>
         <p className="mt-1 text-sm text-muted-foreground">
           {t(
             "Set up your first administrator account to get started.",
-            "Richten Sie Ihr erstes Administrator-Konto ein.",
+            "Richte dein erstes Administrator-Konto ein.",
           )}
         </p>
       </div>
@@ -360,7 +358,7 @@ function SetupForm({
             type="text"
             value={displayName}
             onChange={(e) => setDisplayName(e.target.value)}
-            placeholder={t("Your name", "Ihr Name")}
+            placeholder={t("Your name", "Dein Name")}
             className="mt-1 w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm"
           />
         </div>
@@ -390,7 +388,7 @@ function SetupForm({
             type="password"
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
-            placeholder={t("Repeat your password", "Wiederholen Sie Ihr Passwort")}
+            placeholder={t("Repeat your password", "Wiederhole dein Passwort")}
             minLength={8}
             required
             className="mt-1 w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm"
@@ -401,7 +399,7 @@ function SetupForm({
       <button
         type="submit"
         disabled={loading || !email || !password || !confirmPassword}
-        className="w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+        className="w-full rounded-md bg-brand-gradient px-4 py-2 text-sm font-medium text-brand-gradient-foreground hover:brightness-110 disabled:opacity-50"
       >
         {loading ? t("Creating…", "Erstelle…") : t("Create Account", "Konto erstellen")}
       </button>
@@ -430,9 +428,9 @@ function LoginForm({
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       <div>
-        <h2 className="text-lg font-semibold">{t("Sign In", "Anmelden")}</h2>
+        <h2 className="font-serif text-xl">{t("Sign In", "Anmelden")}</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          {t("Enter your credentials to continue.", "Geben Sie Ihre Zugangsdaten ein.")}
+          {t("Enter your credentials to continue.", "Gib deine Zugangsdaten ein.")}
         </p>
       </div>
 
@@ -461,7 +459,7 @@ function LoginForm({
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            placeholder={t("Your password", "Ihr Passwort")}
+            placeholder={t("Your password", "Dein Passwort")}
             required
             className="mt-1 w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm"
           />
@@ -478,7 +476,7 @@ function LoginForm({
       <button
         type="submit"
         disabled={loading || !email || !password}
-        className="w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+        className="w-full rounded-md bg-brand-gradient px-4 py-2 text-sm font-medium text-brand-gradient-foreground hover:brightness-110 disabled:opacity-50"
       >
         {loading ? t("Signing in…", "Melde mich an…") : t("Sign In", "Anmelden")}
       </button>

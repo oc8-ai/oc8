@@ -87,7 +87,7 @@ describe("Profile: organisation id", () => {
     wrap(<AccountPanel initialDisplayName="Ana" />);
 
     expect(screen.getByText(/Organisations-ID/)).toBeInTheDocument();
-    expect(screen.getByText("Bitte geben Sie sie bei Support-Anfragen an.")).toBeInTheDocument();
+    expect(screen.getByText("Bitte gib sie bei Support-Anfragen an.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Organisations-ID kopieren" })).toBeInTheDocument();
   });
 });

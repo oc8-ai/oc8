@@ -7,6 +7,7 @@ import { downloadCapaExport, type CapaExportItemInput } from "@/lib/api";
 import { useAgents, useDepartments, usePreviewCapaExport, useSkills } from "@/lib/hooks";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
+import { SkeletonRows } from "@/components/skeleton-rows";
 
 type WizardStep = "selection" | "details" | "preview" | "export";
 
@@ -278,7 +279,7 @@ export function CapaExportWizard({
             type="button"
             disabled={!hasSelection}
             onClick={() => setStep("details")}
-            className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
+            className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {t("Next", "Weiter")}
           </button>
@@ -288,7 +289,7 @@ export function CapaExportWizard({
           <button
             type="button"
             onClick={goToPreview}
-            className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground"
+            className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90"
           >
             {t("Preview", "Vorschau")}
           </button>
@@ -299,7 +300,7 @@ export function CapaExportWizard({
             type="button"
             disabled={preview.isPending}
             onClick={() => setStep("export")}
-            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {preview.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
             {t("Continue to export", "Weiter zum Export")}
@@ -311,7 +312,7 @@ export function CapaExportWizard({
             type="button"
             disabled={exporting || preview.isPending || !preview.isSuccess}
             onClick={handleExport}
-            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {exporting && <Loader2 className="h-3 w-3 animate-spin" />}
             {exporting ? t("Exporting…", "Exportiere…") : t("Export", "Export")}
@@ -554,7 +555,7 @@ function DetailsStep({
             <label className="block text-xs text-muted-foreground">
               {t("Capa name", "Capa-Name")}
               <input
-                className="mt-1 w-full rounded border border-border bg-background/40 px-2 py-1 text-sm text-foreground"
+                className="mt-1 w-full rounded-md border border-border bg-background/40 px-2 py-1 text-sm text-foreground"
                 value={current.name}
                 onChange={(e) => onChange(kind, id, "name", e.target.value)}
               />
@@ -562,7 +563,7 @@ function DetailsStep({
             <label className="block text-xs text-muted-foreground">
               {t("Version", "Version")}
               <input
-                className="mt-1 w-full rounded border border-border bg-background/40 px-2 py-1 text-sm text-foreground"
+                className="mt-1 w-full rounded-md border border-border bg-background/40 px-2 py-1 text-sm text-foreground"
                 value={current.version}
                 onChange={(e) => onChange(kind, id, "version", e.target.value)}
               />
@@ -570,7 +571,7 @@ function DetailsStep({
             <label className="block text-xs text-muted-foreground">
               {t("Summary", "Kurzbeschreibung")}
               <input
-                className="mt-1 w-full rounded border border-border bg-background/40 px-2 py-1 text-sm text-foreground"
+                className="mt-1 w-full rounded-md border border-border bg-background/40 px-2 py-1 text-sm text-foreground"
                 value={current.summary}
                 onChange={(e) => onChange(kind, id, "summary", e.target.value)}
               />
@@ -585,12 +586,7 @@ function DetailsStep({
 function PreviewStep({ preview }: { preview: ReturnType<typeof usePreviewCapaExport> }) {
   const t = useT();
   if (preview.isPending) {
-    return (
-      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin" />
-        {t("Building preview…", "Vorschau wird erstellt…")}
-      </div>
-    );
+    return <SkeletonRows label={t("Building preview…", "Vorschau wird erstellt…")} rows={4} />;
   }
   if (preview.isError) {
     return (
@@ -610,17 +606,17 @@ function PreviewStep({ preview }: { preview: ReturnType<typeof usePreviewCapaExp
         <div key={item.folder_name} className="rounded-md border border-border p-3">
           <p className="text-sm font-medium">{item.folder_name}/</p>
           {item.warnings.map((w) => (
-            <p key={w} className="text-xs text-amber-500">
+            <p key={w} className="text-xs text-status-warning-text">
               ⚠ {w}
             </p>
           ))}
-          <pre className="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap break-all rounded bg-background/40 p-2 text-xs text-muted-foreground">
+          <pre className="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap break-all rounded-md bg-background/40 p-2 text-xs text-muted-foreground">
             {item.manifest_toml}
           </pre>
           {Object.entries(item.extra_files).map(([path, content]) => (
             <div key={path} className="mt-2">
-              <p className="text-[11px] text-muted-foreground">{path}</p>
-              <pre className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-all rounded bg-background/40 p-2 text-xs text-muted-foreground">
+              <p className="text-xs text-muted-foreground">{path}</p>
+              <pre className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-all rounded-md bg-background/40 p-2 text-xs text-muted-foreground">
                 {content}
               </pre>
             </div>

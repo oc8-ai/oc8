@@ -22,6 +22,15 @@ import {
   usePublishAgentVersion,
   type AgentVersionFieldDiff,
 } from "@/lib/agent-versions";
+import { SkeletonRows } from "@/components/skeleton-rows";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 /** A JSON value rendered for a diff cell. Objects are stringified rather than
  *  expanded: a `narrowing.odoo` entry is a small flat object and one line of
@@ -47,32 +56,30 @@ export function DiffTable({ entries }: { entries: AgentVersionFieldDiff[] }) {
     );
   }
   return (
-    <table className="w-full text-sm">
-      <thead>
-        <tr className="border-b border-border">
-          <th className="py-2 text-left font-medium text-muted-foreground">{t("Field", "Feld")}</th>
-          <th className="py-2 text-left font-medium text-muted-foreground">
-            {t("Running now", "Läuft aktuell")}
-          </th>
-          <th className="py-2 text-left font-medium text-muted-foreground">
+    <Table className="text-sm">
+      <TableHeader>
+        <TableRow className="border-b border-border hover:bg-transparent">
+          <TableHead className="py-2 micro-label">{t("Field", "Feld")}</TableHead>
+          <TableHead className="py-2 micro-label">{t("Running now", "Läuft aktuell")}</TableHead>
+          <TableHead className="py-2 micro-label">
             {t("After publishing", "Nach Veröffentlichung")}
-          </th>
-        </tr>
-      </thead>
-      <tbody>
+          </TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
         {entries.map((entry) => (
-          <tr key={entry.field} className="border-b border-border/50 align-top">
-            <td className="py-2 pr-3 font-mono text-xs">{entry.field}</td>
-            <td className="py-2 pr-3 text-muted-foreground">
+          <TableRow key={entry.field} className="border-b border-border/50 align-top">
+            <TableCell className="py-2 pr-3 font-mono text-xs">{entry.field}</TableCell>
+            <TableCell className="py-2 pr-3 text-muted-foreground">
               <DiffValue value={entry.before} />
-            </td>
-            <td className="py-2">
+            </TableCell>
+            <TableCell className="py-2">
               <DiffValue value={entry.after} />
-            </td>
-          </tr>
+            </TableCell>
+          </TableRow>
         ))}
-      </tbody>
-    </table>
+      </TableBody>
+    </Table>
   );
 }
 
@@ -145,7 +152,7 @@ export function describePublishError(err: unknown, t: (en: string, de: string) =
     const current = detail?.current ?? "?";
     return t(
       `Somebody else published v${current} while you were editing. Reload before publishing.`,
-      `Jemand anderes hat v${current} veröffentlicht, während Sie bearbeitet haben. Bitte neu laden.`,
+      `Jemand anderes hat v${current} veröffentlicht, während du bearbeitet hast. Bitte neu laden.`,
     );
   }
   if (code === "no_changes_to_publish") {
@@ -165,7 +172,7 @@ export function describePublishError(err: unknown, t: (en: string, de: string) =
     const what = describeMissingReferences(detail?.missing, t);
     return t(
       `This version points at ${what} that no longer exist. Pick a different version, or recreate what was deleted first.`,
-      `Diese Version verweist auf ${what}, die nicht mehr existieren. Wählen Sie eine andere Version, oder stellen Sie das Gelöschte zuerst wieder her.`,
+      `Diese Version verweist auf ${what}, die nicht mehr existieren. Wähle eine andere Version, oder stelle das Gelöschte zuerst wieder her.`,
     );
   }
   if (code === "narrowing_exceeds_frame") {
@@ -240,9 +247,9 @@ export function AgentPublishBar({ agentId, mayManage }: { agentId: string; mayMa
 
   return (
     <>
-      <Panel className="flex flex-wrap items-center justify-between gap-3 border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 p-4">
+      <Panel className="flex flex-wrap items-center justify-between gap-3 border-status-warning/40 bg-status-warning/10 p-4">
         <div className="flex min-w-0 items-center gap-2 text-sm">
-          <AlertCircle className="h-4 w-4 shrink-0 text-[color:var(--status-warning)]" />
+          <AlertCircle className="h-4 w-4 shrink-0 text-status-warning-text" />
           <span>
             {count === 1
               ? t("1 unpublished change", "1 unveröffentlichte Änderung")
@@ -291,7 +298,7 @@ export function AgentPublishBar({ agentId, mayManage }: { agentId: string; mayMa
           >
             <div className="flex items-center justify-between border-b border-border px-5 py-4">
               <div>
-                <div className="text-[11px] uppercase tracking-widest text-muted-foreground">
+                <div className="micro-label">
                   {t("Unpublished changes", "Unveröffentlichte Änderungen")}
                 </div>
                 <h2 className="font-serif text-xl">
@@ -314,10 +321,12 @@ export function AgentPublishBar({ agentId, mayManage }: { agentId: string; mayMa
             </div>
             <div className="p-5">
               {diff.isPending ? (
-                <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  {t("Loading…", "Wird geladen…")}
-                </div>
+                <SkeletonRows
+                  label={t("Loading…", "Wird geladen…")}
+                  rows={4}
+                  rowClassName="h-8"
+                  className="py-2"
+                />
               ) : (
                 <DiffTable entries={diff.data?.entries ?? []} />
               )}

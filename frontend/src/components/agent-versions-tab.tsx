@@ -19,6 +19,15 @@ import {
   useAgentVersions,
   useRollbackAgentVersion,
 } from "@/lib/agent-versions";
+import { SkeletonRows } from "@/components/skeleton-rows";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 type Intent = "diff" | "rollback";
 
@@ -67,8 +76,8 @@ export function AgentVersionsTab({ agentId, mayManage }: { agentId: string; mayM
 
   if (isPending) {
     return (
-      <Panel className="flex items-center gap-2 p-6 text-sm text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin" /> {t("Loading…", "Wird geladen…")}
+      <Panel className="p-5">
+        <SkeletonRows label={t("Loading…", "Wird geladen…")} rowClassName="h-12" />
       </Panel>
     );
   }
@@ -96,76 +105,66 @@ export function AgentVersionsTab({ agentId, mayManage }: { agentId: string; mayM
             "Veröffentlichte Konfiguration · neueste zuerst",
           )}
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border">
-                <th className="py-2 text-left font-medium text-muted-foreground">
-                  {t("Version", "Version")}
-                </th>
-                <th className="py-2 text-left font-medium text-muted-foreground">
-                  {t("Published", "Veröffentlicht")}
-                </th>
-                <th className="py-2 text-left font-medium text-muted-foreground">
-                  {t("Note", "Notiz")}
-                </th>
-                <th className="py-2 text-right font-medium text-muted-foreground" />
-              </tr>
-            </thead>
-            <tbody>
-              {versions.map((version) => (
-                <tr key={version.id} className="border-b border-border/50 align-top">
-                  <td className="py-2 pr-3 whitespace-nowrap">
-                    <span className="font-mono">{`v${version.versionNo}`}</span>
-                    {version.isCurrent && (
-                      <span className="ml-2 inline-flex items-center rounded-full border border-[color:var(--status-running)]/50 bg-[color:var(--status-running)]/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-[color:var(--status-running)]">
-                        {t("running", "läuft")}
-                      </span>
-                    )}
-                  </td>
-                  <td className="py-2 pr-3 whitespace-nowrap text-muted-foreground">
-                    {new Date(version.publishedAt).toLocaleString()}
-                  </td>
-                  <td className="py-2 pr-3">
-                    {version.note ?? (
-                      <span className="italic text-muted-foreground">
-                        {t("no note", "keine Notiz")}
-                      </span>
-                    )}
-                    {version.rolledBackFrom !== null && (
-                      <div className="text-xs text-muted-foreground">
-                        {t(
-                          `rolled back from v${version.rolledBackFrom}`,
-                          `zurückgesetzt von v${version.rolledBackFrom}`,
-                        )}
-                      </div>
-                    )}
-                  </td>
-                  <td className="py-2 text-right whitespace-nowrap">
+        <Table className="text-sm">
+          <TableHeader>
+            <TableRow className="border-b border-border hover:bg-transparent">
+              <TableHead className="py-2 micro-label">{t("Version", "Version")}</TableHead>
+              <TableHead className="py-2 micro-label">{t("Published", "Veröffentlicht")}</TableHead>
+              <TableHead className="py-2 micro-label">{t("Note", "Notiz")}</TableHead>
+              <TableHead className="py-2 text-right micro-label" />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {versions.map((version) => (
+              <TableRow key={version.id} className="border-b border-border/50 align-top">
+                <TableCell className="py-2 pr-3 whitespace-nowrap">
+                  <span className="font-mono">{`v${version.versionNo}`}</span>
+                  {version.isCurrent && (
+                    <span className="ml-2 inline-flex items-center rounded-full border border-status-running/50 bg-status-running/15 px-2 py-0.5 micro-label text-status-running-text">
+                      {t("running", "läuft")}
+                    </span>
+                  )}
+                </TableCell>
+                <TableCell className="py-2 pr-3 whitespace-nowrap text-muted-foreground">
+                  {new Date(version.publishedAt).toLocaleString()}
+                </TableCell>
+                <TableCell className="py-2 pr-3">
+                  {version.note ?? (
+                    <span className="italic text-muted-foreground">
+                      {t("no note", "keine Notiz")}
+                    </span>
+                  )}
+                  {version.rolledBackFrom !== null && (
+                    <div className="text-xs text-muted-foreground">
+                      {t(
+                        `rolled back from v${version.rolledBackFrom}`,
+                        `zurückgesetzt von v${version.rolledBackFrom}`,
+                      )}
+                    </div>
+                  )}
+                </TableCell>
+                <TableCell className="py-2 text-right whitespace-nowrap">
+                  <button
+                    type="button"
+                    onClick={() => setOpen({ versionNo: version.versionNo, intent: "diff" })}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground transition hover:text-foreground"
+                  >
+                    <GitCompare className="h-3.5 w-3.5" /> {t("Diff", "Vergleich")}
+                  </button>
+                  {mayPublish && !version.isCurrent && (
                     <button
                       type="button"
-                      onClick={() => setOpen({ versionNo: version.versionNo, intent: "diff" })}
-                      className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground transition hover:text-foreground"
+                      onClick={() => setOpen({ versionNo: version.versionNo, intent: "rollback" })}
+                      className="ml-2 inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground transition hover:text-foreground"
                     >
-                      <GitCompare className="h-3.5 w-3.5" /> {t("Diff", "Vergleich")}
+                      <RotateCcw className="h-3.5 w-3.5" /> {t("Roll back", "Zurücksetzen")}
                     </button>
-                    {mayPublish && !version.isCurrent && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setOpen({ versionNo: version.versionNo, intent: "rollback" })
-                        }
-                        className="ml-2 inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground transition hover:text-foreground"
-                      >
-                        <RotateCcw className="h-3.5 w-3.5" /> {t("Roll back", "Zurücksetzen")}
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                  )}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
       </Panel>
 
       {open && (
@@ -181,7 +180,7 @@ export function AgentVersionsTab({ agentId, mayManage }: { agentId: string; mayM
           >
             <div className="flex items-center justify-between border-b border-border px-5 py-4">
               <div>
-                <div className="text-[11px] uppercase tracking-widest text-muted-foreground">
+                <div className="micro-label">
                   {open.intent === "rollback"
                     ? t("Confirm rollback", "Zurücksetzen bestätigen")
                     : t("Compare", "Vergleich")}
@@ -204,10 +203,12 @@ export function AgentVersionsTab({ agentId, mayManage }: { agentId: string; mayM
             </div>
             <div className="p-5">
               {diff.isPending ? (
-                <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  {t("Loading…", "Wird geladen…")}
-                </div>
+                <SkeletonRows
+                  label={t("Loading…", "Wird geladen…")}
+                  rows={4}
+                  rowClassName="h-8"
+                  className="py-2"
+                />
               ) : (
                 <DiffTable entries={diff.data?.entries ?? []} />
               )}

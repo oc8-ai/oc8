@@ -215,7 +215,7 @@ function DraftWithCopilot({
 
   return (
     <div className="mt-4 rounded-md border border-primary/30 bg-primary/5 p-3">
-      <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted-foreground">
+      <div className="flex items-center gap-1.5 micro-label">
         <img src="/octopus_oc8.svg" alt="" className="h-4 w-4" draggable={false} />
         {t("Describe roughly what this agent should do", "Beschreib grob, was der Agent tun soll")}
       </div>
@@ -255,14 +255,14 @@ function DraftWithCopilot({
             <button
               type="button"
               onClick={() => onInsert(proposedDraft)}
-              className="rounded-md bg-primary px-2.5 py-1.5 text-[11px] font-medium text-primary-foreground transition hover:brightness-110"
+              className="rounded-md bg-primary px-2.5 py-1.5 text-xs font-medium text-primary-foreground transition hover:brightness-110"
             >
               {t("Insert into editor", "In Editor einfügen")}
             </button>
             <button
               type="button"
               onClick={() => setProposedDraft(null)}
-              className="rounded-md border border-border px-2.5 py-1.5 text-[11px] text-muted-foreground transition hover:text-foreground"
+              className="rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground transition hover:text-foreground"
             >
               {t("Discard", "Verwerfen")}
             </button>
@@ -405,7 +405,7 @@ export function AgentInstructionsPanel({
       <Panel className="p-5">
         <div className="flex items-start justify-between gap-2">
           <div>
-            <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
+            <div className="micro-label">
               {t("standing system prompt", "dauerhafter System-Prompt")}
             </div>
             <h3 className="mt-0.5 font-serif text-lg">{t("Instructions", "Anweisungen")}</h3>
@@ -471,13 +471,13 @@ export function AgentInstructionsPanel({
           )}
           className="mt-4 w-full resize-y rounded-md border border-border bg-background/40 px-3 py-2 font-mono text-sm outline-none focus:border-primary/50 disabled:cursor-not-allowed disabled:opacity-60"
         />
-        <p className="mt-3 text-[11px] text-muted-foreground">
+        <p className="mt-3 text-xs text-muted-foreground">
           {t(
             "For task-specific instructions, assign a skill instead — this field is only the agent's base mission.",
             "Für aufgabenspezifische Anweisungen nutze stattdessen Skills — dieses Feld ist nur die Basis-Mission des Agenten.",
           )}
           {!mayManage &&
-            ` ${t("Your role does not include agent:manage, so this field is read-only for you.", "Ihre Rolle enthält agent:manage nicht, deshalb ist dieses Feld für Sie schreibgeschützt.")}`}
+            ` ${t("Your role does not include agent:manage, so this field is read-only for you.", "Deine Rolle enthält agent:manage nicht, deshalb ist dieses Feld für dich schreibgeschützt.")}`}
         </p>
 
         <div className="mt-6 border-t border-border pt-4">
@@ -496,7 +496,7 @@ export function AgentInstructionsPanel({
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
                   disabled={uploadFile.isPending}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-[11px] text-muted-foreground transition hover:border-primary/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground transition hover:border-primary/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Paperclip className="h-3 w-3" />
                   {uploadFile.isPending
@@ -506,7 +506,7 @@ export function AgentInstructionsPanel({
               </>
             )}
           </div>
-          <p className="mt-1 text-[11px] text-muted-foreground">
+          <p className="mt-1 text-xs text-muted-foreground">
             {t(
               "Reference material this agent can read on demand — never injected into every run automatically.",
               "Referenzmaterial, das dieser Agent bei Bedarf lesen kann — wird nicht automatisch in jeden Lauf eingefügt.",
@@ -562,7 +562,7 @@ export function AgentInstructionsPanel({
 
       <Panel className="p-5">
         <h3 className="font-serif text-lg">{t("Versions", "Versionen")}</h3>
-        <p className="mt-1 text-[11px] text-muted-foreground">
+        <p className="mt-1 text-xs text-muted-foreground">
           {t(
             "Every save is kept — nothing is pruned.",
             "Jede Speicherung bleibt erhalten — nichts wird gelöscht.",
@@ -585,7 +585,7 @@ export function AgentInstructionsPanel({
                     <div className="flex items-center gap-1.5">
                       <span className="font-mono font-medium text-foreground">{versionLabel}</span>
                       {isCurrent && (
-                        <span className="rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[9px] uppercase tracking-widest text-primary">
+                        <span className="rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 micro-label text-primary">
                           {t("Default", "Standard")}
                         </span>
                       )}
@@ -599,7 +599,7 @@ export function AgentInstructionsPanel({
                         type="button"
                         onClick={() => restore(v.text)}
                         title={t("Load into the editor", "In den Editor laden")}
-                        className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground transition hover:border-primary/40 hover:text-foreground"
+                        className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition hover:border-primary/40 hover:text-foreground"
                       >
                         <RotateCcw className="h-3 w-3" />
                         {t("Restore", "Wiederherstellen")}
@@ -627,7 +627,7 @@ export function AgentInstructionsPanel({
             type="button"
             onClick={() => history.fetchNextPage()}
             disabled={history.isFetchingNextPage}
-            className="mt-3 w-full rounded-md border border-border px-3 py-1.5 text-[11px] text-muted-foreground transition hover:border-primary/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            className="mt-3 w-full rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground transition hover:border-primary/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
           >
             {history.isFetchingNextPage
               ? t("Loading…", "Wird geladen…")

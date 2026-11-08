@@ -62,7 +62,7 @@ export function TotpEnroll({ token, onDone }: { token: string; onDone: () => voi
   return (
     <div className="space-y-4">
       <h3 className="text-sm font-semibold">
-        {t("Scan with your authenticator app", "Mit Ihrer Authenticator-App scannen")}
+        {t("Scan with your authenticator app", "Mit deiner Authenticator-App scannen")}
       </h3>
       <img src={qrDataUrl} alt={t("QR code", "QR-Code")} className="mx-auto h-40 w-40" />
       <p className="text-center text-xs text-muted-foreground">
@@ -85,7 +85,7 @@ export function TotpEnroll({ token, onDone }: { token: string; onDone: () => voi
         type="button"
         disabled={confirming || code.length !== 6}
         onClick={handleConfirm}
-        className="w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+        className="w-full rounded-md bg-brand-gradient px-4 py-2 text-sm font-medium text-brand-gradient-foreground hover:brightness-110 disabled:opacity-50"
       >
         {confirming ? t("Confirming…", "Bestätige…") : t("Confirm", "Bestätigen")}
       </button>

@@ -549,7 +549,7 @@ export function CustomMcpWizard({
                   <li key={s.key} className="flex min-w-0 items-center gap-2">
                     <span
                       className={cn(
-                        "grid h-5 w-5 shrink-0 place-items-center rounded-full text-[10px] font-semibold transition",
+                        "grid h-5 w-5 shrink-0 place-items-center rounded-full text-micro font-semibold transition",
                         i < step
                           ? "bg-primary text-primary-foreground"
                           : i === step
@@ -561,7 +561,7 @@ export function CustomMcpWizard({
                     </span>
                     <span
                       className={cn(
-                        "truncate text-[11px]",
+                        "truncate text-xs",
                         i === step
                           ? "text-foreground"
                           : i < step
@@ -625,7 +625,7 @@ export function CustomMcpWizard({
                             )}
                           />
                           <div className="mt-2 text-sm font-medium">{type.title}</div>
-                          <div className="mt-1 text-[11px] text-muted-foreground">
+                          <div className="mt-1 text-xs text-muted-foreground">
                             {type.description}
                           </div>
                         </button>
@@ -712,9 +712,7 @@ export function CustomMcpWizard({
                         className="space-y-2 rounded-lg border border-border bg-background/20 p-3"
                       >
                         <div className="flex items-center justify-between">
-                          <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                            Tool {i + 1}
-                          </span>
+                          <span className="micro-label">Tool {i + 1}</span>
                           <button
                             type="button"
                             onClick={() => removeHttpTool(i)}
@@ -770,9 +768,7 @@ export function CustomMcpWizard({
                     ))}
                   </div>
                 </div>
-                {stepError && (
-                  <p className="text-xs text-[color:var(--status-error)]">{stepError}</p>
-                )}
+                {stepError && <p className="text-xs text-status-error">{stepError}</p>}
               </div>
             )}
 
@@ -794,7 +790,7 @@ export function CustomMcpWizard({
                 </button>
                 {state.testedToolNames && (
                   <div className="rounded-md border border-border bg-background/20 p-3">
-                    <p className="text-xs font-medium text-[color:var(--status-running)]">
+                    <p className="text-xs font-medium text-status-running-text">
                       Connected — {state.testedToolNames.length} tool
                       {state.testedToolNames.length === 1 ? "" : "s"} discovered.
                     </p>
@@ -803,7 +799,7 @@ export function CustomMcpWizard({
                         {state.testedToolNames.map((name) => (
                           <span
                             key={name}
-                            className="rounded-full border border-border bg-background/30 px-2 py-0.5 text-[10px] text-muted-foreground"
+                            className="rounded-full border border-border bg-background/30 px-2 py-0.5 text-micro text-muted-foreground"
                           >
                             {name}
                           </span>
@@ -812,9 +808,7 @@ export function CustomMcpWizard({
                     )}
                   </div>
                 )}
-                {state.testError && (
-                  <p className="text-xs text-[color:var(--status-error)]">{state.testError}</p>
-                )}
+                {state.testError && <p className="text-xs text-status-error">{state.testError}</p>}
                 {state.testedConnectionId && (
                   <McpTestLogDrawer connectionId={state.testedConnectionId} busy={busy} />
                 )}
@@ -921,7 +915,7 @@ function EnvRowsEditor({
               placeholder="value"
               className="flex-1 rounded-md border border-border bg-background/40 px-2.5 py-1.5 font-mono text-xs outline-none focus:border-primary/50"
             />
-            <label className="flex shrink-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+            <label className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
               <input
                 type="checkbox"
                 checked={row.secret}
@@ -996,12 +990,12 @@ function SummaryCard({ state }: { state: WizardState }) {
   return (
     <div className="relative overflow-hidden rounded-2xl border border-primary/40 bg-gradient-to-b from-primary/10 via-panel to-panel p-5 shadow-[0_0_0_1px_var(--primary)]/10">
       <div className="pointer-events-none absolute -right-10 -top-10 h-40 w-40 rounded-full bg-primary/15 blur-3xl" />
-      <div className="mb-4 flex items-center justify-between text-[10px] uppercase tracking-widest text-muted-foreground">
+      <div className="mb-4 flex items-center justify-between micro-label">
         <span className="inline-flex items-center gap-1.5">
           <ClipboardCheck className="h-3 w-3 text-primary" />
           Capa summary
         </span>
-        <span className="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[9px] text-primary">
+        <span className="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-micro text-primary">
           ready to save
         </span>
       </div>
@@ -1046,7 +1040,7 @@ function Row({
       <span className="grid h-5 w-5 place-items-center rounded-md bg-background/40 text-muted-foreground">
         {icon}
       </span>
-      <span className="text-[10px] uppercase tracking-widest text-muted-foreground">{label}</span>
+      <span className="micro-label">{label}</span>
       <span className="truncate">{children}</span>
     </div>
   );

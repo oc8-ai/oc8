@@ -30,12 +30,12 @@ export function TotpChallenge({
   return (
     <div className="space-y-4">
       <h3 className="text-sm font-semibold">
-        {t("Enter your authentication code", "Geben Sie Ihren Authentifizierungscode ein")}
+        {t("Enter your authentication code", "Gib deinen Authentifizierungscode ein")}
       </h3>
       <p className="text-sm text-muted-foreground">
         {t(
           "Use your authenticator app, or a backup code.",
-          "Verwenden Sie Ihre Authenticator-App oder einen Backup-Code.",
+          "Verwende deine Authenticator-App oder einen Backup-Code.",
         )}
       </p>
       <div>
@@ -53,7 +53,7 @@ export function TotpChallenge({
         type="button"
         disabled={verifying || !code}
         onClick={handleVerify}
-        className="w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+        className="w-full rounded-md bg-brand-gradient px-4 py-2 text-sm font-medium text-brand-gradient-foreground hover:brightness-110 disabled:opacity-50"
       >
         {verifying ? t("Verifying…", "Wird geprüft…") : t("Verify", "Verifizieren")}
       </button>

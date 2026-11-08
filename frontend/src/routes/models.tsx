@@ -53,6 +53,14 @@ import {
   useModelPricesPolicy,
   type ModelPrice,
 } from "@/lib/model-prices-hooks";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 export const Route = createFileRoute("/models")({
   component: ModelsPage,
@@ -120,7 +128,7 @@ export function AutoRouterBadge() {
         "Complexity router — picks among the tier models you configure (fast / balanced / strong).",
         "Komplexitäts-Router — wählt unter den konfigurierten Tier-Modellen (fast / balanced / strong).",
       )}
-      className="rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary"
+      className="rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-micro text-primary"
     >
       {t("Auto router", "Auto-Router")}
     </span>
@@ -141,7 +149,7 @@ export function SubscriptionRiskBadge() {
         "Connected via a personal ChatGPT subscription — scheduled/automated runs are blocked server-side.",
         "Verbunden über ein persönliches ChatGPT-Abo — geplante/automatisierte Läufe sind serverseitig gesperrt.",
       )}
-      className="rounded-full border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 px-1.5 py-0.5 text-[10px] text-[color:var(--status-warning)]"
+      className="rounded-full border border-status-warning/40 bg-status-warning/10 px-1.5 py-0.5 text-micro text-status-warning-text"
     >
       {t("Personal · manual only", "Persönlich · nur manuell")}
     </span>
@@ -273,12 +281,12 @@ export function ModelsPage() {
               <p className="mt-0.5 text-xs text-muted-foreground">
                 {t(
                   "Your model providers. Add more via the wizard — cloud accounts or local servers.",
-                  "Ihre Modellanbieter. Weitere über den Assistenten hinzufügen — Cloud-Konten oder lokale Server.",
+                  "Deine Modellanbieter. Weitere über den Assistenten hinzufügen — Cloud-Konten oder lokale Server.",
                 )}
               </p>
-              <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
+              <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
                 <span className="inline-flex items-center gap-1">
-                  <CheckCircle2 className="h-3 w-3 text-[color:var(--status-running)]" />
+                  <CheckCircle2 className="h-3 w-3 text-status-running-text" />
                   {stats.activeProviders} {t("configured", "konfiguriert")} · {stats.totalConfigs}{" "}
                   {t("models", "Modelle")}
                 </span>
@@ -315,7 +323,7 @@ export function ModelsPage() {
               <div className="text-sm font-medium">
                 {t("Add another provider", "Weiteren Anbieter hinzufügen")}
               </div>
-              <div className="text-[11px] text-muted-foreground group-hover:text-primary/80">
+              <div className="text-xs text-muted-foreground group-hover:text-primary/80">
                 {t("Cloud or local — 3 quick steps", "Cloud oder lokal — 3 schnelle Schritte")}
               </div>
             </button>
@@ -335,15 +343,13 @@ export function ModelsPage() {
       <Panel className="overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-3">
           <div>
-            <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-              {t("Available models", "Verfügbare Modelle")}
-            </div>
+            <div className="micro-label">{t("Available models", "Verfügbare Modelle")}</div>
             <div className="font-serif text-base">
               {t("Assigned to agents", "Agenten zugewiesen")}
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <span className="text-[11px] text-muted-foreground">
+            <span className="text-xs text-muted-foreground">
               {t(
                 "Models from connected providers appear here automatically.",
                 "Modelle verbundener Anbieter erscheinen hier automatisch.",
@@ -360,154 +366,159 @@ export function ModelsPage() {
             )}
           </div>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
-                <th className="px-5 py-3 font-medium">{t("Model", "Modell")}</th>
-                <th className="px-5 py-3 font-medium">{t("Provider", "Anbieter")}</th>
-                <th className="px-5 py-3 font-medium">{t("Status", "Status")}</th>
-                <th className="px-5 py-3 font-medium">{t("Latency", "Latenz")}</th>
-                <th className="px-5 py-3 font-medium">{t("Cost", "Kosten")}</th>
-                <th className="px-5 py-3 font-medium">{t("Assigned to", "Zugewiesen an")}</th>
-                <th className="px-5 py-3 font-medium text-right">{t("Actions", "Aktionen")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {models.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="px-5 py-8 text-center text-sm text-muted-foreground">
-                    {t("No models configured yet.", "Noch keine Modelle konfiguriert.")}
-                  </td>
-                </tr>
-              )}
-              {models.map((m) => {
-                const color =
-                  m.status === "healthy"
-                    ? "var(--status-running)"
-                    : m.status === "degraded"
-                      ? "var(--status-warning)"
-                      : m.status === "unknown"
-                        ? "var(--muted-foreground)"
-                        : "var(--status-error)";
-                return (
-                  <tr key={m.id} className="border-b border-border/60 last:border-none">
-                    <td className="px-5 py-4">
-                      <div className="flex items-center gap-2 font-medium">
-                        <Cpu className="h-4 w-4 text-primary" />
-                        {m.name}
-                        {isAutoProvider(m.provider) && <AutoRouterBadge />}
-                      </div>
-                      <div className="mt-0.5 text-xs text-muted-foreground">{m.note}</div>
-                    </td>
-                    <td className="px-5 py-4">
-                      <div className="flex flex-wrap items-center gap-1">
-                        <span className="rounded-full border border-border bg-background/40 px-2 py-0.5 text-xs">
-                          {isAutoProvider(m.provider) ? t("Auto", "Auto") : m.provider}
-                        </span>
-                        {m.provider === SUBSCRIPTION_PROVIDER && <SubscriptionRiskBadge />}
-                      </div>
-                    </td>
-                    <td className="px-5 py-4">
-                      <span
-                        className="inline-flex items-center gap-1.5 text-xs"
-                        style={{ color }}
-                        title={
-                          m.healthCheckedAt
-                            ? t(
-                                `Checked ${new Date(m.healthCheckedAt).toLocaleString()}`,
-                                `Geprüft am ${new Date(m.healthCheckedAt).toLocaleString()}`,
-                              )
-                            : t(
-                                "Never tested — click Test to check.",
-                                "Noch nie getestet — auf Test klicken zum Prüfen.",
-                              )
-                        }
-                      >
-                        <span
-                          className="h-1.5 w-1.5 rounded-full"
-                          style={{ background: color, boxShadow: `0 0 8px ${color}` }}
-                        />
-                        {m.status}
+        <Table className="text-sm">
+          <TableHeader>
+            <TableRow className="border-b border-border hover:bg-transparent">
+              <TableHead className="px-5 py-3 micro-label">{t("Model", "Modell")}</TableHead>
+              <TableHead className="px-5 py-3 micro-label">{t("Provider", "Anbieter")}</TableHead>
+              <TableHead className="px-5 py-3 micro-label">{t("Status", "Status")}</TableHead>
+              <TableHead className="px-5 py-3 micro-label">{t("Latency", "Latenz")}</TableHead>
+              <TableHead className="px-5 py-3 micro-label">{t("Cost", "Kosten")}</TableHead>
+              <TableHead className="px-5 py-3 micro-label">
+                {t("Assigned to", "Zugewiesen an")}
+              </TableHead>
+              <TableHead className="px-5 py-3 text-right micro-label">
+                {t("Actions", "Aktionen")}
+              </TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {models.length === 0 && (
+              <TableRow className="hover:bg-transparent">
+                <TableCell
+                  colSpan={7}
+                  className="px-5 py-8 text-center text-sm text-muted-foreground"
+                >
+                  {t("No models configured yet.", "Noch keine Modelle konfiguriert.")}
+                </TableCell>
+              </TableRow>
+            )}
+            {models.map((m) => {
+              const color =
+                m.status === "healthy"
+                  ? "var(--status-running)"
+                  : m.status === "degraded"
+                    ? "var(--status-warning)"
+                    : m.status === "unknown"
+                      ? "var(--muted-foreground)"
+                      : "var(--status-error)";
+              return (
+                <TableRow key={m.id} className="border-b border-border/60 last:border-none">
+                  <TableCell className="px-5 py-4">
+                    <div className="flex items-center gap-2 font-medium">
+                      <Cpu className="h-4 w-4 text-primary" />
+                      {m.name}
+                      {isAutoProvider(m.provider) && <AutoRouterBadge />}
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted-foreground">{m.note}</div>
+                  </TableCell>
+                  <TableCell className="px-5 py-4">
+                    <div className="flex flex-wrap items-center gap-1">
+                      <span className="rounded-full border border-border bg-background/40 px-2 py-0.5 text-xs">
+                        {isAutoProvider(m.provider) ? t("Auto", "Auto") : m.provider}
                       </span>
-                      {m.healthError && (
-                        <div className="mt-0.5 max-w-xs text-[11px] text-muted-foreground">
-                          {m.healthError}
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-5 py-4 font-mono text-xs">{m.latency}</td>
-                    <td className="px-5 py-4">
-                      <div className="flex gap-0.5">
-                        {[1, 2, 3].map((n) => (
+                      {m.provider === SUBSCRIPTION_PROVIDER && <SubscriptionRiskBadge />}
+                    </div>
+                  </TableCell>
+                  <TableCell className="px-5 py-4">
+                    <span
+                      className="inline-flex items-center gap-1.5 text-xs"
+                      style={{ color }}
+                      title={
+                        m.healthCheckedAt
+                          ? t(
+                              `Checked ${new Date(m.healthCheckedAt).toLocaleString()}`,
+                              `Geprüft am ${new Date(m.healthCheckedAt).toLocaleString()}`,
+                            )
+                          : t(
+                              "Never tested — click Test to check.",
+                              "Noch nie getestet — auf Test klicken zum Prüfen.",
+                            )
+                      }
+                    >
+                      <span
+                        className="h-1.5 w-1.5 rounded-full"
+                        style={{ background: color, boxShadow: `0 0 8px ${color}` }}
+                      />
+                      {m.status}
+                    </span>
+                    {m.healthError && (
+                      <div className="mt-0.5 max-w-xs text-xs text-muted-foreground">
+                        {m.healthError}
+                      </div>
+                    )}
+                  </TableCell>
+                  <TableCell className="px-5 py-4 font-mono text-xs">{m.latency}</TableCell>
+                  <TableCell className="px-5 py-4">
+                    <div className="flex gap-0.5">
+                      {[1, 2, 3].map((n) => (
+                        <span
+                          key={n}
+                          className={
+                            m.costTier.length >= n
+                              ? "h-4 w-1.5 rounded-sm bg-primary/70"
+                              : "h-4 w-1.5 rounded-sm bg-border"
+                          }
+                        />
+                      ))}
+                    </div>
+                  </TableCell>
+                  <TableCell className="px-5 py-4">
+                    <div className="flex flex-wrap gap-1">
+                      {m.assignedTo.map((id) => {
+                        const a = agents.find((x) => x.id === id);
+                        if (!a) return null;
+                        return (
                           <span
-                            key={n}
-                            className={
-                              m.costTier.length >= n
-                                ? "h-4 w-1.5 rounded-sm bg-primary/70"
-                                : "h-4 w-1.5 rounded-sm bg-border"
-                            }
-                          />
-                        ))}
-                      </div>
-                    </td>
-                    <td className="px-5 py-4">
-                      <div className="flex flex-wrap gap-1">
-                        {m.assignedTo.map((id) => {
-                          const a = agents.find((x) => x.id === id);
-                          if (!a) return null;
-                          return (
+                            key={id}
+                            className="inline-flex items-center gap-1 rounded-full border border-border bg-background/30 px-2 py-0.5 text-micro"
+                          >
                             <span
-                              key={id}
-                              className="inline-flex items-center gap-1 rounded-full border border-border bg-background/30 px-2 py-0.5 text-[10px]"
-                            >
-                              <span
-                                className="h-1.5 w-1.5 rounded-full"
-                                style={{ background: a.avatarColor }}
-                              />
-                              {a.name}
-                            </span>
-                          );
-                        })}
+                              className="h-1.5 w-1.5 rounded-full"
+                              style={{ background: a.avatarColor }}
+                            />
+                            {a.name}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </TableCell>
+                  <TableCell className="px-5 py-4 text-right">
+                    {mayManage && (
+                      <div className="flex items-center justify-end gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleTest(m.id)}
+                          disabled={testingId === m.id}
+                          className="inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <RefreshCw
+                            className={cn("h-3 w-3", testingId === m.id && "animate-spin")}
+                          />{" "}
+                          {t("Test", "Testen")}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setModelForm(m)}
+                          className="inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+                        >
+                          <Pencil className="h-3 w-3" /> {t("Edit", "Bearbeiten")}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDelete(m)}
+                          className="inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-status-error"
+                        >
+                          <Trash2 className="h-3 w-3" /> {t("Delete", "Löschen")}
+                        </button>
                       </div>
-                    </td>
-                    <td className="px-5 py-4 text-right">
-                      {mayManage && (
-                        <div className="flex items-center justify-end gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => handleTest(m.id)}
-                            disabled={testingId === m.id}
-                            className="inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            <RefreshCw
-                              className={cn("h-3 w-3", testingId === m.id && "animate-spin")}
-                            />{" "}
-                            {t("Test", "Testen")}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setModelForm(m)}
-                            className="inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
-                          >
-                            <Pencil className="h-3 w-3" /> {t("Edit", "Bearbeiten")}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDelete(m)}
-                            className="inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-[color:var(--status-error)]"
-                          >
-                            <Trash2 className="h-3 w-3" /> {t("Delete", "Löschen")}
-                          </button>
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                    )}
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
       </Panel>
 
       {modelForm && (
@@ -612,13 +623,13 @@ export function ProviderCard({ group, mayManage }: { group: ProviderGroup; mayMa
               {isAuto ? (
                 <AutoRouterBadge />
               ) : (
-                <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-micro text-muted-foreground">
                   <KindIcon className="h-2.5 w-2.5" /> {isLocal ? "local" : "cloud"}
                 </span>
               )}
               {group.canonical === SUBSCRIPTION_PROVIDER && <SubscriptionRiskBadge />}
             </div>
-            <div className="text-[11px] text-muted-foreground">
+            <div className="text-xs text-muted-foreground">
               {isAuto
                 ? t(
                     "Routes each turn to a configured tier model",
@@ -629,19 +640,19 @@ export function ProviderCard({ group, mayManage }: { group: ProviderGroup; mayMa
           </div>
         </div>
         {isAuto ? (
-          <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+          <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-micro text-muted-foreground">
             {t("no key", "kein Schlüssel")}
           </span>
         ) : isLocal ? (
-          <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+          <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-micro text-muted-foreground">
             local
           </span>
         ) : group.available ? (
-          <span className="inline-flex items-center gap-1 rounded-full border border-[color:var(--status-running)]/40 bg-[color:var(--status-running)]/10 px-1.5 py-0.5 text-[10px] text-[color:var(--status-running)]">
+          <span className="inline-flex items-center gap-1 rounded-full border border-status-running/40 bg-status-running/10 px-1.5 py-0.5 text-micro text-status-running-text">
             <CheckCircle2 className="h-2.5 w-2.5" /> key set
           </span>
         ) : (
-          <span className="rounded-full border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 px-1.5 py-0.5 text-[10px] text-[color:var(--status-warning)]">
+          <span className="rounded-full border border-status-warning/40 bg-status-warning/10 px-1.5 py-0.5 text-micro text-status-warning-text">
             key missing
           </span>
         )}
@@ -651,18 +662,18 @@ export function ProviderCard({ group, mayManage }: { group: ProviderGroup; mayMa
         {group.configs.slice(0, 3).map((c) => (
           <span
             key={c.id}
-            className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 font-mono text-[10px]"
+            className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 font-mono text-micro"
           >
             {isAuto ? c.displayName || c.name || "Auto" : c.model}
           </span>
         ))}
         {group.configs.length > 3 && (
-          <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+          <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-micro text-muted-foreground">
             +{group.configs.length - 3}
           </span>
         )}
         {group.configs.length === 0 && (
-          <span className="text-[11px] text-muted-foreground">No models configured</span>
+          <span className="text-xs text-muted-foreground">No models configured</span>
         )}
       </div>
 
@@ -679,7 +690,7 @@ export function ProviderCard({ group, mayManage }: { group: ProviderGroup; mayMa
           type="button"
           onClick={handleRemoveProvider}
           disabled={removing}
-          className="mt-auto self-start text-[11px] text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-[color:var(--status-error)] disabled:cursor-not-allowed disabled:opacity-50"
+          className="mt-auto self-start text-xs text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-status-error disabled:cursor-not-allowed disabled:opacity-50"
         >
           {t("Remove provider", "Anbieter entfernen")}
         </button>
@@ -738,7 +749,7 @@ function CompletionKeyPicker({ canonical, available }: { canonical: string; avai
       <button
         type="button"
         onClick={() => setExpanded(true)}
-        className="text-left text-[11px] text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-primary"
+        className="text-left text-xs text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-primary"
       >
         {t("Change key", "Schlüssel ändern")}
       </button>
@@ -748,7 +759,7 @@ function CompletionKeyPicker({ canonical, available }: { canonical: string; avai
   return (
     <div className="space-y-2 rounded-md border border-dashed border-border bg-background/20 p-2.5">
       {!available ? (
-        <p className="text-[11px] font-medium text-[color:var(--status-warning)]">
+        <p className="text-xs font-medium text-status-warning-text">
           {t(
             "This provider needs a completion key before its agents can run.",
             "Dieser Anbieter benötigt einen Completion-Schlüssel, bevor seine Agenten laufen können.",
@@ -761,7 +772,7 @@ function CompletionKeyPicker({ canonical, available }: { canonical: string; avai
           <button
             type="button"
             onClick={() => setExpanded(false)}
-            className="rounded-md border border-border bg-background/40 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
+            className="rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
           >
             {t("Cancel", "Abbrechen")}
           </button>
@@ -809,7 +820,7 @@ function AdminKeyConnect({ canonical }: { canonical: "anthropic" | "openai" }) {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="text-left text-[11px] text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-primary"
+        className="text-left text-xs text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-primary"
       >
         {t(
           "Connect admin key for cost validation (optional)",
@@ -821,10 +832,10 @@ function AdminKeyConnect({ canonical }: { canonical: "anthropic" | "openai" }) {
 
   return (
     <div className="space-y-2 rounded-md border border-dashed border-border bg-background/20 p-2.5">
-      <p className="text-[11px] text-muted-foreground">
+      <p className="text-xs text-muted-foreground">
         {t(
           `A separate, more-privileged key from your regular API key — generated in your ${providerLabel} console's Admin/Organization settings. Used only for a daily cost validation total, never to make requests.`,
-          `Ein separater, stärker privilegierter Schlüssel als Ihr normaler API-Schlüssel — erzeugt in den Admin-/Organisationseinstellungen der ${providerLabel}-Konsole. Wird nur für einen täglichen Kostenabgleich verwendet, niemals für Anfragen.`,
+          `Ein separater, stärker privilegierter Schlüssel als dein normaler API-Schlüssel — erzeugt in den Admin-/Organisationseinstellungen der ${providerLabel}-Konsole. Wird nur für einen täglichen Kostenabgleich verwendet, niemals für Anfragen.`,
         )}
       </p>
       <input
@@ -842,7 +853,7 @@ function AdminKeyConnect({ canonical }: { canonical: "anthropic" | "openai" }) {
             setOpen(false);
             setKey("");
           }}
-          className="rounded-md border border-border bg-background/40 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
+          className="rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
         >
           {t("Cancel", "Abbrechen")}
         </button>
@@ -850,7 +861,7 @@ function AdminKeyConnect({ canonical }: { canonical: "anthropic" | "openai" }) {
           type="button"
           disabled={createSecret.isPending || !key.trim()}
           onClick={submit}
-          className="rounded-md bg-primary px-2 py-1 text-[11px] font-medium text-primary-foreground hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+          className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
         >
           {t("Connect", "Verbinden")}
         </button>
@@ -881,9 +892,7 @@ function Field({
 }) {
   return (
     <label className="block">
-      <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
-        {label}
-      </span>
+      <span className="mb-1 block micro-label">{label}</span>
       <input
         type="text"
         placeholder={placeholder}
@@ -1156,9 +1165,7 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
 
         <div className="space-y-3">
           <label className="block">
-            <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
-              {t("Provider", "Anbieter")}
-            </span>
+            <span className="mb-1 block micro-label">{t("Provider", "Anbieter")}</span>
             <select
               value={effectiveProvider}
               onChange={(e) => {
@@ -1186,10 +1193,8 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
               />
 
               <div className="space-y-2 rounded-md border border-border bg-background/30 p-3">
-                <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                  {t("Tier models", "Tier-Modelle")}
-                </div>
-                <p className="text-[11px] text-muted-foreground">
+                <div className="micro-label">{t("Tier models", "Tier-Modelle")}</div>
+                <p className="text-xs text-muted-foreground">
                   {t(
                     "Map each complexity tier to an existing model config. At least one is required.",
                     "Ordne jedem Komplexitäts-Tier eine bestehende Modell-Konfiguration zu. Mindestens eine ist erforderlich.",
@@ -1197,9 +1202,7 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
                 </p>
                 {AUTO_TIERS.map((tier) => (
                   <label key={tier} className="block">
-                    <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
-                      {tier}
-                    </span>
+                    <span className="mb-1 block micro-label">{tier}</span>
                     <select
                       value={tierValue(tier)}
                       onChange={(e) => setTierValue(tier, e.target.value)}
@@ -1215,7 +1218,7 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
                   </label>
                 ))}
                 {tierTargets.length === 0 && (
-                  <p className="text-[11px] text-[color:var(--status-warning)]">
+                  <p className="text-xs text-status-warning-text">
                     {t(
                       "Add at least one concrete model first, then configure Auto tiers.",
                       "Lege zuerst mindestens ein konkretes Modell an, dann Auto-Tiers konfigurieren.",
@@ -1234,7 +1237,7 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
                   />
                   <span>
                     <span className="font-medium">{t("Cascade verify", "Cascade-Verify")}</span>
-                    <span className="mt-0.5 block text-[11px] text-muted-foreground">
+                    <span className="mt-0.5 block text-xs text-muted-foreground">
                       {t(
                         "After a cheap answer, escalate once if a self-check looks uncertain.",
                         "Nach einer günstigen Antwort einmal eskalieren, wenn der Self-Check unsicher wirkt.",
@@ -1253,7 +1256,7 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
                     <span className="font-medium">
                       {t("Preference router", "Preference-Router")}
                     </span>
-                    <span className="mt-0.5 block text-[11px] text-muted-foreground">
+                    <span className="mt-0.5 block text-xs text-muted-foreground">
                       {t(
                         "Blend the heuristic with learned preference examples from past runs.",
                         "Heuristik mit gelernten Preference-Beispielen aus früheren Läufen mischen.",
@@ -1270,7 +1273,7 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
                   />
                   <span>
                     <span className="font-medium">{t("Shadow only", "Nur Shadow")}</span>
-                    <span className="mt-0.5 block text-[11px] text-muted-foreground">
+                    <span className="mt-0.5 block text-xs text-muted-foreground">
                       {t(
                         "Log the complexity choice but always run balanced (or latched) until you trust the policy.",
                         "Komplexitätswahl loggen, aber immer balanced (oder gelatcht) laufen lassen, bis die Policy vertrauenswürdig ist.",
@@ -1310,13 +1313,11 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
               {showPicker ? (
                 <div className="block">
                   <div className="mb-1 flex items-center justify-between">
-                    <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                      {t("Models", "Modelle")}
-                    </span>
+                    <span className="micro-label">{t("Models", "Modelle")}</span>
                     <button
                       type="button"
                       onClick={() => setManualMode(true)}
-                      className="text-[11px] text-muted-foreground underline hover:text-foreground"
+                      className="text-xs text-muted-foreground underline hover:text-foreground"
                     >
                       {t("Enter manually instead", "Stattdessen manuell eingeben")}
                     </button>
@@ -1325,7 +1326,7 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
                     {discoveredModels?.map((id) => (
                       <label
                         key={id}
-                        className="flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-background/50"
+                        className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-background/50"
                       >
                         <input
                           type="checkbox"
@@ -1336,14 +1337,14 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
                       </label>
                     ))}
                   </div>
-                  <p className="mt-1 text-[11px] text-muted-foreground">
+                  <p className="mt-1 text-xs text-muted-foreground">
                     {t(`${selectedModels.size} selected`, `${selectedModels.size} ausgewählt`)}
                   </p>
                 </div>
               ) : (
                 <div className="block">
                   {!editing && manualMode && discoveredModels === null && (
-                    <p className="mb-1 text-[11px] text-[color:var(--status-warning)]">
+                    <p className="mb-1 text-xs text-status-warning-text">
                       {t(
                         "Automatic discovery isn't available for this provider — enter the model tag manually.",
                         "Automatisches Abrufen ist für diesen Anbieter nicht verfügbar — Modell-Tag manuell eingeben.",
@@ -1361,9 +1362,7 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
               )}
 
               <label className="block">
-                <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
-                  {t("Locality", "Standort")}
-                </span>
+                <span className="mb-1 block micro-label">{t("Locality", "Standort")}</span>
                 <select
                   value={locality}
                   onChange={(e) => setLocality(e.target.value as "cloud" | "local")}
@@ -1406,7 +1405,7 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
 
                   {editing && (
                     <label className="block">
-                      <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
+                      <span className="mb-1 block micro-label">
                         {t("Max output tokens (optional)", "Max. Output-Tokens (optional)")}
                       </span>
                       <input
@@ -1417,7 +1416,7 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
                         onChange={(e) => setMaxTokens(e.target.value)}
                         className="w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
                       />
-                      <p className="mt-1 text-[11px] text-muted-foreground">
+                      <p className="mt-1 text-xs text-muted-foreground">
                         {t(
                           "How much an agent on this model may write per turn, before oc8 cuts it off. Leave blank for the server default (4096, or OC8_DEFAULT_MAX_TOKENS). Raise this for reasoning-heavy models on large tasks — hidden reasoning tokens count against this budget too.",
                           "Wie viel ein Agent auf diesem Modell pro Zug schreiben darf, bevor oc8 abschneidet. Leer lassen für den Server-Standard (4096 oder OC8_DEFAULT_MAX_TOKENS). Bei reasoning-lastigen Modellen und großen Aufgaben höher setzen — auch unsichtbare Reasoning-Tokens zählen gegen dieses Budget.",
@@ -1427,7 +1426,7 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
                   )}
 
                   <label className="block">
-                    <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
+                    <span className="mb-1 block micro-label">
                       {t("Effort (optional)", "Effort (optional)")}
                     </span>
                     <input
@@ -1437,7 +1436,7 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
                       onChange={(e) => setEffort(e.target.value)}
                       className="w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
                     />
-                    <p className="mt-1 text-[11px] text-muted-foreground">
+                    <p className="mt-1 text-xs text-muted-foreground">
                       {t(
                         "Reasoning effort forwarded as-is to providers that support it (currently Anthropic). Leave blank to omit. Not validated here — the provider decides which values it accepts.",
                         "Reasoning-Aufwand, unverändert an Anbieter weitergereicht, die dies unterstützen (aktuell Anthropic). Leer lassen, um es wegzulassen. Wird hier nicht validiert — der Anbieter entscheidet, welche Werte er akzeptiert.",
@@ -1609,7 +1608,7 @@ export function AddProviderWizard({
             <div key={n} className="flex flex-1 items-center gap-2">
               <div
                 className={cn(
-                  "grid h-6 w-6 place-items-center rounded-full border text-[11px] font-semibold",
+                  "grid h-6 w-6 place-items-center rounded-full border text-xs font-semibold",
                   step === n
                     ? "border-primary bg-primary/20 text-primary"
                     : step > n
@@ -1660,16 +1659,16 @@ export function AddProviderWizard({
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
                           <span className="font-medium">{p.canonical}</span>
-                          <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                          <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-micro text-muted-foreground">
                             {isLocal ? "local" : "cloud"}
                           </span>
                           {!isLocal && p.canonical !== SUBSCRIPTION_PROVIDER && (
                             <span
                               className={cn(
-                                "rounded-full border px-1.5 py-0.5 text-[10px]",
+                                "rounded-full border px-1.5 py-0.5 text-micro",
                                 p.available
-                                  ? "border-[color:var(--status-running)]/40 bg-[color:var(--status-running)]/10 text-[color:var(--status-running)]"
-                                  : "border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 text-[color:var(--status-warning)]",
+                                  ? "border-status-running/40 bg-status-running/10 text-status-running-text"
+                                  : "border-status-warning/40 bg-status-warning/10 text-status-warning-text",
                               )}
                             >
                               {p.available ? "key set" : "key missing"}
@@ -1701,12 +1700,12 @@ export function AddProviderWizard({
 
               {provider.locality !== "local" && provider.canonical === SUBSCRIPTION_PROVIDER && (
                 <label className="block">
-                  <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
+                  <span className="mb-1 block micro-label">
                     {t("ChatGPT account", "ChatGPT-Konto")}
                   </span>
                   <ChatGptSubscriptionPicker value={credentialId} onChange={setCredentialId} />
                   {!credentialId && (
-                    <p className="mt-1 text-[11px] text-[color:var(--status-warning)]">
+                    <p className="mt-1 text-xs text-status-warning-text">
                       {/* Unlike an API-key provider, there is no tenant-wide
                           fallback for this one: the model router only reaches
                           the subscription bridge through an explicitly bound
@@ -1722,16 +1721,14 @@ export function AddProviderWizard({
               )}
               {provider.locality !== "local" && provider.canonical !== SUBSCRIPTION_PROVIDER && (
                 <label className="block">
-                  <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
-                    {t("Credential", "Anmeldedaten")}
-                  </span>
+                  <span className="mb-1 block micro-label">{t("Credential", "Anmeldedaten")}</span>
                   <CredentialPicker
                     credentialType={`${provider.canonical}_api_key`}
                     value={credentialId}
                     onChange={setCredentialId}
                   />
                   {!credentialId && (
-                    <p className="mt-1 text-[11px] text-[color:var(--status-warning)]">
+                    <p className="mt-1 text-xs text-status-warning-text">
                       {t(
                         "No credential selected yet — pick or create one, or the platform's shared key is used if available.",
                         "Noch keine Anmeldedaten ausgewählt — wähle oder erstelle welche, sonst wird der gemeinsame Plattform-Schlüssel verwendet, falls vorhanden.",
@@ -1753,9 +1750,7 @@ export function AddProviderWizard({
               </button>
 
               <label className="block">
-                <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
-                  {t("Model", "Modell")}
-                </span>
+                <span className="mb-1 block micro-label">{t("Model", "Modell")}</span>
                 {discoveredModels && discoveredModels.length > 0 ? (
                   <select
                     value={modelTag}
@@ -1779,9 +1774,7 @@ export function AddProviderWizard({
               </label>
 
               <label className="block">
-                <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
-                  {t("Locality", "Standort")}
-                </span>
+                <span className="mb-1 block micro-label">{t("Locality", "Standort")}</span>
                 <select
                   value={locality}
                   onChange={(e) => setLocality(e.target.value as "cloud" | "local")}
@@ -2027,9 +2020,7 @@ export function ModelPricingPanel() {
     <Panel className="overflow-hidden">
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-5 py-3">
         <div>
-          <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-            {t("Model pricing", "Modellpreise")}
-          </div>
+          <div className="micro-label">{t("Model pricing", "Modellpreise")}</div>
           <div className="font-serif text-base">
             {readOnly
               ? t(
@@ -2053,255 +2044,253 @@ export function ModelPricingPanel() {
           </button>
         )}
       </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
-              <th className="px-5 py-3 font-medium">{t("Model", "Modell")}</th>
-              <th className="px-5 py-3 font-medium">{t("Provider", "Anbieter")}</th>
-              <th className="px-5 py-3 font-medium text-right">
-                {t("Input / 1M", "Input / 1 Mio.")}
-              </th>
-              <th className="px-5 py-3 font-medium text-right">
-                {t("Output / 1M", "Output / 1 Mio.")}
-              </th>
-              <th className="px-5 py-3 font-medium text-right">
-                {t("Est. cost / 1k req", "Ø / 1k Anfr.")}
-              </th>
-              <th className="px-5 py-3 font-medium">{t("Used by", "Verwendet von")}</th>
-              {mayManage && <th className="px-5 py-3 font-medium text-right" />}
-            </tr>
-          </thead>
-          <tbody>
-            {adding && (
-              <tr className="border-b border-border/60 bg-background/20">
-                <td className="px-5 py-3">
-                  {manualEntry || models.length === 0 ? (
-                    <input
-                      type="text"
-                      placeholder={t("model pattern", "Modell-Muster")}
-                      value={newPrice.modelPattern}
-                      onChange={(e) => setNewPrice((n) => ({ ...n, modelPattern: e.target.value }))}
-                      className="w-32 rounded-md border border-border bg-background/40 px-2 py-1 text-xs focus:border-primary focus:outline-none"
-                    />
-                  ) : (
-                    <select
-                      value={newPrice.modelPattern}
-                      onChange={(e) => selectRegisteredModel(e.target.value)}
-                      className="w-40 rounded-md border border-border bg-background/40 px-2 py-1 text-xs focus:border-primary focus:outline-none"
-                    >
-                      <option value="">{t("Select a model…", "Modell auswählen…")}</option>
-                      {models.map((m) => (
-                        <option key={m.id} value={m.model}>
-                          {m.name} ({m.model})
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                  {models.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => setManualEntry((v) => !v)}
-                      className="mt-1 block text-[10px] text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-foreground"
-                    >
-                      {manualEntry
-                        ? t("Choose from available models", "Aus verfügbaren Modellen wählen")
-                        : t("Enter manually", "Manuell eingeben")}
-                    </button>
-                  )}
-                </td>
-                <td className="px-5 py-3">
+      <Table className="text-sm">
+        <TableHeader>
+          <TableRow className="border-b border-border hover:bg-transparent">
+            <TableHead className="px-5 py-3 micro-label">{t("Model", "Modell")}</TableHead>
+            <TableHead className="px-5 py-3 micro-label">{t("Provider", "Anbieter")}</TableHead>
+            <TableHead className="px-5 py-3 text-right micro-label">
+              {t("Input / 1M", "Input / 1 Mio.")}
+            </TableHead>
+            <TableHead className="px-5 py-3 text-right micro-label">
+              {t("Output / 1M", "Output / 1 Mio.")}
+            </TableHead>
+            <TableHead className="px-5 py-3 text-right micro-label">
+              {t("Est. cost / 1k req", "Ø / 1k Anfr.")}
+            </TableHead>
+            <TableHead className="px-5 py-3 micro-label">{t("Used by", "Verwendet von")}</TableHead>
+            {mayManage && <TableHead className="px-5 py-3 text-right micro-label" />}
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {adding && (
+            <TableRow className="border-b border-border/60 bg-background/20">
+              <TableCell className="px-5 py-3">
+                {manualEntry || models.length === 0 ? (
                   <input
                     type="text"
-                    readOnly={!manualEntry && models.length > 0}
-                    placeholder={t("provider", "Anbieter")}
-                    value={newPrice.provider}
-                    onChange={(e) => setNewPrice((n) => ({ ...n, provider: e.target.value }))}
-                    title={
-                      !manualEntry && models.length > 0
-                        ? t(
-                            "Set automatically from the selected model",
-                            "Wird automatisch anhand des gewählten Modells gesetzt",
-                          )
-                        : undefined
-                    }
-                    className={cn(
-                      "w-24 rounded-md border border-border bg-background/40 px-2 py-1 text-xs focus:border-primary focus:outline-none",
-                      !manualEntry && models.length > 0 && "cursor-not-allowed opacity-70",
-                    )}
+                    placeholder={t("model pattern", "Modell-Muster")}
+                    value={newPrice.modelPattern}
+                    onChange={(e) => setNewPrice((n) => ({ ...n, modelPattern: e.target.value }))}
+                    className="w-32 rounded-md border border-border bg-background/40 px-2 py-1 text-xs focus:border-primary focus:outline-none"
                   />
-                </td>
-                <td className="px-5 py-3">
-                  <div className="flex items-center justify-end gap-1">
-                    <span className="text-muted-foreground">$</span>
-                    <input
-                      type="number"
-                      step="0.05"
-                      min="0"
-                      value={newPrice.priceIn}
-                      onChange={(e) => setNewPrice((n) => ({ ...n, priceIn: e.target.value }))}
-                      className="w-20 rounded-md border border-border bg-background/40 px-2 py-1 text-right font-mono text-xs focus:border-primary focus:outline-none"
-                    />
-                  </div>
-                </td>
-                <td className="px-5 py-3">
-                  <div className="flex items-center justify-end gap-1">
-                    <span className="text-muted-foreground">$</span>
-                    <input
-                      type="number"
-                      step="0.05"
-                      min="0"
-                      value={newPrice.priceOut}
-                      onChange={(e) => setNewPrice((n) => ({ ...n, priceOut: e.target.value }))}
-                      className="w-20 rounded-md border border-border bg-background/40 px-2 py-1 text-right font-mono text-xs focus:border-primary focus:outline-none"
-                    />
-                  </div>
-                </td>
-                <td className="px-5 py-3" />
-                <td className="px-5 py-3" />
-                <td className="px-5 py-3 text-right">
-                  <div className="flex items-center justify-end gap-1.5">
-                    <button
-                      type="button"
-                      disabled={createPrice.isPending}
-                      onClick={submitNewPrice}
-                      className="inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      <CheckCircle2 className="h-3 w-3" /> {t("Save", "Speichern")}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setAdding(false)}
-                      className="inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            )}
-            {prices.map((p) => {
-              const usingAgents = agents.filter((a) => a.llm === p.modelPattern);
-              const per1kUSD = (1500 * p.priceInUsdPer1M + 500 * p.priceOutUsdPer1M) / 1000;
-              const isEditing = editingId === p.id;
-              return (
-                <tr key={p.id} className="border-b border-border/60 last:border-none">
-                  <td className="px-5 py-3">
-                    <div className="flex items-center gap-2 font-medium">
-                      <Cpu className="h-3.5 w-3.5 text-primary" />
-                      {p.modelPattern}
-                    </div>
-                  </td>
-                  <td className="px-5 py-3">
-                    <span className="rounded-full border border-border bg-background/40 px-2 py-0.5 text-xs">
-                      {p.provider}
-                    </span>
-                  </td>
-                  <td className="px-5 py-3">
-                    <div className="flex items-center justify-end gap-1">
-                      <span className="text-muted-foreground">$</span>
-                      {isEditing ? (
-                        <input
-                          type="number"
-                          step="0.05"
-                          min="0"
-                          value={draft.priceIn}
-                          onChange={(e) => setDraft((d) => ({ ...d, priceIn: e.target.value }))}
-                          className="w-20 rounded-md border border-border bg-background/40 px-2 py-1 text-right font-mono text-xs focus:border-primary focus:outline-none"
-                        />
-                      ) : (
-                        <span className="font-mono text-xs">{p.priceInUsdPer1M.toFixed(2)}</span>
-                      )}
-                    </div>
-                  </td>
-                  <td className="px-5 py-3">
-                    <div className="flex items-center justify-end gap-1">
-                      <span className="text-muted-foreground">$</span>
-                      {isEditing ? (
-                        <input
-                          type="number"
-                          step="0.05"
-                          min="0"
-                          value={draft.priceOut}
-                          onChange={(e) => setDraft((d) => ({ ...d, priceOut: e.target.value }))}
-                          className="w-20 rounded-md border border-border bg-background/40 px-2 py-1 text-right font-mono text-xs focus:border-primary focus:outline-none"
-                        />
-                      ) : (
-                        <span className="font-mono text-xs">{p.priceOutUsdPer1M.toFixed(2)}</span>
-                      )}
-                    </div>
-                  </td>
-                  <td className="px-5 py-3 text-right font-mono text-xs text-muted-foreground">
-                    ${per1kUSD.toFixed(2)}
-                  </td>
-                  <td className="px-5 py-3">
-                    <div className="flex flex-wrap gap-1">
-                      {usingAgents.map((a) => (
-                        <span
-                          key={a.id}
-                          className="inline-flex items-center gap-1 rounded-full border border-border bg-background/30 px-2 py-0.5 text-[10px]"
-                        >
-                          <span
-                            className="h-1.5 w-1.5 rounded-full"
-                            style={{ background: a.avatarColor }}
-                          />
-                          {a.name}
-                        </span>
-                      ))}
-                      {usingAgents.length === 0 && (
-                        <span className="text-[11px] text-muted-foreground">
-                          {t("— no agent", "— kein Agent")}
-                        </span>
-                      )}
-                    </div>
-                  </td>
-                  {mayManage && (
-                    <td className="px-5 py-3 text-right">
-                      {isEditing ? (
-                        <div className="flex items-center justify-end gap-1.5">
-                          <button
-                            type="button"
-                            disabled={createPrice.isPending}
-                            onClick={() => saveEdit(p)}
-                            className="inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            <CheckCircle2 className="h-3 w-3" /> {t("Save", "Speichern")}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={cancelEdit}
-                            className="inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
-                          >
-                            <X className="h-3 w-3" />
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="flex items-center justify-end gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => startEdit(p)}
-                            className="inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
-                          >
-                            <Pencil className="h-3 w-3" /> {t("Edit", "Bearbeiten")}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => removePrice(p)}
-                            className="inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-[color:var(--status-error)]"
-                          >
-                            <Trash2 className="h-3 w-3" /> {t("Remove", "Entfernen")}
-                          </button>
-                        </div>
-                      )}
-                    </td>
+                ) : (
+                  <select
+                    value={newPrice.modelPattern}
+                    onChange={(e) => selectRegisteredModel(e.target.value)}
+                    className="w-40 rounded-md border border-border bg-background/40 px-2 py-1 text-xs focus:border-primary focus:outline-none"
+                  >
+                    <option value="">{t("Select a model…", "Modell auswählen…")}</option>
+                    {models.map((m) => (
+                      <option key={m.id} value={m.model}>
+                        {m.name} ({m.model})
+                      </option>
+                    ))}
+                  </select>
+                )}
+                {models.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setManualEntry((v) => !v)}
+                    className="mt-1 block text-xs text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-foreground"
+                  >
+                    {manualEntry
+                      ? t("Choose from available models", "Aus verfügbaren Modellen wählen")
+                      : t("Enter manually", "Manuell eingeben")}
+                  </button>
+                )}
+              </TableCell>
+              <TableCell className="px-5 py-3">
+                <input
+                  type="text"
+                  readOnly={!manualEntry && models.length > 0}
+                  placeholder={t("provider", "Anbieter")}
+                  value={newPrice.provider}
+                  onChange={(e) => setNewPrice((n) => ({ ...n, provider: e.target.value }))}
+                  title={
+                    !manualEntry && models.length > 0
+                      ? t(
+                          "Set automatically from the selected model",
+                          "Wird automatisch anhand des gewählten Modells gesetzt",
+                        )
+                      : undefined
+                  }
+                  className={cn(
+                    "w-24 rounded-md border border-border bg-background/40 px-2 py-1 text-xs focus:border-primary focus:outline-none",
+                    !manualEntry && models.length > 0 && "cursor-not-allowed opacity-70",
                   )}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      <div className="border-t border-border px-5 py-3 text-[11px] text-muted-foreground">
+                />
+              </TableCell>
+              <TableCell className="px-5 py-3">
+                <div className="flex items-center justify-end gap-1">
+                  <span className="text-muted-foreground">$</span>
+                  <input
+                    type="number"
+                    step="0.05"
+                    min="0"
+                    value={newPrice.priceIn}
+                    onChange={(e) => setNewPrice((n) => ({ ...n, priceIn: e.target.value }))}
+                    className="w-20 rounded-md border border-border bg-background/40 px-2 py-1 text-right font-mono text-xs focus:border-primary focus:outline-none"
+                  />
+                </div>
+              </TableCell>
+              <TableCell className="px-5 py-3">
+                <div className="flex items-center justify-end gap-1">
+                  <span className="text-muted-foreground">$</span>
+                  <input
+                    type="number"
+                    step="0.05"
+                    min="0"
+                    value={newPrice.priceOut}
+                    onChange={(e) => setNewPrice((n) => ({ ...n, priceOut: e.target.value }))}
+                    className="w-20 rounded-md border border-border bg-background/40 px-2 py-1 text-right font-mono text-xs focus:border-primary focus:outline-none"
+                  />
+                </div>
+              </TableCell>
+              <TableCell className="px-5 py-3" />
+              <TableCell className="px-5 py-3" />
+              <TableCell className="px-5 py-3 text-right">
+                <div className="flex items-center justify-end gap-1.5">
+                  <button
+                    type="button"
+                    disabled={createPrice.isPending}
+                    onClick={submitNewPrice}
+                    className="inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <CheckCircle2 className="h-3 w-3" /> {t("Save", "Speichern")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAdding(false)}
+                    className="inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              </TableCell>
+            </TableRow>
+          )}
+          {prices.map((p) => {
+            const usingAgents = agents.filter((a) => a.llm === p.modelPattern);
+            const per1kUSD = (1500 * p.priceInUsdPer1M + 500 * p.priceOutUsdPer1M) / 1000;
+            const isEditing = editingId === p.id;
+            return (
+              <TableRow key={p.id} className="border-b border-border/60 last:border-none">
+                <TableCell className="px-5 py-3">
+                  <div className="flex items-center gap-2 font-medium">
+                    <Cpu className="h-3.5 w-3.5 text-primary" />
+                    {p.modelPattern}
+                  </div>
+                </TableCell>
+                <TableCell className="px-5 py-3">
+                  <span className="rounded-full border border-border bg-background/40 px-2 py-0.5 text-xs">
+                    {p.provider}
+                  </span>
+                </TableCell>
+                <TableCell className="px-5 py-3">
+                  <div className="flex items-center justify-end gap-1">
+                    <span className="text-muted-foreground">$</span>
+                    {isEditing ? (
+                      <input
+                        type="number"
+                        step="0.05"
+                        min="0"
+                        value={draft.priceIn}
+                        onChange={(e) => setDraft((d) => ({ ...d, priceIn: e.target.value }))}
+                        className="w-20 rounded-md border border-border bg-background/40 px-2 py-1 text-right font-mono text-xs focus:border-primary focus:outline-none"
+                      />
+                    ) : (
+                      <span className="font-mono text-xs">{p.priceInUsdPer1M.toFixed(2)}</span>
+                    )}
+                  </div>
+                </TableCell>
+                <TableCell className="px-5 py-3">
+                  <div className="flex items-center justify-end gap-1">
+                    <span className="text-muted-foreground">$</span>
+                    {isEditing ? (
+                      <input
+                        type="number"
+                        step="0.05"
+                        min="0"
+                        value={draft.priceOut}
+                        onChange={(e) => setDraft((d) => ({ ...d, priceOut: e.target.value }))}
+                        className="w-20 rounded-md border border-border bg-background/40 px-2 py-1 text-right font-mono text-xs focus:border-primary focus:outline-none"
+                      />
+                    ) : (
+                      <span className="font-mono text-xs">{p.priceOutUsdPer1M.toFixed(2)}</span>
+                    )}
+                  </div>
+                </TableCell>
+                <TableCell className="px-5 py-3 text-right font-mono text-xs text-muted-foreground">
+                  ${per1kUSD.toFixed(2)}
+                </TableCell>
+                <TableCell className="px-5 py-3">
+                  <div className="flex flex-wrap gap-1">
+                    {usingAgents.map((a) => (
+                      <span
+                        key={a.id}
+                        className="inline-flex items-center gap-1 rounded-full border border-border bg-background/30 px-2 py-0.5 text-micro"
+                      >
+                        <span
+                          className="h-1.5 w-1.5 rounded-full"
+                          style={{ background: a.avatarColor }}
+                        />
+                        {a.name}
+                      </span>
+                    ))}
+                    {usingAgents.length === 0 && (
+                      <span className="text-xs text-muted-foreground">
+                        {t("— no agent", "— kein Agent")}
+                      </span>
+                    )}
+                  </div>
+                </TableCell>
+                {mayManage && (
+                  <TableCell className="px-5 py-3 text-right">
+                    {isEditing ? (
+                      <div className="flex items-center justify-end gap-1.5">
+                        <button
+                          type="button"
+                          disabled={createPrice.isPending}
+                          onClick={() => saveEdit(p)}
+                          className="inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          <CheckCircle2 className="h-3 w-3" /> {t("Save", "Speichern")}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={cancelEdit}
+                          className="inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-end gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => startEdit(p)}
+                          className="inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+                        >
+                          <Pencil className="h-3 w-3" /> {t("Edit", "Bearbeiten")}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => removePrice(p)}
+                          className="inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-status-error"
+                        >
+                          <Trash2 className="h-3 w-3" /> {t("Remove", "Entfernen")}
+                        </button>
+                      </div>
+                    )}
+                  </TableCell>
+                )}
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+      <div className="border-t border-border px-5 py-3 text-xs text-muted-foreground">
         {t(
           "Estimate assumes ~1,500 input + 500 output tokens per request. Cost totals per agent and department use these prices.",
           "Schätzung geht von ~1.500 Input + 500 Output Token pro Anfrage aus. Kostenauswertungen pro Agent und Abteilung verwenden diese Preise.",

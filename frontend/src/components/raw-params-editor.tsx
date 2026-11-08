@@ -66,10 +66,10 @@ export function RawParamsEditor({
 
   return (
     <div>
-      <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
+      <span className="mb-1 block micro-label">
         {t("Advanced/Raw parameters (optional)", "Erweitert/Raw-Parameter (optional)")}
       </span>
-      <p className="mb-2 text-[11px] text-muted-foreground">
+      <p className="mb-2 text-xs text-muted-foreground">
         {t(
           "Forwarded verbatim to the provider after every named field above -- for knobs oc8 has no dedicated field for (e.g. OpenRouter's provider/top_p). Not validated here; the provider decides what it accepts.",
           "Wird nach allen benannten Feldern oben unverändert an den Anbieter weitergereicht -- für Einstellungen, für die oc8 kein eigenes Feld hat (z. B. OpenRouters provider/top_p). Wird hier nicht validiert -- der Anbieter entscheidet, was er akzeptiert.",

@@ -15,6 +15,7 @@ import {
   useUpdateApiKey,
   type ApiKeyCreatedDTO,
 } from "@/lib/hooks";
+import { SkeletonRows } from "@/components/skeleton-rows";
 
 export function ApiKeysPanel() {
   const t = useT();
@@ -92,7 +93,7 @@ export function ApiKeysPanel() {
           <p className="mt-0.5 text-xs text-muted-foreground">
             {t(
               "Lets an external tool call oc8's Copilot over MCP as you, with your own permissions.",
-              "Erlaubt einem externen Tool, oc8s Copilot über MCP als Sie aufzurufen, mit Ihren eigenen Berechtigungen.",
+              "Erlaubt einem externen Tool, oc8s Copilot über MCP als dich aufzurufen, mit deinen eigenen Berechtigungen.",
             )}
           </p>
         </div>
@@ -128,7 +129,7 @@ export function ApiKeysPanel() {
               placeholder="https://claude.ai"
               className="mt-1 w-full rounded-md border border-border bg-background/30 px-3 py-2 text-sm text-foreground"
             />
-            <span className="mt-1 block text-[11px] text-muted-foreground">
+            <span className="mt-1 block text-xs text-muted-foreground">
               {t("Leave empty to allow any origin.", "Leer lassen, um jede Origin zuzulassen.")}
             </span>
           </label>
@@ -141,7 +142,7 @@ export function ApiKeysPanel() {
               onChange={(e) => setExpiresAt(e.target.value)}
               className="mt-1 w-full rounded-md border border-border bg-background/30 px-3 py-2 text-sm text-foreground"
             />
-            <span className="mt-1 block text-[11px] text-muted-foreground">
+            <span className="mt-1 block text-xs text-muted-foreground">
               {t("Leave empty to never expire.", "Leer lassen, damit der Key nie abläuft.")}
             </span>
           </label>
@@ -150,7 +151,7 @@ export function ApiKeysPanel() {
               type="button"
               onClick={handleCreate}
               disabled={!name.trim() || createKey.isPending}
-              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-40"
+              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
             >
               {createKey.isPending ? (
                 <Loader2 className="h-3 w-3 animate-spin" />
@@ -172,7 +173,14 @@ export function ApiKeysPanel() {
 
       {revealed && <RevealedToken keyDto={revealed} onDismiss={() => setRevealed(null)} />}
 
-      {isLoading && <Loader2 className="mt-5 h-4 w-4 animate-spin text-muted-foreground" />}
+      {isLoading && (
+        <SkeletonRows
+          label={t("Loading…", "Wird geladen…")}
+          rows={2}
+          rowClassName="h-10"
+          className="mt-4"
+        />
+      )}
 
       {!isLoading && keys.length === 0 && !creating && (
         <p className="mt-4 text-sm text-muted-foreground">
@@ -192,16 +200,16 @@ export function ApiKeysPanel() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <span className="truncate font-medium">{key.name}</span>
-                    <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                    <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-micro text-muted-foreground">
                       oc8_ak_{key.tokenPrefix}…
                     </span>
                     {expired && (
-                      <span className="rounded-full border border-[color:var(--status-error)]/40 px-1.5 py-0.5 text-[10px] text-[color:var(--status-error)]">
+                      <span className="rounded-full border border-status-error/40 px-1.5 py-0.5 text-micro text-status-error">
                         {t("Expired", "Abgelaufen")}
                       </span>
                     )}
                   </div>
-                  <p className="mt-0.5 text-[11px] text-muted-foreground">
+                  <p className="mt-0.5 text-xs text-muted-foreground">
                     {key.allowedOrigins.length > 0
                       ? key.allowedOrigins.join(", ")
                       : t("Any origin", "Jede Origin")}
@@ -239,7 +247,7 @@ export function ApiKeysPanel() {
                   type="button"
                   onClick={() => handleDelete(key.id)}
                   disabled={deleteKey.isPending}
-                  className="shrink-0 rounded-md p-1.5 text-muted-foreground hover:text-[color:var(--status-error)] disabled:cursor-not-allowed disabled:opacity-50"
+                  className="shrink-0 rounded-md p-1.5 text-muted-foreground hover:text-status-error disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
@@ -268,7 +276,7 @@ function RevealedToken({ keyDto, onDismiss }: { keyDto: ApiKeyCreatedDTO; onDism
       <p className="text-xs font-medium text-foreground">
         {t(
           "Copy this key now — it will not be shown again.",
-          "Kopieren Sie diesen Key jetzt — er wird nicht erneut angezeigt.",
+          "Kopiere diesen Key jetzt — er wird nicht erneut angezeigt.",
         )}
       </p>
       <div className="flex items-center gap-2">
@@ -287,7 +295,7 @@ function RevealedToken({ keyDto, onDismiss }: { keyDto: ApiKeyCreatedDTO; onDism
       <button
         type="button"
         onClick={onDismiss}
-        className="text-[11px] text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-foreground"
+        className="text-xs text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-foreground"
       >
         {t("I've saved it", "Ich habe ihn gespeichert")}
       </button>

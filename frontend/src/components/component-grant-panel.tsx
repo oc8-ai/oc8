@@ -79,9 +79,7 @@ export function ComponentGrantPanel({
 
   return (
     <Panel className="p-5">
-      <div className="text-[11px] uppercase tracking-widest text-muted-foreground">
-        {t("visual output", "visuelle Ausgabe")}
-      </div>
+      <div className="micro-label">{t("visual output", "visuelle Ausgabe")}</div>
       <h3 className="mt-1 font-serif text-lg">{t("Components", "Komponenten")}</h3>
       <p className="mt-1 text-xs text-muted-foreground">
         {t(

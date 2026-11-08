@@ -92,7 +92,7 @@ export function CapaSetupDialog({
           <button
             onClick={submit}
             disabled={configure.isPending || test.isPending}
-            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-40"
+            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
           >
             {resolveTranslation(setup.submit_label, setup.translations?.submit_label, lang)}
           </button>

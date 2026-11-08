@@ -12,6 +12,14 @@ import {
 } from "@/lib/audit-hooks";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 export const Route = createFileRoute("/audit")({
   component: AuditPage,
@@ -123,12 +131,12 @@ function IntegrityBanner() {
       : isTruncation
         ? t(
             `${missingEn}. Last verified position: seq ${brokenSeq}. Re-verifying will not clear this — the missing entries have to be restored from a backup. Treat this as a security event and escalate.`,
-            `${missingDe}. Zuletzt geprüfte Position: lfd. Nr. ${brokenSeq}. Eine erneute Prüfung ändert daran nichts — die fehlenden Einträge müssen aus einer Sicherung wiederhergestellt werden. Behandeln Sie dies als Sicherheitsvorfall und eskalieren Sie.`,
+            `${missingDe}. Zuletzt geprüfte Position: lfd. Nr. ${brokenSeq}. Eine erneute Prüfung ändert daran nichts — die fehlenden Einträge müssen aus einer Sicherung wiederhergestellt werden. Behandle dies als Sicherheitsvorfall und eskaliere.`,
           )
         : isMacDowngrade
           ? t(
               "Re-checking alone will not clear this. If tamper-proofing was only just switched on for this deployment, an administrator has to run the one-off `oc8 audit-adopt-checkpoints` command to seal the existing logs, and then a full check here. If it was already switched on, the seal was removed or the entries were rewritten — treat this as a security event and escalate.",
-              "Eine erneute Prüfung allein ändert daran nichts. Falls der Manipulationsschutz für diese Installation gerade erst aktiviert wurde, muss eine Administratorin den einmaligen Befehl `oc8 audit-adopt-checkpoints` ausführen, um die vorhandenen Protokolle zu versiegeln, und danach hier eine vollständige Prüfung starten. War er bereits aktiv, wurde das Siegel entfernt oder die Einträge wurden umgeschrieben — behandeln Sie dies als Sicherheitsvorfall und eskalieren Sie.",
+              "Eine erneute Prüfung allein ändert daran nichts. Falls der Manipulationsschutz für diese Installation gerade erst aktiviert wurde, muss eine Administratorin den einmaligen Befehl `oc8 audit-adopt-checkpoints` ausführen, um die vorhandenen Protokolle zu versiegeln, und danach hier eine vollständige Prüfung starten. War er bereits aktiv, wurde das Siegel entfernt oder die Einträge wurden umgeschrieben — behandle dies als Sicherheitsvorfall und eskaliere.",
             )
           : t(
               `Entry seq ${brokenSeq} is the first that no longer hashes correctly. A full check re-verifies the whole chain, so it is the way to confirm a legitimate restore.`,
@@ -166,7 +174,7 @@ function IntegrityBanner() {
   const outlineClass =
     "rounded-md border border-border bg-panel px-3 py-1.5 text-sm text-foreground transition hover:bg-primary/10 disabled:opacity-50";
   const dangerPrimaryClass =
-    "rounded-md border border-[color:var(--status-error)]/50 bg-[color:var(--status-error)]/15 px-3 py-1.5 text-sm font-medium text-[color:var(--status-error)] transition hover:bg-[color:var(--status-error)]/25 disabled:opacity-50";
+    "rounded-md border border-status-error/50 bg-status-error/15 px-3 py-1.5 text-sm font-medium text-status-error transition hover:bg-status-error/25 disabled:opacity-50";
 
   return (
     <div
@@ -268,17 +276,17 @@ function AuditPage() {
     const errDetail = err instanceof Error && err.message ? err.message : null;
     return (
       <div className="space-y-4">
-        <div className="flex items-start gap-3 rounded-xl border border-[color:var(--status-error)]/35 bg-[color:var(--status-error)]/8 px-5 py-4 shadow-[0_1px_0_0_oklch(1_0_0/6%)_inset,0_10px_30px_-20px_oklch(0_0_0/60%)]">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--status-error)]" />
+        <div className="flex items-start gap-3 rounded-xl border border-status-error/35 bg-status-error/8 px-5 py-4 shadow-[0_1px_0_0_oklch(1_0_0/6%)_inset,0_10px_30px_-20px_oklch(0_0_0/60%)]">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-status-error" />
           <div>
-            <p className="text-sm text-[color:var(--status-error)]">
+            <p className="text-sm text-status-error">
               {t("Could not load the audit log.", "Prüfprotokoll konnte nicht geladen werden.")}
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
               {errDetail ??
                 t(
                   "You may not have permission to view this page, or the server could not be reached.",
-                  "Möglicherweise fehlt Ihnen die Berechtigung für diese Seite, oder der Server war nicht erreichbar.",
+                  "Möglicherweise fehlt dir die Berechtigung für diese Seite, oder der Server war nicht erreichbar.",
                 )}
             </p>
           </div>
@@ -356,80 +364,84 @@ function AuditPage() {
       </div>
 
       <Panel className="overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
-                <th className="px-5 py-3 font-medium" />
-                <th className="px-5 py-3 font-medium">{t("Time", "Zeit")}</th>
-                <th className="px-5 py-3 font-medium">{t("Category", "Kategorie")}</th>
-                <th className="px-5 py-3 font-medium">{t("Action", "Aktion")}</th>
-                <th className="px-5 py-3 font-medium">{t("Actor type", "Akteurtyp")}</th>
-                <th className="px-5 py-3 font-medium">{t("Decision", "Entscheidung")}</th>
-                <th className="px-5 py-3 font-medium">{t("Responsible", "Verantwortlich")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {events.map((ev) => {
-                const isOpen = openId === ev.id;
-                const flagged = broken !== null && ev.seq >= broken;
-                return (
-                  <Fragment key={ev.id}>
-                    <tr
-                      onClick={() => setOpenId(isOpen ? null : ev.id)}
-                      className={cn(
-                        "cursor-pointer border-b border-border/60 last:border-none transition hover:bg-primary/5",
-                        flagged && "border-l-2 border-l-[color:var(--status-error)]",
+        <Table className="text-sm">
+          <TableHeader>
+            <TableRow className="border-b border-border hover:bg-transparent">
+              <TableHead className="px-5 py-3 micro-label" />
+              <TableHead className="px-5 py-3 micro-label">{t("Time", "Zeit")}</TableHead>
+              <TableHead className="px-5 py-3 micro-label">{t("Category", "Kategorie")}</TableHead>
+              <TableHead className="px-5 py-3 micro-label">{t("Action", "Aktion")}</TableHead>
+              <TableHead className="px-5 py-3 micro-label">
+                {t("Actor type", "Akteurtyp")}
+              </TableHead>
+              <TableHead className="px-5 py-3 micro-label">
+                {t("Decision", "Entscheidung")}
+              </TableHead>
+              <TableHead className="px-5 py-3 micro-label">
+                {t("Responsible", "Verantwortlich")}
+              </TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {events.map((ev) => {
+              const isOpen = openId === ev.id;
+              const flagged = broken !== null && ev.seq >= broken;
+              return (
+                <Fragment key={ev.id}>
+                  <TableRow
+                    onClick={() => setOpenId(isOpen ? null : ev.id)}
+                    className={cn(
+                      "cursor-pointer border-b border-border/60 last:border-none transition hover:bg-primary/5",
+                      flagged && "border-l-2 border-l-status-error",
+                    )}
+                  >
+                    <TableCell className="px-5 py-3">
+                      {isOpen ? (
+                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                      ) : (
+                        <ChevronRight className="h-4 w-4 text-muted-foreground" />
                       )}
-                    >
-                      <td className="px-5 py-3">
-                        {isOpen ? (
-                          <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                        ) : (
-                          <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                        )}
-                      </td>
-                      <td className="whitespace-nowrap px-5 py-3 font-mono text-xs text-muted-foreground">
-                        {new Date(ev.ts).toLocaleString()}
-                      </td>
-                      <td className="px-5 py-3">{ev.category}</td>
-                      <td className="px-5 py-3">{ev.action}</td>
-                      <td className="px-5 py-3">{ev.actorType}</td>
-                      <td className="px-5 py-3">{ev.decision ?? "—"}</td>
-                      <td className="px-5 py-3 font-mono text-xs text-muted-foreground">
-                        {ev.responsibleId ?? "—"}
-                      </td>
-                    </tr>
-                    {isOpen && (
-                      <tr className="border-b border-border/60 bg-background/30">
-                        <td colSpan={7} className="space-y-2 px-14 py-3 text-xs">
-                          <pre className="overflow-x-auto whitespace-pre-wrap break-all text-muted-foreground">
-                            {JSON.stringify(ev.resource, null, 2)}
-                          </pre>
-                          <div className="font-mono text-muted-foreground">
-                            hash: {ev.hash}
-                            <br />
-                            prevHash: {ev.prevHash}
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
-                );
-              })}
-              {events.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="px-5 py-8 text-center text-muted-foreground">
-                    {t(
-                      "No audit events for this filter.",
-                      "Keine Prüfprotokoll-Einträge für diesen Filter.",
-                    )}
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap px-5 py-3 font-mono text-xs text-muted-foreground">
+                      {new Date(ev.ts).toLocaleString()}
+                    </TableCell>
+                    <TableCell className="px-5 py-3">{ev.category}</TableCell>
+                    <TableCell className="px-5 py-3">{ev.action}</TableCell>
+                    <TableCell className="px-5 py-3">{ev.actorType}</TableCell>
+                    <TableCell className="px-5 py-3">{ev.decision ?? "—"}</TableCell>
+                    <TableCell className="px-5 py-3 font-mono text-xs text-muted-foreground">
+                      {ev.responsibleId ?? "—"}
+                    </TableCell>
+                  </TableRow>
+                  {isOpen && (
+                    <TableRow className="border-b border-border/60 bg-background/30">
+                      <TableCell colSpan={7} className="space-y-2 px-14 py-3 text-xs">
+                        <pre className="overflow-x-auto whitespace-pre-wrap break-all text-muted-foreground">
+                          {JSON.stringify(ev.resource, null, 2)}
+                        </pre>
+                        <div className="font-mono text-muted-foreground">
+                          hash: {ev.hash}
+                          <br />
+                          prevHash: {ev.prevHash}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </Fragment>
+              );
+            })}
+            {events.length === 0 && (
+              <TableRow className="hover:bg-transparent">
+                <TableCell colSpan={7} className="px-5 py-8 text-center text-muted-foreground">
+                  {t(
+                    "No audit events for this filter.",
+                    "Keine Prüfprotokoll-Einträge für diesen Filter.",
+                  )}
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
         {hasNextPage && (
           <div className="flex justify-center border-t border-border p-3">
             <button

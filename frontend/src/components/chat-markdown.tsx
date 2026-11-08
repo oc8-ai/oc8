@@ -39,7 +39,7 @@ function CodeBlock({ children }: { children?: ReactNode }) {
   }
 
   return (
-    <div className="rounded bg-muted/50">
+    <div className="rounded-md bg-muted/50">
       <div className="flex items-center justify-between px-2 py-1 text-[0.7em] text-muted-foreground">
         <span className="uppercase">{language ?? ""}</span>
         <button

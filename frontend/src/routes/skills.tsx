@@ -316,16 +316,16 @@ function SkillCard({
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <h3 className="truncate font-serif text-lg leading-tight">{skill.name}</h3>
-            <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+            <span className="rounded-full border border-border px-1.5 py-0.5 micro-label">
               v{skill.version}
             </span>
             {archived && (
-              <span className="rounded-full border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-[color:var(--status-warning)]">
+              <span className="rounded-full border border-status-warning/40 bg-status-warning/10 px-1.5 py-0.5 micro-label text-status-warning-text">
                 {t("Archived", "Archiviert")}
               </span>
             )}
           </div>
-          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
             <span className="rounded bg-primary/10 px-1.5 py-0.5 text-primary">
               {categoryLabel}
             </span>
@@ -334,7 +334,7 @@ function SkillCard({
             <span
               className={cn(
                 "inline-flex items-center gap-1",
-                skill.origin === "store" && "text-[color:var(--status-warning)]",
+                skill.origin === "store" && "text-status-warning-text",
               )}
             >
               {skill.origin === "store" ? (
@@ -355,7 +355,7 @@ function SkillCard({
         {skill.tools.slice(0, 4).map((tool) => (
           <span
             key={tool}
-            className="inline-flex items-center gap-1 rounded border border-border bg-background/50 px-1.5 py-0.5 text-[11px] text-muted-foreground"
+            className="inline-flex items-center gap-1 rounded border border-border bg-background/50 px-1.5 py-0.5 text-micro text-muted-foreground"
           >
             <Wrench className="h-3 w-3" /> {tool}
           </span>
@@ -456,7 +456,7 @@ export function SkillDrawer({
         </>
       }
     >
-      <div className="text-[11px] uppercase tracking-widest text-muted-foreground">
+      <div className="micro-label">
         {categoryLabel} · v{skill.version}
       </div>
       <p className="mt-1 text-xs text-muted-foreground">{skill.author}</p>
@@ -530,7 +530,7 @@ export function SkillDrawer({
         <ul className="space-y-1 text-sm text-muted-foreground">
           {skill.guardrails.map((g) => (
             <li key={g} className="flex items-start gap-2">
-              <ShieldAlert className="mt-0.5 h-3.5 w-3.5 text-[color:var(--status-warning)]" />
+              <ShieldAlert className="mt-0.5 h-3.5 w-3.5 text-status-warning-text" />
               <span>{g}</span>
             </li>
           ))}
@@ -596,7 +596,7 @@ export function SkillDrawer({
           </button>
         </div>
         {!skill.currentVersionId && (
-          <p className="mt-2 text-[11px] text-[color:var(--status-warning)]">
+          <p className="mt-2 text-xs text-status-warning-text">
             {t(
               "This skill has no published version yet, so there is nothing to assign.",
               "Dieser Skill hat noch keine veröffentlichte Version — es gibt nichts zuzuweisen.",
@@ -683,9 +683,7 @@ function SkillWizard({
       <div className="w-full max-w-xl overflow-hidden rounded-xl border border-border bg-panel shadow-2xl">
         <div className="flex items-center justify-between border-b border-border px-5 py-4">
           <div>
-            <div className="text-[11px] uppercase tracking-widest text-muted-foreground">
-              {t("New skill", "Neuer Skill")}
-            </div>
+            <div className="micro-label">{t("New skill", "Neuer Skill")}</div>
             <h2 className="font-serif text-xl">{steps[step]}</h2>
           </div>
           <button
@@ -816,9 +814,7 @@ function SkillWizard({
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="block">
-      <span className="mb-1 block text-[11px] uppercase tracking-widest text-muted-foreground">
-        {label}
-      </span>
+      <span className="mb-1 block micro-label">{label}</span>
       {children}
     </label>
   );
@@ -943,9 +939,7 @@ function ImportWizard({ onClose }: { onClose: () => void }) {
       <div className="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-border bg-panel shadow-2xl">
         <div className="flex items-center justify-between border-b border-border px-5 py-4">
           <div>
-            <div className="text-[11px] uppercase tracking-widest text-muted-foreground">
-              {t("Skills", "Skills")}
-            </div>
+            <div className="micro-label">{t("Skills", "Skills")}</div>
             <div className="text-base font-semibold">
               {t("Import from a source", "Aus einer Quelle importieren")}
             </div>
@@ -978,7 +972,7 @@ function ImportWizard({ onClose }: { onClose: () => void }) {
                 {preview.isPending ? t("Reading…", "Lese…") : t("Look", "Ansehen")}
               </button>
             </div>
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               {t(
                 "Nothing is imported until you choose. The source is fetched, not trusted.",
                 "Es wird nichts importiert, bis du auswählst. Die Quelle wird gelesen, nicht geglaubt.",
@@ -1035,7 +1029,7 @@ function ImportWizard({ onClose }: { onClose: () => void }) {
                 </button>
               )}
             </div>
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               {budgetOverride
                 ? t(
                     "Judging against your number for this look only — nothing is saved.",
@@ -1183,18 +1177,18 @@ function CandidateRow({
             {budget > 0 && (
               <span
                 className={cn(
-                  "rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide",
+                  "rounded px-1.5 py-0.5 micro-label",
                   verdict === "fits"
                     ? "bg-primary/10 text-primary"
                     : verdict === "tight"
-                      ? "bg-amber-500/15 text-amber-600"
+                      ? "bg-status-warning/15 text-status-warning-text"
                       : "bg-destructive/15 text-destructive",
                 )}
               >
                 {verdictLabel}
               </span>
             )}
-            <span className="text-[11px] text-muted-foreground">
+            <span className="text-xs text-muted-foreground">
               {budget > 0
                 ? `${candidate.tokens} / ${budget} ${t("tokens", "Token")}`
                 : `${candidate.tokens} ${t("tokens", "Token")}`}
@@ -1206,13 +1200,13 @@ function CandidateRow({
             </p>
           )}
           {candidate.warnings.map((w) => (
-            <p key={w} className="mt-1 flex items-start gap-1.5 text-[11px] text-amber-600">
+            <p key={w} className="mt-1 flex items-start gap-1.5 text-xs text-status-warning-text">
               <ShieldAlert className="mt-px h-3 w-3 shrink-0" />
               <span>{w}</span>
             </p>
           ))}
           {tooBig && (
-            <p className="mt-1 text-[11px] text-destructive">
+            <p className="mt-1 text-xs text-destructive">
               {t(
                 "Over the budget: it stays in the transcript for the whole run. You can still import it — raise the budget above, or take it knowingly.",
                 "Über dem Budget: es bleibt den ganzen Lauf im Verlauf stehen. Du kannst es trotzdem importieren — Budget oben anheben oder es bewusst nehmen.",
@@ -1222,14 +1216,14 @@ function CandidateRow({
           <button
             type="button"
             onClick={onExpand}
-            className="mt-1.5 text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
+            className="mt-1.5 text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
           >
             {expanded
               ? t("Hide the text", "Text ausblenden")
               : t("Read the text before importing", "Text vor dem Import lesen")}
           </button>
           {expanded && (
-            <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded border border-border bg-background p-2 text-[11px] leading-relaxed">
+            <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background p-2 text-xs leading-relaxed">
               {candidate.instruction}
             </pre>
           )}

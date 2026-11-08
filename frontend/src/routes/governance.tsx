@@ -4,7 +4,6 @@ import {
   Bot,
   Check,
   ChevronRight,
-  Loader2,
   Lock,
   MapPin,
   Minus,
@@ -40,6 +39,15 @@ import {
 } from "@/lib/roles-hooks";
 import type { Seat } from "@/lib/hooks";
 import { useLang, useT } from "@/lib/i18n";
+import { SkeletonRows } from "@/components/skeleton-rows";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 export const Route = createFileRoute("/governance")({
   component: GovernancePage,
@@ -70,11 +78,12 @@ function GovernancePage() {
 
   if (isLoading) {
     return (
-      <Panel className="p-8">
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="size-4 animate-spin" />
-          {t("Loading the permission model…", "Berechtigungsmodell wird geladen…")}
-        </div>
+      <Panel className="p-5">
+        <SkeletonRows
+          label={t("Loading the permission model…", "Berechtigungsmodell wird geladen…")}
+          rows={4}
+          rowClassName="h-10"
+        />
       </Panel>
     );
   }
@@ -153,40 +162,40 @@ function YourAccess({ data }: { data: Governance }) {
   return (
     <Panel className="p-6">
       {data.authorityUnavailable && (
-        <div className="mb-4 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
+        <div className="mb-4 flex items-start gap-2 rounded-md border border-status-warning/40 bg-status-warning/10 px-3 py-2 text-xs text-status-warning-text">
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
           <span>
             {t(
               "Your assigned role could not be read from the database just now. What follows is what your token carries; an assignment on top of it would not be shown. Nothing was changed.",
-              "Ihre zugewiesene Rolle konnte gerade nicht aus der Datenbank gelesen werden. Unten steht, was Ihr Token trägt; eine darüberliegende Zuweisung wird nicht angezeigt. Es wurde nichts geändert.",
+              "Deine zugewiesene Rolle konnte gerade nicht aus der Datenbank gelesen werden. Unten steht, was dein Token trägt; eine darüberliegende Zuweisung wird nicht angezeigt. Es wurde nichts geändert.",
             )}
           </span>
         </div>
       )}
       <div className="flex items-start gap-3">
         {unknown || unusableAssignment ? (
-          <AlertTriangle className="mt-0.5 size-5 shrink-0 text-amber-500" />
+          <AlertTriangle className="mt-0.5 size-5 shrink-0 text-status-warning-text" />
         ) : (
-          <ShieldCheck className="mt-0.5 size-5 shrink-0 text-emerald-500" />
+          <ShieldCheck className="mt-0.5 size-5 shrink-0 text-status-running-text" />
         )}
         <div className="min-w-0 flex-1">
-          <h2 className="flex flex-wrap items-center gap-2 text-sm font-medium">
-            {t("Your access", "Ihr Zugriff")}
+          <h2 className="flex flex-wrap items-center gap-2 font-serif text-xl">
+            {t("Your access", "Dein Zugriff")}
             <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
               {assignedName ?? data.callerRole}
             </span>
             {assignedName && (
-              <span className="rounded border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+              <span className="rounded border border-border px-1.5 py-0.5 micro-label">
                 {t("assigned", "zugewiesen")}
               </span>
             )}
           </h2>
 
           {unusableAssignment ? (
-            <p className="mt-1 text-sm text-amber-600 dark:text-amber-400">
+            <p className="mt-1 text-sm text-status-warning-text">
               {t(
                 `A role was assigned to you, but it can no longer grant anything — it has been deleted, or it is a role for AGENTS, which no person can hold. That, and not the role “${data.callerRole}” in your token, is why you hold nothing company-wide. Ask an administrator to assign you a different role or to clear the assignment.`,
-                `Ihnen wurde eine Rolle zugewiesen, die nichts mehr gewähren kann — sie wurde gelöscht, oder sie ist eine Rolle für AGENTEN, die kein Mensch halten kann. Daran liegt es, dass Sie unternehmensweit nichts halten, und nicht an der Rolle „${data.callerRole}“ in Ihrem Token. Bitten Sie eine Administratorin, Ihnen eine andere Rolle zuzuweisen oder die Zuweisung zu löschen.`,
+                `Dir wurde eine Rolle zugewiesen, die nichts mehr gewähren kann — sie wurde gelöscht, oder sie ist eine Rolle für AGENTEN, die kein Mensch halten kann. Daran liegt es, dass du unternehmensweit nichts hältst, und nicht an der Rolle „${data.callerRole}“ in deinem Token. Bitte eine Administratorin, dir eine andere Rolle zuzuweisen oder die Zuweisung zu löschen.`,
               )}
             </p>
           ) : assignedName ? (
@@ -194,35 +203,35 @@ function YourAccess({ data }: { data: Governance }) {
               {data.callerPermissions.length === 0
                 ? t(
                     `Your rights come from the role “${assignedName}”, which an administrator assigned to you. It replaces the role “${data.callerRole}” your token carries, and it grants nothing company-wide — your authority is the departments you are seated in, listed below.`,
-                    `Ihre Rechte stammen aus der Rolle „${assignedName}“, die Ihnen eine Administratorin zugewiesen hat. Sie ersetzt die Rolle „${data.callerRole}“ aus Ihrem Token und gewährt unternehmensweit nichts — Ihre Befugnis sind die Abteilungen, in denen Sie einen Platz haben, unten aufgeführt.`,
+                    `Deine Rechte stammen aus der Rolle „${assignedName}“, die dir eine Administratorin zugewiesen hat. Sie ersetzt die Rolle „${data.callerRole}“ aus deinem Token und gewährt unternehmensweit nichts — deine Befugnis sind die Abteilungen, in denen du einen Platz hast, unten aufgeführt.`,
                   )
                 : t(
                     `Your rights come from the role “${assignedName}”, which an administrator assigned to you. It replaces the role “${data.callerRole}” your token carries, and it holds ${data.callerPermissions.length} of ${data.permissions.length} permissions.`,
-                    `Ihre Rechte stammen aus der Rolle „${assignedName}“, die Ihnen eine Administratorin zugewiesen hat. Sie ersetzt die Rolle „${data.callerRole}“ aus Ihrem Token und hält ${data.callerPermissions.length} von ${data.permissions.length} Berechtigungen.`,
+                    `Deine Rechte stammen aus der Rolle „${assignedName}“, die dir eine Administratorin zugewiesen hat. Sie ersetzt die Rolle „${data.callerRole}“ aus deinem Token und hält ${data.callerPermissions.length} von ${data.permissions.length} Berechtigungen.`,
                   )}
             </p>
           ) : unknown ? (
             // The case this screen exists for: an unmapped role holds nothing,
             // so every other screen is empty — which reads as a broken product
             // rather than as a mapping nobody finished.
-            <p className="mt-1 text-sm text-amber-600 dark:text-amber-400">
+            <p className="mt-1 text-sm text-status-warning-text">
               {t(
                 `This deployment does not define a role called “${data.callerRole}”, so it grants nothing at all. That is why other screens appear empty. Map your identity provider’s group to one of the roles below.`,
-                `Diese Installation kennt keine Rolle „${data.callerRole}“, deshalb gewährt sie gar nichts. Genau darum wirken die übrigen Ansichten leer. Ordnen Sie die Gruppe Ihres Identitätsanbieters einer der unten aufgeführten Rollen zu.`,
+                `Diese Installation kennt keine Rolle „${data.callerRole}“, deshalb gewährt sie gar nichts. Genau darum wirken die übrigen Ansichten leer. Ordne die Gruppe deines Identitätsanbieters einer der unten aufgeführten Rollen zu.`,
               )}
             </p>
           ) : grantsNothingTenantWide ? (
             <p className="mt-1 text-sm text-muted-foreground">
               {t(
                 `Your token carries the role “${data.callerRole}”, which holds nothing company-wide by design. Your authority is the departments you are seated in, listed below.`,
-                `Ihr Token trägt die Rolle „${data.callerRole}“, die bewusst nichts unternehmensweit gewährt. Ihre Befugnis sind die Abteilungen, in denen Sie einen Platz haben — unten aufgeführt.`,
+                `Dein Token trägt die Rolle „${data.callerRole}“, die bewusst nichts unternehmensweit gewährt. Deine Befugnis sind die Abteilungen, in denen du einen Platz hast — unten aufgeführt.`,
               )}
             </p>
           ) : (
             <p className="mt-1 text-sm text-muted-foreground">
               {t(
                 `Your token carries the role “${data.callerRole}”, which holds ${data.callerPermissions.length} of ${data.permissions.length} permissions. Nobody has assigned you a role of this tenant’s own.`,
-                `Ihr Token trägt die Rolle „${data.callerRole}“ und hält ${data.callerPermissions.length} von ${data.permissions.length} Berechtigungen. Eine mandanteneigene Rolle wurde Ihnen nicht zugewiesen.`,
+                `Dein Token trägt die Rolle „${data.callerRole}“ und hält ${data.callerPermissions.length} von ${data.permissions.length} Berechtigungen. Eine mandanteneigene Rolle wurde dir nicht zugewiesen.`,
               )}
             </p>
           )}
@@ -265,12 +274,12 @@ function YourSeats({ seats, seatRoles }: { seats: Seat[]; seatRoles: Record<stri
       <div className="mt-4 rounded-md border border-border bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
         <span className="flex items-center gap-1.5">
           <MapPin className="size-3.5 shrink-0" />
-          {t("You hold no seat in any department.", "Sie haben in keiner Abteilung einen Platz.")}
+          {t("You hold no seat in any department.", "Du hast in keiner Abteilung einen Platz.")}
         </span>
         <span className="mt-1 block text-xs">
           {t(
             "A seat is granted per department by an administrator and takes effect on your next request — no new sign-in.",
-            "Ein Platz wird je Abteilung von einer Administratorin vergeben und gilt ab Ihrer nächsten Anfrage — ohne neue Anmeldung.",
+            "Ein Platz wird je Abteilung von einer Administratorin vergeben und gilt ab deiner nächsten Anfrage — ohne neue Anmeldung.",
           )}
         </span>
       </div>
@@ -279,20 +288,18 @@ function YourSeats({ seats, seatRoles }: { seats: Seat[]; seatRoles: Record<stri
 
   return (
     <div className="mt-4">
-      <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-        {t("Your seats", "Ihre Plätze")}
-      </div>
+      <div className="micro-label">{t("Your seats", "Deine Plätze")}</div>
       <ul className="mt-2 grid gap-1.5">
         {seats.map((seat) => (
           <li
             key={seat.departmentId}
-            className="flex flex-wrap items-center gap-2 rounded border border-border px-2 py-1.5 text-xs"
+            className="flex flex-wrap items-center gap-2 rounded-md border border-border px-2 py-1.5 text-xs"
           >
             <MapPin className="size-3.5 shrink-0 text-muted-foreground" />
             <span className="font-medium">
               {seat.departmentName || t("Unnamed department", "Unbenannte Abteilung")}
             </span>
-            <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">
+            <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-micro">
               {seat.seatRole}
             </span>
             {/* What the seat role actually carries, read off the wire rather
@@ -356,7 +363,7 @@ function TenantRoles({ data }: { data: Governance }) {
         <p className="mt-2 text-sm text-muted-foreground">
           {t(
             "Your role does not include role:view, so which roles this company has invented and who holds them is not shown to you. What you yourself may do is at the top of this page and needs no permission at all.",
-            "Ihre Rolle enthält role:view nicht, deshalb wird Ihnen nicht angezeigt, welche Rollen dieses Unternehmen angelegt hat und wer sie hält. Was Sie selbst dürfen, steht oben auf dieser Seite und braucht keine Berechtigung.",
+            "Deine Rolle enthält role:view nicht, deshalb wird dir nicht angezeigt, welche Rollen dieses Unternehmen angelegt hat und wer sie hält. Was du selbst darfst, steht oben auf dieser Seite und braucht keine Berechtigung.",
           )}
         </p>
       </Panel>
@@ -369,7 +376,7 @@ function TenantRoles({ data }: { data: Governance }) {
         <div className="min-w-0">
           <PanelHeading
             title={t("Roles of this company", "Rollen dieses Unternehmens")}
-            hint={t("you define these", "von Ihnen definiert")}
+            hint={t("you define these", "von dir definiert")}
           />
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
             {t(
@@ -393,10 +400,11 @@ function TenantRoles({ data }: { data: Governance }) {
       </div>
 
       {isLoading && (
-        <div className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="size-4 animate-spin" />
-          {t("Loading roles…", "Rollen werden geladen…")}
-        </div>
+        <SkeletonRows
+          label={t("Loading roles…", "Rollen werden geladen…")}
+          rowClassName="h-10"
+          className="mt-4"
+        />
       )}
       {error && (
         <p className="mt-4 text-sm text-destructive">
@@ -409,7 +417,7 @@ function TenantRoles({ data }: { data: Governance }) {
           <p className="text-sm text-muted-foreground">
             {t(
               "This company has not defined any roles of its own. As long as everybody may do everything, you do not need any.",
-              "Dieses Unternehmen hat noch keine eigenen Rollen definiert. Solange jeder alles darf, brauchen Sie keine.",
+              "Dieses Unternehmen hat noch keine eigenen Rollen definiert. Solange jeder alles darf, brauchst du keine.",
             )}
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -553,12 +561,23 @@ function RoleDetail({
     setSeeded(roleId);
   }, [role, roleId, seeded]);
 
-  if (isLoading || !role) {
+  if (isLoading) {
     return (
-      <div className="mt-1 flex items-center gap-2 rounded-md border border-border px-3 py-3 text-sm text-muted-foreground">
-        <Loader2 className="size-4 animate-spin" />
-        {t("Loading the role…", "Rolle wird geladen…")}
-      </div>
+      <SkeletonRows
+        label={t("Loading the role…", "Rolle wird geladen…")}
+        className="mt-1 rounded-md border border-border px-3 py-3"
+      />
+    );
+  }
+
+  if (!role) {
+    return (
+      <p className="mt-1 rounded-md border border-border px-3 py-3 text-sm text-destructive">
+        {t(
+          "This role could not be loaded. Reload the page or pick it again.",
+          "Diese Rolle konnte nicht geladen werden. Lade die Seite neu oder wähle sie erneut.",
+        )}
+      </p>
     );
   }
 
@@ -569,7 +588,7 @@ function RoleDetail({
 
   return (
     <div className="mt-1 rounded-md border border-border bg-background/30 p-4">
-      <label className="block text-[10px] uppercase tracking-widest text-muted-foreground">
+      <label className="block micro-label">
         {t("What this role is for", "Wofür diese Rolle da ist")}
       </label>
       <input
@@ -698,7 +717,7 @@ function RoleDetail({
               role.holderCount > 0 && !reassignTo
                 ? t(
                     "Somebody holds this role. Choose where they go first.",
-                    "Diese Rolle wird gehalten. Wählen Sie zuerst, wohin die Halter wechseln.",
+                    "Diese Rolle wird gehalten. Wähle zuerst, wohin die Halter wechseln.",
                   )
                 : undefined
             }
@@ -714,7 +733,7 @@ function RoleDetail({
                 },
               )
             }
-            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-muted-foreground transition hover:text-[color:var(--status-error)] disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-muted-foreground transition hover:text-status-error disabled:opacity-50"
           >
             <Trash2 className="size-3.5" /> {t("Delete", "Löschen")}
           </button>
@@ -763,16 +782,14 @@ function RoleComposer({
       />
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
         <div>
-          <label className="block text-[10px] uppercase tracking-widest text-muted-foreground">
-            {t("Name", "Name")}
-          </label>
+          <label className="block micro-label">{t("Name", "Name")}</label>
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder={t("e.g. Sales sign-off", "z. B. Freigabe Vertrieb")}
             className="mt-1 w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
           />
-          <p className="mt-1 text-[11px] text-muted-foreground">
+          <p className="mt-1 text-xs text-muted-foreground">
             {t(
               "Cannot be changed later, and cannot be the name of a built-in role.",
               "Später nicht änderbar und nicht der Name einer eingebauten Rolle.",
@@ -780,9 +797,7 @@ function RoleComposer({
           </p>
         </div>
         <div>
-          <label className="block text-[10px] uppercase tracking-widest text-muted-foreground">
-            {t("Start from", "Vorlage")}
-          </label>
+          <label className="block micro-label">{t("Start from", "Vorlage")}</label>
           <select
             value={basedOn}
             onChange={(e) => {
@@ -804,7 +819,7 @@ function RoleComposer({
               </option>
             ))}
           </select>
-          <p className="mt-1 text-[11px] text-muted-foreground">
+          <p className="mt-1 text-xs text-muted-foreground">
             {t(
               "A template only — it ticks boxes now and is not stored. There is no inheritance.",
               "Nur eine Vorlage — sie setzt jetzt Häkchen und wird nicht gespeichert. Es gibt keine Vererbung.",
@@ -813,7 +828,7 @@ function RoleComposer({
         </div>
       </div>
       <div className="mt-3">
-        <label className="block text-[10px] uppercase tracking-widest text-muted-foreground">
+        <label className="block micro-label">
           {t("What this role is for", "Wofür diese Rolle da ist")}
         </label>
         <input
@@ -942,9 +957,7 @@ function PermissionPicker({
   return (
     <div className="mt-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-          {t("Rights", "Rechte")}
-        </div>
+        <div className="micro-label">{t("Rights", "Rechte")}</div>
         <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <input
             type="checkbox"
@@ -990,7 +1003,7 @@ function PermissionPicker({
                       <span className="min-w-0">
                         <span className="flex flex-wrap items-center gap-1.5">
                           <span>{label(entry)}</span>
-                          <span className="font-mono text-[10px] text-muted-foreground">
+                          <span className="font-mono text-xs text-muted-foreground">
                             {entry.permission}
                           </span>
                           {!entry.delegatable && (
@@ -998,12 +1011,12 @@ function PermissionPicker({
                           )}
                         </span>
                         {describe(entry) && (
-                          <span className="block text-[11px] text-muted-foreground">
+                          <span className="block text-xs text-muted-foreground">
                             {describe(entry)}
                           </span>
                         )}
                         {!entry.delegatable && entry.reason && (
-                          <span className="mt-0.5 block text-[11px] text-amber-600 dark:text-amber-400">
+                          <span className="mt-0.5 block text-xs text-status-warning-text">
                             {t("Not available: ", "Nicht vergebbar: ")}
                             {entry.reason}
                           </span>
@@ -1086,13 +1099,13 @@ function AssignPicker({
   return (
     <div className="mt-3 rounded-md border border-border p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <label className="text-[10px] uppercase tracking-widest text-muted-foreground">
+        <label className="micro-label">
           {t(
             `Assign ${roleLabel(roleName, t)} to`,
             `${roleLabel(roleName, t)} zuweisen an`,
           )}
         </label>
-        <span className="text-[11px] text-muted-foreground">
+        <span className="text-xs text-muted-foreground">
           {t(
             `${candidates.length} available · ${picked.size} selected`,
             `${candidates.length} verfügbar · ${picked.size} ausgewählt`,
@@ -1119,7 +1132,7 @@ function AssignPicker({
         <ul className="mt-2 max-h-56 space-y-0.5 overflow-y-auto pr-1">
           {shown.map((a) => (
             <li key={a.id}>
-              <label className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-sm hover:bg-muted/50">
+              <label className="flex cursor-pointer items-center gap-2 rounded-md px-1 py-1 text-sm hover:bg-muted/50">
                 <input
                   type="checkbox"
                   className="size-3.5 shrink-0 accent-[color:var(--primary)]"
@@ -1138,7 +1151,7 @@ function AssignPicker({
                 </span>
                 {/* What the assignment REPLACES. Absent means the token decides,
                     which is not "no permissions" and is said as itself. */}
-                <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">
+                <span className="ml-auto shrink-0 text-xs text-muted-foreground">
                   {a.roleName ? roleLabel(a.roleName, t) : t("from their sign-in", "aus ihrer Anmeldung")}
                 </span>
               </label>
@@ -1148,7 +1161,7 @@ function AssignPicker({
       )}
 
       {shown.length < candidates.length && (
-        <p className="mt-1 text-[11px] text-muted-foreground">
+        <p className="mt-1 text-xs text-muted-foreground">
           {t(
             `Showing ${shown.length} of ${candidates.length} — narrow the search.`,
             `${shown.length} von ${candidates.length} angezeigt — Suche eingrenzen.`,
@@ -1156,7 +1169,7 @@ function AssignPicker({
         </p>
       )}
       {truncated && (
-        <p className="mt-1 text-[11px] text-[color:var(--status-warning)]">
+        <p className="mt-1 text-xs text-status-warning-text">
           {t(
             `This tenant has more than ${ASSIGNEE_LIMIT} people, so this list is incomplete. Use oc8 member import --csv for the rest.`,
             `Dieser Mandant hat mehr als ${ASSIGNEE_LIMIT} Personen — diese Liste ist unvollständig. Für den Rest: oc8 member import --csv.`,
@@ -1213,7 +1226,7 @@ function Holders({
   }
   return (
     <div className="mt-3">
-      <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
+      <div className="micro-label">
         {total > holders.length
           ? t(
               `Held by ${total} — showing ${holders.length}`,
@@ -1240,7 +1253,7 @@ function Holders({
                   "Clear the assignment — their token decides again",
                   "Zuweisung entfernen — dann entscheidet wieder ihr Token",
                 )}
-                className="text-muted-foreground transition hover:text-[color:var(--status-error)]"
+                className="text-muted-foreground transition hover:text-status-error"
               >
                 <Minus className="size-3" />
               </button>
@@ -1281,12 +1294,14 @@ function BuiltInRoles({ data }: { data: Governance }) {
 
       {/* Wide content scrolls inside its own container; the page never does. */}
       <div className="mt-4 overflow-x-auto">
-        <table className="w-full min-w-[36rem] border-collapse text-sm">
-          <thead>
-            <tr className="border-b border-border">
-              <th className="px-2 py-2 text-left font-medium">{t("Permission", "Berechtigung")}</th>
+        <Table className="min-w-[36rem] border-collapse text-sm">
+          <TableHeader>
+            <TableRow className="border-b border-border hover:bg-transparent">
+              <TableHead className="px-2 py-2 micro-label">
+                {t("Permission", "Berechtigung")}
+              </TableHead>
               {humans.map((role) => (
-                <th
+                <TableHead
                   key={role.name}
                   className={`px-2 py-2 text-center font-mono text-xs font-medium ${
                     role.name === data.callerRole ? "text-foreground" : "text-muted-foreground"
@@ -1294,13 +1309,13 @@ function BuiltInRoles({ data }: { data: Governance }) {
                 >
                   {role.name}
                   {role.name === data.callerRole && (
-                    <span className="ml-1 text-[10px] uppercase">{t("you", "Sie")}</span>
+                    <span className="ml-1 micro-label text-foreground">{t("you", "du")}</span>
                   )}
-                </th>
+                </TableHead>
               ))}
-            </tr>
-          </thead>
-          <tbody>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {[...grouped.entries()].map(([resource, permissions]) => (
               <ResourceRows
                 key={resource}
@@ -1310,8 +1325,8 @@ function BuiltInRoles({ data }: { data: Governance }) {
                 held={held}
               />
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
     </Panel>
   );
@@ -1338,14 +1353,14 @@ function AgentRoles({ data }: { data: Governance }) {
       <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
         {t(
           "These describe what an AGENT may do in your systems. They are never given to a person, and they can only ever subtract: what an agent actually does is this, intersected with its department’s frame and with its own narrowing.",
-          "Diese beschreiben, was ein AGENT in Ihren Systemen tun darf. Sie werden nie an einen Menschen vergeben und können immer nur einschränken: Was ein Agent tatsächlich tut, ist diese Menge, geschnitten mit dem Rahmen seiner Abteilung und seiner eigenen Einschränkung.",
+          "Diese beschreiben, was ein AGENT in deinen Systemen tun darf. Sie werden nie an einen Menschen vergeben und können immer nur einschränken: Was ein Agent tatsächlich tut, ist diese Menge, geschnitten mit dem Rahmen seiner Abteilung und seiner eigenen Einschränkung.",
         )}
       </p>
       <ul className="mt-3 grid gap-1.5">
         {agents.map((role) => (
           <li
             key={role.name}
-            className="flex flex-wrap items-center gap-2 rounded border border-border px-3 py-2 text-sm"
+            className="flex flex-wrap items-center gap-2 rounded-md border border-border px-3 py-2 text-sm"
           >
             <Bot className="size-3.5 shrink-0 text-muted-foreground" />
             <span className="font-mono text-xs">{role.name}</span>
@@ -1362,8 +1377,8 @@ function AgentRoles({ data }: { data: Governance }) {
 function PanelHeading({ title, hint }: { title: string; hint: string }) {
   return (
     <div>
-      <div className="text-[10px] uppercase tracking-widest text-muted-foreground">{hint}</div>
-      <h2 className="text-sm font-medium">{title}</h2>
+      <div className="micro-label">{hint}</div>
+      <h2 className="font-serif text-xl">{title}</h2>
     </div>
   );
 }
@@ -1381,26 +1396,26 @@ function ResourceRows({
 }) {
   return (
     <>
-      <tr className="border-b border-border/50 bg-muted/30">
-        <td colSpan={roles.length + 1} className="px-2 py-1.5 font-mono text-xs">
+      <TableRow className="border-b border-border/50 bg-muted/30">
+        <TableCell colSpan={roles.length + 1} className="px-2 py-1.5 font-mono text-xs">
           {resource}
-        </td>
-      </tr>
+        </TableCell>
+      </TableRow>
       {permissions.map((permission) => (
-        <tr key={permission} className="border-b border-border/30">
-          <td className="px-2 py-1.5 pl-6 font-mono text-xs text-muted-foreground">
+        <TableRow key={permission} className="border-b border-border/30">
+          <TableCell className="px-2 py-1.5 pl-6 font-mono text-xs text-muted-foreground">
             {permission.split(":")[1]}
-          </td>
+          </TableCell>
           {roles.map((role) => (
-            <td key={role} className="px-2 py-1.5 text-center">
+            <TableCell key={role} className="px-2 py-1.5 text-center">
               {held.get(role)?.has(permission) ? (
-                <Check className="mx-auto size-3.5 text-emerald-500" aria-label="granted" />
+                <Check className="mx-auto size-3.5 text-status-running-text" aria-label="granted" />
               ) : (
                 <Minus className="mx-auto size-3.5 text-muted-foreground/40" aria-label="—" />
               )}
-            </td>
+            </TableCell>
           ))}
-        </tr>
+        </TableRow>
       ))}
     </>
   );

@@ -287,7 +287,7 @@ function NavItemLink({
           )}
         />
         {collapsed && hasBadge && (
-          <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-[color:var(--status-warning)]" />
+          <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-status-warning" />
         )}
       </span>
       {!collapsed && (
@@ -295,7 +295,7 @@ function NavItemLink({
           <span className="truncate">{item.label}</span>
           {item.adornment}
           {hasBadge && (
-            <span className="ml-auto grid h-5 min-w-5 place-items-center rounded-full bg-[color:var(--status-warning)] px-1 text-[10px] font-semibold text-black">
+            <span className="ml-auto grid h-5 min-w-5 place-items-center rounded-full bg-status-warning px-1 text-micro font-semibold text-black">
               {item.badge}
             </span>
           )}
@@ -476,7 +476,7 @@ export function EditionCapabilityGate({ path, children }: { path: string; childr
     <div role="alert" className="mx-auto max-w-md py-16 text-center text-sm text-muted-foreground">
       {t(
         "This feature is not available for your organisation.",
-        "Diese Funktion ist für Ihre Organisation nicht verfügbar.",
+        "Diese Funktion ist für deine Organisation nicht verfügbar.",
       )}
     </div>
   );
@@ -539,10 +539,10 @@ export function AppShell() {
         size={16}
       />
       {copilotProfile?.status === "working" && (
-        <span className="h-1.5 w-1.5 rounded-full bg-[color:var(--status-running)]" />
+        <span className="h-1.5 w-1.5 rounded-full bg-status-running" />
       )}
       {copilotProfile?.status === "waiting" && (
-        <span className="h-1.5 w-1.5 rounded-full bg-[color:var(--status-warning)]" />
+        <span className="h-1.5 w-1.5 rounded-full bg-status-warning" />
       )}
     </span>
   );
@@ -736,7 +736,7 @@ export function AppShell() {
     if (p === "/")
       return t(
         "Your company as a living floor — each department a room.",
-        "Ihr Unternehmen als lebendiges Stockwerk — jede Abteilung ein Raum.",
+        "Dein Unternehmen als lebendiges Stockwerk — jede Abteilung ein Raum.",
       );
     // The departments you cover, so the page says whose desk it is before you
     // read a row. Names, not ids, and never a hardcoded department: they come
@@ -796,12 +796,12 @@ export function AppShell() {
     if (p.startsWith("/governance"))
       return t(
         "Who may do what — and why you were refused.",
-        "Wer was darf — und warum Sie abgewiesen wurden.",
+        "Wer was darf — und warum du abgewiesen wurdest.",
       );
     if (p.startsWith("/members"))
       return t(
         "Manage user roles for your organization.",
-        "Verwalten Sie Benutzerrollen für Ihre Organisation.",
+        "Verwalte Benutzerrollen für deine Organisation.",
       );
     if (p.startsWith("/models"))
       return t("LLM providers, costs, and assignments.", "LLM-Anbieter, Kosten und Zuweisungen.");
@@ -867,7 +867,7 @@ export function AppShell() {
                 className="h-9 w-auto shrink-0 select-none"
                 draggable={false}
               />
-              <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+              <div className="flex items-center gap-2 micro-label">
                 <span>{t("Control Panel", "Leitstand")}</span>
               </div>
             </>
@@ -917,14 +917,14 @@ export function AppShell() {
           )}
         >
           {collapsed ? (
-            <span className="status-dot text-[color:var(--status-running)] bg-[color:var(--status-running)]" />
+            <span className="status-dot text-status-running-text bg-status-running" />
           ) : (
             <div className="flex items-center justify-between">
               <span className="inline-flex items-center gap-2">
-                <span className="status-dot text-[color:var(--status-running)] bg-[color:var(--status-running)]" />
+                <span className="status-dot text-status-running-text bg-status-running" />
                 {t("All systems operational", "Alle Systeme betriebsbereit")}
               </span>
-              <span className="text-[10px]">v0.9</span>
+              <span className="text-xs">v0.9</span>
             </div>
           )}
         </div>
@@ -967,7 +967,7 @@ export function AppShell() {
               was meant to. A real minimum forces the WHOLE block onto its own
               line once the row is actually too narrow for both. */}
           <div className="min-w-[12rem] flex-1">
-            <h1 className="font-serif text-2xl leading-none md:text-3xl">{pageTitle(pathname)}</h1>
+            <h1 className="font-serif text-2xl leading-none">{pageTitle(pathname)}</h1>
             <p className="mt-1 text-sm text-muted-foreground">{pageSubtitle(pathname)}</p>
           </div>
           <GlobalSearch />
@@ -993,7 +993,7 @@ export function AppShell() {
             <ShieldCheck className="h-4 w-4" />
             <span>{t("My work", "Meine Arbeit")}</span>
             {workCount > 0 && (
-              <span className="grid h-5 min-w-5 place-items-center rounded-full bg-[color:var(--status-warning)] px-1 text-[10px] font-semibold text-black">
+              <span className="grid h-5 min-w-5 place-items-center rounded-full bg-status-warning px-1 text-micro font-semibold text-black">
                 {workCount}
               </span>
             )}
@@ -1005,7 +1005,7 @@ export function AppShell() {
           >
             <ShieldCheck className="h-4 w-4" />
             {workCount > 0 && (
-              <span className="absolute -right-1 -top-1 grid h-5 min-w-5 place-items-center rounded-full bg-[color:var(--status-warning)] px-1 text-[10px] font-semibold text-black">
+              <span className="absolute -right-1 -top-1 grid h-5 min-w-5 place-items-center rounded-full bg-status-warning px-1 text-micro font-semibold text-black">
                 {workCount}
               </span>
             )}
@@ -1018,7 +1018,7 @@ export function AppShell() {
           >
             <Bell className="h-4 w-4" />
             {notifCount > 0 && (
-              <span className="absolute -right-1 -top-1 grid h-5 min-w-5 place-items-center rounded-full bg-[color:var(--status-warning)] px-1 text-[10px] font-semibold text-black">
+              <span className="absolute -right-1 -top-1 grid h-5 min-w-5 place-items-center rounded-full bg-status-warning px-1 text-micro font-semibold text-black">
                 {notifCount}
               </span>
             )}
@@ -1072,7 +1072,7 @@ export function AppShell() {
             <DropdownMenu>
               <DropdownMenuTrigger
                 aria-label={t("Change language", "Sprache ändern")}
-                className="ml-1 inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-[11px] font-medium text-muted-foreground transition hover:text-foreground focus:outline-none"
+                className="ml-1 inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs font-medium text-muted-foreground transition hover:text-foreground focus:outline-none"
               >
                 <span className="text-sm leading-none">
                   {locales.find((l) => l.code === lang)?.flag}
@@ -1081,9 +1081,7 @@ export function AppShell() {
                 <ChevronDown className="h-3 w-3" />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-48">
-                <DropdownMenuLabel className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                  Sprache · Language
-                </DropdownMenuLabel>
+                <DropdownMenuLabel className="micro-label">Sprache · Language</DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 {locales.map((l) => (
                   <DropdownMenuItem
@@ -1099,9 +1097,7 @@ export function AppShell() {
                   >
                     <span className="text-base leading-none">{l.flag}</span>
                     <span className="flex-1">{l.nativeName}</span>
-                    <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                      {l.code}
-                    </span>
+                    <span className="micro-label">{l.code}</span>
                     {lang === l.code && <Check className="h-3.5 w-3.5 text-primary" />}
                   </DropdownMenuItem>
                 ))}

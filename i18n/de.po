@@ -35,7 +35,7 @@ msgid "A role is a name and a set of rights — nothing else. It applies company
 msgstr "Eine Rolle ist ein Name und eine Menge von Rechten — mehr nicht. Sie gilt unternehmensweit: WO jemand arbeitet, entscheidet sein Platz in einer Abteilung, nicht seine Rolle. Eine Änderung hier gilt ab der nächsten Anfrage jedes Halters, mit dem Token, das er ohnehin schon trägt."
 
 msgid "A seat is granted per department by an administrator and takes effect on your next request — no new sign-in."
-msgstr "Ein Platz wird je Abteilung von einer Administratorin vergeben und gilt ab Ihrer nächsten Anfrage — ohne neue Anmeldung."
+msgstr "Ein Platz wird je Abteilung von einer Administratorin vergeben und gilt ab deiner nächsten Anfrage — ohne neue Anmeldung."
 
 msgid "A template only — it ticks boxes now and is not stored. There is no inheritance."
 msgstr "Nur eine Vorlage — sie setzt jetzt Häkchen und wird nicht gespeichert. Es gibt keine Vererbung."
@@ -458,7 +458,7 @@ msgid "Bar"
 msgstr "Balken"
 
 msgid "Basic details of your workspace."
-msgstr "Grunddaten Ihres Arbeitsbereichs."
+msgstr "Grunddaten deines Arbeitsbereichs."
 
 msgid "Basics"
 msgstr "Basis"
@@ -575,10 +575,10 @@ msgid "Check a box to allow/deny it right away; ✓ interprets a Definition text
 msgstr "Häkchen setzen erlaubt/verbietet sofort; ✓ übersetzt einen Definitionstext in eine strukturierte Regel, die du übernimmst oder verwirfst. So oder so speichert erst der Speichern-Button des Panels."
 
 msgid "Choose a company, or create a safely isolated one for local testing."
-msgstr "Wählen Sie eine Firma oder legen Sie eine isolierte Testfirma an."
+msgstr "Wähle eine Firma oder lege eine isolierte Testfirma an."
 
 msgid "Choose a department."
-msgstr "Wählen Sie ein Department."
+msgstr "Wähle ein Department."
 
 msgid "Choose a starting layout"
 msgstr "Wähle eine Startanordnung"
@@ -710,7 +710,7 @@ msgid "Copy"
 msgstr "Kopieren"
 
 msgid "Copy this key now — it will not be shown again."
-msgstr "Kopieren Sie diesen Key jetzt — er wird nicht erneut angezeigt."
+msgstr "Kopiere diesen Key jetzt — er wird nicht erneut angezeigt."
 
 msgid "Copy user ID"
 msgstr "Benutzer-ID kopieren"
@@ -785,7 +785,7 @@ msgid "Could not create the task"
 msgstr "Aufgabe konnte nicht erstellt werden"
 
 msgid "Could not create user. Try again."
-msgstr "Benutzer konnte nicht angelegt werden. Versuchen Sie es erneut."
+msgstr "Benutzer konnte nicht angelegt werden. Versuche es erneut."
 
 msgid "Could not create."
 msgstr "Konnte nicht angelegt werden."
@@ -1034,7 +1034,7 @@ msgid "Create a local company"
 msgstr "Lokale Firma anlegen"
 
 msgid "Create a room for a new team. You can assign agents later."
-msgstr "Legen Sie einen Raum für ein neues Team an. Agenten können später zugewiesen werden."
+msgstr "Lege einen Raum für ein neues Team an. Agenten können später zugewiesen werden."
 
 msgid "Create Account"
 msgstr "Konto erstellen"
@@ -1094,7 +1094,7 @@ msgid "Cross-department handoffs — contracts, gates, provenance."
 msgstr "Abteilungsübergreifende Übergaben — Verträge, Gates, Herkunft."
 
 msgid "CSV downloaded to your device."
-msgstr "CSV auf Ihr Gerät geladen."
+msgstr "CSV auf dein Gerät geladen."
 
 msgid "Current password"
 msgstr "Aktuelles Passwort"
@@ -1355,7 +1355,7 @@ msgid "e.g. Sales sign-off"
 msgstr "z. B. Freigabe Vertrieb"
 
 msgid "Each code works once. Store them somewhere safe — you will not see them again."
-msgstr "Jeder Code funktioniert einmal. Bewahren Sie sie sicher auf — Sie sehen sie nicht erneut."
+msgstr "Jeder Code funktioniert einmal. Bewahre sie sicher auf — du siehst sie nicht erneut."
 
 msgid "Each person changes their email and password in their own account."
 msgstr "Jede Person ändert ihre E-Mail-Adresse und ihr Passwort selbst in ihrem eigenen Konto."
@@ -1421,10 +1421,10 @@ msgid "Enforced by the platform — a hard limit pauses new tasks with budget_ex
 msgstr "Vom System durchgesetzt — ein hartes Limit pausiert neue Tasks mit budget_exceeded."
 
 msgid "Enrol somebody by their sign-in identity. They can also be added automatically the first time they sign in — this just lets you set them up (and assign a role) ahead of time."
-msgstr "Legen Sie jemanden über seine Anmelde-Identität an. Personen werden auch automatisch beim ersten Anmelden hinzugefügt — so können Sie vorab einrichten (und eine Rolle zuweisen)."
+msgstr "Lege jemanden über seine Anmelde-Identität an. Personen werden auch automatisch beim ersten Anmelden hinzugefügt — so kannst du vorab einrichten (und eine Rolle zuweisen)."
 
 msgid "Enter a sign-in email or username."
-msgstr "Geben Sie eine Anmelde-E-Mail oder einen Benutzernamen ein."
+msgstr "Gib eine Anmelde-E-Mail oder einen Benutzernamen ein."
 
 msgid "Enter manually"
 msgstr "Manuell eingeben"
@@ -1445,10 +1445,10 @@ msgid "Enter valid, non-negative prices."
 msgstr "Bitte gültige, nicht-negative Preise eingeben."
 
 msgid "Enter your authentication code"
-msgstr "Geben Sie Ihren Authentifizierungscode ein"
+msgstr "Gib deinen Authentifizierungscode ein"
 
 msgid "Enter your credentials to continue."
-msgstr "Geben Sie Ihre Zugangsdaten ein."
+msgstr "Gib deine Zugangsdaten ein."
 
 msgid "Enter your office"
 msgstr "Büro betreten"
@@ -1694,7 +1694,7 @@ msgid "Hire agent"
 msgstr "Agent einstellen"
 
 msgid "Hire an agent into it from the Agents page."
-msgstr "Stellen Sie einen Agenten dafür auf der Agenten-Seite ein."
+msgstr "Stelle einen Agenten dafür auf der Agenten-Seite ein."
 
 msgid "History"
 msgstr "Verlauf"
@@ -1787,10 +1787,10 @@ msgid "Installing…"
 msgstr "Wird installiert …"
 
 msgid "Instance already initialized. Please log in."
-msgstr "Instanz bereits initialisiert. Bitte melden Sie sich an."
+msgstr "Instanz bereits initialisiert. Bitte melde dich an."
 
 msgid "Instance not yet initialized. Please complete setup."
-msgstr "Instanz noch nicht initialisiert. Bitte führen Sie das Setup durch."
+msgstr "Instanz noch nicht initialisiert. Bitte führe das Setup durch."
 
 msgid "Instructions"
 msgstr ""
@@ -1883,7 +1883,7 @@ msgid "Let the copilot read this agent's instructions and suggest guardrails"
 msgstr "Den Copilot die Instruction dieses Agenten lesen und Guardrails vorschlagen lassen"
 
 msgid "Lets an external tool call oc8's Copilot over MCP as you, with your own permissions."
-msgstr "Erlaubt einem externen Tool, oc8s Copilot über MCP als Sie aufzurufen, mit Ihren eigenen Berechtigungen."
+msgstr "Erlaubt einem externen Tool, oc8s Copilot über MCP als dich aufzurufen, mit deinen eigenen Berechtigungen."
 
 msgid "Lets them sign in immediately. Min. 8 characters."
 msgstr "Ermöglicht sofortige Anmeldung. Mind. 8 Zeichen."
@@ -2024,10 +2024,10 @@ msgid "Mail server updated"
 msgstr "Mailserver aktualisiert"
 
 msgid "Manage user roles for your organization."
-msgstr "Verwalten Sie Benutzerrollen für Ihre Organisation."
+msgstr "Verwalte Benutzerrollen für deine Organisation."
 
 msgid "Managed by your identity provider; not editable here."
-msgstr "Wird von Ihrem Identity-Provider verwaltet; hier nicht bearbeitbar."
+msgstr "Wird von deinem Identity-Provider verwaltet; hier nicht bearbeitbar."
 
 msgid "Manages agents"
 msgstr "Verwaltet Agenten"
@@ -2303,13 +2303,13 @@ msgid "No knowledge bases match your search."
 msgstr "Keine Wissensbasen passen zur Suche."
 
 msgid "No limits set yet. Add one to protect your budget."
-msgstr "Noch keine Limits gesetzt. Fügen Sie eines hinzu, um Ihr Budget zu schützen."
+msgstr "Noch keine Limits gesetzt. Füge eines hinzu, um dein Budget zu schützen."
 
 msgid "No locally authored skills to export."
 msgstr "Keine lokal erstellten Skills zum Exportieren."
 
 msgid "No mail server is configured for this instance, so the invite could not be emailed. Copy this link and send it to the new user yourself — it lets them set their own password."
-msgstr "Für diese Instanz ist kein Mailserver konfiguriert, daher konnte die Einladung nicht per E-Mail versendet werden. Kopieren Sie diesen Link und senden Sie ihn selbst an den neuen Benutzer — damit kann er sein eigenes Passwort festlegen."
+msgstr "Für diese Instanz ist kein Mailserver konfiguriert, daher konnte die Einladung nicht per E-Mail versendet werden. Kopiere diesen Link und sende ihn selbst an den neuen Benutzer — damit kann er sein eigenes Passwort festlegen."
 
 msgid "No MCP connections yet."
 msgstr "Noch keine MCP-Verbindungen."
@@ -2390,7 +2390,7 @@ msgid "no version"
 msgstr "keine Version"
 
 msgid "Nobody has signed in to this company yet — use quick access below."
-msgstr "In dieser Firma hat sich noch niemand angemeldet — nutzen Sie den Schnellzugriff unten."
+msgstr "In dieser Firma hat sich noch niemand angemeldet — nutze den Schnellzugriff unten."
 
 msgid "Nobody holds this role yet."
 msgstr "Diese Rolle hält bisher niemand."
@@ -2681,7 +2681,7 @@ msgid "Quick check only covers entries since the last checkpoint; full check re-
 msgstr "Die Schnellprüfung erfasst nur Einträge seit dem letzten Prüfpunkt; die vollständige Prüfung überprüft die gesamte Kette von Beginn an."
 
 msgid "Re-checking alone will not clear this. If tamper-proofing was only just switched on for this deployment, an administrator has to run the one-off `oc8 audit-adopt-checkpoints` command to seal the existing logs, and then a full check here. If it was already switched on, the seal was removed or the entries were rewritten — treat this as a security event and escalate."
-msgstr "Eine erneute Prüfung allein ändert daran nichts. Falls der Manipulationsschutz für diese Installation gerade erst aktiviert wurde, muss eine Administratorin den einmaligen Befehl `oc8 audit-adopt-checkpoints` ausführen, um die vorhandenen Protokolle zu versiegeln, und danach hier eine vollständige Prüfung starten. War er bereits aktiv, wurde das Siegel entfernt oder die Einträge wurden umgeschrieben — behandeln Sie dies als Sicherheitsvorfall und eskalieren Sie."
+msgstr "Eine erneute Prüfung allein ändert daran nichts. Falls der Manipulationsschutz für diese Installation gerade erst aktiviert wurde, muss eine Administratorin den einmaligen Befehl `oc8 audit-adopt-checkpoints` ausführen, um die vorhandenen Protokolle zu versiegeln, und danach hier eine vollständige Prüfung starten. War er bereits aktiv, wurde das Siegel entfernt oder die Einträge wurden umgeschrieben — behandle dies als Sicherheitsvorfall und eskaliere."
 
 msgid "Re-sync"
 msgstr "Re-sync"
@@ -2804,7 +2804,7 @@ msgid "Rename department"
 msgstr "Abteilung umbenennen"
 
 msgid "Repeat your password"
-msgstr "Wiederholen Sie Ihr Passwort"
+msgstr "Wiederhole dein Passwort"
 
 msgid "Report exported"
 msgstr "Bericht exportiert"
@@ -2951,7 +2951,7 @@ msgid "Save sampling settings"
 msgstr "Sampling-Einstellungen speichern"
 
 msgid "Save your backup codes"
-msgstr "Speichern Sie Ihre Backup-Codes"
+msgstr "Speichere deine Backup-Codes"
 
 msgid "Saved"
 msgstr "Gespeichert"
@@ -2969,7 +2969,7 @@ msgid "Say hello to get started."
 msgstr "Sag Hallo, um loszulegen."
 
 msgid "Scan with your authenticator app"
-msgstr "Mit Ihrer Authenticator-App scannen"
+msgstr "Mit deiner Authenticator-App scannen"
 
 msgid "schedule"
 msgstr "Zeitplan"
@@ -3095,7 +3095,7 @@ msgid "Sensitivity"
 msgstr "Vertraulichkeit"
 
 msgid "Set a new password so this person can sign in. There is no way to view their current password."
-msgstr "Vergeben Sie ein neues Passwort, damit sich diese Person anmelden kann. Das aktuelle Passwort kann nicht eingesehen werden."
+msgstr "Vergib ein neues Passwort, damit sich diese Person anmelden kann. Das aktuelle Passwort kann nicht eingesehen werden."
 
 msgid "Set automatically from the selected model"
 msgstr "Wird automatisch anhand des gewählten Modells gesetzt"
@@ -3107,7 +3107,7 @@ msgid "Set password"
 msgstr "Passwort setzen"
 
 msgid "Set up your first administrator account to get started."
-msgstr "Richten Sie Ihr erstes Administrator-Konto ein."
+msgstr "Richte dein erstes Administrator-Konto ein."
 
 msgid "Setting…"
 msgstr "Wird gesetzt…"
@@ -3215,7 +3215,7 @@ msgid "soft"
 msgstr "weich"
 
 msgid "Somebody holds this role. Choose where they go first."
-msgstr "Diese Rolle wird gehalten. Wählen Sie zuerst, wohin die Halter wechseln."
+msgstr "Diese Rolle wird gehalten. Wähle zuerst, wohin die Halter wechseln."
 
 msgid "Something went wrong"
 msgstr "Etwas ist schiefgelaufen"
@@ -3440,7 +3440,7 @@ msgid "The user list could not be loaded."
 msgstr "Die Benutzerliste konnte nicht geladen werden."
 
 msgid "These describe what an AGENT may do in your systems. They are never given to a person, and they can only ever subtract: what an agent actually does is this, intersected with its department’s frame and with its own narrowing."
-msgstr "Diese beschreiben, was ein AGENT in Ihren Systemen tun darf. Sie werden nie an einen Menschen vergeben und können immer nur einschränken: Was ein Agent tatsächlich tut, ist diese Menge, geschnitten mit dem Rahmen seiner Abteilung und seiner eigenen Einschränkung."
+msgstr "Diese beschreiben, was ein AGENT in deinen Systemen tun darf. Sie werden nie an einen Menschen vergeben und können immer nur einschränken: Was ein Agent tatsächlich tut, ist diese Menge, geschnitten mit dem Rahmen seiner Abteilung und seiner eigenen Einschränkung."
 
 msgid "These five roles ship with the product, so no request’s authorization depends on a database row existing. They cannot be changed here — a role of your own, above, is how you say something they do not."
 msgstr "Diese fünf Rollen liefert das Produkt mit, damit keine Autorisierung davon abhängt, dass eine Datenbankzeile existiert. Sie sind hier nicht änderbar — eine eigene Rolle, oben, ist der Weg, etwas zu sagen, was sie nicht sagen."
@@ -3476,7 +3476,7 @@ msgid "This cannot be undone."
 msgstr "Das kann nicht rückgängig gemacht werden."
 
 msgid "This company has not defined any roles of its own. As long as everybody may do everything, you do not need any."
-msgstr "Dieses Unternehmen hat noch keine eigenen Rollen definiert. Solange jeder alles darf, brauchen Sie keine."
+msgstr "Dieses Unternehmen hat noch keine eigenen Rollen definiert. Solange jeder alles darf, brauchst du keine."
 
 msgid "This deletes every agent, run and knowledge item this company currently has and replaces them with the contents of the uploaded file. It cannot be undone."
 msgstr "Dies löscht jeden Agenten, jeden Lauf und jeden Wissenseintrag, den dieses Unternehmen derzeit hat, und ersetzt sie durch den Inhalt der hochgeladenen Datei. Dies kann nicht rückgängig gemacht werden."
@@ -3485,7 +3485,7 @@ msgid "This department has no team lead to receive the task."
 msgstr "Diese Abteilung hat keine Teamleitung, die die Aufgabe annehmen kann."
 
 msgid "This filter produces too many results. Narrow the date range, choose a coarser grouping, or filter by an agent or department."
-msgstr "Dieser Filter liefert zu viele Ergebnisse. Grenzen Sie den Zeitraum ein, wählen Sie eine gröbere Gruppierung oder filtern Sie nach Agent oder Abteilung."
+msgstr "Dieser Filter liefert zu viele Ergebnisse. Grenze den Zeitraum ein, wähle eine gröbere Gruppierung oder filtere nach Agent oder Abteilung."
 
 msgid "This function is read-only in the plugin's manifest; it has no modify action."
 msgstr "Diese Funktion ist laut Plugin-Manifest nur lesend; es gibt keine Verändern-Aktion dafür."
@@ -3695,7 +3695,7 @@ msgid "Usage (est.)"
 msgstr "Verbrauch (geschätzt)"
 
 msgid "Usage below is an estimate from the editable pricing model (see Models), not the platform's recorded spend — see the Overview/By Agent/By Department tabs for metered figures."
-msgstr "Der Verbrauch unten ist eine Schätzung anhand des editierbaren Preismodells (siehe Modelle), nicht die vom System erfassten Ausgaben — gemessene Werte finden Sie unter Übersicht/Pro Agent/Pro Abteilung."
+msgstr "Der Verbrauch unten ist eine Schätzung anhand des editierbaren Preismodells (siehe Modelle), nicht die vom System erfassten Ausgaben — gemessene Werte findest du unter Übersicht/Pro Agent/Pro Abteilung."
 
 msgid "USD per 1M tokens — editable"
 msgstr "USD pro 1 Mio. Token — bearbeitbar"
@@ -3713,7 +3713,7 @@ msgid "Use this model for the Copilot"
 msgstr "Dieses Modell für den Copilot nutzen"
 
 msgid "Use your authenticator app, or a backup code."
-msgstr "Verwenden Sie Ihre Authenticator-App oder einen Backup-Code."
+msgstr "Verwende deine Authenticator-App oder einen Backup-Code."
 
 msgid "Used by"
 msgstr "Verwendet von"
@@ -3857,7 +3857,7 @@ msgid "Which visual components (charts, tables, record cards) may be used when r
 msgstr "Welche visuellen Komponenten (Diagramme, Tabellen, Datensatz-Karten) bei Antworten verwendet werden dürfen."
 
 msgid "Who may do what — and why you were refused."
-msgstr "Wer was darf — und warum Sie abgewiesen wurden."
+msgstr "Wer was darf — und warum du abgewiesen wurdest."
 
 msgid "Who watches the thinking of"
 msgstr "Wer überwacht das Denken von"
@@ -3875,7 +3875,7 @@ msgid "Yes, approve"
 msgstr "Ja, zustimmen"
 
 msgid "you"
-msgstr "Sie"
+msgstr "du"
 
 msgid "You are not assigned to a department"
 msgstr "Du bist keiner Abteilung zugeordnet"
@@ -3896,22 +3896,22 @@ msgid "You can rearrange, resize, or remove any tile afterwards."
 msgstr "Du kannst danach jede Kachel verschieben, verändern oder entfernen."
 
 msgid "you define these"
-msgstr "von Ihnen definiert"
+msgstr "von dir definiert"
 
 msgid "You don't have access to Copilot chat."
 msgstr "Du hast keinen Zugriff auf den Copilot-Chat."
 
 msgid "You don't have permission to view this content."
-msgstr "Sie haben keine Berechtigung, diesen Inhalt anzuzeigen."
+msgstr "Du hast keine Berechtigung, diesen Inhalt anzuzeigen."
 
 msgid "You hold no seat in any department."
-msgstr "Sie haben in keiner Abteilung einen Platz."
+msgstr "Du hast in keiner Abteilung einen Platz."
 
 msgid "You may not have permission to view this page, or the server could not be reached."
-msgstr "Möglicherweise fehlt Ihnen die Berechtigung für diese Seite, oder der Server war nicht erreichbar."
+msgstr "Möglicherweise fehlt dir die Berechtigung für diese Seite, oder der Server war nicht erreichbar."
 
 msgid "Your access"
-msgstr "Ihr Zugriff"
+msgstr "Dein Zugriff"
 
 msgid "Your answer"
 msgstr "Deine Antwort"
@@ -3920,13 +3920,13 @@ msgid "Your answer…"
 msgstr "Deine Antwort…"
 
 msgid "Your assigned role could not be read from the database just now. What follows is what your token carries; an assignment on top of it would not be shown. Nothing was changed."
-msgstr "Ihre zugewiesene Rolle konnte gerade nicht aus der Datenbank gelesen werden. Unten steht, was Ihr Token trägt; eine darüberliegende Zuweisung wird nicht angezeigt. Es wurde nichts geändert."
+msgstr "Deine zugewiesene Rolle konnte gerade nicht aus der Datenbank gelesen werden. Unten steht, was dein Token trägt; eine darüberliegende Zuweisung wird nicht angezeigt. Es wurde nichts geändert."
 
 msgid "Your company"
 msgstr "Dein Unternehmen"
 
 msgid "Your company as a living floor — each department a room."
-msgstr "Ihr Unternehmen als lebendiges Stockwerk — jede Abteilung ein Raum."
+msgstr "Dein Unternehmen als lebendiges Stockwerk — jede Abteilung ein Raum."
 
 msgid "Your dashboard could not be loaded."
 msgstr "Dein Dashboard konnte nicht geladen werden."
@@ -3938,16 +3938,16 @@ msgid "Your email has been updated."
 msgstr "Deine E-Mail wurde aktualisiert."
 
 msgid "Your model providers. Add more via the wizard — cloud accounts or local servers."
-msgstr "Ihre Modellanbieter. Weitere über den Assistenten hinzufügen — Cloud-Konten oder lokale Server."
+msgstr "Deine Modellanbieter. Weitere über den Assistenten hinzufügen — Cloud-Konten oder lokale Server."
 
 msgid "Your name"
-msgstr "Ihr Name"
+msgstr "Dein Name"
 
 msgid "Your office is open!"
 msgstr "Dein Büro ist eröffnet!"
 
 msgid "Your password"
-msgstr "Ihr Passwort"
+msgstr "Dein Passwort"
 
 msgid "Your queue could not be loaded"
 msgstr "Deine Liste konnte nicht geladen werden"
@@ -3956,22 +3956,22 @@ msgid "Your role does not include agent:manage, so this assignment is read-only 
 msgstr "Ihre Rolle enthält agent:manage nicht, deshalb ist diese Zuweisung für Sie schreibgeschützt."
 
 msgid "Your role does not include agent:manage, so this field is read-only for you."
-msgstr "Ihre Rolle enthält agent:manage nicht, deshalb ist dieses Feld für Sie schreibgeschützt."
+msgstr "Deine Rolle enthält agent:manage nicht, deshalb ist dieses Feld für dich schreibgeschützt."
 
 msgid "Your role does not include member:manage, so you cannot manage users."
-msgstr "Ihre Rolle enthält member:manage nicht, daher können Sie Benutzer nicht verwalten."
+msgstr "Deine Rolle enthält member:manage nicht, daher kannst du Benutzer nicht verwalten."
 
 msgid "Your role does not include member:manage, so you cannot manage users. Ask your administrator for access."
-msgstr "Ihre Rolle enthält member:manage nicht, daher können Sie Benutzer nicht verwalten. Bitten Sie Ihren Administrator um Zugriff."
+msgstr "Deine Rolle enthält member:manage nicht, daher kannst du Benutzer nicht verwalten. Bitte deinen Administrator um Zugriff."
 
 msgid "Your role does not include role:view, so which roles this company has invented and who holds them is not shown to you. What you yourself may do is at the top of this page and needs no permission at all."
-msgstr "Ihre Rolle enthält role:view nicht, deshalb wird Ihnen nicht angezeigt, welche Rollen dieses Unternehmen angelegt hat und wer sie hält. Was Sie selbst dürfen, steht oben auf dieser Seite und braucht keine Berechtigung."
+msgstr "Deine Rolle enthält role:view nicht, deshalb wird dir nicht angezeigt, welche Rollen dieses Unternehmen angelegt hat und wer sie hält. Was du selbst darfst, steht oben auf dieser Seite und braucht keine Berechtigung."
 
 msgid "Your role does not include secret:view."
-msgstr "Ihre Rolle enthält secret:view nicht."
+msgstr "Deine Rolle enthält secret:view nicht."
 
 msgid "Your seats"
-msgstr "Ihre Plätze"
+msgstr "Deine Plätze"
 
 msgid "Your work is next door"
 msgstr "Deine Arbeit liegt nebenan"

@@ -30,6 +30,7 @@ import {
   useUpdateOrganizationSettings,
   type CredentialDTO,
 } from "@/lib/hooks";
+import { SkeletonRows } from "@/components/skeleton-rows";
 
 export const Route = createFileRoute("/settings")({
   component: SettingsPage,
@@ -62,7 +63,7 @@ function SettingsPage() {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="font-serif text-lg">{t("Guided setup", "Geführte Einrichtung")}</h2>
+              <h2 className="font-serif text-xl">{t("Guided setup", "Geführte Einrichtung")}</h2>
               <button
                 type="button"
                 onClick={() => setSetupOpen(false)}
@@ -150,7 +151,7 @@ function PilotSetup({ onOpenWizard }: { onOpenWizard: () => void }) {
               className="flex items-center gap-2 rounded-md border border-border bg-background/30 px-3 py-2 text-sm transition hover:border-primary/40"
             >
               {step.done ? (
-                <CheckCircle2 className="h-4 w-4 shrink-0 text-[color:var(--status-running)]" />
+                <CheckCircle2 className="h-4 w-4 shrink-0 text-status-running-text" />
               ) : (
                 <Circle className="h-4 w-4 shrink-0 text-muted-foreground" />
               )}
@@ -159,7 +160,7 @@ function PilotSetup({ onOpenWizard }: { onOpenWizard: () => void }) {
           </li>
         ))}
       </ol>
-      <p className="mt-3 text-[11px] text-muted-foreground">
+      <p className="mt-3 text-xs text-muted-foreground">
         {t(
           "The guided setup configures the tenant you are signed into. New tenants are deliberately provisioned by the administrator CLI so the application role never receives cross-tenant write authority.",
           "Die geführte Einrichtung konfiguriert den angemeldeten Mandanten. Neue Mandanten werden bewusst über die Administrator-CLI provisioniert, damit die App-Rolle nie mandantenübergreifende Schreibrechte erhält.",
@@ -200,11 +201,18 @@ function OrganizationPanel() {
     <Panel id="organization" className="p-5">
       <h3 className="font-serif text-lg">{t("Organization", "Organisation")}</h3>
       <p className="mt-1 text-xs text-muted-foreground">
-        {t("Basic details of your workspace.", "Grunddaten Ihres Arbeitsbereichs.")}
+        {t("Basic details of your workspace.", "Grunddaten deines Arbeitsbereichs.")}
       </p>
-      {isLoading && <Loader2 className="mt-5 h-4 w-4 animate-spin text-muted-foreground" />}
+      {isLoading && (
+        <SkeletonRows
+          label={t("Loading…", "Wird geladen…")}
+          rows={2}
+          rowClassName="h-9"
+          className="mt-5"
+        />
+      )}
       {error && (
-        <p className="mt-4 text-sm text-[color:var(--status-error)]">
+        <p className="mt-4 text-sm text-status-error">
           {t(
             "Could not load organization settings.",
             "Organisationseinstellungen konnten nicht geladen werden.",
@@ -243,7 +251,7 @@ function OrganizationPanel() {
             type="button"
             onClick={save}
             disabled={!name.trim() || !region.trim() || update.isPending}
-            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-40"
+            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
           >
             {update.isPending ? (
               <Loader2 className="h-3 w-3 animate-spin" />
@@ -361,7 +369,7 @@ export function MailServerSetting() {
             type="button"
             onClick={() => setActive("")}
             disabled={update.isPending}
-            className="text-[11px] text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-[color:var(--status-error)] disabled:cursor-not-allowed disabled:opacity-50"
+            className="text-xs text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-status-error disabled:cursor-not-allowed disabled:opacity-50"
           >
             {t("None (disable)", "Keine (deaktivieren)")}
           </button>
@@ -379,7 +387,7 @@ export function MailServerSetting() {
               >
                 <span className="flex min-w-0 items-center gap-2">
                   {c.id === activeId ? (
-                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-[color:var(--status-running)]" />
+                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-status-running-text" />
                   ) : (
                     <Circle className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                   )}
@@ -452,7 +460,7 @@ export function CopilotSettingsPanel() {
           className="mt-1 block w-24 rounded-md border border-border bg-background/40 px-2 py-1 text-sm text-foreground"
         />
       </label>
-      <p className="mt-1 text-[11px] text-muted-foreground">
+      <p className="mt-1 text-xs text-muted-foreground">
         {t(
           "Between 1 and 100. Lowering it keeps existing follow-ups but blocks new ones above the limit.",
           "Zwischen 1 und 100. Ein niedrigerer Wert behält bestehende Wiedervorlagen, blockiert aber neue über dem Limit.",
@@ -463,7 +471,7 @@ export function CopilotSettingsPanel() {
           type="button"
           onClick={save}
           disabled={!valid || update.isPending || value === data?.maxActiveFollowups}
-          className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-40"
+          className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
         >
           {update.isPending ? (
             <Loader2 className="h-3 w-3 animate-spin" />

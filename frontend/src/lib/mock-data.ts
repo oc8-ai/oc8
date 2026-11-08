@@ -694,28 +694,28 @@ export function agentById(id: string) {
 export const statusMeta: Record<AgentStatus, { label: string; className: string; dot: string }> = {
   running: {
     label: "running",
-    className: "text-[color:var(--status-running)]",
-    dot: "bg-[color:var(--status-running)]",
+    className: "text-status-running-text",
+    dot: "bg-status-running",
   },
   warning: {
     label: "awaiting approval",
-    className: "text-[color:var(--status-warning)]",
-    dot: "bg-[color:var(--status-warning)]",
+    className: "text-status-warning-text",
+    dot: "bg-status-warning",
   },
   error: {
     label: "error",
-    className: "text-[color:var(--status-error)]",
-    dot: "bg-[color:var(--status-error)]",
+    className: "text-status-error",
+    dot: "bg-status-error",
   },
   paused: {
     label: "paused",
-    className: "text-[color:var(--status-paused)]",
-    dot: "bg-[color:var(--status-paused)]",
+    className: "text-status-paused",
+    dot: "bg-status-paused",
   },
   waiting_for_task: {
     label: "waiting for task",
-    className: "text-[color:var(--status-waiting-for-task)]",
-    dot: "bg-[color:var(--status-waiting-for-task)]",
+    className: "text-status-waiting-for-task-text",
+    dot: "bg-status-waiting-for-task",
   },
 };
 

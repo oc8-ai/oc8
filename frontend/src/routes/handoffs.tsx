@@ -215,11 +215,9 @@ function HandoffRow({ h, onOpen }: { h: Handoff; onOpen: () => void }) {
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="truncate font-mono text-sm">{h.type}</span>
-          {h.gate === "approval" && (
-            <ShieldCheck className="h-3 w-3 text-[color:var(--status-warning)]" />
-          )}
+          {h.gate === "approval" && <ShieldCheck className="h-3 w-3 text-status-warning-text" />}
         </div>
-        <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+        <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
           <span>{src?.name ?? h.sourceDept}</span>
           <ArrowRight className="h-3 w-3" />
           <span>{tgt?.name ?? h.targetDept}</span>
@@ -230,7 +228,7 @@ function HandoffRow({ h, onOpen }: { h: Handoff; onOpen: () => void }) {
         </div>
       </div>
       <span
-        className="rounded-full border px-2 py-0.5 text-[10px] font-medium capitalize"
+        className="rounded-full border px-2 py-0.5 text-micro font-medium capitalize"
         style={{
           color: meta.color,
           borderColor: `color-mix(in oklab, ${meta.color} 35%, transparent)`,
@@ -268,7 +266,7 @@ function HandoffDrawer({
           <FileText className="h-4 w-4 text-primary" />
           <SheetTitle className="font-mono text-base">{h.type}</SheetTitle>
           <span
-            className="ml-auto rounded-full border px-2 py-0.5 text-[10px] capitalize"
+            className="ml-auto rounded-full border px-2 py-0.5 text-micro capitalize"
             style={{
               color: meta.color,
               borderColor: `color-mix(in oklab, ${meta.color} 35%, transparent)`,
@@ -288,15 +286,13 @@ function HandoffDrawer({
 
       <div className="space-y-5 px-6 py-5">
         <section>
-          <div className="mb-2 text-[10px] uppercase tracking-widest text-muted-foreground">
-            Status timeline
-          </div>
+          <div className="mb-2 micro-label">Status timeline</div>
           <ol className="space-y-2">
             {h.timeline.map((t, i) => (
               <li key={i} className="flex items-center gap-2 text-sm">
                 <span
                   className={cn(
-                    "grid h-5 w-5 place-items-center rounded-full border text-[10px]",
+                    "grid h-5 w-5 place-items-center rounded-full border text-micro",
                     t.done
                       ? "border-primary/60 bg-primary/10 text-primary"
                       : "border-border text-muted-foreground",
@@ -308,9 +304,7 @@ function HandoffDrawer({
                   {t.label}
                 </span>
                 {t.at && (
-                  <span className="ml-auto font-mono text-[10px] text-muted-foreground">
-                    {t.at}
-                  </span>
+                  <span className="ml-auto font-mono text-xs text-muted-foreground">{t.at}</span>
                 )}
               </li>
             ))}
@@ -318,16 +312,12 @@ function HandoffDrawer({
         </section>
 
         <section>
-          <div className="mb-2 text-[10px] uppercase tracking-widest text-muted-foreground">
-            Payload
-          </div>
+          <div className="mb-2 micro-label">Payload</div>
           <div className="rounded-md border border-border bg-panel/60 p-3">
             <dl className="grid grid-cols-2 gap-2 text-xs">
               {Object.entries(h.payload).map(([k, v]) => (
                 <div key={k} className="min-w-0">
-                  <dt className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                    {k}
-                  </dt>
+                  <dt className="micro-label">{k}</dt>
                   <dd className="mt-0.5 truncate font-mono">
                     {Array.isArray(v) ? v.join(", ") : String(v)}
                   </dd>
@@ -339,15 +329,13 @@ function HandoffDrawer({
 
         {h.attachments.length > 0 && (
           <section>
-            <div className="mb-2 text-[10px] uppercase tracking-widest text-muted-foreground">
-              Attachments
-            </div>
+            <div className="mb-2 micro-label">Attachments</div>
             <ul className="space-y-1.5">
               {h.attachments.map((a) => (
                 <li key={a.name} className="flex items-center gap-2 text-xs">
                   <Paperclip className="h-3 w-3 text-muted-foreground" />
                   <span>{a.name}</span>
-                  <span className="ml-auto text-[10px] text-muted-foreground">
+                  <span className="ml-auto text-xs text-muted-foreground">
                     copied into target scope
                   </span>
                 </li>
@@ -357,9 +345,7 @@ function HandoffDrawer({
         )}
 
         <section>
-          <div className="mb-2 text-[10px] uppercase tracking-widest text-muted-foreground">
-            Provenance chain
-          </div>
+          <div className="mb-2 micro-label">Provenance chain</div>
           <div className="space-y-1.5 rounded-md border border-border bg-panel/60 p-3 text-xs">
             <div>
               Source task: <span className="font-mono">{h.type}.request</span> in {src?.name}
@@ -373,7 +359,7 @@ function HandoffDrawer({
                     className={cn(
                       "h-1.5 w-1.5 rounded-full",
                       s.status === "done"
-                        ? "bg-[color:var(--status-running)]"
+                        ? "bg-status-running"
                         : s.status === "in_progress"
                           ? "bg-primary"
                           : "bg-muted-foreground",
@@ -381,7 +367,7 @@ function HandoffDrawer({
                   />
                   <span>{s.title}</span>
                   {s.agentId && (
-                    <span className="ml-auto font-mono text-[10px] text-muted-foreground">
+                    <span className="ml-auto font-mono text-xs text-muted-foreground">
                       → {s.agentId}
                     </span>
                   )}
@@ -392,8 +378,8 @@ function HandoffDrawer({
         </section>
 
         {h.status === "pending" && (
-          <section className="rounded-md border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/5 p-3">
-            <div className="mb-2 flex items-center gap-2 text-xs text-[color:var(--status-warning)]">
+          <section className="rounded-md border border-status-warning/40 bg-status-warning/5 p-3">
+            <div className="mb-2 flex items-center gap-2 text-xs text-status-warning-text">
               <ShieldCheck className="h-4 w-4" /> Reject reason (optional)
             </div>
             <textarea
@@ -412,13 +398,13 @@ function HandoffDrawer({
           <>
             <button
               onClick={() => onReject(reason || "no reason given")}
-              className="inline-flex items-center gap-1 rounded-md border border-[color:var(--status-error)]/40 bg-[color:var(--status-error)]/10 px-3 py-2 text-xs text-[color:var(--status-error)]"
+              className="inline-flex items-center gap-1 rounded-md border border-status-error/40 bg-status-error/10 px-3 py-2 text-xs text-status-error"
             >
               <XCircle className="h-3.5 w-3.5" /> Reject
             </button>
             <button
               onClick={onApprove}
-              className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground"
+              className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90"
             >
               <CheckCircle2 className="h-3.5 w-3.5" /> Approve gate
             </button>
@@ -427,7 +413,7 @@ function HandoffDrawer({
         {h.status === "accepted" && (
           <button
             onClick={onAccept}
-            className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground"
+            className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90"
           >
             <Zap className="h-3.5 w-3.5" /> Start work
           </button>
@@ -435,7 +421,7 @@ function HandoffDrawer({
         {h.status === "in_progress" && (
           <button
             onClick={onComplete}
-            className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground"
+            className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90"
           >
             <CheckCircle2 className="h-3.5 w-3.5" /> Mark complete
           </button>

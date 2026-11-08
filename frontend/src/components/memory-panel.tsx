@@ -60,13 +60,13 @@ export function MemoryPanel({
                   onClick={() => onDelete(r.id)}
                   disabled={deletingId === r.id}
                   title={t("Delete this memory", "Diese Erinnerung löschen")}
-                  className="shrink-0 rounded-md p-1.5 text-muted-foreground transition hover:bg-[color:var(--status-error)]/10 hover:text-[color:var(--status-error)] disabled:cursor-not-allowed disabled:opacity-50"
+                  className="shrink-0 rounded-md p-1.5 text-muted-foreground transition hover:bg-status-error/10 hover:text-status-error disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
               )}
             </div>
-            <div className="mt-2 text-[11px] text-muted-foreground">
+            <div className="mt-2 text-xs text-muted-foreground">
               {new Date(r.createdAt).toLocaleString()}
             </div>
           </li>

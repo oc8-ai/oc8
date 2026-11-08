@@ -47,6 +47,14 @@ import {
 } from "@/lib/hooks";
 import { useReconciliation, useRefreshReconciliation } from "@/lib/reconciliation-hooks";
 import { downloadUsageExport } from "@/lib/usage-export";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 export const Route = createFileRoute("/costs")({
   component: CostsPage,
@@ -191,7 +199,7 @@ function CostsPage() {
     try {
       await downloadUsageExport({}, "csv");
       toast.success(t("Report exported", "Bericht exportiert"), {
-        description: t("CSV downloaded to your device.", "CSV auf Ihr Gerät geladen."),
+        description: t("CSV downloaded to your device.", "CSV auf dein Gerät geladen."),
       });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : t("Export failed", "Export fehlgeschlagen"));
@@ -264,7 +272,7 @@ function CostsPage() {
 
         <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-md border border-border bg-background/30 px-3 py-2 text-xs">
           <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+            <span className="h-1.5 w-1.5 rounded-full bg-status-running" />
             {t("Recorded (live)", "Aufgezeichnet (live)")}
           </span>
           {recorded.hasData ? (
@@ -283,7 +291,7 @@ function CostsPage() {
                 {t("Output", "Output")}:{" "}
                 <span className="font-mono text-foreground">{formatTokens(recorded.outTok)}</span>
               </span>
-              <span className="text-[10px] text-muted-foreground">
+              <span className="text-xs text-muted-foreground">
                 {t("metered by the platform", "vom System gemessen")}
               </span>
             </>
@@ -351,11 +359,11 @@ function Metric({
         highlight && "border-primary/40 bg-primary/5",
       )}
     >
-      <div className="text-[10px] uppercase tracking-widest text-muted-foreground">{label}</div>
+      <div className="micro-label">{label}</div>
       <div className={cn("mt-1 font-serif text-2xl leading-none", highlight && "text-primary")}>
         {value}
       </div>
-      {hint && <div className="mt-1 text-[10px] text-muted-foreground">{hint}</div>}
+      {hint && <div className="mt-1 text-xs text-muted-foreground">{hint}</div>}
     </div>
   );
 }
@@ -378,7 +386,7 @@ function Bar({
           width: `${pct}%`,
           background:
             tone === "warm"
-              ? "linear-gradient(90deg, #FF8A3D, #FF8A3D)"
+              ? "var(--status-warning)"
               : "linear-gradient(90deg, var(--primary), color-mix(in oklab, var(--primary) 60%, transparent))",
           boxShadow: "0 0 10px color-mix(in oklab, var(--primary) 50%, transparent)",
         }}
@@ -419,9 +427,7 @@ function OverviewTab({
       <Panel className="p-5">
         <div className="mb-4 flex items-center justify-between">
           <div>
-            <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-              {t("Top agents", "Top-Agenten")}
-            </div>
+            <div className="micro-label">{t("Top agents", "Top-Agenten")}</div>
             <div className="font-serif text-base">{t("By spend", "Nach Ausgaben")}</div>
           </div>
           <Users className="h-4 w-4 text-muted-foreground" />
@@ -436,7 +442,7 @@ function OverviewTab({
                     style={{ background: r.avatarColor }}
                   />
                   <span className="truncate font-medium">{r.name}</span>
-                  {r.llm && <span className="text-[11px] text-muted-foreground">· {r.llm}</span>}
+                  {r.llm && <span className="text-xs text-muted-foreground">· {r.llm}</span>}
                 </div>
                 <span className="font-mono text-xs">
                   {formatMoney(convert(r.costUSD, currency), currency)}
@@ -446,7 +452,7 @@ function OverviewTab({
             </div>
           ))}
           {topAgents.length === 0 && (
-            <div className="rounded-md border border-dashed border-border/60 px-2 py-3 text-center text-[11px] text-muted-foreground">
+            <div className="rounded-md border border-dashed border-border/60 px-2 py-3 text-center text-xs text-muted-foreground">
               {noUsage}
             </div>
           )}
@@ -456,9 +462,7 @@ function OverviewTab({
       <Panel className="p-5">
         <div className="mb-4 flex items-center justify-between">
           <div>
-            <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-              {t("Departments", "Abteilungen")}
-            </div>
+            <div className="micro-label">{t("Departments", "Abteilungen")}</div>
             <div className="font-serif text-base">
               {t("Spend distribution", "Ausgabenverteilung")}
             </div>
@@ -477,7 +481,7 @@ function OverviewTab({
                       style={{ background: d.accent }}
                     />
                     <span className="truncate font-medium">{d.name}</span>
-                    <span className="text-[11px] text-muted-foreground">
+                    <span className="text-xs text-muted-foreground">
                       · {agentCount} {t("agents", "Agenten")}
                     </span>
                   </div>
@@ -490,7 +494,7 @@ function OverviewTab({
             );
           })}
           {topDept.length === 0 && (
-            <div className="rounded-md border border-dashed border-border/60 px-2 py-3 text-center text-[11px] text-muted-foreground">
+            <div className="rounded-md border border-dashed border-border/60 px-2 py-3 text-center text-xs text-muted-foreground">
               {noUsage}
             </div>
           )}
@@ -500,9 +504,7 @@ function OverviewTab({
       <Panel className="p-5 lg:col-span-2">
         <div className="mb-4 flex items-center justify-between">
           <div>
-            <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-              {t("By provider", "Nach Anbieter")}
-            </div>
+            <div className="micro-label">{t("By provider", "Nach Anbieter")}</div>
             <div className="font-serif text-base">
               {t("Where the money goes", "Wohin das Geld fließt")}
             </div>
@@ -514,7 +516,7 @@ function OverviewTab({
             <div key={prov} className="rounded-lg border border-border bg-background/30 p-4">
               <div className="flex items-center justify-between">
                 <div className="text-sm font-medium">{prov}</div>
-                <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-micro text-muted-foreground">
                   {Math.round((total / (provMax || 1)) * 100)}%
                 </span>
               </div>
@@ -527,7 +529,7 @@ function OverviewTab({
             </div>
           ))}
           {providers.length === 0 && (
-            <div className="rounded-md border border-dashed border-border/60 px-2 py-3 text-center text-[11px] text-muted-foreground sm:col-span-2 lg:col-span-4">
+            <div className="rounded-md border border-dashed border-border/60 px-2 py-3 text-center text-xs text-muted-foreground sm:col-span-2 lg:col-span-4">
               {noUsage}
             </div>
           )}
@@ -605,7 +607,7 @@ export function ReconciliationCard({ currency }: { currency: Currency }) {
     <Panel className="p-5 opacity-90 lg:col-span-2">
       <div className="mb-3 flex items-center justify-between gap-3">
         <div>
-          <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
+          <div className="micro-label">
             {t("Provider-reported cost", "Vom Anbieter gemeldete Kosten")}
           </div>
           <div className="font-serif text-sm">
@@ -623,7 +625,7 @@ export function ReconciliationCard({ currency }: { currency: Currency }) {
         </button>
       </div>
       {rows.length === 0 ? (
-        <div className="rounded-md border border-dashed border-border/60 px-2 py-3 text-center text-[11px] text-muted-foreground">
+        <div className="rounded-md border border-dashed border-border/60 px-2 py-3 text-center text-xs text-muted-foreground">
           {t(
             "Not refreshed yet — click Refresh to fetch provider-reported cost.",
             "Noch nicht aktualisiert — auf „Aktualisieren“ klicken, um die vom Anbieter gemeldeten Kosten abzurufen.",
@@ -645,7 +647,7 @@ export function ReconciliationCard({ currency }: { currency: Currency }) {
                 <div className="flex items-center justify-between font-medium">
                   <span>{p.provider}</span>
                   {!p.hasReported && (
-                    <span className="text-[10px] font-normal text-muted-foreground">
+                    <span className="text-xs font-normal text-muted-foreground">
                       {t("no report yet", "noch kein Bericht")}
                     </span>
                   )}
@@ -692,62 +694,69 @@ function AgentsTab({ agentRows, currency }: { agentRows: AgentSpendRow[]; curren
   return (
     <Panel className="overflow-hidden">
       <div className="border-b border-border px-5 py-3">
-        <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-          {t("Cost per agent", "Kosten pro Agent")}
-        </div>
+        <div className="micro-label">{t("Cost per agent", "Kosten pro Agent")}</div>
         <div className="font-serif text-base">{t("Recorded usage", "Erfasster Verbrauch")}</div>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
-              <th className="px-5 py-3 font-medium">{t("Agent", "Agent")}</th>
-              <th className="px-5 py-3 font-medium">{t("Model", "Modell")}</th>
-              <th className="px-5 py-3 font-medium text-right">{t("Input", "Input")}</th>
-              <th className="px-5 py-3 font-medium text-right">{t("Output", "Output")}</th>
-              <th className="px-5 py-3 font-medium text-right">{t("Cost", "Kosten")}</th>
-              <th className="px-5 py-3 font-medium">{t("Share", "Anteil")}</th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table className="text-sm">
+          <TableHeader>
+            <TableRow className="border-b border-border hover:bg-transparent">
+              <TableHead className="px-5 py-3 micro-label">{t("Agent", "Agent")}</TableHead>
+              <TableHead className="px-5 py-3 micro-label">{t("Model", "Modell")}</TableHead>
+              <TableHead className="px-5 py-3 text-right micro-label">
+                {t("Input", "Input")}
+              </TableHead>
+              <TableHead className="px-5 py-3 text-right micro-label">
+                {t("Output", "Output")}
+              </TableHead>
+              <TableHead className="px-5 py-3 text-right micro-label">
+                {t("Cost", "Kosten")}
+              </TableHead>
+              <TableHead className="px-5 py-3 micro-label">{t("Share", "Anteil")}</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {sorted.map((r) => (
-              <tr key={r.id} className="border-b border-border/60 last:border-none">
-                <td className="px-5 py-3">
+              <TableRow key={r.id} className="border-b border-border/60 last:border-none">
+                <TableCell className="px-5 py-3">
                   <div className="flex items-center gap-2">
                     <span className="h-2 w-2 rounded-full" style={{ background: r.avatarColor }} />
                     <div>
                       <div className="font-medium">{r.name}</div>
-                      <div className="text-[11px] text-muted-foreground">
+                      <div className="text-xs text-muted-foreground">
                         {r.role ?? t("unassigned agent", "nicht zugeordneter Agent")}
                         {r.departmentName && ` · ${r.departmentName}`}
                       </div>
                     </div>
                   </div>
-                </td>
-                <td className="px-5 py-3 font-mono text-xs">{r.llm ?? "—"}</td>
-                <td className="px-5 py-3 text-right font-mono text-xs">
+                </TableCell>
+                <TableCell className="px-5 py-3 font-mono text-xs">{r.llm ?? "—"}</TableCell>
+                <TableCell className="px-5 py-3 text-right font-mono text-xs">
                   {formatTokens(r.tokensIn)}
-                </td>
-                <td className="px-5 py-3 text-right font-mono text-xs">
+                </TableCell>
+                <TableCell className="px-5 py-3 text-right font-mono text-xs">
                   {formatTokens(r.tokensOut)}
-                </td>
-                <td className="px-5 py-3 text-right font-mono text-sm font-medium text-primary">
+                </TableCell>
+                <TableCell className="px-5 py-3 text-right font-mono text-sm font-medium text-primary">
                   {formatMoney(convert(r.costUSD, currency), currency)}
-                </td>
-                <td className="px-5 py-3">
+                </TableCell>
+                <TableCell className="px-5 py-3">
                   <Bar value={r.costUSD} max={max} />
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             ))}
             {sorted.length === 0 && (
-              <tr>
-                <td colSpan={6} className="px-5 py-10 text-center text-sm text-muted-foreground">
+              <TableRow className="hover:bg-transparent">
+                <TableCell
+                  colSpan={6}
+                  className="px-5 py-10 text-center text-sm text-muted-foreground"
+                >
                   {t("No usage recorded yet.", "Noch kein Verbrauch erfasst.")}
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             )}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
     </Panel>
   );
@@ -781,7 +790,7 @@ function DeptTab({
                 />
                 <div>
                   <div className="font-serif text-lg leading-tight">{d.name}</div>
-                  <div className="text-[11px] text-muted-foreground">
+                  <div className="text-xs text-muted-foreground">
                     {deptAgents.length} {t("agents", "Agenten")}
                   </div>
                 </div>
@@ -790,11 +799,9 @@ function DeptTab({
                 <div className="font-serif text-2xl text-primary">
                   {formatMoney(convert(d.costUSD, currency), currency)}
                 </div>
-                <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                  {t("Recorded spend", "Erfasste Ausgaben")}
-                </div>
+                <div className="micro-label">{t("Recorded spend", "Erfasste Ausgaben")}</div>
                 {d.savedCostUSD > 0 && (
-                  <div className="mt-2 flex items-center justify-end gap-1.5 text-[11px] text-primary">
+                  <div className="mt-2 flex items-center justify-end gap-1.5 text-xs text-primary">
                     <span>{t("Saved by caching:", "Durch Caching gespart:")}</span>
                     <span className="font-mono">
                       {formatMoney(convert(d.savedCostUSD, currency), currency)}
@@ -810,23 +817,17 @@ function DeptTab({
 
             <div className="mt-4 grid grid-cols-2 gap-2 text-xs">
               <div className="rounded-md border border-border bg-background/30 p-2">
-                <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                  {t("Input", "Input")}
-                </div>
+                <div className="micro-label">{t("Input", "Input")}</div>
                 <div className="font-mono">{formatTokens(d.tokensIn)}</div>
               </div>
               <div className="rounded-md border border-border bg-background/30 p-2">
-                <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                  {t("Output", "Output")}
-                </div>
+                <div className="micro-label">{t("Output", "Output")}</div>
                 <div className="font-mono">{formatTokens(d.tokensOut)}</div>
               </div>
             </div>
 
             <div className="mt-4">
-              <div className="mb-1.5 text-[10px] uppercase tracking-widest text-muted-foreground">
-                {t("Agents", "Agenten")}
-              </div>
+              <div className="mb-1.5 micro-label">{t("Agents", "Agenten")}</div>
               <div className="space-y-1.5">
                 {deptAgents.map((r) => (
                   <div
@@ -840,7 +841,7 @@ function DeptTab({
                       />
                       <span className="truncate">{r.name}</span>
                       {r.llm && (
-                        <span className="truncate text-[10px] text-muted-foreground">{r.llm}</span>
+                        <span className="truncate text-xs text-muted-foreground">{r.llm}</span>
                       )}
                     </div>
                     <span className="font-mono">
@@ -849,7 +850,7 @@ function DeptTab({
                   </div>
                 ))}
                 {deptAgents.length === 0 && (
-                  <div className="rounded-md border border-dashed border-border/60 px-2 py-3 text-center text-[11px] text-muted-foreground">
+                  <div className="rounded-md border border-dashed border-border/60 px-2 py-3 text-center text-xs text-muted-foreground">
                     {t("No usage recorded yet.", "Noch kein Verbrauch erfasst.")}
                   </div>
                 )}
@@ -927,13 +928,13 @@ function LimitsTab({ currency }: { currency: Currency }) {
                   "Diese Altansicht ist schreibgeschützt. Die Live-Token-Budgets oben sind bis zu einer Kostenlimit-API die einzigen durchgesetzten Budgetkontrollen.",
                 )}
               </p>
-              <p className="mt-1 text-[11px] italic text-muted-foreground">
+              <p className="mt-1 text-xs italic text-muted-foreground">
                 {t(
                   "Usage below is an estimate from the editable pricing model (see Models), not the platform's recorded spend — see the Overview/By Agent/By Department tabs for metered figures.",
-                  "Der Verbrauch unten ist eine Schätzung anhand des editierbaren Preismodells (siehe Modelle), nicht die vom System erfassten Ausgaben — gemessene Werte finden Sie unter Übersicht/Pro Agent/Pro Abteilung.",
+                  "Der Verbrauch unten ist eine Schätzung anhand des editierbaren Preismodells (siehe Modelle), nicht die vom System erfassten Ausgaben — gemessene Werte findest du unter Übersicht/Pro Agent/Pro Abteilung.",
                 )}
               </p>
-              <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+              <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
                 {summary.map((s) => {
                   const Icon = s.icon;
                   return (
@@ -962,22 +963,26 @@ function LimitsTab({ currency }: { currency: Currency }) {
 
       <Panel className="overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
-                <th className="px-5 py-3 font-medium">{t("Scope", "Ebene")}</th>
-                <th className="px-5 py-3 font-medium">{t("Target", "Ziel")}</th>
-                <th className="px-5 py-3 font-medium text-right">{t("Limit", "Limit")}</th>
-                <th className="px-5 py-3 font-medium">{t("Period", "Zeitraum")}</th>
-                <th className="px-5 py-3 font-medium">{t("Action", "Aktion")}</th>
-                <th className="px-5 py-3 font-medium">
+          <Table className="text-sm">
+            <TableHeader>
+              <TableRow className="border-b border-border hover:bg-transparent">
+                <TableHead className="px-5 py-3 micro-label">{t("Scope", "Ebene")}</TableHead>
+                <TableHead className="px-5 py-3 micro-label">{t("Target", "Ziel")}</TableHead>
+                <TableHead className="px-5 py-3 text-right micro-label">
+                  {t("Limit", "Limit")}
+                </TableHead>
+                <TableHead className="px-5 py-3 micro-label">{t("Period", "Zeitraum")}</TableHead>
+                <TableHead className="px-5 py-3 micro-label">{t("Action", "Aktion")}</TableHead>
+                <TableHead className="px-5 py-3 micro-label">
                   {t("Usage (est.)", "Verbrauch (geschätzt)")}
-                </th>
-                <th className="px-5 py-3 font-medium text-right">{t("Enabled", "Aktiv")}</th>
-                <th className="px-5 py-3 font-medium" />
-              </tr>
-            </thead>
-            <tbody>
+                </TableHead>
+                <TableHead className="px-5 py-3 text-right micro-label">
+                  {t("Enabled", "Aktiv")}
+                </TableHead>
+                <TableHead className="px-5 py-3 micro-label" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {rows.map(({ limit, spend, pct }) => {
                 const scopeMeta = scopes.find((s) => s.id === limit.scope)!;
                 const Icon = scopeMeta.icon;
@@ -988,22 +993,22 @@ function LimitsTab({ currency }: { currency: Currency }) {
                       ? "var(--status-warning)"
                       : "var(--status-running)";
                 return (
-                  <tr key={limit.id} className="border-b border-border/60 last:border-none">
-                    <td className="px-5 py-3">
+                  <TableRow key={limit.id} className="border-b border-border/60 last:border-none">
+                    <TableCell className="px-5 py-3">
                       <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background/40 px-2 py-0.5 text-xs">
                         <Icon className="h-3 w-3" />
                         {scopeMeta.label}
                       </span>
-                    </td>
-                    <td className="px-5 py-3">
+                    </TableCell>
+                    <TableCell className="px-5 py-3">
                       <TargetSelect
                         scope={limit.scope}
                         value={limit.targetId}
                         disabled
                         onChange={(v) => update(limit.id, { targetId: v })}
                       />
-                    </td>
-                    <td className="px-5 py-3">
+                    </TableCell>
+                    <TableCell className="px-5 py-3">
                       <div className="flex items-center justify-end gap-1">
                         <span className="text-muted-foreground">
                           {currency === "USD" ? "$" : "€"}
@@ -1026,8 +1031,8 @@ function LimitsTab({ currency }: { currency: Currency }) {
                           className="w-24 rounded-md border border-border bg-background/40 px-2 py-1 text-right font-mono text-xs focus:border-primary focus:outline-none"
                         />
                       </div>
-                    </td>
-                    <td className="px-5 py-3">
+                    </TableCell>
+                    <TableCell className="px-5 py-3">
                       <select
                         disabled
                         value={limit.period}
@@ -1039,8 +1044,8 @@ function LimitsTab({ currency }: { currency: Currency }) {
                         <option value="daily">{t("Daily", "Täglich")}</option>
                         <option value="monthly">{t("Monthly", "Monatlich")}</option>
                       </select>
-                    </td>
-                    <td className="px-5 py-3">
+                    </TableCell>
+                    <TableCell className="px-5 py-3">
                       <select
                         disabled
                         value={limit.action}
@@ -1053,10 +1058,10 @@ function LimitsTab({ currency }: { currency: Currency }) {
                         <option value="throttle">{t("Throttle", "Drosseln")}</option>
                         <option value="block">{t("Block", "Sperren")}</option>
                       </select>
-                    </td>
-                    <td className="px-5 py-3">
+                    </TableCell>
+                    <TableCell className="px-5 py-3">
                       <div className="min-w-[140px]">
-                        <div className="mb-1 flex items-center justify-between text-[11px]">
+                        <div className="mb-1 flex items-center justify-between text-xs">
                           <span className="font-mono" style={{ color: tone }}>
                             {formatMoney(convert(spend, currency), currency)}
                           </span>
@@ -1073,8 +1078,8 @@ function LimitsTab({ currency }: { currency: Currency }) {
                           />
                         </div>
                       </div>
-                    </td>
-                    <td className="px-5 py-3 text-right">
+                    </TableCell>
+                    <TableCell className="px-5 py-3 text-right">
                       <button
                         type="button"
                         role="switch"
@@ -1093,35 +1098,38 @@ function LimitsTab({ currency }: { currency: Currency }) {
                           )}
                         />
                       </button>
-                    </td>
-                    <td className="px-5 py-3 text-right">
+                    </TableCell>
+                    <TableCell className="px-5 py-3 text-right">
                       <button
                         type="button"
                         onClick={() => remove(limit.id)}
                         disabled
-                        className="rounded-md p-1.5 text-muted-foreground hover:bg-background/40 hover:text-[color:var(--status-error)]"
+                        className="rounded-md p-1.5 text-muted-foreground hover:bg-background/40 hover:text-status-error"
                         aria-label={t("Delete limit", "Limit löschen")}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 );
               })}
               {rows.length === 0 && (
-                <tr>
-                  <td colSpan={8} className="px-5 py-10 text-center text-sm text-muted-foreground">
+                <TableRow className="hover:bg-transparent">
+                  <TableCell
+                    colSpan={8}
+                    className="px-5 py-10 text-center text-sm text-muted-foreground"
+                  >
                     {t(
                       "No limits set yet. Add one to protect your budget.",
-                      "Noch keine Limits gesetzt. Fügen Sie eines hinzu, um Ihr Budget zu schützen.",
+                      "Noch keine Limits gesetzt. Füge eines hinzu, um dein Budget zu schützen.",
                     )}
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               )}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
-        <div className="flex flex-wrap items-center gap-3 border-t border-border px-5 py-3 text-[11px] text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-3 border-t border-border px-5 py-3 text-xs text-muted-foreground">
           <span className="inline-flex items-center gap-1">
             <Bell className="h-3 w-3" />
             {t("Notify — alert only", "Benachrichtigen — nur Hinweis")}
@@ -1276,7 +1284,7 @@ function BudgetRow({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
           <div className="truncate text-sm font-medium">{label}</div>
-          <div className="mt-0.5 font-mono text-[11px] text-muted-foreground">
+          <div className="mt-0.5 font-mono text-xs text-muted-foreground">
             {formatTokens(status?.currentTokens ?? 0)}{" "}
             {t("used this month", "verbraucht diesen Monat")}
           </div>
@@ -1340,7 +1348,7 @@ function BudgetRow({
         </div>
       </div>
       {mode === "dollar" && budget?.dollarBudgetUsd != null && budget.hardLimitTokens != null && (
-        <div className="mt-1.5 text-[11px] text-muted-foreground">
+        <div className="mt-1.5 text-xs text-muted-foreground">
           {t(
             `≈ ${formatTokens(budget.hardLimitTokens)} tokens (at ${budget.dollarReferenceModel} pricing)`,
             `≈ ${formatTokens(budget.hardLimitTokens)} Token (zu ${budget.dollarReferenceModel}-Preisen)`,
@@ -1362,7 +1370,7 @@ function BudgetRow({
         </div>
       )}
       {status?.hardExceeded && (
-        <div className="mt-2 flex items-center gap-1.5 text-[11px] text-[color:var(--status-error)]">
+        <div className="mt-2 flex items-center gap-1.5 text-xs text-status-error">
           <ShieldAlert className="h-3 w-3" />
           {t(
             "Hard limit exceeded — new tasks are paused.",
@@ -1456,9 +1464,7 @@ function AddLimitDialog({
 
         <div className="space-y-3 text-sm">
           <div>
-            <label className="mb-1 block text-[11px] uppercase tracking-widest text-muted-foreground">
-              {t("Scope", "Ebene")}
-            </label>
+            <label className="mb-1 block micro-label">{t("Scope", "Ebene")}</label>
             <div className="grid grid-cols-3 gap-1 rounded-md border border-border bg-background/40 p-0.5">
               {(["agent", "department", "model"] as LimitScope[]).map((s) => (
                 <button
@@ -1486,17 +1492,13 @@ function AddLimitDialog({
           </div>
 
           <div>
-            <label className="mb-1 block text-[11px] uppercase tracking-widest text-muted-foreground">
-              {t("Target", "Ziel")}
-            </label>
+            <label className="mb-1 block micro-label">{t("Target", "Ziel")}</label>
             <TargetSelect scope={scope} value={targetId} onChange={setTargetId} />
           </div>
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="mb-1 block text-[11px] uppercase tracking-widest text-muted-foreground">
-                {t("Amount (USD)", "Betrag (USD)")}
-              </label>
+              <label className="mb-1 block micro-label">{t("Amount (USD)", "Betrag (USD)")}</label>
               <input
                 type="number"
                 min="0"
@@ -1507,9 +1509,7 @@ function AddLimitDialog({
               />
             </div>
             <div>
-              <label className="mb-1 block text-[11px] uppercase tracking-widest text-muted-foreground">
-                {t("Period", "Zeitraum")}
-              </label>
+              <label className="mb-1 block micro-label">{t("Period", "Zeitraum")}</label>
               <select
                 value={period}
                 onChange={(e) => setPeriod(e.target.value as LimitPeriod)}
@@ -1522,7 +1522,7 @@ function AddLimitDialog({
           </div>
 
           <div>
-            <label className="mb-1 block text-[11px] uppercase tracking-widest text-muted-foreground">
+            <label className="mb-1 block micro-label">
               {t("Action on threshold", "Aktion bei Schwelle")}
             </label>
             <select

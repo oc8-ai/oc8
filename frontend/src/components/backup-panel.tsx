@@ -5,6 +5,14 @@ import { Panel } from "@/components/app-shell";
 import { exportBackup } from "@/lib/api";
 import { useOrganizationSettings, usePreviewBackup, useRestoreBackup } from "@/lib/hooks";
 import { useT } from "@/lib/i18n";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 /** The archive's own manifest carries an "excluded" list (design doc §2.3/§3:
  * audit log, metering, and run evidence blobs never become rows) — read from
@@ -137,10 +145,7 @@ export function BackupPanel() {
           )}
         </p>
 
-        <label
-          htmlFor="backup-export-passphrase"
-          className="mt-3 block text-[11px] uppercase tracking-wider text-muted-foreground"
-        >
+        <label htmlFor="backup-export-passphrase" className="mt-3 block micro-label">
           {t("Passphrase (optional)", "Passphrase (optional)")}
         </label>
         <input
@@ -152,8 +157,8 @@ export function BackupPanel() {
           spellCheck={false}
           className="mt-1 w-full max-w-sm rounded-md border border-border bg-background px-3 py-1.5 font-mono text-sm"
         />
-        <div className="mt-2 flex items-start gap-2 rounded-md border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 p-3 text-xs">
-          <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[color:var(--status-warning)]" />
+        <div className="mt-2 flex items-start gap-2 rounded-md border border-status-warning/40 bg-status-warning/10 p-3 text-xs">
+          <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-warning-text" />
           <p className="text-foreground/90">
             {t(
               "Every export, with or without a passphrase, carries every member's password hash. With a passphrase, the file also carries every provider credential and OAuth token this company holds, encrypted under it — anyone with the file AND the passphrase holds those credentials too. The passphrase cannot be recovered if lost; losing it only costs the secrets, everything else still restores.",
@@ -181,8 +186,8 @@ export function BackupPanel() {
           <Upload className="h-3.5 w-3.5" />
           {t("Restore", "Wiederherstellen")}
         </h4>
-        <div className="mt-1 flex items-start gap-2 rounded-md border border-[color:var(--status-error)]/40 bg-[color:var(--status-error)]/10 p-3 text-xs">
-          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[color:var(--status-error)]" />
+        <div className="mt-1 flex items-start gap-2 rounded-md border border-status-error/40 bg-status-error/10 p-3 text-xs">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-error" />
           <p className="text-foreground/90">
             {t(
               "This deletes every agent, run and knowledge item this company currently has and replaces them with the contents of the uploaded file. It cannot be undone.",
@@ -191,8 +196,8 @@ export function BackupPanel() {
           </p>
         </div>
 
-        <div className="mt-2 flex items-start gap-2 rounded-md border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 p-3 text-xs">
-          <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[color:var(--status-warning)]" />
+        <div className="mt-2 flex items-start gap-2 rounded-md border border-status-warning/40 bg-status-warning/10 p-3 text-xs">
+          <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-warning-text" />
           <p className="text-foreground/90">
             {t(
               "If this archive was taken on a different oc8 instance, restoring it also replaces every member and role this company has with the source instance's — including your own membership. Because those rows carry sign-in identities from the source instance's own login provider, this can remove your own access to this company.",
@@ -201,10 +206,7 @@ export function BackupPanel() {
           </p>
         </div>
 
-        <label
-          htmlFor="backup-restore-file"
-          className="mt-3 block text-[11px] uppercase tracking-wider text-muted-foreground"
-        >
+        <label htmlFor="backup-restore-file" className="mt-3 block micro-label">
           {t("Archive file", "Archivdatei")}
         </label>
         <input
@@ -223,7 +225,7 @@ export function BackupPanel() {
         )}
 
         {preview.isError && (
-          <p className="mt-3 text-xs text-[color:var(--status-error)]">
+          <p className="mt-3 text-xs text-status-error">
             {preview.error instanceof Error
               ? preview.error.message
               : t("Could not read the archive.", "Archiv konnte nicht gelesen werden.")}
@@ -232,50 +234,56 @@ export function BackupPanel() {
 
         {preview.data && (
           <div className="mt-3">
-            <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
+            <p className="micro-label">
               {t(
                 "Currently in this company → in the archive",
                 "Derzeit in diesem Unternehmen → im Archiv",
               )}
             </p>
             <div className="mt-1.5 overflow-hidden rounded-md border border-border">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="border-b border-border bg-background/60 text-left text-muted-foreground">
-                    <th className="px-3 py-1.5 font-normal">{t("Table", "Tabelle")}</th>
-                    <th className="px-3 py-1.5 font-normal">{t("Currently", "Derzeit")}</th>
-                    <th className="px-3 py-1.5 font-normal">{t("In archive", "Im Archiv")}</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
+              <Table className="text-xs">
+                <TableHeader>
+                  <TableRow className="border-b border-border bg-background/60 hover:bg-transparent">
+                    <TableHead className="px-3 py-1.5 micro-label">
+                      {t("Table", "Tabelle")}
+                    </TableHead>
+                    <TableHead className="px-3 py-1.5 micro-label">
+                      {t("Currently", "Derzeit")}
+                    </TableHead>
+                    <TableHead className="px-3 py-1.5 micro-label">
+                      {t("In archive", "Im Archiv")}
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody className="divide-y divide-border">
                   {Object.entries(preview.data.table_counts).map(([table, counts]) => (
-                    <tr key={table}>
-                      <td className="px-3 py-1.5 font-mono">{table}</td>
-                      <td className="px-3 py-1.5">{counts.current}</td>
-                      <td className="px-3 py-1.5">{counts.archive}</td>
-                    </tr>
+                    <TableRow key={table}>
+                      <TableCell className="px-3 py-1.5 font-mono">{table}</TableCell>
+                      <TableCell className="px-3 py-1.5">{counts.current}</TableCell>
+                      <TableCell className="px-3 py-1.5">{counts.archive}</TableCell>
+                    </TableRow>
                   ))}
                   {Object.keys(preview.data.table_counts).length === 0 && (
-                    <tr>
-                      <td colSpan={3} className="px-3 py-1.5 text-muted-foreground">
+                    <TableRow className="hover:bg-transparent">
+                      <TableCell colSpan={3} className="px-3 py-1.5 text-muted-foreground">
                         {t("Nothing on either side.", "Nichts auf beiden Seiten.")}
-                      </td>
-                    </tr>
+                      </TableCell>
+                    </TableRow>
                   )}
-                </tbody>
-              </table>
+                </TableBody>
+              </Table>
             </div>
 
             {manifestExcluded(preview.data.manifest).length > 0 && (
-              <p className="mt-2 text-[11px] text-muted-foreground">
+              <p className="mt-2 text-xs text-muted-foreground">
                 {t("Not part of any backup:", "Nicht Teil einer Sicherung:")}{" "}
                 {manifestExcluded(preview.data.manifest).join(", ")}
               </p>
             )}
 
             {blockingProblems.length > 0 && (
-              <div className="mt-2 rounded-md border border-[color:var(--status-error)]/40 bg-[color:var(--status-error)]/10 p-3 text-xs">
-                <p className="font-medium text-[color:var(--status-error)]">
+              <div className="mt-2 rounded-md border border-status-error/40 bg-status-error/10 p-3 text-xs">
+                <p className="font-medium text-status-error">
                   {t(
                     "This archive cannot be restored:",
                     "Dieses Archiv kann nicht wiederhergestellt werden:",
@@ -291,10 +299,7 @@ export function BackupPanel() {
 
             {preview.data.has_secrets && blockingProblems.length === 0 && (
               <div className="mt-3">
-                <label
-                  htmlFor="backup-restore-passphrase"
-                  className="block text-[11px] uppercase tracking-wider text-muted-foreground"
-                >
+                <label htmlFor="backup-restore-passphrase" className="block micro-label">
                   {t("Passphrase", "Passphrase")}
                 </label>
                 <input
@@ -306,8 +311,8 @@ export function BackupPanel() {
                   spellCheck={false}
                   className="mt-1 w-full max-w-sm rounded-md border border-border bg-background px-3 py-1.5 font-mono text-sm"
                 />
-                <div className="mt-2 flex items-start gap-2 rounded-md border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 p-3 text-xs">
-                  <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[color:var(--status-warning)]" />
+                <div className="mt-2 flex items-start gap-2 rounded-md border border-status-warning/40 bg-status-warning/10 p-3 text-xs">
+                  <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-warning-text" />
                   <p className="text-foreground/90">
                     {t(
                       "This archive carries provider credentials and OAuth tokens, encrypted under this passphrase. Enter it exactly as set at export time — a wrong passphrase fails the whole restore before anything is touched.",
@@ -320,16 +325,13 @@ export function BackupPanel() {
 
             {blockingProblems.length === 0 && (
               <div className="mt-3">
-                <label
-                  htmlFor="backup-confirm-name"
-                  className="block text-[11px] uppercase tracking-wider text-muted-foreground"
-                >
+                <label htmlFor="backup-confirm-name" className="block micro-label">
                   {t(
                     "Type this company's name to confirm",
                     "Gib den Namen dieses Unternehmens zur Bestätigung ein",
                   )}
                 </label>
-                <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">
+                <p className="mt-0.5 font-mono text-xs text-muted-foreground">
                   {organization?.name}
                 </p>
                 <input
@@ -345,7 +347,7 @@ export function BackupPanel() {
             )}
 
             {blockingProblems.length === 0 && !hasExportedThisSession && (
-              <p className="mt-2 text-[11px] text-[color:var(--status-warning)]">
+              <p className="mt-2 text-xs text-status-warning-text">
                 {t(
                   "Download a fresh backup above first — restoring is irreversible, and this is the recovery path if it goes wrong.",
                   "Lade oben zuerst eine aktuelle Sicherung herunter — die Wiederherstellung ist unwiderruflich, und das ist der Weg zurück, falls dabei etwas schiefgeht.",
@@ -357,7 +359,7 @@ export function BackupPanel() {
               type="button"
               disabled={!canRestore || restore.isPending}
               onClick={handleRestore}
-              className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-[color:var(--status-error)] px-3 py-1.5 text-xs font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+              className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-status-error px-3 py-1.5 text-xs font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
             >
               {restore.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
               {t("Restore company from backup", "Unternehmen aus Sicherung wiederherstellen")}
@@ -381,7 +383,7 @@ export function BackupPanel() {
             </div>
             <ul className="mt-2 space-y-0.5">
               {Object.entries(restore.data.tables).map(([table, count]) => (
-                <li key={table} className="flex justify-between font-mono text-[11px]">
+                <li key={table} className="flex justify-between font-mono text-xs">
                   <span>{table}</span>
                   <span>{count}</span>
                 </li>

@@ -76,8 +76,8 @@ export function TaskBoardWidget(_props: {
       </div>
 
       {boardQuery.error && (
-        <div className="flex items-start gap-2 border-b border-[color:var(--status-error)]/40 px-3 py-2 text-xs">
-          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[color:var(--status-error)]" />
+        <div className="flex items-start gap-2 border-b border-status-error/40 px-3 py-2 text-xs">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-error" />
           <div>
             <div>
               {t(
@@ -116,21 +116,19 @@ export function TaskBoardWidget(_props: {
                   key={col.id}
                   className={cn(
                     "flex min-h-[140px] flex-col rounded-lg border bg-panel/60 p-2",
-                    isWaiting
-                      ? "border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/5"
-                      : "border-border",
+                    isWaiting ? "border-status-warning/40 bg-status-warning/5" : "border-border",
                   )}
                 >
                   <div className="mb-1.5 flex items-center justify-between">
                     <span
                       className={cn(
-                        "text-[10px] uppercase tracking-widest",
-                        isWaiting ? "text-[color:var(--status-warning)]" : "text-muted-foreground",
+                        "micro-label",
+                        isWaiting ? "text-status-warning-text" : "text-muted-foreground",
                       )}
                     >
                       {col.label}
                     </span>
-                    <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                    <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 font-mono text-micro text-muted-foreground">
                       {items.length}
                     </span>
                   </div>
@@ -162,7 +160,7 @@ function TaskCard({ row }: { row: TaskBoardRow }) {
       )}
     >
       <div className={cn("leading-snug", isDone && "line-through")}>{row.title}</div>
-      <div className="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
+      <div className="mt-1 flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
         <span className="truncate">{row.departmentName}</span>
         {row.agentName && (
           <>

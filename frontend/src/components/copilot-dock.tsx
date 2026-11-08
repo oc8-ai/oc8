@@ -133,14 +133,14 @@ export function PendingProposals({ de }: { de: boolean }) {
       aria-label={de ? "Offene Vorschläge" : "Pending proposals"}
       className="border-b border-border bg-primary/5 px-4 py-3"
     >
-      <h3 className="mb-2 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+      <h3 className="mb-2 flex items-center gap-1.5 micro-label">
         <Sparkles className="h-3 w-3 text-primary" />
         {de ? "Offene Vorschläge" : "Pending proposals"}
       </h3>
       {failed && (
         <p
           role="alert"
-          className="mb-2 rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-[11px] text-destructive"
+          className="mb-2 rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-xs text-destructive"
         >
           {proposalFailedText(de)}
         </p>
@@ -171,7 +171,7 @@ export function PendingProposals({ de }: { de: boolean }) {
                   onClick={() =>
                     answer(proposal.id, (options) => apply.mutate(proposal.id, options))
                   }
-                  className="rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground disabled:opacity-50"
+                  className="rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                 >
                   {de ? "Anwenden" : "Apply"}
                 </button>
@@ -181,7 +181,7 @@ export function PendingProposals({ de }: { de: boolean }) {
                   onClick={() =>
                     answer(proposal.id, (options) => reject.mutate(proposal.id, options))
                   }
-                  className="rounded-md border border-border px-2.5 py-1 text-[11px] disabled:opacity-50"
+                  className="rounded-md border border-border px-2.5 py-1 text-xs disabled:opacity-50"
                 >
                   {de ? "Ablehnen" : "Reject"}
                 </button>
@@ -495,7 +495,7 @@ function CopilotDockPanel() {
           </div>
 
           {liveConnectionStatus === "disconnected" && (
-            <div className="flex items-center gap-1.5 border-b border-amber-500/30 bg-amber-500/10 px-3 py-1 text-xs text-amber-700 dark:text-amber-400">
+            <div className="flex items-center gap-1.5 border-b border-status-warning/30 bg-status-warning/10 px-3 py-1 text-xs text-status-warning-text">
               <WifiOff className="h-3.5 w-3.5" />
               <span>
                 {t(
@@ -926,7 +926,7 @@ export function CopilotChatTab({
                 setInput(s.insert);
                 inputRef.current?.focus();
               }}
-              className="rounded-full border border-border bg-background/40 px-2.5 py-1 text-[11px] text-muted-foreground transition hover:text-foreground"
+              className="rounded-full border border-border bg-background/40 px-2.5 py-1 text-xs text-muted-foreground transition hover:text-foreground"
             >
               {s.label}
             </button>
@@ -990,7 +990,7 @@ export function CopilotChatTab({
           />
         )}
         {armed && (
-          <div className="mb-2 flex items-center gap-1.5 text-[11px]">
+          <div className="mb-2 flex items-center gap-1.5 text-xs">
             <span className="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 font-mono text-primary">
               /{armed.command.key}
             </span>
@@ -1004,7 +1004,7 @@ export function CopilotChatTab({
             {contextRefs.map((ref) => (
               <span
                 key={ref.id}
-                className="inline-flex max-w-[200px] items-center gap-1 truncate rounded-full border border-border bg-background/60 py-0.5 pl-2 pr-1 text-[11px] text-muted-foreground"
+                className="inline-flex max-w-[200px] items-center gap-1 truncate rounded-full border border-border bg-background/60 py-0.5 pl-2 pr-1 text-micro text-muted-foreground"
               >
                 <BookOpen className="h-2.5 w-2.5 shrink-0" />
                 <span className="truncate">{ref.label}</span>
@@ -1021,7 +1021,7 @@ export function CopilotChatTab({
           </div>
         )}
         {!isAssistant && (
-          <div className="mb-1 text-[11px] text-muted-foreground">
+          <div className="mb-1 text-xs text-muted-foreground">
             {t(
               `This conversation goes to ${agents.find((a) => a.id === agentId)?.name ?? "an agent"} — not the copilot.`,
               `Dieses Gespräch geht an ${agents.find((a) => a.id === agentId)?.name ?? "einen Agenten"} — nicht an den Copilot.`,

@@ -118,6 +118,7 @@
   --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
+  --color-brand-gradient-foreground: var(--brand-gradient-foreground);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
@@ -148,7 +149,12 @@
   --color-status-error: var(--status-error);
   --color-status-paused: var(--status-paused);
   --color-status-waiting-for-task: var(--status-waiting-for-task);
+  --color-status-warning-text: var(--status-warning-text);
+  --color-status-running-text: var(--status-running-text);
+  --color-status-waiting-for-task-text: var(--status-waiting-for-task-text);
   --color-panel: var(--panel);
+  --text-micro: 0.6875rem; /* 11px, DESIGN.md type scale */
+  --text-micro--line-height: 0.875rem; /* 14px */
   --font-serif: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
@@ -170,6 +176,9 @@
   --popover-foreground: #0b1020;
   --primary: #286bff; /* doc: --primary, same both themes */
   --primary-foreground: #ffffff; /* doc: --btn-primary-fg (light) */
+  /* Text on bg-brand-gradient, both themes: dark ink reads on every stop
+     (>= 4.0:1); white drops to 1.7:1 on the cyan and 2.1:1 on the orange. */
+  --brand-gradient-foreground: #0b0d18;
   --secondary: #eef1f6; /* doc: --secondary / --muted / --accent share one value */
   --secondary-foreground: #0b1020;
   --muted: #eef1f6;
@@ -186,6 +195,12 @@
   --status-error: oklch(0.58 0.22 25);
   --status-paused: oklch(0.65 0.02 250);
   --status-waiting-for-task: #35d46a; /* doc: not in the brand sheet's 6-color palette -- a grass-green sibling of Mint (hue 140 vs Mint's 173), kept distinct so "waiting" and "running" dots don't read as the same status */
+  /* Status as TEXT: the brand fills (#ff9a3c, #20d4bf, #35d46a) are ~2:1 on
+     light surfaces, so text uses darker shades of the same hues (>= 4.8:1 on
+     --background and --muted). Fills, borders and dots keep the brand value. */
+  --status-warning-text: #a85000;
+  --status-running-text: #0d766a;
+  --status-waiting-for-task-text: #16793a;
   --chart-1: #286bff;
   --chart-2: #20d4bf;
   --chart-3: #ff9a3c;
@@ -212,7 +227,10 @@
   --popover: #0e1220;
   --popover-foreground: #f6f8fa;
   --primary: #286bff; /* doc: Electric Blue, same both themes */
-  --primary-foreground: #0b0d18; /* doc: --btn-primary-fg (dark) */
+  /* White on the flat Electric Blue (4.5:1). The brand sheet's dark
+     --btn-primary-fg (#0b0d18) was chosen for the gradient fill and lives on
+     as --brand-gradient-foreground. */
+  --primary-foreground: #ffffff;
   --secondary: #141827; /* doc: --secondary / --muted / --accent share one value */
   --secondary-foreground: #f6f8fa;
   --muted: #141827;
@@ -229,6 +247,9 @@
   --status-error: oklch(0.65 0.22 25);
   --status-paused: oklch(0.6 0 0);
   --status-waiting-for-task: #35d46a; /* doc: see light-theme comment above */
+  --status-warning-text: var(--status-warning);
+  --status-running-text: var(--status-running);
+  --status-waiting-for-task-text: var(--status-waiting-for-task);
   --chart-1: #286bff;
   --chart-2: #20d4bf;
   --chart-3: #ff9a3c;
@@ -269,19 +290,12 @@
 
 /* Brand gradient, lifted verbatim from the octopus mark's own fill
    (public/octopus_oc8.svg's linearGradient stops: cyan -> blue -> purple ->
-   pink -> orange) -- applied to every filled `bg-primary` surface app-wide
-   (buttons, progress fills, badges, chat bubbles) so the brand's signature
-   sweep shows up beyond the mascot itself, not just as a flat Electric Blue.
-   Layered on top of the flat `--primary` background-color Tailwind's
-   generated `.bg-primary` utility already sets (this rule comes later in
-   the cascade at equal specificity, so it wins) -- text/borders/rings stay
-   flat (--primary): a 5-stop gradient only reads cleanly on a filled
-   surface, not on thin strokes or small type.
-   An opacity-modified variant (`bg-primary/90`, used by Button/Badge's
-   hover state) changes the now-invisible background-color underneath, not
-   this opaque background-image, so it silently loses its visual effect --
-   compensated by a brightness bump on hover here instead. */
-.bg-primary {
+   pink -> orange). DESIGN.md reserves it for the logo, the octopus, the
+   auth/onboarding surfaces and the rare `highlight` button -- ordinary
+   `bg-primary` surfaces are flat Electric Blue. The flat --primary
+   background-color underneath keeps text contrast if the image fails. */
+@utility bg-brand-gradient {
+  background-color: var(--primary);
   background-image: linear-gradient(
     135deg,
     #26d9ff 0%,
@@ -292,8 +306,17 @@
   );
 }
 
-.bg-primary:hover {
-  filter: brightness(1.08);
+/* Type scale (DESIGN.md "Typography"): the one micro style -- labels above
+   fields, table headers, small status. `text-micro` (the size alone, from
+   @theme) is for dense badges and pills that need 11px without the label
+   casing. */
+@utility micro-label {
+  font-size: 0.6875rem; /* 11px */
+  line-height: 0.875rem; /* 14px */
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted-foreground);
 }
 
 @utility glow-teal {
@@ -593,13 +616,25 @@
   animation: oc8-docking-celebrate 800ms ease-in-out 2;
 }
 
+/* Reduced motion, app-wide (DESIGN.md "Motion"): one rule instead of a
+   per-component opt-out. Covers the docking station's octopus and bubbles
+   too. Animations still run their single final frame so `both`-filled
+   entrances land in their end state. */
 @media (prefers-reduced-motion: reduce) {
-  .oc8-docking-station *,
-  .oc8-docking-station *::before,
-  .oc8-docking-station *::after {
+  *,
+  *::before,
+  *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* In-progress spinners are the one looping animation DESIGN.md allows;
+     stopping them would read as "stuck". Slowed down instead. */
+  .animate-spin {
+    animation-duration: 1.5s !important;
+    animation-iteration-count: infinite !important;
   }
 }
 

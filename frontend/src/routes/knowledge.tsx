@@ -156,7 +156,7 @@ export function KnowledgePage() {
             >
               <t.icon className="h-4 w-4" />
               {t.label}
-              <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+              <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 font-mono text-micro text-muted-foreground">
                 {t.count}
               </span>
             </button>
@@ -338,7 +338,7 @@ export function SourcesTab({
                       lastSyncError={s.lastSyncError}
                     />
                     {archived && (
-                      <span className="rounded-full border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-[color:var(--status-warning)]">
+                      <span className="rounded-full border border-status-warning/40 bg-status-warning/10 px-1.5 py-0.5 micro-label text-status-warning-text">
                         {t("Deleted", "Gelöscht")}
                       </span>
                     )}
@@ -360,7 +360,7 @@ export function SourcesTab({
               </dl>
 
               {!archived && s.lastSyncStatus === "failed" && !(activeJob?.sourceId === s.id) && (
-                <p className="mt-3 rounded-md border border-[color:var(--status-error)]/30 bg-[color:var(--status-error)]/5 px-2.5 py-1.5 text-xs text-[color:var(--status-error)]">
+                <p className="mt-3 rounded-md border border-status-error/30 bg-status-error/5 px-2.5 py-1.5 text-xs text-status-error">
                   {s.lastSyncError ||
                     t("The last sync failed.", "Der letzte Sync ist fehlgeschlagen.")}
                 </p>
@@ -696,7 +696,7 @@ export function BasesTab({
               className={cn(
                 "flex flex-col p-5 transition",
                 archived ? "opacity-60" : "hover:border-primary/50",
-                isRestricted && !archived && "border-[color:var(--status-warning)]/50",
+                isRestricted && !archived && "border-status-warning/50",
               )}
             >
               <div className="flex items-start justify-between gap-3">
@@ -714,7 +714,7 @@ export function BasesTab({
                     <div className="flex items-center gap-2">
                       <h3 className="truncate font-serif text-base leading-tight">{kb.name}</h3>
                       {archived && (
-                        <span className="rounded-full border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-[color:var(--status-warning)]">
+                        <span className="rounded-full border border-status-warning/40 bg-status-warning/10 px-1.5 py-0.5 micro-label text-status-warning-text">
                           {t("Deleted", "Gelöscht")}
                         </span>
                       )}
@@ -752,7 +752,7 @@ export function BasesTab({
                   )}
                 </Row>
                 <Row label="Model">
-                  <span className="font-mono text-[11px] text-muted-foreground">
+                  <span className="font-mono text-xs text-muted-foreground">
                     {kb.embeddingModel.includes("/")
                       ? kb.embeddingModel.split("/")[1]
                       : kb.embeddingModel}
@@ -773,7 +773,7 @@ export function BasesTab({
 
               {isRestricted && !archived && (
                 <div
-                  className="mt-4 flex items-start gap-2 rounded-md border p-2 text-[11px]"
+                  className="mt-4 flex items-start gap-2 rounded-md border p-2 text-xs"
                   style={{
                     borderColor: `color-mix(in oklab, ${sens.color} 40%, transparent)`,
                     background: `color-mix(in oklab, ${sens.color} 8%, transparent)`,
@@ -1096,7 +1096,7 @@ export function KbDetailDrawer({ kbId, onClose }: { kbId: string; onClose: () =>
                       },
                     );
                   }}
-                  className="rounded-md border border-border bg-background/40 px-2 py-1 text-muted-foreground hover:border-[color:var(--status-error)]/50 hover:text-[color:var(--status-error)] disabled:cursor-not-allowed disabled:opacity-50"
+                  className="rounded-md border border-border bg-background/40 px-2 py-1 text-muted-foreground hover:border-status-error/50 hover:text-status-error disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {t("Remove", "Entfernen")}
                 </button>
@@ -1289,7 +1289,7 @@ function Wizard({
         <header className="flex items-center justify-between border-b border-border px-5 py-4">
           <div>
             <h3 className="font-serif text-lg leading-tight">{title}</h3>
-            <p className="mt-0.5 text-[11px] uppercase tracking-widest text-muted-foreground">
+            <p className="mt-0.5 micro-label">
               Step {step} of {totalSteps}
             </p>
           </div>
@@ -1489,7 +1489,7 @@ export function SourceWizard({
                         {entry.label ?? entry.typeId.replace(/[-_]/g, " ")}
                       </div>
                     </div>
-                    <div className="truncate text-[10px] text-muted-foreground">
+                    <div className="truncate text-xs text-muted-foreground">
                       {entry.description ?? "Installed connector"}
                     </div>
                   </div>
@@ -1526,8 +1526,8 @@ export function SourceWizard({
       {step === 3 && (
         <>
           {!targetKbId && (
-            <div className="space-y-2 rounded-md border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 p-3">
-              <p className="text-xs text-[color:var(--status-warning)]">
+            <div className="space-y-2 rounded-md border border-status-warning/40 bg-status-warning/10 p-3">
+              <p className="text-xs text-status-warning-text">
                 A source needs a knowledge base to sync into — you don't have one yet. Name one now:
               </p>
               <div className="flex gap-2">
@@ -1622,7 +1622,7 @@ export function SourceWizard({
                   />
                   <div>
                     <div className="font-medium">{sm.label}</div>
-                    <div className="text-[10px] text-muted-foreground">
+                    <div className="text-xs text-muted-foreground">
                       {s === "public" && "Visible to everyone, safe for public models."}
                       {s === "internal" && "Employees only, cloud models allowed."}
                       {s === "confidential" && "Cleared roles, prefer EU-hosted models."}
@@ -1695,7 +1695,7 @@ function DynamicConnectorFields({
             ))}
           </select>
           {!connections.length && (
-            <span className="mt-1 block text-[11px] text-[color:var(--status-warning)]">
+            <span className="mt-1 block text-xs text-status-warning-text">
               No active {oauthProvider} account is connected yet. Configure OAuth first.
             </span>
           )}
@@ -1715,9 +1715,7 @@ function DynamicConnectorFields({
                   onChange={(id) => onChange(key, id)}
                 />
               </div>
-              {field.description && (
-                <span className="mt-1 block text-[11px]">{field.description}</span>
-              )}
+              {field.description && <span className="mt-1 block text-xs">{field.description}</span>}
             </label>
           );
         }
@@ -1751,9 +1749,7 @@ function DynamicConnectorFields({
               }
               className="mt-1 w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm text-foreground"
             />
-            {field.description && (
-              <span className="mt-1 block text-[11px]">{field.description}</span>
-            )}
+            {field.description && <span className="mt-1 block text-xs">{field.description}</span>}
           </label>
         );
       })}
@@ -2060,7 +2056,7 @@ export function BaseWizard({
           <button
             type="button"
             onClick={() => setIndexType("")}
-            className="text-[11px] text-muted-foreground underline"
+            className="text-xs text-muted-foreground underline"
           >
             {t("Change index type", "Index-Typ ändern")}
           </button>
@@ -2083,9 +2079,7 @@ export function BaseWizard({
                 onChange={(e) => setIndexConfig((prev) => ({ ...prev, [key]: e.target.value }))}
                 className="mt-1 w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm text-foreground"
               />
-              {field.description && (
-                <span className="mt-1 block text-[11px]">{field.description}</span>
-              )}
+              {field.description && <span className="mt-1 block text-xs">{field.description}</span>}
             </label>
           ))}
         </div>
@@ -2103,7 +2097,7 @@ export function BaseWizard({
                     ? t("Must match the remote collection", "Muss zur Remote-Collection passen")
                     : "Recommended defaults"}
                 </span>
-                <span className="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[10px] text-primary">
+                <span className="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-micro text-primary">
                   {mode === "connect" ? "required" : "auto"}
                 </span>
               </div>
@@ -2132,7 +2126,7 @@ export function BaseWizard({
                 </option>
               ))}
             </select>
-            <p className="mt-1 text-[11px] text-muted-foreground">
+            <p className="mt-1 text-xs text-muted-foreground">
               {t(
                 "Only on-prem models are offered: this deployment routes every embedding through the local Ollama instance, so a cloud model would fail the moment a document is ingested.",
                 "Es werden nur On-Prem-Modelle angeboten: dieses Deployment leitet jedes Embedding über die lokale Ollama-Instanz, ein Cloud-Modell würde beim ersten Dokument fehlschlagen.",
@@ -2150,7 +2144,7 @@ export function BaseWizard({
 function Stat({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="rounded-md border border-border bg-background/40 px-2 py-1.5">
-      <div className="text-[10px] uppercase tracking-widest text-muted-foreground">{label}</div>
+      <div className="micro-label">{label}</div>
       <div className="mt-0.5 truncate text-xs font-medium">{value}</div>
     </div>
   );
@@ -2159,9 +2153,7 @@ function Stat({ label, value }: { label: string; value: React.ReactNode }) {
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-baseline gap-2">
-      <span className="w-24 shrink-0 text-[10px] uppercase tracking-widest text-muted-foreground">
-        {label}
-      </span>
+      <span className="w-24 shrink-0 micro-label">{label}</span>
       <span className="min-w-0 flex-1 truncate">{children}</span>
     </div>
   );
@@ -2188,7 +2180,7 @@ function StatusDot({
   const label = failed ? "sync failed" : connected ? "connected" : "not connected";
   return (
     <span
-      className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px]"
+      className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-micro"
       title={failed ? (lastSyncError ?? "sync failed") : undefined}
       style={{
         color,
@@ -2216,7 +2208,7 @@ function JobStatusChip({ status }: { status: string }) {
   const m = meta[status] ?? { color: "var(--status-warning)", label: status };
   return (
     <span
-      className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px]"
+      className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-micro"
       style={{
         color: m.color,
         borderColor: `color-mix(in oklab, ${m.color} 40%, transparent)`,
@@ -2243,7 +2235,7 @@ function StatusChip({ status }: { status: "current" | "updating" | "error" }) {
   }[status];
   return (
     <span
-      className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px]"
+      className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-micro"
       style={{
         color: meta.color,
         borderColor: `color-mix(in oklab, ${meta.color} 40%, transparent)`,
@@ -2263,7 +2255,7 @@ function SensPill({ sens }: { sens: SensitivityLevel }) {
   const m = sensitivityMeta[sens];
   return (
     <span
-      className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px]"
+      className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-micro"
       style={{
         color: m.color,
         borderColor: `color-mix(in oklab, ${m.color} 40%, transparent)`,
@@ -2278,7 +2270,7 @@ function SensPill({ sens }: { sens: SensitivityLevel }) {
 
 function MiniPill({ icon: Icon, children }: { icon: typeof Lock; children: React.ReactNode }) {
   return (
-    <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+    <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-micro text-muted-foreground">
       <Icon className="h-2.5 w-2.5" />
       {children}
     </span>
@@ -2298,7 +2290,7 @@ function Pipeline({ updating }: { updating: boolean }) {
         <div key={s.label} className="flex items-center gap-1">
           <div
             className={cn(
-              "flex flex-1 flex-col items-center gap-1 rounded-md border p-2 text-[10px] uppercase tracking-widest",
+              "flex flex-1 flex-col items-center gap-1 rounded-md border p-2 micro-label",
               updating && i === 2
                 ? "border-primary/60 bg-primary/10 text-primary"
                 : "border-border bg-background/40 text-muted-foreground",
@@ -2344,9 +2336,7 @@ function TokenUsageTile() {
           <TrendingUp className="h-5 w-5" />
         </div>
         <div>
-          <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-            Token consumption
-          </div>
+          <div className="micro-label">Token consumption</div>
           <div className="mt-0.5 text-sm font-medium">oc8 AI Gateway · billed monthly</div>
         </div>
       </div>
@@ -2368,7 +2358,7 @@ function TokenUsageTile() {
       </div>
 
       <div className="ml-auto min-w-[220px] flex-1 max-w-sm">
-        <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-widest text-muted-foreground">
+        <div className="mb-1 flex items-center justify-between micro-label">
           <span>Monthly budget</span>
           <span className="font-mono normal-case tracking-normal text-foreground/80">
             {pct.toFixed(0)}% · {formatBigTokens(budget)}
@@ -2398,17 +2388,17 @@ function UsageStat({
 }) {
   return (
     <div>
-      <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-widest text-muted-foreground">
+      <div className="flex items-center gap-1.5 micro-label">
         {label}
         {live && (
           <span className="relative inline-flex h-1.5 w-1.5">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[color:var(--status-running)] opacity-70" />
-            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-[color:var(--status-running)]" />
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-status-running opacity-70" />
+            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-status-running" />
           </span>
         )}
       </div>
       <div className="mt-0.5 font-serif text-base leading-tight">{primary}</div>
-      <div className="text-[11px] text-muted-foreground">
+      <div className="text-xs text-muted-foreground">
         est. <span className="text-foreground/80">{secondary}</span>
       </div>
     </div>
@@ -2438,7 +2428,7 @@ function SyncProgress({ className }: { className?: string }) {
 
   return (
     <div className={cn("space-y-1", className)}>
-      <div className="flex items-center justify-between text-[10px] uppercase tracking-widest text-muted-foreground">
+      <div className="flex items-center justify-between micro-label">
         <span className="inline-flex items-center gap-1.5">
           <RefreshCw className="h-3 w-3 animate-spin text-primary" />
           Syncing
