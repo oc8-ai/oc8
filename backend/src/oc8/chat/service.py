@@ -31,9 +31,12 @@ from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.chat.audience import session_audience
 from oc8.chat.modes import MODES, ChatMode, mode_directive, parse_command
 from oc8.copilot.redaction import is_secret_request, redact_text
 from oc8.copilot.responsibilities import close_responsibility
+from oc8.realtime.bus import get_event_bus
+from oc8.realtime.emit import publish_chat_message_created
 from oc8.runtime.intake import enqueue_run
 from oc8.runtime.states import TERMINAL
 from oc8.storage import s3
@@ -471,15 +474,24 @@ async def send_message(
         # the transcript verbatim.
         user_message.content = redact_text(message)
         await db.flush()
-        db.add(
-            m.ChatMessage(
-                tenant_id=tenant_id,
-                session_id=session.id,
-                role="assistant",
-                content=_SECRET_REFUSAL,
-            )
+        refusal = m.ChatMessage(
+            tenant_id=tenant_id,
+            session_id=session.id,
+            role="assistant",
+            content=_SECRET_REFUSAL,
         )
+        db.add(refusal)
         session.last_message_at = dt.datetime.now(tz=dt.UTC)
+        await db.flush()
+        for announced in (user_message, refusal):
+            await publish_chat_message_created(
+                db,
+                session=session,
+                message=announced,
+                run_id=None,
+                acting_subject=originating_operator,
+                acting_role=operator_role,
+            )
         await db.commit()
         # This commit ends the transaction-local `app.tenant_id` RLS binding --
         # re-bind here, not in every caller (`_message_dto` reads `user_message`
@@ -558,6 +570,10 @@ async def send_message(
         session.task_id = task.id
         await db.flush()
 
+    # Resolved before `enqueue_run` commits, while the RLS binding still holds.
+    audience = await session_audience(
+        db, session=session, acting_subject=originating_operator, acting_role=operator_role
+    )
     run, _published = await enqueue_run(
         db,
         tenant_id=tenant_id,
@@ -573,6 +589,20 @@ async def send_message(
     # `collab.intake`'s handoff routing.
     await db.execute(
         text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": str(tenant_id)}
+    )
+    # enqueue_run committed: the turn is readable, so a refetch triggered by
+    # this event finds it. Not publish_after_commit -- the commit is behind us.
+    await get_event_bus().publish_member_event(
+        tenant_id,
+        audience,
+        "chat.message_created",
+        {
+            "session_id": str(session.id),
+            "message_id": str(user_message.id),
+            "role": user_message.role,
+            "run_id": str(run.id),
+        },
+        source=f"oc8/chat/{session.id}",
     )
     if role == "followup":
         # Linked so a quiet outcome can take its own prompt back out of the
@@ -717,18 +747,26 @@ async def record_assistant_reply(db: AsyncSession, *, run: m.AgentRun, output: s
             reply_to_id = uuid.UUID(str(reply_to_raw))
         except (TypeError, ValueError):
             reply_to_id = None
-    db.add(
-        m.ChatMessage(
-            tenant_id=run.tenant_id,
-            session_id=session.id,
-            role="assistant",
-            content=output or "",
-            run_id=run.id,
-            rendered_components=rendered_components,
-            reply_to_id=reply_to_id,
-        )
+    reply = m.ChatMessage(
+        tenant_id=run.tenant_id,
+        session_id=session.id,
+        role="assistant",
+        content=output or "",
+        run_id=run.id,
+        rendered_components=rendered_components,
+        reply_to_id=reply_to_id,
     )
+    db.add(reply)
     session.last_message_at = dt.datetime.now(tz=dt.UTC)
+    await db.flush()
+    await publish_chat_message_created(
+        db,
+        session=session,
+        message=reply,
+        run_id=run.id,
+        acting_subject=(run.context or {}).get("originating_operator"),
+        acting_role=(run.context or {}).get("operator_role"),
+    )
 
 
 async def active_runs_for_session(

@@ -3,9 +3,12 @@ so callers get one call instead of duplicated inline construction."""
 
 from __future__ import annotations
 
+import asyncio
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any
 
+from sqlalchemy import event as sa_event
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -249,3 +252,76 @@ async def note_focus(
         payload["record_url"] = record_url
         task.payload = payload
     await db.flush()
+
+
+_AFTER_COMMIT_KEY = "oc8_after_commit"
+#: Live references to the fire-and-forget publish tasks (an unreferenced task
+#: can be garbage-collected mid-flight); self-pruning via the done callback.
+_after_commit_tasks: set[asyncio.Task[None]] = set()
+
+
+def _run_pending(session: Any) -> None:
+    pending = session.info.pop(_AFTER_COMMIT_KEY, [])
+    if not pending:
+        return
+    loop = asyncio.get_running_loop()
+    for factory in pending:
+        task = loop.create_task(factory())
+        _after_commit_tasks.add(task)
+        task.add_done_callback(_after_commit_tasks.discard)
+
+
+def _drop_pending(session: Any) -> None:
+    session.info.pop(_AFTER_COMMIT_KEY, None)
+
+
+def publish_after_commit(db: AsyncSession, factory: Callable[[], Awaitable[None]]) -> None:
+    """Publish only once the row the event names is visible to a reader.
+
+    `chat.message_created` carries ids, and a browser refetches on it; published
+    before the executor's commit, that refetch would come back without the
+    message (the executor publishes run.status before it commits, see
+    lib/live/apply-event.ts). Dropped on rollback: an event for a row that never
+    existed is worse than none."""
+    sync = db.sync_session
+    if not sa_event.contains(sync, "after_commit", _run_pending):
+        sa_event.listen(sync, "after_commit", _run_pending)
+        sa_event.listen(sync, "after_rollback", _drop_pending)
+    sync.info.setdefault(_AFTER_COMMIT_KEY, []).append(factory)
+
+
+async def publish_chat_message_created(
+    db: AsyncSession,
+    *,
+    session: m.ChatSession,
+    message: m.ChatMessage,
+    run_id: uuid.UUID | None,
+    acting_subject: str | None = None,
+    acting_role: str | None = None,
+) -> None:
+    """Spec §2.4: `{session_id, message_id, role, run_id}` to every member who
+    can open the session -- and still reach its agent -- and to nobody else.
+    The audience is resolved now, while the RLS tenant binding still holds;
+    the publish waits for the commit."""
+    from oc8.chat.audience import session_audience
+
+    audience = await session_audience(
+        db, session=session, acting_subject=acting_subject, acting_role=acting_role
+    )
+    if not audience:
+        return
+    tenant_id = session.tenant_id
+    source = f"oc8/chat/{session.id}"
+    data = {
+        "session_id": str(session.id),
+        "message_id": str(message.id),
+        "role": message.role,
+        "run_id": str(run_id) if run_id else None,
+    }
+
+    async def _publish() -> None:
+        await get_event_bus().publish_member_event(
+            tenant_id, audience, "chat.message_created", data, source=source
+        )
+
+    publish_after_commit(db, _publish)
