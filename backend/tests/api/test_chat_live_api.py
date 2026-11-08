@@ -220,6 +220,7 @@ def _leaky_context(chat_ctx: dict[str, Any]) -> dict[str, Any]:
         ],
         "stepTimings": [{"step": 1, "step_wall_ms": 40, "reasoning": f"{_MARK} in reasoning"}],
         "pending_question": f"{_MARK} question",
+        "rendered_components": [{"component_key": "table", "props": {"title": f"{_MARK} card"}}],
         "transcript": [{"role": "user", "content": f"{_MARK} transcript"}],
     }
 
@@ -286,6 +287,7 @@ async def test_a_colleagues_runs_carry_only_step_labels_and_the_result(
         ]
         assert run["stepTimings"] == [{"step": 1, "stepWallMs": 40}]
         assert run["redacted"] is True
+        assert run["renderedComponents"] == []
 
 
 async def test_an_autonomous_run_keeps_its_full_steps(app_session: AppSessionFactory) -> None:
@@ -312,12 +314,27 @@ async def test_an_autonomous_run_keeps_its_full_steps(app_session: AppSessionFac
     assert item["run"]["toolCalls"][0]["arguments"] == {"q": "x"}
 
 
-async def test_my_own_runs_are_not_redacted(app_session: AppSessionFactory) -> None:
-    """A run of mine, or an autonomous one, is never `redacted`."""
+async def test_my_own_runs_are_not_redacted_and_keep_their_cards(
+    app_session: AppSessionFactory,
+) -> None:
+    """A run of mine, or an autonomous one, is never `redacted`, and carries
+    the cards it rendered, so they outlive the live socket."""
     tenant = uuid.uuid4()
     agent_id = await _agent(app_session, tenant)
     async with app_session(tenant) as db:
-        db.add(m.AgentRun(tenant_id=tenant, agent_id=agent_id, source="cron", state="done"))
+        db.add(
+            m.AgentRun(
+                tenant_id=tenant,
+                agent_id=agent_id,
+                source="cron",
+                state="done",
+                context={
+                    "rendered_components": [
+                        {"component_key": "table", "props": {"title": "Inbox"}}
+                    ],
+                },
+            )
+        )
     app = create_app()
     async with LifespanManager(app), _client(app) as c:
         body = (
@@ -325,3 +342,6 @@ async def test_my_own_runs_are_not_redacted(app_session: AppSessionFactory) -> N
         ).json()
     [item] = body["items"]
     assert item["run"]["redacted"] is False
+    assert item["run"]["renderedComponents"] == [
+        {"componentKey": "table", "props": {"title": "Inbox"}}
+    ]

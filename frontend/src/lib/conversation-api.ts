@@ -16,7 +16,7 @@ import {
   type ChatSessionDTO,
   type RunActivityDTO,
 } from "@/lib/hooks-chat";
-import { useKnowledgeBases } from "@/lib/hooks";
+import { useKnowledgeBases, type RunComponentDTO } from "@/lib/hooks";
 
 export interface ActiveRunDTO {
   runId: string;
@@ -167,6 +167,8 @@ export interface LiveRunDTO {
   startedBy: string | null;
   /** A colleague's run: shown as labels only, never watched live. */
   redacted: boolean;
+  /** The cards it rendered; always empty for a `redacted` run. */
+  renderedComponents: RunComponentDTO[];
 }
 
 export interface LiveItemDTO {

@@ -1,6 +1,6 @@
 // frontend/src/test/conversation-steering.test.tsx
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 const steering = vi.hoisted(() => ({ value: undefined as unknown }));
@@ -66,6 +66,7 @@ function liveRun(over: Partial<LiveRunDTO> = {}): LiveRunDTO {
     stepTimings: [],
     startedBy: null,
     redacted: false,
+    renderedComponents: [],
     ...over,
   };
 }
@@ -546,11 +547,17 @@ describe("timeline helpers", () => {
 
   it("uses a colleague's run as the timeline has it, never a stale live cache", () => {
     const qc = new QueryClient();
-    qc.setQueryData(["run", "theirs"], { id: "theirs", state: "queued", steps: 0, toolCalls: [] });
+    qc.setQueryData(["run", "theirs"], {
+      id: "theirs",
+      state: "queued",
+      steps: 0,
+      toolCalls: [],
+      components: [{ componentKey: "table", props: {} }],
+    });
     let result: Record<string, RunActivityDTO> = {};
     function Probe() {
       result = useTimelineRuns(
-        [liveRun({ id: "theirs", state: "running", steps: 3 })],
+        [liveRun({ id: "theirs", state: "running", steps: 3, redacted: true })],
         "a",
         new Set(),
       );
@@ -563,5 +570,48 @@ describe("timeline helpers", () => {
     );
     expect(result.theirs?.state).toBe("running");
     expect(result.theirs?.steps).toBe(3);
+    expect(result.theirs?.components).toEqual([]);
+  });
+
+  it("keeps the cards a watched run rendered once it has finished", async () => {
+    const qc = new QueryClient();
+    let result: Record<string, RunActivityDTO> = {};
+    function Probe({ run, watched }: { run: LiveRunDTO; watched: string[] }) {
+      result = useTimelineRuns([run], "a", new Set(watched));
+      return null;
+    }
+    const ui = (run: LiveRunDTO, watched: string[]) => (
+      <QueryClientProvider client={qc}>
+        <Probe run={run} watched={watched} />
+      </QueryClientProvider>
+    );
+    const view = render(ui(liveRun({ state: "running" }), ["r1"]));
+    await act(async () =>
+      applyEvent(qc, {
+        id: "e3",
+        type: "run.component_rendered",
+        data: { run_id: "r1", component_key: "table", props: { title: "Inbox" } },
+      } as never),
+    );
+    await waitFor(() =>
+      expect(result.r1?.components).toEqual([{ componentKey: "table", props: { title: "Inbox" } }]),
+    );
+    view.rerender(ui(liveRun({ state: "done" }), []));
+    expect(result.r1?.components).toEqual([{ componentKey: "table", props: { title: "Inbox" } }]);
+  });
+
+  it("shows the cards a finished run carries on the timeline", () => {
+    let result: Record<string, RunActivityDTO> = {};
+    const card = { componentKey: "table", props: { title: "Inbox" } };
+    function Probe() {
+      result = useTimelineRuns([liveRun({ renderedComponents: [card] })], "a", new Set());
+      return null;
+    }
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <Probe />
+      </QueryClientProvider>,
+    );
+    expect(result.r1?.components).toEqual([card]);
   });
 });

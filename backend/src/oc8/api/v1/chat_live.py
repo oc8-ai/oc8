@@ -80,9 +80,12 @@ def _run_dto(run: m.AgentRun, trigger: dict[str, str | None], *, colleague: bool
     output = ctx.get("output")
     calls: list[Any] = list(ctx.get("toolCalls") or [])
     timings = [step_timing_dto(e) for e in ctx.get("stepTimings") or []]
+    components: list[Any] = list(ctx.get("rendered_components") or [])
     if colleague:
         calls = [_only(c, _COLLEAGUE_CALL_KEYS) for c in calls]
         timings = [_only(t, _COLLEAGUE_TIMING_KEYS) for t in timings]
+        # A card may quote anything the run read -- none of it is a label.
+        components = []
     return LiveRunDTO(
         id=str(run.id),
         state=run.state,
@@ -95,6 +98,7 @@ def _run_dto(run: m.AgentRun, trigger: dict[str, str | None], *, colleague: bool
         step_timings=timings,
         started_by=trigger.get("started_by"),
         redacted=colleague,
+        rendered_components=components,
     )
 
 

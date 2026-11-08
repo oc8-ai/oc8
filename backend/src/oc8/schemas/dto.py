@@ -1752,6 +1752,9 @@ class LiveRunDTO(CamelModel):
     #: A colleague's run under "All runs", cut to step labels (Ruling 15) --
     #: the client shows it as labels only and never watches it live.
     redacted: bool = False
+    #: The cards the run rendered (`context["rendered_components"]`), so they
+    #: outlive the live socket. Always empty for a `redacted` run.
+    rendered_components: list[RenderedComponentDTO] = []
 
 
 class LiveItemDTO(CamelModel):
