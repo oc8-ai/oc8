@@ -1382,6 +1382,15 @@ async def _delegate(
             for carried in ("door", "followup", "originating_operator"):
                 if executing_run.context.get(carried) is not None:
                     context[carried] = executing_run.context[carried]
+            # The sub-run acts for the same person (connections design): a
+            # tool "in the user's context" must not lose them one hop down.
+            from oc8.connections.acting import resolve_acting_person
+
+            acting = await resolve_acting_person(db, executing_run)
+            if acting.member_id is not None:
+                context["on_behalf_of"] = str(acting.member_id)
+            if executing_run.context.get("trigger_id"):
+                context["trigger_id"] = executing_run.context["trigger_id"]
     # Deferred import: oc8.runtime.executor reaches oc8.runtime.adapter, which
     # imports this module's own importer (oc8.agent.engine) at module level, so
     # importing it at the top would be a cycle. Resolved once, at first call.

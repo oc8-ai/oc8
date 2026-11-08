@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
 from oc8.authz.permissions import MANAGE, TRIGGER, VIEW, perm
+from oc8.authz.scope import scope_for_principal
 from oc8.config import get_settings
 from oc8.modelrouter.subscription_guard import (
     SubscriptionModelNotManualOnly,
@@ -47,7 +48,17 @@ def _to_dto(t: m.Trigger) -> TriggerDTO:
         event_source=t.event_source,
         event_type=t.event_type,
         webhook_url=_webhook_url(t.webhook_token) if t.webhook_token else None,
+        created_by_member_id=str(t.created_by_member_id) if t.created_by_member_id else None,
     )
+
+
+async def _caller_member_id(db: DbSession, principal: CurrentPrincipal) -> uuid.UUID | None:
+    """Whose account the trigger's runs act through in "user" mode."""
+    try:
+        member, _scope = await scope_for_principal(db, principal, upsert=True)
+    except PermissionError:
+        return None
+    return member.id if member is not None else None
 
 
 @router.post(
@@ -72,6 +83,7 @@ async def create_agent_trigger(
             cron_expression=body.cron_expression,
             event_source=body.event_source,
             event_type=body.event_type,
+            created_by_member_id=await _caller_member_id(db, principal),
         )
     except InvalidTriggerConfig as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
@@ -110,6 +122,8 @@ async def update_agent_trigger(
     trigger = await get_trigger(db, trigger_id=trigger_id)
     if trigger is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "trigger not found")
+    if trigger.created_by_member_id is None:
+        trigger.created_by_member_id = await _caller_member_id(db, principal)
     try:
         updated = await update_trigger(
             db,

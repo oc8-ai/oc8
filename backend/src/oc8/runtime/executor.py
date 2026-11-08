@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agents.versioning import resolve_version
+from oc8.connections.acting import resolve_acting_person
 from oc8.db.session import tenant_session
 from oc8.observability import get_tracer, record_run_outcome
 from oc8.realtime.emit import publish_agent_status, record_activity
@@ -255,6 +256,8 @@ async def _maybe_wake_parent(
     door: str | None = None,
     followup: dict[str, Any] | None = None,
     originating_operator: str | None = None,
+    on_behalf_of: uuid.UUID | None = None,
+    trigger_id: str | None = None,
 ) -> uuid.UUID | None:
     """Create a follow-up run for the team lead that delegated this sub-run, so
     it can react to the outcome (§7). Returns the new run's id for the caller to
@@ -292,6 +295,12 @@ async def _maybe_wake_parent(
         "parent_task_id": str(parent.id),
         "delegation_depth": delegation_depth,
     }
+    # The lead's wake-up acts for the same person as the sub-run (connections
+    # design), whether or not the chain started in a chat.
+    if on_behalf_of is not None:
+        context["on_behalf_of"] = str(on_behalf_of)
+    if trigger_id:
+        context["trigger_id"] = trigger_id
     # Two reasons the sub-run's connection is withheld from the lead's wake-up,
     # and both end the same way: the lead resolves for itself.
     #
@@ -977,6 +986,8 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         door=(run.context or {}).get("door"),
                         followup=(run.context or {}).get("followup"),
                         originating_operator=(run.context or {}).get("originating_operator"),
+                        on_behalf_of=(await resolve_acting_person(db, run)).member_id,
+                        trigger_id=(run.context or {}).get("trigger_id"),
                     )
                     if wake_id is not None:
                         pending_runs.append(wake_id)
@@ -1115,6 +1126,8 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                                 originating_operator=(run.context or {}).get(
                                     "originating_operator"
                                 ),
+                                on_behalf_of=(await resolve_acting_person(db, run)).member_id,
+                                trigger_id=(run.context or {}).get("trigger_id"),
                             )
                             if wake_id is not None:
                                 pending_runs.append(wake_id)
@@ -1218,6 +1231,8 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             door=(run.context or {}).get("door"),
                             followup=(run.context or {}).get("followup"),
                             originating_operator=(run.context or {}).get("originating_operator"),
+                            on_behalf_of=(await resolve_acting_person(db, run)).member_id,
+                            trigger_id=(run.context or {}).get("trigger_id"),
                         )
                         if wake_id is not None:
                             pending_runs.append(wake_id)

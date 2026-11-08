@@ -55,6 +55,7 @@ async def create_trigger(
     event_type: str | None = None,
     declared_events: set[tuple[str, str]] | None = None,
     jitter_seconds: int = 60,
+    created_by_member_id: uuid.UUID | None = None,
 ) -> Trigger:
     next_run_at = None
     if kind == "cron":
@@ -82,6 +83,7 @@ async def create_trigger(
     trigger = Trigger(
         tenant_id=tenant_id,
         agent_id=agent_id,
+        created_by_member_id=created_by_member_id,
         kind=kind,
         task_text=task_text,
         cron_expression=cron_expression,
