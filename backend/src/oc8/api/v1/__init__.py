@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from oc8.api.v1 import (
+    agent_tool_access,
     agents,
     agents_write,
     api_keys,
@@ -65,6 +66,7 @@ api_router.include_router(departments.router, tags=["departments"])
 api_router.include_router(onboarding.router, tags=["onboarding"])
 api_router.include_router(agents.router, tags=["agents"])
 api_router.include_router(agents_write.router, tags=["agents"])
+api_router.include_router(agent_tool_access.router, tags=["agents"])
 api_router.include_router(catalog.router, tags=["catalog"])
 api_router.include_router(model_prices.router, tags=["catalog"])
 api_router.include_router(reconciliation.router, tags=["catalog"])

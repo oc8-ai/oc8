@@ -1464,6 +1464,31 @@ class CredentialCheckDTO(CamelModel):
     detail: str | None = None
 
 
+class AgentToolAccessDTO(CamelModel):
+    """The account one agent uses for one connectable tool."""
+
+    tool_key: str
+    integration: str
+    label: str
+    kind: str  # "oauth" | "credential"
+    mode: str  # "default" | "user" | "fixed"
+    default_mode: str  # "user" | "organisation"
+    oauth_connection_id: str | None = None
+    credential_id: str | None = None
+    target_label: str | None = None
+    target_owner_name: str | None = None
+    #: A fixed binding whose connection or credential was removed.
+    target_missing: bool = False
+
+
+class AccessOptionDTO(CamelModel):
+    kind: str  # "user" | "oauth" | "credential"
+    id: str | None = None
+    label: str
+    owner: str | None = None  # "organisation" | "me" | "member"
+    owner_name: str | None = None
+
+
 class DeviceLoginStartDTO(CamelModel):
     """What `POST /models/chatgpt-subscription/device/start` hands the
     frontend to show the user-facing code and start polling (Task 12).

@@ -834,3 +834,9 @@ class UpdateCopilotProfileRequest(CamelModel):
 class UpdateResponsibilityRequest(CamelModel):
     state: Literal["active", "paused", "done", "cancelled"]
     reason: str = ""
+
+
+class SetAgentToolAccessRequest(CamelModel):
+    mode: Literal["user", "fixed"]
+    oauth_connection_id: uuid.UUID | None = None
+    credential_id: uuid.UUID | None = None
