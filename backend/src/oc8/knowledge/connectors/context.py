@@ -43,7 +43,9 @@ class SourceAuthContext:
 
     async def token(self) -> str:
         if self._connection_id is None:
-            raise ConnectorError("this source has no connected account — connect one and try again")
+            raise ConnectorError(
+                "this source has no connected account — connect one and try again"
+            )
         return await get_access_token(
             self._db, tenant_id=self._tenant_id, connection_id=self._connection_id
         )

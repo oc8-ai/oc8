@@ -22,7 +22,9 @@ from oc8.knowledge.vector_indexes.base import VectorIndex, VectorIndexError
 INTERNAL_INDEX_TYPE = "internal"
 
 
-async def _plugin_vector_indexes(db: AsyncSession, tenant_id: uuid.UUID) -> dict[str, VectorIndex]:
+async def _plugin_vector_indexes(
+    db: AsyncSession, tenant_id: uuid.UUID
+) -> dict[str, VectorIndex]:
     out: dict[str, VectorIndex] = {}
     for name in await enabled_plugin_names(db, tenant_id):
         discovered = find_plugin(name)
