@@ -18,7 +18,7 @@ from oc8.observability import get_tracer, record_run_outcome
 from oc8.realtime.emit import publish_agent_status, record_activity
 from oc8.runtime.adapter import RuntimeAdapter
 from oc8.runtime.intake import publish_run
-from oc8.runtime.person import ON_BEHALF_OF, person_behind
+from oc8.runtime.person import ON_BEHALF_OF, SEVERAL_PEOPLE, person_behind
 from oc8.runtime.queue import RunMessage
 from oc8.runtime.reconcile import ABANDONED_AFTER, heartbeat
 from oc8.runtime.registry import resolve_runtime
@@ -241,18 +241,43 @@ async def agent_has_own_login_binding(db: AsyncSession, agent: m.Agent) -> bool:
 async def _person_of_task_runs(
     db: AsyncSession, *, tenant_id: uuid.UUID, task_id: uuid.UUID
 ) -> str | None:
-    """The person behind the newest of a task's runs that has one."""
+    """Whose work a task is: the person its runs name, or -- for a task from
+    before its root run carried one -- the live member in
+    `payload["requested_by_member_id"]`. Several different people give
+    `SEVERAL_PEOPLE`, never a guess; nobody gives `None`."""
+    people: set[str] = set()
     rows = await db.execute(
         select(m.AgentRun.context)
         .where(m.AgentRun.tenant_id == tenant_id, m.AgentRun.task_id == task_id)
         .order_by(m.AgentRun.created_at.desc())
-        .limit(20)
+        .limit(50)
     )
     for (ctx,) in rows:
         person = person_behind(ctx)
         if person is not None:
-            return person
-    return None
+            people.add(person)
+    task = await db.get(m.Task, task_id)
+    raw = (task.payload or {}).get("requested_by_member_id") if task is not None else None
+    if raw:
+        try:
+            member_id = uuid.UUID(str(raw))
+        except ValueError:
+            member_id = None
+        if member_id is not None:
+            subject = (
+                await db.execute(
+                    select(m.OrgMember.subject).where(
+                        m.OrgMember.id == member_id,
+                        m.OrgMember.tenant_id == tenant_id,
+                        m.OrgMember.deleted_at.is_(None),
+                    )
+                )
+            ).scalar_one_or_none()
+            if subject:
+                people.add(subject)
+    if not people:
+        return None
+    return people.pop() if len(people) == 1 else SEVERAL_PEOPLE
 
 
 async def _maybe_wake_parent(

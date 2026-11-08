@@ -9,13 +9,19 @@ import uuid
 from typing import Any
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agent.control_tools import REQUEST_DECISION, _delegate, execute_control_tool
 from oc8.agent.decision_followup import carry_out_decision
 from oc8.authz.pdp import Decision, Effect
-from oc8.chat.live import get_or_create_live_session, is_autonomous_run, live_timeline
+from oc8.chat.live import (
+    get_or_create_live_session,
+    is_autonomous_run,
+    is_colleague_run,
+    live_timeline,
+)
 from oc8.modelrouter import ToolCall
 from oc8.runtime.executor import _maybe_wake_parent
 from oc8.runtime.repository import RunRepository
@@ -225,3 +231,121 @@ async def test_a_decision_follow_up_from_an_autonomous_run_stays_autonomous(
     follow, _alice, _lead = await _decide(app_session, tenant, monkeypatch, {}, "cron")
     assert "on_behalf_of" not in follow.context
     assert is_autonomous_run(follow)
+
+
+async def test_a_task_board_request_is_the_requesting_members_chain(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POST /tasks starts the lead's run for the member who asked; its
+    delegated sub-run and the lead's wake-up stay that member's -- off a
+    third member's timeline and not watchable by them."""
+    from asgi_lifespan import LifespanManager
+    from httpx import ASGITransport, AsyncClient
+
+    from oc8.auth import get_identity_provider
+    from oc8.chat.watch import may_watch_run
+    from oc8.main import create_app
+
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: _Queue())
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        dept = m.Department(tenant_id=tenant, name="Ops", frame={})
+        db.add(dept)
+        await db.flush()
+        lead = m.Agent(tenant_id=tenant, department_id=dept.id, name="Lead", is_team_lead=True)
+        worker = m.Agent(tenant_id=tenant, department_id=dept.id, name="Worker")
+        alice = m.OrgMember(tenant_id=tenant, subject="alice", subject_uuid=uuid.uuid4())
+        db.add_all([lead, worker, alice])
+        await db.flush()
+        dept.team_lead_agent_id = lead.id
+        db.add(
+            m.OrgMemberDepartment(
+                tenant_id=tenant, member_id=alice.id, department_id=dept.id,
+                seat_role="dept_viewer",
+            )
+        )  # fmt: skip
+    token = get_identity_provider().mint(tenant_id=tenant, subject="boss", role="org_admin")
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            created = await c.post(
+                "/api/v1/tasks",
+                json={"departmentId": str(dept.id), "instructions": "BOSS WORDS"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    assert created.status_code == 200, created.text
+    async with app_session(tenant) as db:
+        root = (
+            await db.execute(select(m.AgentRun).where(m.AgentRun.agent_id == lead.id))
+        ).scalar_one()
+        assert root.context["on_behalf_of"] == "boss"
+        assert "originating_operator" not in root.context
+        task = await db.get(m.Task, root.task_id)
+        lead_row = await db.get(m.Agent, lead.id)
+        worker_row = await db.get(m.Agent, worker.id)
+        alice_row = await db.get(m.OrgMember, alice.id)
+        assert task is not None and lead_row is not None and worker_row is not None
+        assert alice_row is not None
+        wake = await _delegate_and_wake(
+            db, tenant, lead=lead_row, worker=worker_row, task=task, run_id=root.id
+        )
+        assert wake.context["on_behalf_of"] == "boss"
+        assert not is_autonomous_run(wake)
+        assert await _on_alices_timeline(db, tenant, alice_row, lead_row) == set()
+        for run_id in (root.id, wake.id):
+            assert not await may_watch_run(db, member=alice_row, run_id=run_id)
+
+
+async def test_an_older_task_names_its_requester(app_session: AppSessionFactory) -> None:
+    """A task from before the root run carried the person: its
+    `requested_by_member_id` names them -- a live member of this tenant only."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        lead, worker, task, _run, _alice = await _world(db, tenant, {"task": "old"}, "manual")
+        bob = m.OrgMember(tenant_id=tenant, subject="bob", subject_uuid=uuid.uuid4())
+        db.add(bob)
+        await db.flush()
+        task.payload = {"requested_by_member_id": str(bob.id)}
+        await db.flush()
+        wake_id = await _maybe_wake_parent(
+            db, repo=RunRepository(db), tenant_id=tenant, parent_task_id=task.id,
+            delegation_depth=1, finished_agent_id=worker.id, sub_task_label="job",
+            output="done", succeeded=True, mcp_conn=None,
+        )  # fmt: skip
+        assert wake_id is not None
+        wake = await db.get(m.AgentRun, wake_id)
+        assert wake is not None and wake.context["on_behalf_of"] == "bob"
+        assert lead.id == wake.agent_id
+
+
+async def test_a_task_whose_runs_name_different_people_belongs_to_no_one(
+    app_session: AppSessionFactory,
+) -> None:
+    """No guessing: the wake-up is still somebody's (never autonomous), but
+    nobody's own -- a colleague's run for everyone, redacted and unwatchable."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        lead, worker, task, _run, alice = await _world(
+            db, tenant, {"originating_operator": "bob"}, "manual"
+        )
+        db.add(
+            m.AgentRun(
+                tenant_id=tenant, agent_id=lead.id, task_id=task.id, source="manual",
+                context={"on_behalf_of": "carol"},
+            )
+        )  # fmt: skip
+        await db.flush()
+        wake_id = await _maybe_wake_parent(
+            db, repo=RunRepository(db), tenant_id=tenant, parent_task_id=task.id,
+            delegation_depth=1, finished_agent_id=worker.id, sub_task_label="job",
+            output="done", succeeded=True, mcp_conn=None,
+        )  # fmt: skip
+        assert wake_id is not None
+        wake = await db.get(m.AgentRun, wake_id)
+        assert wake is not None
+        assert wake.context["on_behalf_of"] not in ("bob", "carol")
+        assert not is_autonomous_run(wake)
+        for subject in ("bob", "carol", "alice"):
+            member = m.OrgMember(tenant_id=tenant, subject=subject)
+            assert is_colleague_run(wake, member)
+        assert wake.id not in await _on_alices_timeline(db, tenant, alice, lead)

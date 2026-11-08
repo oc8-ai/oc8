@@ -13,6 +13,11 @@ from collections.abc import Mapping
 from typing import Any, Final
 
 ON_BEHALF_OF: Final = "on_behalf_of"
+#: `on_behalf_of` for work that continues SEVERAL people's runs (a task whose
+#: runs name different people): somebody's, so never autonomous, but nobody's
+#: own -- a colleague's run for everyone. Not a subject anyone can hold: the
+#: `oc8:` prefix is never issued as an identity subject.
+SEVERAL_PEOPLE: Final = "oc8:several-people"
 #: The context keys that name a person behind a run, strongest first.
 PERSON_KEYS: Final = ("originating_operator", ON_BEHALF_OF)
 
