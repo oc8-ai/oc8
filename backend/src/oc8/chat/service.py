@@ -288,6 +288,7 @@ _RESERVED_CONTEXT_KEYS = frozenset(
         "task",
         "reply_to_message_id",
         "model_override_id",
+        "suggestions",
     }
 )
 
@@ -761,12 +762,25 @@ async def record_assistant_reply(db: AsyncSession, *, run: m.AgentRun, output: s
             reply_to_id = uuid.UUID(str(reply_to_raw))
         except (TypeError, ValueError):
             reply_to_id = None
+    from oc8.runtime.run_context import clean_suggestions
+
+    raw_suggestions = (run.context or {}).get("suggestions")
+    suggestions = clean_suggestions(raw_suggestions) if isinstance(raw_suggestions, list) else []
+    reply_parts: list[dict[str, Any]] = (
+        [{"type": "suggestions", "options": suggestions}] if suggestions else []
+    )
+    if raw_suggestions is not None:
+        # Consumed: a later answer on this run must not inherit stale chips.
+        from oc8.runtime.run_context import merge_context
+
+        await merge_context(db, run, {"suggestions": None})
     reply = m.ChatMessage(
         tenant_id=run.tenant_id,
         session_id=session.id,
         role="assistant",
         content=output or "",
         run_id=run.id,
+        parts=reply_parts or None,
         rendered_components=rendered_components,
         reply_to_id=reply_to_id,
     )

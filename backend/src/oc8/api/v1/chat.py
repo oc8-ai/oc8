@@ -159,6 +159,12 @@ async def _message_dto(msg: m.ChatMessage, db: DbSession, tenant_id: uuid.UUID) 
         author_name=author_name,
         reply_to_id=str(msg.reply_to_id) if msg.reply_to_id else None,
         parts=msg.parts,
+        suggestions=[
+            str(o)
+            for part in (msg.parts or [])
+            if isinstance(part, dict) and part.get("type") == "suggestions"
+            for o in (part.get("options") or [])
+        ],
     )
 
 

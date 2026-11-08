@@ -40,6 +40,7 @@ from oc8.agent.control_tools import (
     REQUEST_DECISION,
     SEARCH_KNOWLEDGE,
     SEARCH_MEMORY,
+    SUGGEST_REPLIES,
     execute_control_tool,
 )
 from oc8.agent.engine import _authorize, _call_sig
@@ -442,6 +443,7 @@ async def _list_tools(
         SEARCH_MEMORY,
         MEMORY_WRITE,
         RENDER_COMPONENT,
+        SUGGEST_REPLIES,
     ]
     # Withheld from the tenant Assistant specifically, mirroring
     # control_tools.offered_tools' own reasoning: a park only WORKS if
@@ -712,6 +714,7 @@ async def _call_tool(
         MEMORY_WRITE.name,
         DELEGATE_TASK.name,
         RENDER_COMPONENT.name,
+        SUGGEST_REPLIES.name,
     ):
         if run.task_id is None:
             return _tool_result(

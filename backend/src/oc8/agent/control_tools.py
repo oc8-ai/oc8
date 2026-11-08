@@ -57,6 +57,7 @@ from oc8.metering.budget import current_month_tokens, get_budget
 from oc8.modelrouter import NeutralTool, ToolCall, locality_for_provider
 from oc8.realtime.emit import record_activity
 from oc8.runtime.repository import RunRepository
+from oc8.runtime.run_context import clean_suggestions
 from oc8.skills.runtime import LoadedSkill, instruction_block, skill_tool_schemas
 from oc8.storage import s3
 from oc8.storage.attachments import (
@@ -82,6 +83,26 @@ MEMORY_WRITE = NeutralTool(
             "content": {"type": "string", "description": "The fact or note to remember."},
         },
         "required": ["tier", "content"],
+    },
+)
+
+SUGGEST_REPLIES = NeutralTool(
+    name="suggest_replies",
+    description=(
+        "Offer the person up to three short replies they can send with one click "
+        "after your answer -- the likely next things they would say. Changes "
+        "nothing and is never required."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "options": {
+                "type": "array",
+                "maxItems": 3,
+                "items": {"type": "string", "maxLength": 120},
+            }
+        },
+        "required": ["options"],
     },
 )
 
@@ -969,6 +990,7 @@ COPILOT_TOOL_NAMES: frozenset[str] = frozenset(t.name for t in COPILOT_TOOLS)
 CONTROL_TOOL_SCHEMAS: dict[str, NeutralTool] = {
     MEMORY_WRITE.name: MEMORY_WRITE,
     TODO_WRITE.name: TODO_WRITE,
+    SUGGEST_REPLIES.name: SUGGEST_REPLIES,
     FIND_TOOLS.name: FIND_TOOLS,
     READ_RESOURCE.name: READ_RESOURCE,
     PROCEDURE_STEP_DONE.name: PROCEDURE_STEP_DONE,
@@ -1069,6 +1091,7 @@ def offered_tools(
         RENDER_COMPONENT,
         FETCH_URL,
         TODO_WRITE,
+        SUGGEST_REPLIES,
         PROCEDURE_STEP_DONE,
         READ_RESOURCE,
         READ_RUN_FILE,
@@ -2331,6 +2354,19 @@ async def execute_control_tool(
             suspend="waiting_for_input",
             questions=None if is_plain(questions) else questions_to_json(questions),
         )
+
+    if tc.name == SUGGEST_REPLIES.name:
+        raw_options = tc.arguments.get("options")
+        if not isinstance(raw_options, list):
+            return ControlOutcome(output="ERROR: suggest_replies requires an `options` array")
+        chips = clean_suggestions(raw_options)
+        if run_id is not None and chips:
+            from oc8.runtime.run_context import merge_context
+
+            run_row = await db.get(m.AgentRun, run_id)
+            if run_row is not None:
+                await merge_context(db, run_row, {"suggestions": chips})
+        return ControlOutcome(output=f"Offered {len(chips)} suggested replies.")
 
     if tc.name == TODO_WRITE.name:
         raw_todos = tc.arguments.get("todos")

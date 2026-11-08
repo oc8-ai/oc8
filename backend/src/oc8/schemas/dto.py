@@ -1280,6 +1280,8 @@ class ChatMessageDTO(CamelModel):
     #: Typed parts (e.g. `{"type": "answers", "questions": [...], "answers":
     #: {...}}` for an answered question card). Null for plain-text turns.
     parts: list[dict[str, Any]] | None = None
+    #: One-click replies from the `suggest_replies` part, derived for convenience.
+    suggestions: list[str] = []
 
 
 class ReportDTO(CamelModel):

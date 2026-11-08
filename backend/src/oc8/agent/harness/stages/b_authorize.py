@@ -113,6 +113,11 @@ def authorize(
         # should be for a tool that can only ever produce a draft a human has
         # to approve before anything changes.
         return Decision(Effect.ALLOW)
+    if tc.name == "suggest_replies":
+        # Belongs to no connection, like propose_change: it only stores chips
+        # on the answer, so the frame has nothing to decide it against and
+        # falling through would audit every call as a denial.
+        return Decision(Effect.ALLOW)
     if tc.name == "decide_approval":
         # Like propose_change and ask_user: it belongs to no connection, so
         # the department frame has nothing to decide it against. Real

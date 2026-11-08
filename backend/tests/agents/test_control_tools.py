@@ -183,6 +183,8 @@ def test_control_tool_names_matches_the_schemas() -> None:
         "schedule_followup",
         "cancel_followup",
         "memory_write",
+        "suggest_replies",
+        "read_resource",
         "ask_user",
         "delegate_task",
         "request_decision",

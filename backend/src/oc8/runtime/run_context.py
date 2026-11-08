@@ -20,6 +20,7 @@ This column predates that pattern and is read by too many callers to move now.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from sqlalchemy import bindparam, text
@@ -105,3 +106,17 @@ async def append_tool_call(
     """
     stored = (await db.execute(_APPEND_TOOL_CALL, {"entry": [entry], "id": run.id})).scalar_one()
     return _adopt(run, stored)
+
+
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]+")
+
+
+def clean_suggestions(raw: list[Any]) -> list[str]:
+    """Model-written, untrusted: control characters out, trimmed, empties
+    dropped, 120 characters each, three at most."""
+    out: list[str] = []
+    for item in raw:
+        chip = _CONTROL_CHARS.sub(" ", str(item)).strip()[:120].strip()
+        if chip:
+            out.append(chip)
+    return out[:3]

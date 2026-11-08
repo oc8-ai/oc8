@@ -314,6 +314,7 @@ async def test_tools_list_hides_what_the_frame_forbids(
         "memory_write",
         "ask_user",
         "render_component",
+        "suggest_replies",
     }
     assert [n for n in names if n not in core] == ["search_records"], names
     assert core <= set(names)
