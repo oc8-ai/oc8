@@ -24,18 +24,21 @@ function toActivity(run: LiveRunDTO, agentId: string): RunActivityDTO {
   };
 }
 
-/** Timeline runs (Live tab) as the turns render them. A run still going is
- *  read from its ["run", id] entry, which the WS patchers fill (steps,
- *  streamed answer, state) but only update once it exists -- so it is seeded
- *  from the timeline. A run that has ended is the timeline's own copy: that
- *  is refetched when it ends and carries the final output. */
+/** Timeline runs (Live tab) as the turns render them. A run this reader
+ *  watches (`watched`) is read from its ["run", id] entry, which the WS
+ *  patchers fill (steps, streamed answer, state) but only update once it
+ *  exists -- so it is seeded from the timeline. Any other run -- one that has
+ *  ended, or a colleague's, which is never watched and is refetched instead --
+ *  is the timeline's own copy. */
 export function useTimelineRuns(
   runs: readonly LiveRunDTO[],
   agentId: string,
+  watched: ReadonlySet<string>,
 ): Record<string, RunActivityDTO> {
   const qc = useQueryClient();
+  const live = runs.filter((run) => watched.has(run.id));
   const results = useQueries({
-    queries: runs.map((run) => ({
+    queries: live.map((run) => ({
       queryKey: ["run", run.id],
       queryFn: () => qc.getQueryData<RunActivityDTO>(["run", run.id]) ?? toActivity(run, agentId),
       initialData: toActivity(run, agentId),
@@ -43,20 +46,23 @@ export function useTimelineRuns(
       staleTime: Infinity,
     })),
   });
+  const cachedById = new Map(
+    live.map((run, i) => [run.id, results[i]?.data as RunActivityDTO | undefined]),
+  );
   const out: Record<string, RunActivityDTO> = {};
-  runs.forEach((run, i) => {
+  for (const run of runs) {
     const base = toActivity(run, agentId);
-    const cached = results[i]?.data as RunActivityDTO | undefined;
+    const cached = cachedById.get(run.id);
     out[run.id] =
       TERMINAL.has(run.state) || !cached
         ? { ...base, components: cached?.components }
         : { ...cached, ...base, ...pickLive(cached) };
-  });
+  }
   return out;
 }
 
 /** What the live patchers know better than a timeline fetch of a running run. */
-function pickLive(cached: RunActivityDTO): Partial<RunActivityDTO> {
+export function pickLive(cached: RunActivityDTO): Partial<RunActivityDTO> {
   const live: Partial<RunActivityDTO> = { state: cached.state, phase: cached.phase };
   if (cached.steps) live.steps = cached.steps;
   if (cached.toolCalls?.length) live.toolCalls = cached.toolCalls;

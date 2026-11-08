@@ -65,6 +65,12 @@ function turnRows(turns: TurnModel[]): Row[] {
   });
 }
 
+/** Milliseconds for sorting; a row without a usable time sorts last. */
+function timeOf(at: string): number {
+  const ms = Date.parse(at);
+  return Number.isNaN(ms) ? Number.POSITIVE_INFINITY : ms;
+}
+
 function localDay(at: string): string {
   const d = new Date(at);
   return Number.isNaN(d.getTime()) ? "" : d.toDateString();
@@ -121,16 +127,30 @@ export function Conversation(props: ConversationProps) {
   const { data: me } = useAuth();
   const { lang } = useLang();
   const conv = useConversation(props.sessionId);
-  const extraRuns = props.extraRuns ?? [];
+  // A run that is already a chat turn (its answer, or a run still writing
+  // one) is shown there, never a second time as a timeline run.
+  const turnRunIds = new Set<string>();
+  for (const turn of conv.turns) {
+    if (turn.kind !== "assistant") continue;
+    if (turn.liveRunId) turnRunIds.add(turn.liveRunId);
+    for (const v of turn.variants) if (v.runId) turnRunIds.add(v.runId);
+  }
+  const extraRuns = (props.extraRuns ?? []).filter((e) => !turnRunIds.has(e.run.id));
+  // Only my own running runs are watched; a colleague's is refetched with
+  // the timeline instead (useLiveTimeline).
+  const watchedIds = extraRuns
+    .filter((e) => !e.labelsOnly && !TERMINAL.has(e.run.state))
+    .map((e) => e.run.id);
+  useWatchRuns(watchedIds);
   const timelineRuns = useTimelineRuns(
     extraRuns.map((e) => e.run),
     props.agentId,
+    new Set(watchedIds),
   );
-  useWatchRuns(extraRuns.filter((e) => !TERMINAL.has(e.run.state)).map((e) => e.run.id));
   const rows: Row[] = [
     ...turnRows(conv.turns),
     ...extraRuns.map((extra): Row => ({ at: extra.at, kind: "run", extra })),
-  ].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+  ].sort((a, b) => timeOf(a.at) - timeOf(b.at));
   const [ownDraft, setOwnDraft] = useState("");
   const draft = props.draft ?? ownDraft;
   const setDraft = props.onDraftChange ?? setOwnDraft;
@@ -161,6 +181,11 @@ export function Conversation(props: ConversationProps) {
     el.scrollTop = saved.top + (el.scrollHeight - saved.height);
   }, [oldestKey, ref]);
   const { hasOlder, onLoadOlder, loadingOlder } = props;
+  // A load that ended without new rows on top (failed, or nothing older)
+  // must not shift the reader's place on some later change.
+  useEffect(() => {
+    if (!loadingOlder) beforeLoad.current = null;
+  }, [loadingOlder]);
   function loadOlder() {
     const el = ref.current;
     if (!onLoadOlder || !hasOlder || loadingOlder) return;
@@ -318,7 +343,7 @@ export function Conversation(props: ConversationProps) {
                 <button
                   type="button"
                   onClick={loadOlder}
-                  className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="inline-flex min-h-9 items-center rounded-md px-2 text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   {t("Show earlier", "Früheres anzeigen")}
                 </button>

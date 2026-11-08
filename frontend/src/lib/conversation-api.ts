@@ -214,9 +214,32 @@ export function flattenLivePages(data: InfiniteData<LiveTimelineDTO>): LiveTimel
   };
 }
 
+const LIVE_TERMINAL = new Set(["done", "failed", "interrupted"]);
+/** How often the timeline is refetched while a colleague's run is running. */
+export const COLLEAGUE_POLL_MS = 10_000;
+
+/** A colleague's run is never watched over the socket (the server would not
+ *  send its steps to this reader), so while one is running the timeline is
+ *  refetched every 10 s instead -- and not at all once none is. */
+export function liveTimelineRefetchInterval(
+  data: InfiniteData<LiveTimelineDTO> | undefined,
+  isColleague: (run: LiveRunDTO) => boolean,
+): number | false {
+  const running = data?.pages.some((page) =>
+    page.items.some((i) => i.run && !LIVE_TERMINAL.has(i.run.state) && isColleague(i.run)),
+  );
+  return running ? COLLEAGUE_POLL_MS : false;
+}
+
 /** The Live tab's timeline. `data` is every loaded page merged; `fetchOlder`
- *  loads the page before the oldest one (scrolling up). */
-export function useLiveTimeline(agentId: string, allRuns: boolean) {
+ *  loads the page before the oldest one (scrolling up). `isColleague` picks
+ *  the runs shown as labels only (Task 24 decides); left out, every run under
+ *  "All runs" counts, so a running one is never left stale. */
+export function useLiveTimeline(
+  agentId: string,
+  allRuns: boolean,
+  isColleague: (run: LiveRunDTO) => boolean = () => allRuns,
+) {
   const query = useInfiniteQuery({
     queryKey: liveTimelineKey(agentId, allRuns),
     queryFn: ({ pageParam }) => {
@@ -230,6 +253,7 @@ export function useLiveTimeline(agentId: string, allRuns: boolean) {
     getNextPageParam: (page) => page.nextBefore,
     select: flattenLivePages,
     enabled: !!agentId,
+    refetchInterval: (query) => liveTimelineRefetchInterval(query.state.data, isColleague),
   });
   return {
     ...query,

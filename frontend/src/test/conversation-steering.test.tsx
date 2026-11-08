@@ -5,6 +5,13 @@ import { describe, expect, it, vi } from "vitest";
 
 const steering = vi.hoisted(() => ({ value: undefined as unknown }));
 const conv = vi.hoisted(() => ({ turns: [] as unknown[] }));
+const watched = vi.hoisted(() => ({ ids: [] as string[] }));
+vi.mock("@/lib/live/provider", async (orig) => ({
+  ...(await orig<typeof import("@/lib/live/provider")>()),
+  useWatchRuns: (ids: readonly string[]) => {
+    watched.ids.push(...ids);
+  },
+}));
 vi.mock("@/lib/conversation-api", async (orig) => ({
   ...(await orig<typeof import("@/lib/conversation-api")>()),
   useRunSteering: () => ({ data: steering.value }),
@@ -34,7 +41,14 @@ vi.mock("@/lib/governance-hooks", () => ({ useCan: () => () => true }));
 import { Conversation } from "@/components/conversation/conversation";
 import { RunInputs, runInputError, steeringTarget } from "@/components/conversation/run-steering";
 import { ApiError } from "@/lib/api";
-import type { LiveRunDTO } from "@/lib/conversation-api";
+import { pickLive, useTimelineRuns } from "@/components/conversation/timeline-runs";
+import {
+  flattenLivePages,
+  liveTimelineRefetchInterval,
+  type LiveRunDTO,
+  type LiveTimelineDTO,
+} from "@/lib/conversation-api";
+import type { RunActivityDTO } from "@/lib/hooks-chat";
 import { applyEvent } from "@/lib/live/apply-event";
 
 const t = (en: string) => en;
@@ -305,5 +319,230 @@ describe("Conversation with timeline runs", () => {
       </QueryClientProvider>,
     );
     expect(scroller.scrollTop).toBe(640);
+  });
+
+  it("watches only my running timeline runs, never a colleague's", () => {
+    conv.turns = [];
+    watched.ids = [];
+    wrap(
+      <Conversation
+        agentId="a"
+        sessionId="s"
+        onSessionChange={() => undefined}
+        variant="full"
+        extraRuns={[
+          {
+            at: "2026-11-08T09:00:00Z",
+            run: liveRun({ id: "mine", state: "running" }),
+            trigger: null,
+          },
+          {
+            at: "2026-11-08T09:01:00Z",
+            run: liveRun({ id: "theirs", state: "running" }),
+            trigger: null,
+            labelsOnly: true,
+          },
+          { at: "2026-11-08T09:02:00Z", run: liveRun({ id: "ended" }), trigger: null },
+        ]}
+      />,
+    );
+    expect(watched.ids).toContain("mine");
+    expect(watched.ids).not.toContain("theirs");
+    expect(watched.ids).not.toContain("ended");
+  });
+
+  it("shows a run that is also a chat turn only once", () => {
+    conv.turns = [
+      {
+        kind: "user",
+        key: "u1",
+        message: {
+          id: "u1",
+          role: "user",
+          content: "Hello there",
+          createdAt: "2026-11-08T08:00:00Z",
+          runId: null,
+          renderedComponents: [],
+          attachments: [],
+          contextRefs: [],
+        },
+      },
+      { kind: "assistant", key: "answer-u1", replyToId: "u1", variants: [], liveRunId: "live-run" },
+      {
+        kind: "assistant",
+        key: "a-old",
+        replyToId: null,
+        variants: [
+          {
+            id: "a-old",
+            role: "assistant",
+            content: "Earlier answer",
+            createdAt: "2026-11-08T07:00:00Z",
+            runId: "done-run",
+            renderedComponents: [],
+            attachments: [],
+            contextRefs: [],
+          },
+        ],
+        liveRunId: null,
+      },
+    ];
+    wrap(
+      <Conversation
+        agentId="a"
+        sessionId="s"
+        onSessionChange={() => undefined}
+        variant="full"
+        extraRuns={[
+          {
+            at: "2026-11-08T08:00:01Z",
+            run: liveRun({ id: "live-run", state: "running" }),
+            trigger: <span>dup live</span>,
+          },
+          {
+            at: "2026-11-08T07:00:00Z",
+            run: liveRun({ id: "done-run" }),
+            trigger: <span>dup done</span>,
+          },
+          { at: "2026-11-08T09:00:00Z", run: liveRun({ id: "cron" }), trigger: <span>kept</span> },
+        ]}
+      />,
+    );
+    expect(screen.queryByText("dup live")).not.toBeInTheDocument();
+    expect(screen.queryByText("dup done")).not.toBeInTheDocument();
+    expect(screen.getByText("kept")).toBeInTheDocument();
+  });
+
+  it("puts an earlier offset time first even when its string sorts later", () => {
+    conv.turns = [];
+    wrap(
+      <Conversation
+        agentId="a"
+        sessionId="s"
+        onSessionChange={() => undefined}
+        variant="full"
+        extraRuns={[
+          {
+            at: "2026-11-08T07:30:00Z",
+            run: liveRun({ id: "b", output: "Second" }),
+            trigger: null,
+          },
+          {
+            at: "2026-11-08T09:00:00+02:00",
+            run: liveRun({ id: "a", output: "First" }),
+            trigger: null,
+          },
+        ]}
+      />,
+    );
+    const text = screen.getByTestId("conversation-scroller").textContent ?? "";
+    expect(text.indexOf("First")).toBeLessThan(text.indexOf("Second"));
+  });
+});
+
+describe("timeline helpers", () => {
+  const page = (
+    items: string[],
+    nextBefore: string | null,
+    extra: Partial<LiveTimelineDTO> = {},
+  ) => ({
+    sessionId: "live-1",
+    mayViewAllRuns: true,
+    nextBefore,
+    items: items.map((id) => ({
+      kind: "run" as const,
+      at: id,
+      message: null,
+      run: liveRun({ id }),
+    })),
+    ...extra,
+  });
+
+  it("flattens pages oldest first and keeps the oldest page's cursor", () => {
+    const flat = flattenLivePages({
+      pages: [page(["c", "d"], "cur-1"), page(["a", "b"], null, { mayViewAllRuns: false })],
+      pageParams: [null, "cur-1"],
+    });
+    expect(flat.items.map((i) => i.run?.id)).toEqual(["a", "b", "c", "d"]);
+    expect(flat.nextBefore).toBeNull();
+    expect(flat.mayViewAllRuns).toBe(true);
+    expect(flat.sessionId).toBe("live-1");
+  });
+
+  it("polls every 10 s only while a colleague's run is running", () => {
+    const isColleague = (run: LiveRunDTO) => run.id.startsWith("c-");
+    const data = (runs: LiveRunDTO[]) => ({
+      pages: [
+        {
+          sessionId: "s",
+          mayViewAllRuns: true,
+          nextBefore: null,
+          items: runs.map((run) => ({
+            kind: "run" as const,
+            at: run.createdAt,
+            message: null,
+            run,
+          })),
+        },
+      ],
+      pageParams: [null],
+    });
+    expect(
+      liveTimelineRefetchInterval(data([liveRun({ id: "c-1", state: "running" })]), isColleague),
+    ).toBe(10_000);
+    expect(
+      liveTimelineRefetchInterval(data([liveRun({ id: "c-1", state: "done" })]), isColleague),
+    ).toBe(false);
+    expect(
+      liveTimelineRefetchInterval(data([liveRun({ id: "mine", state: "running" })]), isColleague),
+    ).toBe(false);
+    expect(liveTimelineRefetchInterval(undefined, isColleague)).toBe(false);
+  });
+
+  it("takes from the live cache only what the patchers fill", () => {
+    const cached = {
+      id: "r",
+      agentId: "a",
+      state: "running",
+      phase: "tool",
+      output: null,
+      steps: 0,
+      toolCalls: [],
+      stepTimings: [],
+      taskId: null,
+      question: null,
+      renderedComponents: [],
+    } as RunActivityDTO;
+    expect(pickLive(cached)).toEqual({ state: "running", phase: "tool" });
+    expect(
+      pickLive({ ...cached, steps: 2, toolCalls: [{ tool: "x" }], stepTimings: [{ step: 1 }] }),
+    ).toEqual({
+      state: "running",
+      phase: "tool",
+      steps: 2,
+      toolCalls: [{ tool: "x" }],
+      stepTimings: [{ step: 1 }],
+    });
+  });
+
+  it("uses a colleague's run as the timeline has it, never a stale live cache", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(["run", "theirs"], { id: "theirs", state: "queued", steps: 0, toolCalls: [] });
+    let result: Record<string, RunActivityDTO> = {};
+    function Probe() {
+      result = useTimelineRuns(
+        [liveRun({ id: "theirs", state: "running", steps: 3 })],
+        "a",
+        new Set(),
+      );
+      return null;
+    }
+    render(
+      <QueryClientProvider client={qc}>
+        <Probe />
+      </QueryClientProvider>,
+    );
+    expect(result.theirs?.state).toBe("running");
+    expect(result.theirs?.steps).toBe(3);
   });
 });
