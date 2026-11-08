@@ -93,6 +93,8 @@ export function QuestionCard({
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   // Focus follows the roving option only after a key moved it.
   const moved = useRef(false);
+  // Set from the send until the server answers: a second Enter is no second post.
+  const sending = useRef(false);
 
   const q = questions[Math.min(index, questions.length - 1)];
   const rows =
@@ -110,16 +112,18 @@ export function QuestionCard({
 
   function toggle(key: string) {
     setError(null);
-    setPicked((prev) => {
-      const current = prev[q.id] ?? [];
-      const next =
-        q.kind === "multi"
-          ? current.includes(key)
-            ? current.filter((k) => k !== key)
-            : [...current, key]
-          : [key];
-      return { ...prev, [q.id]: next };
-    });
+    const current = picked[q.id] ?? [];
+    let next: string[];
+    if (q.kind !== "multi") next = [key];
+    else if (current.includes(key)) next = current.filter((k) => k !== key);
+    // The server takes a list of keys OR one text, never both: an own answer
+    // replaces the ticks, and a tick replaces the own answer -- visibly.
+    else if (key === OTHER) next = [OTHER];
+    else next = [...current.filter((k) => k !== OTHER), key];
+    if (q.kind === "multi" && current.includes(OTHER) && !next.includes(OTHER)) {
+      setFree((p) => ({ ...p, [q.id]: "" }));
+    }
+    setPicked((prev) => ({ ...prev, [q.id]: next }));
   }
 
   function collect(): QuestionAnswers {
@@ -148,12 +152,18 @@ export function QuestionCard({
       setError(t("This question needs an answer.", "Diese Frage braucht eine Antwort."));
       return;
     }
+    if (sending.current) return;
     setError(null);
     const body = plain
       ? { clarificationId: pending.clarificationId, text: answers.plain as string }
       : { clarificationId: pending.clarificationId, answers };
+    sending.current = true;
     answer.mutate(body, {
+      onSuccess: () => {
+        sending.current = false;
+      },
       onError: (e: unknown) => {
+        sending.current = false;
         const status = e instanceof ApiError ? e.status : null;
         if (status === 409) onClose(t("Already answered", "Schon beantwortet"));
         else if (status === 404) onClose();
@@ -177,6 +187,8 @@ export function QuestionCard({
   function onKeyDown(e: KeyboardEvent<HTMLDivElement>) {
     if (e.key === "Enter") {
       e.preventDefault();
+      // A held key, an IME composing, or an answer on its way: no second send.
+      if (e.repeat || e.nativeEvent.isComposing || answer.isPending || sending.current) return;
       if (index < questions.length - 1) go(1);
       else send();
       return;
@@ -237,6 +249,10 @@ export function QuestionCard({
           aria-labelledby={labelId}
           aria-describedby={option?.detail ? `${labelId}-detail` : undefined}
           tabIndex={i === active ? 0 : -1}
+          // Space is handled on keydown; Firefox would also click on keyup.
+          onKeyUp={(e) => {
+            if (e.key === " ") e.preventDefault();
+          }}
           onClick={() => {
             setActive(i);
             toggle(key);
@@ -294,7 +310,7 @@ export function QuestionCard({
               onClick={() => go(-1)}
               disabled={index === 0}
               className={cn(
-                "grid size-8 place-items-center rounded-md hover:bg-muted disabled:opacity-50",
+                "grid size-9 place-items-center rounded-md hover:bg-muted disabled:opacity-50",
                 FOCUS_RING,
               )}
             >
@@ -309,7 +325,7 @@ export function QuestionCard({
               onClick={() => go(1)}
               disabled={index === questions.length - 1}
               className={cn(
-                "grid size-8 place-items-center rounded-md hover:bg-muted disabled:opacity-50",
+                "grid size-9 place-items-center rounded-md hover:bg-muted disabled:opacity-50",
                 FOCUS_RING,
               )}
             >
@@ -322,7 +338,7 @@ export function QuestionCard({
           aria-label={t("Close questions", "Fragen schließen")}
           onClick={() => onClose()}
           className={cn(
-            "grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground",
+            "grid size-9 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground",
             FOCUS_RING,
           )}
         >
@@ -338,6 +354,14 @@ export function QuestionCard({
           </div>
         ) : (
           options
+        )}
+        {q.kind === "multi" && q.allowOther && (
+          <p className="px-2 text-xs text-muted-foreground">
+            {t(
+              "Your own answer replaces the ticked options.",
+              "Eine eigene Antwort ersetzt die angekreuzten Optionen.",
+            )}
+          </p>
         )}
       </div>
       <footer className="mt-2 flex items-center gap-2">
@@ -355,7 +379,7 @@ export function QuestionCard({
           onClick={send}
           disabled={answer.isPending}
           className={cn(
-            "grid size-8 shrink-0 place-items-center rounded-md bg-primary text-primary-foreground disabled:opacity-50",
+            "grid size-9 shrink-0 place-items-center rounded-md bg-primary text-primary-foreground disabled:opacity-50",
             FOCUS_RING,
           )}
         >

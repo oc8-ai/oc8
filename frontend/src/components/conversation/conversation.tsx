@@ -314,6 +314,8 @@ export function Conversation(props: ConversationProps) {
     } catch (error) {
       const status = error instanceof ApiError ? error.status : null;
       if (status === 409) {
+        // Someone else answered: what was typed can still go out as a message.
+        if (fromComposer) setDraft(text);
         setQuestionNotice(t("Already answered", "Schon beantwortet"));
         return;
       }
@@ -545,6 +547,14 @@ export function Conversation(props: ConversationProps) {
           onAddressAgent={props.onAddressAgent}
           target={props.composerTarget}
           trailing={props.composerTrailing}
+          textOnlyHint={
+            pending
+              ? t(
+                  "Sent as the answer – attachments only afterwards.",
+                  "Wird als Antwort gesendet – Anhänge gehen erst danach.",
+                )
+              : undefined
+          }
           above={
             questionAbove || props.composerAbove ? (
               <>

@@ -89,6 +89,10 @@ export interface ComposerProps {
   /** C3: lets the + menu and # add a ref from outside (data source browser). */
   contextRefs?: ContextItem[];
   onContextRefsChange?: (refs: ContextItem[]) => void;
+  /** C2: what is sent answers an open question, as text only. The hint says
+   *  so; the + menu, the drop zone and # are off, and a send that still
+   *  carries files or context is refused (they are never dropped). */
+  textOnlyHint?: string;
 }
 
 const MAX_REFS = 10;
@@ -120,7 +124,10 @@ export function Composer(props: ComposerProps) {
   // The token Esc closed; it stays closed until the caret moves or the
   // token changes, so Esc is not swallowed by a popover that reopens at once.
   const [dismissed, setDismissed] = useState<SigilToken | null>(null);
-  const rawSigil = props.disabled ? null : activeSigil(props.draft, caret);
+  const textOnly = !!props.textOnlyHint;
+  const typedSigil = props.disabled ? null : activeSigil(props.draft, caret);
+  // # pins context, which an answer cannot carry.
+  const rawSigil = textOnly && typedSigil?.kind === "#" ? null : typedSigil;
   const sigil: SigilToken | null =
     rawSigil &&
     !(
@@ -204,6 +211,15 @@ export function Composer(props: ComposerProps) {
   }
 
   async function addFiles(files: File[]) {
+    if (textOnly) {
+      setError(
+        t(
+          "Files can be attached once the question is answered.",
+          "Dateien kannst du anhängen, sobald die Frage beantwortet ist.",
+        ),
+      );
+      return;
+    }
     const refused: string[] = [];
     const accepted: File[] = [];
     for (const file of files) {
@@ -267,6 +283,16 @@ export function Composer(props: ComposerProps) {
   function submit() {
     const text = props.draft.trim();
     if (!text || props.disabled || props.busy || uploading > 0) return;
+    if (textOnly && (attachments.length > 0 || refs.length > 0)) {
+      // Never dropped silently: the draft and the chips stay as they are.
+      setError(
+        t(
+          "An answer is sent as text only. Remove the attachments, or send them after answering.",
+          "Eine Antwort geht nur als Text. Entfern die Anhänge oder schick sie nach der Antwort.",
+        ),
+      );
+      return;
+    }
     const local = detectCommand(text, commands);
     if (local?.command.local) {
       props.onLocalCommand?.(local.command.key);
@@ -334,7 +360,7 @@ export function Composer(props: ComposerProps) {
     // Always claim a file drag, read-only too: otherwise the browser
     // navigates away to open the dropped file.
     e.preventDefault();
-    if (!props.disabled) setDragging(true);
+    if (!props.disabled && !textOnly) setDragging(true);
   }
 
   function onDragLeave(e: DragEvent<HTMLDivElement>) {
@@ -451,7 +477,7 @@ export function Composer(props: ComposerProps) {
           className="max-h-48 min-h-10 w-full resize-none bg-transparent px-1 py-1 text-sm outline-none placeholder:text-muted-foreground"
         />
         <div className="flex items-center gap-1">
-          <PlusMenu items={plusItems} disabled={props.disabled} />
+          <PlusMenu items={plusItems} disabled={props.disabled || textOnly} />
           {props.showModelPicker && (
             <ModelPicker
               sessionId={props.sessionId}
@@ -486,6 +512,9 @@ export function Composer(props: ComposerProps) {
           )}
         </div>
       </div>
+      {props.textOnlyHint && (
+        <p className="px-1 text-xs text-muted-foreground">{props.textOnlyHint}</p>
+      )}
       {error && (
         <p className="px-1 text-xs text-status-error" role="alert">
           {error}
