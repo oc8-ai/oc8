@@ -1,0 +1,34 @@
+"""Who, if anybody, a run's work is for (Ruling 18).
+
+`originating_operator` is the person a run ACTS for -- its authority. Some runs
+continue a person's work without acting as them: a lead's wake-up after a
+delegation, a decision follow-up. Those carry `on_behalf_of` (the person's
+subject) instead, which grants nothing; it only says whose run it is, so the
+Live timeline never shows it as the agent's own autonomous run.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any, Final
+
+ON_BEHALF_OF: Final = "on_behalf_of"
+#: The context keys that name a person behind a run, strongest first.
+PERSON_KEYS: Final = ("originating_operator", ON_BEHALF_OF)
+
+
+def present(value: object) -> bool:
+    """A context value that counts: anything but null and the empty string.
+    The same rule as the SQL twin in `oc8.chat.live` (`->>` gives NULL for
+    a JSON null and the text of anything else)."""
+    return value is not None and value != ""
+
+
+def person_behind(context: Mapping[str, Any] | None) -> str | None:
+    """The subject of the person the run's work is for, or `None`."""
+    ctx = context or {}
+    for key in PERSON_KEYS:
+        value = ctx.get(key)
+        if present(value):
+            return str(value)
+    return None

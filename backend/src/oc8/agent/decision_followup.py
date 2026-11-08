@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.runtime.intake import enqueue_run
+from oc8.runtime.person import ON_BEHALF_OF, present
 from oc8.tenants.activity import TenantInactive
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,18 @@ def instruction_for(approval: m.ApprovalRequest, *, decision: str, reason: str) 
     return "\n".join(lines)
 
 
+def _followup_context(approval: m.ApprovalRequest, *, decision: str, reason: str) -> dict[str, Any]:
+    """The follow-up's context. A decision requested from a person's run
+    continues that person's work: it carries their `on_behalf_of` (Ruling 18),
+    which grants nothing but keeps the run off everyone's Live timeline as an
+    autonomous one."""
+    context: dict[str, Any] = {"task": instruction_for(approval, decision=decision, reason=reason)}
+    person = (approval.payload or {}).get(ON_BEHALF_OF)
+    if present(person):
+        context[ON_BEHALF_OF] = str(person)
+    return context
+
+
 async def carry_out_decision(
     db: AsyncSession,
     *,
@@ -98,7 +111,7 @@ async def carry_out_decision(
             db,
             tenant_id=approval.tenant_id,
             agent_id=approval.agent_id,
-            context={"task": instruction_for(approval, decision=decision, reason=reason)},
+            context=_followup_context(approval, decision=decision, reason=reason),
             source="decision",
             # One run per decision, forever: a double-click on approve must not
             # have the agent act twice on an external system.

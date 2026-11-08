@@ -17,11 +17,24 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final, Literal
 
-from sqlalchemy import ColumnElement, String, and_, cast, false, func, not_, or_, select, tuple_
+from sqlalchemy import (
+    ColumnElement,
+    String,
+    and_,
+    cast,
+    false,
+    func,
+    literal,
+    not_,
+    or_,
+    select,
+    tuple_,
+)
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.runtime.person import PERSON_KEYS, person_behind, present
 
 
 @dataclass(frozen=True)
@@ -81,7 +94,7 @@ def trigger_of(
     label: str | None = None
     if run.source == "delegation":
         label = delegated_by
-    elif (run.context or {}).get("originating_operator"):
+    elif person_behind(run.context) is not None:
         label = started_by
     elif trigger is not None and run.source == "cron":
         label = trigger.cron_expression
@@ -103,11 +116,12 @@ def _id_in(raw: object, *, prefix: str = "") -> uuid.UUID | None:
 async def trigger_names(
     db: AsyncSession, runs: Sequence[m.AgentRun], *, tenant_id: uuid.UUID
 ) -> dict[uuid.UUID, dict[str, str | None]]:
-    """`trigger_of` for each run, with what it needs read in three batched
+    """`trigger_of` for each run plus `started_by` (the display name of the
+    person behind it, `person_behind`), with what it needs read in three batched
     queries, each held to `tenant_id` on top of RLS: the starting member, the
     delegating agent (through the parent task), and the firing Trigger (the
     run's `coalesce_key` is `trigger:<id>`, see triggers/scheduler.py)."""
-    subjects = {str(op) for run in runs if (op := (run.context or {}).get("originating_operator"))}
+    subjects = {person for run in runs if (person := person_behind(run.context))}
     parent_tasks = {
         tid
         for run in runs
@@ -148,12 +162,18 @@ async def trigger_names(
         ctx = run.context or {}
         task_id = _id_in(ctx.get("parent_task_id"))
         trigger_id = _id_in(run.coalesce_key, prefix=_TRIGGER_KEY_PREFIX)
-        out[run.id] = trigger_of(
-            run,
-            delegated_by=agents.get(task_id) if task_id else None,
-            started_by=members.get(str(ctx.get("originating_operator"))),
-            trigger=triggers.get(trigger_id) if trigger_id else None,
-        )
+        person = person_behind(ctx)
+        started_by = members.get(person) if person else None
+        out[run.id] = {
+            **trigger_of(
+                run,
+                delegated_by=agents.get(task_id) if task_id else None,
+                started_by=started_by,
+                trigger=triggers.get(trigger_id) if trigger_id else None,
+            ),
+            # The PERSON behind the run -- never the delegating agent.
+            "started_by": started_by,
+        }
     return out
 
 
@@ -165,45 +185,49 @@ AUTONOMOUS_SOURCES: Final = frozenset(
 
 
 def is_autonomous_run(run: m.AgentRun) -> bool:
-    """The agent's own run: an autonomous source, and no person behind it --
-    no `originating_operator` and no `chat_session_id` (a sub-run delegated
-    from a chat carries both). The ONE definition the timeline
-    (`_autonomous`, its SQL twin) and live watching (`oc8.chat.watch`) use."""
+    """The agent's own run: an autonomous source, and nobody behind it -- no
+    `originating_operator`, no `on_behalf_of` (a wake-up or decision follow-up
+    continuing a person's work, Ruling 18) and no `chat_session_id` (a
+    sub-run delegated from a chat). "Present" is `oc8.runtime.person.present`
+    here and in the SQL twin `_autonomous`; both the timeline and live
+    watching (`oc8.chat.watch`) use these two and nothing else."""
     ctx = run.context or {}
-    return (
-        run.source in AUTONOMOUS_SOURCES
-        and not ctx.get("originating_operator")
-        and not ctx.get("chat_session_id")
+    return run.source in AUTONOMOUS_SOURCES and not any(
+        present(ctx.get(key)) for key in (*PERSON_KEYS, "chat_session_id")
     )
 
 
 def is_colleague_run(run: m.AgentRun, member: m.OrgMember) -> bool:
-    """Somebody else's run: not autonomous and not started by `member`. Shown
-    only under "All runs", and only as step labels and result (Ruling 15)."""
-    return (
-        not is_autonomous_run(run)
-        and (run.context or {}).get("originating_operator") != member.subject
-    )
+    """Somebody else's run: not autonomous and not `member`'s (neither started
+    by her nor on her behalf). Shown only under "All runs", and only as step
+    labels and result (Ruling 15)."""
+    return not is_autonomous_run(run) and person_behind(run.context) != member.subject
 
 
 def _ctx_text(key: str) -> ColumnElement[str]:
+    """The key's text, '' for absent or JSON null -- so `== ''` is exactly
+    "not `present`" (`->>` renders false, 0 or {} as non-empty text)."""
     return func.coalesce(m.AgentRun.context[key].astext, "")
+
+
+def _person() -> ColumnElement[str]:
+    """`person_behind`, in SQL: '' when nobody."""
+    return func.coalesce(*(func.nullif(_ctx_text(key), "") for key in PERSON_KEYS), literal(""))
 
 
 def _autonomous() -> ColumnElement[bool]:
     """`is_autonomous_run`, in SQL."""
     return and_(
         m.AgentRun.source.in_(AUTONOMOUS_SOURCES),
-        _ctx_text("originating_operator") == "",
-        _ctx_text("chat_session_id") == "",
+        *(_ctx_text(key) == "" for key in (*PERSON_KEYS, "chat_session_id")),
     )
 
 
 def _hers_outside_chat(member: m.OrgMember) -> ColumnElement[bool]:
-    """A run the member started by hand (not from a chat: her chat runs are
-    her sessions' business, her live-session runs ARE the messages)."""
+    """A run started by her or on her behalf, not from a chat (her chat runs
+    are her sessions' business, her live-session runs ARE the messages)."""
     return and_(
-        _ctx_text("originating_operator") == member.subject,
+        _person() == member.subject,
         _ctx_text("chat_session_id") == "",
         m.AgentRun.source != "chat",
     )
@@ -217,7 +241,7 @@ def _colleagues(member: m.OrgMember) -> ColumnElement[bool]:
     )
     return and_(
         not_(_autonomous()),
-        _ctx_text("originating_operator") != member.subject,
+        _person() != member.subject,
         not_(_ctx_text("chat_session_id").in_(own_sessions.scalar_subquery())),
     )
 

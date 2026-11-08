@@ -18,6 +18,7 @@ from oc8.observability import get_tracer, record_run_outcome
 from oc8.realtime.emit import publish_agent_status, record_activity
 from oc8.runtime.adapter import RuntimeAdapter
 from oc8.runtime.intake import publish_run
+from oc8.runtime.person import ON_BEHALF_OF, person_behind
 from oc8.runtime.queue import RunMessage
 from oc8.runtime.reconcile import ABANDONED_AFTER, heartbeat
 from oc8.runtime.registry import resolve_runtime
@@ -237,6 +238,23 @@ async def agent_has_own_login_binding(db: AsyncSession, agent: m.Agent) -> bool:
     return bool(needs_login)
 
 
+async def _person_of_task_runs(
+    db: AsyncSession, *, tenant_id: uuid.UUID, task_id: uuid.UUID
+) -> str | None:
+    """The person behind the newest of a task's runs that has one."""
+    rows = await db.execute(
+        select(m.AgentRun.context)
+        .where(m.AgentRun.tenant_id == tenant_id, m.AgentRun.task_id == task_id)
+        .order_by(m.AgentRun.created_at.desc())
+        .limit(20)
+    )
+    for (ctx,) in rows:
+        person = person_behind(ctx)
+        if person is not None:
+            return person
+    return None
+
+
 async def _maybe_wake_parent(
     db: AsyncSession,
     *,
@@ -255,6 +273,7 @@ async def _maybe_wake_parent(
     door: str | None = None,
     followup: dict[str, Any] | None = None,
     originating_operator: str | None = None,
+    on_behalf_of: str | None = None,
 ) -> uuid.UUID | None:
     """Create a follow-up run for the team lead that delegated this sub-run, so
     it can react to the outcome (§7). Returns the new run's id for the caller to
@@ -328,6 +347,15 @@ async def _maybe_wake_parent(
     # rather than being re-derived here, so a delegation chain several hops
     # deep keeps pointing at the SAME original conversation, on the SAME
     # channel, at every hop.
+    # Whose work this continues (Ruling 18): the finishing child's person, or
+    # else the lead's own run's. Marks the wake-up as that person's run on the
+    # Live timeline; grants nothing -- `originating_operator` is set only in
+    # the chat branch below, exactly as before.
+    person = person_behind(
+        {"originating_operator": originating_operator, ON_BEHALF_OF: on_behalf_of}
+    ) or await _person_of_task_runs(db, tenant_id=tenant_id, task_id=parent.id)
+    if person is not None:
+        context[ON_BEHALF_OF] = person
     wake_source = "chat" if chat_session_id else "delegation"
     if chat_session_id:
         context["chat_session_id"] = chat_session_id
@@ -983,6 +1011,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         door=(run.context or {}).get("door"),
                         followup=(run.context or {}).get("followup"),
                         originating_operator=(run.context or {}).get("originating_operator"),
+                        on_behalf_of=(run.context or {}).get(ON_BEHALF_OF),
                     )
                     if wake_id is not None:
                         pending_runs.append(wake_id)
@@ -1121,6 +1150,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                                 originating_operator=(run.context or {}).get(
                                     "originating_operator"
                                 ),
+                                on_behalf_of=(run.context or {}).get(ON_BEHALF_OF),
                             )
                             if wake_id is not None:
                                 pending_runs.append(wake_id)
@@ -1224,6 +1254,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             door=(run.context or {}).get("door"),
                             followup=(run.context or {}).get("followup"),
                             originating_operator=(run.context or {}).get("originating_operator"),
+                            on_behalf_of=(run.context or {}).get(ON_BEHALF_OF),
                         )
                         if wake_id is not None:
                             pending_runs.append(wake_id)

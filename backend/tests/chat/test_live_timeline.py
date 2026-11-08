@@ -17,6 +17,7 @@ from oc8.chat.live import (
     LiveItem,
     get_or_create_live_session,
     is_autonomous_run,
+    is_colleague_run,
     live_timeline,
     trigger_names,
     trigger_of,
@@ -415,3 +416,80 @@ async def test_trigger_names_resolve_the_firing_trigger_and_stay_in_the_tenant(
         await db.flush()
         names = await trigger_names(db, runs, tenant_id=tenant)
     assert [names[r.id]["label"] for r in runs] == ["0 9 * * *", "sales/deal.won", None, None]
+
+
+async def test_python_and_sql_agree_on_who_is_behind_a_run(
+    app_session: AppSessionFactory,
+) -> None:
+    """Any present value but null and "" names a person, in both checks --
+    a stray `false` or `0` errs on the side of "somebody's"."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, alice, _ = await _world(db, tenant)
+        live = await get_or_create_live_session(
+            db, tenant_id=tenant, member_id=alice.id, agent_id=agent.id
+        )
+        values: tuple[Any, ...] = (None, "", False, 0, "bob", {})
+        runs = [
+            _run(tenant, agent, "cron", {key: value})
+            for key in ("originating_operator", "on_behalf_of", "chat_session_id")
+            for value in values
+        ]
+        db.add_all(runs)
+        await db.flush()
+        shown = _run_ids(
+            await live_timeline(
+                db,
+                member=alice,
+                agent=agent,
+                session=live,
+                before=None,
+                limit=100,
+                all_runs=False,
+            )
+        )
+    for run in runs:
+        assert (run.id in shown) == is_autonomous_run(run), run.context
+
+
+async def test_a_run_on_her_behalf_is_hers(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, alice, _ = await _world(db, tenant)
+        live = await get_or_create_live_session(
+            db, tenant_id=tenant, member_id=alice.id, agent_id=agent.id
+        )
+        hers = _run(tenant, agent, "delegation", {"on_behalf_of": "alice"})
+        bobs = _run(tenant, agent, "delegation", {"on_behalf_of": "bob"})
+        db.add_all([hers, bobs])
+        await db.flush()
+        plain = await live_timeline(
+            db, member=alice, agent=agent, session=live, before=None, limit=50, all_runs=False
+        )
+    assert _run_ids(plain) == {hers.id}
+    assert not is_colleague_run(hers, alice)
+    assert is_colleague_run(bobs, alice)
+
+
+async def test_started_by_names_the_person_not_the_delegating_agent(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, _, _ = await _world(db, tenant)
+        task = m.Task(
+            tenant_id=tenant,
+            department_id=agent.department_id,
+            assigned_agent_id=agent.id,
+            title="t",
+            state="in_progress",
+        )
+        db.add(task)
+        await db.flush()
+        wake = _run(
+            tenant, agent, "delegation", {"on_behalf_of": "bob", "parent_task_id": str(task.id)}
+        )
+        db.add(wake)
+        await db.flush()
+        names = await trigger_names(db, [wake], tenant_id=tenant)
+    assert names[wake.id] == {"kind": "delegation", "label": "A", "started_by": "Bob"}

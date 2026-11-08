@@ -266,6 +266,7 @@ async def _resolve_context_refs(
 _RESERVED_CONTEXT_KEYS = frozenset(
     {
         "originating_operator",
+        "on_behalf_of",
         "operator_role",
         "door",
         "chat_channel",

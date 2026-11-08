@@ -11,6 +11,7 @@ from oc8 import models as m
 from oc8.chat.audience import session_audience
 from oc8.chat.live import is_autonomous_run
 from oc8.chat.reach import member_can_reach_agent
+from oc8.runtime.person import person_behind
 
 
 async def may_watch_run(
@@ -20,7 +21,8 @@ async def may_watch_run(
     run_id: uuid.UUID,
     token_role: str | None = None,
 ) -> bool:
-    """A run the member started (`originating_operator`), an autonomous run
+    """A run the member started, or that runs on her behalf (`person_behind`),
+    an autonomous run
     of the agent (it is on their Live timeline), or a chat run of a session
     whose audience includes them -- never a colleague's run otherwise, not
     even for a manager; in EVERY case only while they can still
@@ -34,7 +36,7 @@ async def may_watch_run(
     ):
         return False
     context = run.context or {}
-    if context.get("originating_operator") == member.subject:
+    if person_behind(context) == member.subject:
         return True
     if is_autonomous_run(run):
         # The agent's own run: on the Live timeline of everyone who reaches

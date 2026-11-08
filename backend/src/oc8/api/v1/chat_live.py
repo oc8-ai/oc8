@@ -93,7 +93,7 @@ def _run_dto(run: m.AgentRun, trigger: dict[str, str | None], *, colleague: bool
         steps=int(ctx.get("steps") or 0),
         tool_calls=calls,
         step_timings=timings,
-        started_by=trigger["label"] if ctx.get("originating_operator") else None,
+        started_by=trigger.get("started_by"),
     )
 
 
