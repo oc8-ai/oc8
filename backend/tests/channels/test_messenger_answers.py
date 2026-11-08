@@ -171,3 +171,31 @@ async def test_a_plain_park_keeps_starting_a_new_turn(
     async with app_session(tenant) as db:
         run = await db.get(m.AgentRun, run_id)
         assert run is not None and run.state == "waiting_for_input"
+
+
+async def test_a_secret_in_a_messenger_answer_is_refused_like_a_message(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    run_id, session_id = await _bound_member_with_parked_run(app_session, tenant, structured=True)
+    impl = FakeChannel()
+
+    with patch("oc8.runtime.intake.publish_run") as published:
+        await _say(app_session, tenant, impl, "password=hunter2")
+
+    assert not published.called
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None and run.state == "waiting_for_input"
+        assert "hunter2" not in str(run.context)
+        contents = [
+            msg.content
+            for msg in (
+                await db.execute(
+                    select(m.ChatMessage).where(m.ChatMessage.session_id == session_id)
+                )
+            ).scalars()
+        ]
+        assert "hunter2" not in str(contents) and len(contents) == 2
+    sent = impl.say.await_args
+    assert sent is not None and "credential" in str(sent.args)

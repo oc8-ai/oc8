@@ -20,6 +20,9 @@ from typing import Any, Literal
 
 MAX_QUESTIONS = 6
 MAX_OPTIONS = 8
+#: The longest written answer accepted, on every door (the chat request caps
+#: it too; a messenger reply reaches `validate_answers` uncapped).
+MAX_ANSWER_TEXT = 2000
 #: The single free-text question a plain `question` call becomes.
 PLAIN_ID = "q1"
 
@@ -150,6 +153,9 @@ def render_questions_text(questions: Sequence[Question]) -> str:
 
 def validate_answers(questions: Sequence[Question], answers: Mapping[str, Any]) -> Answer:
     """`{question id: [option keys] | free text}`, checked against the questions."""
+    unknown = set(answers) - {q.id for q in questions}
+    if unknown:
+        raise QuestionError(f"unknown question id {sorted(unknown)[0]!r}")
     out: Answer = {}
     for q in questions:
         value = answers.get(q.id)
@@ -160,6 +166,8 @@ def validate_answers(questions: Sequence[Question], answers: Mapping[str, Any]) 
                 raise QuestionError(f"{q.prompt!r} is required")
             continue
         if isinstance(value, str):
+            if len(value) > MAX_ANSWER_TEXT:
+                raise QuestionError(f"{q.prompt!r}: at most {MAX_ANSWER_TEXT} characters")
             if q.kind != "text" and not q.allow_other:
                 raise QuestionError(f"{q.prompt!r} takes one of its options")
             out[q.id] = value

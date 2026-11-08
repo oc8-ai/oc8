@@ -805,6 +805,13 @@ class QuestionNotAnswerable(RuntimeError):
     """The question is closed, or its run no longer waits for an answer."""
 
 
+class AnswerRefused(RuntimeError):
+    """The answer was refused by the same gate an ordinary message passes
+    (the Assistant's secret-blindness gate). The refusal is already in the
+    transcript; the question stays open and the run stays parked. The caller
+    commits, so the redacted turn and the refusal are kept."""
+
+
 async def answer_parked_question(
     db: AsyncSession,
     *,
@@ -831,6 +838,23 @@ async def answer_parked_question(
     """
     if clarification.status != "open" or run.state != RunState.WAITING_FOR_INPUT.value:
         raise QuestionNotAnswerable("this question has already been answered")
+    # What the PERSON wrote: the written answer and every free-text value.
+    # Option keys are not free text -- `validate_answers` only admits keys the
+    # question offered.
+    written = [text, *(v for v in (answers or {}).values() if isinstance(v, str))]
+    agent = await db.get(m.Agent, run.agent_id)
+    if agent is not None and agent.is_tenant_assistant and is_secret_request(" ".join(written)):
+        # The same gate `send_message` applies, checked BEFORE the run sees
+        # anything: the turn is kept redacted, the refusal is said, and the
+        # answer never reaches the clarification, the run or the model.
+        await _record_refused_turn(
+            db,
+            session=session,
+            content=redact_text("\n".join(w for w in written if w.strip())),
+            member=member,
+            principal=principal,
+        )
+        raise AnswerRefused(_SECRET_REFUSAL)
     pending = (run.context or {}).get("pending_questions")
     if not pending:
         if not text.strip() and answers is not None:
@@ -901,6 +925,44 @@ async def answer_parked_question(
         acting_role=principal.role if principal is not None else None,
     )
     return message
+
+
+async def _record_refused_turn(
+    db: AsyncSession,
+    *,
+    session: m.ChatSession,
+    content: str,
+    member: m.OrgMember,
+    principal: Principal | None,
+) -> None:
+    """The redacted turn plus the refusal, exactly as `send_message` keeps them."""
+    turn = m.ChatMessage(
+        tenant_id=session.tenant_id,
+        session_id=session.id,
+        role="user",
+        content=content,
+        author_member_id=member.id,
+    )
+    db.add(turn)
+    await db.flush()
+    refusal = m.ChatMessage(
+        tenant_id=session.tenant_id,
+        session_id=session.id,
+        role="assistant",
+        content=_SECRET_REFUSAL,
+    )
+    db.add(refusal)
+    session.last_message_at = dt.datetime.now(tz=dt.UTC)
+    await db.flush()
+    for announced in (turn, refusal):
+        await publish_chat_message_created(
+            db,
+            session=session,
+            message=announced,
+            run_id=None,
+            acting_subject=principal.subject if principal is not None else None,
+            acting_role=principal.role if principal is not None else None,
+        )
 
 
 async def parked_session_question(

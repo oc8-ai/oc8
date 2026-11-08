@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import AwareDatetime, ConfigDict, EmailStr, Field, field_validator
+from pydantic import (
+    AwareDatetime,
+    ConfigDict,
+    EmailStr,
+    Field,
+    StringConstraints,
+    field_validator,
+)
 
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import WidgetInstanceDTO
@@ -701,8 +708,24 @@ class ChatAnswerRequest(CamelModel):
     fits depends on what was asked.
     """
 
-    answers: dict[str, list[str] | str] | None = None
-    text: str | None = Field(default=None, max_length=4000)
+    model_config = ConfigDict(extra="forbid")
+
+    #: At most `MAX_QUESTIONS` entries, each id and option key at most 64 chars,
+    #: at most `MAX_OPTIONS` keys per answer, a written answer at most 2000
+    #: chars. Ids and keys the question did not offer are refused in
+    #: `validate_answers`; these caps bound the request before it gets there.
+    answers: (
+        dict[
+            Annotated[str, StringConstraints(min_length=1, max_length=64)],
+            Annotated[
+                list[Annotated[str, StringConstraints(min_length=1, max_length=64)]],
+                Field(max_length=8),
+            ]
+            | Annotated[str, StringConstraints(max_length=2000)],
+        ]
+        | None
+    ) = Field(default=None, max_length=6)
+    text: str | None = Field(default=None, max_length=2000)
 
 
 class CreateTaskRequest(CamelModel):

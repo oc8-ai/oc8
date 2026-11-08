@@ -514,7 +514,7 @@ async def _answer_parked_question(
     from sqlalchemy import select
 
     from oc8.chat.questions import QuestionError, format_for_messenger, questions_from_json
-    from oc8.chat.service import QuestionNotAnswerable, answer_parked_question
+    from oc8.chat.service import AnswerRefused, QuestionNotAnswerable, answer_parked_question
 
     own_sessions = [
         str(sid)
@@ -570,6 +570,11 @@ async def _answer_parked_question(
             via=channel,
             principal=None,
         )
+    except AnswerRefused as exc:
+        # The refused turn stays in the transcript, as for a refused message.
+        await db.commit()
+        await tell_sender(impl, text.external_id, str(exc))
+        return True
     except QuestionNotAnswerable:
         # Raised before anything changed, and without a rollback: that would end
         # the transaction-local tenant binding the new turn below still needs.
