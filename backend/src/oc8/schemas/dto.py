@@ -1413,6 +1413,44 @@ class OAuthConnectionDTO(CamelModel):
     created_at: str
 
 
+class ConnectableIntegrationDTO(CamelModel):
+    """An installed plugin a person or an admin can connect (connections design)."""
+
+    name: str
+    label: str
+    summary: str
+    tool_key: str
+    kind: str  # "oauth" | "credential"
+    provider: str | None = None
+    credential_type: str | None = None
+    #: The credential type's fields (label/help/placeholder plus translations),
+    #: for the form; secrets are never pre-filled.
+    credential_fields: list[dict[str, Any]] = []
+    available: bool
+    capa_id: str
+
+
+class ConnectionDTO(CamelModel):
+    """One OAuth connection or credential as the Connections page shows it --
+    metadata only, never a token, a secret ref or a secret value."""
+
+    id: str
+    kind: str  # "oauth" | "credential"
+    integration: str | None = None
+    provider: str | None = None
+    credential_type: str | None = None
+    account_label: str
+    owner: str  # "me" | "organisation" | "member"
+    owner_member_id: str | None = None
+    owner_name: str | None = None
+    status: str
+    grant_type: str | None = None
+    created_at: str
+    created_by_name: str | None = None
+    last_tested_at: str | None = None
+    last_test_ok: bool | None = None
+
+
 class DeviceLoginStartDTO(CamelModel):
     """What `POST /models/chatgpt-subscription/device/start` hands the
     frontend to show the user-facing code and start polling (Task 12).

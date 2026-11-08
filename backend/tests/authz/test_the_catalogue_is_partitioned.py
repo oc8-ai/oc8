@@ -167,9 +167,7 @@ def test_every_delegatable_permission_gates_at_least_one_route() -> None:
         f"the route sweep found only {len(declared)} permissions; it is broken"
     )
 
-    # TODO(connections): drop this exemption once the connections API (a later
-    # task of the same change) gates its routes with `connection:own`.
-    inert = sorted(DELEGATABLE_PERMISSIONS - declared - {CONNECTION_OWN})
+    inert = sorted(DELEGATABLE_PERMISSIONS - declared)
     assert not inert, (
         f"these can be ticked in the role builder and gate no route at all: {inert}. "
         "Either a route is missing, or the box should not be offered."

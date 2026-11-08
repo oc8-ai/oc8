@@ -193,13 +193,13 @@ async def list_credential_types_endpoint(
             name=t.name,
             display_name=t.display_name,
             display_name_translations=translations_for(i18n, t.display_name),
-            fields=[_translate_field(f, i18n) for f in t.fields],
+            fields=[translate_field(f, i18n) for f in t.fields],
         )
         for t, i18n in types
     ]
 
 
-def _translate_field(field: SetupFieldSpec, i18n: CredentialTypeI18n) -> dict[str, Any]:
+def translate_field(field: SetupFieldSpec, i18n: CredentialTypeI18n) -> dict[str, Any]:
     out = field.model_dump(mode="json")
     for prop in ("label", "help", "placeholder"):
         value = out.get(prop)

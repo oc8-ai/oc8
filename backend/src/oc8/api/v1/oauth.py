@@ -21,6 +21,7 @@ from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission, unguarded
 from oc8.authz.permissions import INTEGRATION, MANAGE, VIEW, perm
 from oc8.config import get_settings
+from oc8.connections.revoke import revoke_oauth_connection
 from oc8.db.session import tenant_session
 from oc8.oauth.client import resolve_client
 from oc8.oauth.errors import (
@@ -28,17 +29,14 @@ from oc8.oauth.errors import (
     OAuthNotConfigured,
     OAuthStateInvalid,
 )
-from oc8.oauth.http import get_client
 from oc8.oauth.providers import get_provider, redirect_uri_for
 from oc8.oauth.provisioning import provision_oauth_connection
 from oc8.oauth.state import consume_state, put_state
 from oc8.oauth.tokens import (
     access_ref,
-    delete_tokens,
     exchange_code,
     expiry_from,
     fetch_account_label,
-    invalidate_delegated_tokens,
     persist_tokens,
     refresh_ref,
 )
@@ -354,24 +352,5 @@ async def disconnect(
     if conn is None or conn.tenant_id != principal.tenant_id or conn.owner_member_id is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "connection not found")
 
-    prov = get_provider(conn.provider)
-    if prov.revoke_url and conn.refresh_secret_ref:
-        # Best effort: a provider-side failure must never block local cleanup,
-        # otherwise a dead provider would pin secrets in the store forever.
-        try:
-            from oc8.secrets.service import resolve_secret
-
-            token = await resolve_secret(db, tenant_id=conn.tenant_id, ref=conn.refresh_secret_ref)
-            async with get_client() as http_client:
-                await http_client.post(prov.revoke_url, data={"token": token})
-        except Exception as exc:  # best effort by design
-            logger.warning("provider revoke failed for %s: %s", connection_id, exc)
-
-    await delete_tokens(db, tenant_id=conn.tenant_id, connection_id=conn.id)
-    # The stored tokens are only half of what this connection can still serve:
-    # delegated (domain-wide-delegation) tokens live in a process-local cache
-    # keyed by connection, not in the secret store, and would otherwise stay
-    # servable for up to an hour after the row an operator just disconnected.
-    invalidate_delegated_tokens(conn.id)
-    await db.delete(conn)
+    await revoke_oauth_connection(db, conn)
     await db.commit()
