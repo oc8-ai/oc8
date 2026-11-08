@@ -12,7 +12,7 @@ import datetime as dt
 import uuid
 from typing import Any
 
-from sqlalchemy import CheckConstraint, DateTime, Index, Text, Uuid, text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Index, Text, Uuid, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -52,6 +52,16 @@ class ChatSession(Base, PkMixin, TenantMixin, TimestampMixin):
     #: Live timeline per (member, agent) (spec §3.1); `uq_chat_session_live`
     #: (migration 0108) keeps that to one row.
     kind: Mapped[str] = mapped_column(Text, nullable=False, default="chat", server_default="chat")
+    #: Context pinned to this chat (spec §5.2): `[{"kind","id","label"}]`, each
+    #: authorised against the member when pinned and re-checked per reader.
+    pinned_refs: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
+    project_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
+    #: Kept at the top of the history list.
+    pinned: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
 
 
 class ChatMessage(Base, PkMixin, TenantMixin, TimestampMixin):
@@ -87,4 +97,27 @@ class ChatMessage(Base, PkMixin, TenantMixin, TimestampMixin):
 
     __table_args__ = (
         CheckConstraint("role IN ('user','assistant','followup')", name="ck_chat_message_role"),
+    )
+
+
+class ChatProject(Base, PkMixin, TenantMixin, TimestampMixin):
+    """A folder of chats with shared instructions and pinned context (spec §5.2).
+    Each chat in it stays private to its member."""
+
+    __tablename__ = "chat_project"
+    __table_args__ = (
+        CheckConstraint("char_length(name) BETWEEN 1 AND 120", name="ck_chat_project_name"),
+        CheckConstraint("char_length(instructions) <= 8000", name="ck_chat_project_instructions"),
+        Index("ix_chat_project_tenant_owner", "tenant_id", "owner_member_id"),
+    )
+
+    owner_member_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    instructions: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    pinned_refs: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
+    #: Reserved for the later sharing work; never read in core.
+    shared_with: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
     )

@@ -6,7 +6,7 @@ from oc8.models.api_keys import ApiKey
 from oc8.models.attachments import FileAttachment
 from oc8.models.capas import Capa, CapaInstallation, CapaVersion
 from oc8.models.channels import ApprovalChannelBinding, ChannelPollCursor
-from oc8.models.chat import ChatMessage, ChatSession
+from oc8.models.chat import ChatMessage, ChatProject, ChatSession
 from oc8.models.collab import ContractBinding, Handoff, HandoffType
 from oc8.models.components import ComponentGrant
 from oc8.models.copilot import CopilotProfile, Responsibility
@@ -84,6 +84,7 @@ __all__ = [
     "CapaVersion",
     "ChannelPollCursor",
     "ChatMessage",
+    "ChatProject",
     "ChatSession",
     "Clarification",
     "ComponentGrant",
