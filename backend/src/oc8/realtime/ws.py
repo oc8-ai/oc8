@@ -18,7 +18,7 @@ from oc8.authz.permissions import RUN, VIEW, perm
 from oc8.chat.watch import may_watch_run
 from oc8.db.session import tenant_session
 from oc8.models import OrgMember
-from oc8.realtime.manager import ConnectionManager
+from oc8.realtime.manager import ConnectionManager, Recheck, WatchVerdict
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +117,10 @@ async def events_ws(websocket: WebSocket) -> None:
     manager: ConnectionManager = websocket.app.state.realtime_manager
     tenant_id = principal.tenant_id
     await websocket.accept()
-    await manager.connect(tenant_id, websocket, member_id=member_id, feed=feed)
+    recheck = (
+        _watch_recheck(tenant_id, member_id, principal.role) if member_id is not None else None
+    )
+    await manager.connect(tenant_id, websocket, member_id=member_id, feed=feed, recheck=recheck)
     # Handshake: connect() only returns once the tenant subscription is live,
     # so this genuinely means events are now being received. The client uses
     # it to (re)sync, and `feed` to know whether it gets the tenant feed.
@@ -132,6 +135,24 @@ async def events_ws(websocket: WebSocket) -> None:
         pass
     finally:
         await manager.disconnect(tenant_id, websocket)
+
+
+def _watch_recheck(tenant_id: uuid.UUID, member_id: uuid.UUID, token_role: str | None) -> Recheck:
+    """The periodic re-authorisation of this socket's run watches: the same
+    `may_watch_run` that granted them, re-read from the database, so a revoked
+    seat, a changed role or an offboarded member stops the stream."""
+
+    async def _recheck(run_id: str) -> WatchVerdict:
+        async with tenant_session(tenant_id) as db:
+            member = await db.get(OrgMember, member_id)
+            if member is None or member.deleted_at is not None:
+                return "gone"
+            allowed = await may_watch_run(
+                db, member=member, run_id=uuid.UUID(run_id), token_role=token_role
+            )
+        return "ok" if allowed else "access"
+
+    return _recheck
 
 
 async def _handle_client_message(

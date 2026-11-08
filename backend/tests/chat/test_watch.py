@@ -122,3 +122,27 @@ async def test_an_offboarded_member_reaches_nothing(app_session: AppSessionFacto
         alice_row.deleted_at = dt.datetime.now(tz=dt.UTC)
         await db.flush()
         assert not await may_watch_run(db, member=alice_row, run_id=run.id)
+
+
+async def test_the_socket_recheck_reads_access_afresh(app_session: AppSessionFactory) -> None:
+    """`ws.py`'s re-check is the same predicate, re-read from the database:
+    allowed, then (role taken away) lost access, then (offboarded) gone."""
+    import datetime as dt
+
+    from oc8.realtime.ws import _watch_recheck
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        alice = await copilot_seat(db, tenant, "alice")
+        run = await _chat_run(db, tenant, alice)
+        run_id = str(run.id)
+    recheck = _watch_recheck(tenant, alice.member_id, None)
+    assert await recheck(run_id) == "ok"
+    async with app_session(tenant) as db:
+        row = await _member(db, alice.member_id)
+        row.role_id = None
+    assert await recheck(run_id) == "access"
+    async with app_session(tenant) as db:
+        row = await _member(db, alice.member_id)
+        row.deleted_at = dt.datetime.now(tz=dt.UTC)
+    assert await recheck(run_id) == "gone"

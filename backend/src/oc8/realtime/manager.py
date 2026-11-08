@@ -7,9 +7,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Literal, Protocol
 
 import redis.asyncio as redis
 
@@ -24,6 +26,18 @@ _RESUBSCRIBE_BACKOFF_BASE = 1.0
 _RESUBSCRIBE_BACKOFF_MAX = 30.0
 
 
+#: How long a run watch is trusted before it is asked again. A watch is a grant
+#: made at one moment; a member whose seat is revoked, whose role changes or who
+#: is offboarded must stop receiving the run within this window.
+WATCH_RECHECK_SECONDS = 60.0
+
+#: A re-check's answer: still allowed; lost access to the run (the watch is
+#: dropped and the client told `run.unwatched`); or the member is gone (the
+#: socket is closed).
+WatchVerdict = Literal["ok", "access", "gone"]
+Recheck = Callable[[str], Awaitable[WatchVerdict]]
+
+
 class SupportsSend(Protocol):
     async def send_text(self, data: str) -> None: ...
 
@@ -33,7 +47,37 @@ class _Conn:
     ws: SupportsSend
     member_id: str | None
     feed: bool
-    runs: set[str] = field(default_factory=set)
+    #: run id -> when the watch was last (re)authorised, on the manager's clock.
+    runs: dict[str, float] = field(default_factory=dict)
+    recheck: Recheck | None = None
+
+
+def _route(conn: _Conn, raw: str) -> tuple[str | None, str | None]:
+    """`(frame, watched_run_id)`: the frame for this socket (or None), and the
+    run id when it is delivered ONLY because of a run watch -- the one case the
+    caller has to re-authorise from time to time."""
+    try:
+        env = json.loads(raw)
+    except ValueError:
+        return (raw if conn.feed else None), None
+    if not isinstance(env, dict):
+        return (raw if conn.feed else None), None
+    if "audience" in env:
+        audience = env["audience"]
+        if not isinstance(audience, list) or conn.member_id is None:
+            return None, None
+        if conn.member_id not in audience:
+            return None, None
+        trimmed = {k: v for k, v in env.items() if k != "audience"}
+        return json.dumps(trimmed), None
+    if conn.feed:
+        return raw, None
+    type_ = str(env.get("type", ""))
+    data = env.get("data")
+    run_id = data.get("run_id") if isinstance(data, dict) else None
+    if type_.startswith("run.") and isinstance(run_id, str) and run_id in conn.runs:
+        return raw, run_id
+    return None, None
 
 
 def _deliverable(conn: _Conn, raw: str) -> str | None:
@@ -49,34 +93,22 @@ def _deliverable(conn: _Conn, raw: str) -> str | None:
        allowed to watch (`ws.py`'s `run.watch`).
 
     Unparseable frames are only ever sent to feed sockets (the legacy
-    behaviour), never to member-only sockets."""
-    try:
-        env = json.loads(raw)
-    except ValueError:
-        return raw if conn.feed else None
-    if not isinstance(env, dict):
-        return raw if conn.feed else None
-    if "audience" in env:
-        audience = env["audience"]
-        if not isinstance(audience, list) or conn.member_id is None:
-            return None
-        if conn.member_id not in audience:
-            return None
-        trimmed = {k: v for k, v in env.items() if k != "audience"}
-        return json.dumps(trimmed)
-    if conn.feed:
-        return raw
-    type_ = str(env.get("type", ""))
-    data = env.get("data")
-    run_id = data.get("run_id") if isinstance(data, dict) else None
-    if type_.startswith("run.") and isinstance(run_id, str) and run_id in conn.runs:
-        return raw
-    return None
+    behaviour), never to member-only sockets. A watch-delivered frame is
+    additionally subject to `ConnectionManager`'s periodic re-check."""
+    return _route(conn, raw)[0]
 
 
 class ConnectionManager:
-    def __init__(self, url: str) -> None:
+    def __init__(
+        self,
+        url: str,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        watch_recheck_seconds: float = WATCH_RECHECK_SECONDS,
+    ) -> None:
         self._client: redis.Redis = redis.from_url(url, decode_responses=True)
+        self._clock = clock
+        self._watch_recheck_seconds = watch_recheck_seconds
         self._conns: dict[uuid.UUID, dict[int, _Conn]] = {}
         self._tasks: dict[uuid.UUID, asyncio.Task[None]] = {}
 
@@ -87,10 +119,16 @@ class ConnectionManager:
         *,
         member_id: uuid.UUID | None = None,
         feed: bool = True,
+        recheck: Recheck | None = None,
     ) -> None:
+        """`recheck` re-authorises this socket's run watches (see
+        `_still_watching`); `ws.py` always passes one for a member socket."""
         first = tenant_id not in self._conns
         self._conns.setdefault(tenant_id, {})[id(ws)] = _Conn(
-            ws=ws, member_id=str(member_id) if member_id else None, feed=feed
+            ws=ws,
+            member_id=str(member_id) if member_id else None,
+            feed=feed,
+            recheck=recheck,
         )
         if first:
             ready = asyncio.Event()
@@ -128,13 +166,64 @@ class ConnectionManager:
         already decided it may (`oc8.chat.watch.may_watch_run`)."""
         conn = self._conns.get(tenant_id, {}).get(id(ws))
         if conn is not None:
-            conn.runs.add(run_id)
+            conn.runs[run_id] = self._clock()
+
+    async def _still_watching(self, tenant_id: uuid.UUID, conn: _Conn, run_id: str) -> bool:
+        """Whether a watch-delivered frame may go out. Off the hot path: the
+        socket's `recheck` (the same predicate `run.watch` was granted with) is
+        asked at most once per `watch_recheck_seconds` per watch.
+
+        Lost access drops the watch and tells the client `run.unwatched`; a
+        member who is gone has the socket closed. A re-check that fails (a
+        database blip) withholds this frame and keeps the watch, so the next
+        event asks again -- fail closed, without losing the watch."""
+        granted_at = conn.runs.get(run_id)
+        if granted_at is None:
+            return False
+        now = self._clock()
+        if conn.recheck is None or now - granted_at < self._watch_recheck_seconds:
+            return True
+        try:
+            verdict = await conn.recheck(run_id)
+        except Exception:
+            logger.warning("run watch re-check failed (run=%s)", run_id, exc_info=True)
+            return False
+        if verdict == "ok":
+            conn.runs[run_id] = now
+            return True
+        conn.runs.pop(run_id, None)
+        if verdict == "gone":
+            await self._close(tenant_id, conn)
+            return False
+        try:
+            await conn.ws.send_text(
+                json.dumps({"type": "run.unwatched", "runId": run_id, "reason": "access"})
+            )
+        except Exception:
+            await self.disconnect(tenant_id, conn.ws)
+        return False
+
+    async def _close(self, tenant_id: uuid.UUID, conn: _Conn) -> None:
+        """Close a member socket whose member no longer exists, then forget it.
+        Closed first: forgetting the tenant's last socket cancels the very
+        subscriber task this runs in, and the close must not be cut short."""
+        close = getattr(conn.ws, "close", None)
+        if close is not None:
+            try:
+                await close(code=1008)
+            except Exception:
+                logger.debug("closing a revoked member socket failed", exc_info=True)
+        await self.disconnect(tenant_id, conn.ws)
 
     async def _broadcast(self, tenant_id: uuid.UUID, text: str) -> None:
         dead: list[SupportsSend] = []
         for conn in list(self._conns.get(tenant_id, {}).values()):
-            frame = _deliverable(conn, text)
+            frame, watched_run = _route(conn, text)
             if frame is None:
+                continue
+            if watched_run is not None and not await self._still_watching(
+                tenant_id, conn, watched_run
+            ):
                 continue
             try:
                 await conn.ws.send_text(frame)
