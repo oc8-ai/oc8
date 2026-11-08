@@ -217,9 +217,44 @@ ASK_USER = NeutralTool(
     parameters={
         "type": "object",
         "properties": {
-            "question": {"type": "string", "description": "The question for the human."},
+            "question": {
+                "type": "string",
+                "description": "One free-text question for the human. Use this OR `questions`.",
+            },
+            "questions": {
+                "type": "array",
+                "maxItems": 6,
+                "description": (
+                    "Up to 6 structured questions the person answers in one go. "
+                    "kind: single (pick one), multi (pick several), text (free answer). "
+                    "Up to 8 options each; allow_other lets them write their own answer."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "prompt": {"type": "string"},
+                        "kind": {"type": "string", "enum": ["single", "multi", "text"]},
+                        "options": {
+                            "type": "array",
+                            "maxItems": 8,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "key": {"type": "string"},
+                                    "label": {"type": "string"},
+                                    "detail": {"type": "string"},
+                                },
+                                "required": ["key", "label"],
+                            },
+                        },
+                        "allow_other": {"type": "boolean"},
+                        "required": {"type": "boolean"},
+                    },
+                    "required": ["id", "prompt", "kind"],
+                },
+            },
         },
-        "required": ["question"],
     },
 )
 
@@ -1153,6 +1188,11 @@ class ControlOutcome:
     #: read on every later completion -- one-way, a run never becomes
     #: unrestricted again.
     contains_restricted: bool = False
+    #: Set only by a structured ask_user: the validated questions
+    #: (`oc8.chat.questions.questions_to_json`). A field of its own, never a
+    #: marker inside `output` -- `output` stays the readable text every model
+    #: and the inbox see. None for a plain one-question ask.
+    questions: list[dict[str, Any]] | None = None
 
 
 async def _member_behind_task(
@@ -2254,6 +2294,14 @@ async def execute_control_tool(
         )
 
     if tc.name == ASK_USER.name:
+        from oc8.chat.questions import (
+            QuestionError,
+            is_plain,
+            parse_questions,
+            questions_to_json,
+            render_questions_text,
+        )
+
         if agent.is_tenant_assistant and run_id is not None:
             from oc8.copilot.door import door_of
 
@@ -2263,18 +2311,26 @@ async def execute_control_tool(
                 # tool it was never offered; a messenger sender cannot answer a
                 # parked run, so refuse instead of suspending. The question is
                 # echoed back so the reply can still say what is missing.
-                missing = str(tc.arguments.get("question", "")).strip()
+                try:
+                    missing = render_questions_text(parse_questions(tc.arguments))
+                except QuestionError:
+                    missing = ""
                 return ControlOutcome(
                     output="ERROR: you cannot ask a question on this channel; decide "
                     "with what you have, delegate, or say you cannot proceed"
                     + (f" -- and name what is missing in your reply: {missing}" if missing else "")
                 )
-        question = str(tc.arguments.get("question", "")).strip()
-        if not question:
-            # An empty question is a model error, not a suspend: parking the run
-            # would leave a human staring at nothing to answer.
-            return ControlOutcome(output="ERROR: ask_user requires a non-empty question")
-        return ControlOutcome(output=question, suspend="waiting_for_input")
+        try:
+            questions = parse_questions(tc.arguments)
+        except QuestionError as exc:
+            # A malformed (or empty) question is a model error, not a suspend:
+            # parking the run would leave a human staring at nothing to answer.
+            return ControlOutcome(output=f"ERROR: {exc}")
+        return ControlOutcome(
+            output=render_questions_text(questions),
+            suspend="waiting_for_input",
+            questions=None if is_plain(questions) else questions_to_json(questions),
+        )
 
     if tc.name == TODO_WRITE.name:
         raw_todos = tc.arguments.get("todos")

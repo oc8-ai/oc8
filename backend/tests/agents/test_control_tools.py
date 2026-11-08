@@ -1136,6 +1136,9 @@ def test_each_control_tool_declares_its_required_arguments(name: str) -> None:
         "agent_status",
         "budget_overview",
         "kpi_overview",
+        # `question` OR `questions` (spec §4.1) -- a JSON-schema "one of these"
+        # many providers reject, so the handler enforces it instead.
+        "ask_user",
     }
     if name not in optional_tools:
         assert schema.parameters["required"]
