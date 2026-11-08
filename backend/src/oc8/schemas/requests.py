@@ -178,6 +178,8 @@ class ModelConfigWrite(CamelModel):
     #: model's existing raw params untouched on update; {} clears them.
     extra: dict[str, Any] | None = None
     used_by_copilot: bool | None = None
+    #: Whether members may pick this model in a chat. None leaves it unchanged.
+    chat_enabled: bool | None = None
     #: A specific Credential to bind to this ModelConfig (id as string). None
     #: leaves the tenant-wide "first credential of this provider's type"
     #: convention as the fallback (resolve_model_key/resolve_model_base_url).

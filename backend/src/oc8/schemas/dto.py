@@ -391,6 +391,8 @@ class ModelDTO(CamelModel):
     #: Free-form raw parameters forwarded verbatim; see ModelConfigWrite.extra.
     extra: dict[str, Any] | None = None
     used_by_copilot: bool = False
+    #: Whether members may pick this model in a chat (`oc8.chat.model_choice`).
+    chat_enabled: bool = True
     credential_id: str | None = None
     #: Set only when `status` is "error"/"unknown" -- the real reason from
     #: the last POST /models/{id}/test check (see catalog.py).

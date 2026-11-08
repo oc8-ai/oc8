@@ -271,6 +271,9 @@ export interface ModelDTO {
   // these, the provider does. null/undefined means "none set".
   extra?: Record<string, unknown> | null;
   usedByCopilot: boolean;
+  // Whether members may pick this model in a chat. Absent on an older
+  // backend, where every model was pickable.
+  chatEnabled?: boolean;
   supportsVision?: boolean;
   credentialId: string | null;
   healthError: string | null;
@@ -321,6 +324,7 @@ export interface ModelWriteBody {
   effort?: string;
   extra?: Record<string, unknown>;
   usedByCopilot?: boolean;
+  chatEnabled?: boolean;
   supportsVision?: boolean;
   credentialId?: string | null;
   autoTiers?: Record<string, string> | null;

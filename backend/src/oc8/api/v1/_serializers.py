@@ -425,6 +425,8 @@ def model_to_dto(mc: m.ModelConfig, assigned_to: list[str]) -> ModelDTO:
         # `mapped_column(default=False)` applies at INSERT, not at construction; a
         # row built and serialized before its first flush still reads None here.
         used_by_copilot=bool(mc.used_by_copilot),
+        # Same INSERT-time default caveat as above; the column defaults to on.
+        chat_enabled=mc.chat_enabled is not False,
         credential_id=str(mc.credential_id) if mc.credential_id else None,
         health_error=health.get("error"),
         health_checked_at=health.get("checkedAt"),

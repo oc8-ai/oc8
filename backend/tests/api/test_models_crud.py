@@ -1257,3 +1257,57 @@ async def test_patch_allows_binding_a_subscription_credential_without_triggers(
             )
             assert r.status_code == 200, r.text
             assert r.json()["credentialId"] == str(sub_id)
+
+
+async def test_patch_toggles_chat_enabled() -> None:
+    """Admins choose which models members may pick in a chat (the picker in
+    `oc8.chat.model_choice` lists only `chat_enabled` ones)."""
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    app = create_app()
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as client:
+            headers = {"Authorization": f"Bearer {_token(tenant)}"}
+            write = {"provider": "ollama", "model": "llama3.1:8b", "locality": "local"}
+            r = await client.post("/api/v1/models", json=write, headers=headers)
+            assert r.status_code == 201, r.text
+            model_id = r.json()["id"]
+            assert r.json()["chatEnabled"] is True
+
+            r = await client.patch(
+                f"/api/v1/models/{model_id}", json={**write, "chatEnabled": False}, headers=headers
+            )
+            assert r.status_code == 200, r.text
+            assert r.json()["chatEnabled"] is False
+
+            # Omitted on a later PATCH -> preserved.
+            r = await client.patch(f"/api/v1/models/{model_id}", json=write, headers=headers)
+            assert r.json()["chatEnabled"] is False
+
+            listed = await client.get("/api/v1/models", headers=headers)
+            row = next(x for x in listed.json() if x["id"] == model_id)
+            assert row["chatEnabled"] is False
+
+            r = await client.patch(
+                f"/api/v1/models/{model_id}", json={**write, "chatEnabled": True}, headers=headers
+            )
+            assert r.json()["chatEnabled"] is True
+
+
+async def test_patch_chat_enabled_forbidden_for_non_admin() -> None:
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    app = create_app()
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as client:
+            r = await client.patch(
+                f"/api/v1/models/{uuid.uuid4()}",
+                json={
+                    "provider": "ollama",
+                    "model": "llama3.1:8b",
+                    "locality": "local",
+                    "chatEnabled": False,
+                },
+                headers={"Authorization": f"Bearer {_token(tenant, role='member')}"},
+            )
+            assert r.status_code == 403, r.text

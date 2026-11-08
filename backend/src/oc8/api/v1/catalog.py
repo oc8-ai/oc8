@@ -358,6 +358,8 @@ async def update_model(
         cfg.locality = body.locality
     if "display_name" in body.model_fields_set:
         cfg.display_name = body.display_name
+    if body.chat_enabled is not None:
+        cfg.chat_enabled = body.chat_enabled
     if canon == AUTO_PROVIDER:
         # Auto rows only carry router params; skip concrete-model fields below.
         if "used_by_copilot" in body.model_fields_set:
