@@ -106,7 +106,7 @@ async def _message_dto(msg: m.ChatMessage, db: DbSession, tenant_id: uuid.UUID) 
     author_name: str | None = None
     if msg.author_member_id is not None:
         author = await db.get(m.OrgMember, msg.author_member_id)
-        author_name = author.display_name if author is not None else None
+        author_name = (author.display_name or None) if author is not None else None
     return ChatMessageDTO(
         id=str(msg.id),
         session_id=str(msg.session_id),

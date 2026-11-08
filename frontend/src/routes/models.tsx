@@ -178,6 +178,7 @@ export function ChatAvailabilitySwitch({
         locality: model.locality,
         chatEnabled: next,
       });
+      setPending(null);
     } catch {
       setPending(null);
       setFailed(true);
