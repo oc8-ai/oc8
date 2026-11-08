@@ -337,6 +337,12 @@ class Settings(BaseSettings):
     # these are the platform-wide fallback (design decision 2).
     google_oauth_client_id: str = ""
     google_oauth_client_secret: str = ""
+    microsoft_oauth_client_id: str = ""
+    microsoft_oauth_client_secret: str = ""
+    #: Ask Google for the full Gmail/Drive scopes when a person connects. Off
+    #: by default: those scopes are restricted and need a security assessment
+    #: of the app first; the narrow set needs none.
+    google_full_scopes: bool = False
     # Externally reachable base URL of THIS api — must match the redirect URI
     # registered with the provider.
     oauth_redirect_base_url: str = "http://localhost:8000"

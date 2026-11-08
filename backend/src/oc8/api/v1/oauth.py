@@ -109,6 +109,10 @@ async def start_oauth(
         "code_challenge_method": "S256",
         **dict(prov.extra_authorize_params),
     }
+    # Google's consent prompt moved out of extra_authorize_params (Task 11
+    # decides it per start); until then every start asks, as before.
+    if prov.prompt_first:
+        params.setdefault("prompt", prov.prompt_first)
     return OAuthStartDTO(authorization_url=f"{prov.authorize_url}?{urlencode(params)}")
 
 

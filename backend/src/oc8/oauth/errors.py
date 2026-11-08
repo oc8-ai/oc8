@@ -21,3 +21,8 @@ class OAuthExchangeFailed(OAuthError):
 
 class OAuthReauthRequired(OAuthError):
     """The refresh token is dead — the user must re-authorize."""
+
+
+class OAuthConsentRequired(OAuthReauthRequired):
+    """The provider wants an administrator's consent before this account may
+    grant the requested access (Microsoft AADSTS65001/AADSTS90094)."""

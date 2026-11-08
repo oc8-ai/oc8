@@ -130,7 +130,7 @@ async def _provision_microsoft(
             # re-mint, so a display name here would silently break every
             # refresh after the first.
             account_label=client_id,
-            scopes=list(get_provider("microsoft").default_scopes),
+            scopes=[get_provider("microsoft").app_scope or "https://graph.microsoft.com/.default"],
             access_secret_ref=access_ref(
                 uuid.uuid4()
             ),  # placeholder id; replaced below once conn.id exists

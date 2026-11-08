@@ -20,7 +20,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.oauth.client import ResolvedClient, resolve_client
-from oc8.oauth.errors import OAuthError, OAuthExchangeFailed, OAuthReauthRequired
+from oc8.oauth.errors import (
+    OAuthConsentRequired,
+    OAuthError,
+    OAuthExchangeFailed,
+    OAuthReauthRequired,
+)
 from oc8.oauth.http import get_client
 from oc8.oauth.providers import get_provider
 from oc8.secrets.service import SecretNotFound, delete_secret, resolve_secret, store_secret
@@ -41,7 +46,8 @@ def _token_url_for(conn: m.OAuthConnection) -> str:
     """The provider's token URL, with Microsoft's {tenant_id} placeholder filled
     in from the connection's own azure_tenant_id. Every other provider's
     token_url has no placeholder, so .format is a no-op for them."""
-    template = get_provider(conn.provider).token_url
+    provider = get_provider(conn.provider)
+    template = provider.app_token_url or provider.token_url
     return template.format(tenant_id=conn.azure_tenant_id or "")
 
 
@@ -90,6 +96,20 @@ def extract_chatgpt_account_id(id_token: str) -> str | None:
     return account_id if isinstance(account_id, str) else None
 
 
+def tenant_from_id_token(id_token: str | None) -> str | None:
+    """Microsoft's `tid` claim: the directory the person signed in from.
+    Read without signature verification -- it labels the row, it authorises
+    nothing (the access token itself is what Graph checks)."""
+    if not id_token:
+        return None
+    try:
+        claims = _pyjwt.decode(id_token, options={"verify_signature": False})
+    except _pyjwt.PyJWTError:
+        return None
+    tid = claims.get("tid")
+    return tid if isinstance(tid, str) and tid else None
+
+
 async def _post_token(
     provider_id: str, data: dict[str, str], *, url: str | None = None
 ) -> dict[str, object]:
@@ -102,6 +122,13 @@ async def _post_token(
         raise OAuthExchangeFailed(f"provider returned non-JSON ({resp.status_code})") from None
     if resp.status_code >= 400:
         err = body.get("error")
+        description = body.get("error_description")
+        if isinstance(description, str) and (
+            "AADSTS65001" in description or "AADSTS90094" in description
+        ):
+            raise OAuthConsentRequired(
+                "an administrator of the account's organisation must consent first"
+            )
         if err == "invalid_grant":
             raise OAuthReauthRequired("refresh token rejected by the provider")
         raise OAuthExchangeFailed(f"provider error {resp.status_code}: {err!r}")
@@ -146,8 +173,11 @@ async def fetch_account_label(*, provider_id: str, access_token: str) -> str:
         body: dict[str, object] = resp.json()
     except ValueError:
         return "unknown"
-    email = body.get("email")
-    return email if isinstance(email, str) and email else "unknown"
+    for key in ("email", "mail", "userPrincipalName"):
+        value = body.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return "unknown"
 
 
 def expiry_from(expires_in: int | None) -> dt.datetime | None:
@@ -305,7 +335,7 @@ async def _mint_client_credentials(db: AsyncSession, conn: m.OAuthConnection) ->
                 "grant_type": "client_credentials",
                 "client_id": conn.account_label,  # Microsoft's client_id; see Task 3's note
                 "client_secret": client_secret,
-                "scope": provider.default_scopes[0],
+                "scope": provider.app_scope or provider.default_scopes[0],
             },
             url=_token_url_for(conn),
         )
