@@ -3,12 +3,15 @@ delivery, run watching and (C5) read-only sharing all use."""
 
 from __future__ import annotations
 
+import logging
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.chat.reach import member_can_reach_agent
+
+logger = logging.getLogger(__name__)
 
 
 async def session_audience(
@@ -35,3 +38,28 @@ async def session_audience(
     ):
         return []
     return [owner.id]
+
+
+async def session_audience_or_nobody(
+    db: AsyncSession,
+    *,
+    session: m.ChatSession,
+    acting_subject: str | None = None,
+    acting_role: str | None = None,
+) -> list[uuid.UUID]:
+    """`session_audience` for an event publisher: realtime never breaks a domain
+    write, so a failing lookup logs and answers "nobody" (the event is skipped).
+    Run inside a SAVEPOINT, so a database error here leaves the caller's
+    transaction usable rather than aborted."""
+    try:
+        async with db.begin_nested():
+            return await session_audience(
+                db, session=session, acting_subject=acting_subject, acting_role=acting_role
+            )
+    except Exception:
+        logger.warning(
+            "could not resolve the audience of chat session %s; event skipped",
+            session.id,
+            exc_info=True,
+        )
+        return []

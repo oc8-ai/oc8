@@ -271,8 +271,12 @@ def _run_pending(session: Any) -> None:
         task.add_done_callback(_after_commit_tasks.discard)
 
 
-def _drop_pending(session: Any) -> None:
-    session.info.pop(_AFTER_COMMIT_KEY, None)
+def _drop_pending(session: Any, previous_transaction: Any) -> None:
+    # `after_soft_rollback` fires for SAVEPOINT rollbacks too; only the root
+    # transaction's rollback means the rows never existed. A savepoint rolled
+    # back inside a transaction that then commits keeps its pending events.
+    if previous_transaction.parent is None:
+        session.info.pop(_AFTER_COMMIT_KEY, None)
 
 
 def publish_after_commit(db: AsyncSession, factory: Callable[[], Awaitable[None]]) -> None:
@@ -286,7 +290,7 @@ def publish_after_commit(db: AsyncSession, factory: Callable[[], Awaitable[None]
     sync = db.sync_session
     if not sa_event.contains(sync, "after_commit", _run_pending):
         sa_event.listen(sync, "after_commit", _run_pending)
-        sa_event.listen(sync, "after_rollback", _drop_pending)
+        sa_event.listen(sync, "after_soft_rollback", _drop_pending)
     sync.info.setdefault(_AFTER_COMMIT_KEY, []).append(factory)
 
 
@@ -303,9 +307,9 @@ async def publish_chat_message_created(
     can open the session -- and still reach its agent -- and to nobody else.
     The audience is resolved now, while the RLS tenant binding still holds;
     the publish waits for the commit."""
-    from oc8.chat.audience import session_audience
+    from oc8.chat.audience import session_audience_or_nobody
 
-    audience = await session_audience(
+    audience = await session_audience_or_nobody(
         db, session=session, acting_subject=acting_subject, acting_role=acting_role
     )
     if not audience:

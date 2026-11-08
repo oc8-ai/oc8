@@ -31,7 +31,7 @@ from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.chat.audience import session_audience
+from oc8.chat.audience import session_audience_or_nobody
 from oc8.chat.modes import MODES, ChatMode, mode_directive, parse_command
 from oc8.copilot.redaction import is_secret_request, redact_text
 from oc8.copilot.responsibilities import close_responsibility
@@ -571,7 +571,7 @@ async def send_message(
         await db.flush()
 
     # Resolved before `enqueue_run` commits, while the RLS binding still holds.
-    audience = await session_audience(
+    audience = await session_audience_or_nobody(
         db, session=session, acting_subject=originating_operator, acting_role=operator_role
     )
     run, _published = await enqueue_run(

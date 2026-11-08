@@ -133,3 +133,76 @@ async def test_publish_after_commit_is_dropped_on_rollback(
         publish_after_commit(db, _publish)
     await asyncio.sleep(0.01)
     assert fired == ["x"]
+
+
+async def test_a_savepoint_rollback_keeps_the_pending_event(
+    app_session: AppSessionFactory,
+) -> None:
+    """Only the ROOT transaction's rollback drops pending events: a SAVEPOINT
+    rolled back inside a transaction that then commits must not lose them."""
+    fired: list[str] = []
+
+    async def _publish() -> None:
+        fired.append("x")
+
+    async with app_session(uuid.uuid4()) as db:
+        publish_after_commit(db, _publish)
+        savepoint = await db.begin_nested()
+        await savepoint.rollback()
+    await asyncio.sleep(0.01)
+    assert fired == ["x"]
+
+
+async def test_an_audience_lookup_failure_never_breaks_the_reply(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """Realtime never breaks a domain write: the reply is recorded, the event
+    is skipped."""
+    tenant = uuid.uuid4()
+    rec = _Recorder()
+
+    async def _boom(*args: Any, **kwargs: Any) -> bool:
+        raise RuntimeError("audience lookup failed")
+
+    with (
+        patch("oc8.realtime.emit.get_event_bus", return_value=rec),
+        patch("oc8.chat.service.get_event_bus", return_value=rec),
+        patch("oc8.runtime.intake.publish_run"),
+        patch("oc8.chat.audience.member_can_reach_agent", _boom),
+    ):
+        async with app_session(tenant) as db:
+            seat = await copilot_seat(db, tenant, "alice")
+            session = await db.get(m.ChatSession, seat.session_id)
+            assert session is not None
+            _user_msg, run = await send_message(
+                db,
+                session=session,
+                tenant_id=tenant,
+                message="hello",
+                originating_operator="alice",
+                author_member_id=seat.member_id,
+            )
+            assert run is not None
+            run_id = run.id
+        async with app_session(tenant) as db:
+            loaded = await db.get(m.AgentRun, run_id)
+            assert loaded is not None
+            await record_assistant_reply(db, run=loaded, output="hi")
+        await asyncio.sleep(0.05)
+    assert rec.calls == []
+    async with app_session(tenant) as db:
+        from sqlalchemy import select
+
+        replies = (
+            (
+                await db.execute(
+                    select(m.ChatMessage).where(
+                        m.ChatMessage.session_id == seat.session_id,
+                        m.ChatMessage.role == "assistant",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert [r.content for r in replies] == ["hi"]

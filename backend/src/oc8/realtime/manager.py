@@ -30,6 +30,14 @@ _RESUBSCRIBE_BACKOFF_MAX = 30.0
 #: made at one moment; a member whose seat is revoked, whose role changes or who
 #: is offboarded must stop receiving the run within this window.
 WATCH_RECHECK_SECONDS = 60.0
+#: After a re-check FAILS (a database blip), the watch's frames are withheld
+#: and the re-check is not asked again until this much later -- never per frame.
+WATCH_RETRY_SECONDS = 15.0
+#: While a re-check of a watch that was valid until now is in flight, its frames
+#: keep flowing for at most this long (manager clock); then they are withheld.
+WATCH_RECHECK_GRACE_SECONDS = 5.0
+#: A re-check that has not answered after this long (wall clock) counts as failed.
+WATCH_RECHECK_TIMEOUT_SECONDS = 5.0
 
 #: A re-check's answer: still allowed; lost access to the run (the watch is
 #: dropped and the client told `run.unwatched`); or the member is gone (the
@@ -43,12 +51,21 @@ class SupportsSend(Protocol):
 
 
 @dataclass(eq=False)
+class _Watch:
+    #: When the watch was last (re)authorised, on the manager's clock.
+    checked_at: float
+    #: Set while a re-check is in flight (when it started).
+    pending_since: float | None = None
+    #: Set after a re-check failed: frames are withheld until then.
+    retry_at: float | None = None
+
+
+@dataclass(eq=False)
 class _Conn:
     ws: SupportsSend
     member_id: str | None
     feed: bool
-    #: run id -> when the watch was last (re)authorised, on the manager's clock.
-    runs: dict[str, float] = field(default_factory=dict)
+    runs: dict[str, _Watch] = field(default_factory=dict)
     recheck: Recheck | None = None
 
 
@@ -105,10 +122,17 @@ class ConnectionManager:
         *,
         clock: Callable[[], float] = time.monotonic,
         watch_recheck_seconds: float = WATCH_RECHECK_SECONDS,
+        watch_retry_seconds: float = WATCH_RETRY_SECONDS,
+        watch_recheck_grace_seconds: float = WATCH_RECHECK_GRACE_SECONDS,
+        watch_recheck_timeout_seconds: float = WATCH_RECHECK_TIMEOUT_SECONDS,
     ) -> None:
         self._client: redis.Redis = redis.from_url(url, decode_responses=True)
         self._clock = clock
         self._watch_recheck_seconds = watch_recheck_seconds
+        self._watch_retry_seconds = watch_retry_seconds
+        self._watch_recheck_grace_seconds = watch_recheck_grace_seconds
+        self._watch_recheck_timeout_seconds = watch_recheck_timeout_seconds
+        self._rechecks: set[asyncio.Task[None]] = set()
         self._conns: dict[uuid.UUID, dict[int, _Conn]] = {}
         self._tasks: dict[uuid.UUID, asyncio.Task[None]] = {}
 
@@ -132,9 +156,7 @@ class ConnectionManager:
         )
         if first:
             ready = asyncio.Event()
-            self._tasks[tenant_id] = asyncio.create_task(
-                self._run_subscriber(tenant_id, ready)
-            )
+            self._tasks[tenant_id] = asyncio.create_task(self._run_subscriber(tenant_id, ready))
             # Only return once the subscription is actually live, so the WS
             # handshake ("realtime.connected") is accurate and no event
             # published right after connect() can be missed. A second
@@ -143,9 +165,7 @@ class ConnectionManager:
             try:
                 await asyncio.wait_for(ready.wait(), timeout=5.0)
             except TimeoutError:
-                logger.warning(
-                    "subscription for tenant %s not confirmed live within 5s", tenant_id
-                )
+                logger.warning("subscription for tenant %s not confirmed live within 5s", tenant_id)
 
     async def disconnect(self, tenant_id: uuid.UUID, ws: SupportsSend) -> None:
         conns = self._conns.get(tenant_id)
@@ -166,42 +186,82 @@ class ConnectionManager:
         already decided it may (`oc8.chat.watch.may_watch_run`)."""
         conn = self._conns.get(tenant_id, {}).get(id(ws))
         if conn is not None:
-            conn.runs[run_id] = self._clock()
+            conn.runs[run_id] = _Watch(checked_at=self._clock())
 
-    async def _still_watching(self, tenant_id: uuid.UUID, conn: _Conn, run_id: str) -> bool:
-        """Whether a watch-delivered frame may go out. Off the hot path: the
+    def _still_watching(self, tenant_id: uuid.UUID, conn: _Conn, run_id: str) -> bool:
+        """Whether a watch-delivered frame may go out. Never blocks: the
         socket's `recheck` (the same predicate `run.watch` was granted with) is
-        asked at most once per `watch_recheck_seconds` per watch.
+        started as a background task at most once per `watch_recheck_seconds`
+        per watch, and its answer is applied when it lands (`_recheck`).
 
-        Lost access drops the watch and tells the client `run.unwatched`; a
-        member who is gone has the socket closed. A re-check that fails (a
-        database blip) withholds this frame and keeps the watch, so the next
-        event asks again -- fail closed, without losing the watch."""
-        granted_at = conn.runs.get(run_id)
-        if granted_at is None:
+        While a re-check of a still-valid watch is in flight, frames keep going
+        out for at most the grace window, then are withheld. A failed re-check
+        withholds the watch's frames until `retry_at` without asking again, so a
+        database blip cannot turn into a query per streamed token."""
+        watch = conn.runs.get(run_id)
+        if watch is None:
             return False
-        now = self._clock()
-        if conn.recheck is None or now - granted_at < self._watch_recheck_seconds:
+        if conn.recheck is None:
             return True
+        now = self._clock()
+        if watch.pending_since is not None:
+            in_grace = now - watch.pending_since < self._watch_recheck_grace_seconds
+            return watch.retry_at is None and in_grace
+        if watch.retry_at is not None:
+            if now >= watch.retry_at:
+                self._start_recheck(tenant_id, conn, run_id, watch, now)
+            return False
+        if now - watch.checked_at < self._watch_recheck_seconds:
+            return True
+        self._start_recheck(tenant_id, conn, run_id, watch, now)
+        return True
+
+    def _start_recheck(
+        self, tenant_id: uuid.UUID, conn: _Conn, run_id: str, watch: _Watch, now: float
+    ) -> None:
+        watch.pending_since = now
+        task = asyncio.create_task(self._recheck(tenant_id, conn, run_id, watch))
+        self._rechecks.add(task)
+        task.add_done_callback(self._rechecks.discard)
+
+    async def _recheck(self, tenant_id: uuid.UUID, conn: _Conn, run_id: str, watch: _Watch) -> None:
+        """Apply one re-check's answer. "ok" renews the watch; "access" drops
+        it and tells the client `run.unwatched`; "gone" closes the socket. A
+        failure or timeout sets the retry time."""
+        recheck = conn.recheck
+        if recheck is None:
+            return
         try:
-            verdict = await conn.recheck(run_id)
+            verdict = await asyncio.wait_for(
+                recheck(run_id), timeout=self._watch_recheck_timeout_seconds
+            )
         except Exception:
             logger.warning("run watch re-check failed (run=%s)", run_id, exc_info=True)
-            return False
+            watch.pending_since = None
+            watch.retry_at = self._clock() + self._watch_retry_seconds
+            return
+        if conn.runs.get(run_id) is not watch:
+            return  # re-granted or dropped meanwhile; this answer is stale
+        watch.pending_since = None
         if verdict == "ok":
-            conn.runs[run_id] = now
-            return True
+            watch.checked_at = self._clock()
+            watch.retry_at = None
+            return
         conn.runs.pop(run_id, None)
         if verdict == "gone":
             await self._close(tenant_id, conn)
-            return False
+            return
         try:
             await conn.ws.send_text(
                 json.dumps({"type": "run.unwatched", "runId": run_id, "reason": "access"})
             )
         except Exception:
             await self.disconnect(tenant_id, conn.ws)
-        return False
+
+    async def _settle_rechecks(self) -> None:
+        """Wait for every in-flight re-check (tests drive the clock with it)."""
+        while self._rechecks:
+            await asyncio.gather(*list(self._rechecks), return_exceptions=True)
 
     async def _close(self, tenant_id: uuid.UUID, conn: _Conn) -> None:
         """Close a member socket whose member no longer exists, then forget it.
@@ -221,9 +281,7 @@ class ConnectionManager:
             frame, watched_run = _route(conn, text)
             if frame is None:
                 continue
-            if watched_run is not None and not await self._still_watching(
-                tenant_id, conn, watched_run
-            ):
+            if watched_run is not None and not self._still_watching(tenant_id, conn, watched_run):
                 continue
             try:
                 await conn.ws.send_text(frame)
@@ -275,6 +333,8 @@ class ConnectionManager:
         self._tasks.pop(tenant_id, None)
 
     async def close(self) -> None:
+        for recheck in list(self._rechecks):
+            recheck.cancel()
         for task in list(self._tasks.values()):
             task.cancel()
         self._tasks.clear()

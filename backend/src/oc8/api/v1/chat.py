@@ -295,8 +295,15 @@ async def get_chat_session(
     return _session_dto(session, active_runs=runs)
 
 
-async def _session_agent(db: DbSession, session: m.ChatSession) -> m.Agent:
-    agent = await db.get(m.Agent, session.agent_id)
+async def _session_agent(
+    request: Request, db: DbSession, actor: HumanActor, session: m.ChatSession
+) -> m.Agent:
+    """The session's agent, through the same scoped predicate as every other
+    chat door (`oc8.chat.reach`): a caller who lost the agent gets a 404."""
+    authority = await authority_for_principal(request, db, actor.principal)
+    agent = await reachable_chat_agent(
+        db, authority=authority, scope=actor.scope, agent_id=session.agent_id
+    )
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
     return agent
@@ -309,7 +316,7 @@ async def get_chat_models(
     """The model picker: "Auto" first, then the agent's own model, then the
     tenant's other chat-enabled models (`oc8.chat.model_choice`)."""
     session = await _owned_session(request, session_id, db, actor)
-    agent = await _session_agent(db, session)
+    agent = await _session_agent(request, db, actor, session)
     pinned = await resolve_version(db, None, agent)
     options = await model_options(db, agent=agent, default_model_id=pinned_model_config_id(pinned))
     return [
@@ -336,7 +343,7 @@ async def set_chat_model(
     the picker offers is accepted; the run re-checks it when it resolves."""
     session = await _owned_session(request, session_id, db, actor)
     if body.model_config_id is not None:
-        agent = await _session_agent(db, session)
+        agent = await _session_agent(request, db, actor, session)
         if not await is_allowed_override(db, agent=agent, model_config_id=body.model_config_id):
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_ENTITY, "model not allowed for this agent"

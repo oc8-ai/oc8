@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 
 import pytest
 
 from oc8.realtime.envelope import build_envelope
-from oc8.realtime.manager import ConnectionManager
+from oc8.realtime.manager import ConnectionManager, WatchVerdict
 
 pytestmark = pytest.mark.asyncio
 
@@ -108,17 +109,27 @@ class ClosableWS(FakeWS):
         self.closed_with = code
 
 
+def _delta(tenant: uuid.UUID, text: str, run_id: str = "r1") -> str:
+    return _env(tenant, "run.token_delta", {"run_id": run_id, "text": text})
+
+
+def _texts(ws: FakeWS) -> list[str]:
+    frames = [json.loads(s) for s in ws.sent]
+    return [f["data"]["text"] for f in frames if f.get("type") == "run.token_delta"]
+
+
 async def test_a_watch_is_rechecked_and_dropped_once_access_is_lost(redis_url: str) -> None:
     """A watch is not a grant for the socket's lifetime: after the re-check
-    interval the same predicate runs again, and a member who lost the run's
-    agent gets `run.unwatched` and no further events."""
+    interval the same predicate runs again (in the background, the frame that
+    triggered it still goes out within the grace window), and a member who lost
+    the run's agent gets `run.unwatched` and no further events."""
     clock = _Clock()
     mgr = ConnectionManager(redis_url, clock=clock, watch_recheck_seconds=60.0)
     tenant = uuid.uuid4()
-    verdict = {"value": "ok"}
+    verdict: dict[str, WatchVerdict] = {"value": "ok"}
     checks: list[str] = []
 
-    async def recheck(run_id: str) -> str:
+    async def recheck(run_id: str) -> WatchVerdict:
         checks.append(run_id)
         return verdict["value"]
 
@@ -126,25 +137,28 @@ async def test_a_watch_is_rechecked_and_dropped_once_access_is_lost(redis_url: s
     await mgr.connect(tenant, ws, member_id=uuid.uuid4(), feed=False, recheck=recheck)
     try:
         mgr.watch_run(tenant, ws, "r1")
-        await mgr._broadcast(tenant, _env(tenant, "run.token_delta", {"run_id": "r1", "text": "a"}))
+        await mgr._broadcast(tenant, _delta(tenant, "a"))
         clock.now += 30
-        await mgr._broadcast(tenant, _env(tenant, "run.token_delta", {"run_id": "r1", "text": "b"}))
+        await mgr._broadcast(tenant, _delta(tenant, "b"))
+        await mgr._settle_rechecks()
         assert checks == [], "re-checked on the hot path"
         clock.now += 31
-        await mgr._broadcast(tenant, _env(tenant, "run.token_delta", {"run_id": "r1", "text": "c"}))
+        await mgr._broadcast(tenant, _delta(tenant, "c"))
+        await mgr._settle_rechecks()
         assert checks == ["r1"]
         verdict["value"] = "access"  # her seat is revoked
         clock.now += 61
-        await mgr._broadcast(tenant, _env(tenant, "run.token_delta", {"run_id": "r1", "text": "d"}))
+        await mgr._broadcast(tenant, _delta(tenant, "d"))  # grace: check in flight
+        await mgr._settle_rechecks()
         clock.now += 1
-        await mgr._broadcast(tenant, _env(tenant, "run.token_delta", {"run_id": "r1", "text": "e"}))
-        frames = [json.loads(s) for s in ws.sent]
-        assert [f["data"]["text"] for f in frames if f.get("type") == "run.token_delta"] == [
-            "a",
-            "b",
-            "c",
-        ]
-        assert frames[-1] == {"type": "run.unwatched", "runId": "r1", "reason": "access"}
+        await mgr._broadcast(tenant, _delta(tenant, "e"))
+        assert _texts(ws) == ["a", "b", "c", "d"]
+        assert json.loads(ws.sent[-1]) == {
+            "type": "run.unwatched",
+            "runId": "r1",
+            "reason": "access",
+        }
+        await mgr._settle_rechecks()
         assert checks == ["r1", "r1"], "a dropped watch is not re-checked again"
     finally:
         await mgr.close()
@@ -155,7 +169,7 @@ async def test_a_member_offboarded_mid_watch_has_the_socket_closed(redis_url: st
     mgr = ConnectionManager(redis_url, clock=clock, watch_recheck_seconds=60.0)
     tenant = uuid.uuid4()
 
-    async def recheck(run_id: str) -> str:
+    async def recheck(run_id: str) -> WatchVerdict:
         return "gone"
 
     ws = ClosableWS()
@@ -163,38 +177,86 @@ async def test_a_member_offboarded_mid_watch_has_the_socket_closed(redis_url: st
     try:
         mgr.watch_run(tenant, ws, "r1")
         clock.now += 61
-        await mgr._broadcast(tenant, _env(tenant, "run.token_delta", {"run_id": "r1", "text": "x"}))
-        assert ws.sent == []
+        await mgr._broadcast(tenant, _delta(tenant, "x"))
+        await mgr._settle_rechecks()
         assert ws.closed_with == 1008
+        sent_before = list(ws.sent)
         mgr.watch_run(tenant, ws, "r1")  # the socket is gone from the manager
-        await mgr._broadcast(tenant, _env(tenant, "run.token_delta", {"run_id": "r1", "text": "y"}))
-        assert ws.sent == []
+        await mgr._broadcast(tenant, _delta(tenant, "y"))
+        assert ws.sent == sent_before
+        assert "y" not in _texts(ws)
     finally:
         await mgr.close()
 
 
-async def test_a_failed_recheck_withholds_the_frame_and_retries(redis_url: str) -> None:
-    """Fail closed on a database blip: the frame is not delivered, the watch
-    is kept, and the next event re-checks again."""
+async def test_a_failing_recheck_backs_off_instead_of_querying_per_frame(
+    redis_url: str,
+) -> None:
+    """Fail closed on a database blip, without a query storm: the watch's
+    frames are withheld until the retry time and the re-check is asked once
+    per backoff window, not once per frame. Other sockets keep receiving."""
     clock = _Clock()
-    mgr = ConnectionManager(redis_url, clock=clock, watch_recheck_seconds=60.0)
+    mgr = ConnectionManager(
+        redis_url, clock=clock, watch_recheck_seconds=60.0, watch_retry_seconds=15.0
+    )
     tenant = uuid.uuid4()
     calls = {"n": 0}
 
-    async def recheck(run_id: str) -> str:
+    async def recheck(run_id: str) -> WatchVerdict:
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("db down")
         return "ok"
 
-    ws = FakeWS()
+    ws, other = FakeWS(), FakeWS()
     await mgr.connect(tenant, ws, member_id=uuid.uuid4(), feed=False, recheck=recheck)
+    await mgr.connect(tenant, other)
     try:
         mgr.watch_run(tenant, ws, "r1")
         clock.now += 61
-        await mgr._broadcast(tenant, _env(tenant, "run.token_delta", {"run_id": "r1", "text": "a"}))
-        await mgr._broadcast(tenant, _env(tenant, "run.token_delta", {"run_id": "r1", "text": "b"}))
-        assert [json.loads(s)["data"]["text"] for s in ws.sent] == ["b"]
+        await mgr._broadcast(tenant, _delta(tenant, "a"))  # starts the check
+        await mgr._settle_rechecks()  # ... which fails
+        for i in range(20):
+            clock.now += 0.5
+            await mgr._broadcast(tenant, _delta(tenant, f"blip{i}"))
+        await mgr._settle_rechecks()
+        assert calls["n"] == 1, "re-checked per frame during the backoff"
+        clock.now += 6  # past the 15 s retry time
+        await mgr._broadcast(tenant, _delta(tenant, "retry"))  # withheld, re-asks
+        await mgr._settle_rechecks()
         assert calls["n"] == 2
+        await mgr._broadcast(tenant, _delta(tenant, "z"))
+        assert [t for t in _texts(ws) if t.startswith("blip") or t == "retry"] == []
+        assert _texts(ws)[-1] == "z"
+        assert len(_texts(other)) == 23, "the feed socket missed frames"
+    finally:
+        await mgr.close()
+
+
+async def test_a_slow_recheck_does_not_stall_the_tenant(redis_url: str) -> None:
+    """The re-check runs outside the broadcast loop: a hung database never
+    holds up delivery to the tenant's other sockets."""
+    clock = _Clock()
+    mgr = ConnectionManager(redis_url, clock=clock, watch_recheck_seconds=60.0)
+    tenant = uuid.uuid4()
+    never = asyncio.Event()
+
+    async def recheck(run_id: str) -> WatchVerdict:
+        await never.wait()
+        return "ok"
+
+    ws, other = FakeWS(), FakeWS()
+    await mgr.connect(tenant, ws, member_id=uuid.uuid4(), feed=False, recheck=recheck)
+    await mgr.connect(tenant, other)
+    try:
+        mgr.watch_run(tenant, ws, "r1")
+        clock.now += 61
+        await asyncio.wait_for(mgr._broadcast(tenant, _delta(tenant, "a")), timeout=1.0)
+        await asyncio.wait_for(mgr._broadcast(tenant, _delta(tenant, "b")), timeout=1.0)
+        assert _texts(other) == ["a", "b"]
+        clock.now += 10  # past the grace window, the check still unanswered
+        await asyncio.wait_for(mgr._broadcast(tenant, _delta(tenant, "c")), timeout=1.0)
+        assert _texts(other) == ["a", "b", "c"]
+        assert "c" not in _texts(ws)
     finally:
         await mgr.close()
