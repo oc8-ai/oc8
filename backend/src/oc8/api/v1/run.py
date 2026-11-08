@@ -19,7 +19,7 @@ from oc8.authz.permissions import RUN, RUN_CONTROL, RUN_START, VIEW, perm
 from oc8.chat.questions import QuestionError
 from oc8.chat.service import record_answer_turn
 from oc8.runtime.cancellation import record_operator_cancel
-from oc8.runtime.clarification import resolve_clarification
+from oc8.runtime.clarification import AnswerRefused, resolve_clarification
 from oc8.runtime.intake import enqueue_run, publish_run
 from oc8.runtime.states import TERMINAL, RunState
 from oc8.runtime.step_record import step_timing_dto
@@ -415,6 +415,9 @@ async def answer_run(
     pending = (run_row.context or {}).get("pending_questions")
     try:
         structured = await resolve_clarification(db, run=run_row, answer=body.answer)
+    except AnswerRefused as exc:
+        # The secret gate every answer door shares: nothing was written.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     except QuestionError as exc:
         # Structured questions (spec §4.1): the written answer must fit them.
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc

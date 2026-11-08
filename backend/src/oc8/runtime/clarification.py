@@ -22,6 +22,7 @@ from oc8.chat.questions import (
     render_answers_text,
     validate_answers,
 )
+from oc8.copilot.redaction import is_secret_request
 from oc8.models.run import AgentRun, Clarification
 from oc8.runtime.repository import RunRepository
 from oc8.runtime.run_context import merge_context
@@ -49,6 +50,37 @@ class RepeatedClarification(RuntimeError):
     normally (an honest, non-repeating question is unaffected); the FIRST
     verbatim repeat of it fails the run outright, loud and specific, rather
     than parking the human a second time on a question already answered."""
+
+
+#: Said instead of taking an answer the tenant Assistant may not accept -- the
+#: same sentence `chat.service.send_message` answers such a message with.
+SECRET_REFUSAL = (
+    "I cannot accept, request, or use credential values. Use the normal secret setup flow."
+)
+
+
+class AnswerRefused(RuntimeError):
+    """The answer was refused by the gate an ordinary chat message passes too
+    (the tenant Assistant's secret-blindness gate). Raised by
+    `resolve_clarification` before anything is written: the question stays
+    open, the run stays parked, and nothing reaches the transcript."""
+
+
+async def _refuse_secret_answer(
+    db: AsyncSession, *, run: AgentRun, answer: str, answers: Mapping[str, Any] | None
+) -> None:
+    """The one place every answer door passes the secret-blindness gate.
+
+    Same rule as `send_message`: the tenant Assistant never accepts a
+    credential value. Checked on what the PERSON wrote -- the written answer
+    and every free-text value; option keys are not free text, since
+    `validate_answers` only admits keys the question offered."""
+    written = [answer, *(v for v in (answers or {}).values() if isinstance(v, str))]
+    if not is_secret_request(" ".join(written)):
+        return
+    agent = await db.get(m.Agent, run.agent_id)
+    if agent is not None and agent.is_tenant_assistant:
+        raise AnswerRefused(SECRET_REFUSAL)
 
 
 async def request_clarification(
@@ -107,8 +139,10 @@ async def resolve_clarification(
     the readable answer AND the structure as JSON on the last line, so every
     model can use it. Returns the validated answers (None for a plain question).
 
-    Raises `QuestionError` BEFORE changing anything when the answer does not fit.
+    Raises `QuestionError` (does not fit) or `AnswerRefused` (the secret gate)
+    BEFORE changing anything.
     """
+    await _refuse_secret_answer(db, run=run, answer=answer, answers=answers)
     structured: Answer | None = None
     pending = run.context.get("pending_questions")
     if pending:

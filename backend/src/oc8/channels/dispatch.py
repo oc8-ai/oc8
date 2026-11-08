@@ -527,7 +527,8 @@ async def _answer_parked_question(
         # sends `_CONTENT_WITHHELD` instead), so the sender never saw what a
         # "1,3" would pick: nothing here can be an answer to them.
         return False
-    from oc8.chat.service import AnswerRefused, QuestionNotAnswerable, answer_parked_question
+    from oc8.chat.service import QuestionNotAnswerable, answer_parked_question
+    from oc8.runtime.clarification import AnswerRefused
 
     own_sessions = [
         str(sid)
@@ -584,8 +585,8 @@ async def _answer_parked_question(
             principal=None,
         )
     except AnswerRefused as exc:
-        # The refused turn stays in the transcript, as for a refused message.
-        await db.commit()
+        # The secret gate every answer door shares: nothing was written, the
+        # question stays open. The sender is told why.
         await tell_sender(impl, text.external_id, str(exc))
         return True
     except QuestionNotAnswerable:

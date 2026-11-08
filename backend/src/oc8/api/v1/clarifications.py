@@ -23,6 +23,7 @@ from oc8.api.v1._serializers import clarification_to_dto
 from oc8.authz.permissions import CLARIFICATION_ANSWER, CLARIFICATION_VIEW
 from oc8.authz.scope import HumanActor
 from oc8.chat.questions import QuestionError
+from oc8.runtime.clarification import AnswerRefused
 from oc8.runtime.intake import publish_run
 from oc8.schemas.dto import ClarificationAnswerDTO, ClarificationDTO
 from oc8.schemas.requests import AnswerClarificationRequest
@@ -89,6 +90,9 @@ async def answer(
         # 409, never 404: this only escapes once the scope has already admitted
         # the caller, so it may say why without telling anybody which rows exist.
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except AnswerRefused as exc:
+        # The secret gate every answer door shares (`resolve_clarification`).
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     except QuestionError as exc:
         # A structured question (spec §4.1) whose written answer does not fit.
         # Raised before anything changed, so the question is still open.

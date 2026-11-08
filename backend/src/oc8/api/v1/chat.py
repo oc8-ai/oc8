@@ -26,7 +26,6 @@ from oc8.chat.modes import MODES
 from oc8.chat.questions import QuestionError
 from oc8.chat.reach import reachable_chat_agent
 from oc8.chat.service import (
-    AnswerRefused,
     QuestionNotAnswerable,
     active_runs_for_session,
     answer_parked_question,
@@ -40,6 +39,7 @@ from oc8.chat.service import (
     rename_session,
     send_message,
 )
+from oc8.runtime.clarification import AnswerRefused
 from oc8.runtime.intake import publish_run
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import (
@@ -392,9 +392,8 @@ async def answer_chat_question(
             principal=actor.principal,
         )
     except AnswerRefused as exc:
-        # Kept like a refused message: the redacted turn and the refusal are
-        # committed; nothing reached the run, which stays parked.
-        await db.commit()
+        # The secret gate every answer door shares (`resolve_clarification`):
+        # nothing was written, the run stays parked.
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     except QuestionNotAnswerable as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc

@@ -196,7 +196,11 @@ async def test_a_secret_in_a_messenger_answer_is_refused_like_a_message(
                 )
             ).scalars()
         ]
-        assert "hunter2" not in str(contents) and len(contents) == 2
+        assert contents == [], "a refused answer writes nothing"
+        clar = (
+            await db.execute(select(m.Clarification).where(m.Clarification.run_id == run_id))
+        ).scalar_one()
+        assert clar.status == "open" and clar.answer is None
     sent = impl.say.await_args
     assert sent is not None and "credential" in str(sent.args)
 

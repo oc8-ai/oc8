@@ -256,50 +256,114 @@ async def test_answers_are_bounded(app_session: AppSessionFactory, redis_url: st
         assert clar is not None and clar.status == "open"
 
 
-async def test_a_secret_in_an_answer_to_the_assistant_is_refused_like_a_message(
+async def _assert_nothing_written(
+    app_session: AppSessionFactory,
+    tenant: uuid.UUID,
+    *,
+    session_id: str,
+    run_id: str,
+    clar_id: uuid.UUID,
+) -> None:
+    """A refused answer leaves no trace: no turn, no answer, no run context."""
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, uuid.UUID(run_id))
+        assert run is not None and run.state == "waiting_for_input"
+        assert "hunter2" not in str(run.context)
+        assert "clarifications" not in run.context
+        clar = await db.get(m.Clarification, clar_id)
+        assert clar is not None and clar.status == "open" and clar.answer is None
+        contents = [
+            msg.content
+            for msg in (
+                await db.execute(
+                    select(m.ChatMessage).where(m.ChatMessage.session_id == uuid.UUID(session_id))
+                )
+            ).scalars()
+        ]
+        assert contents == ["go"], "only the turn that started the run"
+
+
+async def _assistant_id(c: AsyncClient, headers: dict[str, str]) -> uuid.UUID:
+    return uuid.UUID((await c.get("/api/v1/assistant", headers=headers)).json()["agentId"])
+
+
+async def test_a_secret_in_an_answer_to_the_assistant_is_refused_on_every_door(
     app_session: AppSessionFactory, redis_url: str
 ) -> None:
-    """The Assistant's secret-blindness gate (`send_message`) applies to an
-    answer too: the turn is kept redacted, the refusal is said, and the
-    credential never reaches the run -- which stays parked."""
+    """The Assistant's secret-blindness gate (`send_message`) lives in
+    `resolve_clarification`, which every answer door passes: the chat door, the
+    inbox and the admin door all refuse with 422 and write nothing."""
     tenant = uuid.uuid4()
     app = create_app()
     async with LifespanManager(app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
             alice = _h(tenant, "alice")
-            assistant_id = uuid.UUID(
-                (await c.get("/api/v1/assistant", headers=alice)).json()["agentId"]
-            )
-            sid, run_id, clar_id = await _session_with_parked_question(
-                c, app_session, tenant, assistant_id, alice
-            )
-            url = f"/api/v1/chat/sessions/{sid}/questions/{clar_id}/answer"
-            with patch("oc8.api.v1.chat.publish_run") as published:
-                got = await c.post(
-                    url,
+            assistant_id = await _assistant_id(c, alice)
+            parked = []
+            for structured in (True, True, False):
+                parked.append(
+                    await _session_with_parked_question(
+                        c, app_session, tenant, assistant_id, alice, structured=structured
+                    )
+                )
+            chat_sid, _run, chat_clar = parked[0]
+            in_clar = parked[1][2]
+            ad_run = parked[2][1]
+            with (
+                patch("oc8.api.v1.chat.publish_run") as p1,
+                patch("oc8.api.v1.clarifications.publish_run") as p2,
+                patch("oc8.api.v1.run.publish_run") as p3,
+            ):
+                chat = await c.post(
+                    f"/api/v1/chat/sessions/{chat_sid}/questions/{chat_clar}/answer",
                     json={"answers": {"r": ["eu"], "n": "password=hunter2"}},
                     headers=alice,
                 )
-            assert got.status_code == 422, got.text
-            assert "credential" in got.json()["detail"]
-            assert not published.called
-            messages = (await c.get(f"/api/v1/chat/sessions/{sid}/messages", headers=alice)).json()
-            assert "hunter2" not in str(messages)
-            # Same transaction, same millisecond: uuid7 order between the two is
-            # not fixed, so find them by role rather than by position.
-            turns = [(x["role"], x["content"]) for x in messages[1:]]
-            assert len(turns) == 2
-            [user_turn] = [c for r, c in turns if r == "user"]
-            [refusal] = [c for r, c in turns if r == "assistant"]
-            assert "[redacted]" in user_turn
-            assert "credential" in refusal
+                inbox = await c.post(
+                    f"/api/v1/clarifications/{in_clar}/answer",
+                    json={"answer": "1: 1; 2: my password is hunter2"},
+                    headers=alice,
+                )
+                admin = await c.post(
+                    f"/api/v1/runs/{ad_run}/answer",
+                    json={"answer": "token=hunter2"},
+                    headers=alice,
+                )
+            for got in (chat, inbox, admin):
+                assert got.status_code == 422, got.text
+                assert "credential" in got.json()["detail"]
+            assert not (p1.called or p2.called or p3.called)
 
-    async with app_session(tenant) as db:
-        run = await db.get(m.AgentRun, uuid.UUID(run_id))
-        assert run is not None and run.state == "waiting_for_input"
-        assert "hunter2" not in str(run.context)
-        clar = await db.get(m.Clarification, clar_id)
-        assert clar is not None and clar.status == "open" and clar.answer is None
+    for sid, run_id, clar_id in parked:
+        await _assert_nothing_written(
+            app_session, tenant, session_id=sid, run_id=run_id, clar_id=clar_id
+        )
+
+
+async def test_the_admin_door_returns_no_structured_questions_or_answers(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """`run_to_dto` exposes the readable question only -- never
+    `pending_questions` nor the folded answers."""
+    tenant = uuid.uuid4()
+    agent_id = await _agent(app_session, tenant)
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            alice = _h(tenant, "alice")
+            _sid, run_id, _clar = await _session_with_parked_question(
+                c, app_session, tenant, agent_id, alice
+            )
+            with patch("oc8.api.v1.run.publish_run"):
+                got = await c.post(
+                    f"/api/v1/runs/{run_id}/answer",
+                    json={"answer": "1: 2; 2: sehr geheim"},
+                    headers=alice,
+                )
+    assert got.status_code == 200, got.text
+    body = str(got.json())
+    assert "pendingQuestions" not in body and "pending_questions" not in body
+    assert "sehr geheim" not in body and "clarifications" not in body
 
 
 async def test_the_inbox_and_admin_doors_also_write_the_answered_turn(
