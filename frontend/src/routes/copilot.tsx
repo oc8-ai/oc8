@@ -1,10 +1,12 @@
 import { createFileRoute, useRouterState } from "@tanstack/react-router";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useEffect, useState } from "react";
-import { ChatSessionPicker, ChatWindow } from "@/components/chat-window";
+import { ChatSessionPicker } from "@/components/chat-window";
+import { Conversation } from "@/components/conversation";
 import { CopilotAvatar, CopilotPersonaHeader } from "@/components/copilot-persona";
 import { CopilotWorkPanel } from "@/components/copilot-work-panel";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { mascotState } from "@/lib/copilot-status";
@@ -89,21 +91,19 @@ export function CopilotPage({
   const mobile = useIsMobile();
   if (!may("copilot:use")) return null; // nav is the main gate; defense in depth
   const name = profile?.displayName ?? "Copilot";
+  const starters = [
+    t("Keep an eye on something for me", "Behalte etwas für mich im Blick"),
+    t("What are you working on for me?", "Woran arbeitest du gerade für mich?"),
+    t("What is waiting on me?", "Was wartet auf mich?"),
+  ];
   const chat = agentId ? (
-    <ChatWindow
+    <Conversation
       agentId={agentId}
-      agentName={name}
-      hideHeader
-      className="h-full min-h-0 flex-1 rounded-none border-0"
       sessionId={sessionId}
       onSessionChange={setSessionId}
-      promptStarters={[
-        t("Keep an eye on something for me", "Behalte etwas für mich im Blick"),
-        t("What are you working on for me?", "Woran arbeitest du gerade für mich?"),
-        t("What is waiting on me?", "Was wartet auf mich?"),
-      ]}
-      emptyIntro={
-        <div className="mb-3 flex flex-col items-center gap-2">
+      variant="full"
+      emptyState={(send) => (
+        <div className="flex flex-col items-center gap-3 py-12 text-center">
           <CopilotAvatar
             avatar={profile?.avatar ?? { shape: "round", color: "indigo" }}
             state={mascotState(profile?.status ?? "ready")}
@@ -115,10 +115,27 @@ export function CopilotPage({
               "Ich bin {name}. Sag mir, was ich im Blick behalten soll, den Rest übernehme ich.",
             ).replace("{name}", name)}
           </p>
+          <div className="flex flex-wrap justify-center gap-2">
+            {starters.map((starter) => (
+              <button
+                key={starter}
+                type="button"
+                onClick={() => send(starter)}
+                className="rounded-full border border-border px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {starter}
+              </button>
+            ))}
+          </div>
         </div>
-      }
+      )}
     />
-  ) : null;
+  ) : (
+    <div className="mx-auto w-full max-w-[760px] space-y-3 p-6" aria-busy="true">
+      <Skeleton className="h-4 w-1/2 rounded-md" />
+      <Skeleton className="h-4 w-2/3 rounded-md" />
+    </div>
+  );
   return (
     <div className="flex min-h-0 flex-1">
       <section className="flex min-w-0 flex-1 flex-col border-r border-border">

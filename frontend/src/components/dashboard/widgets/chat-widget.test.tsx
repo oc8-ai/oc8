@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ChatWidget } from "./chat-widget";
 import * as governanceHooks from "@/lib/governance-hooks";
 import * as hooks from "@/lib/hooks";
-import * as hooksChat from "@/lib/hooks-chat";
 import * as liveProvider from "@/lib/live/provider";
 
 vi.mock("@/lib/hooks", async (importOriginal) => {
@@ -17,11 +16,24 @@ vi.mock("@/lib/hooks-chat", async (importOriginal) => {
   return {
     ...actual,
     useChatSessions: () => ({ data: [] }),
-    useChatMessages: () => ({ data: [] }),
-    useSendChatMessage: () => ({ mutate: vi.fn(), isPending: false }),
-    useCreateChatSession: () => ({ mutate: vi.fn(), isPending: false }),
   };
 });
+
+vi.mock("@/components/conversation", () => ({
+  Conversation: (p: {
+    agentId: string;
+    sessionId: string | null;
+    onSessionChange: (id: string) => void;
+    variant: string;
+  }) => (
+    <div data-testid="conversation" data-agent={p.agentId} data-variant={p.variant}>
+      {p.sessionId}
+      <button type="button" onClick={() => p.onSessionChange("new-session-1")}>
+        create
+      </button>
+    </div>
+  ),
+}));
 
 function wrapper({ children }: { children: ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -35,39 +47,27 @@ describe("ChatWidget", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders a composer for a tile with no session yet", () => {
+  it("mounts the one conversation for a tile with no session yet", () => {
     render(<ChatWidget config={{}} onConfigChange={vi.fn()} />, { wrapper });
-    expect(screen.getByPlaceholderText(/configure or ask oc8/i)).toBeInTheDocument();
+    const conversation = screen.getByTestId("conversation");
+    expect(conversation).toHaveAttribute("data-agent", "agent-1");
+    expect(conversation).toHaveAttribute("data-variant", "compact");
+    expect(conversation).toHaveTextContent(/^create$/);
   });
 
-  it("does not call onConfigChange merely from mounting with an existing session id", () => {
+  it("binds the conversation to the tile's session without writing config on mount", () => {
     const onConfigChange = vi.fn();
     render(<ChatWidget config={{ sessionId: "s1" }} onConfigChange={onConfigChange} />, {
       wrapper,
     });
-    // With a sessionId already in config, the composer is present and bound
-    // to that session -- onConfigChange fires only when the session CHANGES,
-    // not on every render, so it should not have been called yet.
+    expect(screen.getByTestId("conversation")).toHaveTextContent("s1");
     expect(onConfigChange).not.toHaveBeenCalled();
   });
 
-  it("writes the newly created session id back into config on send", () => {
-    // No sessionId in config yet -- sending a message has to create a
-    // session first, same as CopilotChatTab's own `send()`.
-    vi.spyOn(hooksChat, "useCreateChatSession").mockReturnValue({
-      mutate: (_agentId: string, options?: { onSuccess?: (session: { id: string }) => void }) =>
-        options?.onSuccess?.({ id: "new-session-1" }),
-      isPending: false,
-    } as never);
-
+  it("writes the newly created session id back into config", () => {
     const onConfigChange = vi.fn();
     render(<ChatWidget config={{}} onConfigChange={onConfigChange} />, { wrapper });
-
-    fireEvent.change(screen.getByPlaceholderText(/configure or ask oc8/i), {
-      target: { value: "hello" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: /send/i }));
-
+    fireEvent.click(screen.getByRole("button", { name: "create" }));
     expect(onConfigChange).toHaveBeenCalledWith({ sessionId: "new-session-1" });
   });
 
@@ -76,7 +76,7 @@ describe("ChatWidget", () => {
 
     render(<ChatWidget config={{}} onConfigChange={vi.fn()} />, { wrapper });
 
-    expect(screen.queryByPlaceholderText(/configure or ask oc8/i)).not.toBeInTheDocument();
+    expect(screen.queryByTestId("conversation")).not.toBeInTheDocument();
     expect(screen.getByText(/don't have access to copilot chat/i)).toBeInTheDocument();
   });
 

@@ -6,6 +6,7 @@ const m = vi.hoisted(() => ({
   mobile: false,
   sessions: [] as Array<{ id: string; agentId: string }>,
   linked: undefined as { id: string; agentId: string } | undefined,
+  sent: [] as string[],
 }));
 
 vi.mock("@tanstack/react-router", () => ({
@@ -35,20 +36,25 @@ vi.mock("@/lib/hooks-copilot", () => ({
   usePauseCopilot: () => ({ mutate: vi.fn(), isPending: false }),
   useResumeCopilot: () => ({ mutate: vi.fn(), isPending: false }),
 }));
-vi.mock("@/components/chat-window", () => ({
-  ChatWindow: ({
+vi.mock("@/components/conversation", () => ({
+  Conversation: ({
     sessionId,
     onSessionChange,
+    emptyState,
   }: {
     sessionId: string | null;
-    onSessionChange: (id: string | null) => void;
+    onSessionChange: (id: string) => void;
+    emptyState?: React.ReactNode | ((send: (text: string) => void) => React.ReactNode);
   }) => (
     <div data-testid="chat" data-session={sessionId ?? ""}>
       <button type="button" onClick={() => onSessionChange("s-8")}>
         switch
       </button>
+      {typeof emptyState === "function" ? emptyState((text) => m.sent.push(text)) : emptyState}
     </div>
   ),
+}));
+vi.mock("@/components/chat-window", () => ({
   ChatSessionPicker: () => <div data-testid="picker" />,
 }));
 vi.mock("@/components/copilot-work-panel", () => ({
@@ -69,6 +75,7 @@ beforeEach(() => {
   m.mobile = false;
   m.sessions = [];
   m.linked = undefined;
+  m.sent = [];
 });
 
 describe("CopilotPage", () => {
@@ -138,5 +145,11 @@ describe("CopilotPage", () => {
     const panel = screen.getByTestId("work-panel");
     expect(panel.closest("aside")).toBeNull();
     expect(panel.closest('[role="dialog"]')).not.toBeNull();
+  });
+
+  it("sends a prompt starter from the empty chat", () => {
+    wrap();
+    fireEvent.click(screen.getByRole("button", { name: "What is waiting on me?" }));
+    expect(m.sent).toEqual(["What is waiting on me?"]);
   });
 });

@@ -90,7 +90,11 @@ export interface ComposerProps {
 }
 
 const MAX_REFS = 10;
-const MAX_MB = Math.round(MAX_ATTACHMENT_BYTES / (1024 * 1024));
+// Read when needed, not at import: every page imports this through the dock,
+// and tests that stub `@/lib/api` should not have to stub this constant too.
+function maxMb(): number {
+  return Math.round(MAX_ATTACHMENT_BYTES / (1024 * 1024));
+}
 
 const ICON_BUTTON =
   "grid size-9 place-items-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
@@ -205,8 +209,8 @@ export function Composer(props: ComposerProps) {
       } else if (file.size > MAX_ATTACHMENT_BYTES) {
         refused.push(
           t(
-            `${file.name} is larger than ${MAX_MB} MB. Pick a smaller file.`,
-            `${file.name} ist größer als ${MAX_MB} MB. Wähl eine kleinere Datei.`,
+            `${file.name} is larger than ${maxMb()} MB. Pick a smaller file.`,
+            `${file.name} ist größer als ${maxMb()} MB. Wähl eine kleinere Datei.`,
           ),
         );
       } else {

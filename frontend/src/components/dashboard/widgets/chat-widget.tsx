@@ -1,10 +1,10 @@
-// One grid tile bound to its own chat session -- unlike the floating dock's
-// tabs, a grid tile never unmounts while the page is open, so `active` is
-// always true and draft text is scoped to this component's own state
-// rather than lifted to a shared tabs manager.
+// One grid tile bound to its own chat session. It mounts the same
+// `Conversation` as the Copilot page and the dock (spec §2.1); draft text is
+// scoped to this component's own state rather than a shared tabs manager.
 import { useState } from "react";
 import { Plus, WifiOff } from "lucide-react";
-import { CopilotChatTab, PendingProposals } from "@/components/copilot-dock";
+import { Conversation } from "@/components/conversation";
+import { PendingProposals } from "@/components/copilot-dock";
 import { ChatSessionPicker } from "@/components/chat-window";
 import { useCan } from "@/lib/governance-hooks";
 import { useAssistant } from "@/lib/hooks";
@@ -88,7 +88,7 @@ function ChatWidgetPanel({
         )}
       </div>
       {liveConnectionStatus === "disconnected" && (
-        <div className="flex items-center gap-1.5 border-b border-amber-500/30 bg-amber-500/10 px-3 py-1 text-xs text-amber-700 dark:text-amber-400">
+        <div className="flex items-center gap-1.5 border-b border-status-warning/30 bg-status-warning/10 px-3 py-1 text-xs text-status-warning">
           <WifiOff className="h-3.5 w-3.5" />
           <span>
             {t(
@@ -100,19 +100,16 @@ function ChatWidgetPanel({
       )}
       <PendingProposals de={de} />
       <div className="flex flex-1 flex-col overflow-hidden">
-        <CopilotChatTab
-          active
-          sessionId={sessionId}
-          onSessionChange={setSessionId}
-          agentId={assistantAgentId}
-          isAssistant
-          agents={[]}
-          departments={[]}
-          mayStartRuns={false}
-          onAddressAgent={() => {}}
-          draft={draft}
-          onDraftChange={setDraft}
-        />
+        {assistantAgentId && (
+          <Conversation
+            agentId={assistantAgentId}
+            sessionId={sessionId}
+            onSessionChange={setSessionId}
+            variant="compact"
+            draft={draft}
+            onDraftChange={setDraft}
+          />
+        )}
       </div>
     </div>
   );

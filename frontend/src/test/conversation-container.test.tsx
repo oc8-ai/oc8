@@ -84,4 +84,21 @@ describe("Conversation", () => {
     );
     expect(onSessionChange).toHaveBeenCalledWith("fresh");
   });
+
+  it('answers "/budget" on the spot without sending a message', async () => {
+    send.mockClear();
+    create.mockClear();
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <Conversation agentId="a" sessionId="s" onSessionChange={vi.fn()} variant="compact" />
+      </QueryClientProvider>,
+    );
+    const box = screen.getByRole("textbox", { name: /Message/ });
+    fireEvent.change(box, { target: { value: "/budget" } });
+    fireEvent.keyDown(box, { key: "Escape" });
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(await screen.findByText("Budget")).toBeInTheDocument();
+    expect(send).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+  });
 });
