@@ -676,3 +676,14 @@
 .edition-accent-focus:focus {
   box-shadow: 0 0 0 3px var(--edition-accent-glow, transparent);
 }
+
+/* doc: Shiki highlights code with both themes (defaultColor: false); the app's
+   `.dark` class on <html> picks which colour applies. */
+.shiki,
+.shiki span {
+  color: var(--shiki-light);
+}
+.dark .shiki,
+.dark .shiki span {
+  color: var(--shiki-dark);
+}

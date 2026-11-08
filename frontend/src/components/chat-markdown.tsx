@@ -1,76 +1,222 @@
-// Renders an assistant/copilot reply's markdown (headings, bold, lists,
-// links, ...) instead of showing the raw "**bold**"/"## Heading" characters
-// literally. Shared by copilot-dock.tsx and chat-window.tsx -- both surfaces
-// hit the same bug: an LLM defaults to markdown-formatted prose unless told
-// otherwise, and neither bubble was parsing it.
+// Renders an answer's markdown (headings, bold, lists, links, code, ...).
+// Shared by the copilot dock, the chat window and the conversation view.
 //
-// react-markdown never touches innerHTML (it builds React elements), so this
-// stays safe against a message containing literal HTML/script tags without
-// needing a sanitizer on top.
+// react-markdown builds React elements and is given no raw-HTML plugin, so
+// literal HTML in an answer stays text. Every link goes through the `a`
+// renderer below, which only emits http(s) links (new tab), `#cite-n`
+// citations and resolved `oc8://` object chips; anything else is plain text.
+// Images load only over https.
 
-import { useState } from "react";
-import type { ReactNode } from "react";
-import ReactMarkdown from "react-markdown";
+import { useEffect, useState, type ReactNode } from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Check, Copy } from "lucide-react";
-import { cn } from "@/lib/utils";
-import { useT } from "@/lib/i18n";
+import { Check, Copy, ExternalLink } from "lucide-react";
 
-// react-markdown/remark-gfm hand `pre` a single `<code>` child whose own
-// className carries the fence info string as `language-*` (e.g. ` ```ts `
-// produces `<code className="language-ts">`) -- that's the only place the
-// language is available, and the only place the raw code text is available
-// unmodified by any syntax highlighting this component doesn't do.
+import { objectHref, parseObjectUrl } from "@/components/conversation/object-links";
+import type { ChatSourceDTO } from "@/lib/hooks-chat";
+import { useT } from "@/lib/i18n";
+import { cn } from "@/lib/utils";
+
+function isHttp(href: string | undefined): href is string {
+  return !!href && /^https?:\/\//i.test(href);
+}
+
+// react-markdown hands `pre` a single `<code>` child whose className carries
+// the fence info string as `language-*`; that child also holds the raw code.
+function codeOf(children: ReactNode): { language: string | undefined; code: string } {
+  const el = (Array.isArray(children) ? children[0] : children) as
+    | { props?: { className?: string; children?: ReactNode } }
+    | undefined;
+  return {
+    language: /language-([\w+-]+)/.exec(el?.props?.className ?? "")?.[1],
+    code: String(el?.props?.children ?? "").replace(/\n$/, ""),
+  };
+}
+
+const FOCUS =
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
+
 function CodeBlock({ children }: { children?: ReactNode }) {
   const t = useT();
+  const { language, code } = codeOf(children);
+  const [html, setHtml] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const codeElement = Array.isArray(children) ? children[0] : children;
-  const codeProps = (
-    codeElement as { props?: { className?: string; children?: ReactNode } } | undefined
-  )?.props;
-  const language = /language-(\w+)/.exec(codeProps?.className ?? "")?.[1];
-  const codeText = String(codeProps?.children ?? "").replace(/\n$/, "");
+
+  useEffect(() => {
+    let alive = true;
+    // Shiki is its own chunk, fetched only when an answer contains code.
+    void import("shiki")
+      .then(({ codeToHtml }) =>
+        codeToHtml(code, {
+          lang: language ?? "text",
+          themes: { light: "github-light", dark: "github-dark" },
+          defaultColor: false,
+        }),
+      )
+      .then((out) => {
+        if (alive) setHtml(out);
+      })
+      .catch(() => {
+        if (alive) setHtml(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [code, language]);
 
   function copy() {
-    navigator.clipboard.writeText(codeText).then(() => {
+    void navigator.clipboard.writeText(code).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     });
   }
 
   return (
-    <div className="rounded bg-muted/50">
-      <div className="flex items-center justify-between px-2 py-1 text-[0.7em] text-muted-foreground">
-        <span className="uppercase">{language ?? ""}</span>
+    <div className="overflow-hidden rounded-md border border-border bg-muted/40">
+      <div className="flex items-center justify-between px-3 py-1 text-xs text-muted-foreground">
+        <span className="font-mono">{language ?? ""}</span>
         <button
           type="button"
           onClick={copy}
-          className="flex items-center gap-1 hover:text-foreground"
+          className={cn(
+            "inline-flex items-center gap-1 rounded-md px-1 hover:text-foreground",
+            FOCUS,
+          )}
+          aria-label={t("Copy code", "Code kopieren")}
         >
-          {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+          {copied ? (
+            <Check className="size-3.5" aria-hidden />
+          ) : (
+            <Copy className="size-3.5" aria-hidden />
+          )}
           {copied ? t("Copied", "Kopiert") : t("Copy", "Kopieren")}
         </button>
       </div>
-      <pre className="overflow-x-auto bg-transparent p-2">{children}</pre>
+      {html ? (
+        // Shiki escapes the code it highlights; its output is markup it built.
+        <div
+          className="overflow-x-auto px-3 py-2 font-mono text-xs [&_pre]:bg-transparent"
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
+      ) : (
+        <pre className="overflow-x-auto px-3 py-2 font-mono text-xs">{children}</pre>
+      )}
     </div>
   );
 }
 
-// Sizing/max-width is the caller's concern (bubble vs. plain flex row) --
-// this component only owns markdown-element typography.
-export function ChatMarkdown({ text, className }: { text: string; className?: string }) {
+const CITATION = /\[(\d{1,2})\](?!\()/g;
+// Fenced blocks (closed or still streaming) and inline code spans: `[1]`
+// there is code (an index), never a citation.
+const CODE = /(```[\s\S]*?(?:```|$)|`[^`\n]*`)/;
+
+function withCitations(text: string, count: number): string {
+  if (count === 0) return text;
+  return text
+    .split(CODE)
+    .map((part, i) =>
+      i % 2 === 1
+        ? part
+        : part.replace(CITATION, (whole, n: string) =>
+            Number(n) >= 1 && Number(n) <= count ? `[\\[${n}\\]](#cite-${n})` : whole,
+          ),
+    )
+    .join("");
+}
+
+export function ChatMarkdown({
+  text,
+  className,
+  sources = [],
+  onCitation,
+}: {
+  text: string;
+  className?: string;
+  sources?: ChatSourceDTO[];
+  onCitation?: (n: number) => void;
+}) {
+  const t = useT();
+  const components: Components = {
+    pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
+    a: ({ href, children }) => {
+      const cite = /^#cite-(\d+)$/.exec(href ?? "");
+      if (cite) {
+        const n = Number(cite[1]);
+        const title = sources.find((s) => s.n === n)?.title ?? "";
+        return (
+          <sup>
+            <button
+              type="button"
+              onClick={() => onCitation?.(n)}
+              aria-label={t(`Source ${n}: ${title}`, `Quelle ${n}: ${title}`)}
+              className={cn(
+                "rounded-md px-0.5 font-mono text-xs text-primary hover:underline",
+                FOCUS,
+              )}
+            >
+              [{n}]
+            </button>
+          </sup>
+        );
+      }
+      const object = href ? parseObjectUrl(href) : null;
+      if (object) {
+        const target = objectHref(object.kind, object.id);
+        if (!target) return <span>{children}</span>;
+        return (
+          <a
+            href={target}
+            className={cn(
+              "inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 text-xs text-foreground no-underline hover:bg-muted/70",
+              FOCUS,
+            )}
+          >
+            {children}
+          </a>
+        );
+      }
+      if (!isHttp(href)) return <span>{children}</span>;
+      return (
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={cn(
+            "inline-flex items-baseline gap-0.5 rounded-md text-primary underline",
+            FOCUS,
+          )}
+        >
+          {children}
+          <ExternalLink className="size-3.5 self-center" aria-hidden />
+          <span className="sr-only">{t(" (opens in a new tab)", " (öffnet in neuem Tab)")}</span>
+        </a>
+      );
+    },
+    img: ({ src, alt }) =>
+      typeof src === "string" && src.startsWith("https://") ? (
+        <img
+          src={src}
+          alt={alt ?? ""}
+          loading="lazy"
+          className="max-h-80 rounded-md border border-border"
+        />
+      ) : (
+        <span className="text-muted-foreground">{alt}</span>
+      ),
+  };
   return (
     <div
       className={cn(
-        "space-y-2 text-sm leading-relaxed text-foreground/90 [&_a]:text-primary [&_a]:underline [&_code]:rounded [&_code]:bg-muted/50 [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-[0.85em] [&_h1]:text-base [&_h1]:font-semibold [&_h2]:text-sm [&_h2]:font-semibold [&_h3]:text-sm [&_h3]:font-medium [&_li]:ml-4 [&_ol]:list-decimal [&_ol]:space-y-0.5 [&_p]:leading-relaxed [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:space-y-0.5 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_table]:block [&_table]:w-full [&_table]:overflow-x-auto [&_table]:border-collapse [&_th]:border [&_th]:border-border [&_th]:px-2 [&_th]:py-1 [&_th]:text-left [&_th]:font-semibold [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1",
+        "space-y-2 text-sm leading-relaxed text-foreground [&_code]:rounded-md [&_code]:bg-muted [&_code]:px-1 [&_code]:font-mono [&_code]:text-xs [&_h1]:text-base [&_h1]:font-semibold [&_h2]:text-base [&_h2]:font-semibold [&_h3]:text-sm [&_h3]:font-semibold [&_li]:ml-4 [&_ol]:list-decimal [&_ol]:space-y-0.5 [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:space-y-0.5 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_table]:block [&_table]:w-full [&_table]:overflow-x-auto [&_table]:border-collapse [&_th]:border [&_th]:border-border [&_th]:px-2 [&_th]:py-1 [&_th]:text-left [&_th]:font-medium [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1",
         className,
       )}
     >
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        components={{ pre: ({ children }) => <CodeBlock>{children}</CodeBlock> }}
+        components={components}
+        urlTransform={(url) => url}
       >
-        {text}
+        {withCitations(text, sources.length)}
       </ReactMarkdown>
     </div>
   );
