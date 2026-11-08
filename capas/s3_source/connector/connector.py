@@ -174,6 +174,19 @@ def valid_bucket(bucket: str) -> bool:
     return False
 
 
+_PATH_BUCKET_FORBIDDEN = re.compile(r"[/?#@:\\\s\x00-\x1f\x7f]")
+
+
+def valid_path_bucket(bucket: str) -> bool:
+    """A bucket that goes into the path of a custom endpoint: any name a
+    self-hosted store allows, as long as it cannot change the URL's structure
+    (no separators, userinfo, whitespace or control characters, no dot
+    segments)."""
+    if not bucket or len(bucket) > 255 or bucket in (".", ".."):
+        return False
+    return _PATH_BUCKET_FORBIDDEN.search(bucket) is None
+
+
 def _now() -> dt.datetime:
     return dt.datetime.now(tz=dt.UTC)
 
@@ -195,12 +208,10 @@ class _Client:
         self.transport = transport
         self.bucket = bucket
         self.region = region or "us-east-1"
-        # Both end up in the request's host name (AWS) or path; a value
-        # outside the naming rules could redirect the request elsewhere.
+        # The region is part of the AWS host name; a value outside the
+        # naming rules could redirect the request elsewhere.
         if not valid_region(self.region):
             raise ConnectorError("The region is not a valid S3 region name")
-        if bucket and not valid_bucket(bucket):
-            raise ConnectorError("The bucket is not a valid S3 bucket name")
         self.access_key = access_key
         self.secret_key = secret_key
         endpoint = endpoint.strip().rstrip("/")
@@ -209,8 +220,17 @@ class _Client:
             self.scheme, _, self.host = endpoint.partition("://")
             if not self.host:
                 self.host, self.scheme = self.scheme, "https"
-            self.prefix_path = f"/{self.bucket}"
+            # The bucket stays in the path, so a self-hosted store's own
+            # names (Ceph: "My_Bucket") are fine; only what could change the
+            # URL's structure is refused, and the rest is percent-encoded.
+            if bucket and not valid_path_bucket(bucket):
+                raise ConnectorError("The bucket is not a valid S3 bucket name")
+            self.prefix_path = f"/{quote(bucket, safe='')}" if bucket else ""
         else:
+            # Virtual-hosted style: the bucket becomes the first host label,
+            # so the strict S3 naming rules apply.
+            if bucket and not valid_bucket(bucket):
+                raise ConnectorError("The bucket is not a valid S3 bucket name")
             self.scheme = "https"
             # Without a bucket (checking the keys alone) the regional
             # service endpoint answers.

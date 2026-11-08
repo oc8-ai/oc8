@@ -350,6 +350,45 @@ async def test_a_bucket_that_is_not_an_s3_bucket_name_never_reaches_the_network(
     assert s3.requests == []
 
 
+def _endpoint_auth() -> _Secrets:
+    auth = _Secrets()
+    auth.credentials[("test-credential-id", "endpoint")] = "https://ceph.acme.test:7480"
+    return auth
+
+
+async def test_a_custom_endpoint_accepts_a_self_hosted_bucket_name_in_the_path() -> None:
+    s3 = _S3([])
+    _install(s3)
+    res = await _connector().validate({**CFG, "bucket": "My_Bucket"}, _endpoint_auth())
+    assert res.ok is True, res.error
+    assert s3.requests[0].url.host == "ceph.acme.test"
+    assert s3.requests[0].url.raw_path.startswith(b"/My_Bucket/")
+
+
+@pytest.mark.parametrize(
+    "bucket",
+    [
+        "a/b", "a?b", "a#b", "x@10.0.0.5", "a:b", "a\\b",
+        "a b", "a\tb", "a\x00b", ".", "..", "a" * 256,
+    ],
+)
+async def test_a_custom_endpoint_refuses_bucket_names_that_alter_the_url(bucket: str) -> None:
+    s3 = _S3([])
+    _install(s3)
+    res = await _connector().validate({**CFG, "bucket": bucket}, _endpoint_auth())
+    assert res.ok is False
+    assert "bucket" in (res.error or "")
+    assert s3.requests == []
+
+
+async def test_the_aws_host_still_needs_an_s3_bucket_name() -> None:
+    s3 = _S3([])
+    _install(s3)
+    res = await _connector().validate({**CFG, "bucket": "My_Bucket"}, _Secrets())
+    assert res.ok is False
+    assert s3.requests == []
+
+
 async def test_a_dotted_bucket_name_is_fine() -> None:
     s3 = _S3([])
     _install(s3)
