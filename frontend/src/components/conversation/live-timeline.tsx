@@ -27,6 +27,13 @@ const TERMINAL = new Set(["done", "failed", "interrupted"]);
 
 type Translate = (en: string, de?: string) => string;
 
+/** " (Europe/Berlin)" when the schedule's zone is not the reader's. */
+function zoneNote(zone: string | null | undefined): string {
+  if (!zone) return "";
+  const here = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return zone === here ? "" : ` (${zone})`;
+}
+
 function triggerText(run: LiveRunDTO, t: Translate): [ReactNode, string] {
   const label = run.trigger.label;
   const named = (en: string, de: string) => t(en, de).replace("{label}", label ?? "");
@@ -44,15 +51,18 @@ function triggerText(run: LiveRunDTO, t: Translate): [ReactNode, string] {
     case "cron":
       return [
         icon(CalendarClock),
-        label ? `${t("Schedule", "Zeitplan")} · ${cronWords(label, t)}` : t("Schedule", "Zeitplan"),
+        label
+          ? `${t("Schedule", "Zeitplan")} · ${cronWords(label, t)}${zoneNote(run.trigger.timezone)}`
+          : t("Schedule", "Zeitplan"),
       ];
     case "webhook":
       return [icon(Webhook), label ? `Webhook · ${label}` : "Webhook"];
     case "event":
       return [icon(Zap), label ? `${t("Event", "Ereignis")} · ${label}` : t("Event", "Ereignis")];
     case "manual":
-    case "chat":
       return [icon(User), t("Started by hand", "Von Hand gestartet")];
+    case "chat":
+      return [icon(User), t("From a chat", "Aus einem Chat")];
   }
   return [icon(Bot), run.source];
 }
@@ -112,6 +122,7 @@ export function LiveTimeline({
   const t = useT();
   const mayManage = useMayManageAgent()(departmentId);
   const [allRuns, setAllRuns] = useState(false);
+  // A refused input or a failed Stop, under the composer's target line.
   const [inputError, setInputError] = useState<string | null>(null);
   const timeline = useLiveTimeline(agentId, allRuns);
   const { data, error } = timeline;
@@ -132,7 +143,8 @@ export function LiveTimeline({
     trigger: (
       <div className="flex flex-wrap items-center gap-2">
         <TriggerLine run={run} />
-        {mayManage && (
+        {/* Ruling 15: a colleague's run has no technical view. */}
+        {mayManage && !run.redacted && (
           <AppLink
             href={`/agents/${encodeURIComponent(agentId)}?tab=livelog&runId=${encodeURIComponent(run.id)}`}
           >
@@ -186,15 +198,35 @@ export function LiveTimeline({
     );
   }
 
+  // Its own labelled Stop: the composer's icon Stop may be showing too,
+  // for one of the reader's chat runs.
   const stop =
     running && steering?.mayWrite ? (
       <button
         type="button"
-        onClick={() => stopRun.mutate(running.id)}
-        aria-label={t("Stop the running run", "Laufenden Lauf stoppen")}
-        className="inline-flex size-8 items-center justify-center rounded-md border border-border text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        disabled={stopRun.isPending}
+        title={t(
+          "Stop the agent's running run at its next step",
+          "Den laufenden Lauf des Agenten beim nächsten Schritt stoppen",
+        )}
+        onClick={() => {
+          setInputError(null);
+          stopRun.mutate(running.id, {
+            onError: (e) =>
+              setInputError(
+                e instanceof ApiError && e.status === 409
+                  ? t("The run has already finished.", "Der Lauf ist schon fertig.")
+                  : t(
+                      "The run was not stopped. Try again.",
+                      "Der Lauf wurde nicht gestoppt. Versuch es noch einmal.",
+                    ),
+              ),
+          });
+        }}
+        className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
       >
-        <Square className="size-3.5" aria-hidden />
+        <Square className="size-3" aria-hidden />
+        {t("Stop run", "Lauf stoppen")}
       </button>
     ) : null;
 

@@ -90,14 +90,21 @@ def trigger_of(
     """The run's trigger line: `kind` is the run's source, `label` what goes
     beside it -- "Schedule · <cron>", "Event · <source>/<type>", "Webhook",
     "Delegated by <agent>", "From <member>". `trigger` is the Trigger row
-    that fired the run, if any (`trigger_names` finds it)."""
+    that fired the run, if any (`trigger_names` finds it). A schedule also
+    carries `timezone`."""
     label: str | None = None
     if run.source == "delegation":
         label = delegated_by
     elif person_behind(run.context) is not None:
         label = started_by
     elif trigger is not None and run.source == "cron":
-        label = trigger.cron_expression
+        # The zone the schedule is read in: an agent's cron fires in UTC
+        # (triggers/service.py) unless the trigger names one.
+        return {
+            "kind": run.source,
+            "label": trigger.cron_expression,
+            "timezone": trigger.timezone or "UTC",
+        }
     elif trigger is not None and run.source == "event":
         parts = [p for p in (trigger.event_source, trigger.event_type) if p]
         label = "/".join(parts) or None

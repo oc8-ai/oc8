@@ -2,6 +2,7 @@
 // the model picker, regenerate and feedback; the transcript itself stays in
 // hooks-chat.ts.
 import {
+  keepPreviousData,
   useInfiniteQuery,
   useMutation,
   useQuery,
@@ -160,7 +161,12 @@ export interface LiveRunDTO {
   createdAt: string;
   /** `kind` is the run's source; `label` the name beside it (a cron
    *  expression, "<source>/<type>", the delegating agent, the member). */
-  trigger: { kind: string; label: string | null };
+  trigger: {
+    kind: string;
+    label: string | null;
+    /** A schedule's zone (IANA); its cron is read there. */
+    timezone?: string | null;
+  };
   output: string | null;
   steps: number;
   toolCalls: Array<Record<string, unknown>>;
@@ -255,6 +261,9 @@ export function useLiveTimeline(agentId: string, allRuns: boolean) {
     initialPageParam: null as string | null,
     getNextPageParam: (page) => page.nextBefore,
     select: flattenLivePages,
+    // Switching All runs keeps the conversation (and its draft) on screen
+    // until the other timeline has loaded.
+    placeholderData: keepPreviousData,
     enabled: !!agentId,
     refetchInterval: (query) => liveTimelineRefetchInterval(query.state.data),
   });

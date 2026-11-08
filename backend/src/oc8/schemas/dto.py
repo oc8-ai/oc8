@@ -1729,6 +1729,8 @@ class LiveTriggerDTO(CamelModel):
 
     kind: str
     label: str | None = None
+    #: A schedule's zone (IANA), so the client can say when it differs.
+    timezone: str | None = None
 
 
 class LiveRunDTO(CamelModel):

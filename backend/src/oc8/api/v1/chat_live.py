@@ -91,7 +91,9 @@ def _run_dto(run: m.AgentRun, trigger: dict[str, str | None], *, colleague: bool
         state=run.state,
         source=run.source,
         created_at=run.created_at.isoformat(),
-        trigger=LiveTriggerDTO(kind=str(trigger["kind"]), label=trigger["label"]),
+        trigger=LiveTriggerDTO(
+            kind=str(trigger["kind"]), label=trigger["label"], timezone=trigger.get("timezone")
+        ),
         output=str(output) if output else None,
         steps=int(ctx.get("steps") or 0),
         tool_calls=calls,

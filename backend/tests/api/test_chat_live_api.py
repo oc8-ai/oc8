@@ -342,6 +342,7 @@ async def test_my_own_runs_are_not_redacted_and_keep_their_cards(
         ).json()
     [item] = body["items"]
     assert item["run"]["redacted"] is False
+    assert item["run"]["trigger"] == {"kind": "cron", "label": None, "timezone": None}
     assert item["run"]["renderedComponents"] == [
         {"componentKey": "table", "props": {"title": "Inbox"}}
     ]

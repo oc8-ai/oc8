@@ -314,7 +314,16 @@ def test_trigger_lines() -> None:
     cron = m.Trigger(kind="cron", cron_expression="0 9 * * 1-5", task_text="x")
     event = m.Trigger(kind="event", event_source="sales", event_type="deal.won", task_text="x")
     hook = m.Trigger(kind="webhook", task_text="x")
-    assert trigger_of(run("cron"), trigger=cron) == {"kind": "cron", "label": "0 9 * * 1-5"}
+    # An agent schedule is read in UTC unless the trigger names a zone.
+    assert trigger_of(run("cron"), trigger=cron) == {
+        "kind": "cron",
+        "label": "0 9 * * 1-5",
+        "timezone": "UTC",
+    }
+    berlin = m.Trigger(
+        kind="cron", cron_expression="0 9 * * *", timezone="Europe/Berlin", task_text="x"
+    )
+    assert trigger_of(run("cron"), trigger=berlin)["timezone"] == "Europe/Berlin"
     assert trigger_of(run("event"), trigger=event) == {"kind": "event", "label": "sales/deal.won"}
     assert trigger_of(run("webhook"), trigger=hook) == {"kind": "webhook", "label": None}
     assert trigger_of(run("delegation"), delegated_by="Copilot") == {

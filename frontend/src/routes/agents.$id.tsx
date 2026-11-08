@@ -221,6 +221,18 @@ function AgentDetail() {
     if (search.tab) setTab(search.tab);
     if (search.runId) setRunId(search.runId);
   }, [search.tab, search.runId]);
+  const navigate = useNavigate();
+  /** A tab click also goes into the address bar, so a stale ?tab= never
+   *  lingers and the same "Technical view" link works again. */
+  function selectTab(next: TabId) {
+    setTab(next);
+    void navigate({
+      to: "/agents/$id",
+      params: { id: rawId },
+      search: { tab: next },
+      replace: true,
+    });
+  }
   const [runPickerOpen, setRunPickerOpen] = useState(false);
   const [runTask, setRunTask] = useState("");
   // Which knowledge bases are enabled directly on this agent. Seeded from the
@@ -455,7 +467,7 @@ function AgentDetail() {
         {tabs.map((tb) => (
           <button
             key={tb.id}
-            onClick={() => setTab(tb.id)}
+            onClick={() => selectTab(tb.id)}
             className={cn(
               "-mb-px border-b-2 px-4 py-2 text-sm transition",
               tab === tb.id

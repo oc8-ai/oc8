@@ -14,6 +14,7 @@ const state = vi.hoisted(() => ({
   error: null as unknown,
   allRunsCalls: [] as boolean[],
   mayWrite: true,
+  stopPending: false,
 }));
 vi.mock("@/components/conversation/conversation", () => ({
   Conversation: (p: Record<string, unknown>) => {
@@ -32,6 +33,8 @@ vi.mock("@/components/conversation/conversation", () => ({
           </div>
         ))}
         {p.composerTarget as React.ReactNode}
+        {/* The composer's own Stop, as when one of my chat runs answers. */}
+        <button type="button" aria-label="Stop" />
         {p.composerTrailing as React.ReactNode}
       </div>
     );
@@ -63,7 +66,7 @@ vi.mock("@/lib/conversation-api", async (orig) => ({
   },
   useRunSteering: () => ({ data: { mayWrite: state.mayWrite, acceptsInputs: true, inputs: [] } }),
   useSendRunInput: () => ({ mutate: sendInput }),
-  useStopRun: () => ({ mutate: stopRun }),
+  useStopRun: () => ({ mutate: stopRun, isPending: state.stopPending }),
 }));
 
 import { cronWords } from "@/components/conversation/cron-words";
@@ -100,6 +103,7 @@ beforeEach(() => {
   state.error = null;
   state.allRunsCalls = [];
   state.mayWrite = true;
+  state.stopPending = false;
   sendInput.mockReset();
   stopRun.mockReset();
 });
@@ -121,16 +125,35 @@ describe("Live tab", () => {
     expect(conversationProps.last?.daySeparators).toBe(true);
   });
 
-  it("stops the running run from the composer", () => {
+  it("stops the running run with a Stop of its own, told apart from the composer's", () => {
     wrap(tab());
-    fireEvent.click(screen.getByRole("button", { name: "Stop the running run" }));
-    expect(stopRun).toHaveBeenCalledWith("r1");
+    const stop = screen.getByRole("button", { name: "Stop run" });
+    expect(stop).toHaveTextContent("Stop run");
+    expect(stop).toHaveAttribute("title");
+    expect(screen.getByRole("button", { name: "Stop" })).not.toBe(stop);
+    fireEvent.click(stop);
+    expect(stopRun).toHaveBeenCalledWith("r1", expect.anything());
+  });
+
+  it("says inline when the run could not be stopped", () => {
+    stopRun.mockImplementation((_id: string, opts: { onError: (e: unknown) => void }) =>
+      opts.onError(new ApiError("run already finished", 409)),
+    );
+    wrap(tab());
+    fireEvent.click(screen.getByRole("button", { name: "Stop run" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("The run has already finished.");
+  });
+
+  it("takes no second Stop while one is on its way", () => {
+    state.stopPending = true;
+    wrap(tab());
+    expect(screen.getByRole("button", { name: "Stop run" })).toBeDisabled();
   });
 
   it("offers no Stop for a run the reader may not write to", () => {
     state.mayWrite = false;
     wrap(tab());
-    expect(screen.queryByRole("button", { name: "Stop the running run" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Stop run" })).toBeNull();
   });
 
   it("chats as usual while nothing runs", () => {
@@ -188,6 +211,9 @@ describe("Live tab", () => {
       ["theirs", true],
       ["mine", false],
     ]);
+    // Ruling 15: a colleague's run never leads to its technical view.
+    const links = screen.getAllByRole("link", { name: /Technical view/ });
+    expect(links.map((a) => a.getAttribute("href"))).toEqual(["/agents/a?tab=livelog&runId=mine"]);
   });
 
   it("continues a finished run in the Copilot with the run pinned", () => {
@@ -231,6 +257,24 @@ describe("trigger lines", () => {
       startedBy: "Bob",
     });
     expect(screen.getByText("Delegated by Copilot")).toBeInTheDocument();
+  });
+
+  it("says a chat started it when it names nobody", () => {
+    line({ source: "chat", trigger: { kind: "chat", label: null } });
+    expect(screen.getByText("From a chat")).toBeInTheDocument();
+  });
+
+  it("names the schedule's zone when it is not the reader's", () => {
+    const here = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const other = here === "Europe/Berlin" ? "America/New_York" : "Europe/Berlin";
+    line({ trigger: { kind: "cron", label: "0 9 * * *", timezone: other } });
+    expect(screen.getByText(`Schedule · daily 09:00 (${other})`)).toBeInTheDocument();
+  });
+
+  it("leaves out the zone when it is the reader's", () => {
+    const here = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    line({ trigger: { kind: "cron", label: "0 9 * * *", timezone: here } });
+    expect(screen.getByText("Schedule · daily 09:00")).toBeInTheDocument();
   });
 
   it("names the member who started it", () => {
