@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { useScrollAnchor } from "@/components/conversation/use-scroll-anchor";
 
@@ -59,5 +59,67 @@ describe("useScrollAnchor", () => {
 
     fireEvent.click(screen.getByText("↓ Latest"));
     expect(el.scrollTop).toBe(1500);
+  });
+
+  it("does not flash the button while the smooth scroll travels down", () => {
+    render(<Harness />);
+    const el = screen.getByTestId("scroller");
+    geometry(el, { scrollTop: 100, scrollHeight: 1200, clientHeight: 400 });
+    fireEvent.scroll(el);
+    // A smooth scroll: the click only starts the trip.
+    el.scrollTo = (() => undefined) as typeof el.scrollTo;
+    fireEvent.click(screen.getByText("↓ Latest"));
+    el.scrollTop = 400;
+    fireEvent.scroll(el);
+    expect(screen.queryByText("↓ Latest")).toBeNull();
+    el.scrollTop = 800;
+    fireEvent.scroll(el);
+    // Arrived: from here a scroll up shows it again.
+    el.scrollTop = 100;
+    fireEvent.scroll(el);
+    expect(screen.getByText("↓ Latest")).toBeInTheDocument();
+  });
+});
+
+describe("useScrollAnchor and growing content", () => {
+  const observers: Array<() => void> = [];
+  afterEach(() => {
+    observers.length = 0;
+    vi.unstubAllGlobals();
+  });
+
+  function Streaming() {
+    const { ref, contentRef } = useScrollAnchor(1);
+    return (
+      <div ref={ref} data-testid="scroller">
+        <div ref={contentRef} />
+      </div>
+    );
+  }
+
+  it("follows an answer that grows without a new turn, only while at the bottom", () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(private cb: () => void) {
+          observers.push(() => this.cb());
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    render(<Streaming />);
+    const el = screen.getByTestId("scroller");
+    geometry(el, { scrollTop: 600, scrollHeight: 1000, clientHeight: 400 });
+    fireEvent.scroll(el);
+    geometry(el, { scrollTop: 600, scrollHeight: 1300, clientHeight: 400 });
+    act(() => observers.forEach((fire) => fire()));
+    expect(el.scrollTop).toBe(1300);
+
+    geometry(el, { scrollTop: 200, scrollHeight: 1300, clientHeight: 400 });
+    fireEvent.scroll(el);
+    geometry(el, { scrollTop: 200, scrollHeight: 1600, clientHeight: 400 });
+    act(() => observers.forEach((fire) => fire()));
+    expect(el.scrollTop).toBe(200);
   });
 });

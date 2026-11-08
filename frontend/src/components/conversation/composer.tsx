@@ -83,6 +83,8 @@ export interface ComposerProps {
   trailing?: ReactNode;
   /** Read-only share. */
   disabled?: boolean;
+  /** Focus the message box on mount (the dock, when it opens). */
+  autoFocus?: boolean;
   sendLabel?: string;
   /** C3: lets the + menu and # add a ref from outside (data source browser). */
   contextRefs?: ContextItem[];
@@ -152,6 +154,12 @@ export function Composer(props: ComposerProps) {
     previousSession.current = props.sessionId;
     if (before !== null && before !== props.sessionId) onContextRefsChange?.([]);
   }, [props.sessionId, onContextRefsChange]);
+  const autoFocus = !!props.autoFocus;
+  useEffect(() => {
+    if (autoFocus) textarea.current?.focus();
+    // Only on mount: the dock mounts a fresh chat whenever it opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const contextItems = useContextSearch(sigil?.kind === "#" ? sigil.query : null);
 
   const sigilItems: SigilItem[] =
@@ -218,11 +226,28 @@ export function Composer(props: ComposerProps) {
       }
     }
     setError(refused.length > 0 ? refused.join(". ") : null);
+    if (accepted.length === 0) return;
     const mine = generation.current;
+    // Every file waits for the one session: resolved once, before the loop,
+    // so a multi-file drop on a new chat never creates two.
+    setUploading((n) => n + accepted.length);
+    let sessionId: string;
+    try {
+      sessionId = props.sessionId ?? (await props.ensureSession());
+    } catch {
+      setUploading((n) => n - accepted.length);
+      if (mine === generation.current) {
+        setError(
+          t(
+            "Your files could not be uploaded. Try again.",
+            "Deine Dateien konnten nicht hochgeladen werden. Versuch es noch einmal.",
+          ),
+        );
+      }
+      return;
+    }
     for (const file of accepted) {
-      setUploading((n) => n + 1);
       try {
-        const sessionId = props.sessionId ?? (await props.ensureSession());
         const uploaded = await uploadChatAttachment(sessionId, file);
         if (mine === generation.current) setAttachments((prev) => [...prev, uploaded]);
       } catch {

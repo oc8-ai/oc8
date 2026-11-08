@@ -11,26 +11,60 @@ function scrollEl(el: HTMLElement, top: number, behavior?: ScrollBehavior) {
   else el.scrollTop = top;
 }
 
+function nearBottom(el: HTMLElement): boolean {
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= THRESHOLD;
+}
+
 /**
- * `dep` changes whenever content grows; `resetKey` (e.g. the session id)
- * changing means a different conversation, which always opens at its end.
+ * `ref` goes on the scroller, `contentRef` on the column inside it: content
+ * that grows without a new turn (a streaming answer, an image loading) is
+ * followed through a ResizeObserver. `dep` changes whenever turns are added;
+ * `resetKey` (the session id) changing means a different conversation, which
+ * always opens at its end.
  */
 export function useScrollAnchor(dep: unknown, resetKey?: unknown) {
   const ref = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
   const atBottomRef = useRef(true);
+  // True while a "↓ Latest" smooth scroll is on its way down: the scroll
+  // events it fires on the way are not the reader leaving the bottom.
+  const pinning = useRef(false);
   const lastReset = useRef(resetKey);
 
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
     const onScroll = () => {
-      const near = el.scrollHeight - el.scrollTop - el.clientHeight <= THRESHOLD;
+      const near = nearBottom(el);
+      if (pinning.current) {
+        if (near) pinning.current = false;
+        return;
+      }
       atBottomRef.current = near;
       setAtBottom(near);
     };
+    // The reader taking the wheel cancels the trip down.
+    const onUserScroll = () => {
+      pinning.current = false;
+    };
     el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
+    el.addEventListener("wheel", onUserScroll, { passive: true });
+    el.addEventListener("touchstart", onUserScroll, { passive: true });
+    let observer: ResizeObserver | undefined;
+    const content = contentRef.current;
+    if (content && typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver(() => {
+        if (atBottomRef.current) scrollEl(el, el.scrollHeight);
+      });
+      observer.observe(content);
+    }
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      el.removeEventListener("wheel", onUserScroll);
+      el.removeEventListener("touchstart", onUserScroll);
+      observer?.disconnect();
+    };
   }, []);
 
   useLayoutEffect(() => {
@@ -48,10 +82,11 @@ export function useScrollAnchor(dep: unknown, resetKey?: unknown) {
   const scrollToBottom = useCallback(() => {
     const el = ref.current;
     if (!el) return;
-    scrollEl(el, el.scrollHeight, "smooth");
     atBottomRef.current = true;
+    pinning.current = true;
     setAtBottom(true);
+    scrollEl(el, el.scrollHeight, "smooth");
   }, []);
 
-  return { ref, atBottom, scrollToBottom };
+  return { ref, contentRef, atBottom, scrollToBottom };
 }

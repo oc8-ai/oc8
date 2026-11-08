@@ -127,9 +127,11 @@ vi.mock("@/components/conversation", () => ({
     composerAbove?: React.ReactNode;
     agentItems?: Array<{ id: string; label: string; hint?: string; blocked?: string }>;
     onAddressAgent?: (agentId: string) => void;
+    autoFocus?: boolean;
   }) => (
     <div
       data-testid="conversation"
+      data-autofocus={p.autoFocus ? "true" : "false"}
       data-agent={p.agentId}
       data-session={p.sessionId ?? ""}
       data-variant={p.variant}
@@ -271,6 +273,12 @@ describe("CopilotDock", () => {
     expect(screen.getByText(/i know your agents, departments and guardrails/i)).toBeInTheDocument();
     expect(sendMessageMock).not.toHaveBeenCalled();
     expect(createSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("focuses the composer when the dock opens", () => {
+    renderDock();
+    openDock();
+    expect(screen.getByTestId("conversation")).toHaveAttribute("data-autofocus", "true");
   });
 
   it("defaults to the Assistant's most recent existing session instead of starting a new one", () => {

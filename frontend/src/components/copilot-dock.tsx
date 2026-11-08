@@ -504,6 +504,7 @@ function CopilotDockPanel() {
               sessionId={activeTab.sessionId}
               onSessionChange={(sid) => setTabSession(activeTab.uiId, sid)}
               variant="compact"
+              autoFocus
               draft={drafts[activeTab.uiId] ?? ""}
               onDraftChange={(text) => setDraft(activeTab.uiId, text)}
               agentItems={agentItems}

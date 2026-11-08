@@ -1,7 +1,7 @@
 // frontend/src/components/conversation/conversation.tsx
 // The one chat (spec §2.1). Every surface mounts this; only spacing differs
 // between "full" (Copilot page, Live tab) and "compact" (dock, My Work).
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, X } from "lucide-react";
 
@@ -45,6 +45,8 @@ export interface ConversationProps {
   composerTarget?: ReactNode;
   onSendOverride?: (submit: ComposerSubmit) => boolean;
   onStopOverride?: () => void;
+  /** Focus the composer on mount (the dock, when it opens). */
+  autoFocus?: boolean;
 }
 
 function TurnSkeletons() {
@@ -74,7 +76,7 @@ export function Conversation(props: ConversationProps) {
   const createSession = useCreateChatSession();
   const sendMessage = useSendChatMessage(props.sessionId ?? "");
   const regenerate = useRegenerate(props.sessionId);
-  const { ref, atBottom, scrollToBottom } = useScrollAnchor(
+  const { ref, contentRef, atBottom, scrollToBottom } = useScrollAnchor(
     `${conv.turns.length}:${conv.liveRunIds.join()}:${sendError ?? ""}`,
     props.sessionId,
   );
@@ -82,34 +84,50 @@ export function Conversation(props: ConversationProps) {
   const busy = conv.liveRunIds.length > 0;
   const lastUser = [...conv.turns].reverse().find((turn) => turn.kind === "user");
 
-  async function ensureSession(): Promise<string> {
-    if (props.sessionId) return props.sessionId;
-    const session = await createSession.mutateAsync(props.agentId);
-    // Seed the new chat's caches so it does not flash skeletons between
-    // being created and its first message landing.
-    qc.setQueryData<ChatMessageDTO[]>(chatKeys.messages(session.id), (prev) => prev ?? []);
-    qc.setQueryData<ChatSessionDetailDTO>(
-      conversationKeys.session(session.id),
-      (prev) =>
-        prev ?? {
-          ...session,
-          modelOverrideId: null,
-          kind: "chat",
-          activeRuns: [],
-          readOnly: false,
-        },
+  // One creation in flight at a time: a multi-file drop and a send during an
+  // upload all wait for the same new chat instead of each making one.
+  const creating = useRef<Promise<string> | null>(null);
+  useEffect(() => {
+    creating.current = null;
+  }, [props.sessionId]);
+
+  function ensureSession(): Promise<string> {
+    if (props.sessionId) return Promise.resolve(props.sessionId);
+    creating.current ??= createSession.mutateAsync(props.agentId).then(
+      (session) => {
+        // Seed the new chat's caches so it does not flash skeletons between
+        // being created and its first message landing.
+        qc.setQueryData<ChatMessageDTO[]>(chatKeys.messages(session.id), (prev) => prev ?? []);
+        qc.setQueryData<ChatSessionDetailDTO>(
+          conversationKeys.session(session.id),
+          (prev) =>
+            prev ?? {
+              ...session,
+              modelOverrideId: null,
+              kind: "chat",
+              activeRuns: [],
+              readOnly: false,
+            },
+        );
+        props.onSessionChange(session.id);
+        return session.id;
+      },
+      (error: unknown) => {
+        creating.current = null;
+        throw error;
+      },
     );
-    props.onSessionChange(session.id);
-    return session.id;
+    return creating.current;
   }
 
-  async function onSend(submit: ComposerSubmit) {
+  /** `fromComposer` false: a prompt starter, which leaves the draft alone. */
+  async function onSend(submit: ComposerSubmit, fromComposer = true) {
     if (props.onSendOverride?.(submit)) {
-      setDraft("");
+      if (fromComposer) setDraft("");
       return;
     }
     setSendError(null);
-    setDraft("");
+    if (fromComposer) setDraft("");
     const body = {
       message: submit.text,
       attachmentIds: submit.attachmentIds,
@@ -137,7 +155,7 @@ export function Conversation(props: ConversationProps) {
         );
       }
     } catch {
-      setDraft(submit.text);
+      if (fromComposer) setDraft(submit.text);
       setSendError(
         t(
           "Your message was not sent. Try again.",
@@ -159,7 +177,7 @@ export function Conversation(props: ConversationProps) {
 
   const sendText = (text: string) => {
     if (busy || readOnly) return;
-    void onSend({ text, attachmentIds: [], contextRefs: [] });
+    void onSend({ text, attachmentIds: [], contextRefs: [] }, false);
   };
   const empty =
     typeof props.emptyState === "function" ? props.emptyState(sendText) : props.emptyState;
@@ -171,7 +189,10 @@ export function Conversation(props: ConversationProps) {
         data-testid="conversation-scroller"
         className={cn("min-h-0 flex-1 overflow-y-auto", full ? "px-4 py-6 md:px-6" : "px-3 py-4")}
       >
-        <div className={cn("mx-auto w-full max-w-[760px]", full ? "space-y-6" : "space-y-4")}>
+        <div
+          ref={contentRef}
+          className={cn("mx-auto w-full max-w-[760px]", full ? "space-y-6" : "space-y-4")}
+        >
           {conv.isLoading ? (
             <TurnSkeletons />
           ) : conv.turns.length === 0 ? (
@@ -205,20 +226,22 @@ export function Conversation(props: ConversationProps) {
           )}
         </div>
       </div>
-      {!atBottom && (
-        <button
-          type="button"
-          onClick={scrollToBottom}
-          className={cn(
-            "absolute left-1/2 inline-flex -translate-x-1/2 items-center gap-1 rounded-full border border-border bg-popover px-3 py-1 text-xs text-foreground shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-            full ? "bottom-32" : "bottom-28",
-          )}
-        >
-          <ArrowDown className="size-3.5" aria-hidden />
-          {t("Latest", "Neueste")}
-        </button>
-      )}
-      <div className={cn("mx-auto w-full max-w-[760px]", full ? "px-4 pb-4 md:px-6" : "px-3 pb-3")}>
+      <div
+        className={cn(
+          "relative mx-auto w-full max-w-[760px]",
+          full ? "px-4 pb-4 md:px-6" : "px-3 pb-3",
+        )}
+      >
+        {!atBottom && (
+          <button
+            type="button"
+            onClick={scrollToBottom}
+            className="absolute -top-10 left-1/2 inline-flex -translate-x-1/2 items-center gap-1 rounded-full border border-border bg-popover px-3 py-1 text-xs text-foreground shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <ArrowDown className="size-3.5" aria-hidden />
+            {t("Latest", "Neueste")}
+          </button>
+        )}
         {showBudget && (
           <div
             className="mb-2 rounded-lg border border-border bg-card px-3 py-2 text-xs"
@@ -277,6 +300,7 @@ export function Conversation(props: ConversationProps) {
           target={props.composerTarget}
           above={props.composerAbove}
           disabled={readOnly}
+          autoFocus={props.autoFocus}
         />
       </div>
     </div>
