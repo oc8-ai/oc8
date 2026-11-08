@@ -306,6 +306,12 @@ _PROSE: Final[dict[str, tuple[str, str, str, str]]] = {
         "View Copilot proposals",
         "Reads a prepared Copilot proposal before it is applied.",
     ),
+    "connection:own": (
+        "Eigene Verbindungen verwalten",
+        "Verbindet die eigenen Konten (z. B. Microsoft, Google, Odoo) und trennt sie wieder -- nur die eigenen.",
+        "Manage own connections",
+        "Connects and disconnects the caller's own accounts (e.g. Microsoft, Google, Odoo) -- only their own.",
+    ),
     "plugin:manage": (
         "Erweiterungen installieren",
         "Installiert Erweiterungen; deren Code läuft anschließend im Backend selbst.",
