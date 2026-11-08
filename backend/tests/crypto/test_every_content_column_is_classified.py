@@ -283,6 +283,8 @@ EXEMPT: dict[str, str] = {
     "trigger.event_source": "dispatch-matched identifier, not customer content, design spec §6c",
     "trigger.event_type": "dispatch-matched identifier, not customer content, design spec §6c",
     "trigger.webhook_token": "encryptable with a defined workaround, not yet migrated (equality-queried, server-generated bearer token that is this trigger's entire auth boundary, unlike its dispatch-identifier siblings above -- becomes DeterministicText), design spec §6b",
+    "agent_tool_access.tool_key": "the tool key (an McpConnection name such as 'microsoft365'), structural/identifier column, not customer free text -- see design spec §6",
+    "agent_tool_access.mode": "structural enum-like column (status/state/kind/classification/...), CHECK-constrained, not content, design spec §6c",
 }
 
 _ENCRYPTED_TYPES = (EncryptedText, EncryptedJSON, DeterministicText)
