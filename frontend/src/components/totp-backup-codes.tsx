@@ -32,7 +32,7 @@ export function BackupCodesReveal({
       <button
         type="button"
         onClick={onAcknowledge}
-        className="w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
+        className="w-full rounded-md bg-brand-gradient px-4 py-2 text-sm font-medium text-brand-gradient-foreground hover:brightness-110"
       >
         {t("I've saved these", "Ich habe sie gespeichert")}
       </button>

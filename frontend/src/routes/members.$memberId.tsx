@@ -628,7 +628,7 @@ export function MemberDetailForm({ member }: { member: Member }) {
           <div className="mt-4 overflow-x-auto">
             <Table className="text-sm">
               <TableHeader>
-                <TableRow className="border-b border-border">
+                <TableRow className="border-b border-border hover:bg-transparent">
                   <TableHead className="py-2 micro-label">
                     {t("Department", "Department")}
                   </TableHead>

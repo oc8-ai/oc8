@@ -366,161 +366,159 @@ export function ModelsPage() {
             )}
           </div>
         </div>
-        <div className="overflow-x-auto">
-          <Table className="text-sm">
-            <TableHeader>
-              <TableRow className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
-                <TableHead className="px-5 py-3 micro-label">{t("Model", "Modell")}</TableHead>
-                <TableHead className="px-5 py-3 micro-label">{t("Provider", "Anbieter")}</TableHead>
-                <TableHead className="px-5 py-3 micro-label">{t("Status", "Status")}</TableHead>
-                <TableHead className="px-5 py-3 micro-label">{t("Latency", "Latenz")}</TableHead>
-                <TableHead className="px-5 py-3 micro-label">{t("Cost", "Kosten")}</TableHead>
-                <TableHead className="px-5 py-3 micro-label">
-                  {t("Assigned to", "Zugewiesen an")}
-                </TableHead>
-                <TableHead className="px-5 py-3 text-right micro-label">
-                  {t("Actions", "Aktionen")}
-                </TableHead>
+        <Table className="text-sm">
+          <TableHeader>
+            <TableRow className="border-b border-border hover:bg-transparent">
+              <TableHead className="px-5 py-3 micro-label">{t("Model", "Modell")}</TableHead>
+              <TableHead className="px-5 py-3 micro-label">{t("Provider", "Anbieter")}</TableHead>
+              <TableHead className="px-5 py-3 micro-label">{t("Status", "Status")}</TableHead>
+              <TableHead className="px-5 py-3 micro-label">{t("Latency", "Latenz")}</TableHead>
+              <TableHead className="px-5 py-3 micro-label">{t("Cost", "Kosten")}</TableHead>
+              <TableHead className="px-5 py-3 micro-label">
+                {t("Assigned to", "Zugewiesen an")}
+              </TableHead>
+              <TableHead className="px-5 py-3 text-right micro-label">
+                {t("Actions", "Aktionen")}
+              </TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {models.length === 0 && (
+              <TableRow className="hover:bg-transparent">
+                <TableCell
+                  colSpan={7}
+                  className="px-5 py-8 text-center text-sm text-muted-foreground"
+                >
+                  {t("No models configured yet.", "Noch keine Modelle konfiguriert.")}
+                </TableCell>
               </TableRow>
-            </TableHeader>
-            <TableBody>
-              {models.length === 0 && (
-                <TableRow>
-                  <TableCell
-                    colSpan={7}
-                    className="px-5 py-8 text-center text-sm text-muted-foreground"
-                  >
-                    {t("No models configured yet.", "Noch keine Modelle konfiguriert.")}
+            )}
+            {models.map((m) => {
+              const color =
+                m.status === "healthy"
+                  ? "var(--status-running)"
+                  : m.status === "degraded"
+                    ? "var(--status-warning)"
+                    : m.status === "unknown"
+                      ? "var(--muted-foreground)"
+                      : "var(--status-error)";
+              return (
+                <TableRow key={m.id} className="border-b border-border/60 last:border-none">
+                  <TableCell className="px-5 py-4">
+                    <div className="flex items-center gap-2 font-medium">
+                      <Cpu className="h-4 w-4 text-primary" />
+                      {m.name}
+                      {isAutoProvider(m.provider) && <AutoRouterBadge />}
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted-foreground">{m.note}</div>
+                  </TableCell>
+                  <TableCell className="px-5 py-4">
+                    <div className="flex flex-wrap items-center gap-1">
+                      <span className="rounded-full border border-border bg-background/40 px-2 py-0.5 text-xs">
+                        {isAutoProvider(m.provider) ? t("Auto", "Auto") : m.provider}
+                      </span>
+                      {m.provider === SUBSCRIPTION_PROVIDER && <SubscriptionRiskBadge />}
+                    </div>
+                  </TableCell>
+                  <TableCell className="px-5 py-4">
+                    <span
+                      className="inline-flex items-center gap-1.5 text-xs"
+                      style={{ color }}
+                      title={
+                        m.healthCheckedAt
+                          ? t(
+                              `Checked ${new Date(m.healthCheckedAt).toLocaleString()}`,
+                              `Geprüft am ${new Date(m.healthCheckedAt).toLocaleString()}`,
+                            )
+                          : t(
+                              "Never tested — click Test to check.",
+                              "Noch nie getestet — auf Test klicken zum Prüfen.",
+                            )
+                      }
+                    >
+                      <span
+                        className="h-1.5 w-1.5 rounded-full"
+                        style={{ background: color, boxShadow: `0 0 8px ${color}` }}
+                      />
+                      {m.status}
+                    </span>
+                    {m.healthError && (
+                      <div className="mt-0.5 max-w-xs text-xs text-muted-foreground">
+                        {m.healthError}
+                      </div>
+                    )}
+                  </TableCell>
+                  <TableCell className="px-5 py-4 font-mono text-xs">{m.latency}</TableCell>
+                  <TableCell className="px-5 py-4">
+                    <div className="flex gap-0.5">
+                      {[1, 2, 3].map((n) => (
+                        <span
+                          key={n}
+                          className={
+                            m.costTier.length >= n
+                              ? "h-4 w-1.5 rounded-sm bg-primary/70"
+                              : "h-4 w-1.5 rounded-sm bg-border"
+                          }
+                        />
+                      ))}
+                    </div>
+                  </TableCell>
+                  <TableCell className="px-5 py-4">
+                    <div className="flex flex-wrap gap-1">
+                      {m.assignedTo.map((id) => {
+                        const a = agents.find((x) => x.id === id);
+                        if (!a) return null;
+                        return (
+                          <span
+                            key={id}
+                            className="inline-flex items-center gap-1 rounded-full border border-border bg-background/30 px-2 py-0.5 text-micro"
+                          >
+                            <span
+                              className="h-1.5 w-1.5 rounded-full"
+                              style={{ background: a.avatarColor }}
+                            />
+                            {a.name}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </TableCell>
+                  <TableCell className="px-5 py-4 text-right">
+                    {mayManage && (
+                      <div className="flex items-center justify-end gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleTest(m.id)}
+                          disabled={testingId === m.id}
+                          className="inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <RefreshCw
+                            className={cn("h-3 w-3", testingId === m.id && "animate-spin")}
+                          />{" "}
+                          {t("Test", "Testen")}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setModelForm(m)}
+                          className="inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+                        >
+                          <Pencil className="h-3 w-3" /> {t("Edit", "Bearbeiten")}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDelete(m)}
+                          className="inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-status-error"
+                        >
+                          <Trash2 className="h-3 w-3" /> {t("Delete", "Löschen")}
+                        </button>
+                      </div>
+                    )}
                   </TableCell>
                 </TableRow>
-              )}
-              {models.map((m) => {
-                const color =
-                  m.status === "healthy"
-                    ? "var(--status-running)"
-                    : m.status === "degraded"
-                      ? "var(--status-warning)"
-                      : m.status === "unknown"
-                        ? "var(--muted-foreground)"
-                        : "var(--status-error)";
-                return (
-                  <TableRow key={m.id} className="border-b border-border/60 last:border-none">
-                    <TableCell className="px-5 py-4">
-                      <div className="flex items-center gap-2 font-medium">
-                        <Cpu className="h-4 w-4 text-primary" />
-                        {m.name}
-                        {isAutoProvider(m.provider) && <AutoRouterBadge />}
-                      </div>
-                      <div className="mt-0.5 text-xs text-muted-foreground">{m.note}</div>
-                    </TableCell>
-                    <TableCell className="px-5 py-4">
-                      <div className="flex flex-wrap items-center gap-1">
-                        <span className="rounded-full border border-border bg-background/40 px-2 py-0.5 text-xs">
-                          {isAutoProvider(m.provider) ? t("Auto", "Auto") : m.provider}
-                        </span>
-                        {m.provider === SUBSCRIPTION_PROVIDER && <SubscriptionRiskBadge />}
-                      </div>
-                    </TableCell>
-                    <TableCell className="px-5 py-4">
-                      <span
-                        className="inline-flex items-center gap-1.5 text-xs"
-                        style={{ color }}
-                        title={
-                          m.healthCheckedAt
-                            ? t(
-                                `Checked ${new Date(m.healthCheckedAt).toLocaleString()}`,
-                                `Geprüft am ${new Date(m.healthCheckedAt).toLocaleString()}`,
-                              )
-                            : t(
-                                "Never tested — click Test to check.",
-                                "Noch nie getestet — auf Test klicken zum Prüfen.",
-                              )
-                        }
-                      >
-                        <span
-                          className="h-1.5 w-1.5 rounded-full"
-                          style={{ background: color, boxShadow: `0 0 8px ${color}` }}
-                        />
-                        {m.status}
-                      </span>
-                      {m.healthError && (
-                        <div className="mt-0.5 max-w-xs text-xs text-muted-foreground">
-                          {m.healthError}
-                        </div>
-                      )}
-                    </TableCell>
-                    <TableCell className="px-5 py-4 font-mono text-xs">{m.latency}</TableCell>
-                    <TableCell className="px-5 py-4">
-                      <div className="flex gap-0.5">
-                        {[1, 2, 3].map((n) => (
-                          <span
-                            key={n}
-                            className={
-                              m.costTier.length >= n
-                                ? "h-4 w-1.5 rounded-sm bg-primary/70"
-                                : "h-4 w-1.5 rounded-sm bg-border"
-                            }
-                          />
-                        ))}
-                      </div>
-                    </TableCell>
-                    <TableCell className="px-5 py-4">
-                      <div className="flex flex-wrap gap-1">
-                        {m.assignedTo.map((id) => {
-                          const a = agents.find((x) => x.id === id);
-                          if (!a) return null;
-                          return (
-                            <span
-                              key={id}
-                              className="inline-flex items-center gap-1 rounded-full border border-border bg-background/30 px-2 py-0.5 text-micro"
-                            >
-                              <span
-                                className="h-1.5 w-1.5 rounded-full"
-                                style={{ background: a.avatarColor }}
-                              />
-                              {a.name}
-                            </span>
-                          );
-                        })}
-                      </div>
-                    </TableCell>
-                    <TableCell className="px-5 py-4 text-right">
-                      {mayManage && (
-                        <div className="flex items-center justify-end gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => handleTest(m.id)}
-                            disabled={testingId === m.id}
-                            className="inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            <RefreshCw
-                              className={cn("h-3 w-3", testingId === m.id && "animate-spin")}
-                            />{" "}
-                            {t("Test", "Testen")}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setModelForm(m)}
-                            className="inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
-                          >
-                            <Pencil className="h-3 w-3" /> {t("Edit", "Bearbeiten")}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDelete(m)}
-                            className="inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-status-error"
-                          >
-                            <Trash2 className="h-3 w-3" /> {t("Delete", "Löschen")}
-                          </button>
-                        </div>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </div>
+              );
+            })}
+          </TableBody>
+        </Table>
       </Panel>
 
       {modelForm && (
@@ -2046,256 +2044,252 @@ export function ModelPricingPanel() {
           </button>
         )}
       </div>
-      <div className="overflow-x-auto">
-        <Table className="text-sm">
-          <TableHeader>
-            <TableRow className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
-              <TableHead className="px-5 py-3 micro-label">{t("Model", "Modell")}</TableHead>
-              <TableHead className="px-5 py-3 micro-label">{t("Provider", "Anbieter")}</TableHead>
-              <TableHead className="px-5 py-3 text-right micro-label">
-                {t("Input / 1M", "Input / 1 Mio.")}
-              </TableHead>
-              <TableHead className="px-5 py-3 text-right micro-label">
-                {t("Output / 1M", "Output / 1 Mio.")}
-              </TableHead>
-              <TableHead className="px-5 py-3 text-right micro-label">
-                {t("Est. cost / 1k req", "Ø / 1k Anfr.")}
-              </TableHead>
-              <TableHead className="px-5 py-3 micro-label">
-                {t("Used by", "Verwendet von")}
-              </TableHead>
-              {mayManage && <TableHead className="px-5 py-3 text-right micro-label" />}
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {adding && (
-              <TableRow className="border-b border-border/60 bg-background/20">
-                <TableCell className="px-5 py-3">
-                  {manualEntry || models.length === 0 ? (
-                    <input
-                      type="text"
-                      placeholder={t("model pattern", "Modell-Muster")}
-                      value={newPrice.modelPattern}
-                      onChange={(e) => setNewPrice((n) => ({ ...n, modelPattern: e.target.value }))}
-                      className="w-32 rounded-md border border-border bg-background/40 px-2 py-1 text-xs focus:border-primary focus:outline-none"
-                    />
-                  ) : (
-                    <select
-                      value={newPrice.modelPattern}
-                      onChange={(e) => selectRegisteredModel(e.target.value)}
-                      className="w-40 rounded-md border border-border bg-background/40 px-2 py-1 text-xs focus:border-primary focus:outline-none"
-                    >
-                      <option value="">{t("Select a model…", "Modell auswählen…")}</option>
-                      {models.map((m) => (
-                        <option key={m.id} value={m.model}>
-                          {m.name} ({m.model})
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                  {models.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => setManualEntry((v) => !v)}
-                      className="mt-1 block text-xs text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-foreground"
-                    >
-                      {manualEntry
-                        ? t("Choose from available models", "Aus verfügbaren Modellen wählen")
-                        : t("Enter manually", "Manuell eingeben")}
-                    </button>
-                  )}
-                </TableCell>
-                <TableCell className="px-5 py-3">
+      <Table className="text-sm">
+        <TableHeader>
+          <TableRow className="border-b border-border hover:bg-transparent">
+            <TableHead className="px-5 py-3 micro-label">{t("Model", "Modell")}</TableHead>
+            <TableHead className="px-5 py-3 micro-label">{t("Provider", "Anbieter")}</TableHead>
+            <TableHead className="px-5 py-3 text-right micro-label">
+              {t("Input / 1M", "Input / 1 Mio.")}
+            </TableHead>
+            <TableHead className="px-5 py-3 text-right micro-label">
+              {t("Output / 1M", "Output / 1 Mio.")}
+            </TableHead>
+            <TableHead className="px-5 py-3 text-right micro-label">
+              {t("Est. cost / 1k req", "Ø / 1k Anfr.")}
+            </TableHead>
+            <TableHead className="px-5 py-3 micro-label">{t("Used by", "Verwendet von")}</TableHead>
+            {mayManage && <TableHead className="px-5 py-3 text-right micro-label" />}
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {adding && (
+            <TableRow className="border-b border-border/60 bg-background/20">
+              <TableCell className="px-5 py-3">
+                {manualEntry || models.length === 0 ? (
                   <input
                     type="text"
-                    readOnly={!manualEntry && models.length > 0}
-                    placeholder={t("provider", "Anbieter")}
-                    value={newPrice.provider}
-                    onChange={(e) => setNewPrice((n) => ({ ...n, provider: e.target.value }))}
-                    title={
-                      !manualEntry && models.length > 0
-                        ? t(
-                            "Set automatically from the selected model",
-                            "Wird automatisch anhand des gewählten Modells gesetzt",
-                          )
-                        : undefined
-                    }
-                    className={cn(
-                      "w-24 rounded-md border border-border bg-background/40 px-2 py-1 text-xs focus:border-primary focus:outline-none",
-                      !manualEntry && models.length > 0 && "cursor-not-allowed opacity-70",
-                    )}
+                    placeholder={t("model pattern", "Modell-Muster")}
+                    value={newPrice.modelPattern}
+                    onChange={(e) => setNewPrice((n) => ({ ...n, modelPattern: e.target.value }))}
+                    className="w-32 rounded-md border border-border bg-background/40 px-2 py-1 text-xs focus:border-primary focus:outline-none"
                   />
-                </TableCell>
-                <TableCell className="px-5 py-3">
-                  <div className="flex items-center justify-end gap-1">
-                    <span className="text-muted-foreground">$</span>
-                    <input
-                      type="number"
-                      step="0.05"
-                      min="0"
-                      value={newPrice.priceIn}
-                      onChange={(e) => setNewPrice((n) => ({ ...n, priceIn: e.target.value }))}
-                      className="w-20 rounded-md border border-border bg-background/40 px-2 py-1 text-right font-mono text-xs focus:border-primary focus:outline-none"
-                    />
-                  </div>
-                </TableCell>
-                <TableCell className="px-5 py-3">
-                  <div className="flex items-center justify-end gap-1">
-                    <span className="text-muted-foreground">$</span>
-                    <input
-                      type="number"
-                      step="0.05"
-                      min="0"
-                      value={newPrice.priceOut}
-                      onChange={(e) => setNewPrice((n) => ({ ...n, priceOut: e.target.value }))}
-                      className="w-20 rounded-md border border-border bg-background/40 px-2 py-1 text-right font-mono text-xs focus:border-primary focus:outline-none"
-                    />
-                  </div>
-                </TableCell>
-                <TableCell className="px-5 py-3" />
-                <TableCell className="px-5 py-3" />
-                <TableCell className="px-5 py-3 text-right">
-                  <div className="flex items-center justify-end gap-1.5">
-                    <button
-                      type="button"
-                      disabled={createPrice.isPending}
-                      onClick={submitNewPrice}
-                      className="inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      <CheckCircle2 className="h-3 w-3" /> {t("Save", "Speichern")}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setAdding(false)}
-                      className="inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </div>
-                </TableCell>
-              </TableRow>
-            )}
-            {prices.map((p) => {
-              const usingAgents = agents.filter((a) => a.llm === p.modelPattern);
-              const per1kUSD = (1500 * p.priceInUsdPer1M + 500 * p.priceOutUsdPer1M) / 1000;
-              const isEditing = editingId === p.id;
-              return (
-                <TableRow key={p.id} className="border-b border-border/60 last:border-none">
-                  <TableCell className="px-5 py-3">
-                    <div className="flex items-center gap-2 font-medium">
-                      <Cpu className="h-3.5 w-3.5 text-primary" />
-                      {p.modelPattern}
-                    </div>
-                  </TableCell>
-                  <TableCell className="px-5 py-3">
-                    <span className="rounded-full border border-border bg-background/40 px-2 py-0.5 text-xs">
-                      {p.provider}
-                    </span>
-                  </TableCell>
-                  <TableCell className="px-5 py-3">
-                    <div className="flex items-center justify-end gap-1">
-                      <span className="text-muted-foreground">$</span>
-                      {isEditing ? (
-                        <input
-                          type="number"
-                          step="0.05"
-                          min="0"
-                          value={draft.priceIn}
-                          onChange={(e) => setDraft((d) => ({ ...d, priceIn: e.target.value }))}
-                          className="w-20 rounded-md border border-border bg-background/40 px-2 py-1 text-right font-mono text-xs focus:border-primary focus:outline-none"
-                        />
-                      ) : (
-                        <span className="font-mono text-xs">{p.priceInUsdPer1M.toFixed(2)}</span>
-                      )}
-                    </div>
-                  </TableCell>
-                  <TableCell className="px-5 py-3">
-                    <div className="flex items-center justify-end gap-1">
-                      <span className="text-muted-foreground">$</span>
-                      {isEditing ? (
-                        <input
-                          type="number"
-                          step="0.05"
-                          min="0"
-                          value={draft.priceOut}
-                          onChange={(e) => setDraft((d) => ({ ...d, priceOut: e.target.value }))}
-                          className="w-20 rounded-md border border-border bg-background/40 px-2 py-1 text-right font-mono text-xs focus:border-primary focus:outline-none"
-                        />
-                      ) : (
-                        <span className="font-mono text-xs">{p.priceOutUsdPer1M.toFixed(2)}</span>
-                      )}
-                    </div>
-                  </TableCell>
-                  <TableCell className="px-5 py-3 text-right font-mono text-xs text-muted-foreground">
-                    ${per1kUSD.toFixed(2)}
-                  </TableCell>
-                  <TableCell className="px-5 py-3">
-                    <div className="flex flex-wrap gap-1">
-                      {usingAgents.map((a) => (
-                        <span
-                          key={a.id}
-                          className="inline-flex items-center gap-1 rounded-full border border-border bg-background/30 px-2 py-0.5 text-micro"
-                        >
-                          <span
-                            className="h-1.5 w-1.5 rounded-full"
-                            style={{ background: a.avatarColor }}
-                          />
-                          {a.name}
-                        </span>
-                      ))}
-                      {usingAgents.length === 0 && (
-                        <span className="text-xs text-muted-foreground">
-                          {t("— no agent", "— kein Agent")}
-                        </span>
-                      )}
-                    </div>
-                  </TableCell>
-                  {mayManage && (
-                    <TableCell className="px-5 py-3 text-right">
-                      {isEditing ? (
-                        <div className="flex items-center justify-end gap-1.5">
-                          <button
-                            type="button"
-                            disabled={createPrice.isPending}
-                            onClick={() => saveEdit(p)}
-                            className="inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            <CheckCircle2 className="h-3 w-3" /> {t("Save", "Speichern")}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={cancelEdit}
-                            className="inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
-                          >
-                            <X className="h-3 w-3" />
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="flex items-center justify-end gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => startEdit(p)}
-                            className="inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
-                          >
-                            <Pencil className="h-3 w-3" /> {t("Edit", "Bearbeiten")}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => removePrice(p)}
-                            className="inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-status-error"
-                          >
-                            <Trash2 className="h-3 w-3" /> {t("Remove", "Entfernen")}
-                          </button>
-                        </div>
-                      )}
-                    </TableCell>
+                ) : (
+                  <select
+                    value={newPrice.modelPattern}
+                    onChange={(e) => selectRegisteredModel(e.target.value)}
+                    className="w-40 rounded-md border border-border bg-background/40 px-2 py-1 text-xs focus:border-primary focus:outline-none"
+                  >
+                    <option value="">{t("Select a model…", "Modell auswählen…")}</option>
+                    {models.map((m) => (
+                      <option key={m.id} value={m.model}>
+                        {m.name} ({m.model})
+                      </option>
+                    ))}
+                  </select>
+                )}
+                {models.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setManualEntry((v) => !v)}
+                    className="mt-1 block text-xs text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-foreground"
+                  >
+                    {manualEntry
+                      ? t("Choose from available models", "Aus verfügbaren Modellen wählen")
+                      : t("Enter manually", "Manuell eingeben")}
+                  </button>
+                )}
+              </TableCell>
+              <TableCell className="px-5 py-3">
+                <input
+                  type="text"
+                  readOnly={!manualEntry && models.length > 0}
+                  placeholder={t("provider", "Anbieter")}
+                  value={newPrice.provider}
+                  onChange={(e) => setNewPrice((n) => ({ ...n, provider: e.target.value }))}
+                  title={
+                    !manualEntry && models.length > 0
+                      ? t(
+                          "Set automatically from the selected model",
+                          "Wird automatisch anhand des gewählten Modells gesetzt",
+                        )
+                      : undefined
+                  }
+                  className={cn(
+                    "w-24 rounded-md border border-border bg-background/40 px-2 py-1 text-xs focus:border-primary focus:outline-none",
+                    !manualEntry && models.length > 0 && "cursor-not-allowed opacity-70",
                   )}
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
-      </div>
+                />
+              </TableCell>
+              <TableCell className="px-5 py-3">
+                <div className="flex items-center justify-end gap-1">
+                  <span className="text-muted-foreground">$</span>
+                  <input
+                    type="number"
+                    step="0.05"
+                    min="0"
+                    value={newPrice.priceIn}
+                    onChange={(e) => setNewPrice((n) => ({ ...n, priceIn: e.target.value }))}
+                    className="w-20 rounded-md border border-border bg-background/40 px-2 py-1 text-right font-mono text-xs focus:border-primary focus:outline-none"
+                  />
+                </div>
+              </TableCell>
+              <TableCell className="px-5 py-3">
+                <div className="flex items-center justify-end gap-1">
+                  <span className="text-muted-foreground">$</span>
+                  <input
+                    type="number"
+                    step="0.05"
+                    min="0"
+                    value={newPrice.priceOut}
+                    onChange={(e) => setNewPrice((n) => ({ ...n, priceOut: e.target.value }))}
+                    className="w-20 rounded-md border border-border bg-background/40 px-2 py-1 text-right font-mono text-xs focus:border-primary focus:outline-none"
+                  />
+                </div>
+              </TableCell>
+              <TableCell className="px-5 py-3" />
+              <TableCell className="px-5 py-3" />
+              <TableCell className="px-5 py-3 text-right">
+                <div className="flex items-center justify-end gap-1.5">
+                  <button
+                    type="button"
+                    disabled={createPrice.isPending}
+                    onClick={submitNewPrice}
+                    className="inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <CheckCircle2 className="h-3 w-3" /> {t("Save", "Speichern")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAdding(false)}
+                    className="inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              </TableCell>
+            </TableRow>
+          )}
+          {prices.map((p) => {
+            const usingAgents = agents.filter((a) => a.llm === p.modelPattern);
+            const per1kUSD = (1500 * p.priceInUsdPer1M + 500 * p.priceOutUsdPer1M) / 1000;
+            const isEditing = editingId === p.id;
+            return (
+              <TableRow key={p.id} className="border-b border-border/60 last:border-none">
+                <TableCell className="px-5 py-3">
+                  <div className="flex items-center gap-2 font-medium">
+                    <Cpu className="h-3.5 w-3.5 text-primary" />
+                    {p.modelPattern}
+                  </div>
+                </TableCell>
+                <TableCell className="px-5 py-3">
+                  <span className="rounded-full border border-border bg-background/40 px-2 py-0.5 text-xs">
+                    {p.provider}
+                  </span>
+                </TableCell>
+                <TableCell className="px-5 py-3">
+                  <div className="flex items-center justify-end gap-1">
+                    <span className="text-muted-foreground">$</span>
+                    {isEditing ? (
+                      <input
+                        type="number"
+                        step="0.05"
+                        min="0"
+                        value={draft.priceIn}
+                        onChange={(e) => setDraft((d) => ({ ...d, priceIn: e.target.value }))}
+                        className="w-20 rounded-md border border-border bg-background/40 px-2 py-1 text-right font-mono text-xs focus:border-primary focus:outline-none"
+                      />
+                    ) : (
+                      <span className="font-mono text-xs">{p.priceInUsdPer1M.toFixed(2)}</span>
+                    )}
+                  </div>
+                </TableCell>
+                <TableCell className="px-5 py-3">
+                  <div className="flex items-center justify-end gap-1">
+                    <span className="text-muted-foreground">$</span>
+                    {isEditing ? (
+                      <input
+                        type="number"
+                        step="0.05"
+                        min="0"
+                        value={draft.priceOut}
+                        onChange={(e) => setDraft((d) => ({ ...d, priceOut: e.target.value }))}
+                        className="w-20 rounded-md border border-border bg-background/40 px-2 py-1 text-right font-mono text-xs focus:border-primary focus:outline-none"
+                      />
+                    ) : (
+                      <span className="font-mono text-xs">{p.priceOutUsdPer1M.toFixed(2)}</span>
+                    )}
+                  </div>
+                </TableCell>
+                <TableCell className="px-5 py-3 text-right font-mono text-xs text-muted-foreground">
+                  ${per1kUSD.toFixed(2)}
+                </TableCell>
+                <TableCell className="px-5 py-3">
+                  <div className="flex flex-wrap gap-1">
+                    {usingAgents.map((a) => (
+                      <span
+                        key={a.id}
+                        className="inline-flex items-center gap-1 rounded-full border border-border bg-background/30 px-2 py-0.5 text-micro"
+                      >
+                        <span
+                          className="h-1.5 w-1.5 rounded-full"
+                          style={{ background: a.avatarColor }}
+                        />
+                        {a.name}
+                      </span>
+                    ))}
+                    {usingAgents.length === 0 && (
+                      <span className="text-xs text-muted-foreground">
+                        {t("— no agent", "— kein Agent")}
+                      </span>
+                    )}
+                  </div>
+                </TableCell>
+                {mayManage && (
+                  <TableCell className="px-5 py-3 text-right">
+                    {isEditing ? (
+                      <div className="flex items-center justify-end gap-1.5">
+                        <button
+                          type="button"
+                          disabled={createPrice.isPending}
+                          onClick={() => saveEdit(p)}
+                          className="inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          <CheckCircle2 className="h-3 w-3" /> {t("Save", "Speichern")}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={cancelEdit}
+                          className="inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-end gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => startEdit(p)}
+                          className="inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+                        >
+                          <Pencil className="h-3 w-3" /> {t("Edit", "Bearbeiten")}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => removePrice(p)}
+                          className="inline-flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground hover:text-status-error"
+                        >
+                          <Trash2 className="h-3 w-3" /> {t("Remove", "Entfernen")}
+                        </button>
+                      </div>
+                    )}
+                  </TableCell>
+                )}
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
       <div className="border-t border-border px-5 py-3 text-xs text-muted-foreground">
         {t(
           "Estimate assumes ~1,500 input + 500 output tokens per request. Cost totals per agent and department use these prices.",

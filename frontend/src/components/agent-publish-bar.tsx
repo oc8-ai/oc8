@@ -58,7 +58,7 @@ export function DiffTable({ entries }: { entries: AgentVersionFieldDiff[] }) {
   return (
     <Table className="text-sm">
       <TableHeader>
-        <TableRow className="border-b border-border">
+        <TableRow className="border-b border-border hover:bg-transparent">
           <TableHead className="py-2 micro-label">{t("Field", "Feld")}</TableHead>
           <TableHead className="py-2 micro-label">{t("Running now", "Läuft aktuell")}</TableHead>
           <TableHead className="py-2 micro-label">

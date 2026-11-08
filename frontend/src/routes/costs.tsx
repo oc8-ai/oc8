@@ -700,7 +700,7 @@ function AgentsTab({ agentRows, currency }: { agentRows: AgentSpendRow[]; curren
       <div className="overflow-x-auto">
         <Table className="text-sm">
           <TableHeader>
-            <TableRow className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
+            <TableRow className="border-b border-border hover:bg-transparent">
               <TableHead className="px-5 py-3 micro-label">{t("Agent", "Agent")}</TableHead>
               <TableHead className="px-5 py-3 micro-label">{t("Model", "Modell")}</TableHead>
               <TableHead className="px-5 py-3 text-right micro-label">
@@ -746,7 +746,7 @@ function AgentsTab({ agentRows, currency }: { agentRows: AgentSpendRow[]; curren
               </TableRow>
             ))}
             {sorted.length === 0 && (
-              <TableRow>
+              <TableRow className="hover:bg-transparent">
                 <TableCell
                   colSpan={6}
                   className="px-5 py-10 text-center text-sm text-muted-foreground"
@@ -965,7 +965,7 @@ function LimitsTab({ currency }: { currency: Currency }) {
         <div className="overflow-x-auto">
           <Table className="text-sm">
             <TableHeader>
-              <TableRow className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
+              <TableRow className="border-b border-border hover:bg-transparent">
                 <TableHead className="px-5 py-3 micro-label">{t("Scope", "Ebene")}</TableHead>
                 <TableHead className="px-5 py-3 micro-label">{t("Target", "Ziel")}</TableHead>
                 <TableHead className="px-5 py-3 text-right micro-label">
@@ -1114,7 +1114,7 @@ function LimitsTab({ currency }: { currency: Currency }) {
                 );
               })}
               {rows.length === 0 && (
-                <TableRow>
+                <TableRow className="hover:bg-transparent">
                   <TableCell
                     colSpan={8}
                     className="px-5 py-10 text-center text-sm text-muted-foreground"

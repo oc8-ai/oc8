@@ -561,12 +561,23 @@ function RoleDetail({
     setSeeded(roleId);
   }, [role, roleId, seeded]);
 
-  if (isLoading || !role) {
+  if (isLoading) {
     return (
       <SkeletonRows
         label={t("Loading the role…", "Rolle wird geladen…")}
         className="mt-1 rounded-md border border-border px-3 py-3"
       />
+    );
+  }
+
+  if (!role) {
+    return (
+      <p className="mt-1 rounded-md border border-border px-3 py-3 text-sm text-destructive">
+        {t(
+          "This role could not be loaded. Reload the page or pick it again.",
+          "Diese Rolle konnte nicht geladen werden. Lade die Seite neu oder wähle sie erneut.",
+        )}
+      </p>
     );
   }
 
@@ -1285,7 +1296,7 @@ function BuiltInRoles({ data }: { data: Governance }) {
       <div className="mt-4 overflow-x-auto">
         <Table className="min-w-[36rem] border-collapse text-sm">
           <TableHeader>
-            <TableRow className="border-b border-border">
+            <TableRow className="border-b border-border hover:bg-transparent">
               <TableHead className="px-2 py-2 micro-label">
                 {t("Permission", "Berechtigung")}
               </TableHead>
@@ -1298,7 +1309,7 @@ function BuiltInRoles({ data }: { data: Governance }) {
                 >
                   {role.name}
                   {role.name === data.callerRole && (
-                    <span className="ml-1 micro-label">{t("you", "du")}</span>
+                    <span className="ml-1 micro-label text-foreground">{t("you", "du")}</span>
                   )}
                 </TableHead>
               ))}

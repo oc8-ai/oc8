@@ -364,88 +364,84 @@ function AuditPage() {
       </div>
 
       <Panel className="overflow-hidden">
-        <div className="overflow-x-auto">
-          <Table className="text-sm">
-            <TableHeader>
-              <TableRow className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
-                <TableHead className="px-5 py-3 micro-label" />
-                <TableHead className="px-5 py-3 micro-label">{t("Time", "Zeit")}</TableHead>
-                <TableHead className="px-5 py-3 micro-label">
-                  {t("Category", "Kategorie")}
-                </TableHead>
-                <TableHead className="px-5 py-3 micro-label">{t("Action", "Aktion")}</TableHead>
-                <TableHead className="px-5 py-3 micro-label">
-                  {t("Actor type", "Akteurtyp")}
-                </TableHead>
-                <TableHead className="px-5 py-3 micro-label">
-                  {t("Decision", "Entscheidung")}
-                </TableHead>
-                <TableHead className="px-5 py-3 micro-label">
-                  {t("Responsible", "Verantwortlich")}
-                </TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {events.map((ev) => {
-                const isOpen = openId === ev.id;
-                const flagged = broken !== null && ev.seq >= broken;
-                return (
-                  <Fragment key={ev.id}>
-                    <TableRow
-                      onClick={() => setOpenId(isOpen ? null : ev.id)}
-                      className={cn(
-                        "cursor-pointer border-b border-border/60 last:border-none transition hover:bg-primary/5",
-                        flagged && "border-l-2 border-l-status-error",
+        <Table className="text-sm">
+          <TableHeader>
+            <TableRow className="border-b border-border hover:bg-transparent">
+              <TableHead className="px-5 py-3 micro-label" />
+              <TableHead className="px-5 py-3 micro-label">{t("Time", "Zeit")}</TableHead>
+              <TableHead className="px-5 py-3 micro-label">{t("Category", "Kategorie")}</TableHead>
+              <TableHead className="px-5 py-3 micro-label">{t("Action", "Aktion")}</TableHead>
+              <TableHead className="px-5 py-3 micro-label">
+                {t("Actor type", "Akteurtyp")}
+              </TableHead>
+              <TableHead className="px-5 py-3 micro-label">
+                {t("Decision", "Entscheidung")}
+              </TableHead>
+              <TableHead className="px-5 py-3 micro-label">
+                {t("Responsible", "Verantwortlich")}
+              </TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {events.map((ev) => {
+              const isOpen = openId === ev.id;
+              const flagged = broken !== null && ev.seq >= broken;
+              return (
+                <Fragment key={ev.id}>
+                  <TableRow
+                    onClick={() => setOpenId(isOpen ? null : ev.id)}
+                    className={cn(
+                      "cursor-pointer border-b border-border/60 last:border-none transition hover:bg-primary/5",
+                      flagged && "border-l-2 border-l-status-error",
+                    )}
+                  >
+                    <TableCell className="px-5 py-3">
+                      {isOpen ? (
+                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                      ) : (
+                        <ChevronRight className="h-4 w-4 text-muted-foreground" />
                       )}
-                    >
-                      <TableCell className="px-5 py-3">
-                        {isOpen ? (
-                          <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                        ) : (
-                          <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                        )}
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap px-5 py-3 font-mono text-xs text-muted-foreground">
-                        {new Date(ev.ts).toLocaleString()}
-                      </TableCell>
-                      <TableCell className="px-5 py-3">{ev.category}</TableCell>
-                      <TableCell className="px-5 py-3">{ev.action}</TableCell>
-                      <TableCell className="px-5 py-3">{ev.actorType}</TableCell>
-                      <TableCell className="px-5 py-3">{ev.decision ?? "—"}</TableCell>
-                      <TableCell className="px-5 py-3 font-mono text-xs text-muted-foreground">
-                        {ev.responsibleId ?? "—"}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap px-5 py-3 font-mono text-xs text-muted-foreground">
+                      {new Date(ev.ts).toLocaleString()}
+                    </TableCell>
+                    <TableCell className="px-5 py-3">{ev.category}</TableCell>
+                    <TableCell className="px-5 py-3">{ev.action}</TableCell>
+                    <TableCell className="px-5 py-3">{ev.actorType}</TableCell>
+                    <TableCell className="px-5 py-3">{ev.decision ?? "—"}</TableCell>
+                    <TableCell className="px-5 py-3 font-mono text-xs text-muted-foreground">
+                      {ev.responsibleId ?? "—"}
+                    </TableCell>
+                  </TableRow>
+                  {isOpen && (
+                    <TableRow className="border-b border-border/60 bg-background/30">
+                      <TableCell colSpan={7} className="space-y-2 px-14 py-3 text-xs">
+                        <pre className="overflow-x-auto whitespace-pre-wrap break-all text-muted-foreground">
+                          {JSON.stringify(ev.resource, null, 2)}
+                        </pre>
+                        <div className="font-mono text-muted-foreground">
+                          hash: {ev.hash}
+                          <br />
+                          prevHash: {ev.prevHash}
+                        </div>
                       </TableCell>
                     </TableRow>
-                    {isOpen && (
-                      <TableRow className="border-b border-border/60 bg-background/30">
-                        <TableCell colSpan={7} className="space-y-2 px-14 py-3 text-xs">
-                          <pre className="overflow-x-auto whitespace-pre-wrap break-all text-muted-foreground">
-                            {JSON.stringify(ev.resource, null, 2)}
-                          </pre>
-                          <div className="font-mono text-muted-foreground">
-                            hash: {ev.hash}
-                            <br />
-                            prevHash: {ev.prevHash}
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    )}
-                  </Fragment>
-                );
-              })}
-              {events.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={7} className="px-5 py-8 text-center text-muted-foreground">
-                    {t(
-                      "No audit events for this filter.",
-                      "Keine Prüfprotokoll-Einträge für diesen Filter.",
-                    )}
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </div>
+                  )}
+                </Fragment>
+              );
+            })}
+            {events.length === 0 && (
+              <TableRow className="hover:bg-transparent">
+                <TableCell colSpan={7} className="px-5 py-8 text-center text-muted-foreground">
+                  {t(
+                    "No audit events for this filter.",
+                    "Keine Prüfprotokoll-Einträge für diesen Filter.",
+                  )}
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
         {hasNextPage && (
           <div className="flex justify-center border-t border-border p-3">
             <button

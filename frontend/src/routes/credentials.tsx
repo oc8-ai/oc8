@@ -102,7 +102,7 @@ export function CredentialsPage() {
       ) : (
         <Table className="mt-6 text-sm">
           <TableHeader>
-            <TableRow className="border-b border-border">
+            <TableRow className="border-b border-border hover:bg-transparent">
               <TableHead className="py-3 micro-label">{t("Name", "Name")}</TableHead>
               <TableHead className="py-3 micro-label">{t("Type", "Typ")}</TableHead>
               <TableHead className="py-3 micro-label">

@@ -798,7 +798,7 @@ export function GuardrailFunctionRules({
       </div>
       <Table className="text-left text-sm">
         <TableHeader>
-          <TableRow className="border-b border-border/70 bg-background/30 micro-label">
+          <TableRow className="border-b border-border/70 bg-background/30 micro-label hover:bg-transparent">
             <TableHead className="p-2.5 micro-label">{t("Allowed", "Erlaubt")}</TableHead>
             <TableHead className="p-2.5 micro-label">{t("Function", "Funktion")}</TableHead>
             <TableHead className="w-2/5 p-2.5 micro-label">

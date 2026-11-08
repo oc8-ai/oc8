@@ -45,7 +45,7 @@ export function DataTable({ props }: { props: Record<string, unknown> }) {
       <div className="overflow-x-auto">
         <Table className="border-collapse text-xs">
           <TableHeader>
-            <TableRow className="border-b border-border text-left text-muted-foreground">
+            <TableRow className="border-b border-border hover:bg-transparent">
               {columns.map((c) => (
                 <TableHead key={c.key} className="whitespace-nowrap px-2 py-1.5 micro-label">
                   {c.label}

@@ -243,7 +243,7 @@ export function BackupPanel() {
             <div className="mt-1.5 overflow-hidden rounded-md border border-border">
               <Table className="text-xs">
                 <TableHeader>
-                  <TableRow className="border-b border-border bg-background/60 text-left text-muted-foreground">
+                  <TableRow className="border-b border-border bg-background/60 hover:bg-transparent">
                     <TableHead className="px-3 py-1.5 micro-label">
                       {t("Table", "Tabelle")}
                     </TableHead>
@@ -264,7 +264,7 @@ export function BackupPanel() {
                     </TableRow>
                   ))}
                   {Object.keys(preview.data.table_counts).length === 0 && (
-                    <TableRow>
+                    <TableRow className="hover:bg-transparent">
                       <TableCell colSpan={3} className="px-3 py-1.5 text-muted-foreground">
                         {t("Nothing on either side.", "Nichts auf beiden Seiten.")}
                       </TableCell>

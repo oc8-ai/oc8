@@ -1408,7 +1408,7 @@ function CollaborationTab({ deptId }: { deptId: string }) {
         <div className="overflow-hidden rounded-md border border-border">
           <Table className="text-xs">
             <TableHeader className="bg-background/40">
-              <TableRow>
+              <TableRow className="hover:bg-transparent">
                 <TableHead className="px-3 py-2 micro-label">Handoff type</TableHead>
                 <TableHead className="px-3 py-2 micro-label">Payload schema</TableHead>
                 <TableHead className="px-3 py-2 micro-label">Route</TableHead>
@@ -1417,7 +1417,7 @@ function CollaborationTab({ deptId }: { deptId: string }) {
             </TableHeader>
             <TableBody className="divide-y divide-border">
               {intakes.length === 0 && (
-                <TableRow>
+                <TableRow className="hover:bg-transparent">
                   <TableCell colSpan={4} className="px-3 py-4 text-center text-muted-foreground">
                     This department doesn't declare any intakes yet.
                   </TableCell>

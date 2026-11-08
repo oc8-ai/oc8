@@ -141,7 +141,7 @@ export function AgentsPage() {
               <div className="hidden overflow-x-auto md:block">
                 <Table className="text-sm">
                   <TableHeader>
-                    <TableRow className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
+                    <TableRow className="border-b border-border hover:bg-transparent">
                       <TableHead className="px-5 py-3 micro-label">{t("Agent", "Agent")}</TableHead>
                       <TableHead className="px-5 py-3 micro-label">
                         {t("Status", "Status")}

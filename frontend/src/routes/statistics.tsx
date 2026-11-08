@@ -310,7 +310,7 @@ export function StatisticsPage() {
           <Panel className="overflow-x-auto">
             <Table className="text-sm">
               <TableHeader>
-                <TableRow className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
+                <TableRow className="border-b border-border hover:bg-transparent">
                   <TableHead className="px-4 py-2 micro-label">{groupByLabel(groupBy)}</TableHead>
                   <TableHead className="px-4 py-2 text-right micro-label">
                     {t("Runs", "Runs")}

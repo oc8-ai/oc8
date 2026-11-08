@@ -85,7 +85,7 @@ export function TotpEnroll({ token, onDone }: { token: string; onDone: () => voi
         type="button"
         disabled={confirming || code.length !== 6}
         onClick={handleConfirm}
-        className="w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+        className="w-full rounded-md bg-brand-gradient px-4 py-2 text-sm font-medium text-brand-gradient-foreground hover:brightness-110 disabled:opacity-50"
       >
         {confirming ? t("Confirming…", "Bestätige…") : t("Confirm", "Bestätigen")}
       </button>
