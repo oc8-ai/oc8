@@ -1749,6 +1749,9 @@ class LiveRunDTO(CamelModel):
     tool_calls: list[dict[str, Any]] = []
     step_timings: list[dict[str, Any]] = []
     started_by: str | None = None
+    #: A colleague's run under "All runs", cut to step labels (Ruling 15) --
+    #: the client shows it as labels only and never watches it live.
+    redacted: bool = False
 
 
 class LiveItemDTO(CamelModel):

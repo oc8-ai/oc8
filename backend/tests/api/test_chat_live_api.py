@@ -285,6 +285,7 @@ async def test_a_colleagues_runs_carry_only_step_labels_and_the_result(
             {"tool": "send_mail", "step": 1, "state": "done", "durationMs": 12}
         ]
         assert run["stepTimings"] == [{"step": 1, "stepWallMs": 40}]
+        assert run["redacted"] is True
 
 
 async def test_an_autonomous_run_keeps_its_full_steps(app_session: AppSessionFactory) -> None:
@@ -309,3 +310,18 @@ async def test_an_autonomous_run_keeps_its_full_steps(app_session: AppSessionFac
         ).json()
     [item] = body["items"]
     assert item["run"]["toolCalls"][0]["arguments"] == {"q": "x"}
+
+
+async def test_my_own_runs_are_not_redacted(app_session: AppSessionFactory) -> None:
+    """A run of mine, or an autonomous one, is never `redacted`."""
+    tenant = uuid.uuid4()
+    agent_id = await _agent(app_session, tenant)
+    async with app_session(tenant) as db:
+        db.add(m.AgentRun(tenant_id=tenant, agent_id=agent_id, source="cron", state="done"))
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        body = (
+            await c.get(f"/api/v1/agents/{agent_id}/live", headers=_h(tenant, "aud", "auditor"))
+        ).json()
+    [item] = body["items"]
+    assert item["run"]["redacted"] is False

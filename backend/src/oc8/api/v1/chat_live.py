@@ -94,6 +94,7 @@ def _run_dto(run: m.AgentRun, trigger: dict[str, str | None], *, colleague: bool
         tool_calls=calls,
         step_timings=timings,
         started_by=trigger.get("started_by"),
+        redacted=colleague,
     )
 
 

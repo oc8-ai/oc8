@@ -65,6 +65,7 @@ function liveRun(over: Partial<LiveRunDTO> = {}): LiveRunDTO {
     toolCalls: [{ tool: "list_tickets", step: 1, state: "done", durationMs: 120 }],
     stepTimings: [],
     startedBy: null,
+    redacted: false,
     ...over,
   };
 }
@@ -497,6 +498,24 @@ describe("timeline helpers", () => {
       liveTimelineRefetchInterval(data([liveRun({ id: "mine", state: "running" })]), isColleague),
     ).toBe(false);
     expect(liveTimelineRefetchInterval(undefined, isColleague)).toBe(false);
+  });
+
+  it("counts a run as a colleague's when the server redacted it", () => {
+    const data = (run: LiveRunDTO) => ({
+      pages: [
+        {
+          sessionId: "s",
+          mayViewAllRuns: true,
+          nextBefore: null,
+          items: [{ kind: "run" as const, at: run.createdAt, message: null, run }],
+        },
+      ],
+      pageParams: [null],
+    });
+    expect(liveTimelineRefetchInterval(data(liveRun({ state: "running", redacted: true })))).toBe(
+      10_000,
+    );
+    expect(liveTimelineRefetchInterval(data(liveRun({ state: "running" })))).toBe(false);
   });
 
   it("takes from the live cache only what the patchers fill", () => {

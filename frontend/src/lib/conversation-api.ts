@@ -150,7 +150,8 @@ export function useContextSearch(query: string | null): ContextItem[] {
 }
 
 /** A run on the Live timeline (backend LiveRunDTO). For a colleague's run
- *  under "All runs", `toolCalls`/`stepTimings` carry step labels only. */
+ *  under "All runs" (`redacted`), `toolCalls`/`stepTimings` carry step
+ *  labels only. */
 export interface LiveRunDTO {
   id: string;
   state: string;
@@ -164,6 +165,8 @@ export interface LiveRunDTO {
   toolCalls: Array<Record<string, unknown>>;
   stepTimings: Array<Record<string, unknown>>;
   startedBy: string | null;
+  /** A colleague's run: shown as labels only, never watched live. */
+  redacted: boolean;
 }
 
 export interface LiveItemDTO {
@@ -223,7 +226,7 @@ export const COLLEAGUE_POLL_MS = 10_000;
  *  refetched every 10 s instead -- and not at all once none is. */
 export function liveTimelineRefetchInterval(
   data: InfiniteData<LiveTimelineDTO> | undefined,
-  isColleague: (run: LiveRunDTO) => boolean,
+  isColleague: (run: LiveRunDTO) => boolean = (run) => run.redacted,
 ): number | false {
   const running = data?.pages.some((page) =>
     page.items.some((i) => i.run && !LIVE_TERMINAL.has(i.run.state) && isColleague(i.run)),
@@ -232,14 +235,9 @@ export function liveTimelineRefetchInterval(
 }
 
 /** The Live tab's timeline. `data` is every loaded page merged; `fetchOlder`
- *  loads the page before the oldest one (scrolling up). `isColleague` picks
- *  the runs shown as labels only (Task 24 decides); left out, every run under
- *  "All runs" counts, so a running one is never left stale. */
-export function useLiveTimeline(
-  agentId: string,
-  allRuns: boolean,
-  isColleague: (run: LiveRunDTO) => boolean = () => allRuns,
-) {
+ *  loads the page before the oldest one (scrolling up). A colleague's run
+ *  (`redacted`) is refetched every 10 s while it runs. */
+export function useLiveTimeline(agentId: string, allRuns: boolean) {
   const query = useInfiniteQuery({
     queryKey: liveTimelineKey(agentId, allRuns),
     queryFn: ({ pageParam }) => {
@@ -253,7 +251,7 @@ export function useLiveTimeline(
     getNextPageParam: (page) => page.nextBefore,
     select: flattenLivePages,
     enabled: !!agentId,
-    refetchInterval: (query) => liveTimelineRefetchInterval(query.state.data, isColleague),
+    refetchInterval: (query) => liveTimelineRefetchInterval(query.state.data),
   });
   return {
     ...query,
