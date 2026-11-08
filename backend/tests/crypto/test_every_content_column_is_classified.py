@@ -88,6 +88,7 @@ EXEMPT: dict[str, str] = {
     "chat_message.rendered_components": "durable copy of a run's render_component calls (charts/tables/record cards) -- structural/config-shaped JSON, not customer free text, same rationale as agent_run.cursor",
     "chat_message.mode": "the slash-command mode a turn was sent in (ask/plan/do/summarise, oc8.chat.modes) -- structural enum-like column, application-level vocabulary with no CHECK on purpose, not content, design spec §6c",
     "chat_message.context_refs": "the operator's # references for a turn ({kind, id, label} per knowledge base) -- structural/identifier-shaped JSON, not customer free text, same rationale as chat_message.rendered_components",
+    "chat_message.parts": "typed message parts (sources, answers, document refs); no free content beyond what content already holds",
     "capa_installation.status": "structural enum-like column (status/state/kind/classification/...), CHECK-constrained, not content, design spec §6c",
     "capa_installation.granted_permissions": "authorization/policy input read directly by the permission decision point, design spec §6c",
     "capa_installation.disabled_reason": "not individually named in spec section 6; structural/config/identifier column, not customer free text -- see design spec §6",

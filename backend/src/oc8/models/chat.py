@@ -31,6 +31,12 @@ class ChatSession(Base, PkMixin, TenantMixin, TimestampMixin):
     # message) -- so a chat session is one item on the department board, not
     # a new one per message.
     task_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    #: The model this chat runs on instead of the agent's pinned one. NULL is
+    #: "Auto" -- the agent's own model. Validated on write AND re-checked by
+    #: `oc8.chat.model_choice.apply_model_override` every time a run resolves
+    #: its version, so a model later removed from the set of chat-enabled
+    #: models stops being used without anybody editing the chat.
+    model_override_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
 
 
 class ChatMessage(Base, PkMixin, TenantMixin, TimestampMixin):
@@ -54,6 +60,15 @@ class ChatMessage(Base, PkMixin, TenantMixin, TimestampMixin):
     #: labelled at send time, so renaming or deleting a knowledge base later
     #: leaves an old turn readable instead of showing a bare uuid.
     context_refs: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    #: The member who wrote a human turn. NULL for assistant turns and for
+    #: rows written before 0107. Prepares for Rooms (spec §7).
+    author_member_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    #: For an assistant turn: the user turn it answers. Two answers to the same
+    #: turn (Regenerate) share it.
+    reply_to_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
+    #: Typed message parts (sources, answers, document refs). NULL for rows
+    #: written before 0107, which render from `content`.
+    parts: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
 
     __table_args__ = (
         CheckConstraint("role IN ('user','assistant','followup')", name="ck_chat_message_role"),

@@ -18,6 +18,7 @@ from sqlalchemy import (
     Uuid,
     func,
     text,
+    true,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -258,6 +259,10 @@ class ModelConfig(Base, PkMixin, TenantMixin, TimestampMixin):
     #: enforcing it here would need a partial unique index scoped to
     #: `tenant_id` that most of this schema's other flags don't use either.
     used_by_copilot: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: Whether operators may pick this model for a chat (the chat model picker).
+    chat_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=true()
+    )
 
     __table_args__ = (CheckConstraint("locality IN ('cloud','local')", name="ck_model_locality"),)
 
