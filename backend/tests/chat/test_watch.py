@@ -146,3 +146,76 @@ async def test_the_socket_recheck_reads_access_afresh(app_session: AppSessionFac
         row = await _member(db, alice.member_id)
         row.deleted_at = dt.datetime.now(tz=dt.UTC)
     assert await recheck(run_id) == "gone"
+
+
+async def _dept_agent(db: AsyncSession, tenant: uuid.UUID) -> m.Agent:
+    dept = m.Department(tenant_id=tenant, name="Ops", frame={})
+    db.add(dept)
+    await db.flush()
+    agent = m.Agent(tenant_id=tenant, department_id=dept.id, name="A")
+    db.add(agent)
+    await db.flush()
+    return agent
+
+
+async def _seated(
+    db: AsyncSession, tenant: uuid.UUID, subject: str, agent: m.Agent, *, manage: bool | None
+) -> m.OrgMember:
+    """`manage=None`: no seat at all."""
+    member = m.OrgMember(tenant_id=tenant, subject=subject, subject_uuid=uuid.uuid4())
+    db.add(member)
+    await db.flush()
+    if manage is not None:
+        db.add(
+            m.OrgMemberDepartment(
+                tenant_id=tenant,
+                member_id=member.id,
+                department_id=agent.department_id,
+                seat_role="dept_viewer",
+                agent_manage=manage,
+            )
+        )
+        await db.flush()
+    return member
+
+
+async def test_a_member_who_sees_the_agent_may_watch_its_scheduled_runs(
+    app_session: AppSessionFactory,
+) -> None:
+    """The Live timeline shows autonomous runs to everyone who reaches the
+    agent, so their live events follow."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent = await _dept_agent(db, tenant)
+        stranger = await _seated(db, tenant, "s", agent, manage=None)
+        viewer = await _seated(db, tenant, "v", agent, manage=False)
+        run = m.AgentRun(tenant_id=tenant, agent_id=agent.id, source="cron", context={})
+        db.add(run)
+        await db.flush()
+        # No role, no seat: sees no department, so no scheduled run either.
+        assert not await may_watch_run(db, member=stranger, run_id=run.id)
+        assert await may_watch_run(db, member=viewer, run_id=run.id)
+
+
+async def test_a_colleagues_chat_run_is_watched_by_managers_only(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent = await _dept_agent(db, tenant)
+        owner = await _seated(db, tenant, "owner", agent, manage=False)
+        viewer = await _seated(db, tenant, "v", agent, manage=False)
+        manager = await _seated(db, tenant, "boss", agent, manage=True)
+        session = m.ChatSession(tenant_id=tenant, agent_id=agent.id, member_id=owner.id)
+        db.add(session)
+        await db.flush()
+        ctx = {"chat_session_id": str(session.id), "originating_operator": "owner"}
+        chat_run = m.AgentRun(tenant_id=tenant, agent_id=agent.id, source="chat", context=ctx)
+        # Delegated from the owner's chat: still the owner's, not autonomous.
+        sub_run = m.AgentRun(tenant_id=tenant, agent_id=agent.id, source="delegation", context=ctx)
+        db.add_all([chat_run, sub_run])
+        await db.flush()
+        for run in (chat_run, sub_run):
+            assert await may_watch_run(db, member=owner, run_id=run.id)
+            assert not await may_watch_run(db, member=viewer, run_id=run.id)
+            assert await may_watch_run(db, member=manager, run_id=run.id)

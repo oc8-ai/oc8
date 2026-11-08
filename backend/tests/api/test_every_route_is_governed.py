@@ -300,6 +300,7 @@ _CHAT_ROUTES: dict[tuple[str, str], str] = {
     ("GET", "/api/v1/runs/{}/steering"): "agent:view",
     ("POST", "/api/v1/runs/{}/inputs"): "agent:view",
     ("POST", "/api/v1/runs/{}/stop"): "agent:view",
+    ("GET", "/api/v1/agents/{}/live"): "agent:view",
 }
 
 

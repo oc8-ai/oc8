@@ -17,6 +17,7 @@ from oc8.api.v1 import (
     catalog,
     channels,
     chat,
+    chat_live,
     clarifications,
     components,
     contracts,
@@ -89,6 +90,7 @@ api_router.include_router(capas.router, tags=["capas"])
 api_router.include_router(roles.router, tags=["roles"])
 api_router.include_router(run.router, tags=["run"])
 api_router.include_router(run_inputs.router, tags=["run"])
+api_router.include_router(chat_live.router, tags=["chat"])
 api_router.include_router(reports.router, tags=["reports"])
 api_router.include_router(runtimes.router, tags=["runtimes"])
 # internal_agent is deliberately NOT included here: the operator API refuses

@@ -1721,3 +1721,44 @@ class RunSteeringDTO(CamelModel):
     may_write: bool
     accepts_inputs: bool
     inputs: list[RunInputDTO] = []
+
+
+class LiveTriggerDTO(CamelModel):
+    """The run's trigger line: `kind` is its source, `label` the name beside
+    it ("Delegated by <label>", "From <label>")."""
+
+    kind: str
+    label: str | None = None
+
+
+class LiveRunDTO(CamelModel):
+    """A run on the Live timeline (spec §3.1). Deliberately no `task` and no
+    `context`: for a colleague's chat run that would be their message text."""
+
+    id: str
+    state: str
+    source: str
+    created_at: str
+    trigger: LiveTriggerDTO
+    output: str | None = None
+    steps: int = 0
+    tool_calls: list[dict[str, Any]] = []
+    step_timings: list[dict[str, Any]] = []
+    started_by: str | None = None
+
+
+class LiveItemDTO(CamelModel):
+    kind: str
+    at: str
+    message: ChatMessageDTO | None = None
+    run: LiveRunDTO | None = None
+
+
+class LiveTimelineDTO(CamelModel):
+    """`next_before` is the cursor for the next older page, `None` at the
+    start of the timeline."""
+
+    session_id: str
+    items: list[LiveItemDTO]
+    next_before: str | None = None
+    may_view_all_runs: bool
