@@ -462,7 +462,8 @@ async def test_test_credential_resolves_a_plugin_owned_validate_entry_point(
     # teardown re-pops "s3_api" afterwards regardless, so this is harmless.
     registry.CORE_CREDENTIAL_TYPES.pop("s3_api", None)
     # The example endpoint has no DNS; the url guard needs it to resolve.
-    monkeypatch.setattr("oc8.net.outbound.resolve_ips", lambda host: ["93.184.216.34"])
+    monkeypatch.setattr("oc8.net.outbound.resolve_ips", lambda host: ["10.9.9.9"])
+    monkeypatch.setattr(get_settings(), "outbound_allowed_private", "minio.example.test")
 
     tenant = uuid.uuid4()
     found = find_plugin("s3_source")

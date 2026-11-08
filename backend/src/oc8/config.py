@@ -38,6 +38,15 @@ class Settings(BaseSettings):
 
     redis_url: str = "redis://localhost:6381/0"
 
+    # Outbound requests to an address a person typed in (live credential
+    # checks, website sources) refuse private, loopback and link-local targets.
+    # A self-hosted install that needs one -- an ERP on the office network, an
+    # object store on the container host -- lists it here: comma-separated
+    # CIDRs and/or exact hostnames (e.g. "10.20.0.0/16,host.docker.internal").
+    # Default empty = nothing private is reachable. The cloud metadata
+    # addresses stay refused whatever is listed.
+    outbound_allowed_private: str = ""
+
     # Plugin discovery (§13): directories scanned for plugin folders, each
     # containing a plugin.toml. Comma-separated for multiple roots, like Odoo's
     # addons_path. Operator configuration -- never taken from a request.

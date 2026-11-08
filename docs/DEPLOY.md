@@ -282,6 +282,17 @@ it is replaced by an `evidence.reduced` entry naming its hash, so the proof of
 what happened survives while the ability to re-read the reasoning expires. Set
 it deliberately, not to save space you have.
 
+## Reaching systems on your own network
+
+Live credential checks ("Check connection") and website knowledge sources
+refuse private, loopback and link-local addresses by default, so a typed-in URL
+cannot be used to probe your internal network. If a connected system lives
+there (an ERP on a LAN host, an object store on the container host), allow it
+with `OC8_OUTBOUND_ALLOWED_PRIVATE` in `.env` (Helm: `oc8.outboundAllowedPrivate`):
+comma-separated CIDRs and/or exact hostnames, for example
+`10.20.0.0/16,host.docker.internal`. Cloud metadata addresses
+(`169.254.169.254`, `fd00:ec2::254`) stay refused whatever is listed.
+
 ## Operating notes
 
 - **Logs:** `docker compose logs -f backend` (or `worker`, `scheduler`, …).

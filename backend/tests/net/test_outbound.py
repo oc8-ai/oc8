@@ -40,3 +40,43 @@ async def test_pinned_transport_connects_to_the_ip_but_keeps_host_and_sni() -> N
     assert req.url.host == "93.184.216.34"
     assert req.headers["Host"] == "odoo.acme.test:8443"
     assert req.extensions["sni_hostname"] == "odoo.acme.test"
+
+
+def _allow(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    from oc8.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "outbound_allowed_private", value)
+
+
+def test_private_targets_are_refused_by_default() -> None:
+    with pytest.raises(OutboundBlocked):
+        guard_outbound_url("http://odoo.lan:8069", resolver=lambda h: ["10.1.2.3"])
+
+
+def test_an_allowed_cidr_lets_a_private_address_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    _allow(monkeypatch, "10.1.0.0/16, 192.168.0.0/24")
+    assert guard_outbound_url("http://odoo.lan", resolver=lambda h: ["10.1.2.3"]) == "10.1.2.3"
+    with pytest.raises(OutboundBlocked):
+        guard_outbound_url("http://odoo.lan", resolver=lambda h: ["10.2.0.1"])
+
+
+def test_an_allowed_hostname_lets_it_through_but_only_that_exact_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _allow(monkeypatch, "host.docker.internal,minio")
+    assert guard_outbound_url("http://host.docker.internal:1000", resolver=lambda h: ["172.17.0.1"])
+    assert guard_outbound_url("http://minio:9000", resolver=lambda h: ["172.18.0.5"])
+    with pytest.raises(OutboundBlocked):
+        guard_outbound_url("http://evil.minio", resolver=lambda h: ["172.18.0.5"])
+    with pytest.raises(OutboundBlocked):
+        guard_outbound_url("http://other.lan", resolver=lambda h: ["172.18.0.5"])
+
+
+def test_the_metadata_address_is_refused_even_when_its_range_is_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _allow(monkeypatch, "169.254.0.0/16,fd00:ec2::/32,metadata.lan")
+    for ip in ("169.254.169.254", "fd00:ec2::254"):
+        with pytest.raises(OutboundBlocked):
+            guard_outbound_url("http://metadata.lan", resolver=lambda h, ip=ip: [ip])
+    assert guard_outbound_url("http://x.lan", resolver=lambda h: ["169.254.1.1"]) == "169.254.1.1"

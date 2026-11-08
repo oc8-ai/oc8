@@ -13,11 +13,60 @@ from __future__ import annotations
 import ipaddress
 import socket
 from collections.abc import Callable
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 
+from oc8.config import get_settings
+
 _ALLOWED_SCHEMES = {"http", "https"}
+
+
+#: Never reachable, whatever the operator allows: cloud metadata services.
+_ALWAYS_BLOCKED = (
+    ipaddress.ip_address("169.254.169.254"),
+    ipaddress.ip_address("fd00:ec2::254"),
+)
+
+
+def _always_blocked(ip: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return True
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    return addr in _ALWAYS_BLOCKED
+
+
+def _allowed_private() -> tuple[list[ipaddress.IPv4Network | ipaddress.IPv6Network], set[str]]:
+    """The operator's allowlist (OC8_OUTBOUND_ALLOWED_PRIVATE): networks and
+    exact hostnames. An unparsable entry is treated as a hostname."""
+    nets: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    hosts: set[str] = set()
+    for raw in get_settings().outbound_allowed_private.split(","):
+        entry = raw.strip().lower()
+        if not entry:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            hosts.add(entry)
+    return nets, hosts
+
+
+def _ip_allowed(ip: str, host: str, nets: list[Any], hosts: set[str]) -> bool:
+    if _always_blocked(ip):
+        return False
+    if not is_blocked_ip(ip):
+        return True
+    if host.lower() in hosts:
+        return True
+    addr = ipaddress.ip_address(ip)
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    return any(addr in net for net in nets if net.version == addr.version)
 
 
 class OutboundBlocked(ValueError):
@@ -65,8 +114,9 @@ def guard_outbound_url(url: str, resolver: Callable[[str], list[str]] | None = N
         raise OutboundBlocked(f"cannot resolve {host!r}: {exc}") from exc
     if not ips:
         raise OutboundBlocked(f"cannot resolve {host!r}")
+    nets, hosts = _allowed_private()
     for ip in ips:
-        if is_blocked_ip(ip):
+        if not _ip_allowed(ip, host, nets, hosts):
             raise OutboundBlocked(f"blocked host {host!r} -> {ip}")
     return ips[0]
 
