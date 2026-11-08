@@ -123,7 +123,7 @@ export function TaskBoardWidget(_props: {
                     <span
                       className={cn(
                         "micro-label",
-                        isWaiting ? "text-status-warning" : "text-muted-foreground",
+                        isWaiting ? "text-status-warning-text" : "text-muted-foreground",
                       )}
                     >
                       {col.label}

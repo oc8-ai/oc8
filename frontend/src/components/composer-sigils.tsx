@@ -121,7 +121,9 @@ export function SigilPopover({
           >
             <span className="text-sm">{item.label}</span>
             {item.hint && <span className="text-xs text-muted-foreground">{item.hint}</span>}
-            {item.blocked && <span className="text-xs text-status-warning">{item.blocked}</span>}
+            {item.blocked && (
+              <span className="text-xs text-status-warning-text">{item.blocked}</span>
+            )}
           </button>
         ))
       )}

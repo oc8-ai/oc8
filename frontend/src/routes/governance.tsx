@@ -162,7 +162,7 @@ function YourAccess({ data }: { data: Governance }) {
   return (
     <Panel className="p-6">
       {data.authorityUnavailable && (
-        <div className="mb-4 flex items-start gap-2 rounded-md border border-status-warning/40 bg-status-warning/10 px-3 py-2 text-xs text-status-warning">
+        <div className="mb-4 flex items-start gap-2 rounded-md border border-status-warning/40 bg-status-warning/10 px-3 py-2 text-xs text-status-warning-text">
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
           <span>
             {t(
@@ -174,9 +174,9 @@ function YourAccess({ data }: { data: Governance }) {
       )}
       <div className="flex items-start gap-3">
         {unknown || unusableAssignment ? (
-          <AlertTriangle className="mt-0.5 size-5 shrink-0 text-status-warning" />
+          <AlertTriangle className="mt-0.5 size-5 shrink-0 text-status-warning-text" />
         ) : (
-          <ShieldCheck className="mt-0.5 size-5 shrink-0 text-status-running" />
+          <ShieldCheck className="mt-0.5 size-5 shrink-0 text-status-running-text" />
         )}
         <div className="min-w-0 flex-1">
           <h2 className="flex flex-wrap items-center gap-2 font-serif text-xl">
@@ -192,7 +192,7 @@ function YourAccess({ data }: { data: Governance }) {
           </h2>
 
           {unusableAssignment ? (
-            <p className="mt-1 text-sm text-status-warning">
+            <p className="mt-1 text-sm text-status-warning-text">
               {t(
                 `A role was assigned to you, but it can no longer grant anything — it has been deleted, or it is a role for AGENTS, which no person can hold. That, and not the role “${data.callerRole}” in your token, is why you hold nothing company-wide. Ask an administrator to assign you a different role or to clear the assignment.`,
                 `Dir wurde eine Rolle zugewiesen, die nichts mehr gewähren kann — sie wurde gelöscht, oder sie ist eine Rolle für AGENTEN, die kein Mensch halten kann. Daran liegt es, dass du unternehmensweit nichts hältst, und nicht an der Rolle „${data.callerRole}“ in deinem Token. Bitte eine Administratorin, dir eine andere Rolle zuzuweisen oder die Zuweisung zu löschen.`,
@@ -214,7 +214,7 @@ function YourAccess({ data }: { data: Governance }) {
             // The case this screen exists for: an unmapped role holds nothing,
             // so every other screen is empty — which reads as a broken product
             // rather than as a mapping nobody finished.
-            <p className="mt-1 text-sm text-status-warning">
+            <p className="mt-1 text-sm text-status-warning-text">
               {t(
                 `This deployment does not define a role called “${data.callerRole}”, so it grants nothing at all. That is why other screens appear empty. Map your identity provider’s group to one of the roles below.`,
                 `Diese Installation kennt keine Rolle „${data.callerRole}“, deshalb gewährt sie gar nichts. Genau darum wirken die übrigen Ansichten leer. Ordne die Gruppe deines Identitätsanbieters einer der unten aufgeführten Rollen zu.`,
@@ -1005,7 +1005,7 @@ function PermissionPicker({
                           </span>
                         )}
                         {!entry.delegatable && entry.reason && (
-                          <span className="mt-0.5 block text-xs text-status-warning">
+                          <span className="mt-0.5 block text-xs text-status-warning-text">
                             {t("Not available: ", "Nicht vergebbar: ")}
                             {entry.reason}
                           </span>
@@ -1158,7 +1158,7 @@ function AssignPicker({
         </p>
       )}
       {truncated && (
-        <p className="mt-1 text-xs text-status-warning">
+        <p className="mt-1 text-xs text-status-warning-text">
           {t(
             `This tenant has more than ${ASSIGNEE_LIMIT} people, so this list is incomplete. Use oc8 member import --csv for the rest.`,
             `Dieser Mandant hat mehr als ${ASSIGNEE_LIMIT} Personen — diese Liste ist unvollständig. Für den Rest: oc8 member import --csv.`,
@@ -1398,7 +1398,7 @@ function ResourceRows({
           {roles.map((role) => (
             <TableCell key={role} className="px-2 py-1.5 text-center">
               {held.get(role)?.has(permission) ? (
-                <Check className="mx-auto size-3.5 text-status-running" aria-label="granted" />
+                <Check className="mx-auto size-3.5 text-status-running-text" aria-label="granted" />
               ) : (
                 <Minus className="mx-auto size-3.5 text-muted-foreground/40" aria-label="—" />
               )}

@@ -606,7 +606,7 @@ function PreviewStep({ preview }: { preview: ReturnType<typeof usePreviewCapaExp
         <div key={item.folder_name} className="rounded-md border border-border p-3">
           <p className="text-sm font-medium">{item.folder_name}/</p>
           {item.warnings.map((w) => (
-            <p key={w} className="text-xs text-status-warning">
+            <p key={w} className="text-xs text-status-warning-text">
               ⚠ {w}
             </p>
           ))}

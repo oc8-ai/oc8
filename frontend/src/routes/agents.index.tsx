@@ -171,7 +171,7 @@ export function AgentsPage() {
                             />
                             {isTeamLead(a.id) && (
                               <Crown
-                                className="absolute -top-1.5 -right-1.5 h-3.5 w-3.5 text-status-warning"
+                                className="absolute -top-1.5 -right-1.5 h-3.5 w-3.5 text-status-warning-text"
                                 fill="currentColor"
                               />
                             )}
@@ -180,7 +180,7 @@ export function AgentsPage() {
                             <div className="flex items-center gap-2">
                               <span className="font-medium group-hover:text-primary">{a.name}</span>
                               {archived && (
-                                <span className="rounded-full border border-status-warning/40 bg-status-warning/10 px-1.5 py-0.5 micro-label text-status-warning">
+                                <span className="rounded-full border border-status-warning/40 bg-status-warning/10 px-1.5 py-0.5 micro-label text-status-warning-text">
                                   {t("Archived", "Archiviert")}
                                 </span>
                               )}
@@ -272,7 +272,7 @@ export function AgentsPage() {
                         <AgentAvatar seed={a.id} size={36} background="squircle" title={a.name} />
                         {isTeamLead(a.id) && (
                           <Crown
-                            className="absolute -top-1.5 -right-1.5 h-3.5 w-3.5 text-status-warning"
+                            className="absolute -top-1.5 -right-1.5 h-3.5 w-3.5 text-status-warning-text"
                             fill="currentColor"
                           />
                         )}
@@ -281,7 +281,7 @@ export function AgentsPage() {
                         <div className="flex items-center gap-2">
                           <span className="truncate font-medium">{a.name}</span>
                           {archived && (
-                            <span className="shrink-0 rounded-full border border-status-warning/40 bg-status-warning/10 px-1.5 py-0.5 micro-label text-status-warning">
+                            <span className="shrink-0 rounded-full border border-status-warning/40 bg-status-warning/10 px-1.5 py-0.5 micro-label text-status-warning-text">
                               {t("Archived", "Archiviert")}
                             </span>
                           )}

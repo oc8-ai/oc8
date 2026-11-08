@@ -312,7 +312,7 @@ function FreeTextApprovalActions({
             className={cn(
               "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-micro normal-case",
               unknown(name)
-                ? "border-status-warning/60 bg-status-warning/10 text-status-warning"
+                ? "border-status-warning/60 bg-status-warning/10 text-status-warning-text"
                 : "border-border bg-background/40 text-foreground",
             )}
           >

@@ -548,7 +548,7 @@ function FlowCanvas({
                 <div className="flex items-center gap-2">
                   <span className="font-mono text-xs">{st.handoffType}</span>
                   {st.gate === "approval" ? (
-                    <ShieldCheck className="h-3.5 w-3.5 text-status-warning" />
+                    <ShieldCheck className="h-3.5 w-3.5 text-status-warning-text" />
                   ) : (
                     <Bolt className="h-3.5 w-3.5 text-primary" />
                   )}

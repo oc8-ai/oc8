@@ -215,7 +215,7 @@ function HandoffRow({ h, onOpen }: { h: Handoff; onOpen: () => void }) {
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="truncate font-mono text-sm">{h.type}</span>
-          {h.gate === "approval" && <ShieldCheck className="h-3 w-3 text-status-warning" />}
+          {h.gate === "approval" && <ShieldCheck className="h-3 w-3 text-status-warning-text" />}
         </div>
         <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
           <span>{src?.name ?? h.sourceDept}</span>
@@ -379,7 +379,7 @@ function HandoffDrawer({
 
         {h.status === "pending" && (
           <section className="rounded-md border border-status-warning/40 bg-status-warning/5 p-3">
-            <div className="mb-2 flex items-center gap-2 text-xs text-status-warning">
+            <div className="mb-2 flex items-center gap-2 text-xs text-status-warning-text">
               <ShieldCheck className="h-4 w-4" /> Reject reason (optional)
             </div>
             <textarea

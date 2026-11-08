@@ -81,7 +81,7 @@ export function InlineRename({
           title={t("Save", "Speichern")}
           onClick={() => void commit()}
           disabled={saving}
-          className="shrink-0 rounded p-1 text-muted-foreground transition hover:text-status-running disabled:cursor-not-allowed disabled:opacity-50"
+          className="shrink-0 rounded p-1 text-muted-foreground transition hover:text-status-running-text disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Check className="h-4 w-4" />
         </button>

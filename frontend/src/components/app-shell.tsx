@@ -917,11 +917,11 @@ export function AppShell() {
           )}
         >
           {collapsed ? (
-            <span className="status-dot text-status-running bg-status-running" />
+            <span className="status-dot text-status-running-text bg-status-running" />
           ) : (
             <div className="flex items-center justify-between">
               <span className="inline-flex items-center gap-2">
-                <span className="status-dot text-status-running bg-status-running" />
+                <span className="status-dot text-status-running-text bg-status-running" />
                 {t("All systems operational", "Alle Systeme betriebsbereit")}
               </span>
               <span className="text-xs">v0.9</span>

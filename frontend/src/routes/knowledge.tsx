@@ -338,7 +338,7 @@ export function SourcesTab({
                       lastSyncError={s.lastSyncError}
                     />
                     {archived && (
-                      <span className="rounded-full border border-status-warning/40 bg-status-warning/10 px-1.5 py-0.5 micro-label text-status-warning">
+                      <span className="rounded-full border border-status-warning/40 bg-status-warning/10 px-1.5 py-0.5 micro-label text-status-warning-text">
                         {t("Deleted", "Gelöscht")}
                       </span>
                     )}
@@ -714,7 +714,7 @@ export function BasesTab({
                     <div className="flex items-center gap-2">
                       <h3 className="truncate font-serif text-base leading-tight">{kb.name}</h3>
                       {archived && (
-                        <span className="rounded-full border border-status-warning/40 bg-status-warning/10 px-1.5 py-0.5 micro-label text-status-warning">
+                        <span className="rounded-full border border-status-warning/40 bg-status-warning/10 px-1.5 py-0.5 micro-label text-status-warning-text">
                           {t("Deleted", "Gelöscht")}
                         </span>
                       )}
@@ -1527,7 +1527,7 @@ export function SourceWizard({
         <>
           {!targetKbId && (
             <div className="space-y-2 rounded-md border border-status-warning/40 bg-status-warning/10 p-3">
-              <p className="text-xs text-status-warning">
+              <p className="text-xs text-status-warning-text">
                 A source needs a knowledge base to sync into — you don't have one yet. Name one now:
               </p>
               <div className="flex gap-2">
@@ -1695,7 +1695,7 @@ function DynamicConnectorFields({
             ))}
           </select>
           {!connections.length && (
-            <span className="mt-1 block text-xs text-status-warning">
+            <span className="mt-1 block text-xs text-status-warning-text">
               No active {oauthProvider} account is connected yet. Configure OAuth first.
             </span>
           )}

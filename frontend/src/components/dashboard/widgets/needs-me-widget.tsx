@@ -140,9 +140,9 @@ export function NeedsMeWidget({
             {row.kind === "clarification" ? (
               <HelpCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
             ) : row.kind === "parked" ? (
-              <PauseCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-warning" />
+              <PauseCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-warning-text" />
             ) : (
-              <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-warning" />
+              <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-warning-text" />
             )}
             <span className="min-w-0 flex-1 truncate font-medium">{row.title}</span>
             {openId === `${row.kind}-${row.id}` ? (

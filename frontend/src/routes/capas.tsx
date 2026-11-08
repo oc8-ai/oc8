@@ -786,13 +786,13 @@ function CapaCard({
                 <BadgeCheck className="h-3.5 w-3.5 shrink-0 text-primary" />
               )}
               {showRestore && (
-                <span className="rounded-full border border-status-warning/40 bg-status-warning/10 px-1.5 py-0.5 micro-label text-status-warning">
+                <span className="rounded-full border border-status-warning/40 bg-status-warning/10 px-1.5 py-0.5 micro-label text-status-warning-text">
                   {t("Disabled", "Deaktiviert")}
                 </span>
               )}
               {!showRestore && plugin.disabledReason === UPDATE_PENDING_CONSENT && (
                 <span
-                  className="rounded-full border border-status-warning/40 bg-status-warning/10 px-1.5 py-0.5 micro-label text-status-warning"
+                  className="rounded-full border border-status-warning/40 bg-status-warning/10 px-1.5 py-0.5 micro-label text-status-warning-text"
                   title={t(
                     "The update changed the setup form -- click Enable to review and confirm it.",
                     "Das Update hat das Setup-Formular geändert -- auf Aktivieren klicken, um es zu bestätigen.",
@@ -878,7 +878,7 @@ function CapaCard({
             </button>
           ) : plugin.installed && plugin.installationStatus === "enabled" ? (
             <div className="flex shrink-0 items-center gap-1.5">
-              <span className="inline-flex items-center gap-1 rounded-md bg-status-running/15 px-2 py-1 text-xs text-status-running">
+              <span className="inline-flex items-center gap-1 rounded-md bg-status-running/15 px-2 py-1 text-xs text-status-running-text">
                 <CheckCircle2 className="h-3 w-3" />
                 {t("Enabled", "Aktiviert")}
               </span>

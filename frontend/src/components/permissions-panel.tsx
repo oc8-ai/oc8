@@ -416,7 +416,7 @@ export function PermissionsPanel(props: DeptProps | AgentProps) {
             })}
           </div>
           <div className="mt-4 flex items-start gap-2 rounded-md border border-status-warning/30 bg-status-warning/5 p-3 text-xs text-foreground/90">
-            <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-status-warning" />
+            <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-status-warning-text" />
             <span>
               {mode === "department" ? (
                 <>

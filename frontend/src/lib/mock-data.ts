@@ -694,12 +694,12 @@ export function agentById(id: string) {
 export const statusMeta: Record<AgentStatus, { label: string; className: string; dot: string }> = {
   running: {
     label: "running",
-    className: "text-status-running",
+    className: "text-status-running-text",
     dot: "bg-status-running",
   },
   warning: {
     label: "awaiting approval",
-    className: "text-status-warning",
+    className: "text-status-warning-text",
     dot: "bg-status-warning",
   },
   error: {
@@ -714,7 +714,7 @@ export const statusMeta: Record<AgentStatus, { label: string; className: string;
   },
   waiting_for_task: {
     label: "waiting for task",
-    className: "text-status-waiting-for-task",
+    className: "text-status-waiting-for-task-text",
     dot: "bg-status-waiting-for-task",
   },
 };

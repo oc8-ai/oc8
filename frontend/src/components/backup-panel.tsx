@@ -158,7 +158,7 @@ export function BackupPanel() {
           className="mt-1 w-full max-w-sm rounded-md border border-border bg-background px-3 py-1.5 font-mono text-sm"
         />
         <div className="mt-2 flex items-start gap-2 rounded-md border border-status-warning/40 bg-status-warning/10 p-3 text-xs">
-          <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-warning" />
+          <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-warning-text" />
           <p className="text-foreground/90">
             {t(
               "Every export, with or without a passphrase, carries every member's password hash. With a passphrase, the file also carries every provider credential and OAuth token this company holds, encrypted under it — anyone with the file AND the passphrase holds those credentials too. The passphrase cannot be recovered if lost; losing it only costs the secrets, everything else still restores.",
@@ -197,7 +197,7 @@ export function BackupPanel() {
         </div>
 
         <div className="mt-2 flex items-start gap-2 rounded-md border border-status-warning/40 bg-status-warning/10 p-3 text-xs">
-          <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-warning" />
+          <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-warning-text" />
           <p className="text-foreground/90">
             {t(
               "If this archive was taken on a different oc8 instance, restoring it also replaces every member and role this company has with the source instance's — including your own membership. Because those rows carry sign-in identities from the source instance's own login provider, this can remove your own access to this company.",
@@ -312,7 +312,7 @@ export function BackupPanel() {
                   className="mt-1 w-full max-w-sm rounded-md border border-border bg-background px-3 py-1.5 font-mono text-sm"
                 />
                 <div className="mt-2 flex items-start gap-2 rounded-md border border-status-warning/40 bg-status-warning/10 p-3 text-xs">
-                  <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-warning" />
+                  <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-warning-text" />
                   <p className="text-foreground/90">
                     {t(
                       "This archive carries provider credentials and OAuth tokens, encrypted under this passphrase. Enter it exactly as set at export time — a wrong passphrase fails the whole restore before anything is touched.",
@@ -347,7 +347,7 @@ export function BackupPanel() {
             )}
 
             {blockingProblems.length === 0 && !hasExportedThisSession && (
-              <p className="mt-2 text-xs text-status-warning">
+              <p className="mt-2 text-xs text-status-warning-text">
                 {t(
                   "Download a fresh backup above first — restoring is irreversible, and this is the recovery path if it goes wrong.",
                   "Lade oben zuerst eine aktuelle Sicherung herunter — die Wiederherstellung ist unwiderruflich, und das ist der Weg zurück, falls dabei etwas schiefgeht.",

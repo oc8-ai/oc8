@@ -151,7 +151,7 @@ function PilotSetup({ onOpenWizard }: { onOpenWizard: () => void }) {
               className="flex items-center gap-2 rounded-md border border-border bg-background/30 px-3 py-2 text-sm transition hover:border-primary/40"
             >
               {step.done ? (
-                <CheckCircle2 className="h-4 w-4 shrink-0 text-status-running" />
+                <CheckCircle2 className="h-4 w-4 shrink-0 text-status-running-text" />
               ) : (
                 <Circle className="h-4 w-4 shrink-0 text-muted-foreground" />
               )}
@@ -387,7 +387,7 @@ export function MailServerSetting() {
               >
                 <span className="flex min-w-0 items-center gap-2">
                   {c.id === activeId ? (
-                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-status-running" />
+                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-status-running-text" />
                   ) : (
                     <Circle className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                   )}

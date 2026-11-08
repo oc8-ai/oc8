@@ -149,7 +149,7 @@ export function SubscriptionRiskBadge() {
         "Connected via a personal ChatGPT subscription — scheduled/automated runs are blocked server-side.",
         "Verbunden über ein persönliches ChatGPT-Abo — geplante/automatisierte Läufe sind serverseitig gesperrt.",
       )}
-      className="rounded-full border border-status-warning/40 bg-status-warning/10 px-1.5 py-0.5 text-micro text-status-warning"
+      className="rounded-full border border-status-warning/40 bg-status-warning/10 px-1.5 py-0.5 text-micro text-status-warning-text"
     >
       {t("Personal · manual only", "Persönlich · nur manuell")}
     </span>
@@ -286,7 +286,7 @@ export function ModelsPage() {
               </p>
               <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
                 <span className="inline-flex items-center gap-1">
-                  <CheckCircle2 className="h-3 w-3 text-status-running" />
+                  <CheckCircle2 className="h-3 w-3 text-status-running-text" />
                   {stats.activeProviders} {t("configured", "konfiguriert")} · {stats.totalConfigs}{" "}
                   {t("models", "Modelle")}
                 </span>
@@ -650,11 +650,11 @@ export function ProviderCard({ group, mayManage }: { group: ProviderGroup; mayMa
             local
           </span>
         ) : group.available ? (
-          <span className="inline-flex items-center gap-1 rounded-full border border-status-running/40 bg-status-running/10 px-1.5 py-0.5 text-micro text-status-running">
+          <span className="inline-flex items-center gap-1 rounded-full border border-status-running/40 bg-status-running/10 px-1.5 py-0.5 text-micro text-status-running-text">
             <CheckCircle2 className="h-2.5 w-2.5" /> key set
           </span>
         ) : (
-          <span className="rounded-full border border-status-warning/40 bg-status-warning/10 px-1.5 py-0.5 text-micro text-status-warning">
+          <span className="rounded-full border border-status-warning/40 bg-status-warning/10 px-1.5 py-0.5 text-micro text-status-warning-text">
             key missing
           </span>
         )}
@@ -761,7 +761,7 @@ function CompletionKeyPicker({ canonical, available }: { canonical: string; avai
   return (
     <div className="space-y-2 rounded-md border border-dashed border-border bg-background/20 p-2.5">
       {!available ? (
-        <p className="text-xs font-medium text-status-warning">
+        <p className="text-xs font-medium text-status-warning-text">
           {t(
             "This provider needs a completion key before its agents can run.",
             "Dieser Anbieter benötigt einen Completion-Schlüssel, bevor seine Agenten laufen können.",
@@ -1220,7 +1220,7 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
                   </label>
                 ))}
                 {tierTargets.length === 0 && (
-                  <p className="text-xs text-status-warning">
+                  <p className="text-xs text-status-warning-text">
                     {t(
                       "Add at least one concrete model first, then configure Auto tiers.",
                       "Lege zuerst mindestens ein konkretes Modell an, dann Auto-Tiers konfigurieren.",
@@ -1346,7 +1346,7 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
               ) : (
                 <div className="block">
                   {!editing && manualMode && discoveredModels === null && (
-                    <p className="mb-1 text-xs text-status-warning">
+                    <p className="mb-1 text-xs text-status-warning-text">
                       {t(
                         "Automatic discovery isn't available for this provider — enter the model tag manually.",
                         "Automatisches Abrufen ist für diesen Anbieter nicht verfügbar — Modell-Tag manuell eingeben.",
@@ -1669,8 +1669,8 @@ export function AddProviderWizard({
                               className={cn(
                                 "rounded-full border px-1.5 py-0.5 text-micro",
                                 p.available
-                                  ? "border-status-running/40 bg-status-running/10 text-status-running"
-                                  : "border-status-warning/40 bg-status-warning/10 text-status-warning",
+                                  ? "border-status-running/40 bg-status-running/10 text-status-running-text"
+                                  : "border-status-warning/40 bg-status-warning/10 text-status-warning-text",
                               )}
                             >
                               {p.available ? "key set" : "key missing"}
@@ -1707,7 +1707,7 @@ export function AddProviderWizard({
                   </span>
                   <ChatGptSubscriptionPicker value={credentialId} onChange={setCredentialId} />
                   {!credentialId && (
-                    <p className="mt-1 text-xs text-status-warning">
+                    <p className="mt-1 text-xs text-status-warning-text">
                       {/* Unlike an API-key provider, there is no tenant-wide
                           fallback for this one: the model router only reaches
                           the subscription bridge through an explicitly bound
@@ -1730,7 +1730,7 @@ export function AddProviderWizard({
                     onChange={setCredentialId}
                   />
                   {!credentialId && (
-                    <p className="mt-1 text-xs text-status-warning">
+                    <p className="mt-1 text-xs text-status-warning-text">
                       {t(
                         "No credential selected yet — pick or create one, or the platform's shared key is used if available.",
                         "Noch keine Anmeldedaten ausgewählt — wähle oder erstelle welche, sonst wird der gemeinsame Plattform-Schlüssel verwendet, falls vorhanden.",

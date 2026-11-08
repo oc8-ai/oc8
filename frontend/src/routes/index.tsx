@@ -242,7 +242,7 @@ function HUD({
           value={String(pendingApprovals)}
           highlight={pendingApprovals > 0}
         >
-          <div className="mt-2 inline-flex items-center gap-1 text-xs text-status-warning">
+          <div className="mt-2 inline-flex items-center gap-1 text-xs text-status-warning-text">
             <Bell className="h-3 w-3" /> {t("Click to review", "Zum Prüfen klicken")}
           </div>
         </HudStat>
@@ -268,7 +268,7 @@ function HudStat({
       <div
         className={cn(
           "mt-1 font-serif text-3xl leading-none tabular-nums",
-          highlight && "text-status-warning",
+          highlight && "text-status-warning-text",
         )}
       >
         {value}
@@ -377,7 +377,7 @@ function DepartmentRoom({
         <span
           className={cn(
             "flex items-center gap-1.5 micro-label",
-            hasWarning ? "text-status-warning" : "text-muted-foreground",
+            hasWarning ? "text-status-warning-text" : "text-muted-foreground",
           )}
         >
           <span
@@ -453,7 +453,7 @@ function AgentTile({ agent, isLead }: { agent: Agent; isLead: boolean }) {
         />
         {isLead && (
           <Crown
-            className="absolute -top-2 -right-1.5 h-3.5 w-3.5 text-status-warning"
+            className="absolute -top-2 -right-1.5 h-3.5 w-3.5 text-status-warning-text"
             fill="currentColor"
           />
         )}

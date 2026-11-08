@@ -320,7 +320,7 @@ function SkillCard({
               v{skill.version}
             </span>
             {archived && (
-              <span className="rounded-full border border-status-warning/40 bg-status-warning/10 px-1.5 py-0.5 micro-label text-status-warning">
+              <span className="rounded-full border border-status-warning/40 bg-status-warning/10 px-1.5 py-0.5 micro-label text-status-warning-text">
                 {t("Archived", "Archiviert")}
               </span>
             )}
@@ -334,7 +334,7 @@ function SkillCard({
             <span
               className={cn(
                 "inline-flex items-center gap-1",
-                skill.origin === "store" && "text-status-warning",
+                skill.origin === "store" && "text-status-warning-text",
               )}
             >
               {skill.origin === "store" ? (
@@ -530,7 +530,7 @@ export function SkillDrawer({
         <ul className="space-y-1 text-sm text-muted-foreground">
           {skill.guardrails.map((g) => (
             <li key={g} className="flex items-start gap-2">
-              <ShieldAlert className="mt-0.5 h-3.5 w-3.5 text-status-warning" />
+              <ShieldAlert className="mt-0.5 h-3.5 w-3.5 text-status-warning-text" />
               <span>{g}</span>
             </li>
           ))}
@@ -596,7 +596,7 @@ export function SkillDrawer({
           </button>
         </div>
         {!skill.currentVersionId && (
-          <p className="mt-2 text-xs text-status-warning">
+          <p className="mt-2 text-xs text-status-warning-text">
             {t(
               "This skill has no published version yet, so there is nothing to assign.",
               "Dieser Skill hat noch keine veröffentlichte Version — es gibt nichts zuzuweisen.",
@@ -1181,7 +1181,7 @@ function CandidateRow({
                   verdict === "fits"
                     ? "bg-primary/10 text-primary"
                     : verdict === "tight"
-                      ? "bg-status-warning/15 text-status-warning"
+                      ? "bg-status-warning/15 text-status-warning-text"
                       : "bg-destructive/15 text-destructive",
                 )}
               >
@@ -1200,7 +1200,7 @@ function CandidateRow({
             </p>
           )}
           {candidate.warnings.map((w) => (
-            <p key={w} className="mt-1 flex items-start gap-1.5 text-xs text-status-warning">
+            <p key={w} className="mt-1 flex items-start gap-1.5 text-xs text-status-warning-text">
               <ShieldAlert className="mt-px h-3 w-3 shrink-0" />
               <span>{w}</span>
             </p>

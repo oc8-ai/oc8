@@ -249,7 +249,7 @@ export function AgentPublishBar({ agentId, mayManage }: { agentId: string; mayMa
     <>
       <Panel className="flex flex-wrap items-center justify-between gap-3 border-status-warning/40 bg-status-warning/10 p-4">
         <div className="flex min-w-0 items-center gap-2 text-sm">
-          <AlertCircle className="h-4 w-4 shrink-0 text-status-warning" />
+          <AlertCircle className="h-4 w-4 shrink-0 text-status-warning-text" />
           <span>
             {count === 1
               ? t("1 unpublished change", "1 unveröffentlichte Änderung")

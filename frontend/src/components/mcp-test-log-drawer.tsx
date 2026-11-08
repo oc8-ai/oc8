@@ -96,13 +96,13 @@ export function McpTestLogDrawer({
           <div
             ref={scrollRef}
             onScroll={onScroll}
-            className="max-h-[240px] overflow-auto border-t border-border bg-black/90 p-3 font-mono text-xs leading-relaxed text-status-running"
+            className="max-h-[240px] overflow-auto border-t border-border bg-black/90 p-3 font-mono text-xs leading-relaxed text-status-running-text"
           >
             {lines.map((line, i) => {
               const isError = line.step === "result" && line.message.startsWith("Error:");
               return (
                 <div key={i} className={cn(isError && "text-status-error")}>
-                  <span className="text-status-running/60">
+                  <span className="text-status-running-text/60">
                     [{STEP_LABEL[line.step] ?? line.step}]
                   </span>{" "}
                   {line.message}

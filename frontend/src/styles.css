@@ -148,6 +148,9 @@
   --color-status-error: var(--status-error);
   --color-status-paused: var(--status-paused);
   --color-status-waiting-for-task: var(--status-waiting-for-task);
+  --color-status-warning-text: var(--status-warning-text);
+  --color-status-running-text: var(--status-running-text);
+  --color-status-waiting-for-task-text: var(--status-waiting-for-task-text);
   --color-panel: var(--panel);
   --text-micro: 0.6875rem; /* 11px, DESIGN.md type scale */
   --text-micro--line-height: 0.875rem; /* 14px */
@@ -188,6 +191,12 @@
   --status-error: oklch(0.58 0.22 25);
   --status-paused: oklch(0.65 0.02 250);
   --status-waiting-for-task: #35d46a; /* doc: not in the brand sheet's 6-color palette -- a grass-green sibling of Mint (hue 140 vs Mint's 173), kept distinct so "waiting" and "running" dots don't read as the same status */
+  /* Status as TEXT: the brand fills (#ff9a3c, #20d4bf, #35d46a) are ~2:1 on
+     light surfaces, so text uses darker shades of the same hues (>= 4.8:1 on
+     --background and --muted). Fills, borders and dots keep the brand value. */
+  --status-warning-text: #a85000;
+  --status-running-text: #0d766a;
+  --status-waiting-for-task-text: #16793a;
   --chart-1: #286bff;
   --chart-2: #20d4bf;
   --chart-3: #ff9a3c;
@@ -231,6 +240,9 @@
   --status-error: oklch(0.65 0.22 25);
   --status-paused: oklch(0.6 0 0);
   --status-waiting-for-task: #35d46a; /* doc: see light-theme comment above */
+  --status-warning-text: var(--status-warning);
+  --status-running-text: var(--status-running);
+  --status-waiting-for-task-text: var(--status-waiting-for-task);
   --chart-1: #286bff;
   --chart-2: #20d4bf;
   --chart-3: #ff9a3c;

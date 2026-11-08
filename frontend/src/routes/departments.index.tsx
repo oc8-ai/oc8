@@ -140,7 +140,7 @@ export function DepartmentsPage() {
                     <div className="flex items-center gap-2">
                       <span className="font-serif text-xl leading-tight">{d.name}</span>
                       {archived && (
-                        <span className="rounded-full border border-status-warning/40 bg-status-warning/10 px-1.5 py-0.5 micro-label text-status-warning">
+                        <span className="rounded-full border border-status-warning/40 bg-status-warning/10 px-1.5 py-0.5 micro-label text-status-warning-text">
                           {t("Archived", "Archiviert")}
                         </span>
                       )}
@@ -149,7 +149,7 @@ export function DepartmentsPage() {
                   </div>
                 </div>
                 {waiting > 0 && (
-                  <span className="rounded-full bg-status-warning/15 px-2 py-0.5 text-micro font-medium text-status-warning">
+                  <span className="rounded-full bg-status-warning/15 px-2 py-0.5 text-micro font-medium text-status-warning-text">
                     {waiting}{" "}
                     {waiting > 1 ? t("approvals", "Freigaben") : t("approval", "Freigabe")}
                   </span>
@@ -169,7 +169,7 @@ export function DepartmentsPage() {
                       title={m.name}
                     />
                     {lead?.id === m.id && (
-                      <Crown className="absolute -top-1.5 -right-1 h-3 w-3 text-status-warning" fill="currentColor" />
+                      <Crown className="absolute -top-1.5 -right-1 h-3 w-3 text-status-warning-text" fill="currentColor" />
                     )}
                   </div>
                 ))}

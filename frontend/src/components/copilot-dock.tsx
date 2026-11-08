@@ -495,7 +495,7 @@ function CopilotDockPanel() {
           </div>
 
           {liveConnectionStatus === "disconnected" && (
-            <div className="flex items-center gap-1.5 border-b border-status-warning/30 bg-status-warning/10 px-3 py-1 text-xs text-status-warning">
+            <div className="flex items-center gap-1.5 border-b border-status-warning/30 bg-status-warning/10 px-3 py-1 text-xs text-status-warning-text">
               <WifiOff className="h-3.5 w-3.5" />
               <span>
                 {t(

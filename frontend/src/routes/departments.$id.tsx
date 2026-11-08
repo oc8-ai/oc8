@@ -277,7 +277,7 @@ function DepartmentDetail() {
               <div className="relative">
                 <AgentAvatar seed={lead.id} size={40} title={lead.name} />
                 <Crown
-                  className="absolute -top-2 -right-1 h-4 w-4 text-status-warning"
+                  className="absolute -top-2 -right-1 h-4 w-4 text-status-warning-text"
                   fill="currentColor"
                 />
               </div>
@@ -370,7 +370,7 @@ function DepartmentDetail() {
                         <AgentAvatar seed={m.id} size={40} title={m.name} />
                         {lead?.id === m.id && (
                           <Crown
-                            className="absolute -top-2 -right-1 h-3.5 w-3.5 text-status-warning"
+                            className="absolute -top-2 -right-1 h-3.5 w-3.5 text-status-warning-text"
                             fill="currentColor"
                           />
                         )}
@@ -454,7 +454,7 @@ function DepartmentDetail() {
                       <span
                         className={cn(
                           "micro-label",
-                          isWaiting ? "text-status-warning" : "text-muted-foreground",
+                          isWaiting ? "text-status-warning-text" : "text-muted-foreground",
                         )}
                       >
                         {col.label}
@@ -1320,7 +1320,7 @@ function CollaborationTab({ deptId }: { deptId: string }) {
   return (
     <div className="space-y-5">
       <div className="rounded-md border border-status-warning/40 bg-status-warning/10 px-3 py-2 text-xs">
-        <div className="flex items-center gap-1.5 font-medium text-status-warning">
+        <div className="flex items-center gap-1.5 font-medium text-status-warning-text">
           <AlertTriangle className="h-3.5 w-3.5" /> Contracts are governed — changes are audited and
           may suspend active flows.
         </div>
@@ -1386,7 +1386,7 @@ function CollaborationTab({ deptId }: { deptId: string }) {
               className={cn(
                 "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-micro",
                 form.gate === "approval"
-                  ? "border-status-warning/50 text-status-warning"
+                  ? "border-status-warning/50 text-status-warning-text"
                   : "border-primary/40 text-primary",
               )}
             >
@@ -1445,7 +1445,7 @@ function CollaborationTab({ deptId }: { deptId: string }) {
                       className={cn(
                         "inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-micro transition",
                         it.gate === "approval"
-                          ? "border-status-warning/50 bg-status-warning/10 text-status-warning"
+                          ? "border-status-warning/50 bg-status-warning/10 text-status-warning-text"
                           : "border-primary/40 bg-primary/10 text-primary",
                       )}
                     >
