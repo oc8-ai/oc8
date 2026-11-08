@@ -448,6 +448,20 @@ class StartOAuthRequest(CamelModel):
     scopes: list[str] | None = None
 
 
+class CreateConnectionCredentialRequest(CamelModel):
+    """Connect Odoo/HubSpot/Jira with a form (connections design)."""
+
+    integration: str
+    owner: Literal["me", "organisation"] = "me"
+    name: str | None = None
+    field_values: dict[str, Any]
+
+
+class CheckConnectionCredentialRequest(CamelModel):
+    integration: str
+    field_values: dict[str, Any]
+
+
 class DevicePollRequest(CamelModel):
     """Body for `POST /models/chatgpt-subscription/device/poll`.
 

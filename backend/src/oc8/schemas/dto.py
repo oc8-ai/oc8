@@ -1451,6 +1451,13 @@ class ConnectionDTO(CamelModel):
     last_test_ok: bool | None = None
 
 
+class CredentialCheckDTO(CamelModel):
+    ok: bool
+    #: "auth" | "unreachable" | "invalid"; None when ok.
+    reason: str | None = None
+    detail: str | None = None
+
+
 class DeviceLoginStartDTO(CamelModel):
     """What `POST /models/chatgpt-subscription/device/start` hands the
     frontend to show the user-facing code and start polling (Task 12).

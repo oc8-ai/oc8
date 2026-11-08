@@ -32,6 +32,7 @@ from oc8.auth.password import PasswordHashingError, hash_password
 from oc8.authz.permissions import MANAGE, MEMBER, MEMBER_ROLE, VIEW, perm
 from oc8.authz.scope import scope_for_principal, subject_uuid_for
 from oc8.config import get_settings
+from oc8.connections.revoke import purge_member_connections
 from oc8.copilot.profile import offboard_member
 from oc8.mail.send import SmtpConfig, deliver, resolve_smtp_config
 from oc8.schemas.dto import MemberDTO, MemberPasswordResetDTO
@@ -749,6 +750,9 @@ async def delete_member_route(
             ) from exc
 
     await offboard_member(db, tenant_id=principal.tenant_id, member_id=member.id)
+    # Soft delete fires no FK cascade: remove what this person connected for
+    # themselves (provider revoke best-effort, tokens and secrets deleted).
+    await purge_member_connections(db, tenant_id=principal.tenant_id, member_id=member.id)
     await _spend_unused_tokens(db, tenant_id=principal.tenant_id, member_id=member.id)
     await append_event(
         db,

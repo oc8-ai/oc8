@@ -23,15 +23,26 @@ from oc8.auth.principal import Principal
 from oc8.authz.authority import authority_for_principal
 from oc8.authz.permissions import CONNECTION_OWN, INTEGRATION, MANAGE, perm
 from oc8.authz.scope import scope_for_principal
-from oc8.connections.integrations import InstalledIntegration, installed_integrations
+from oc8.connections.checks import classify_check_error
+from oc8.connections.integrations import InstalledIntegration, Integration, installed_integrations
 from oc8.connections.revoke import (
     delete_credential_with_secrets,
     delete_secret_refs,
     revoke_oauth_connection,
 )
 from oc8.credentials.registry import list_credential_types_with_i18n
-from oc8.credentials.service import CredentialInUse, delete_credential
-from oc8.schemas.dto import ConnectableIntegrationDTO, ConnectionDTO
+from oc8.credentials.service import (
+    CredentialFieldNotSet,
+    CredentialInUse,
+    CredentialNotFound,
+    check_credential_values,
+    create_credential,
+    delete_credential,
+    get_credential,
+    test_credential,
+)
+from oc8.schemas.dto import ConnectableIntegrationDTO, ConnectionDTO, CredentialCheckDTO
+from oc8.schemas.requests import CheckConnectionCredentialRequest, CreateConnectionCredentialRequest
 
 router = APIRouter()
 
@@ -346,3 +357,119 @@ async def delete_credential_connection(
         await delete_credential_with_secrets(db, cred)
     await _audit_revoked(db, principal, kind="credential", row_id=credential_id, owner=owner)
     await db.commit()
+
+
+async def _credential_integration(db: AsyncSession, name: str) -> Integration:
+    for item in await installed_integrations(db):
+        if (
+            item.integration.name == name
+            and item.integration.kind == "credential"
+            and item.available
+        ):
+            return item.integration
+    raise HTTPException(status.HTTP_404_NOT_FOUND, "integration not available")
+
+
+async def _free_name(db: AsyncSession, owner: uuid.UUID | None, base: str) -> str:
+    stmt = select(m.Credential.name).where(
+        m.Credential.owner_member_id.is_(None)
+        if owner is None
+        else m.Credential.owner_member_id == owner
+    )
+    taken = set((await db.execute(stmt)).scalars().all())
+    if base not in taken:
+        return base
+    n = 2
+    while f"{base} {n}" in taken:
+        n += 1
+    return f"{base} {n}"
+
+
+def _check_result(exc: Exception | None) -> CredentialCheckDTO:
+    if exc is None:
+        return CredentialCheckDTO(ok=True)
+    message = str(exc)
+    return CredentialCheckDTO(ok=False, reason=classify_check_error(message), detail=message[:300])
+
+
+@router.post("/connections/credentials/check", response_model=CredentialCheckDTO, dependencies=_OWN)
+async def check_credential(
+    body: CheckConnectionCredentialRequest, db: DbSession, principal: CurrentPrincipal
+) -> CredentialCheckDTO:
+    integration = await _credential_integration(db, body.integration)
+    assert integration.credential_type is not None
+    try:
+        await check_credential_values(
+            db,
+            tenant_id=principal.tenant_id,
+            credential_type=integration.credential_type,
+            field_values=body.field_values,
+        )
+    except ValueError as exc:
+        return _check_result(exc)
+    return _check_result(None)
+
+
+@router.post(
+    "/connections/credentials",
+    response_model=ConnectionDTO,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=_OWN,
+)
+async def create_credential_connection(
+    body: CreateConnectionCredentialRequest,
+    request: Request,
+    db: DbSession,
+    principal: CurrentPrincipal,
+) -> ConnectionDTO:
+    me = await caller_member(db, principal)
+    if body.owner == "organisation" and not await may_manage_integrations(request, db, principal):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "requires permission: integration:manage")
+    integration = await _credential_integration(db, body.integration)
+    assert integration.credential_type is not None
+    owner = None if body.owner == "organisation" else me.id
+    name = await _free_name(db, owner, (body.name or "").strip() or integration.label)
+    cred = await create_credential(
+        db,
+        tenant_id=principal.tenant_id,
+        name=name,
+        credential_type=integration.credential_type,
+        field_values=body.field_values,
+        owner_member_id=owner,
+    )
+    # Records last_tested_at/last_test_ok; a failing login is still saved
+    # (the person asked to save) and shows as "failed" with its own Test button.
+    try:
+        await test_credential(db, tenant_id=principal.tenant_id, credential_id=cred.id)
+    except (ValueError, CredentialFieldNotSet):
+        pass
+    # Before the commit: the tenant binding is transaction-local, so a read
+    # after it would see nothing under RLS.
+    names = await _names(db, {me.id})
+    dto = credential_dto(cred, me.id, names, {integration.credential_type: integration.name})
+    await db.commit()
+    return dto
+
+
+@router.post(
+    "/connections/credentials/{credential_id}/test",
+    response_model=CredentialCheckDTO,
+    dependencies=_OWN,
+)
+async def test_credential_connection(
+    credential_id: uuid.UUID, request: Request, db: DbSession, principal: CurrentPrincipal
+) -> CredentialCheckDTO:
+    me = await caller_member(db, principal)
+    try:
+        cred = await get_credential(db, tenant_id=principal.tenant_id, credential_id=credential_id)
+    except CredentialNotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "credential not found") from exc
+    if cred.owner_member_id != me.id and not await may_manage_integrations(request, db, principal):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "credential not found")
+    try:
+        await test_credential(db, tenant_id=principal.tenant_id, credential_id=credential_id)
+    except (ValueError, CredentialFieldNotSet) as exc:
+        await db.commit()
+        return _check_result(exc)
+    await db.commit()
+    return _check_result(None)

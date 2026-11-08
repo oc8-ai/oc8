@@ -20,7 +20,6 @@ from oc8.capas.loader import TRUSTED, import_entry_point
 from oc8.credentials.registry import find_credential_type_owner, get_credential_type
 from oc8.secrets.service import resolve_secret, store_secret
 
-
 #: Which owner a lookup accepts. "any": internal callers holding an id the
 #: system itself stored (a running bridge, the mailer). "organisation": every
 #: admin surface -- a personal credential does not exist there. A member id:
@@ -54,9 +53,7 @@ class CredentialFieldNotSet(Exception):
     def __init__(self, credential_name: str, field_key: str) -> None:
         self.credential_name = credential_name
         self.field_key = field_key
-        super().__init__(
-            f"credential {credential_name!r} has no value set for field {field_key!r}"
-        )
+        super().__init__(f"credential {credential_name!r} has no value set for field {field_key!r}")
 
 
 class CredentialInUse(Exception):
@@ -266,6 +263,63 @@ async def resolve_credential_field(
     return str(value)
 
 
+async def _run_validate(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    credential_type: str,
+    cred_type: Any,
+    values: dict[str, str],
+) -> None:
+    """Call the type's own `validate_entry_point`. A core-owned type resolves
+    it via a plain dotted import; a Capa-owned type's entry point names a
+    module path relative to the owning plugin's folder, found through
+    `find_credential_type_owner` (matching the DECLARED type name)."""
+    if not cred_type.validate_entry_point:
+        return
+    discovered = await find_credential_type_owner(
+        db, tenant_id=tenant_id, credential_type=credential_type
+    )
+    if discovered is not None and discovered.trust in TRUSTED:
+        validate = import_entry_point(discovered.path, cred_type.validate_entry_point)
+    else:
+        module_path, _, attr = cred_type.validate_entry_point.partition(":")
+        validate = getattr(importlib.import_module(module_path), attr)
+    await validate(values)  # type: ignore[operator]
+
+
+async def check_credential_values(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    credential_type: str,
+    field_values: dict[str, Any],
+) -> None:
+    """Validate values that are not stored ("Verbindung prüfen"). Raises
+    ValueError with the validator's message; stores nothing."""
+    cred_type = await get_credential_type(db, tenant_id=tenant_id, name=credential_type)
+    values: dict[str, str] = {}
+    for field in cred_type.fields:
+        raw = field_values.get(field.key)
+        value = str(raw).strip() if raw is not None else ""
+        if not value and field.default:
+            value = field.default
+        if value:
+            values[field.key] = value
+        elif field.required:
+            raise ValueError(f"{field.label} is required")
+    try:
+        await _run_validate(
+            db,
+            tenant_id=tenant_id,
+            credential_type=credential_type,
+            cred_type=cred_type,
+            values=values,
+        )
+    except Exception as exc:
+        raise ValueError(str(exc)) from exc
+
+
 async def test_credential(
     db: AsyncSession,
     *,
@@ -297,28 +351,14 @@ async def test_credential(
             # `validate_s3`) applies, the same way the connector itself
             # already tolerates it not being in `config`.
             continue
-    # Core-owned credential types (no owning Capa, Task 14) resolve their
-    # validate_entry_point against core's own module path via a plain dotted
-    # import. A Capa-owned type's entry point (e.g. s3_api's
-    # "credential:validate_s3") instead names a module PATH RELATIVE TO THE
-    # OWNING PLUGIN'S OWN FOLDER, resolved via `import_entry_point` -- exactly
-    # like `configure_plugin` (`api/v1/capas.py`) already resolves a
-    # `PluginSetupSpec.validate_entry_point`. `find_credential_type_owner`
-    # finds that owning plugin by walking this tenant's enabled Capas and
-    # matching on the DECLARED credential_type name -- `cred.credential_type`
-    # (e.g. "s3_api") is never itself a plugin name, so passing it straight to
-    # `find_plugin` (as if it were one) finds nothing and silently falls
-    # through to the core branch, which is the bug this resolves.
-    discovered = await find_credential_type_owner(
-        db, tenant_id=tenant_id, credential_type=cred.credential_type
-    )
     try:
-        if discovered is not None and discovered.trust in TRUSTED:
-            validate = import_entry_point(discovered.path, cred_type.validate_entry_point)
-        else:
-            module_path, _, attr = cred_type.validate_entry_point.partition(":")
-            validate = getattr(importlib.import_module(module_path), attr)
-        await validate(values)  # type: ignore[operator]
+        await _run_validate(
+            db,
+            tenant_id=tenant_id,
+            credential_type=cred.credential_type,
+            cred_type=cred_type,
+            values=values,
+        )
     except Exception as exc:
         cred.last_tested_at = dt.datetime.now(tz=dt.UTC)
         cred.last_test_ok = False
