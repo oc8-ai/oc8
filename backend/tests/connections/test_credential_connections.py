@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from oc8.connections.checks import classify_check_error
+from oc8.credentials.errors import CredentialCheckFailed
 from tests.conftest import AppSessionFactory
 from tests.connections.helpers import api, credential_row, headers, install, member
 
@@ -27,7 +28,7 @@ def odoo_validator(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, str]]:
     async def validate(values: dict[str, str]) -> None:
         seen.append(values)
         if values.get("password") != "s3cret":
-            raise ValueError("Access Denied: wrong login/password")
+            raise CredentialCheckFailed("Access Denied: wrong login/password")
 
     async def load(db: Any, *, tenant_id: Any, credential_type: str, cred_type: Any) -> Any:
         return validate

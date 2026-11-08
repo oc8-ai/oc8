@@ -3,19 +3,20 @@ from __future__ import annotations
 import httpx
 
 from oc8.knowledge.connectors.base import ConnectorError
-from oc8.net.outbound import OutboundBlocked, guard_outbound_url, is_blocked_ip
-from oc8.net.outbound import resolve_ips as outbound_resolve
+from oc8.net import outbound
+from oc8.net.outbound import OutboundBlocked, PinnedTransport, guard_outbound_url, is_blocked_ip
 
 _is_blocked_ip = is_blocked_ip
 
 
 def _resolve_ips(host: str) -> list[str]:
-    return outbound_resolve(host)
+    return outbound.resolve_ips(host)
 
 
-def _guard(url: str) -> None:
+def _guard(url: str) -> str | None:
+    """Refuse a blocked target; return the address that was checked."""
     try:
-        guard_outbound_url(url, resolver=_resolve_ips)
+        return guard_outbound_url(url, resolver=_resolve_ips)
     except OutboundBlocked as exc:
         raise ConnectorError(str(exc)) from exc
 
@@ -36,8 +37,12 @@ async def safe_fetch_bytes(
     """
     current = url
     for _ in range(max_redirects + 1):
-        _guard(current)
-        async with httpx.AsyncClient(follow_redirects=False, timeout=timeout) as client:
+        ip = _guard(current)
+        async with httpx.AsyncClient(
+            follow_redirects=False,
+            timeout=timeout,
+            transport=PinnedTransport(ip) if ip else None,
+        ) as client:
             async with client.stream("GET", current) as resp:
                 if resp.is_redirect and resp.has_redirect_location:
                     current = (
@@ -68,8 +73,12 @@ async def safe_fetch(
 ) -> tuple[str, str]:
     current = url
     for _ in range(max_redirects + 1):
-        _guard(current)
-        async with httpx.AsyncClient(follow_redirects=False, timeout=timeout) as client:
+        ip = _guard(current)
+        async with httpx.AsyncClient(
+            follow_redirects=False,
+            timeout=timeout,
+            transport=PinnedTransport(ip) if ip else None,
+        ) as client:
             async with client.stream("GET", current) as resp:
                 if resp.is_redirect and resp.has_redirect_location:
                     current = (

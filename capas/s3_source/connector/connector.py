@@ -158,8 +158,17 @@ class _Client:
     """Just enough S3: sign a GET, send it, and complain usefully on failure."""
 
     def __init__(
-        self, bucket: str, region: str, endpoint: str, access_key: str, secret_key: str
+        self,
+        bucket: str,
+        region: str,
+        endpoint: str,
+        access_key: str,
+        secret_key: str,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
+        #: Optional: connect through this transport (a pinned, already-checked
+        #: address) instead of resolving the endpoint again.
+        self.transport = transport
         self.bucket = bucket
         self.region = region or "us-east-1"
         self.access_key = access_key
@@ -198,7 +207,7 @@ class _Client:
         url = f"{self.scheme}://{self.host}{full_path}"
         if canonical_query:
             url = f"{url}?{canonical_query}"
-        async with get_client() as client:
+        async with get_client(transport=self.transport) as client:
             resp = await client.get(url, headers=headers)
         if resp.status_code == 403:
             raise ConnectorError(

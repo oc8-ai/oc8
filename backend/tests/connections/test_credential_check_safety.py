@@ -4,6 +4,7 @@ they must not reach internal addresses and must not echo upstream text."""
 from __future__ import annotations
 
 import ipaddress
+import ssl
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -13,6 +14,7 @@ import pytest
 from sqlalchemy import select
 
 from oc8 import models as m
+from oc8.credentials.errors import CredentialCheckFailed
 from oc8.net.outbound import guard_outbound_url
 from tests.conftest import AppSessionFactory
 from tests.connections.helpers import api, credential_row, headers, install, member
@@ -194,7 +196,9 @@ async def test_a_validators_own_value_error_is_shown(
     app_session: AppSessionFactory, spy: Spy
 ) -> None:
     async def nope(values: dict[str, str]) -> None:
-        raise ValueError("Odoo rejected this login: invalid username, password, or API key")
+        raise CredentialCheckFailed(
+            "Odoo rejected this login: invalid username, password, or API key"
+        )
 
     spy.fn = nope
     tenant = uuid.uuid4()
@@ -291,3 +295,81 @@ async def test_a_name_taken_in_a_race_gets_the_next_suffix_not_a_500(
 
 def test_guard_returns_the_checked_address() -> None:
     assert guard_outbound_url("https://x.test/a", resolver=lambda h: [PUBLIC]) == PUBLIC
+
+
+async def test_a_plain_value_error_is_not_user_facing(
+    app_session: AppSessionFactory, spy: Spy
+) -> None:
+    async def leaky(values: dict[str, str]) -> None:
+        raise ValueError("could not reach http://10.0.0.9:8069: token sk-live-1")
+
+    spy.fn = leaky
+    tenant = uuid.uuid4()
+    async with api() as c:
+        await install(c, headers(tenant, "admin@acme.test", "org_admin"), "odoo_mcp")
+        r = await _check(c, headers(tenant, "anna@acme.test"), ODOO)
+    assert r.json()["detail"] is None
+    assert "sk-live-1" not in r.text and "10.0.0.9" not in r.text
+
+
+@pytest.mark.parametrize(
+    ("exc", "reason"),
+    [
+        (httpx.ConnectTimeout("t"), "unreachable"),
+        (httpx.ReadTimeout("t"), "unreachable"),
+        (ssl.SSLError("certificate verify failed"), "unreachable"),
+        (ConnectionRefusedError("x"), "unreachable"),
+        (
+            httpx.HTTPStatusError(
+                "x", request=httpx.Request("GET", "http://a"), response=httpx.Response(401)
+            ),
+            "auth",
+        ),
+        (RuntimeError("something odd"), "invalid"),
+    ],
+)
+async def test_the_reason_comes_from_the_exception_type(
+    app_session: AppSessionFactory, spy: Spy, exc: Exception, reason: str
+) -> None:
+    async def fail(values: dict[str, str]) -> None:
+        raise exc
+
+    spy.fn = fail
+    tenant = uuid.uuid4()
+    async with api() as c:
+        await install(c, headers(tenant, "admin@acme.test", "org_admin"), "odoo_mcp")
+        r = await _check(c, headers(tenant, "anna@acme.test"), ODOO)
+    assert r.json() == {"ok": False, "reason": reason, "detail": None}
+
+
+async def test_a_host_field_is_guarded_like_a_url(app_session: AppSessionFactory, spy: Spy) -> None:
+    from oc8.credentials.service import check_credential_values
+
+    tenant = uuid.uuid4()
+    values = {"host": "10.0.0.5", "port": "587", "use_tls": "true", "from_address": "a@acme.test"}
+    async with app_session(tenant) as db:
+        with pytest.raises(CredentialCheckFailed) as err:
+            await check_credential_values(
+                db, tenant_id=tenant, credential_type="smtp_server", field_values=values
+            )
+        assert (err.value.reason, err.value.detail) == ("unreachable", None)
+        await check_credential_values(
+            db,
+            tenant_id=tenant,
+            credential_type="smtp_server",
+            field_values={**values, "host": "mail.acme.test"},
+        )
+    assert [v["host"] for v in spy.seen] == ["mail.acme.test"]
+
+
+def test_a_scheme_less_url_value_is_guarded_but_not_rewritten(spy: Spy) -> None:
+    from types import SimpleNamespace
+
+    from oc8.credentials.service import _guard_url_fields
+
+    cred_type = SimpleNamespace(fields=[SimpleNamespace(key="endpoint", kind="url")])
+    values = {"endpoint": "minio:9000"}
+    _guard_url_fields(cred_type, values)
+    assert values == {"endpoint": "minio:9000"}
+    with pytest.raises(CredentialCheckFailed):
+        _guard_url_fields(cred_type, {"endpoint": "localhost:9000"})

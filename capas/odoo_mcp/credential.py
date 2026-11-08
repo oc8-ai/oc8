@@ -29,6 +29,7 @@ import httpx
 
 # This plugin ships with the core and runs in its process, so it uses the
 # core's outbound guard rather than carrying a second copy of the block-list.
+from oc8.credentials.errors import CredentialCheckFailed
 from oc8.net.outbound import OutboundBlocked, PinnedTransport, guard_outbound_url
 
 _TIMEOUT = 15.0
@@ -40,13 +41,13 @@ async def validate_odoo_login(values: dict[str, str]) -> None:
     username = values.get("username") or ""
     password = values.get("password") or ""
     if not url:
-        raise ValueError("url is required")
+        raise CredentialCheckFailed("url is required", reason="invalid")
     if not database:
-        raise ValueError("database is required")
+        raise CredentialCheckFailed("database is required", reason="invalid")
     if not username:
-        raise ValueError("username is required")
+        raise CredentialCheckFailed("username is required", reason="invalid")
     if not password:
-        raise ValueError("password is required")
+        raise CredentialCheckFailed("password is required", reason="invalid")
 
     payload = {
         "jsonrpc": "2.0",
@@ -63,31 +64,44 @@ async def validate_odoo_login(values: dict[str, str]) -> None:
     try:
         ip = await asyncio.to_thread(guard_outbound_url, url)
     except OutboundBlocked as exc:
-        raise ValueError("The Odoo address is not reachable from here") from exc
+        raise CredentialCheckFailed(
+            "The Odoo address is not reachable from here", reason="unreachable"
+        ) from exc
     async with httpx.AsyncClient(
         timeout=_TIMEOUT, transport=PinnedTransport(ip), follow_redirects=False
     ) as client:
         try:
             resp = await client.post(f"{url}/jsonrpc", json=payload)
         except httpx.HTTPError as exc:
-            raise ValueError("could not reach the Odoo server") from exc
+            raise CredentialCheckFailed(
+                "could not reach the Odoo server", reason="unreachable"
+            ) from exc
     # Error text below is fixed wording: an upstream body or URL is never
     # copied into a message a person will read.
     if resp.status_code != 200:
-        raise ValueError(f"Odoo answered with HTTP {resp.status_code}")
+        raise CredentialCheckFailed(
+            f"Odoo answered with HTTP {resp.status_code}",
+            reason="auth" if resp.status_code in (401, 403) else "invalid",
+        )
     try:
         data = resp.json()
     except ValueError as exc:
-        raise ValueError("Odoo did not answer with a JSON-RPC response") from exc
+        raise CredentialCheckFailed(
+            "Odoo did not answer with a JSON-RPC response", reason="invalid"
+        ) from exc
     if not isinstance(data, dict):
-        raise ValueError("Odoo did not answer with a JSON-RPC response")
+        raise CredentialCheckFailed(
+            "Odoo did not answer with a JSON-RPC response", reason="invalid"
+        )
     error = data.get("error")
     if error is not None:
         detail = error.get("data", {}).get("message") if isinstance(error, dict) else None
         if isinstance(detail, str) and "access denied" in detail.lower():
-            raise ValueError("Odoo rejected this login: Access Denied")
-        raise ValueError("Odoo rejected this login")
+            raise CredentialCheckFailed("Odoo rejected this login: Access Denied", reason="auth")
+        raise CredentialCheckFailed("Odoo rejected this login", reason="auth")
     # common.authenticate returns the uid (truthy int) on success, or the
     # bare literal `false` on bad credentials -- never an error envelope.
     if not data.get("result"):
-        raise ValueError("Odoo rejected this login: invalid username, password, or API key")
+        raise CredentialCheckFailed(
+            "Odoo rejected this login: invalid username, password, or API key", reason="auth"
+        )

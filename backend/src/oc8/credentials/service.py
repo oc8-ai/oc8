@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import importlib
-import json
 import logging
 import uuid
 from typing import Any, Literal
@@ -20,8 +19,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.capas.loader import TRUSTED, import_entry_point
+from oc8.connections.checks import reason_for_exception
+from oc8.credentials.errors import CredentialCheckFailed
 from oc8.credentials.registry import find_credential_type_owner, get_credential_type
-from oc8.net.outbound import OutboundBlocked, guard_outbound_url
+from oc8.net.outbound import OutboundBlocked, guard_outbound_host, guard_outbound_url
 from oc8.secrets.service import resolve_secret, store_secret
 
 logger = logging.getLogger(__name__)
@@ -269,42 +270,19 @@ async def resolve_credential_field(
     return str(value)
 
 
-class CredentialCheckFailed(ValueError):
-    """A live check did not pass.
-
-    `detail` is text that is safe to show a person: the validator's own
-    ValueError, or one of ours. It is None whenever the failure came from
-    anywhere else (a transport error, an HTTP error, a parse error): that text
-    can carry an upstream response body or an internal address, so it is only
-    logged. `reason` ("auth" | "unreachable" | "invalid") is the class of
-    failure when we know it; `internal` is for classifying and logging only.
-    """
-
-    def __init__(
-        self, detail: str | None, *, reason: str | None = None, internal: str = ""
-    ) -> None:
-        super().__init__(detail or "The check failed.")
-        self.detail = detail
-        self.reason = reason
-        self.internal = internal or detail or ""
-
-
-#: ValueError subclasses that come from parsing/serialising a foreign
-#: response, not from a validator choosing its words.
-_NOT_USER_FACING = (json.JSONDecodeError, UnicodeError)
-
-
 def _guard_url_fields(cred_type: Any, values: dict[str, str]) -> None:
-    """Refuse a url field that points at an internal or non-http address,
-    before any validator makes a request with it."""
+    """Refuse an address field that points at an internal or non-http target,
+    before any validator makes a connection with it: `url` fields as URLs, a
+    field named `host` (database, SMTP) as a bare host."""
     for field in cred_type.fields:
-        if field.kind != "url":
-            continue
         value = values.get(field.key)
         if not value:
             continue
         try:
-            guard_outbound_url(value)
+            if field.kind == "url":
+                guard_outbound_url(value)
+            elif field.key == "host":
+                guard_outbound_host(value)
         except OutboundBlocked as exc:
             raise CredentialCheckFailed(
                 None, reason="unreachable", internal=f"unreachable: {exc}"
@@ -346,15 +324,14 @@ async def _run_validate(
         await validate(values)
     except CredentialCheckFailed:
         raise
-    except _NOT_USER_FACING as exc:
-        logger.warning("credential check %s failed: %r", credential_type, exc)
-        raise CredentialCheckFailed(None, internal=repr(exc)) from exc
-    except ValueError as exc:
-        # Raised by the validator on purpose: its words are for the person.
-        raise CredentialCheckFailed(str(exc)) from exc
     except Exception as exc:
+        # Anything the validator did not word itself (a plain ValueError
+        # included) can carry upstream text or an internal address: log it,
+        # show nothing but the class of failure.
         logger.warning("credential check %s failed: %r", credential_type, exc)
-        raise CredentialCheckFailed(None, internal=f"{type(exc).__name__}: {exc}") from exc
+        raise CredentialCheckFailed(
+            None, reason=reason_for_exception(exc), internal=f"{type(exc).__name__}: {exc}"
+        ) from exc
 
 
 async def check_credential_values(

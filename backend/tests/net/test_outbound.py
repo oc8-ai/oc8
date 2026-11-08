@@ -84,8 +84,13 @@ def test_the_metadata_address_is_refused_even_when_its_range_is_allowed(
 
 
 def test_a_url_without_a_scheme_is_checked_as_https() -> None:
-    assert guard_outbound_url("s3.example.com", resolver=lambda h: ["93.184.216.34"]) == "93.184.216.34"
-    assert guard_outbound_url("minio:9000/x", resolver=lambda h: ["93.184.216.34"]) == "93.184.216.34"
+    assert (
+        guard_outbound_url("s3.example.com", resolver=lambda h: ["93.184.216.34"])
+        == "93.184.216.34"
+    )
+    assert (
+        guard_outbound_url("minio:9000/x", resolver=lambda h: ["93.184.216.34"]) == "93.184.216.34"
+    )
     with pytest.raises(OutboundBlocked):
         guard_outbound_url("localhost:9000", resolver=lambda h: ["127.0.0.1"])
 

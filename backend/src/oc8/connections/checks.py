@@ -4,6 +4,10 @@
 from __future__ import annotations
 
 import re
+import smtplib
+import ssl
+
+import httpx
 
 # Whole words only: "14013" must not read as an HTTP 401.
 _AUTH = re.compile(
@@ -24,3 +28,21 @@ def classify_check_error(message: str) -> str:
     if _UNREACHABLE.search(message):
         return "unreachable"
     return "invalid"
+
+
+def reason_for_exception(exc: BaseException) -> str:
+    """The class of failure from the exception's type chain, falling back to
+    the wording only when the types say nothing."""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, httpx.HTTPStatusError):
+            if cur.response.status_code in (401, 403):
+                return "auth"
+        elif isinstance(cur, smtplib.SMTPAuthenticationError):
+            return "auth"
+        elif isinstance(cur, (httpx.TransportError, ssl.SSLError, OSError, TimeoutError)):
+            return "unreachable"
+        cur = cur.__cause__ or cur.__context__
+    return classify_check_error(str(exc))
