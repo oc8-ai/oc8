@@ -493,3 +493,44 @@ async def test_started_by_names_the_person_not_the_delegating_agent(
         await db.flush()
         names = await trigger_names(db, [wake], tenant_id=tenant)
     assert names[wake.id] == {"kind": "delegation", "label": "A", "started_by": "Bob"}
+
+
+async def test_the_several_people_marker_is_never_a_member(
+    app_session: AppSessionFactory,
+) -> None:
+    """A member whose subject happens to equal the marker owns nothing: a
+    mixed-owner run stays a colleague's run for him too -- off his default
+    timeline and not watchable live."""
+    from oc8.chat.watch import may_watch_run
+    from oc8.runtime.person import SEVERAL_PEOPLE
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, _, _ = await _world(db, tenant)
+        mallory = m.OrgMember(tenant_id=tenant, subject=SEVERAL_PEOPLE, subject_uuid=uuid.uuid4())
+        db.add(mallory)
+        await db.flush()
+        db.add(
+            m.OrgMemberDepartment(
+                tenant_id=tenant,
+                member_id=mallory.id,
+                department_id=agent.department_id,
+                seat_role="dept_viewer",
+            )
+        )
+        mixed = _run(tenant, agent, "delegation", {"on_behalf_of": SEVERAL_PEOPLE})
+        db.add(mixed)
+        await db.flush()
+        live = await get_or_create_live_session(
+            db, tenant_id=tenant, member_id=mallory.id, agent_id=agent.id
+        )
+        plain = await live_timeline(
+            db, member=mallory, agent=agent, session=live, before=None, limit=50, all_runs=False
+        )
+        everything = await live_timeline(
+            db, member=mallory, agent=agent, session=live, before=None, limit=50, all_runs=True
+        )
+        assert is_colleague_run(mixed, mallory)
+        assert _run_ids(plain) == set()
+        assert _run_ids(everything) == {mixed.id}
+        assert not await may_watch_run(db, member=mallory, run_id=mixed.id)

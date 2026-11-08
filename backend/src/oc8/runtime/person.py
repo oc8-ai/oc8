@@ -37,3 +37,9 @@ def person_behind(context: Mapping[str, Any] | None) -> str | None:
         if present(value):
             return str(value)
     return None
+
+
+def is_own(person: str | None, subject: str) -> bool:
+    """Is `person` (from `person_behind`) the member with `subject`? Never for
+    `SEVERAL_PEOPLE`, whatever subject a member happens to hold."""
+    return person is not None and person != SEVERAL_PEOPLE and person == subject

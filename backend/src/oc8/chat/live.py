@@ -34,7 +34,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.runtime.person import PERSON_KEYS, person_behind, present
+from oc8.runtime.person import PERSON_KEYS, SEVERAL_PEOPLE, is_own, person_behind, present
 
 
 @dataclass(frozen=True)
@@ -201,7 +201,7 @@ def is_colleague_run(run: m.AgentRun, member: m.OrgMember) -> bool:
     """Somebody else's run: not autonomous and not `member`'s (neither started
     by her nor on her behalf). Shown only under "All runs", and only as step
     labels and result (Ruling 15)."""
-    return not is_autonomous_run(run) and person_behind(run.context) != member.subject
+    return not is_autonomous_run(run) and not is_own(person_behind(run.context), member.subject)
 
 
 def _ctx_text(key: str) -> ColumnElement[str]:
@@ -228,6 +228,7 @@ def _hers_outside_chat(member: m.OrgMember) -> ColumnElement[bool]:
     are her sessions' business, her live-session runs ARE the messages)."""
     return and_(
         _person() == member.subject,
+        _person() != literal(SEVERAL_PEOPLE),
         _ctx_text("chat_session_id") == "",
         m.AgentRun.source != "chat",
     )
@@ -241,7 +242,7 @@ def _colleagues(member: m.OrgMember) -> ColumnElement[bool]:
     )
     return and_(
         not_(_autonomous()),
-        _person() != member.subject,
+        or_(_person() != member.subject, _person() == literal(SEVERAL_PEOPLE)),
         not_(_ctx_text("chat_session_id").in_(own_sessions.scalar_subquery())),
     )
 

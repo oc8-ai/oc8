@@ -11,7 +11,7 @@ from oc8 import models as m
 from oc8.chat.audience import session_audience
 from oc8.chat.live import is_autonomous_run
 from oc8.chat.reach import member_can_reach_agent
-from oc8.runtime.person import person_behind
+from oc8.runtime.person import is_own, person_behind
 
 
 async def may_watch_run(
@@ -36,7 +36,7 @@ async def may_watch_run(
     ):
         return False
     context = run.context or {}
-    if person_behind(context) == member.subject:
+    if is_own(person_behind(context), member.subject):
         return True
     if is_autonomous_run(run):
         # The agent's own run: on the Live timeline of everyone who reaches
