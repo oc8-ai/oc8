@@ -118,7 +118,7 @@ export function AgentVersionsTab({ agentId, mayManage }: { agentId: string; mayM
                   <td className="py-2 pr-3 whitespace-nowrap">
                     <span className="font-mono">{`v${version.versionNo}`}</span>
                     {version.isCurrent && (
-                      <span className="ml-2 inline-flex items-center rounded-full border border-[color:var(--status-running)]/50 bg-[color:var(--status-running)]/15 px-2 py-0.5 micro-label text-[color:var(--status-running)]">
+                      <span className="ml-2 inline-flex items-center rounded-full border border-status-running/50 bg-status-running/15 px-2 py-0.5 micro-label text-status-running">
                         {t("running", "läuft")}
                       </span>
                     )}

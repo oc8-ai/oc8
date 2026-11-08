@@ -166,7 +166,7 @@ function IntegrityBanner() {
   const outlineClass =
     "rounded-md border border-border bg-panel px-3 py-1.5 text-sm text-foreground transition hover:bg-primary/10 disabled:opacity-50";
   const dangerPrimaryClass =
-    "rounded-md border border-[color:var(--status-error)]/50 bg-[color:var(--status-error)]/15 px-3 py-1.5 text-sm font-medium text-[color:var(--status-error)] transition hover:bg-[color:var(--status-error)]/25 disabled:opacity-50";
+    "rounded-md border border-status-error/50 bg-status-error/15 px-3 py-1.5 text-sm font-medium text-status-error transition hover:bg-status-error/25 disabled:opacity-50";
 
   return (
     <div
@@ -268,10 +268,10 @@ function AuditPage() {
     const errDetail = err instanceof Error && err.message ? err.message : null;
     return (
       <div className="space-y-4">
-        <div className="flex items-start gap-3 rounded-xl border border-[color:var(--status-error)]/35 bg-[color:var(--status-error)]/8 px-5 py-4 shadow-[0_1px_0_0_oklch(1_0_0/6%)_inset,0_10px_30px_-20px_oklch(0_0_0/60%)]">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--status-error)]" />
+        <div className="flex items-start gap-3 rounded-xl border border-status-error/35 bg-status-error/8 px-5 py-4 shadow-[0_1px_0_0_oklch(1_0_0/6%)_inset,0_10px_30px_-20px_oklch(0_0_0/60%)]">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-status-error" />
           <div>
-            <p className="text-sm text-[color:var(--status-error)]">
+            <p className="text-sm text-status-error">
               {t("Could not load the audit log.", "Prüfprotokoll konnte nicht geladen werden.")}
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
@@ -379,7 +379,7 @@ function AuditPage() {
                       onClick={() => setOpenId(isOpen ? null : ev.id)}
                       className={cn(
                         "cursor-pointer border-b border-border/60 last:border-none transition hover:bg-primary/5",
-                        flagged && "border-l-2 border-l-[color:var(--status-error)]",
+                        flagged && "border-l-2 border-l-status-error",
                       )}
                     >
                       <td className="px-5 py-3">

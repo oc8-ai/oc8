@@ -161,7 +161,7 @@ function OfficePage() {
 
         <div className="relative mb-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[color:var(--status-running)] shadow-[0_0_8px_var(--status-running)]" />
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-status-running shadow-[0_0_8px_var(--status-running)]" />
             <span className="micro-label">
               {t("Floor 1 · Live operations", "Etage 1 · Live-Betrieb")}
             </span>
@@ -242,7 +242,7 @@ function HUD({
           value={String(pendingApprovals)}
           highlight={pendingApprovals > 0}
         >
-          <div className="mt-2 inline-flex items-center gap-1 text-xs text-[color:var(--status-warning)]">
+          <div className="mt-2 inline-flex items-center gap-1 text-xs text-status-warning">
             <Bell className="h-3 w-3" /> {t("Click to review", "Zum Prüfen klicken")}
           </div>
         </HudStat>
@@ -268,7 +268,7 @@ function HudStat({
       <div
         className={cn(
           "mt-1 font-serif text-3xl leading-none tabular-nums",
-          highlight && "text-[color:var(--status-warning)]",
+          highlight && "text-status-warning",
         )}
       >
         {value}
@@ -337,7 +337,7 @@ function DepartmentRoom({
       className={cn(
         "group relative block cursor-pointer rounded-xl border bg-panel/80 p-4 transition hover:border-primary/60",
         hasWarning
-          ? "border-[color:var(--status-warning)]/40 room-pulse-amber"
+          ? "border-status-warning/40 room-pulse-amber"
           : hasActive
             ? "border-border room-pulse-teal"
             : "border-border",
@@ -377,7 +377,7 @@ function DepartmentRoom({
         <span
           className={cn(
             "flex items-center gap-1.5 micro-label",
-            hasWarning ? "text-[color:var(--status-warning)]" : "text-muted-foreground",
+            hasWarning ? "text-status-warning" : "text-muted-foreground",
           )}
         >
           <span
@@ -453,7 +453,7 @@ function AgentTile({ agent, isLead }: { agent: Agent; isLead: boolean }) {
         />
         {isLead && (
           <Crown
-            className="absolute -top-2 -right-1.5 h-3.5 w-3.5 text-[color:var(--status-warning)]"
+            className="absolute -top-2 -right-1.5 h-3.5 w-3.5 text-status-warning"
             fill="currentColor"
           />
         )}

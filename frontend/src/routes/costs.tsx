@@ -264,7 +264,7 @@ function CostsPage() {
 
         <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-md border border-border bg-background/30 px-3 py-2 text-xs">
           <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+            <span className="h-1.5 w-1.5 rounded-full bg-status-running" />
             {t("Recorded (live)", "Aufgezeichnet (live)")}
           </span>
           {recorded.hasData ? (
@@ -378,7 +378,7 @@ function Bar({
           width: `${pct}%`,
           background:
             tone === "warm"
-              ? "linear-gradient(90deg, #FF8A3D, #FF8A3D)"
+              ? "var(--status-warning)"
               : "linear-gradient(90deg, var(--primary), color-mix(in oklab, var(--primary) 60%, transparent))",
           boxShadow: "0 0 10px color-mix(in oklab, var(--primary) 50%, transparent)",
         }}
@@ -1083,7 +1083,7 @@ function LimitsTab({ currency }: { currency: Currency }) {
                         type="button"
                         onClick={() => remove(limit.id)}
                         disabled
-                        className="rounded-md p-1.5 text-muted-foreground hover:bg-background/40 hover:text-[color:var(--status-error)]"
+                        className="rounded-md p-1.5 text-muted-foreground hover:bg-background/40 hover:text-status-error"
                         aria-label={t("Delete limit", "Limit löschen")}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
@@ -1346,7 +1346,7 @@ function BudgetRow({
         </div>
       )}
       {status?.hardExceeded && (
-        <div className="mt-2 flex items-center gap-1.5 text-xs text-[color:var(--status-error)]">
+        <div className="mt-2 flex items-center gap-1.5 text-xs text-status-error">
           <ShieldAlert className="h-3 w-3" />
           {t(
             "Hard limit exceeded — new tasks are paused.",

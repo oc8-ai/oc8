@@ -189,7 +189,7 @@ function FlowsPage() {
               {flow.version}
             </span>
             {problems.length > 0 && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-[color:var(--status-error)]/40 bg-[color:var(--status-error)]/10 px-2 py-0.5 text-micro text-[color:var(--status-error)]">
+              <span className="inline-flex items-center gap-1 rounded-full border border-status-error/40 bg-status-error/10 px-2 py-0.5 text-micro text-status-error">
                 <AlertTriangle className="h-3 w-3" /> {problems.length} contract issue
               </span>
             )}
@@ -531,7 +531,7 @@ function FlowCanvas({
               key={st.id}
               className={cn(
                 "flex flex-wrap items-center gap-3 rounded-xl border bg-panel/60 p-3",
-                invalid ? "border-[color:var(--status-error)]/50" : "border-border",
+                invalid ? "border-status-error/50" : "border-border",
               )}
               title={invalid ?? ""}
             >
@@ -542,16 +542,13 @@ function FlowCanvas({
                 {st.sourceDept}
               </span>
               <ArrowRight
-                className={cn(
-                  "h-4 w-4",
-                  invalid ? "text-[color:var(--status-error)]" : "text-muted-foreground",
-                )}
+                className={cn("h-4 w-4", invalid ? "text-status-error" : "text-muted-foreground")}
               />
               <div className="flex min-w-0 flex-1 flex-col">
                 <div className="flex items-center gap-2">
                   <span className="font-mono text-xs">{st.handoffType}</span>
                   {st.gate === "approval" ? (
-                    <ShieldCheck className="h-3.5 w-3.5 text-[color:var(--status-warning)]" />
+                    <ShieldCheck className="h-3.5 w-3.5 text-status-warning" />
                   ) : (
                     <Bolt className="h-3.5 w-3.5 text-primary" />
                   )}
@@ -559,9 +556,7 @@ function FlowCanvas({
                 <div className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
                   <Clock className="h-2.5 w-2.5" /> {st.timeout}
                 </div>
-                {invalid && (
-                  <div className="mt-1 text-xs text-[color:var(--status-error)]">{invalid}</div>
-                )}
+                {invalid && <div className="mt-1 text-xs text-status-error">{invalid}</div>}
               </div>
               <span
                 className="rounded-md border border-border bg-background/40 px-2 py-1 text-xs"
@@ -579,9 +574,9 @@ function FlowCanvas({
               key={c.from}
               className="flex flex-wrap items-center gap-3 rounded-xl border border-dashed p-3 text-xs"
               style={{
-                borderColor: "color-mix(in oklab, #FF8A3D 55%, transparent)",
-                background: "color-mix(in oklab, #FF8A3D 6%, transparent)",
-                color: "#FF8A3D",
+                borderColor: "color-mix(in oklab, var(--status-warning) 55%, transparent)",
+                background: "color-mix(in oklab, var(--status-warning) 6%, transparent)",
+                color: "var(--status-warning)",
               }}
             >
               <AlertTriangle className="h-3.5 w-3.5" />

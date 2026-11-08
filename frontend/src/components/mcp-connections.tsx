@@ -328,9 +328,7 @@ export function McpConnectionBody({ connection }: { connection: McpConnection })
         </div>
       )}
 
-      {status === "error" && error && (
-        <p className="mt-3 text-xs text-[color:var(--status-error)]">{error}</p>
-      )}
+      {status === "error" && error && <p className="mt-3 text-xs text-status-error">{error}</p>}
 
       <McpTestLogDrawer connectionId={connection.id} busy={testConnection.isPending} />
     </div>

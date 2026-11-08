@@ -82,8 +82,8 @@ export function McpTestLogDrawer({
           className="flex w-full items-center gap-1.5 px-3 py-2 text-xs font-medium text-muted-foreground transition hover:text-foreground"
         >
           {busy && (
-            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-[color:var(--status-running)]">
-              <span className="absolute inset-0 animate-ping rounded-full bg-[color:var(--status-running)] opacity-60" />
+            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-status-running">
+              <span className="absolute inset-0 animate-ping rounded-full bg-status-running opacity-60" />
             </span>
           )}
           {t("Connection log", "Verbindungs-Log")}
@@ -96,13 +96,13 @@ export function McpTestLogDrawer({
           <div
             ref={scrollRef}
             onScroll={onScroll}
-            className="max-h-[240px] overflow-auto border-t border-border bg-black/90 p-3 font-mono text-xs leading-relaxed text-emerald-300"
+            className="max-h-[240px] overflow-auto border-t border-border bg-black/90 p-3 font-mono text-xs leading-relaxed text-status-running"
           >
             {lines.map((line, i) => {
               const isError = line.step === "result" && line.message.startsWith("Error:");
               return (
-                <div key={i} className={cn(isError && "text-[color:var(--status-error)]")}>
-                  <span className="text-emerald-500/60">
+                <div key={i} className={cn(isError && "text-status-error")}>
+                  <span className="text-status-running/60">
                     [{STEP_LABEL[line.step] ?? line.step}]
                   </span>{" "}
                   {line.message}

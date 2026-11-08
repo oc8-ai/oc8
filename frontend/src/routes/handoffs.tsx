@@ -215,9 +215,7 @@ function HandoffRow({ h, onOpen }: { h: Handoff; onOpen: () => void }) {
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="truncate font-mono text-sm">{h.type}</span>
-          {h.gate === "approval" && (
-            <ShieldCheck className="h-3 w-3 text-[color:var(--status-warning)]" />
-          )}
+          {h.gate === "approval" && <ShieldCheck className="h-3 w-3 text-status-warning" />}
         </div>
         <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
           <span>{src?.name ?? h.sourceDept}</span>
@@ -361,7 +359,7 @@ function HandoffDrawer({
                     className={cn(
                       "h-1.5 w-1.5 rounded-full",
                       s.status === "done"
-                        ? "bg-[color:var(--status-running)]"
+                        ? "bg-status-running"
                         : s.status === "in_progress"
                           ? "bg-primary"
                           : "bg-muted-foreground",
@@ -380,8 +378,8 @@ function HandoffDrawer({
         </section>
 
         {h.status === "pending" && (
-          <section className="rounded-md border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/5 p-3">
-            <div className="mb-2 flex items-center gap-2 text-xs text-[color:var(--status-warning)]">
+          <section className="rounded-md border border-status-warning/40 bg-status-warning/5 p-3">
+            <div className="mb-2 flex items-center gap-2 text-xs text-status-warning">
               <ShieldCheck className="h-4 w-4" /> Reject reason (optional)
             </div>
             <textarea
@@ -400,7 +398,7 @@ function HandoffDrawer({
           <>
             <button
               onClick={() => onReject(reason || "no reason given")}
-              className="inline-flex items-center gap-1 rounded-md border border-[color:var(--status-error)]/40 bg-[color:var(--status-error)]/10 px-3 py-2 text-xs text-[color:var(--status-error)]"
+              className="inline-flex items-center gap-1 rounded-md border border-status-error/40 bg-status-error/10 px-3 py-2 text-xs text-status-error"
             >
               <XCircle className="h-3.5 w-3.5" /> Reject
             </button>

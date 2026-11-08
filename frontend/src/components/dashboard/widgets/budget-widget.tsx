@@ -48,9 +48,9 @@ export function BudgetWidget({
             className={cn(
               "h-full rounded-full",
               status.hardExceeded
-                ? "bg-[color:var(--status-error)]"
+                ? "bg-status-error"
                 : status.softExceeded
-                  ? "bg-[color:var(--status-warning)]"
+                  ? "bg-status-warning"
                   : "bg-primary",
             )}
             style={{ width: `${pct}%` }}
@@ -58,7 +58,7 @@ export function BudgetWidget({
         </div>
       )}
       {status.hardExceeded && (
-        <div className="text-xs text-[color:var(--status-error)]">
+        <div className="text-xs text-status-error">
           {t("Hard limit exceeded", "Hartes Limit überschritten")}
         </div>
       )}

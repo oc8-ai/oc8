@@ -149,8 +149,8 @@ export function BackupPanel() {
           spellCheck={false}
           className="mt-1 w-full max-w-sm rounded-md border border-border bg-background px-3 py-1.5 font-mono text-sm"
         />
-        <div className="mt-2 flex items-start gap-2 rounded-md border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 p-3 text-xs">
-          <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[color:var(--status-warning)]" />
+        <div className="mt-2 flex items-start gap-2 rounded-md border border-status-warning/40 bg-status-warning/10 p-3 text-xs">
+          <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-warning" />
           <p className="text-foreground/90">
             {t(
               "Every export, with or without a passphrase, carries every member's password hash. With a passphrase, the file also carries every provider credential and OAuth token this company holds, encrypted under it — anyone with the file AND the passphrase holds those credentials too. The passphrase cannot be recovered if lost; losing it only costs the secrets, everything else still restores.",
@@ -178,8 +178,8 @@ export function BackupPanel() {
           <Upload className="h-3.5 w-3.5" />
           {t("Restore", "Wiederherstellen")}
         </h4>
-        <div className="mt-1 flex items-start gap-2 rounded-md border border-[color:var(--status-error)]/40 bg-[color:var(--status-error)]/10 p-3 text-xs">
-          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[color:var(--status-error)]" />
+        <div className="mt-1 flex items-start gap-2 rounded-md border border-status-error/40 bg-status-error/10 p-3 text-xs">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-error" />
           <p className="text-foreground/90">
             {t(
               "This deletes every agent, run and knowledge item this company currently has and replaces them with the contents of the uploaded file. It cannot be undone.",
@@ -188,8 +188,8 @@ export function BackupPanel() {
           </p>
         </div>
 
-        <div className="mt-2 flex items-start gap-2 rounded-md border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 p-3 text-xs">
-          <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[color:var(--status-warning)]" />
+        <div className="mt-2 flex items-start gap-2 rounded-md border border-status-warning/40 bg-status-warning/10 p-3 text-xs">
+          <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-warning" />
           <p className="text-foreground/90">
             {t(
               "If this archive was taken on a different oc8 instance, restoring it also replaces every member and role this company has with the source instance's — including your own membership. Because those rows carry sign-in identities from the source instance's own login provider, this can remove your own access to this company.",
@@ -217,7 +217,7 @@ export function BackupPanel() {
         )}
 
         {preview.isError && (
-          <p className="mt-3 text-xs text-[color:var(--status-error)]">
+          <p className="mt-3 text-xs text-status-error">
             {preview.error instanceof Error
               ? preview.error.message
               : t("Could not read the archive.", "Archiv konnte nicht gelesen werden.")}
@@ -268,8 +268,8 @@ export function BackupPanel() {
             )}
 
             {blockingProblems.length > 0 && (
-              <div className="mt-2 rounded-md border border-[color:var(--status-error)]/40 bg-[color:var(--status-error)]/10 p-3 text-xs">
-                <p className="font-medium text-[color:var(--status-error)]">
+              <div className="mt-2 rounded-md border border-status-error/40 bg-status-error/10 p-3 text-xs">
+                <p className="font-medium text-status-error">
                   {t(
                     "This archive cannot be restored:",
                     "Dieses Archiv kann nicht wiederhergestellt werden:",
@@ -297,8 +297,8 @@ export function BackupPanel() {
                   spellCheck={false}
                   className="mt-1 w-full max-w-sm rounded-md border border-border bg-background px-3 py-1.5 font-mono text-sm"
                 />
-                <div className="mt-2 flex items-start gap-2 rounded-md border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 p-3 text-xs">
-                  <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[color:var(--status-warning)]" />
+                <div className="mt-2 flex items-start gap-2 rounded-md border border-status-warning/40 bg-status-warning/10 p-3 text-xs">
+                  <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-warning" />
                   <p className="text-foreground/90">
                     {t(
                       "This archive carries provider credentials and OAuth tokens, encrypted under this passphrase. Enter it exactly as set at export time — a wrong passphrase fails the whole restore before anything is touched.",
@@ -333,7 +333,7 @@ export function BackupPanel() {
             )}
 
             {blockingProblems.length === 0 && !hasExportedThisSession && (
-              <p className="mt-2 text-xs text-[color:var(--status-warning)]">
+              <p className="mt-2 text-xs text-status-warning">
                 {t(
                   "Download a fresh backup above first — restoring is irreversible, and this is the recovery path if it goes wrong.",
                   "Lade oben zuerst eine aktuelle Sicherung herunter — die Wiederherstellung ist unwiderruflich, und das ist der Weg zurück, falls dabei etwas schiefgeht.",
@@ -345,7 +345,7 @@ export function BackupPanel() {
               type="button"
               disabled={!canRestore || restore.isPending}
               onClick={handleRestore}
-              className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-[color:var(--status-error)] px-3 py-1.5 text-xs font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+              className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-status-error px-3 py-1.5 text-xs font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
             >
               {restore.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
               {t("Restore company from backup", "Unternehmen aus Sicherung wiederherstellen")}

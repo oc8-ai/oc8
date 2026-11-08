@@ -230,8 +230,8 @@ export function MissionAutomation({
             ))}
           </ul>
         )}
-        <div className="mt-4 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
-          <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+        <div className="mt-4 flex items-start gap-2 rounded-md border border-status-warning/40 bg-status-warning/10 p-3 text-sm">
+          <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-status-warning" />
           Critical actions should always be sent to approval; automation never bypasses access
           rules.
         </div>

@@ -287,7 +287,7 @@ function NavItemLink({
           )}
         />
         {collapsed && hasBadge && (
-          <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-[color:var(--status-warning)]" />
+          <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-status-warning" />
         )}
       </span>
       {!collapsed && (
@@ -295,7 +295,7 @@ function NavItemLink({
           <span className="truncate">{item.label}</span>
           {item.adornment}
           {hasBadge && (
-            <span className="ml-auto grid h-5 min-w-5 place-items-center rounded-full bg-[color:var(--status-warning)] px-1 text-micro font-semibold text-black">
+            <span className="ml-auto grid h-5 min-w-5 place-items-center rounded-full bg-status-warning px-1 text-micro font-semibold text-black">
               {item.badge}
             </span>
           )}
@@ -539,10 +539,10 @@ export function AppShell() {
         size={16}
       />
       {copilotProfile?.status === "working" && (
-        <span className="h-1.5 w-1.5 rounded-full bg-[color:var(--status-running)]" />
+        <span className="h-1.5 w-1.5 rounded-full bg-status-running" />
       )}
       {copilotProfile?.status === "waiting" && (
-        <span className="h-1.5 w-1.5 rounded-full bg-[color:var(--status-warning)]" />
+        <span className="h-1.5 w-1.5 rounded-full bg-status-warning" />
       )}
     </span>
   );
@@ -917,11 +917,11 @@ export function AppShell() {
           )}
         >
           {collapsed ? (
-            <span className="status-dot text-[color:var(--status-running)] bg-[color:var(--status-running)]" />
+            <span className="status-dot text-status-running bg-status-running" />
           ) : (
             <div className="flex items-center justify-between">
               <span className="inline-flex items-center gap-2">
-                <span className="status-dot text-[color:var(--status-running)] bg-[color:var(--status-running)]" />
+                <span className="status-dot text-status-running bg-status-running" />
                 {t("All systems operational", "Alle Systeme betriebsbereit")}
               </span>
               <span className="text-xs">v0.9</span>
@@ -993,7 +993,7 @@ export function AppShell() {
             <ShieldCheck className="h-4 w-4" />
             <span>{t("My work", "Meine Arbeit")}</span>
             {workCount > 0 && (
-              <span className="grid h-5 min-w-5 place-items-center rounded-full bg-[color:var(--status-warning)] px-1 text-micro font-semibold text-black">
+              <span className="grid h-5 min-w-5 place-items-center rounded-full bg-status-warning px-1 text-micro font-semibold text-black">
                 {workCount}
               </span>
             )}
@@ -1005,7 +1005,7 @@ export function AppShell() {
           >
             <ShieldCheck className="h-4 w-4" />
             {workCount > 0 && (
-              <span className="absolute -right-1 -top-1 grid h-5 min-w-5 place-items-center rounded-full bg-[color:var(--status-warning)] px-1 text-micro font-semibold text-black">
+              <span className="absolute -right-1 -top-1 grid h-5 min-w-5 place-items-center rounded-full bg-status-warning px-1 text-micro font-semibold text-black">
                 {workCount}
               </span>
             )}
@@ -1018,7 +1018,7 @@ export function AppShell() {
           >
             <Bell className="h-4 w-4" />
             {notifCount > 0 && (
-              <span className="absolute -right-1 -top-1 grid h-5 min-w-5 place-items-center rounded-full bg-[color:var(--status-warning)] px-1 text-micro font-semibold text-black">
+              <span className="absolute -right-1 -top-1 grid h-5 min-w-5 place-items-center rounded-full bg-status-warning px-1 text-micro font-semibold text-black">
                 {notifCount}
               </span>
             )}

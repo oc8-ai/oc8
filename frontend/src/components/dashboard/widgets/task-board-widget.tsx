@@ -76,8 +76,8 @@ export function TaskBoardWidget(_props: {
       </div>
 
       {boardQuery.error && (
-        <div className="flex items-start gap-2 border-b border-[color:var(--status-error)]/40 px-3 py-2 text-xs">
-          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[color:var(--status-error)]" />
+        <div className="flex items-start gap-2 border-b border-status-error/40 px-3 py-2 text-xs">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-error" />
           <div>
             <div>
               {t(
@@ -116,16 +116,14 @@ export function TaskBoardWidget(_props: {
                   key={col.id}
                   className={cn(
                     "flex min-h-[140px] flex-col rounded-lg border bg-panel/60 p-2",
-                    isWaiting
-                      ? "border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/5"
-                      : "border-border",
+                    isWaiting ? "border-status-warning/40 bg-status-warning/5" : "border-border",
                   )}
                 >
                   <div className="mb-1.5 flex items-center justify-between">
                     <span
                       className={cn(
                         "micro-label",
-                        isWaiting ? "text-[color:var(--status-warning)]" : "text-muted-foreground",
+                        isWaiting ? "text-status-warning" : "text-muted-foreground",
                       )}
                     >
                       {col.label}

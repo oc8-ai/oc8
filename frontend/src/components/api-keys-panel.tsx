@@ -196,7 +196,7 @@ export function ApiKeysPanel() {
                       oc8_ak_{key.tokenPrefix}…
                     </span>
                     {expired && (
-                      <span className="rounded-full border border-[color:var(--status-error)]/40 px-1.5 py-0.5 text-micro text-[color:var(--status-error)]">
+                      <span className="rounded-full border border-status-error/40 px-1.5 py-0.5 text-micro text-status-error">
                         {t("Expired", "Abgelaufen")}
                       </span>
                     )}
@@ -239,7 +239,7 @@ export function ApiKeysPanel() {
                   type="button"
                   onClick={() => handleDelete(key.id)}
                   disabled={deleteKey.isPending}
-                  className="shrink-0 rounded-md p-1.5 text-muted-foreground hover:text-[color:var(--status-error)] disabled:cursor-not-allowed disabled:opacity-50"
+                  className="shrink-0 rounded-md p-1.5 text-muted-foreground hover:text-status-error disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>

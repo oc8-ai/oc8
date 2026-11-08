@@ -300,7 +300,7 @@ export function ChatGptSubscriptionPicker({
       )}
 
       {failure && (
-        <p className="text-xs text-[color:var(--status-warning)]">
+        <p className="text-xs text-status-warning">
           {failure.kind === "expired"
             ? t(
                 "The code expired before it was confirmed. Start again to get a new one.",

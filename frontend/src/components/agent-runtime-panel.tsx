@@ -175,8 +175,8 @@ export function AgentRuntimePanel({
         })()}
 
       {unresolved && (
-        <div className="mt-4 flex items-start gap-2 rounded-md border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 p-3 text-xs">
-          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[color:var(--status-warning)]" />
+        <div className="mt-4 flex items-start gap-2 rounded-md border border-status-warning/40 bg-status-warning/10 p-3 text-xs">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-warning" />
           <div className="flex-1">
             <p className="text-foreground/90">
               {t("This runtime is no longer available.", "Diese Runtime ist nicht mehr verfügbar.")}
@@ -187,7 +187,7 @@ export function AgentRuntimePanel({
                 type="button"
                 onClick={resetToDefault}
                 disabled={updateRuntime.isPending}
-                className="mt-2 rounded-md border border-[color:var(--status-warning)]/50 bg-background/40 px-2.5 py-1 text-xs font-medium text-foreground/90 transition hover:bg-background/70 disabled:cursor-not-allowed disabled:opacity-50"
+                className="mt-2 rounded-md border border-status-warning/50 bg-background/40 px-2.5 py-1 text-xs font-medium text-foreground/90 transition hover:bg-background/70 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {updateRuntime.isPending
                   ? t("Resetting…", "Wird zurückgesetzt…")
@@ -205,7 +205,7 @@ export function AgentRuntimePanel({
       )}
 
       {runtimesQuery.isError && (
-        <p className="mt-4 text-sm text-[color:var(--status-error)]">
+        <p className="mt-4 text-sm text-status-error">
           {t(
             "Couldn't load runtime information.",
             "Runtime-Informationen konnten nicht geladen werden.",
@@ -251,9 +251,9 @@ export function AgentRuntimePanel({
               {violations && (
                 <div
                   role="alert"
-                  className="rounded-md border border-[color:var(--status-error)]/40 bg-[color:var(--status-error)]/10 p-3 text-xs text-foreground/90"
+                  className="rounded-md border border-status-error/40 bg-status-error/10 p-3 text-xs text-foreground/90"
                 >
-                  <p className="font-medium text-[color:var(--status-error)]">
+                  <p className="font-medium text-status-error">
                     {t(
                       "This runtime can't be used here:",
                       "Diese Runtime kann hier nicht verwendet werden:",

@@ -41,17 +41,15 @@ function StateGlyph({ state }: { state: StepState }) {
   const className = "mt-0.5 h-3.5 w-3.5 shrink-0";
   switch (state) {
     case "running":
-      return (
-        <Loader2 className={cn(className, "animate-spin text-[color:var(--status-running)]")} />
-      );
+      return <Loader2 className={cn(className, "animate-spin text-status-running")} />;
     case "failed":
-      return <TriangleAlert className={cn(className, "text-[color:var(--status-error)]")} />;
+      return <TriangleAlert className={cn(className, "text-status-error")} />;
     case "denied":
-      return <ShieldX className={cn(className, "text-[color:var(--status-error)]")} />;
+      return <ShieldX className={cn(className, "text-status-error")} />;
     case "awaiting_approval":
-      return <PauseCircle className={cn(className, "text-[color:var(--status-warning)]")} />;
+      return <PauseCircle className={cn(className, "text-status-warning")} />;
     default:
-      return <CheckCircle2 className={cn(className, "text-[color:var(--status-success)]")} />;
+      return <CheckCircle2 className={cn(className, "text-status-running")} />;
   }
 }
 
@@ -102,7 +100,7 @@ function Row({ row, agentId }: { row: RunStepRow; agentId?: string }) {
           )}
 
           {row.reason && (
-            <p className="text-xs text-[color:var(--status-warning)]">
+            <p className="text-xs text-status-warning">
               {row.state === "awaiting_approval"
                 ? t(
                     `Waiting for a decision: ${row.reason}`,
@@ -247,7 +245,7 @@ export function RunStepTimeline({
         {steps.live ? (
           <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
         ) : (
-          <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-[color:var(--status-success)]" />
+          <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-status-running" />
         )}
         <span className="min-w-0 flex-1 truncate">{summary}</span>
         <span className="shrink-0 text-muted-foreground">

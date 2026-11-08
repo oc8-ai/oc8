@@ -78,7 +78,7 @@ export function CopilotAvatar({
       {state === "waiting" && (
         <span
           data-testid="avatar-waiting-dot"
-          className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border-2 border-background bg-amber-500 motion-safe:animate-pulse"
+          className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border-2 border-background bg-status-warning motion-safe:animate-pulse"
         />
       )}
     </span>

@@ -338,7 +338,7 @@ export function SourcesTab({
                       lastSyncError={s.lastSyncError}
                     />
                     {archived && (
-                      <span className="rounded-full border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 px-1.5 py-0.5 micro-label text-[color:var(--status-warning)]">
+                      <span className="rounded-full border border-status-warning/40 bg-status-warning/10 px-1.5 py-0.5 micro-label text-status-warning">
                         {t("Deleted", "Gelöscht")}
                       </span>
                     )}
@@ -360,7 +360,7 @@ export function SourcesTab({
               </dl>
 
               {!archived && s.lastSyncStatus === "failed" && !(activeJob?.sourceId === s.id) && (
-                <p className="mt-3 rounded-md border border-[color:var(--status-error)]/30 bg-[color:var(--status-error)]/5 px-2.5 py-1.5 text-xs text-[color:var(--status-error)]">
+                <p className="mt-3 rounded-md border border-status-error/30 bg-status-error/5 px-2.5 py-1.5 text-xs text-status-error">
                   {s.lastSyncError ||
                     t("The last sync failed.", "Der letzte Sync ist fehlgeschlagen.")}
                 </p>
@@ -696,7 +696,7 @@ export function BasesTab({
               className={cn(
                 "flex flex-col p-5 transition",
                 archived ? "opacity-60" : "hover:border-primary/50",
-                isRestricted && !archived && "border-[color:var(--status-warning)]/50",
+                isRestricted && !archived && "border-status-warning/50",
               )}
             >
               <div className="flex items-start justify-between gap-3">
@@ -714,7 +714,7 @@ export function BasesTab({
                     <div className="flex items-center gap-2">
                       <h3 className="truncate font-serif text-base leading-tight">{kb.name}</h3>
                       {archived && (
-                        <span className="rounded-full border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 px-1.5 py-0.5 micro-label text-[color:var(--status-warning)]">
+                        <span className="rounded-full border border-status-warning/40 bg-status-warning/10 px-1.5 py-0.5 micro-label text-status-warning">
                           {t("Deleted", "Gelöscht")}
                         </span>
                       )}
@@ -1096,7 +1096,7 @@ export function KbDetailDrawer({ kbId, onClose }: { kbId: string; onClose: () =>
                       },
                     );
                   }}
-                  className="rounded-md border border-border bg-background/40 px-2 py-1 text-muted-foreground hover:border-[color:var(--status-error)]/50 hover:text-[color:var(--status-error)] disabled:cursor-not-allowed disabled:opacity-50"
+                  className="rounded-md border border-border bg-background/40 px-2 py-1 text-muted-foreground hover:border-status-error/50 hover:text-status-error disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {t("Remove", "Entfernen")}
                 </button>
@@ -1526,8 +1526,8 @@ export function SourceWizard({
       {step === 3 && (
         <>
           {!targetKbId && (
-            <div className="space-y-2 rounded-md border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 p-3">
-              <p className="text-xs text-[color:var(--status-warning)]">
+            <div className="space-y-2 rounded-md border border-status-warning/40 bg-status-warning/10 p-3">
+              <p className="text-xs text-status-warning">
                 A source needs a knowledge base to sync into — you don't have one yet. Name one now:
               </p>
               <div className="flex gap-2">
@@ -1695,7 +1695,7 @@ function DynamicConnectorFields({
             ))}
           </select>
           {!connections.length && (
-            <span className="mt-1 block text-xs text-[color:var(--status-warning)]">
+            <span className="mt-1 block text-xs text-status-warning">
               No active {oauthProvider} account is connected yet. Configure OAuth first.
             </span>
           )}
@@ -2392,8 +2392,8 @@ function UsageStat({
         {label}
         {live && (
           <span className="relative inline-flex h-1.5 w-1.5">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[color:var(--status-running)] opacity-70" />
-            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-[color:var(--status-running)]" />
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-status-running opacity-70" />
+            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-status-running" />
           </span>
         )}
       </div>

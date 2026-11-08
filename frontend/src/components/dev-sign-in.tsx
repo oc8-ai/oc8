@@ -156,7 +156,7 @@ function TenantPicker({
         </button>
       </div>
       {(error || createError) && (
-        <p className="mt-3 text-sm text-[color:var(--status-error)]">{error || createError}</p>
+        <p className="mt-3 text-sm text-status-error">{error || createError}</p>
       )}
       <p className="mt-5 text-xs text-muted-foreground">
         {t(
@@ -218,9 +218,7 @@ function PersonaPicker({ tenant, onBack }: { tenant: DevTenant; onBack: () => vo
           <Users className="h-3.5 w-3.5" />
           {t("People", "Personen")}
         </h2>
-        {membersError && (
-          <p className="mt-2 text-sm text-[color:var(--status-error)]">{membersError}</p>
-        )}
+        {membersError && <p className="mt-2 text-sm text-status-error">{membersError}</p>}
         {members === null && !membersError && (
           <p className="mt-2 text-sm text-muted-foreground">{t("Loading…", "Lädt…")}</p>
         )}
@@ -316,7 +314,7 @@ function PersonaPicker({ tenant, onBack }: { tenant: DevTenant; onBack: () => vo
         )}
       </div>
 
-      {error && <p className="mt-4 text-sm text-[color:var(--status-error)]">{error}</p>}
+      {error && <p className="mt-4 text-sm text-status-error">{error}</p>}
       <p className="mt-5 text-xs text-muted-foreground">
         {t(
           "Development only. A person's authority comes from their seats and any tenant role assigned to them, never from this screen.",

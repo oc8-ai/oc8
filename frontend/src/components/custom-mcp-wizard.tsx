@@ -768,9 +768,7 @@ export function CustomMcpWizard({
                     ))}
                   </div>
                 </div>
-                {stepError && (
-                  <p className="text-xs text-[color:var(--status-error)]">{stepError}</p>
-                )}
+                {stepError && <p className="text-xs text-status-error">{stepError}</p>}
               </div>
             )}
 
@@ -792,7 +790,7 @@ export function CustomMcpWizard({
                 </button>
                 {state.testedToolNames && (
                   <div className="rounded-md border border-border bg-background/20 p-3">
-                    <p className="text-xs font-medium text-[color:var(--status-running)]">
+                    <p className="text-xs font-medium text-status-running">
                       Connected — {state.testedToolNames.length} tool
                       {state.testedToolNames.length === 1 ? "" : "s"} discovered.
                     </p>
@@ -810,9 +808,7 @@ export function CustomMcpWizard({
                     )}
                   </div>
                 )}
-                {state.testError && (
-                  <p className="text-xs text-[color:var(--status-error)]">{state.testError}</p>
-                )}
+                {state.testError && <p className="text-xs text-status-error">{state.testError}</p>}
                 {state.testedConnectionId && (
                   <McpTestLogDrawer connectionId={state.testedConnectionId} busy={busy} />
                 )}

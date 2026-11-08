@@ -7,12 +7,12 @@
 import type { ReactNode } from "react";
 
 const SERIES_COLORS = [
-  "var(--primary)",
-  "var(--status-warning, #eab308)",
-  "var(--status-error, #ef4444)",
-  "var(--status-running, #22c55e)",
-  "#8b5cf6",
-  "#06b6d4",
+  "var(--chart-1)",
+  "var(--chart-3)",
+  "var(--chart-4)",
+  "var(--chart-2)",
+  "var(--chart-5)",
+  "var(--muted-foreground)",
 ];
 
 interface ChartSeries {

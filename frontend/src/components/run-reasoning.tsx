@@ -73,7 +73,7 @@ export function StepBudget({ step }: { step: ModelStep }) {
     <span
       className={cn(
         "tabular-nums",
-        step.budgetUsedUp ? "text-[color:var(--status-warning)]" : "text-muted-foreground",
+        step.budgetUsedUp ? "text-status-warning" : "text-muted-foreground",
       )}
       title={
         step.budgetUsedUp
