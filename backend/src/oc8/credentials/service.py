@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import importlib
 import uuid
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +19,21 @@ from oc8 import models as m
 from oc8.capas.loader import TRUSTED, import_entry_point
 from oc8.credentials.registry import find_credential_type_owner, get_credential_type
 from oc8.secrets.service import resolve_secret, store_secret
+
+
+#: Which owner a lookup accepts. "any": internal callers holding an id the
+#: system itself stored (a running bridge, the mailer). "organisation": every
+#: admin surface -- a personal credential does not exist there. A member id:
+#: that member's own rows (the connections API).
+OwnerFilter = uuid.UUID | Literal["any", "organisation"]
+
+
+def _owner_matches(row: m.Credential, owner: OwnerFilter) -> bool:
+    if owner == "any":
+        return True
+    if owner == "organisation":
+        return row.owner_member_id is None
+    return row.owner_member_id == owner
 
 
 class CredentialNotFound(Exception):
@@ -39,9 +54,7 @@ class CredentialFieldNotSet(Exception):
     def __init__(self, credential_name: str, field_key: str) -> None:
         self.credential_name = credential_name
         self.field_key = field_key
-        super().__init__(
-            f"credential {credential_name!r} has no value set for field {field_key!r}"
-        )
+        super().__init__(f"credential {credential_name!r} has no value set for field {field_key!r}")
 
 
 class CredentialInUse(Exception):
@@ -63,6 +76,7 @@ async def create_credential(
     name: str,
     credential_type: str,
     field_values: dict[str, Any],
+    owner_member_id: uuid.UUID | None = None,
 ) -> m.Credential:
     cred_type = await get_credential_type(db, tenant_id=tenant_id, name=credential_type)
     secret_keys = {f.key for f in cred_type.fields if f.kind == "password"}
@@ -89,6 +103,7 @@ async def create_credential(
         credential_type=credential_type,
         field_values=plain_values,
         secret_refs={},
+        owner_member_id=owner_member_id,
     )
     db.add(cred)
     await db.flush()
@@ -106,20 +121,32 @@ async def create_credential(
 
 
 async def list_credentials(
-    db: AsyncSession, *, tenant_id: uuid.UUID, credential_type: str | None = None
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    credential_type: str | None = None,
+    owner: OwnerFilter = "any",
 ) -> list[m.Credential]:
     stmt = select(m.Credential).where(m.Credential.tenant_id == tenant_id)
     if credential_type is not None:
         stmt = stmt.where(m.Credential.credential_type == credential_type)
+    if owner == "organisation":
+        stmt = stmt.where(m.Credential.owner_member_id.is_(None))
+    elif owner != "any":
+        stmt = stmt.where(m.Credential.owner_member_id == owner)
     rows = (await db.execute(stmt.order_by(m.Credential.name))).scalars().all()
     return list(rows)
 
 
 async def get_credential(
-    db: AsyncSession, *, tenant_id: uuid.UUID, credential_id: uuid.UUID
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    credential_id: uuid.UUID,
+    owner: OwnerFilter = "any",
 ) -> m.Credential:
     row = await db.get(m.Credential, credential_id)
-    if row is None or row.tenant_id != tenant_id:
+    if row is None or row.tenant_id != tenant_id or not _owner_matches(row, owner):
         raise CredentialNotFound(str(credential_id))
     return row
 
@@ -131,8 +158,9 @@ async def update_credential(
     credential_id: uuid.UUID,
     name: str | None = None,
     field_values: dict[str, Any] | None = None,
+    owner: OwnerFilter = "any",
 ) -> m.Credential:
-    cred = await get_credential(db, tenant_id=tenant_id, credential_id=credential_id)
+    cred = await get_credential(db, tenant_id=tenant_id, credential_id=credential_id, owner=owner)
     if name is not None:
         cred.name = name
     if field_values is not None:
@@ -156,9 +184,13 @@ async def update_credential(
 
 
 async def delete_credential(
-    db: AsyncSession, *, tenant_id: uuid.UUID, credential_id: uuid.UUID
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    credential_id: uuid.UUID,
+    owner: OwnerFilter = "any",
 ) -> None:
-    cred = await get_credential(db, tenant_id=tenant_id, credential_id=credential_id)
+    cred = await get_credential(db, tenant_id=tenant_id, credential_id=credential_id, owner=owner)
     references = await _find_references(db, tenant_id=tenant_id, credential_id=credential_id)
     if references:
         raise CredentialInUse(references)
@@ -208,7 +240,12 @@ async def _find_references(
 
 
 async def resolve_credential_field(
-    db: AsyncSession, *, tenant_id: uuid.UUID, credential_id: uuid.UUID, field_key: str
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    credential_id: uuid.UUID,
+    field_key: str,
+    owner: OwnerFilter = "any",
 ) -> str:
     """Raises `CredentialNotFound` when the credential ROW itself does not
     exist for this tenant, or `CredentialFieldNotSet` when it exists but
@@ -217,7 +254,7 @@ async def resolve_credential_field(
     accurate error (design note from Task 4's review, confirmed live by
     Task 15's E2E pass: a blank optional `endpoint` on an otherwise-valid S3
     credential must not be reported as "credential not found")."""
-    cred = await get_credential(db, tenant_id=tenant_id, credential_id=credential_id)
+    cred = await get_credential(db, tenant_id=tenant_id, credential_id=credential_id, owner=owner)
     ref = cred.secret_refs.get(field_key)
     if ref is not None:
         return await resolve_secret(db, tenant_id=tenant_id, ref=ref)
@@ -228,10 +265,14 @@ async def resolve_credential_field(
 
 
 async def test_credential(
-    db: AsyncSession, *, tenant_id: uuid.UUID, credential_id: uuid.UUID
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    credential_id: uuid.UUID,
+    owner: OwnerFilter = "any",
 ) -> None:
     """Raises on failure; on success, records last_tested_at/last_test_ok."""
-    cred = await get_credential(db, tenant_id=tenant_id, credential_id=credential_id)
+    cred = await get_credential(db, tenant_id=tenant_id, credential_id=credential_id, owner=owner)
     cred_type = await get_credential_type(db, tenant_id=tenant_id, name=cred.credential_type)
     if not cred_type.validate_entry_point:
         cred.last_tested_at = dt.datetime.now(tz=dt.UTC)

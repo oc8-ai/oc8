@@ -569,6 +569,7 @@ async def configure_plugin(
                     tenant_id=principal.tenant_id,
                     credential_id=credential_id,
                     field_key=secret_fields[0].key,
+                    owner="organisation",
                 )
             except CredentialNotFound as exc:
                 raise HTTPException(
@@ -597,7 +598,10 @@ async def configure_plugin(
             # instead, so writing the plaintext here is safe.
             try:
                 cred_row = await get_credential(
-                    db, tenant_id=principal.tenant_id, credential_id=credential_id
+                    db,
+                    tenant_id=principal.tenant_id,
+                    credential_id=credential_id,
+                    owner="organisation",
                 )
             except CredentialNotFound as exc:
                 raise HTTPException(
@@ -1009,6 +1013,7 @@ async def _configure_without_connection(
 
     await db.commit()
     return PluginSetupResult(connection_id=None)
+
 
 @router.post(
     "/capas/install-from-disk",

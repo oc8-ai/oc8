@@ -104,6 +104,7 @@ async def _provision_microsoft(
                 m.OAuthConnection.tenant_id == tenant_id,
                 m.OAuthConnection.provider == "microsoft",
                 m.OAuthConnection.account_label == client_id,
+                m.OAuthConnection.owner_member_id.is_(None),
             )
         )
     ).scalar_one_or_none()
@@ -288,6 +289,7 @@ async def _provision_google(
                 m.OAuthConnection.tenant_id == tenant_id,
                 m.OAuthConnection.provider == "google",
                 m.OAuthConnection.account_label == client_email,
+                m.OAuthConnection.owner_member_id.is_(None),
             )
         )
     ).scalar_one_or_none()

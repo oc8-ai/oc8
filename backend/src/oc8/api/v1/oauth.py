@@ -327,7 +327,13 @@ async def list_connections(
     principal: CurrentPrincipal,
 ) -> list[OAuthConnectionDTO]:
     rows = (
-        (await db.execute(select(m.OAuthConnection).order_by(m.OAuthConnection.created_at)))
+        (
+            await db.execute(
+                select(m.OAuthConnection)
+                .where(m.OAuthConnection.owner_member_id.is_(None))
+                .order_by(m.OAuthConnection.created_at)
+            )
+        )
         .scalars()
         .all()
     )
@@ -345,7 +351,7 @@ async def disconnect(
     principal: CurrentPrincipal,
 ) -> None:
     conn = await db.get(m.OAuthConnection, connection_id)
-    if conn is None or conn.tenant_id != principal.tenant_id:
+    if conn is None or conn.tenant_id != principal.tenant_id or conn.owner_member_id is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "connection not found")
 
     prov = get_provider(conn.provider)

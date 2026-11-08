@@ -49,9 +49,7 @@ async def create_login(
             db, tenant_id=principal.tenant_id, name=body.credential_type
         )
     except CredentialTypeNotFound as exc:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, f"unknown credential type: {exc}"
-        ) from exc
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"unknown credential type: {exc}") from exc
     dept: m.Department | None = None
     if body.department_id is not None:
         dept = await db.get(m.Department, body.department_id)
@@ -100,7 +98,10 @@ async def create_login(
         # values already sitting in the credential store.
         try:
             cred = await get_credential(
-                db, tenant_id=principal.tenant_id, credential_id=body.credential_id
+                db,
+                tenant_id=principal.tenant_id,
+                credential_id=body.credential_id,
+                owner="organisation",
             )
         except CredentialNotFound as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "no such credential") from exc
