@@ -15,6 +15,7 @@ import {
   useUpdateApiKey,
   type ApiKeyCreatedDTO,
 } from "@/lib/hooks";
+import { SkeletonRows } from "@/components/skeleton-rows";
 
 export function ApiKeysPanel() {
   const t = useT();
@@ -172,7 +173,14 @@ export function ApiKeysPanel() {
 
       {revealed && <RevealedToken keyDto={revealed} onDismiss={() => setRevealed(null)} />}
 
-      {isLoading && <Loader2 className="mt-5 h-4 w-4 animate-spin text-muted-foreground" />}
+      {isLoading && (
+        <SkeletonRows
+          label={t("Loading…", "Wird geladen…")}
+          rows={2}
+          rowClassName="h-10"
+          className="mt-4"
+        />
+      )}
 
       {!isLoading && keys.length === 0 && !creating && (
         <p className="mt-4 text-sm text-muted-foreground">

@@ -12,12 +12,13 @@
 // => rootRouteImport`) before committing this file.
 import { useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { ArrowLeft, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
+import { ArrowLeft, ChevronLeft, ChevronRight } from "lucide-react";
 import { Panel } from "@/components/app-shell";
 import { useKbDocuments, useKbChunks, useSimilarChunks } from "@/lib/hooks";
 import { ApiError } from "@/lib/api";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
+import { SkeletonRows } from "@/components/skeleton-rows";
 
 const CHUNKS_PAGE_SIZE = 20;
 
@@ -109,10 +110,11 @@ export function KbContentView({ kbId }: { kbId: string }) {
             {t("Documents", "Dokumente")}
           </h3>
           {documentsLoading ? (
-            <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
-              <Loader2 className="size-4 animate-spin" />
-              {t("Loading…", "Wird geladen…")}
-            </div>
+            <SkeletonRows
+              label={t("Loading…", "Wird geladen…")}
+              rowClassName="h-9"
+              className="py-4"
+            />
           ) : (documents ?? []).length === 0 ? (
             <p className="py-4 text-sm text-muted-foreground">
               {t("No documents yet.", "Noch keine Dokumente.")}
@@ -165,10 +167,11 @@ export function KbContentView({ kbId }: { kbId: string }) {
                 : t("Chunks · all documents", "Chunks · alle Dokumente")}
           </h3>
           {chunksLoading ? (
-            <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
-              <Loader2 className="size-4 animate-spin" />
-              {t("Loading…", "Wird geladen…")}
-            </div>
+            <SkeletonRows
+              label={t("Loading…", "Wird geladen…")}
+              rowClassName="h-9"
+              className="py-4"
+            />
           ) : chunksPermissionDenied ? (
             <p className="py-4 text-sm text-muted-foreground">
               {t(
@@ -266,10 +269,11 @@ export function KbContentView({ kbId }: { kbId: string }) {
                 {t("Similar chunks", "Ähnliche Chunks")}
               </h3>
               {similarLoading ? (
-                <div className="flex items-center gap-2 py-2 text-sm text-muted-foreground">
-                  <Loader2 className="size-4 animate-spin" />
-                  {t("Loading…", "Wird geladen…")}
-                </div>
+                <SkeletonRows
+                  label={t("Loading…", "Wird geladen…")}
+                  rowClassName="h-9"
+                  className="py-2"
+                />
               ) : similarError || (similarChunks ?? []).length === 0 ? (
                 <p className="py-2 text-sm text-muted-foreground">
                   {t(

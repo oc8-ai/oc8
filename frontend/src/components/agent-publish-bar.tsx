@@ -22,6 +22,7 @@ import {
   usePublishAgentVersion,
   type AgentVersionFieldDiff,
 } from "@/lib/agent-versions";
+import { SkeletonRows } from "@/components/skeleton-rows";
 
 /** A JSON value rendered for a diff cell. Objects are stringified rather than
  *  expanded: a `narrowing.odoo` entry is a small flat object and one line of
@@ -314,10 +315,12 @@ export function AgentPublishBar({ agentId, mayManage }: { agentId: string; mayMa
             </div>
             <div className="p-5">
               {diff.isPending ? (
-                <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  {t("Loading…", "Wird geladen…")}
-                </div>
+                <SkeletonRows
+                  label={t("Loading…", "Wird geladen…")}
+                  rows={4}
+                  rowClassName="h-8"
+                  className="py-2"
+                />
               ) : (
                 <DiffTable entries={diff.data?.entries ?? []} />
               )}

@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { Check, ChevronRight, Copy, Loader2, Plus, Users } from "lucide-react";
+import { Check, ChevronRight, Copy, Plus, Users } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Panel, roleLabel } from "@/components/app-shell";
@@ -16,6 +16,7 @@ import { ApiError } from "@/lib/api";
 import { useAuthConfig } from "@/lib/hooks";
 import { useMay } from "@/lib/governance-hooks";
 import { useT } from "@/lib/i18n";
+import { SkeletonRows } from "@/components/skeleton-rows";
 
 export const Route = createFileRoute("/members/")({
   component: MembersPage,
@@ -427,10 +428,12 @@ function MembersTable() {
       />
 
       {isLoading ? (
-        <div className="mt-6 flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="size-4 animate-spin" />
-          {t("Loading users…", "Benutzer werden geladen…")}
-        </div>
+        <SkeletonRows
+          label={t("Loading users…", "Benutzer werden geladen…")}
+          rows={5}
+          rowClassName="h-10"
+          className="mt-6"
+        />
       ) : error ? (
         <p className="mt-6 text-sm text-destructive">
           {t("The user list could not be loaded.", "Die Benutzerliste konnte nicht geladen werden.")}

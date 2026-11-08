@@ -19,6 +19,7 @@ import {
   useAgentVersions,
   useRollbackAgentVersion,
 } from "@/lib/agent-versions";
+import { SkeletonRows } from "@/components/skeleton-rows";
 
 type Intent = "diff" | "rollback";
 
@@ -67,8 +68,8 @@ export function AgentVersionsTab({ agentId, mayManage }: { agentId: string; mayM
 
   if (isPending) {
     return (
-      <Panel className="flex items-center gap-2 p-6 text-sm text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin" /> {t("Loading…", "Wird geladen…")}
+      <Panel className="p-5">
+        <SkeletonRows label={t("Loading…", "Wird geladen…")} rowClassName="h-12" />
       </Panel>
     );
   }
@@ -204,10 +205,12 @@ export function AgentVersionsTab({ agentId, mayManage }: { agentId: string; mayM
             </div>
             <div className="p-5">
               {diff.isPending ? (
-                <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  {t("Loading…", "Wird geladen…")}
-                </div>
+                <SkeletonRows
+                  label={t("Loading…", "Wird geladen…")}
+                  rows={4}
+                  rowClassName="h-8"
+                  className="py-2"
+                />
               ) : (
                 <DiffTable entries={diff.data?.entries ?? []} />
               )}

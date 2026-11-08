@@ -4,7 +4,6 @@ import {
   Check,
   Copy,
   KeyRound,
-  Loader2,
   Mail,
   Save,
   ShieldCheck,
@@ -48,6 +47,8 @@ import {
   type MemberSeat,
   type RoleAssignee,
 } from "@/lib/roles-hooks";
+import { SkeletonRows } from "@/components/skeleton-rows";
+import { Skeleton } from "@/components/ui/skeleton";
 
 export const Route = createFileRoute("/members/$memberId")({
   component: MemberDetail,
@@ -85,9 +86,9 @@ function MemberDetail() {
 
   if (isLoading) {
     return (
-      <div className="flex items-center gap-2 p-6 text-sm text-muted-foreground">
-        <Loader2 className="size-4 animate-spin" />
-        {t("Loading…", "Wird geladen…")}
+      <div className="space-y-4 p-6">
+        <Skeleton className="h-8 w-64" />
+        <SkeletonRows label={t("Loading…", "Wird geladen…")} rows={4} rowClassName="h-10" />
       </div>
     );
   }

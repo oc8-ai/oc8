@@ -30,6 +30,7 @@ import {
   useUpdateOrganizationSettings,
   type CredentialDTO,
 } from "@/lib/hooks";
+import { SkeletonRows } from "@/components/skeleton-rows";
 
 export const Route = createFileRoute("/settings")({
   component: SettingsPage,
@@ -202,7 +203,14 @@ function OrganizationPanel() {
       <p className="mt-1 text-xs text-muted-foreground">
         {t("Basic details of your workspace.", "Grunddaten Ihres Arbeitsbereichs.")}
       </p>
-      {isLoading && <Loader2 className="mt-5 h-4 w-4 animate-spin text-muted-foreground" />}
+      {isLoading && (
+        <SkeletonRows
+          label={t("Loading…", "Wird geladen…")}
+          rows={2}
+          rowClassName="h-9"
+          className="mt-5"
+        />
+      )}
       {error && (
         <p className="mt-4 text-sm text-status-error">
           {t(

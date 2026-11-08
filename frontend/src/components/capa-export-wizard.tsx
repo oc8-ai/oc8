@@ -7,6 +7,7 @@ import { downloadCapaExport, type CapaExportItemInput } from "@/lib/api";
 import { useAgents, useDepartments, usePreviewCapaExport, useSkills } from "@/lib/hooks";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
+import { SkeletonRows } from "@/components/skeleton-rows";
 
 type WizardStep = "selection" | "details" | "preview" | "export";
 
@@ -585,12 +586,7 @@ function DetailsStep({
 function PreviewStep({ preview }: { preview: ReturnType<typeof usePreviewCapaExport> }) {
   const t = useT();
   if (preview.isPending) {
-    return (
-      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin" />
-        {t("Building preview…", "Vorschau wird erstellt…")}
-      </div>
-    );
+    return <SkeletonRows label={t("Building preview…", "Vorschau wird erstellt…")} rows={4} />;
   }
   if (preview.isError) {
     return (

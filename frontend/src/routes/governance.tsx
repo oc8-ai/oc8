@@ -4,7 +4,6 @@ import {
   Bot,
   Check,
   ChevronRight,
-  Loader2,
   Lock,
   MapPin,
   Minus,
@@ -40,6 +39,7 @@ import {
 } from "@/lib/roles-hooks";
 import type { Seat } from "@/lib/hooks";
 import { useLang, useT } from "@/lib/i18n";
+import { SkeletonRows } from "@/components/skeleton-rows";
 
 export const Route = createFileRoute("/governance")({
   component: GovernancePage,
@@ -70,11 +70,12 @@ function GovernancePage() {
 
   if (isLoading) {
     return (
-      <Panel className="p-8">
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="size-4 animate-spin" />
-          {t("Loading the permission model…", "Berechtigungsmodell wird geladen…")}
-        </div>
+      <Panel className="p-5">
+        <SkeletonRows
+          label={t("Loading the permission model…", "Berechtigungsmodell wird geladen…")}
+          rows={4}
+          rowClassName="h-10"
+        />
       </Panel>
     );
   }
@@ -391,10 +392,11 @@ function TenantRoles({ data }: { data: Governance }) {
       </div>
 
       {isLoading && (
-        <div className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="size-4 animate-spin" />
-          {t("Loading roles…", "Rollen werden geladen…")}
-        </div>
+        <SkeletonRows
+          label={t("Loading roles…", "Rollen werden geladen…")}
+          rowClassName="h-10"
+          className="mt-4"
+        />
       )}
       {error && (
         <p className="mt-4 text-sm text-destructive">
@@ -553,10 +555,10 @@ function RoleDetail({
 
   if (isLoading || !role) {
     return (
-      <div className="mt-1 flex items-center gap-2 rounded-md border border-border px-3 py-3 text-sm text-muted-foreground">
-        <Loader2 className="size-4 animate-spin" />
-        {t("Loading the role…", "Rolle wird geladen…")}
-      </div>
+      <SkeletonRows
+        label={t("Loading the role…", "Rolle wird geladen…")}
+        className="mt-1 rounded-md border border-border px-3 py-3"
+      />
     );
   }
 
