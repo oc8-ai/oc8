@@ -42,6 +42,13 @@ def reason_for_exception(exc: BaseException) -> str:
                 return "auth"
         elif isinstance(cur, smtplib.SMTPAuthenticationError):
             return "auth"
+        elif isinstance(cur, (smtplib.SMTPConnectError, smtplib.SMTPServerDisconnected)):
+            return "unreachable"
+        elif isinstance(cur, (smtplib.SMTPException, httpx.UnsupportedProtocol)):
+            # The server answered (or the address names no usable protocol):
+            # SMTPException is an OSError and UnsupportedProtocol a
+            # TransportError, but neither means the target is unreachable.
+            return "invalid"
         elif isinstance(cur, (httpx.TransportError, ssl.SSLError, OSError, TimeoutError)):
             return "unreachable"
         cur = cur.__cause__ or cur.__context__

@@ -4,6 +4,7 @@ they must not reach internal addresses and must not echo upstream text."""
 from __future__ import annotations
 
 import ipaddress
+import smtplib
 import ssl
 import uuid
 from collections.abc import Awaitable, Callable
@@ -373,3 +374,24 @@ def test_a_scheme_less_url_value_is_guarded_but_not_rewritten(spy: Spy) -> None:
     assert values == {"endpoint": "minio:9000"}
     with pytest.raises(CredentialCheckFailed):
         _guard_url_fields(cred_type, {"endpoint": "localhost:9000"})
+
+
+@pytest.mark.parametrize(
+    ("exc", "reason"),
+    [
+        (smtplib.SMTPNotSupportedError("STARTTLS extension not supported"), "invalid"),
+        (smtplib.SMTPSenderRefused(550, b"no", "a@b.test"), "invalid"),
+        (smtplib.SMTPRecipientsRefused({}), "invalid"),
+        (smtplib.SMTPDataError(554, b"rejected"), "invalid"),
+        (httpx.UnsupportedProtocol("Request URL has an unsupported protocol 'ftp://'"), "invalid"),
+        (smtplib.SMTPConnectError(421, b"busy"), "unreachable"),
+        (smtplib.SMTPServerDisconnected("Connection unexpectedly closed"), "unreachable"),
+        (smtplib.SMTPAuthenticationError(535, b"bad"), "auth"),
+        (httpx.ConnectError("refused"), "unreachable"),
+        (ConnectionRefusedError(61, "refused"), "unreachable"),
+    ],
+)
+def test_protocol_and_server_refusals_are_not_unreachable(exc: Exception, reason: str) -> None:
+    from oc8.connections.checks import reason_for_exception
+
+    assert reason_for_exception(exc) == reason
