@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.authz.authority import authority_for_member
 from oc8.authz.scope import scope_for_member
+from oc8.chat.reach import member_can_reach_agent
 from oc8.runtime import run_inputs
 from oc8.runtime.run_inputs import (
     MAX_INPUT_CHARS,
@@ -99,6 +100,44 @@ async def test_an_autonomous_run_is_steered_by_managers_only(
         assert await _may(db, run, bob, "member") is False
 
 
+async def _seat(
+    db: AsyncSession, tenant: uuid.UUID, member: m.OrgMember, agent: m.Agent, *, manage: bool
+) -> None:
+    db.add(
+        m.OrgMemberDepartment(
+            tenant_id=tenant,
+            member_id=member.id,
+            department_id=agent.department_id,
+            seat_role="dept_viewer",
+            agent_manage=manage,
+        )
+    )
+    await db.flush()
+
+
+async def test_reaching_an_agent_is_not_managing_it(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, _, bob = await _world(db, tenant)
+        await _seat(db, tenant, bob, agent, manage=False)
+        run = await _run(db, tenant, agent, operator=None)
+        # Bob CAN reach the agent (a seat in its department) -- so a refusal
+        # here is the manager rule, not the reach gate.
+        assert await member_can_reach_agent(db, member=bob, agent_id=agent.id, token_role="member")
+        assert await _may(db, run, bob, "member") is False
+
+
+async def test_a_seat_with_agent_manage_steers_an_autonomous_run(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, _, bob = await _world(db, tenant)
+        await _seat(db, tenant, bob, agent, manage=True)
+        run = await _run(db, tenant, agent, operator=None)
+        assert await _may(db, run, bob, "member") is True
+
+
 async def test_an_operator_who_lost_the_agent_cannot_steer(
     app_session: AppSessionFactory,
 ) -> None:
@@ -158,6 +197,40 @@ async def test_a_concurrent_consumer_skips_inputs_another_one_holds(
     assert [c.text for c in held] == ["only once"]
     assert stolen == []
     assert after == []
+
+
+async def test_inputs_are_consumed_in_the_order_they_were_accepted(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, alice, _ = await _world(db, tenant)
+        run = await _run(db, tenant, agent)
+        run_id = run.id
+
+    # Writer B's transaction starts first, so its now()-based created_at is the
+    # OLDEST -- yet A's inputs are accepted before B's, and must come out first.
+    async with app_session(tenant) as writer_b:
+        b_run = await writer_b.get(m.AgentRun, run_id)
+        b_member = await writer_b.get(m.OrgMember, alice.id)
+        assert b_run is not None and b_member is not None
+        async with app_session(tenant) as writer_a:
+            a_run = await writer_a.get(m.AgentRun, run_id)
+            a_member = await writer_a.get(m.OrgMember, alice.id)
+            assert a_run is not None and a_member is not None
+            await add_run_input(writer_a, run=a_run, member=a_member, text="a1")
+            # B queues behind A's per-run writer lock until A commits.
+            b_write = asyncio.create_task(
+                add_run_input(writer_b, run=b_run, member=b_member, text="b1")
+            )
+            await asyncio.sleep(0.3)
+            assert not b_write.done()
+            await add_run_input(writer_a, run=a_run, member=a_member, text="a2")
+        await b_write
+
+    async with app_session(tenant) as consumer:
+        taken = await consume_run_inputs(consumer, run_id=run_id, step=1)
+    assert [c.text for c in taken] == ["a1", "a2", "b1"]
 
 
 async def test_a_finished_run_takes_no_input(app_session: AppSessionFactory) -> None:

@@ -40,6 +40,7 @@ def upgrade() -> None:
             id uuid PRIMARY KEY,
             tenant_id uuid NOT NULL,
             run_id uuid NOT NULL,
+            seq bigint GENERATED ALWAYS AS IDENTITY,
             author_member_id uuid NOT NULL,
             text text NOT NULL,
             consumed_at timestamptz,
@@ -50,6 +51,8 @@ def upgrade() -> None:
         )
     """)
     op.execute("CREATE INDEX IF NOT EXISTS ix_run_input_tenant_id ON run_input (tenant_id)")
+    # Consumers read a run's pending inputs in `seq` order: acceptance order,
+    # which `created_at` (transaction start) is not.
     op.execute(
         "CREATE INDEX IF NOT EXISTS ix_run_input_run_pending ON run_input (run_id, consumed_at)"
     )

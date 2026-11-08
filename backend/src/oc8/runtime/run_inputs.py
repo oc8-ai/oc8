@@ -97,8 +97,10 @@ async def add_run_input(
         raise InputRefused(422, f"message is longer than {MAX_INPUT_CHARS} characters")
     if RunState(run.state) in TERMINAL:
         raise InputRefused(409, "run has already finished")
-    # Serialise writers per run so the pending cap below is a real bound. Not a
-    # row lock on agent_run: the executor holds that one for the whole run.
+    # Serialise writers per run, until commit: the pending cap below is then a
+    # real bound, and a lower `seq` is always committed before a higher one, so
+    # consumers never see a later input before an earlier one. Not a row lock
+    # on agent_run: the executor holds that one for the whole run.
     await db.execute(
         sql_text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
         {"key": f"run_input:{run.id}"},
@@ -138,17 +140,27 @@ async def add_run_input(
 async def consume_run_inputs(
     db: AsyncSession, *, run_id: uuid.UUID, step: int
 ) -> list[ConsumedInput]:
-    """Take every waiting input for `run_id`, oldest first, and stamp it.
+    """Take every waiting input for `run_id`, in acceptance order, and stamp it.
 
-    `SKIP LOCKED`: a second consumer racing this one neither waits for nor
-    re-takes rows this transaction holds -- each input is delivered once."""
+    One consumer per run at a time: a rival that finds the per-run consumer
+    lock taken gets nothing rather than waiting or taking newer inputs past
+    older ones the holder still has. Each input is delivered once, in order.
+    The lock is transaction-scoped -- consume in a short transaction."""
+    got = (
+        await db.execute(
+            sql_text("SELECT pg_try_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"run_input_consume:{run_id}"},
+        )
+    ).scalar_one()
+    if not got:
+        return []
     rows = list(
         (
             await db.execute(
                 select(m.RunInput)
                 .where(m.RunInput.run_id == run_id, m.RunInput.consumed_at.is_(None))
-                .order_by(m.RunInput.created_at, m.RunInput.id)
-                .with_for_update(skip_locked=True)
+                .order_by(m.RunInput.seq)
+                .with_for_update()
             )
         ).scalars()
     )
