@@ -549,6 +549,41 @@ async def test_ask_user_suspends_the_run_for_a_clarification(app_session: object
 
 
 @pytest.mark.asyncio
+async def test_a_structured_ask_suspends_with_its_questions_beside_the_text(
+    app_session: object,
+) -> None:
+    from oc8 import models as m
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent, _task, run = await _plain_agent_run(db, tenant)
+        agent_id, run_id = agent.id, run.id
+
+    ask = {
+        "questions": [
+            {
+                "id": "r",
+                "prompt": "Region?",
+                "kind": "single",
+                "options": [{"key": "eu", "label": "EU"}],
+            }
+        ]
+    }
+    code, body = await _post_tool(tenant, agent_id, run_id, "ask_user", ask)
+    assert code == 200, body
+    assert body["status"] == "waiting_for_input"
+
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        verdict = run.context["isolated_result"]
+        # The harness shapes the tool output (a step header in front); the
+        # readable question is in it either way.
+        assert "Region?\n- EU" in verdict["output"]
+        assert verdict["questions"][0]["id"] == "r"
+
+
+@pytest.mark.asyncio
 async def test_an_empty_question_does_not_suspend_the_run(app_session: object) -> None:
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:  # type: ignore[operator]

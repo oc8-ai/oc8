@@ -441,6 +441,50 @@ async def test_a_clarification_verdict_parks_the_run_and_task(
         assert task is not None and task.state == "waiting_for_input"
 
 
+async def test_a_structured_clarification_verdict_carries_its_questions(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The questions ride out of the container in their own verdict field, and
+    reach the executor on the RunResult -- never inside the readable output."""
+    tenant = uuid.uuid4()
+    agent_id, run_id = await _agent_and_run(app_session, tenant)
+    questions = [
+        {
+            "id": "r",
+            "prompt": "Region?",
+            "kind": "single",
+            "options": [{"key": "eu", "label": "EU", "detail": ""}],
+            "allow_other": False,
+            "required": True,
+        }
+    ]
+
+    async def asks() -> None:
+        async with app_session(tenant) as db:
+            run = await db.get(m.AgentRun, run_id)
+            assert run is not None
+            run.context = {
+                **run.context,
+                "isolated_result": {
+                    "status": "waiting_for_input",
+                    "output": "Region?\n- EU",
+                    "questions": questions,
+                },
+            }
+
+    monkeypatch.setattr("oc8.runtime.isolated.get_sandbox_driver", lambda: _FakeDriver(asks))
+    async with app_session(tenant) as db:
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        result = await DockerIsolatedRuntime().execute(
+            db, agent=agent, task_text="Plane den Launch", tenant_id=tenant, run_id=run_id
+        )
+
+    assert result.status == "waiting_for_input"
+    assert result.output == "Region?\n- EU"
+    assert result.pending_questions == questions
+
+
 async def test_a_delegated_sub_run_reaches_the_executor_for_publishing(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

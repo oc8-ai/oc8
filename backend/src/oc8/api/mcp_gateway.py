@@ -645,9 +645,25 @@ async def _call_tool(
         )
 
     if name == ASK_USER.name:
-        question = str(arguments.get("question", "")).strip()
-        if not question:
-            return _tool_result("ERROR: ask_user requires a non-empty question", is_error=True)
+        from oc8.chat.questions import (
+            QuestionError,
+            is_plain,
+            parse_questions,
+            questions_to_json,
+            render_questions_text,
+        )
+
+        try:
+            questions = parse_questions(arguments)
+        except QuestionError as exc:
+            # Same guard as control_tools.py: a malformed or empty question is a
+            # model error, never a park a human would stare at.
+            return _tool_result(f"ERROR: {exc}", is_error=True)
+        question = render_questions_text(questions)
+        parked: dict[str, Any] = {"status": "waiting_for_input", "output": question}
+        if not is_plain(questions):
+            # Structured questions (spec §4.1) ride beside the readable text.
+            parked["questions"] = questions_to_json(questions)
         # ONLY the park marker -- structurally identical to the
         # REQUIRE_APPROVAL branch below (write the marker, commit, rebind,
         # publish, return a readable "parked, do not retry" error) and, like
@@ -679,7 +695,7 @@ async def _call_tool(
         await merge_context(
             db,
             run,
-            {"isolated_result": {"status": "waiting_for_input", "output": question}},
+            {"isolated_result": parked},
         )
         await db.commit()
         await _rebind_tenant(db, run.tenant_id)

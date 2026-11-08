@@ -1110,7 +1110,26 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         # here. (Unlike waiting_for_approval, the engine's
                         # ask_user path doesn't set agent.status itself either
                         # -- it's simply left as "running".)
-                        await request_clarification(db, run=run, question=result.output)
+                        from oc8.chat.questions import (
+                            QuestionError,
+                            format_for_messenger,
+                            questions_from_json,
+                        )
+
+                        try:
+                            parked_questions = (
+                                questions_from_json(result.pending_questions)
+                                if result.pending_questions
+                                else None
+                            )
+                        except QuestionError:
+                            # Validated when asked; a verdict that no longer
+                            # parses parks as the plain readable question.
+                            logger.warning("run %s: unreadable pending questions", run_id)
+                            parked_questions = None
+                        await request_clarification(
+                            db, run=run, question=result.output, questions=parked_questions
+                        )
                         from oc8.copilot.followups import load_responsibility_for_run
 
                         # Only the Copilot's own turns (source chat) wait on the
@@ -1134,12 +1153,17 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         parked_sender = await _current_chat_sender(db, run)
                         if parked_sender is not None:
                             parked_channel, parked_external_id = parked_sender
+                            # A door without buttons: structured questions go
+                            # out numbered, and the reply ("1,3") answers them
+                            # (channels/dispatch.py).
                             channel_replies.append(
                                 (
                                     run.tenant_id,
                                     parked_channel,
                                     parked_external_id,
-                                    _CHAT_NEEDS_INPUT,
+                                    format_for_messenger(parked_questions)
+                                    if parked_questions
+                                    else _CHAT_NEEDS_INPUT,
                                 )
                             )
                     except RepeatedClarification as exc:

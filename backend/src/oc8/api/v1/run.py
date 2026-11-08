@@ -16,6 +16,7 @@ from oc8 import models as m
 from oc8.agents.versioning import pinned_version_no
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
 from oc8.authz.permissions import RUN, RUN_CONTROL, RUN_START, VIEW, perm
+from oc8.chat.questions import QuestionError
 from oc8.runtime.cancellation import record_operator_cancel
 from oc8.runtime.clarification import resolve_clarification
 from oc8.runtime.intake import enqueue_run, publish_run
@@ -395,7 +396,11 @@ async def answer_run(
         raise HTTPException(status.HTTP_409_CONFLICT, "run is not waiting for input")
     # Record the answer, fold it into the run context, and re-queue the
     # already-existing run (not a new one, so publish_run, not enqueue_run).
-    await resolve_clarification(db, run=run_row, answer=body.answer)
+    try:
+        await resolve_clarification(db, run=run_row, answer=body.answer)
+    except QuestionError as exc:
+        # Structured questions (spec §4.1): the written answer must fit them.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     # No further DB query after commit (the transaction-local tenant binding
     # ends); run_to_dto only reads already-loaded attributes.
     await db.commit()

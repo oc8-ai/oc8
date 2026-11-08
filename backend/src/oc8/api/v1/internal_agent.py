@@ -1993,6 +1993,7 @@ async def _dispatch_one_tool(
         harness.store(ctx)
 
     suspend: str | None = None
+    pending_questions: list[dict[str, Any]] | None = None
 
     # A core-owned tool goes through the SAME dispatcher as the in-process engine
     # (oc8.agent.control_tools). It returns None for a connection tool, which then
@@ -2050,6 +2051,7 @@ async def _dispatch_one_tool(
                 message=control.output.removeprefix("ERROR: ").strip(),
             )
         suspend = control.suspend
+        pending_questions = control.questions
         if control.contains_restricted:
             # Read by every later /step's completion (see above): the router
             # then refuses a cloud model or fallback for this run.
@@ -2298,7 +2300,8 @@ async def _dispatch_one_tool(
             record_decision(
                 harness.state.ledger,
                 tool=tc.name,
-                question=str(tc.arguments.get("question", "")),
+                # A structured ask has no `question`; its readable text is the output.
+                question=str(tc.arguments.get("question") or (output if pending_questions else "")),
                 step=harness.state.step_no,
             )
     after_sat = _satisfied_map(procs, harness)
@@ -2376,6 +2379,10 @@ async def _dispatch_one_tool(
         # executor opens the Clarification and parks the run (same shape as the
         # approval suspend above).
         ctx["isolated_result"] = {"status": suspend, "output": output}
+        if suspend == "waiting_for_input" and pending_questions:
+            # A structured ask_user (spec §4.1): its questions ride beside the
+            # readable output, never inside it.
+            ctx["isolated_result"]["questions"] = pending_questions
     run.context = ctx
 
     # Live Log parity with the in-process engine (agent/engine.py's

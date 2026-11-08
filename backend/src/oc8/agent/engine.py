@@ -262,6 +262,10 @@ class RunResult:
     # One latency record per model step (see harness.step_timing). Empty on
     # runs that never entered the step loop (e.g. budget gate).
     step_timings: list[dict[str, Any]] = field(default_factory=list)
+    # A structured ask_user's validated questions (`oc8.chat.questions`), for
+    # the executor to park beside the readable `output`. None for a plain ask
+    # and for every other status.
+    pending_questions: list[dict[str, Any]] | None = None
 
 
 def _json_chunks(text: str) -> list[str]:
@@ -2242,7 +2246,12 @@ async def run_agent(
                                 record_decision(
                                     harness.state.ledger,
                                     tool=tc.name,
-                                    question=str(tc.arguments.get("question", "")),
+                                    # A structured ask has no `question`; its
+                                    # readable text is the outcome itself.
+                                    question=str(
+                                        tc.arguments.get("question")
+                                        or (control.output if control.questions else "")
+                                    ),
                                     step=harness.state.step_no,
                                 )
                             if control.suspend == "waiting_for_input":
@@ -2265,6 +2274,7 @@ async def run_agent(
                                     rendered_components,
                                     todos,
                                     step_timings,
+                                    pending_questions=control.questions,
                                 )
                         elif decision.effect is Effect.DENY or server is None:
                             reason = decision.reason or "no tool server available"

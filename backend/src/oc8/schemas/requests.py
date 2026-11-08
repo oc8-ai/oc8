@@ -692,6 +692,19 @@ class AnswerClarificationRequest(CamelModel):
     answer: str = Field(min_length=1)
 
 
+class ChatAnswerRequest(CamelModel):
+    """The member's answer to a question the chat's run parked on (spec §4.1).
+
+    `answers` is `{question id: [option keys] | free text}` for structured
+    questions; `text` is a written answer (a plain question, or a messenger-style
+    reply like `1,3`). One of the two -- checked in the route, since which one
+    fits depends on what was asked.
+    """
+
+    answers: dict[str, list[str] | str] | None = None
+    text: str | None = Field(default=None, max_length=4000)
+
+
 class CreateTaskRequest(CamelModel):
     """A member putting new work directly on a department's team lead, from
     the My Work task board rather than a chat session.

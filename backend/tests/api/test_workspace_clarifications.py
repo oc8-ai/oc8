@@ -383,3 +383,54 @@ async def test_a_refused_answer_leaves_no_audit_line(
             .all()
         )
     assert events == []
+
+
+async def test_a_structured_question_is_listed_with_its_options_and_answered_by_number(
+    app_session: AppSessionFactory, queue: _FakeQueue
+) -> None:
+    """Spec §4.1 through the inbox door: the row carries the structured
+    questions, and a written answer is read like a messenger reply -- one that
+    fits nothing is a 422 and leaves the question open."""
+    office = await _office(app_session)
+    async with app_session(office.tenant) as db:
+        run = await db.get(m.AgentRun, office.sales_run)
+        assert run is not None
+        run.context = {
+            **run.context,
+            "pending_questions": [
+                {
+                    "id": "tier",
+                    "prompt": "Rabattstufe?",
+                    "kind": "single",
+                    "options": [
+                        {"key": "s1", "label": "Stufe 1"},
+                        {"key": "s2", "label": "Stufe 2"},
+                    ],
+                }
+            ],
+        }
+    headers = _headers(office.tenant, "hos", "member")
+
+    async with _http() as http:
+        rows = (await http.get("/api/v1/clarifications?status=open", headers=headers)).json()
+        assert [q["id"] for q in rows[0]["questions"]] == ["tier"]
+        assert rows[0]["questions"][0]["options"][1]["label"] == "Stufe 2"
+
+        misfit = await http.post(
+            f"/api/v1/clarifications/{office.sales_clar}/answer",
+            json={"answer": "irgendwas"},
+            headers=headers,
+        )
+        assert misfit.status_code == 422, misfit.text
+
+        ok = await http.post(
+            f"/api/v1/clarifications/{office.sales_clar}/answer",
+            json={"answer": "2"},
+            headers=headers,
+        )
+        assert ok.status_code == 200, ok.text
+
+    async with app_session(office.tenant) as db:
+        run = await db.get(m.AgentRun, office.sales_run)
+        assert run is not None and run.state == "queued"
+        assert run.context["clarifications"][-1]["answers"] == {"tier": ["s2"]}

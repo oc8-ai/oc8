@@ -15,6 +15,7 @@ from oc8 import models as m
 from oc8.agent.assistant import get_or_create_assistant
 from oc8.agents.versioning import pinned_model_config_id, pinned_version_no, resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession, require_departmental, require_permission
+from oc8.api.v1._serializers import question_dtos
 from oc8.api.v1.run import run_to_dto
 from oc8.audit import append_event
 from oc8.authz.authority import Authority, authority_for_principal
@@ -22,18 +23,23 @@ from oc8.authz.permissions import AGENT, COPILOT, COPILOT_USE, MANAGE, RUN_START
 from oc8.authz.scope import HumanActor
 from oc8.chat.model_choice import is_allowed_override, model_options
 from oc8.chat.modes import MODES
+from oc8.chat.questions import QuestionError
 from oc8.chat.reach import reachable_chat_agent
 from oc8.chat.service import (
+    QuestionNotAnswerable,
     active_runs_for_session,
+    answer_parked_question,
     create_session,
     delete_session,
     get_session,
     list_messages,
     list_sessions,
+    parked_session_question,
     regenerate_reply,
     rename_session,
     send_message,
 )
+from oc8.runtime.intake import publish_run
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import (
     ActiveRunDTO,
@@ -43,9 +49,11 @@ from oc8.schemas.dto import (
     ChatModelOptionDTO,
     ChatSessionDTO,
     FileAttachmentDTO,
+    PendingQuestionDTO,
     RunDTO,
 )
 from oc8.schemas.requests import (
+    ChatAnswerRequest,
     CreateChatSessionRequest,
     MessageFeedbackRequest,
     RenameChatSessionRequest,
@@ -66,6 +74,7 @@ def _session_dto(
     *,
     active_runs: Sequence[m.AgentRun] = (),
     read_only: bool = False,
+    pending_question: PendingQuestionDTO | None = None,
 ) -> ChatSessionDTO:
     return ChatSessionDTO(
         id=str(session.id),
@@ -84,6 +93,22 @@ def _session_dto(
             for run in active_runs
         ],
         read_only=read_only,
+        pending_question=pending_question,
+        task_id=str(session.task_id) if session.task_id else None,
+    )
+
+
+async def _pending_question(db: DbSession, runs: Sequence[m.AgentRun]) -> PendingQuestionDTO | None:
+    """What the session's active run is parked on, for the question card."""
+    parked = await parked_session_question(db, runs=runs)
+    if parked is None:
+        return None
+    run, clarification = parked
+    return PendingQuestionDTO(
+        clarification_id=str(clarification.id),
+        run_id=str(run.id),
+        text=clarification.question,
+        questions=question_dtos((run.context or {}).get("pending_questions")),
     )
 
 
@@ -132,6 +157,7 @@ async def _message_dto(msg: m.ChatMessage, db: DbSession, tenant_id: uuid.UUID) 
         author_member_id=str(msg.author_member_id) if msg.author_member_id else None,
         author_name=author_name,
         reply_to_id=str(msg.reply_to_id) if msg.reply_to_id else None,
+        parts=msg.parts,
     )
 
 
@@ -292,7 +318,87 @@ async def get_chat_session(
     runs = await active_runs_for_session(
         db, tenant_id=actor.principal.tenant_id, session_id=session.id
     )
-    return _session_dto(session, active_runs=runs)
+    return _session_dto(
+        session, active_runs=runs, pending_question=await _pending_question(db, runs)
+    )
+
+
+@router.post("/chat/sessions/{session_id}/questions/{clarification_id}/answer")
+async def answer_chat_question(
+    request: Request,
+    session_id: uuid.UUID,
+    clarification_id: uuid.UUID,
+    body: ChatAnswerRequest,
+    db: DbSession,
+    actor: _ChatActor,
+) -> dict[str, str]:
+    """The chat's own door to a question its run parked on (spec §4.1).
+
+    Only the person the run acts for answers here: the session's owner, and --
+    when the turn carried one -- the run's originating operator. Not the
+    Assistant's `copilot:manage` carve-out that lets an admin READ a colleague's
+    session: answering puts words in that colleague's mouth. No department seat
+    is needed, unlike the inbox's /clarifications door, because the run is
+    acting for this person. 404 for anything that is not theirs, 409 once
+    answered, 422 for an answer that does not fit the questions.
+    """
+    session = await _owned_session(request, session_id, db, actor)
+    clarification = (
+        await db.execute(
+            select(m.Clarification)
+            .where(m.Clarification.id == clarification_id)
+            .execution_options(populate_existing=True)
+            # Two tabs answering at once serialise here; the second sees the
+            # question answered (same lock as the inbox door).
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    run = (
+        (
+            await db.execute(
+                select(m.AgentRun)
+                .where(m.AgentRun.id == clarification.run_id)
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if clarification is not None
+        else None
+    )
+    context = (run.context or {}) if run is not None else {}
+    operator = context.get("originating_operator")
+    if (
+        clarification is None
+        or run is None
+        or run.source != "chat"
+        or context.get("chat_session_id") != str(session.id)
+        or session.member_id != actor.member.id
+        or (operator is not None and operator != actor.principal.subject)
+    ):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "question not found")
+    if body.answers is None and not (body.text or "").strip():
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "an answer is required")
+    try:
+        await answer_parked_question(
+            db,
+            session=session,
+            run=run,
+            clarification=clarification,
+            text=body.text or "",
+            answers=body.answers,
+            member=actor.member,
+            via="chat",
+            principal=actor.principal,
+        )
+    except QuestionNotAnswerable as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except QuestionError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    run_id, tenant_id = run.id, run.tenant_id
+    await db.commit()
+    # Strictly after the commit: a stream entry whose run row is not yet
+    # visible is a run a worker picks up and cannot find.
+    await publish_run(run_id=run_id, tenant_id=tenant_id)
+    return {"runId": str(run_id)}
 
 
 async def _session_agent(

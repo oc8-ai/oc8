@@ -180,6 +180,34 @@ class ApprovalDTO(CamelModel):
     record_url: str | None = None
 
 
+class QuestionOptionDTO(CamelModel):
+    key: str
+    label: str
+    detail: str = ""
+
+
+class QuestionDTO(CamelModel):
+    """One structured `ask_user` question (spec §4.1)."""
+
+    id: str
+    prompt: str
+    kind: str  # single | multi | text
+    options: list[QuestionOptionDTO] = []
+    allow_other: bool = False
+    required: bool = True
+
+
+class PendingQuestionDTO(CamelModel):
+    """What the chat's active run is parked on, for the question card.
+
+    `questions` is empty for a plain question: `text` is then all there is."""
+
+    clarification_id: str
+    run_id: str
+    text: str
+    questions: list[QuestionDTO] = []
+
+
 class ClarificationDTO(CamelModel):
     """A question an agent parked mid-run, waiting for a person.
 
@@ -200,6 +228,9 @@ class ClarificationDTO(CamelModel):
     question: str
     status: str  # open | answered
     created_at: str = ""
+    #: The structured questions behind `question` (spec §4.1); empty for a
+    #: plain question.
+    questions: list[QuestionDTO] = []
 
 
 class TaskBoardRowDTO(CamelModel):
@@ -1186,6 +1217,9 @@ class ChatSessionDTO(CamelModel):
     active_runs: list[ActiveRunDTO] = []
     #: True when the caller sees this chat through a read-only share (C5).
     read_only: bool = False
+    #: The question this chat's active run is parked on, if any (spec §4.1).
+    pending_question: PendingQuestionDTO | None = None
+    task_id: str | None = None
 
 
 class ChatModelOptionDTO(CamelModel):
@@ -1243,6 +1277,9 @@ class ChatMessageDTO(CamelModel):
     author_member_id: str | None = None
     author_name: str | None = None
     reply_to_id: str | None = None
+    #: Typed parts (e.g. `{"type": "answers", "questions": [...], "answers":
+    #: {...}}` for an answered question card). Null for plain-text turns.
+    parts: list[dict[str, Any]] | None = None
 
 
 class ReportDTO(CamelModel):

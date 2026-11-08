@@ -441,6 +441,11 @@ async def bind_from_free_text(
         await tell_sender(impl, text.external_id, REFUSED)
         return
 
+    if await _answer_parked_question(
+        db, impl, tenant_id=tenant_id, channel=channel, member=member, text=text
+    ):
+        return
+
     assistant = await get_or_create_assistant(db, tenant_id=tenant_id)
     sessions = await list_sessions(
         db, tenant_id=tenant_id, member_id=member.id, agent_id=assistant.id
@@ -480,6 +485,110 @@ async def bind_from_free_text(
         await tell_sender(impl, text.external_id, _SECRET_REFUSAL)
         return
     await tell_sender_gated(impl, text.external_id, "Bin dran, melde mich gleich.")
+
+
+#: Sent once a messenger reply has answered a parked question.
+_ANSWER_TAKEN = "Thanks -- carrying on."
+
+
+async def _answer_parked_question(
+    db: AsyncSession,
+    impl: Any,
+    *,
+    tenant_id: uuid.UUID,
+    channel: str,
+    member: m.OrgMember,
+    text: ChannelFreeText,
+) -> bool:
+    """A reply to the numbered questions a chat run parked on (spec §4.1).
+
+    Only a STRUCTURED question sent to this channel is answered here -- that is
+    the one the sender was handed numbered options for (`executor.py`). A plain
+    question keeps its old door (the sender was told to answer in oc8), so free
+    text then starts a new turn as before. Only runs in the sender's OWN chat
+    sessions qualify: the run acts for them, nobody else answers it.
+
+    Returns True when the message was consumed (answered, or refused with the
+    questions repeated), False to let it start a new turn.
+    """
+    from sqlalchemy import select
+
+    from oc8.chat.questions import QuestionError, format_for_messenger, questions_from_json
+    from oc8.chat.service import QuestionNotAnswerable, answer_parked_question
+
+    own_sessions = [
+        str(sid)
+        for sid in (
+            await db.execute(
+                select(m.ChatSession.id).where(
+                    m.ChatSession.tenant_id == tenant_id, m.ChatSession.member_id == member.id
+                )
+            )
+        ).scalars()
+    ]
+    if not own_sessions:
+        return False
+    run = (
+        await db.execute(
+            select(m.AgentRun)
+            .where(
+                m.AgentRun.tenant_id == tenant_id,
+                m.AgentRun.source == "chat",
+                m.AgentRun.state == "waiting_for_input",
+                m.AgentRun.context["chat_channel"].astext == channel,
+                m.AgentRun.context.has_key("pending_questions"),
+                m.AgentRun.context["chat_session_id"].astext.in_(own_sessions),
+            )
+            .order_by(m.AgentRun.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if run is None:
+        return False
+    session = await db.get(m.ChatSession, uuid.UUID(str(run.context["chat_session_id"])))
+    clarification = (
+        await db.execute(
+            select(m.Clarification)
+            .where(m.Clarification.run_id == run.id, m.Clarification.status == "open")
+            .order_by(m.Clarification.created_at.desc())
+            .limit(1)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if session is None or clarification is None:
+        return False
+    questions = questions_from_json(run.context["pending_questions"])
+    try:
+        await answer_parked_question(
+            db,
+            session=session,
+            run=run,
+            clarification=clarification,
+            text=text.text,
+            answers=None,
+            member=member,
+            via=channel,
+            principal=None,
+        )
+    except QuestionNotAnswerable:
+        # Raised before anything changed, and without a rollback: that would end
+        # the transaction-local tenant binding the new turn below still needs.
+        return False
+    except QuestionError as exc:
+        await db.rollback()
+        await tell_sender_gated(
+            impl, text.external_id, f"{exc}\n\n{format_for_messenger(questions)}"
+        )
+        return True
+    run_id = run.id
+    await db.commit()
+    # Published only after the commit: a stream entry whose run row is not yet
+    # visible is a run a worker picks up and cannot find.
+    from oc8.runtime.intake import publish_run
+
+    await publish_run(run_id=run_id, tenant_id=tenant_id)
+    await tell_sender(impl, text.external_id, _ANSWER_TAKEN)
+    return True
 
 
 async def process_inbound(

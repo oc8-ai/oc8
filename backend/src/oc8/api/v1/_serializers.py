@@ -31,6 +31,8 @@ from oc8.schemas.dto import (
     KnowledgeDocumentDTO,
     MemberDTO,
     ModelDTO,
+    QuestionDTO,
+    QuestionOptionDTO,
     SeatDTO,
     SimilarChunkDTO,
     SkillDTO,
@@ -307,6 +309,33 @@ def approval_to_dto(a: m.ApprovalRequest, names: ApprovalNames | None = None) ->
     )
 
 
+def question_dtos(raw: Any) -> list[QuestionDTO]:
+    """The structured questions a run parked on (`run.context["pending_questions"]`),
+    as DTOs. Empty for a plain question -- and for a stored value that no longer
+    parses, which then still shows as its readable text."""
+    from oc8.chat.questions import QuestionError, questions_from_json
+
+    if not raw:
+        return []
+    try:
+        questions = questions_from_json(raw)
+    except QuestionError:
+        return []
+    return [
+        QuestionDTO(
+            id=q.id,
+            prompt=q.prompt,
+            kind=q.kind,
+            options=[
+                QuestionOptionDTO(key=o.key, label=o.label, detail=o.detail) for o in q.options
+            ],
+            allow_other=q.allow_other,
+            required=q.required,
+        )
+        for q in questions
+    ]
+
+
 def clarification_to_dto(row: ClarificationRow) -> ClarificationDTO:
     return ClarificationDTO(
         id=str(row.id),
@@ -318,6 +347,7 @@ def clarification_to_dto(row: ClarificationRow) -> ClarificationDTO:
         question=row.question,
         status=row.status,
         created_at=row.created_at.isoformat() if row.created_at else "",
+        questions=question_dtos(row.pending_questions),
     )
 
 

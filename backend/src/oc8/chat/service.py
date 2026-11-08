@@ -25,20 +25,33 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import uuid
-from typing import Literal
+from collections.abc import Mapping, Sequence
+from typing import Any, Literal
 
 from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.audit import append_event
+from oc8.auth.principal import Principal
 from oc8.chat.audience import session_audience_or_nobody
 from oc8.chat.modes import MODES, ChatMode, mode_directive, parse_command
+from oc8.chat.questions import (
+    PLAIN_ID,
+    Answer,
+    Question,
+    QuestionError,
+    questions_from_json,
+    questions_to_json,
+    render_answers_text,
+)
 from oc8.copilot.redaction import is_secret_request, redact_text
 from oc8.copilot.responsibilities import close_responsibility
 from oc8.realtime.bus import get_event_bus
 from oc8.realtime.emit import publish_chat_message_created
+from oc8.runtime.clarification import resolve_clarification
 from oc8.runtime.intake import enqueue_run
-from oc8.runtime.states import TERMINAL
+from oc8.runtime.states import TERMINAL, RunState
 from oc8.storage import s3
 
 logger = logging.getLogger(__name__)
@@ -786,3 +799,125 @@ async def active_runs_for_session(
         .order_by(m.AgentRun.created_at.asc())
     )
     return list((await db.execute(stmt)).scalars())
+
+
+class QuestionNotAnswerable(RuntimeError):
+    """The question is closed, or its run no longer waits for an answer."""
+
+
+async def answer_parked_question(
+    db: AsyncSession,
+    *,
+    session: m.ChatSession,
+    run: m.AgentRun,
+    clarification: m.Clarification,
+    text: str,
+    answers: Mapping[str, Any] | None,
+    member: m.OrgMember,
+    via: str,
+    principal: Principal | None,
+) -> m.ChatMessage:
+    """Answer the question this session's run parked on (spec §4.1) and re-queue
+    the run. One implementation for the chat's own door and the messenger door.
+
+    The answer becomes a USER turn in the transcript, readable `content` (one
+    line per question) plus a typed `answers` part, so the answered card
+    survives a reload. Audited exactly like the inbox's clarification answers.
+
+    Raises `QuestionError` (does not fit the questions) or
+    `QuestionNotAnswerable` (already answered / run not waiting) before
+    anything changes. Does NOT commit, and does not publish the run: the caller
+    commits, then `publish_run`s.
+    """
+    if clarification.status != "open" or run.state != RunState.WAITING_FOR_INPUT.value:
+        raise QuestionNotAnswerable("this question has already been answered")
+    pending = (run.context or {}).get("pending_questions")
+    if not pending:
+        if not text.strip() and answers is not None:
+            plain = answers.get(PLAIN_ID)
+            text = plain if isinstance(plain, str) else ""
+        if not text.strip():
+            raise QuestionError("an answer is required")
+    elif answers is None and not text.strip():
+        raise QuestionError("an answer is required")
+
+    structured = await resolve_clarification(db, run=run, answer=text.strip(), answers=answers)
+    if pending and structured is not None:
+        questions_json: list[dict[str, Any]] = list(pending)
+        answer_map: Answer = structured
+    else:
+        plain_question = Question(
+            id=PLAIN_ID,
+            prompt=clarification.question,
+            kind="text",
+            options=(),
+            allow_other=False,
+            required=True,
+        )
+        questions_json = questions_to_json([plain_question])
+        answer_map = {PLAIN_ID: text.strip()}
+
+    message = m.ChatMessage(
+        tenant_id=session.tenant_id,
+        session_id=session.id,
+        role="user",
+        content=render_answers_text(questions_from_json(questions_json), answer_map),
+        author_member_id=member.id,
+        parts=[{"type": "answers", "questions": questions_json, "answers": answer_map}],
+    )
+    db.add(message)
+    session.last_message_at = dt.datetime.now(tz=dt.UTC)
+    await db.flush()
+
+    department_id = await db.scalar(
+        select(m.Agent.department_id).where(m.Agent.id == clarification.agent_id)
+    )
+    # Same event and shape as `workspace.queue.answer_clarification`, plus the
+    # session. The answer text stays out of the resource for the same reason.
+    await append_event(
+        db,
+        tenant_id=session.tenant_id,
+        actor_type="operator",
+        actor_id=member.id,
+        category="run",
+        action="clarification.answered",
+        resource={
+            "clarification_id": str(clarification.id),
+            "run_id": str(run.id),
+            "agent_id": str(clarification.agent_id),
+            "department_id": str(department_id) if department_id else None,
+            "member_id": str(member.id),
+            "session_id": str(session.id),
+            "via": via,
+        },
+        principal=principal,
+    )
+    await publish_chat_message_created(
+        db,
+        session=session,
+        message=message,
+        run_id=run.id,
+        acting_subject=principal.subject if principal is not None else None,
+        acting_role=principal.role if principal is not None else None,
+    )
+    return message
+
+
+async def parked_session_question(
+    db: AsyncSession, *, runs: Sequence[m.AgentRun]
+) -> tuple[m.AgentRun, m.Clarification] | None:
+    """The first of `runs` (a session's active runs) parked on an open question."""
+    for run in runs:
+        if run.state != RunState.WAITING_FOR_INPUT.value:
+            continue
+        clarification = (
+            await db.execute(
+                select(m.Clarification)
+                .where(m.Clarification.run_id == run.id, m.Clarification.status == "open")
+                .order_by(m.Clarification.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if clarification is not None:
+            return run, clarification
+    return None
