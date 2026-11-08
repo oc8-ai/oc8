@@ -1167,12 +1167,31 @@ class RunSummaryDTO(CamelModel):
     failure_reason: str | None = None
 
 
+class ActiveRunDTO(CamelModel):
+    run_id: str
+    reply_to_id: str | None = None
+    state: str
+
+
 class ChatSessionDTO(CamelModel):
     id: str
     agent_id: str
     title: str
     created_at: str
     last_message_at: str | None = None
+    model_override_id: str | None = None
+    kind: str = "chat"
+    active_runs: list[ActiveRunDTO] = []
+    #: True when the caller sees this chat through a read-only share (C5).
+    read_only: bool = False
+
+
+class ChatModelOptionDTO(CamelModel):
+    id: str | None
+    label: str
+    provider: str
+    locality: str
+    is_default: bool
 
 
 class FileAttachmentDTO(CamelModel):
@@ -1219,6 +1238,9 @@ class ChatMessageDTO(CamelModel):
     #: message. The composer renders it as a badge on the sent turn.
     mode: str | None = None
     context_refs: list[ChatContextRefDTO] = []
+    author_member_id: str | None = None
+    author_name: str | None = None
+    reply_to_id: str | None = None
 
 
 class ReportDTO(CamelModel):

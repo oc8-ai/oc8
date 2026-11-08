@@ -31,10 +31,11 @@ from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.chat.modes import mode_directive, parse_command
+from oc8.chat.modes import ChatMode, mode_directive, parse_command
 from oc8.copilot.redaction import is_secret_request, redact_text
 from oc8.copilot.responsibilities import close_responsibility
 from oc8.runtime.intake import enqueue_run
+from oc8.runtime.states import TERMINAL
 from oc8.storage import s3
 
 logger = logging.getLogger(__name__)
@@ -257,6 +258,91 @@ async def _resolve_context_refs(
     ]
 
 
+#: Context keys a caller's `extra_context` may never set: who is acting, where
+#: the turn goes, which message it answers and which model it may run on.
+_RESERVED_CONTEXT_KEYS = frozenset(
+    {
+        "originating_operator",
+        "operator_role",
+        "door",
+        "chat_channel",
+        "chat_channel_external_id",
+        "chat_session_id",
+        "task",
+        "reply_to_message_id",
+        "model_override_id",
+    }
+)
+
+
+def _build_turn_context(
+    *,
+    session: m.ChatSession,
+    task_text: str,
+    reply_to_message_id: uuid.UUID,
+    image_attachments: list[m.FileAttachment],
+    originating_operator: str | None,
+    operator_role: str | None,
+    chat_channel: str | None,
+    chat_channel_external_id: str | None,
+    role: Literal["user", "followup"],
+    mode: ChatMode | None,
+    resolved_refs: list[dict[str, str]],
+    extra_context: dict[str, object] | None,
+) -> dict[str, object]:
+    """The `AgentRun.context` for the run answering one chat turn.
+
+    Shared by every path that starts such a run (a new turn here, a
+    regenerated reply later) so both carry the same keys. `context["task"]`
+    is `task_text` plus the mode directive when a mode is set -- callers that
+    need the final text read it back from there.
+    """
+    context: dict[str, object] = {
+        "task": task_text,
+        "chat_session_id": str(session.id),
+        "reply_to_message_id": str(reply_to_message_id),
+    }
+    if image_attachments:
+        # Raw bytes are fetched at run-preamble time (Task 7), not here -- to
+        # avoid holding large binary blobs in the run's persisted `context`
+        # JSONB.
+        context["task_images"] = [
+            {"bucket_key": att.bucket_key, "content_type": att.content_type}
+            for att in image_attachments
+        ]
+    if originating_operator is not None:
+        context["originating_operator"] = originating_operator
+    if operator_role is not None:
+        context["operator_role"] = operator_role
+    if chat_channel is not None and chat_channel_external_id is not None:
+        context["chat_channel"] = chat_channel
+        context["chat_channel_external_id"] = chat_channel_external_id
+    # Which door this turn came through (design §7a.6). Read back by
+    # `oc8.copilot.door` to decide whether `ask_user` may be offered.
+    if role == "followup":
+        context["door"] = "followup"
+    elif chat_channel is not None and chat_channel_external_id is not None:
+        context["door"] = "telegram"
+    else:
+        context["door"] = "web"
+    if session.model_override_id is not None:
+        # Re-checked when the run resolves its version (chat.model_choice).
+        context["model_override_id"] = str(session.model_override_id)
+    if extra_context:
+        # Never lets a caller overwrite who is acting or where the turn goes.
+        context.update({k: v for k, v in extra_context.items() if k not in _RESERVED_CONTEXT_KEYS})
+    if mode is not None:
+        # Two consumers, deliberately: the model is TOLD (the directive below)
+        # and the PEP ENFORCES (engine._authorize reads this key back through
+        # mode_from_context). Neither is sufficient alone -- a told model can
+        # ignore it, and a silently denied tool wastes a step.
+        context["chat_mode"] = mode.key
+        context["task"] = task_text + "\n\n" + mode_directive(mode)
+    if resolved_refs:
+        context["context_kb_ids"] = [ref["id"] for ref in resolved_refs]
+    return context
+
+
 async def send_message(
     db: AsyncSession,
     *,
@@ -271,6 +357,7 @@ async def send_message(
     chat_channel_external_id: str | None = None,
     role: Literal["user", "followup"] = "user",
     extra_context: dict[str, object] | None = None,
+    author_member_id: uuid.UUID | None = None,
 ) -> tuple[m.ChatMessage, m.AgentRun | None]:
     """Record the user's turn and enqueue the run that answers it.
 
@@ -334,6 +421,7 @@ async def send_message(
         content=body,
         mode=mode.key if mode is not None else None,
         context_refs=resolved_refs,
+        author_member_id=author_member_id if role == "user" else None,
     )
     db.add(user_message)
     await db.flush()
@@ -428,56 +516,21 @@ async def send_message(
         )
         task_text += label
 
-    context: dict[str, object] = {
-        "task": task_text,
-        "chat_session_id": str(session.id),
-    }
-    image_attachments = [att for att in attachments if att.is_image]
-    if image_attachments:
-        # Raw bytes are fetched at run-preamble time (Task 7), not here -- to
-        # avoid holding large binary blobs in the run's persisted `context`
-        # JSONB.
-        context["task_images"] = [
-            {"bucket_key": att.bucket_key, "content_type": att.content_type}
-            for att in image_attachments
-        ]
-    if originating_operator is not None:
-        context["originating_operator"] = originating_operator
-    if operator_role is not None:
-        context["operator_role"] = operator_role
-    if chat_channel is not None and chat_channel_external_id is not None:
-        context["chat_channel"] = chat_channel
-        context["chat_channel_external_id"] = chat_channel_external_id
-    # Which door this turn came through (design §7a.6). Read back by
-    # `oc8.copilot.door` to decide whether `ask_user` may be offered.
-    if role == "followup":
-        context["door"] = "followup"
-    elif chat_channel is not None and chat_channel_external_id is not None:
-        context["door"] = "telegram"
-    else:
-        context["door"] = "web"
-    if extra_context:
-        # Never lets a caller overwrite who is acting or where the turn goes.
-        reserved = {
-            "originating_operator",
-            "operator_role",
-            "door",
-            "chat_channel",
-            "chat_channel_external_id",
-            "chat_session_id",
-            "task",
-        }
-        context.update({k: v for k, v in extra_context.items() if k not in reserved})
-    if mode is not None:
-        # Two consumers, deliberately: the model is TOLD (the directive below)
-        # and the PEP ENFORCES (engine._authorize reads this key back through
-        # mode_from_context). Neither is sufficient alone -- a told model can
-        # ignore it, and a silently denied tool wastes a step.
-        context["chat_mode"] = mode.key
-        task_text += "\n\n" + mode_directive(mode)
-        context["task"] = task_text
-    if resolved_refs:
-        context["context_kb_ids"] = [ref["id"] for ref in resolved_refs]
+    context = _build_turn_context(
+        session=session,
+        task_text=task_text,
+        reply_to_message_id=user_message.id,
+        image_attachments=[att for att in attachments if att.is_image],
+        originating_operator=originating_operator,
+        operator_role=operator_role,
+        chat_channel=chat_channel,
+        chat_channel_external_id=chat_channel_external_id,
+        role=role,
+        mode=mode,
+        resolved_refs=resolved_refs,
+        extra_context=extra_context,
+    )
+    task_text = str(context["task"])
 
     # Open the session's Task HERE, on turn one, rather than letting the engine
     # open one implicitly when the run starts.
@@ -572,6 +625,13 @@ async def record_assistant_reply(db: AsyncSession, *, run: m.AgentRun, output: s
             session.last_message_at = session.last_message_at or dt.datetime.now(tz=dt.UTC)
             return
     rendered_components = (run.context or {}).get("rendered_components", [])
+    reply_to_raw = (run.context or {}).get("reply_to_message_id")
+    reply_to_id: uuid.UUID | None = None
+    if reply_to_raw:
+        try:
+            reply_to_id = uuid.UUID(str(reply_to_raw))
+        except (TypeError, ValueError):
+            reply_to_id = None
     db.add(
         m.ChatMessage(
             tenant_id=run.tenant_id,
@@ -580,6 +640,25 @@ async def record_assistant_reply(db: AsyncSession, *, run: m.AgentRun, output: s
             content=output or "",
             run_id=run.id,
             rendered_components=rendered_components,
+            reply_to_id=reply_to_id,
         )
     )
     session.last_message_at = dt.datetime.now(tz=dt.UTC)
+
+
+async def active_runs_for_session(
+    db: AsyncSession, *, tenant_id: uuid.UUID, session_id: uuid.UUID
+) -> list[m.AgentRun]:
+    """Runs answering this session that have not finished, oldest first. A page
+    loaded mid-answer learns from this which run to watch (spec §2.1)."""
+    stmt = (
+        select(m.AgentRun)
+        .where(
+            m.AgentRun.tenant_id == tenant_id,
+            m.AgentRun.source == "chat",
+            m.AgentRun.context["chat_session_id"].astext == str(session_id),
+            m.AgentRun.state.notin_([s.value for s in TERMINAL]),
+        )
+        .order_by(m.AgentRun.created_at.asc())
+    )
+    return list((await db.execute(stmt)).scalars())

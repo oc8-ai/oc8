@@ -5,6 +5,7 @@ exactly as they do to an autonomous run."""
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -13,14 +14,16 @@ from sqlalchemy import select
 from oc8 import models as m
 from oc8.agent.assistant import get_or_create_assistant
 from oc8.agents.repo import visible_agent
-from oc8.agents.versioning import pinned_version_no
+from oc8.agents.versioning import pinned_model_config_id, pinned_version_no, resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession, require_departmental, require_permission
 from oc8.api.v1.run import run_to_dto
 from oc8.authz.authority import Authority, authority_for_principal, tenant_wide_read
 from oc8.authz.permissions import AGENT, COPILOT, COPILOT_USE, MANAGE, RUN_START, VIEW, perm
 from oc8.authz.scope import HumanActor
+from oc8.chat.model_choice import is_allowed_override, model_options
 from oc8.chat.modes import MODES
 from oc8.chat.service import (
+    active_runs_for_session,
     create_session,
     delete_session,
     get_session,
@@ -31,9 +34,11 @@ from oc8.chat.service import (
 )
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import (
+    ActiveRunDTO,
     ChatContextRefDTO,
     ChatMessageDTO,
     ChatModeDTO,
+    ChatModelOptionDTO,
     ChatSessionDTO,
     FileAttachmentDTO,
     RunDTO,
@@ -42,18 +47,40 @@ from oc8.schemas.requests import (
     CreateChatSessionRequest,
     RenameChatSessionRequest,
     SendChatMessageRequest,
+    SetChatModelRequest,
 )
 
 router = APIRouter()
 
+#: Every chat route admits its actor the same way, then narrows by ownership.
+_ChatActor = Annotated[
+    HumanActor, Depends(require_departmental(perm(AGENT, VIEW), or_tenant_wide=COPILOT_USE))
+]
 
-def _session_dto(session: m.ChatSession) -> ChatSessionDTO:
+
+def _session_dto(
+    session: m.ChatSession,
+    *,
+    active_runs: Sequence[m.AgentRun] = (),
+    read_only: bool = False,
+) -> ChatSessionDTO:
     return ChatSessionDTO(
         id=str(session.id),
         agent_id=str(session.agent_id),
         title=session.title,
         created_at=session.created_at.isoformat(),
         last_message_at=session.last_message_at.isoformat() if session.last_message_at else None,
+        model_override_id=str(session.model_override_id) if session.model_override_id else None,
+        kind=getattr(session, "kind", "chat") or "chat",
+        active_runs=[
+            ActiveRunDTO(
+                run_id=str(run.id),
+                reply_to_id=(run.context or {}).get("reply_to_message_id"),
+                state=run.state,
+            )
+            for run in active_runs
+        ],
+        read_only=read_only,
     )
 
 
@@ -76,6 +103,10 @@ async def _message_dto(msg: m.ChatMessage, db: DbSession, tenant_id: uuid.UUID) 
         )
         for row in result.scalars().all()
     ]
+    author_name: str | None = None
+    if msg.author_member_id is not None:
+        author = await db.get(m.OrgMember, msg.author_member_id)
+        author_name = author.display_name if author is not None else None
     return ChatMessageDTO(
         id=str(msg.id),
         session_id=str(msg.session_id),
@@ -95,6 +126,9 @@ async def _message_dto(msg: m.ChatMessage, db: DbSession, tenant_id: uuid.UUID) 
             for ref in (msg.context_refs or [])
             if isinstance(ref, dict)
         ],
+        author_member_id=str(msg.author_member_id) if msg.author_member_id else None,
+        author_name=author_name,
+        reply_to_id=str(msg.reply_to_id) if msg.reply_to_id else None,
     )
 
 
@@ -255,6 +289,72 @@ async def get_messages(
     return [await _message_dto(msg, db, actor.principal.tenant_id) for msg in messages]
 
 
+@router.get("/chat/sessions/{session_id}", response_model=ChatSessionDTO)
+async def get_chat_session(
+    request: Request, session_id: uuid.UUID, db: DbSession, actor: _ChatActor
+) -> ChatSessionDTO:
+    """One chat, with the runs still answering it -- so a page loaded mid-answer
+    knows which run to watch. Same ownership gate as every session sub-route."""
+    session = await _owned_session(request, session_id, db, actor)
+    runs = await active_runs_for_session(
+        db, tenant_id=actor.principal.tenant_id, session_id=session.id
+    )
+    return _session_dto(session, active_runs=runs)
+
+
+async def _session_agent(db: DbSession, session: m.ChatSession) -> m.Agent:
+    agent = await db.get(m.Agent, session.agent_id)
+    if agent is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
+    return agent
+
+
+@router.get("/chat/sessions/{session_id}/models", response_model=list[ChatModelOptionDTO])
+async def get_chat_models(
+    request: Request, session_id: uuid.UUID, db: DbSession, actor: _ChatActor
+) -> list[ChatModelOptionDTO]:
+    """The model picker: "Auto" first, then the agent's own model, then the
+    tenant's other chat-enabled models (`oc8.chat.model_choice`)."""
+    session = await _owned_session(request, session_id, db, actor)
+    agent = await _session_agent(db, session)
+    pinned = await resolve_version(db, None, agent)
+    options = await model_options(db, agent=agent, default_model_id=pinned_model_config_id(pinned))
+    return [
+        ChatModelOptionDTO(
+            id=o.id,
+            label=o.label,
+            provider=o.provider,
+            locality=o.locality,
+            is_default=o.is_default,
+        )
+        for o in options
+    ]
+
+
+@router.put("/chat/sessions/{session_id}/model", response_model=ChatSessionDTO)
+async def set_chat_model(
+    request: Request,
+    session_id: uuid.UUID,
+    body: SetChatModelRequest,
+    db: DbSession,
+    actor: _ChatActor,
+) -> ChatSessionDTO:
+    """Pin this chat to one model, or back to "Auto" with `null`. Only a model
+    the picker offers is accepted; the run re-checks it when it resolves."""
+    session = await _owned_session(request, session_id, db, actor)
+    if body.model_config_id is not None:
+        agent = await _session_agent(db, session)
+        if not await is_allowed_override(db, agent=agent, model_config_id=body.model_config_id):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, "model not allowed for this agent"
+            )
+    session.model_override_id = body.model_config_id
+    await db.flush()
+    dto = _session_dto(session)
+    await db.commit()
+    return dto
+
+
 @router.patch("/chat/sessions/{session_id}", response_model=ChatSessionDTO)
 async def rename_chat_session(
     request: Request,
@@ -329,6 +429,7 @@ async def post_message(
         # else in this system, and the run that answers this message has no
         # token to read it from later. See `control_tools._acting_token_role`.
         operator_role=actor.principal.role,
+        author_member_id=actor.member.id,
     )
     dto = await _message_dto(user_message, db, actor.principal.tenant_id)
     if run is not None:
