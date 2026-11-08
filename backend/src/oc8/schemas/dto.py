@@ -1278,6 +1278,7 @@ class TriggerDTO(CamelModel):
     event_source: str | None = None
     event_type: str | None = None
     created_by_member_id: str | None = None
+    acts_for_creator: bool = False
     #: kind='webhook' only -- the full POST /webhooks/{token} URL, built
     #: server-side from the same base URL external OAuth redirects use
     #: (oauth_redirect_base_url). Not one-time-reveal: unlike a password, an

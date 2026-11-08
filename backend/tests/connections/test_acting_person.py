@@ -10,6 +10,7 @@ from oc8 import models as m
 from oc8.connections.acting import (
     NO_ACTING_PERSON,
     SCHEDULE_WITHOUT_OWNER,
+    TRIGGER_WITHOUT_PERSON,
     ActingPerson,
     resolve_acting_person,
 )
@@ -254,7 +255,7 @@ async def test_a_webhook_payload_cannot_name_the_person(
         ).scalar_one()
         assert "on_behalf_of" not in run.context
         assert run.context["trigger_id"] == str(trigger.id)
-        assert await resolve_acting_person(db, run) == ActingPerson(None, SCHEDULE_WITHOUT_OWNER)
+        assert await resolve_acting_person(db, run) == ActingPerson(None, TRIGGER_WITHOUT_PERSON)
 
 
 async def test_a_chat_caller_cannot_inject_the_person(
@@ -367,7 +368,7 @@ async def test_a_second_hop_cannot_escalate_to_another_person(
     assert sub.context["on_behalf_of"] == str(anna)
     async with app_session(agent.tenant_id) as db:
         assert await resolve_acting_person(db, sub) == ActingPerson(anna)
-        assert bob != anna
+        assert sub.context["on_behalf_of"] != str(bob)
 
 
 async def test_a_delegated_scheduled_run_keeps_the_trigger_creator(
@@ -390,3 +391,233 @@ async def test_a_delegated_scheduled_run_keeps_the_trigger_creator(
     sub = await _delegate_from(app_session, agent, {"trigger_id": str(trigger_id)}, {})
     assert sub.context["on_behalf_of"] == str(anna)
     assert sub.context["trigger_id"] == str(trigger_id)
+
+
+async def test_someone_elses_post_in_a_session_acts_for_nobody(
+    app_session: AppSessionFactory,
+) -> None:
+    """An oversight reply by bob in anna's session must not run as anna, and a
+    delegation from that run carries nobody."""
+    agent = await _make_agent(app_session, is_team_lead=True)
+    anna = await member(app_session, agent.tenant_id, "anna@acme.test")
+    await member(app_session, agent.tenant_id, "bob@acme.test")
+    async with app_session(agent.tenant_id) as db:
+        session = m.ChatSession(tenant_id=agent.tenant_id, agent_id=agent.id, member_id=anna)
+        db.add(session)
+        await db.flush()
+        session_id = session.id
+    context = {"chat_session_id": str(session_id), "originating_operator": "bob@acme.test"}
+    run = await _run(app_session, agent, context)
+    assert await _resolve(app_session, run) == ActingPerson(None, NO_ACTING_PERSON)
+    sub = await _delegate_from(app_session, agent, context, {})
+    assert "on_behalf_of" not in sub.context
+    async with app_session(agent.tenant_id) as db:
+        assert await resolve_acting_person(db, sub) == ActingPerson(None, NO_ACTING_PERSON)
+    own = await _run(app_session, agent, {**context, "originating_operator": "anna@acme.test"})
+    assert await _resolve(app_session, own) == ActingPerson(anna)
+
+
+async def _trigger(
+    app_session: AppSessionFactory, agent: m.Agent, owner: uuid.UUID | None, **fields: object
+) -> uuid.UUID:
+    values: dict[str, object] = {
+        "kind": "webhook",
+        "task_text": "t",
+        "webhook_token": uuid.uuid4().hex,
+        "created_by_member_id": owner,
+    }
+    values.update(fields)
+    async with app_session(agent.tenant_id) as db:
+        trigger = m.Trigger(tenant_id=agent.tenant_id, agent_id=agent.id, **values)
+        db.add(trigger)
+        await db.flush()
+        return trigger.id
+
+
+async def test_a_webhook_acts_for_its_creator_only_when_the_creator_said_so(
+    app_session: AppSessionFactory,
+) -> None:
+    agent = await _make_agent(app_session)
+    anna = await member(app_session, agent.tenant_id, "anna@acme.test")
+    closed = await _trigger(app_session, agent, anna)
+    opened = await _trigger(app_session, agent, anna, acts_for_creator=True)
+    no_owner = await _trigger(app_session, agent, None, acts_for_creator=True)
+    expected = {
+        closed: ActingPerson(None, TRIGGER_WITHOUT_PERSON),
+        opened: ActingPerson(anna),
+        no_owner: ActingPerson(None, SCHEDULE_WITHOUT_OWNER),
+    }
+    for trigger_id, person in expected.items():
+        run = await _run(app_session, agent, {"trigger_id": str(trigger_id)})
+        assert await _resolve(app_session, run) == person
+
+
+async def test_an_event_trigger_needs_the_same_opt_in(app_session: AppSessionFactory) -> None:
+    agent = await _make_agent(app_session)
+    anna = await member(app_session, agent.tenant_id, "anna@acme.test")
+    trigger_id = await _trigger(
+        app_session,
+        agent,
+        anna,
+        kind="event",
+        webhook_token=None,
+        event_source="github",
+        event_type="push",
+    )
+    run = await _run(app_session, agent, {"trigger_id": str(trigger_id)})
+    assert await _resolve(app_session, run) == ActingPerson(None, TRIGGER_WITHOUT_PERSON)
+
+
+async def test_other_tenants_rows_are_never_resolved(app_session: AppSessionFactory) -> None:
+    agent = await _make_agent(app_session)
+    other = await _make_agent(app_session)
+    stranger = await member(app_session, other.tenant_id, "eve@acme.test")
+    run = await _run(app_session, agent, {"on_behalf_of": str(stranger)})
+    assert await _resolve(app_session, run) == ActingPerson(None, NO_ACTING_PERSON)
+
+
+async def _trigger_row(app_session: AppSessionFactory, tenant: uuid.UUID, trigger_id: uuid.UUID):
+    async with app_session(tenant) as db:
+        row = await db.get(m.Trigger, trigger_id)
+        assert row is not None
+        return row.created_by_member_id, row.acts_for_creator
+
+
+async def test_editing_someone_elses_trigger_takes_it_over(app_session: AppSessionFactory) -> None:
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    anna = await member(app_session, tenant, "anna@acme.test")
+    bob = await member(app_session, tenant, "bob@acme.test")
+    trigger_id = await _trigger(app_session, agent, anna, acts_for_creator=True)
+    path = f"/api/v1/triggers/{trigger_id}"
+    async with api() as c:
+        noop = await c.patch(
+            path, json={"taskText": "t"}, headers=headers(tenant, "bob@acme.test", "org_admin")
+        )
+        assert noop.status_code == 200, noop.text
+        assert await _trigger_row(app_session, tenant, trigger_id) == (anna, True)
+        own = await c.patch(
+            path, json={"taskText": "new"}, headers=headers(tenant, "anna@acme.test", "org_admin")
+        )
+        assert own.status_code == 200, own.text
+        assert await _trigger_row(app_session, tenant, trigger_id) == (anna, True)
+        edited = await c.patch(
+            path, json={"taskText": "other"}, headers=headers(tenant, "bob@acme.test", "org_admin")
+        )
+        assert edited.status_code == 200, edited.text
+        assert edited.json()["createdByMemberId"] == str(bob)
+        assert edited.json()["actsForCreator"] is False
+        assert await _trigger_row(app_session, tenant, trigger_id) == (bob, False)
+
+
+async def test_enabling_or_rescheduling_takes_a_trigger_over(
+    app_session: AppSessionFactory,
+) -> None:
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    anna = await member(app_session, tenant, "anna@acme.test")
+    bob = await member(app_session, tenant, "bob@acme.test")
+    cron = await _trigger(
+        app_session, agent, anna, kind="cron", webhook_token=None, cron_expression="0 8 * * *"
+    )
+    hook = await _trigger(app_session, agent, anna, enabled=False)
+    admin = headers(tenant, "bob@acme.test", "org_admin")
+    async with api() as c:
+        r = await c.patch(
+            f"/api/v1/triggers/{cron}", json={"cronExpression": "0 9 * * *"}, headers=admin
+        )
+        assert r.status_code == 200, r.text
+        r = await c.patch(f"/api/v1/triggers/{hook}", json={"enabled": True}, headers=admin)
+        assert r.status_code == 200, r.text
+    assert (await _trigger_row(app_session, tenant, cron))[0] == bob
+    assert (await _trigger_row(app_session, tenant, hook))[0] == bob
+
+
+async def test_a_removed_owner_is_replaced_by_the_editor(app_session: AppSessionFactory) -> None:
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    anna = await member(app_session, tenant, "anna@acme.test")
+    bob = await member(app_session, tenant, "bob@acme.test")
+    trigger_id = await _trigger(app_session, agent, anna)
+    async with app_session(tenant) as db:
+        row = await db.get(m.OrgMember, anna)
+        assert row is not None
+        row.deleted_at = datetime.now(tz=UTC)
+    async with api() as c:
+        r = await c.patch(
+            f"/api/v1/triggers/{trigger_id}",
+            json={"taskText": "x"},
+            headers=headers(tenant, "bob@acme.test", "org_admin"),
+        )
+        assert r.status_code == 200, r.text
+    assert (await _trigger_row(app_session, tenant, trigger_id))[0] == bob
+
+
+async def test_only_the_creator_can_let_a_trigger_act_for_them(
+    app_session: AppSessionFactory,
+) -> None:
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    anna = await member(app_session, tenant, "anna@acme.test")
+    await member(app_session, tenant, "bob@acme.test")
+    trigger_id = await _trigger(app_session, agent, anna)
+    path = f"/api/v1/triggers/{trigger_id}"
+    async with api() as c:
+        denied = await c.patch(
+            path,
+            json={"actsForCreator": True},
+            headers=headers(tenant, "bob@acme.test", "org_admin"),
+        )
+        assert denied.status_code == 403, denied.text
+        assert await _trigger_row(app_session, tenant, trigger_id) == (anna, False)
+        allowed = await c.patch(
+            path,
+            json={"actsForCreator": True},
+            headers=headers(tenant, "anna@acme.test", "org_admin"),
+        )
+        assert allowed.status_code == 200, allowed.text
+        assert allowed.json()["actsForCreator"] is True
+        created = await c.post(
+            f"/api/v1/agents/{agent.id}/triggers",
+            json={"kind": "webhook", "taskText": "w", "actsForCreator": True},
+            headers=headers(tenant, "anna@acme.test", "org_admin"),
+        )
+        assert created.status_code == 201, created.text
+        assert created.json()["actsForCreator"] is True
+        plain = await c.post(
+            f"/api/v1/agents/{agent.id}/triggers",
+            json={"kind": "webhook", "taskText": "w"},
+            headers=headers(tenant, "anna@acme.test", "org_admin"),
+        )
+        assert plain.json()["actsForCreator"] is False
+
+
+async def test_applying_a_proposal_records_the_actor_as_trigger_owner(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.auth import Principal
+    from oc8.copilot.proposals import apply_proposal, create_proposal
+
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    anna = await member(app_session, tenant, "anna@acme.test")
+    actor = Principal(subject="anna@acme.test", tenant_id=tenant, role="org_admin")
+    async with app_session(tenant) as db:
+        proposal = await create_proposal(
+            db,
+            actor,
+            [
+                {
+                    "type": "trigger.create",
+                    "agentId": str(agent.id),
+                    "kind": "cron",
+                    "taskText": "daily",
+                    "cronExpression": "0 8 * * *",
+                }
+            ],
+        )
+        await apply_proposal(db, proposal.id, actor)
+        owner = await db.scalar(
+            select(m.Trigger.created_by_member_id).where(m.Trigger.agent_id == agent.id)
+        )
+    assert owner == anna

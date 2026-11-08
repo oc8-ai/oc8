@@ -238,6 +238,16 @@ async def agent_has_own_login_binding(db: AsyncSession, agent: m.Agent) -> bool:
     return bool(needs_login)
 
 
+async def _acting_member_id(db: AsyncSession, run: m.AgentRun) -> uuid.UUID | None:
+    """The person a wake-up should keep acting for. A failed lookup must never
+    stop a finished sub-run from waking its lead, so it only costs the person."""
+    try:
+        return (await resolve_acting_person(db, run)).member_id
+    except Exception:
+        logger.exception("run %s: could not resolve the acting person", run.id)
+        return None
+
+
 async def _maybe_wake_parent(
     db: AsyncSession,
     *,
@@ -986,7 +996,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         door=(run.context or {}).get("door"),
                         followup=(run.context or {}).get("followup"),
                         originating_operator=(run.context or {}).get("originating_operator"),
-                        on_behalf_of=(await resolve_acting_person(db, run)).member_id,
+                        on_behalf_of=await _acting_member_id(db, run),
                         trigger_id=(run.context or {}).get("trigger_id"),
                     )
                     if wake_id is not None:
@@ -1126,7 +1136,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                                 originating_operator=(run.context or {}).get(
                                     "originating_operator"
                                 ),
-                                on_behalf_of=(await resolve_acting_person(db, run)).member_id,
+                                on_behalf_of=await _acting_member_id(db, run),
                                 trigger_id=(run.context or {}).get("trigger_id"),
                             )
                             if wake_id is not None:
@@ -1231,7 +1241,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             door=(run.context or {}).get("door"),
                             followup=(run.context or {}).get("followup"),
                             originating_operator=(run.context or {}).get("originating_operator"),
-                            on_behalf_of=(await resolve_acting_person(db, run)).member_id,
+                            on_behalf_of=await _acting_member_id(db, run),
                             trigger_id=(run.context or {}).get("trigger_id"),
                         )
                         if wake_id is not None:

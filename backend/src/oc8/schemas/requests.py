@@ -400,12 +400,14 @@ class CreateTriggerRequest(CamelModel):
     cron_expression: str | None = None
     event_source: str | None = None
     event_type: str | None = None
+    acts_for_creator: bool = False
 
 
 class UpdateTriggerRequest(CamelModel):
     task_text: str | None = None
     enabled: bool | None = None
     cron_expression: str | None = None
+    acts_for_creator: bool | None = None
 
 
 class CreateSecretRequest(CamelModel):

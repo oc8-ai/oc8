@@ -58,6 +58,13 @@ class Trigger(Base, PkMixin, TenantMixin, TimestampMixin):
     #: account a tool runs through when the agent's access is "in the user's
     #: context". NULL for triggers made before migration 0107.
     created_by_member_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
+    #: kind='webhook'/'event' only: the creator chose to let this trigger act
+    #: through their account (anyone who can reach the URL fires it, so this is
+    #: never the default). A schedule needs no such flag. Reset when someone
+    #: else edits the trigger.
+    acts_for_creator: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default="false"
+    )
 
     __table_args__ = (
         CheckConstraint("kind IN ('cron','event','webhook','once')", name="ck_trigger_kind"),

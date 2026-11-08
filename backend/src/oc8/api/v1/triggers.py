@@ -49,6 +49,7 @@ def _to_dto(t: m.Trigger) -> TriggerDTO:
         event_type=t.event_type,
         webhook_url=_webhook_url(t.webhook_token) if t.webhook_token else None,
         created_by_member_id=str(t.created_by_member_id) if t.created_by_member_id else None,
+        acts_for_creator=t.acts_for_creator,
     )
 
 
@@ -59,6 +60,18 @@ async def _caller_member_id(db: DbSession, principal: CurrentPrincipal) -> uuid.
     except PermissionError:
         return None
     return member.id if member is not None else None
+
+
+def _changes_what_runs(trigger: m.Trigger, body: UpdateTriggerRequest) -> bool:
+    return (
+        (body.task_text is not None and body.task_text != trigger.task_text)
+        or (
+            body.cron_expression is not None
+            and trigger.kind == "cron"
+            and body.cron_expression != trigger.cron_expression
+        )
+        or body.enabled is True
+    )
 
 
 @router.post(
@@ -84,6 +97,7 @@ async def create_agent_trigger(
             event_source=body.event_source,
             event_type=body.event_type,
             created_by_member_id=await _caller_member_id(db, principal),
+            acts_for_creator=body.acts_for_creator,
         )
     except InvalidTriggerConfig as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
@@ -122,8 +136,26 @@ async def update_agent_trigger(
     trigger = await get_trigger(db, trigger_id=trigger_id)
     if trigger is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "trigger not found")
-    if trigger.created_by_member_id is None:
-        trigger.created_by_member_id = await _caller_member_id(db, principal)
+    caller = await _caller_member_id(db, principal)
+    owner = trigger.created_by_member_id
+    if body.acts_for_creator is True and owner is not None and caller != owner:
+        # Letting a trigger borrow the creator's account is the creator's
+        # decision alone.
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "only the trigger's creator can let it act for them"
+        )
+    if owner is None:
+        # Re-saving a schedule made before triggers recorded a creator.
+        trigger.created_by_member_id = caller
+    elif caller != owner and _changes_what_runs(trigger, body):
+        # Whoever changes what a trigger does becomes the person it acts for,
+        # so an edit can never run under the previous owner's account.
+        trigger.created_by_member_id = caller
+        trigger.acts_for_creator = False
+    if body.acts_for_creator is not None:
+        trigger.acts_for_creator = (
+            body.acts_for_creator and trigger.created_by_member_id is not None
+        )
     try:
         updated = await update_trigger(
             db,
