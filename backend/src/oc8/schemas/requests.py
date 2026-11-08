@@ -443,8 +443,12 @@ class UpdatePolicyRequest(CamelModel):
 
 
 class StartOAuthRequest(CamelModel):
-    """Optional scope override; defaults to the provider's declared scopes."""
+    """`owner`: whose account the result is -- the caller's own ("me") or the
+    organisation's (needs integration:manage). `scopes` overrides the tool
+    scope set and is accepted for an organisation connection only."""
 
+    scope_set: Literal["tools"] = "tools"
+    owner: Literal["me", "organisation"] = "me"
     scopes: list[str] | None = None
 
 

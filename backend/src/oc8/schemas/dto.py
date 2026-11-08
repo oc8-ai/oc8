@@ -1400,6 +1400,10 @@ class OAuthStartDTO(CamelModel):
     authorization_url: str
 
 
+class AdminConsentUrlDTO(CamelModel):
+    url: str
+
+
 class OAuthConnectionDTO(CamelModel):
     """Connection metadata only — token material is never serialized."""
 

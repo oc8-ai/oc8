@@ -64,7 +64,7 @@ async def test_start_returns_an_authorization_url_with_pkce(redis_url: str) -> N
     app = create_app()
     async with LifespanManager(app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
-            r = await c.post("/api/v1/oauth/google/start", json={}, headers=_headers(tenant))
+            r = await c.post("/api/v1/oauth/google/start", json={"owner": "organisation"}, headers=_headers(tenant))
             assert r.status_code == 200, r.text
             url = httpx.URL(r.json()["authorizationUrl"])
             assert str(url).startswith("https://accounts.google.com/o/oauth2/v2/auth")
@@ -86,7 +86,7 @@ async def test_start_requires_org_admin() -> None:
     async with LifespanManager(app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
             r = await c.post(
-                "/api/v1/oauth/google/start", json={}, headers=_headers(tenant, "member")
+                "/api/v1/oauth/google/start", json={"owner": "organisation"}, headers=_headers(tenant, "member")
             )
             assert r.status_code == 403, r.text
 
@@ -97,7 +97,7 @@ async def test_full_connect_flow_creates_a_connection(redis_url: str) -> None:
     async with LifespanManager(app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
             start = await c.post(
-                "/api/v1/oauth/google/start", json={}, headers=_headers(tenant)
+                "/api/v1/oauth/google/start", json={"owner": "organisation"}, headers=_headers(tenant)
             )
             state = dict(httpx.URL(start.json()["authorizationUrl"]).params)["state"]
 
@@ -132,7 +132,7 @@ async def test_token_exchange_failure_redirects_without_creating_a_connection(
     async with LifespanManager(app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
             start = await c.post(
-                "/api/v1/oauth/google/start", json={}, headers=_headers(tenant)
+                "/api/v1/oauth/google/start", json={"owner": "organisation"}, headers=_headers(tenant)
             )
             state = dict(httpx.URL(start.json()["authorizationUrl"]).params)["state"]
 
@@ -152,7 +152,7 @@ async def test_token_exchange_failure_redirects_without_creating_a_connection(
 
             assert cb.status_code in (302, 307), cb.text
             assert cb.headers["location"].startswith("https://app.example.com")
-            assert "oauthError=" in cb.headers["location"]
+            assert "error=" in cb.headers["location"]
 
             listed = await c.get("/api/v1/oauth/connections", headers=_headers(tenant))
             assert listed.json() == []
@@ -166,7 +166,7 @@ async def test_userinfo_failure_redirects_without_creating_a_connection(
     async with LifespanManager(app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
             start = await c.post(
-                "/api/v1/oauth/google/start", json={}, headers=_headers(tenant)
+                "/api/v1/oauth/google/start", json={"owner": "organisation"}, headers=_headers(tenant)
             )
             state = dict(httpx.URL(start.json()["authorizationUrl"]).params)["state"]
 
@@ -195,7 +195,7 @@ async def test_userinfo_failure_redirects_without_creating_a_connection(
 
             assert cb.status_code in (302, 307), cb.text
             assert cb.headers["location"].startswith("https://app.example.com")
-            assert "oauthError=account_unresolved" in cb.headers["location"]
+            assert "error=account_unresolved" in cb.headers["location"]
 
             listed = await c.get("/api/v1/oauth/connections", headers=_headers(tenant))
             assert listed.json() == []
@@ -217,7 +217,7 @@ async def test_callback_state_cannot_be_replayed(redis_url: str) -> None:
     async with LifespanManager(app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
             start = await c.post(
-                "/api/v1/oauth/google/start", json={}, headers=_headers(tenant)
+                "/api/v1/oauth/google/start", json={"owner": "organisation"}, headers=_headers(tenant)
             )
             state = dict(httpx.URL(start.json()["authorizationUrl"]).params)["state"]
             first = await c.get(
@@ -236,7 +236,7 @@ async def test_user_denied_consent_redirects_with_an_error(redis_url: str) -> No
     async with LifespanManager(app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
             start = await c.post(
-                "/api/v1/oauth/google/start", json={}, headers=_headers(tenant)
+                "/api/v1/oauth/google/start", json={"owner": "organisation"}, headers=_headers(tenant)
             )
             state = dict(httpx.URL(start.json()["authorizationUrl"]).params)["state"]
             r = await c.get(
@@ -244,7 +244,7 @@ async def test_user_denied_consent_redirects_with_an_error(redis_url: str) -> No
                 follow_redirects=False,
             )
             assert r.status_code in (302, 307)
-            assert "oauthError=access_denied" in r.headers["location"]
+            assert "error=access_denied" in r.headers["location"]
 
 
 async def test_connections_are_tenant_scoped(redis_url: str) -> None:
@@ -253,7 +253,7 @@ async def test_connections_are_tenant_scoped(redis_url: str) -> None:
     async with LifespanManager(app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
             start = await c.post(
-                "/api/v1/oauth/google/start", json={}, headers=_headers(tenant_a)
+                "/api/v1/oauth/google/start", json={"owner": "organisation"}, headers=_headers(tenant_a)
             )
             state = dict(httpx.URL(start.json()["authorizationUrl"]).params)["state"]
             await c.get(
@@ -269,7 +269,7 @@ async def test_disconnect_removes_the_connection(redis_url: str) -> None:
     async with LifespanManager(app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
             start = await c.post(
-                "/api/v1/oauth/google/start", json={}, headers=_headers(tenant)
+                "/api/v1/oauth/google/start", json={"owner": "organisation"}, headers=_headers(tenant)
             )
             state = dict(httpx.URL(start.json()["authorizationUrl"]).params)["state"]
             await c.get(
