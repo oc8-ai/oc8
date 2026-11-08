@@ -86,10 +86,11 @@ are the tokens in `styles.css` (oc8 Brand Style Sheet v1.0).
 | `--muted` (= secondary, accent) | `#141827` / `#eef1f6` | Hover, subtle fills. |
 | `--muted-foreground` | `#8a94a6` / `#6b7280` | Secondary text. |
 | `--border` | white 8 % / navy 10 % | Hairlines. |
-| `--primary` | `#286bff` | **The** primary action of a view and the current selection. Nothing else. |
+| `--primary` | `#286bff` | **The** primary action of a view and the current selection. Nothing else. Text on it is white in both themes (4.5:1). |
 | `--ring` | `#7a4dff` | Focus ring only. |
-| `--status-running` | `#20d4bf` | Running, done, success. |
-| `--status-warning` | `#ff9a3c` | **Waiting on you.** Also attention and warnings. |
+| `--status-running` | `#20d4bf` | Running, done, success (dots, fills, borders). |
+| `--status-warning` | `#ff9a3c` | **Waiting on you.** Also attention and warnings (dots, fills, borders). |
+| `--status-running-text`, `--status-warning-text` | same as above / `#0d766a`, `#a85000` | Status as **text**. Light mode needs darker shades for 4.5:1. Use `text-status-*-text`, never `text-status-*`. |
 | `--status-error` / `--destructive` | oklch hue 25 | Failed, rejected, destructive. |
 | `--status-paused` | grey | Paused, off. |
 
@@ -149,9 +150,10 @@ options. Button labels say what happens ("Approve", "Send mail"), never
   mobile the name and the key value stay on one line and details wrap below.
 - **Max content width:** 1120 px for reading pages. Dashboards may use the
   full width.
-- **Radius:** `rounded-md` (8 px) for controls, `rounded-lg` (14 px,
-  `--radius`) for panels, cards and sheets, `rounded-full` for dots, pills
-  and avatars. Do not use bare `rounded`.
+- **Radius:** derived from `--radius` (14 px): `rounded-sm` 10 px,
+  `rounded-md` 12 px for controls, `rounded-lg` 14 px for panels, cards and
+  sheets, and `rounded-full` for dots, pills, chips, avatars and small icon
+  buttons. Do not use bare `rounded`.
 - **Shadow:** only floating layers (menus, popovers, dialogs, sheets) get a
   shadow. Surfaces on the page get a hairline border instead.
 
@@ -244,4 +246,5 @@ New code follows this file. These existing spots are migrated when touched:
 | 2026-11-08 | Guiding principle: "calm and in control" | Chosen by the product owner. Trust over wow for a product that lets agents act. |
 | 2026-11-08 | Brand gradient only on the logo, auth/onboarding and the rare `highlight` button; primary buttons are flat | Product owner: a standout action should still carry the gradient. Everywhere else it competed with status colours and made the UI loud. |
 | 2026-11-08 | German copy uses "du" | Fits the personal Copilot and the new guardrail texts. The mix was roughly 55 % Sie and 45 % du. |
+| 2026-11-08 | Radius scale documented as sm 10 / md 12 / lg 14; status text tokens; white text on primary in dark mode | Found while migrating: the brand tokens give 12 px for `rounded-md`, and the brand status colours fail 4.5:1 as text in light mode. |
 | 2026-11-08 | One type scale (24/20/16/14/12/11) and one micro-label style | Replaces about 500 arbitrary sizes and four label variants. |
