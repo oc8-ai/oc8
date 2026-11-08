@@ -85,6 +85,7 @@ async def resolve_client(
         raise OAuthNotConfigured(
             f"no {provider_id} oauth client configured: store secrets "
             f"{tenant_client_id_ref(provider_id)} and {tenant_client_secret_ref(provider_id)}, "
-            f"or set OC8_{provider_id.upper()}_OAUTH_CLIENT_ID / OC8_{provider_id.upper()}_OAUTH_CLIENT_SECRET"
+            f"or set OC8_{provider_id.upper()}_OAUTH_CLIENT_ID / "
+            f"OC8_{provider_id.upper()}_OAUTH_CLIENT_SECRET"
         )
     return found
