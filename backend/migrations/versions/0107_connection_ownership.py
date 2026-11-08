@@ -36,12 +36,19 @@ LANGUAGE plpgsql AS $$
 DECLARE
   ref_id uuid;
   ref_tenant uuid;
+  old_id uuid;
   i int := 0;
 BEGIN
   -- TG_ARGV holds pairs: (column of NEW, table it references by id).
   WHILE i < TG_NARGS LOOP
     ref_id := (to_jsonb(NEW) ->> TG_ARGV[i])::uuid;
-    IF ref_id IS NOT NULL THEN
+    old_id := NULL;
+    IF TG_OP = 'UPDATE' THEN
+      old_id := (to_jsonb(OLD) ->> TG_ARGV[i])::uuid;
+    END IF;
+    -- Only a reference that is new or changed is checked: a cascade or SET NULL
+    -- on another column must not trip over a stale (just-deleted) target.
+    IF ref_id IS NOT NULL AND (TG_OP = 'INSERT' OR ref_id IS DISTINCT FROM old_id) THEN
       EXECUTE format('SELECT tenant_id FROM %I WHERE id = $1', TG_ARGV[i + 1])
         INTO ref_tenant USING ref_id;
       IF ref_tenant IS DISTINCT FROM NEW.tenant_id THEN
@@ -60,7 +67,8 @@ _STATEMENTS = (
     # --- owners
     "ALTER TABLE oauth_connection ADD COLUMN IF NOT EXISTS owner_member_id uuid NULL "
     "REFERENCES org_member(id) ON DELETE CASCADE",
-    "CREATE INDEX IF NOT EXISTS ix_oauth_connection_owner_member_id ON oauth_connection (owner_member_id)",
+    "CREATE INDEX IF NOT EXISTS ix_oauth_connection_owner_member_id "
+    "ON oauth_connection (owner_member_id)",
     "ALTER TABLE oauth_connection DROP CONSTRAINT IF EXISTS uq_oauth_conn_tenant_provider_account",
     "ALTER TABLE oauth_connection ADD CONSTRAINT uq_oauth_conn_tenant_provider_owner_account "
     "UNIQUE NULLS NOT DISTINCT (tenant_id, provider, owner_member_id, account_label)",
@@ -79,6 +87,7 @@ _STATEMENTS = (
     # --- trigger creator
     "ALTER TABLE trigger ADD COLUMN IF NOT EXISTS created_by_member_id uuid NULL "
     "REFERENCES org_member(id) ON DELETE SET NULL",
+    "CREATE INDEX IF NOT EXISTS ix_trigger_created_by_member_id ON trigger (created_by_member_id)",
     "DROP TRIGGER IF EXISTS trg_trigger_same_tenant ON trigger",
     "CREATE TRIGGER trg_trigger_same_tenant BEFORE INSERT OR UPDATE ON trigger "
     "FOR EACH ROW EXECUTE FUNCTION oc8_same_tenant_ref('created_by_member_id', 'org_member')",
@@ -99,12 +108,19 @@ _STATEMENTS = (
         CONSTRAINT ck_agent_tool_access_mode CHECK (mode IN ('user', 'fixed')),
         CONSTRAINT ck_agent_tool_access_target CHECK (
             (mode = 'user' AND oauth_connection_id IS NULL AND credential_id IS NULL)
-            OR (mode = 'fixed' AND NOT (oauth_connection_id IS NOT NULL AND credential_id IS NOT NULL))
+            OR (mode = 'fixed'
+                AND NOT (oauth_connection_id IS NOT NULL AND credential_id IS NOT NULL))
         )
     )
     """,
     "CREATE INDEX IF NOT EXISTS ix_agent_tool_access_tenant_id ON agent_tool_access (tenant_id)",
     "CREATE INDEX IF NOT EXISTS ix_agent_tool_access_agent_id ON agent_tool_access (agent_id)",
+    "CREATE INDEX IF NOT EXISTS ix_agent_tool_access_oauth_connection_id "
+    "ON agent_tool_access (oauth_connection_id)",
+    "CREATE INDEX IF NOT EXISTS ix_agent_tool_access_credential_id "
+    "ON agent_tool_access (credential_id)",
+    "CREATE INDEX IF NOT EXISTS ix_agent_tool_access_set_by_member_id "
+    "ON agent_tool_access (set_by_member_id)",
     "ALTER TABLE agent_tool_access ENABLE ROW LEVEL SECURITY",
     """
     DO $$ BEGIN
@@ -140,11 +156,17 @@ def remove_connection_ownership(conn: sa.Connection) -> None:
         "DROP TRIGGER IF EXISTS trg_trigger_same_tenant ON trigger",
         "ALTER TABLE trigger DROP COLUMN IF EXISTS created_by_member_id",
         "DROP TRIGGER IF EXISTS trg_credential_same_tenant ON credential",
+        # Personal rows go: the old unique constraints could not hold them, and
+        # keeping them would turn a person's account into the organisation's.
+        # Their secret_store entries are orphaned (the downgrade cannot reach them).
+        "DELETE FROM credential WHERE owner_member_id IS NOT NULL",
         "ALTER TABLE credential DROP CONSTRAINT IF EXISTS uq_credential_tenant_owner_name",
         "ALTER TABLE credential DROP COLUMN IF EXISTS owner_member_id",
         "ALTER TABLE credential ADD CONSTRAINT uq_credential_tenant_name UNIQUE (tenant_id, name)",
         "DROP TRIGGER IF EXISTS trg_oauth_connection_same_tenant ON oauth_connection",
-        "ALTER TABLE oauth_connection DROP CONSTRAINT IF EXISTS uq_oauth_conn_tenant_provider_owner_account",
+        "DELETE FROM oauth_connection WHERE owner_member_id IS NOT NULL",
+        "ALTER TABLE oauth_connection "
+        "DROP CONSTRAINT IF EXISTS uq_oauth_conn_tenant_provider_owner_account",
         "ALTER TABLE oauth_connection DROP COLUMN IF EXISTS owner_member_id",
         "ALTER TABLE oauth_connection ADD CONSTRAINT uq_oauth_conn_tenant_provider_account "
         "UNIQUE (tenant_id, provider, account_label)",

@@ -125,3 +125,75 @@ def test_an_owner_from_another_tenant_is_refused(pg_url: str) -> None:
             _oauth(conn, tenant, "x@acme.test", stranger)
         conn.rollback()
     engine.dispose()
+
+
+def _credential(
+    conn: sa.Connection, tenant: uuid.UUID, name: str, owner: uuid.UUID | None = None
+) -> None:
+    conn.execute(
+        sa.text(
+            "INSERT INTO credential (id, tenant_id, name, credential_type, field_values, "
+            "secret_refs, owner_member_id, created_at, updated_at) VALUES (:id, :t, :n, "
+            "'odoo_login', '{}', '{}', :o, now(), now())"
+        ),
+        {"id": uuid.uuid4(), "t": tenant, "n": name, "o": owner},
+    )
+
+
+def test_downgrade_drops_personal_rows_and_the_round_trip_works(pg_url: str) -> None:
+    tenant = uuid.uuid4()
+    engine = sa.create_engine(pg_url)
+    with engine.connect() as conn:
+        anna = _member(conn, tenant)
+        _oauth(conn, tenant, "shared@acme.test")
+        _oauth(conn, tenant, "shared@acme.test", anna)
+        _credential(conn, tenant, "Odoo")
+        _credential(conn, tenant, "Odoo", anna)
+        _module().remove_connection_ownership(conn)  # type: ignore[attr-defined]
+        left = conn.execute(
+            sa.text(
+                "SELECT count(*) FROM oauth_connection WHERE tenant_id = :t AND account_label = "
+                "'shared@acme.test'"
+            ),
+            {"t": tenant},
+        ).scalar_one()
+        creds = conn.execute(
+            sa.text("SELECT count(*) FROM credential WHERE tenant_id = :t"), {"t": tenant}
+        ).scalar_one()
+        _module().add_connection_ownership(conn)  # type: ignore[attr-defined]
+        owners = (
+            conn.execute(
+                sa.text("SELECT owner_member_id FROM oauth_connection WHERE tenant_id = :t"),
+                {"t": tenant},
+            )
+            .scalars()
+            .all()
+        )
+        conn.rollback()
+    engine.dispose()
+    # only the organisation rows survive; none became organisation-owned by accident
+    assert (left, creds, owners) == (1, 1, [None])
+
+
+def test_new_reference_columns_are_indexed(pg_url: str) -> None:
+    engine = sa.create_engine(pg_url)
+    with engine.connect() as conn:
+        indexed = set(
+            conn.execute(
+                sa.text(
+                    "SELECT a.attname FROM pg_index i "
+                    "JOIN pg_attribute a ON a.attrelid = i.indrelid "
+                    "AND a.attnum = ANY(i.indkey) WHERE i.indrelid IN "
+                    "('agent_tool_access'::regclass, 'trigger'::regclass)"
+                )
+            )
+            .scalars()
+            .all()
+        )
+    engine.dispose()
+    assert {
+        "oauth_connection_id",
+        "credential_id",
+        "set_by_member_id",
+        "created_by_member_id",
+    } <= indexed

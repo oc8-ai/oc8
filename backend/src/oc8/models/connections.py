@@ -25,16 +25,17 @@ class AgentToolAccess(Base, PkMixin, TenantMixin, TimestampMixin):
     agent_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
     tool_key: Mapped[str] = mapped_column(Text, nullable=False)
     mode: Mapped[str] = mapped_column(Text, nullable=False)
-    oauth_connection_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
-    credential_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
-    set_by_member_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    oauth_connection_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
+    credential_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
+    set_by_member_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
 
     __table_args__ = (
         UniqueConstraint("agent_id", "tool_key", name="uq_agent_tool_access"),
         CheckConstraint("mode IN ('user', 'fixed')", name="ck_agent_tool_access_mode"),
         CheckConstraint(
             "(mode = 'user' AND oauth_connection_id IS NULL AND credential_id IS NULL) "
-            "OR (mode = 'fixed' AND NOT (oauth_connection_id IS NOT NULL AND credential_id IS NOT NULL))",
+            "OR (mode = 'fixed' "
+            "AND NOT (oauth_connection_id IS NOT NULL AND credential_id IS NOT NULL))",
             name="ck_agent_tool_access_target",
         ),
     )
