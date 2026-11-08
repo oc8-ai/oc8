@@ -59,6 +59,18 @@ ALLOWED: dict[str, str] = {
         "function is already gated the same way copilot/capabilities.py is above"
     ),
     "api/v1/run.py": "loads the agent that owns the run being started or controlled",
+    "api/v1/run_inputs.py": (
+        "loads the agent of a run the caller was already admitted to steer "
+        "(may_steer_run), only to resolve its pinned runtime"
+    ),
+    "chat/live.py": (
+        "names the agents behind delegated tasks on a timeline the caller was "
+        "already admitted to (reach + watch rules); name only, never content"
+    ),
+    "runtime/clarification.py": (
+        "the answer path reading the run's own agent for the secret gate "
+        "(is_tenant_assistant); no departmental browse"
+    ),
     "api/v1/knowledge.py": "resolves the grantee (agent or department) of a KB share",
     "api/v1/components.py": "resolves the grantee (agent or department) of a component grant",
     "agent/control_tools.py": "the agent runtime reading its own department; no human here",
