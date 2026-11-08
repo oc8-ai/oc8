@@ -36,7 +36,11 @@ vi.mock("@/lib/chat-commands", async (orig) => ({
   ...(await orig<typeof import("@/lib/chat-commands")>()),
   useChatModes: () => ({ data: [] }),
 }));
-vi.mock("@/lib/governance-hooks", () => ({ useCan: () => () => true }));
+vi.mock("@/lib/governance-hooks", () => ({
+  useCan: () => () => true,
+  // No approval:view: the chat sends no approvals request.
+  useMay: () => () => false,
+}));
 
 import { Conversation } from "@/components/conversation/conversation";
 import { RunInputs, runInputError, steeringTarget } from "@/components/conversation/run-steering";

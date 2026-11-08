@@ -23,6 +23,7 @@ import {
   useSendChatMessage,
   type ChatMessageDTO,
 } from "@/lib/hooks-chat";
+import { useMay } from "@/lib/governance-hooks";
 import { useLang, useT } from "@/lib/i18n";
 import { useWatchRuns } from "@/lib/live/provider";
 import { cn } from "@/lib/utils";
@@ -32,7 +33,7 @@ import { Composer, type ComposerSubmit } from "./composer";
 import { DecisionCard } from "./decision-card";
 import { PromptStarters } from "./prompt-starters";
 import { QuestionCard } from "./question-card";
-import { SuggestionChips } from "./suggestion-chips";
+import { SuggestionChips, type ReplyChip } from "./suggestion-chips";
 import type { AssistantTurnModel, ConversationVariant, TurnModel } from "./types";
 import { useTimelineRuns } from "./timeline-runs";
 import { useConversation } from "./use-conversation";
@@ -226,9 +227,12 @@ export function Conversation(props: ConversationProps) {
   const lastUser = [...conv.turns].reverse().find((turn) => turn.kind === "user");
 
   // request_decision approvals this chat's run raised (spec §4.2). Pending
-  // approvals are `approval:view`-gated: without it the query fails, the list
-  // stays empty and the decision is the inbox's alone.
-  const { data: pendingApprovals = [] } = useApprovals("pending");
+  // approvals are `approval:view`-gated: without it nothing is fetched, the
+  // list stays empty and the decision is the inbox's alone.
+  const may = useMay();
+  const { data: pendingApprovals = [] } = useApprovals("pending", {
+    enabled: may("approval:view"),
+  });
   const taskId = conv.session?.taskId ?? null;
   // Decided here: the pending list drops them, the chat keeps the answer.
   const [decidedHere, setDecidedHere] = useState<Approval[]>([]);
@@ -258,10 +262,10 @@ export function Conversation(props: ConversationProps) {
       : null;
   const offerChips = !!latestAnswer && !busy && !pending && !readOnly;
   const lastMessage = conv.messages[conv.messages.length - 1];
-  const suggestions = !offerChips
+  const suggestions: ReplyChip[] = !offerChips
     ? []
     : latestAnswer.suggestions?.length
-      ? latestAnswer.suggestions
+      ? latestAnswer.suggestions.map((s) => ({ label: s, text: s }))
       : nextStepChips(
           {
             hasMessages: conv.turns.length > 0,
@@ -273,7 +277,7 @@ export function Conversation(props: ConversationProps) {
             promptStarters: [],
           },
           t,
-        ).map((chip) => chip.insert);
+        ).map((chip) => ({ label: chip.label, text: chip.insert }));
 
   // One creation in flight at a time: a multi-file drop and a send during an
   // upload all wait for the same new chat instead of each making one.
@@ -416,26 +420,30 @@ export function Conversation(props: ConversationProps) {
     );
   }
 
+  /** This chat's decisions: on the newest answer, or on their own below the
+   *  turns while there is no answer yet (never both). */
+  function decisionCards(): ReactNode {
+    if (sessionDecisions.length === 0) return null;
+    return sessionDecisions.map((approval) => (
+      <DecisionCard
+        key={approval.id}
+        approval={approval}
+        mayDecide={mayDecide(approval)}
+        onDecided={(option) =>
+          setDecidedHere((prev) => [
+            ...prev.filter((d) => d.id !== approval.id),
+            { ...approval, status: "approved", decisionOption: option },
+          ])
+        }
+      />
+    ));
+  }
+
   /** The surface's own extras first, then this chat's decisions and replies
    *  on the newest answer. */
   function assistantExtras(turn: AssistantTurnModel): { cards?: ReactNode; footer?: ReactNode } {
     const own = props.renderAssistantExtras?.(turn) ?? {};
-    const decisions =
-      turn === lastAssistant && sessionDecisions.length > 0
-        ? sessionDecisions.map((approval) => (
-            <DecisionCard
-              key={approval.id}
-              approval={approval}
-              mayDecide={mayDecide(approval)}
-              onDecided={(option) =>
-                setDecidedHere((prev) => [
-                  ...prev.filter((d) => d.id !== approval.id),
-                  { ...approval, status: "approved", decisionOption: option },
-                ])
-              }
-            />
-          ))
-        : null;
+    const decisions = turn === lastAssistant ? decisionCards() : null;
     const chips =
       turn === lastTurn && suggestions.length > 0 ? (
         <SuggestionChips
@@ -567,6 +575,12 @@ export function Conversation(props: ConversationProps) {
                 )}
               </Fragment>
             ))
+          )}
+
+          {!conv.isLoading && !lastAssistant && sessionDecisions.length > 0 && (
+            <div data-testid="session-decisions" className="space-y-2">
+              {decisionCards()}
+            </div>
           )}
 
           {sendError && (

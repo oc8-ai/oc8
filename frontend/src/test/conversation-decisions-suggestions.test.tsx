@@ -28,7 +28,7 @@ vi.mock("@/lib/chat-commands", async (orig) => ({
   ...(await orig<typeof import("@/lib/chat-commands")>()),
   useChatModes: () => ({ data: [] }),
 }));
-vi.mock("@/lib/governance-hooks", () => ({ useCan: () => () => true }));
+vi.mock("@/lib/governance-hooks", () => ({ useCan: () => () => true, useMay: () => () => true }));
 
 import { Conversation } from "@/components/conversation";
 import { DecisionCard } from "@/components/conversation/decision-card";
@@ -74,12 +74,36 @@ describe("SuggestionChips", () => {
     const onSend = vi.fn();
     const onInsert = vi.fn();
     render(
-      <SuggestionChips suggestions={["Shorter", "Send it"]} onSend={onSend} onInsert={onInsert} />,
+      <SuggestionChips
+        suggestions={[
+          { label: "Shorter", text: "Shorter" },
+          { label: "Send it", text: "Send it" },
+        ]}
+        onSend={onSend}
+        onInsert={onInsert}
+      />,
     );
     fireEvent.click(screen.getByRole("button", { name: "Shorter" }));
     expect(onSend).toHaveBeenCalledWith("Shorter");
     fireEvent.click(screen.getByRole("button", { name: "Edit before sending: Send it" }));
     expect(onInsert).toHaveBeenCalledWith("Send it");
+  });
+
+  it("shows the label and sends or inserts the text", () => {
+    const onSend = vi.fn();
+    const onInsert = vi.fn();
+    render(
+      <SuggestionChips
+        suggestions={[{ label: "Summarise this", text: "/summarise this conversation" }]}
+        onSend={onSend}
+        onInsert={onInsert}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Summarise this" }));
+    expect(onSend).toHaveBeenCalledWith("/summarise this conversation");
+    fireEvent.click(screen.getByRole("button", { name: "Edit before sending: Summarise this" }));
+    expect(onInsert).toHaveBeenCalledWith("/summarise this conversation");
+    expect(screen.queryByText("/summarise this conversation")).toBeNull();
   });
 });
 
@@ -256,12 +280,18 @@ describe("Conversation suggestions and decisions", () => {
     expect(box).toHaveValue("Hello Send it");
   });
 
-  it("falls back to the next-step chips when the model gave none", () => {
+  it("falls back to the next-step chips when the model gave none", async () => {
     chat([]);
+    const post = vi.spyOn(api, "post").mockResolvedValue(message({ id: "u3", role: "user" }));
     mount();
-    expect(
-      screen.getByRole("button", { name: "/summarise this conversation" }),
-    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Summarise this" }));
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith(
+        "/chat/sessions/s1/messages",
+        expect.objectContaining({ message: "/summarise this conversation" }),
+      ),
+    );
+    post.mockRestore();
   });
 
   it("shows no chips while a run is live, a question waits or the chat is read-only", () => {
@@ -305,6 +335,30 @@ describe("Conversation suggestions and decisions", () => {
     mount();
     expect(screen.getByText("Refund 40 €?")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Decide:/ })).toBeNull();
+  });
+
+  it("shows a decision before the first answer, below the turns", () => {
+    const u1 = message({ id: "u1", role: "user", content: "First", authorMemberId: "me" });
+    conv.current = {
+      session: session(),
+      messages: [u1],
+      turns: [{ kind: "user", key: "u1", message: u1 }],
+      liveRunIds: [],
+    };
+    approvals.current = [decision];
+    mount();
+    expect(screen.getAllByText("Refund 40 €?")).toHaveLength(1);
+    expect(screen.getByTestId("session-decisions")).toHaveTextContent("Refund 40 €?");
+  });
+
+  it("never shows a decision twice when there is an answer", () => {
+    chat(["Shorter please"]);
+    approvals.current = [decision];
+    mount();
+    expect(screen.getAllByText("Refund 40 €?")).toHaveLength(1);
+    expect(screen.queryByTestId("session-decisions")).toBeNull();
+    const answers = screen.getAllByRole("article", { name: "Answer" });
+    expect(answers[answers.length - 1]).toHaveTextContent("Refund 40 €?");
   });
 
   it("shows no decisions for a chat without a task", () => {

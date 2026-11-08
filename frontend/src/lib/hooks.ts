@@ -1118,12 +1118,15 @@ export const useActivity = (opts: { agentId?: string; limit?: number } = {}) => 
   });
 };
 
-export const useApprovals = (status = "pending") => {
+/** `enabled: false` sends nothing: for a surface that only shows approvals to
+ *  a caller holding `approval:view` (the chat), not the inbox itself. */
+export const useApprovals = (status = "pending", options: { enabled?: boolean } = {}) => {
   const { lang } = useLang();
   return useQuery({
     queryKey: keys.approvals(status),
     queryFn: () => api.get<Approval[]>(`/approvals?status=${status}`),
     select: (rows) => rows.map((r) => localizeLabeled(r, lang)),
+    enabled: options.enabled ?? true,
   });
 };
 
