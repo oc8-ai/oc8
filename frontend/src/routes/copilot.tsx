@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ChatSessionPicker, ChatWindow } from "@/components/chat-window";
 import { CopilotAvatar, CopilotPersonaHeader } from "@/components/copilot-persona";
 import { CopilotWorkPanel } from "@/components/copilot-work-panel";
@@ -13,15 +13,36 @@ import { useChatSessions } from "@/lib/hooks-chat";
 import { useCopilotProfile } from "@/lib/hooks-copilot";
 import { useT } from "@/lib/i18n";
 
-export const Route = createFileRoute("/copilot")({ component: CopilotPage });
+export interface CopilotSearch {
+  /** A conversation to open -- where an answer's session chip
+   *  ("oc8://chat_session/<id>") lands. */
+  session?: string;
+}
 
-export function CopilotPage() {
+export const Route = createFileRoute("/copilot")({
+  validateSearch: (search: Record<string, unknown>): CopilotSearch =>
+    typeof search.session === "string" && search.session ? { session: search.session } : {},
+  component: CopilotRoute,
+});
+
+function CopilotRoute() {
+  const { session } = Route.useSearch();
+  return <CopilotPage initialSessionId={session ?? null} />;
+}
+
+export function CopilotPage({
+  initialSessionId = null,
+}: { initialSessionId?: string | null } = {}) {
   const t = useT();
   const may = useMay();
   const { data: profile } = useCopilotProfile();
   const agentId = profile?.agentId ?? "";
   const { data: sessions = [] } = useChatSessions(agentId || undefined);
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(initialSessionId);
+  // A second link while the page is open names another conversation.
+  useEffect(() => {
+    if (initialSessionId) setSessionId(initialSessionId);
+  }, [initialSessionId]);
   const [panelOpen, setPanelOpen] = useState(true);
   const mobile = useIsMobile();
   if (!may("copilot:use")) return null; // nav is the main gate; defense in depth

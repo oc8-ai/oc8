@@ -390,14 +390,23 @@
   }
 }
 
+/* Set on the markdown root while an answer streams. The caret is the ::after
+   of the last block (inside the last item of a trailing list), so it sits
+   inline right after the last word and owns no box that could jump when it
+   goes away. A root with nothing in it yet shows the caret on its own. */
 @utility stream-caret {
-  display: inline-block;
-  width: 0.5ch;
-  height: 1em;
-  margin-left: 1px;
-  vertical-align: text-bottom;
-  background: var(--foreground);
-  animation: oc8-caret-blink 1s step-end infinite;
+  & > :last-child:not(ul, ol, pre, table, hr)::after,
+  & > :is(ul, ol):last-child > li:last-child::after,
+  &:empty::after {
+    content: "";
+    display: inline-block;
+    width: 0.5ch;
+    height: 1em;
+    margin-left: 1px;
+    vertical-align: text-bottom;
+    background: var(--foreground);
+    animation: oc8-caret-blink 1s step-end infinite;
+  }
 }
 
 @keyframes room-pulse-teal {

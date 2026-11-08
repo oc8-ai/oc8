@@ -7,7 +7,7 @@
 // citations and resolved `oc8://` object chips; anything else is plain text.
 // Images load only over https.
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type MouseEvent, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Check, Copy, ExternalLink } from "lucide-react";
@@ -124,16 +124,32 @@ function withCitations(text: string, count: number): string {
     .join("");
 }
 
+/** A plain left click -- no modifier, main button -- is the user asking to go
+ *  there now; anything else (new tab, new window, download) the browser does
+ *  with the href. */
+function isPlainClick(e: MouseEvent): boolean {
+  return (
+    e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey && !e.defaultPrevented
+  );
+}
+
 export function ChatMarkdown({
   text,
   className,
   sources = [],
   onCitation,
+  onObjectClick,
+  streaming = false,
 }: {
   text: string;
   className?: string;
   sources?: ChatSourceDTO[];
   onCitation?: (n: number) => void;
+  /** Opens an object chip's in-app route without a page load. Without it a
+   *  chip is a plain link. */
+  onObjectClick?: (href: string) => void;
+  /** Draws the streaming caret inline after the last word (`stream-caret`). */
+  streaming?: boolean;
 }) {
   const t = useT();
   const components: Components = {
@@ -166,6 +182,11 @@ export function ChatMarkdown({
         return (
           <a
             href={target}
+            onClick={(e) => {
+              if (!onObjectClick || !isPlainClick(e)) return;
+              e.preventDefault();
+              onObjectClick(target);
+            }}
             className={cn(
               "inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 text-xs text-foreground no-underline hover:bg-muted/70",
               FOCUS,
@@ -206,7 +227,9 @@ export function ChatMarkdown({
   };
   return (
     <div
+      data-testid={streaming ? "stream-caret" : undefined}
       className={cn(
+        streaming && "stream-caret",
         "space-y-2 text-sm leading-relaxed text-foreground [&_code]:rounded-md [&_code]:bg-muted [&_code]:px-1 [&_code]:font-mono [&_code]:text-xs [&_h1]:text-base [&_h1]:font-semibold [&_h2]:text-base [&_h2]:font-semibold [&_h3]:text-sm [&_h3]:font-semibold [&_li]:ml-4 [&_ol]:list-decimal [&_ol]:space-y-0.5 [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:space-y-0.5 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_table]:block [&_table]:w-full [&_table]:overflow-x-auto [&_table]:border-collapse [&_th]:border [&_th]:border-border [&_th]:px-2 [&_th]:py-1 [&_th]:text-left [&_th]:font-medium [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1",
         className,
       )}

@@ -25,7 +25,9 @@ vi.mock("@/lib/hooks-copilot", () => ({
   useResumeCopilot: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 vi.mock("@/components/chat-window", () => ({
-  ChatWindow: () => <div data-testid="chat" />,
+  ChatWindow: ({ sessionId }: { sessionId: string | null }) => (
+    <div data-testid="chat" data-session={sessionId ?? ""} />
+  ),
   ChatSessionPicker: () => <div data-testid="picker" />,
 }));
 vi.mock("@/components/copilot-work-panel", () => ({
@@ -47,6 +49,15 @@ beforeEach(() => {
 });
 
 describe("CopilotPage", () => {
+  it("opens the session a /copilot?session= link names", () => {
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <CopilotPage initialSessionId="s-7" />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByTestId("chat")).toHaveAttribute("data-session", "s-7");
+  });
+
   it("desktop shows the persona header, the chat and the inline work panel", () => {
     wrap();
     expect(screen.getByText("Pip")).toBeInTheDocument();
