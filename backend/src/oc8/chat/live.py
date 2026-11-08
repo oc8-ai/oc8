@@ -15,7 +15,7 @@ import datetime as dt
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Final, Literal
 
 from sqlalchemy import ColumnElement, String, and_, cast, false, func, not_, or_, select, tuple_
 from sqlalchemy.exc import IntegrityError
@@ -119,26 +119,68 @@ async def trigger_names(
     return out
 
 
-def _chat_originated() -> ColumnElement[bool]:
-    """Started from a chat, or delegated from one (the sub-run carries the
-    chat's session id): somebody's conversation, not an autonomous run."""
-    return or_(m.AgentRun.source == "chat", m.AgentRun.context.has_key("chat_session_id"))
+#: Sources a run with nobody behind it comes from. `manual` (POST
+#: /agents/{id}/run) and `chat` are always somebody's; see `is_autonomous_run`.
+AUTONOMOUS_SOURCES: Final = frozenset(
+    {"cron", "event", "webhook", "delegation", "decision", "handoff"}
+)
 
 
-def _colleagues_chat(member: m.OrgMember) -> ColumnElement[bool]:
-    """A chat-originated run that is neither the member's own nor in one of
-    her own sessions -- her live-session runs ARE the timeline's messages,
-    and her other chats are not this timeline's business."""
+def is_autonomous_run(run: m.AgentRun) -> bool:
+    """The agent's own run: an autonomous source, and no person behind it --
+    no `originating_operator` and no `chat_session_id` (a sub-run delegated
+    from a chat carries both). The ONE definition the timeline
+    (`_autonomous`, its SQL twin) and live watching (`oc8.chat.watch`) use."""
+    ctx = run.context or {}
+    return (
+        run.source in AUTONOMOUS_SOURCES
+        and not ctx.get("originating_operator")
+        and not ctx.get("chat_session_id")
+    )
+
+
+def is_colleague_run(run: m.AgentRun, member: m.OrgMember) -> bool:
+    """Somebody else's run: not autonomous and not started by `member`. Shown
+    only under "All runs", and only as step labels and result (Ruling 15)."""
+    return (
+        not is_autonomous_run(run)
+        and (run.context or {}).get("originating_operator") != member.subject
+    )
+
+
+def _ctx_text(key: str) -> ColumnElement[str]:
+    return func.coalesce(m.AgentRun.context[key].astext, "")
+
+
+def _autonomous() -> ColumnElement[bool]:
+    """`is_autonomous_run`, in SQL."""
+    return and_(
+        m.AgentRun.source.in_(AUTONOMOUS_SOURCES),
+        _ctx_text("originating_operator") == "",
+        _ctx_text("chat_session_id") == "",
+    )
+
+
+def _hers_outside_chat(member: m.OrgMember) -> ColumnElement[bool]:
+    """A run the member started by hand (not from a chat: her chat runs are
+    her sessions' business, her live-session runs ARE the messages)."""
+    return and_(
+        _ctx_text("originating_operator") == member.subject,
+        _ctx_text("chat_session_id") == "",
+        m.AgentRun.source != "chat",
+    )
+
+
+def _colleagues(member: m.OrgMember) -> ColumnElement[bool]:
+    """`is_colleague_run`, in SQL -- and never a run in one of her own
+    sessions, whoever is named on it."""
     own_sessions = select(cast(m.ChatSession.id, String)).where(
         m.ChatSession.tenant_id == member.tenant_id, m.ChatSession.member_id == member.id
     )
     return and_(
-        func.coalesce(m.AgentRun.context["originating_operator"].astext, "") != member.subject,
-        not_(
-            func.coalesce(m.AgentRun.context["chat_session_id"].astext, "").in_(
-                own_sessions.scalar_subquery()
-            )
-        ),
+        not_(_autonomous()),
+        _ctx_text("originating_operator") != member.subject,
+        not_(_ctx_text("chat_session_id").in_(own_sessions.scalar_subquery())),
     )
 
 
@@ -166,8 +208,9 @@ async def live_timeline(
         m.AgentRun.tenant_id == agent.tenant_id,
         m.AgentRun.agent_id == agent.id,
         or_(
-            not_(_chat_originated()),
-            _colleagues_chat(member) if all_runs else false(),
+            _autonomous(),
+            _hers_outside_chat(member),
+            _colleagues(member) if all_runs else false(),
         ),
     )
     if before is not None:

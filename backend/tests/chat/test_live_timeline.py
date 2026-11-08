@@ -13,7 +13,13 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.chat.live import LiveItem, get_or_create_live_session, live_timeline, trigger_of
+from oc8.chat.live import (
+    LiveItem,
+    get_or_create_live_session,
+    is_autonomous_run,
+    live_timeline,
+    trigger_of,
+)
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -318,3 +324,44 @@ def test_trigger_lines() -> None:
         "kind": "chat",
         "label": "Bob",
     }
+
+
+async def test_a_run_a_colleague_started_by_hand_is_not_autonomous(
+    app_session: AppSessionFactory,
+) -> None:
+    """POST /agents/{id}/run by Bob (source "manual", his operator, no chat
+    session) is Bob's, not the agent's own: off Alice's timeline unless "All
+    runs". Alice's own hand-started run is hers and stays on it."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, alice, _ = await _world(db, tenant)
+        live = await get_or_create_live_session(
+            db, tenant_id=tenant, member_id=alice.id, agent_id=agent.id
+        )
+        bobs = _run(tenant, agent, "manual", {"originating_operator": "bob", "task": "BOB TASK"})
+        nobodys = _run(tenant, agent, "manual", {"task": "no operator"})
+        hers = _run(tenant, agent, "manual", {"originating_operator": "alice"})
+        # Delegated, but carrying a person: not autonomous either.
+        carried = _run(tenant, agent, "delegation", {"originating_operator": "bob"})
+        db.add_all([bobs, nobodys, hers, carried])
+        await db.flush()
+        plain = await live_timeline(
+            db, member=alice, agent=agent, session=live, before=None, limit=50, all_runs=False
+        )
+        everything = await live_timeline(
+            db, member=alice, agent=agent, session=live, before=None, limit=50, all_runs=True
+        )
+    assert _run_ids(plain) == {hers.id}
+    assert _run_ids(everything) == {hers.id, bobs.id, nobodys.id, carried.id}
+
+
+def test_autonomous_means_no_person_behind_the_run() -> None:
+    def run(source: str, **ctx: Any) -> m.AgentRun:
+        return m.AgentRun(source=source, context=ctx)
+
+    for source in ("cron", "event", "webhook", "delegation", "decision", "handoff"):
+        assert is_autonomous_run(run(source))
+    assert not is_autonomous_run(run("manual"))
+    assert not is_autonomous_run(run("chat"))
+    assert not is_autonomous_run(run("cron", originating_operator="bob"))
+    assert not is_autonomous_run(run("delegation", chat_session_id=str(uuid.uuid4())))

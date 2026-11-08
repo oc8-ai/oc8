@@ -194,3 +194,118 @@ async def test_the_members_turns_page_back_with_a_cursor(app_session: AppSession
         assert older.status_code == 200, older.text
         assert [i["message"]["content"] for i in older.json()["items"]] == ["m0"]
         assert older.json()["nextBefore"] is None
+
+
+_MARK = "ZEBRA-7731"
+
+
+def _leaky_context(chat_ctx: dict[str, Any]) -> dict[str, Any]:
+    """Every place a colleague's words can hide in a run's context."""
+    return {
+        **chat_ctx,
+        "task": f"User: {_MARK} task",
+        "output": "final answer",
+        "steps": 1,
+        "toolCalls": [
+            {
+                "tool": "send_mail",
+                "arguments": {"body": f"{_MARK} in args"},
+                "result": f"{_MARK} in result",
+                "step": 1,
+                "connection": f"{_MARK}-conn",
+                "state": "done",
+                "durationMs": 12,
+                "startedAt": "2026-11-01T00:00:00+00:00",
+            }
+        ],
+        "stepTimings": [{"step": 1, "step_wall_ms": 40, "reasoning": f"{_MARK} in reasoning"}],
+        "pending_question": f"{_MARK} question",
+        "transcript": [{"role": "user", "content": f"{_MARK} transcript"}],
+    }
+
+
+async def test_a_colleagues_runs_carry_only_step_labels_and_the_result(
+    app_session: AppSessionFactory,
+) -> None:
+    """Ruling 15: under "All runs" a colleague's run -- chat, delegated from
+    his chat, or started by his hand -- shows step labels (tool, step, state,
+    duration) and the final result. Nothing else, anywhere in the body."""
+    tenant = uuid.uuid4()
+    agent_id = await _agent(app_session, tenant)
+    async with app_session(tenant) as db:
+        bob = m.OrgMember(
+            tenant_id=tenant, subject="bob", subject_uuid=uuid.uuid4(), display_name="Bob"
+        )
+        db.add(bob)
+        await db.flush()
+        session = m.ChatSession(tenant_id=tenant, agent_id=agent_id, member_id=bob.id)
+        db.add(session)
+        await db.flush()
+        chat_ctx = {"chat_session_id": str(session.id), "originating_operator": "bob"}
+        runs = [
+            m.AgentRun(
+                tenant_id=tenant,
+                agent_id=agent_id,
+                source=source,
+                state="running",
+                context=_leaky_context(ctx),
+            )
+            for source, ctx in (
+                ("chat", chat_ctx),
+                ("delegation", chat_ctx),
+                ("manual", {"originating_operator": "bob"}),
+            )
+        ]
+        db.add_all(runs)
+        await db.flush()
+        for run in runs:
+            db.add(
+                m.RunInput(
+                    tenant_id=tenant,
+                    run_id=run.id,
+                    author_member_id=bob.id,
+                    text=f"{_MARK} steering",
+                )
+            )
+        ids = {str(r.id) for r in runs}
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        url = f"/api/v1/agents/{agent_id}/live"
+        plain = await c.get(url, headers=_h(tenant, "admin", "org_admin"))
+        everything = await c.get(f"{url}?allRuns=true", headers=_h(tenant, "admin", "org_admin"))
+    assert plain.status_code == 200 and everything.status_code == 200, everything.text
+    assert _run_ids(plain.json()) == set()
+    assert _run_ids(everything.json()) == ids
+    assert _MARK not in plain.text
+    assert _MARK not in everything.text
+    for item in everything.json()["items"]:
+        run = item["run"]
+        assert run["output"] == "final answer"
+        assert run["toolCalls"] == [
+            {"tool": "send_mail", "step": 1, "state": "done", "durationMs": 12}
+        ]
+        assert run["stepTimings"] == [{"step": 1, "stepWallMs": 40}]
+
+
+async def test_an_autonomous_run_keeps_its_full_steps(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    agent_id = await _agent(app_session, tenant)
+    async with app_session(tenant) as db:
+        db.add(
+            m.AgentRun(
+                tenant_id=tenant,
+                agent_id=agent_id,
+                source="cron",
+                state="done",
+                context={
+                    "toolCalls": [{"tool": "t", "arguments": {"q": "x"}, "step": 1}],
+                },
+            )
+        )
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        body = (
+            await c.get(f"/api/v1/agents/{agent_id}/live", headers=_h(tenant, "aud", "auditor"))
+        ).json()
+    [item] = body["items"]
+    assert item["run"]["toolCalls"][0]["arguments"] == {"q": "x"}

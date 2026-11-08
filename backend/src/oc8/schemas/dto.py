@@ -1733,7 +1733,11 @@ class LiveTriggerDTO(CamelModel):
 
 class LiveRunDTO(CamelModel):
     """A run on the Live timeline (spec §3.1). Deliberately no `task` and no
-    `context`: for a colleague's chat run that would be their message text."""
+    `context`: for a colleague's chat run that would be their message text.
+    For a colleague's run (under "All runs") `tool_calls`/`step_timings` are
+    cut to step labels (Ruling 15, `api/v1/chat_live.py`). Its `output`, the
+    final result, is kept and may quote their message -- deliberate: the spec
+    gives managers that run's result."""
 
     id: str
     state: str

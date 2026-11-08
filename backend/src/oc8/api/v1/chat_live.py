@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
-from typing import Annotated
+from typing import Annotated, Any, Final
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
@@ -22,7 +22,13 @@ from oc8.api.v1.chat import _message_dto
 from oc8.authz.authority import authority_for_principal
 from oc8.authz.permissions import AGENT, COPILOT_USE, VIEW, perm
 from oc8.authz.scope import HumanActor
-from oc8.chat.live import LiveItem, get_or_create_live_session, live_timeline, trigger_names
+from oc8.chat.live import (
+    LiveItem,
+    get_or_create_live_session,
+    is_colleague_run,
+    live_timeline,
+    trigger_names,
+)
 from oc8.chat.reach import reachable_chat_agent
 from oc8.runtime.run_inputs import may_manage_agent
 from oc8.runtime.step_record import step_timing_dto
@@ -55,9 +61,28 @@ def _parse_cursor(raw: str) -> tuple[dt.datetime, uuid.UUID | None]:
     return at, item_id
 
 
-def _run_dto(run: m.AgentRun, trigger: dict[str, str | None]) -> LiveRunDTO:
+#: Ruling 15: what a colleague's run may show of a step -- its label, never
+#: its arguments, raw result, connection, or the model's reasoning.
+_COLLEAGUE_CALL_KEYS: Final = ("tool", "step", "state", "durationMs")
+_COLLEAGUE_TIMING_KEYS: Final = ("step", "stepWallMs")
+
+
+def _only(entry: object, keys: tuple[str, ...]) -> dict[str, Any]:
+    if not isinstance(entry, dict):
+        return {}
+    return {k: entry[k] for k in keys if entry.get(k) is not None}
+
+
+def _run_dto(run: m.AgentRun, trigger: dict[str, str | None], *, colleague: bool) -> LiveRunDTO:
+    """`colleague`: somebody else's run, under "All runs". An ALLOWLIST, not a
+    blocklist -- a key some runtime adds to the context tomorrow stays out."""
     ctx = run.context or {}
     output = ctx.get("output")
+    calls: list[Any] = list(ctx.get("toolCalls") or [])
+    timings = [step_timing_dto(e) for e in ctx.get("stepTimings") or []]
+    if colleague:
+        calls = [_only(c, _COLLEAGUE_CALL_KEYS) for c in calls]
+        timings = [_only(t, _COLLEAGUE_TIMING_KEYS) for t in timings]
     return LiveRunDTO(
         id=str(run.id),
         state=run.state,
@@ -66,8 +91,8 @@ def _run_dto(run: m.AgentRun, trigger: dict[str, str | None]) -> LiveRunDTO:
         trigger=LiveTriggerDTO(kind=str(trigger["kind"]), label=trigger["label"]),
         output=str(output) if output else None,
         steps=int(ctx.get("steps") or 0),
-        tool_calls=list(ctx.get("toolCalls") or []),
-        step_timings=[step_timing_dto(e) for e in ctx.get("stepTimings") or []],
+        tool_calls=calls,
+        step_timings=timings,
         started_by=trigger["label"] if ctx.get("originating_operator") else None,
     )
 
@@ -120,7 +145,15 @@ async def get_live(
                     if item.message is not None
                     else None
                 ),
-                run=_run_dto(item.run, triggers[item.run.id]) if item.run is not None else None,
+                run=(
+                    _run_dto(
+                        item.run,
+                        triggers[item.run.id],
+                        colleague=is_colleague_run(item.run, actor.member),
+                    )
+                    if item.run is not None
+                    else None
+                ),
             )
         )
     session_id = str(session.id)

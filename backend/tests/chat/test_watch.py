@@ -197,9 +197,13 @@ async def test_a_member_who_sees_the_agent_may_watch_its_scheduled_runs(
         assert await may_watch_run(db, member=viewer, run_id=run.id)
 
 
-async def test_a_colleagues_chat_run_is_watched_by_managers_only(
+async def test_a_colleagues_run_is_never_watched_live_not_even_by_a_manager(
     app_session: AppSessionFactory,
 ) -> None:
+    """The live stream (token deltas, tool arguments, reasoning) carries the
+    colleague's words: a manager sees such a run only afterwards, redacted,
+    through "All runs" -- never live. That holds for a chat run, a sub-run
+    delegated from it, and a run the colleague started by hand."""
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent = await _dept_agent(db, tenant)
@@ -211,11 +215,16 @@ async def test_a_colleagues_chat_run_is_watched_by_managers_only(
         await db.flush()
         ctx = {"chat_session_id": str(session.id), "originating_operator": "owner"}
         chat_run = m.AgentRun(tenant_id=tenant, agent_id=agent.id, source="chat", context=ctx)
-        # Delegated from the owner's chat: still the owner's, not autonomous.
         sub_run = m.AgentRun(tenant_id=tenant, agent_id=agent.id, source="delegation", context=ctx)
-        db.add_all([chat_run, sub_run])
+        by_hand = m.AgentRun(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            source="manual",
+            context={"originating_operator": "owner"},
+        )
+        db.add_all([chat_run, sub_run, by_hand])
         await db.flush()
-        for run in (chat_run, sub_run):
+        for run in (chat_run, sub_run, by_hand):
             assert await may_watch_run(db, member=owner, run_id=run.id)
             assert not await may_watch_run(db, member=viewer, run_id=run.id)
-            assert await may_watch_run(db, member=manager, run_id=run.id)
+            assert not await may_watch_run(db, member=manager, run_id=run.id)
