@@ -167,7 +167,7 @@ function YourAccess({ data }: { data: Governance }) {
           <span>
             {t(
               "Your assigned role could not be read from the database just now. What follows is what your token carries; an assignment on top of it would not be shown. Nothing was changed.",
-              "Ihre zugewiesene Rolle konnte gerade nicht aus der Datenbank gelesen werden. Unten steht, was Ihr Token trägt; eine darüberliegende Zuweisung wird nicht angezeigt. Es wurde nichts geändert.",
+              "Deine zugewiesene Rolle konnte gerade nicht aus der Datenbank gelesen werden. Unten steht, was dein Token trägt; eine darüberliegende Zuweisung wird nicht angezeigt. Es wurde nichts geändert.",
             )}
           </span>
         </div>
@@ -180,7 +180,7 @@ function YourAccess({ data }: { data: Governance }) {
         )}
         <div className="min-w-0 flex-1">
           <h2 className="flex flex-wrap items-center gap-2 font-serif text-xl">
-            {t("Your access", "Ihr Zugriff")}
+            {t("Your access", "Dein Zugriff")}
             <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
               {assignedName ?? data.callerRole}
             </span>
@@ -195,7 +195,7 @@ function YourAccess({ data }: { data: Governance }) {
             <p className="mt-1 text-sm text-status-warning">
               {t(
                 `A role was assigned to you, but it can no longer grant anything — it has been deleted, or it is a role for AGENTS, which no person can hold. That, and not the role “${data.callerRole}” in your token, is why you hold nothing company-wide. Ask an administrator to assign you a different role or to clear the assignment.`,
-                `Ihnen wurde eine Rolle zugewiesen, die nichts mehr gewähren kann — sie wurde gelöscht, oder sie ist eine Rolle für AGENTEN, die kein Mensch halten kann. Daran liegt es, dass Sie unternehmensweit nichts halten, und nicht an der Rolle „${data.callerRole}“ in Ihrem Token. Bitten Sie eine Administratorin, Ihnen eine andere Rolle zuzuweisen oder die Zuweisung zu löschen.`,
+                `Dir wurde eine Rolle zugewiesen, die nichts mehr gewähren kann — sie wurde gelöscht, oder sie ist eine Rolle für AGENTEN, die kein Mensch halten kann. Daran liegt es, dass du unternehmensweit nichts hältst, und nicht an der Rolle „${data.callerRole}“ in deinem Token. Bitte eine Administratorin, dir eine andere Rolle zuzuweisen oder die Zuweisung zu löschen.`,
               )}
             </p>
           ) : assignedName ? (
@@ -203,11 +203,11 @@ function YourAccess({ data }: { data: Governance }) {
               {data.callerPermissions.length === 0
                 ? t(
                     `Your rights come from the role “${assignedName}”, which an administrator assigned to you. It replaces the role “${data.callerRole}” your token carries, and it grants nothing company-wide — your authority is the departments you are seated in, listed below.`,
-                    `Ihre Rechte stammen aus der Rolle „${assignedName}“, die Ihnen eine Administratorin zugewiesen hat. Sie ersetzt die Rolle „${data.callerRole}“ aus Ihrem Token und gewährt unternehmensweit nichts — Ihre Befugnis sind die Abteilungen, in denen Sie einen Platz haben, unten aufgeführt.`,
+                    `Deine Rechte stammen aus der Rolle „${assignedName}“, die dir eine Administratorin zugewiesen hat. Sie ersetzt die Rolle „${data.callerRole}“ aus deinem Token und gewährt unternehmensweit nichts — deine Befugnis sind die Abteilungen, in denen du einen Platz hast, unten aufgeführt.`,
                   )
                 : t(
                     `Your rights come from the role “${assignedName}”, which an administrator assigned to you. It replaces the role “${data.callerRole}” your token carries, and it holds ${data.callerPermissions.length} of ${data.permissions.length} permissions.`,
-                    `Ihre Rechte stammen aus der Rolle „${assignedName}“, die Ihnen eine Administratorin zugewiesen hat. Sie ersetzt die Rolle „${data.callerRole}“ aus Ihrem Token und hält ${data.callerPermissions.length} von ${data.permissions.length} Berechtigungen.`,
+                    `Deine Rechte stammen aus der Rolle „${assignedName}“, die dir eine Administratorin zugewiesen hat. Sie ersetzt die Rolle „${data.callerRole}“ aus deinem Token und hält ${data.callerPermissions.length} von ${data.permissions.length} Berechtigungen.`,
                   )}
             </p>
           ) : unknown ? (
@@ -217,21 +217,21 @@ function YourAccess({ data }: { data: Governance }) {
             <p className="mt-1 text-sm text-status-warning">
               {t(
                 `This deployment does not define a role called “${data.callerRole}”, so it grants nothing at all. That is why other screens appear empty. Map your identity provider’s group to one of the roles below.`,
-                `Diese Installation kennt keine Rolle „${data.callerRole}“, deshalb gewährt sie gar nichts. Genau darum wirken die übrigen Ansichten leer. Ordnen Sie die Gruppe Ihres Identitätsanbieters einer der unten aufgeführten Rollen zu.`,
+                `Diese Installation kennt keine Rolle „${data.callerRole}“, deshalb gewährt sie gar nichts. Genau darum wirken die übrigen Ansichten leer. Ordne die Gruppe deines Identitätsanbieters einer der unten aufgeführten Rollen zu.`,
               )}
             </p>
           ) : grantsNothingTenantWide ? (
             <p className="mt-1 text-sm text-muted-foreground">
               {t(
                 `Your token carries the role “${data.callerRole}”, which holds nothing company-wide by design. Your authority is the departments you are seated in, listed below.`,
-                `Ihr Token trägt die Rolle „${data.callerRole}“, die bewusst nichts unternehmensweit gewährt. Ihre Befugnis sind die Abteilungen, in denen Sie einen Platz haben — unten aufgeführt.`,
+                `Dein Token trägt die Rolle „${data.callerRole}“, die bewusst nichts unternehmensweit gewährt. Deine Befugnis sind die Abteilungen, in denen du einen Platz hast — unten aufgeführt.`,
               )}
             </p>
           ) : (
             <p className="mt-1 text-sm text-muted-foreground">
               {t(
                 `Your token carries the role “${data.callerRole}”, which holds ${data.callerPermissions.length} of ${data.permissions.length} permissions. Nobody has assigned you a role of this tenant’s own.`,
-                `Ihr Token trägt die Rolle „${data.callerRole}“ und hält ${data.callerPermissions.length} von ${data.permissions.length} Berechtigungen. Eine mandanteneigene Rolle wurde Ihnen nicht zugewiesen.`,
+                `Dein Token trägt die Rolle „${data.callerRole}“ und hält ${data.callerPermissions.length} von ${data.permissions.length} Berechtigungen. Eine mandanteneigene Rolle wurde dir nicht zugewiesen.`,
               )}
             </p>
           )}
@@ -274,12 +274,12 @@ function YourSeats({ seats, seatRoles }: { seats: Seat[]; seatRoles: Record<stri
       <div className="mt-4 rounded-md border border-border bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
         <span className="flex items-center gap-1.5">
           <MapPin className="size-3.5 shrink-0" />
-          {t("You hold no seat in any department.", "Sie haben in keiner Abteilung einen Platz.")}
+          {t("You hold no seat in any department.", "Du hast in keiner Abteilung einen Platz.")}
         </span>
         <span className="mt-1 block text-xs">
           {t(
             "A seat is granted per department by an administrator and takes effect on your next request — no new sign-in.",
-            "Ein Platz wird je Abteilung von einer Administratorin vergeben und gilt ab Ihrer nächsten Anfrage — ohne neue Anmeldung.",
+            "Ein Platz wird je Abteilung von einer Administratorin vergeben und gilt ab deiner nächsten Anfrage — ohne neue Anmeldung.",
           )}
         </span>
       </div>
@@ -288,7 +288,7 @@ function YourSeats({ seats, seatRoles }: { seats: Seat[]; seatRoles: Record<stri
 
   return (
     <div className="mt-4">
-      <div className="micro-label">{t("Your seats", "Ihre Plätze")}</div>
+      <div className="micro-label">{t("Your seats", "Deine Plätze")}</div>
       <ul className="mt-2 grid gap-1.5">
         {seats.map((seat) => (
           <li
@@ -363,7 +363,7 @@ function TenantRoles({ data }: { data: Governance }) {
         <p className="mt-2 text-sm text-muted-foreground">
           {t(
             "Your role does not include role:view, so which roles this company has invented and who holds them is not shown to you. What you yourself may do is at the top of this page and needs no permission at all.",
-            "Ihre Rolle enthält role:view nicht, deshalb wird Ihnen nicht angezeigt, welche Rollen dieses Unternehmen angelegt hat und wer sie hält. Was Sie selbst dürfen, steht oben auf dieser Seite und braucht keine Berechtigung.",
+            "Deine Rolle enthält role:view nicht, deshalb wird dir nicht angezeigt, welche Rollen dieses Unternehmen angelegt hat und wer sie hält. Was du selbst darfst, steht oben auf dieser Seite und braucht keine Berechtigung.",
           )}
         </p>
       </Panel>
@@ -376,7 +376,7 @@ function TenantRoles({ data }: { data: Governance }) {
         <div className="min-w-0">
           <PanelHeading
             title={t("Roles of this company", "Rollen dieses Unternehmens")}
-            hint={t("you define these", "von Ihnen definiert")}
+            hint={t("you define these", "von dir definiert")}
           />
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
             {t(
@@ -417,7 +417,7 @@ function TenantRoles({ data }: { data: Governance }) {
           <p className="text-sm text-muted-foreground">
             {t(
               "This company has not defined any roles of its own. As long as everybody may do everything, you do not need any.",
-              "Dieses Unternehmen hat noch keine eigenen Rollen definiert. Solange jeder alles darf, brauchen Sie keine.",
+              "Dieses Unternehmen hat noch keine eigenen Rollen definiert. Solange jeder alles darf, brauchst du keine.",
             )}
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -706,7 +706,7 @@ function RoleDetail({
               role.holderCount > 0 && !reassignTo
                 ? t(
                     "Somebody holds this role. Choose where they go first.",
-                    "Diese Rolle wird gehalten. Wählen Sie zuerst, wohin die Halter wechseln.",
+                    "Diese Rolle wird gehalten. Wähle zuerst, wohin die Halter wechseln.",
                   )
                 : undefined
             }
@@ -1298,7 +1298,7 @@ function BuiltInRoles({ data }: { data: Governance }) {
                 >
                   {role.name}
                   {role.name === data.callerRole && (
-                    <span className="ml-1 micro-label">{t("you", "Sie")}</span>
+                    <span className="ml-1 micro-label">{t("you", "du")}</span>
                   )}
                 </TableHead>
               ))}
@@ -1342,7 +1342,7 @@ function AgentRoles({ data }: { data: Governance }) {
       <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
         {t(
           "These describe what an AGENT may do in your systems. They are never given to a person, and they can only ever subtract: what an agent actually does is this, intersected with its department’s frame and with its own narrowing.",
-          "Diese beschreiben, was ein AGENT in Ihren Systemen tun darf. Sie werden nie an einen Menschen vergeben und können immer nur einschränken: Was ein Agent tatsächlich tut, ist diese Menge, geschnitten mit dem Rahmen seiner Abteilung und seiner eigenen Einschränkung.",
+          "Diese beschreiben, was ein AGENT in deinen Systemen tun darf. Sie werden nie an einen Menschen vergeben und können immer nur einschränken: Was ein Agent tatsächlich tut, ist diese Menge, geschnitten mit dem Rahmen seiner Abteilung und seiner eigenen Einschränkung.",
         )}
       </p>
       <ul className="mt-3 grid gap-1.5">

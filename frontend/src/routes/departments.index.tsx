@@ -245,7 +245,7 @@ export function DepartmentsPage() {
                   toast.success(t(`Department "${name}" created`, `Abteilung „${name}" erstellt`), {
                     description: t(
                       "Hire an agent into it from the Agents page.",
-                      "Stellen Sie einen Agenten dafür auf der Agenten-Seite ein.",
+                      "Stelle einen Agenten dafür auf der Agenten-Seite ein.",
                     ),
                   });
                   setDialog(false);
@@ -287,7 +287,7 @@ function NewDepartmentDialog({
           <p className="mt-1 text-sm text-muted-foreground">
             {t(
               "Create a room for a new team. You can assign agents later.",
-              "Legen Sie einen Raum für ein neues Team an. Agenten können später zugewiesen werden.",
+              "Lege einen Raum für ein neues Team an. Agenten können später zugewiesen werden.",
             )}
           </p>
           <div className="mt-4 space-y-3">

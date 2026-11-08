@@ -93,7 +93,7 @@ export function ApiKeysPanel() {
           <p className="mt-0.5 text-xs text-muted-foreground">
             {t(
               "Lets an external tool call oc8's Copilot over MCP as you, with your own permissions.",
-              "Erlaubt einem externen Tool, oc8s Copilot über MCP als Sie aufzurufen, mit Ihren eigenen Berechtigungen.",
+              "Erlaubt einem externen Tool, oc8s Copilot über MCP als dich aufzurufen, mit deinen eigenen Berechtigungen.",
             )}
           </p>
         </div>
@@ -276,7 +276,7 @@ function RevealedToken({ keyDto, onDismiss }: { keyDto: ApiKeyCreatedDTO; onDism
       <p className="text-xs font-medium text-foreground">
         {t(
           "Copy this key now — it will not be shown again.",
-          "Kopieren Sie diesen Key jetzt — er wird nicht erneut angezeigt.",
+          "Kopiere diesen Key jetzt — er wird nicht erneut angezeigt.",
         )}
       </p>
       <div className="flex items-center gap-2">

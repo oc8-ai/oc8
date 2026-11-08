@@ -281,7 +281,7 @@ export function ModelsPage() {
               <p className="mt-0.5 text-xs text-muted-foreground">
                 {t(
                   "Your model providers. Add more via the wizard — cloud accounts or local servers.",
-                  "Ihre Modellanbieter. Weitere über den Assistenten hinzufügen — Cloud-Konten oder lokale Server.",
+                  "Deine Modellanbieter. Weitere über den Assistenten hinzufügen — Cloud-Konten oder lokale Server.",
                 )}
               </p>
               <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
@@ -837,7 +837,7 @@ function AdminKeyConnect({ canonical }: { canonical: "anthropic" | "openai" }) {
       <p className="text-xs text-muted-foreground">
         {t(
           `A separate, more-privileged key from your regular API key — generated in your ${providerLabel} console's Admin/Organization settings. Used only for a daily cost validation total, never to make requests.`,
-          `Ein separater, stärker privilegierter Schlüssel als Ihr normaler API-Schlüssel — erzeugt in den Admin-/Organisationseinstellungen der ${providerLabel}-Konsole. Wird nur für einen täglichen Kostenabgleich verwendet, niemals für Anfragen.`,
+          `Ein separater, stärker privilegierter Schlüssel als dein normaler API-Schlüssel — erzeugt in den Admin-/Organisationseinstellungen der ${providerLabel}-Konsole. Wird nur für einen täglichen Kostenabgleich verwendet, niemals für Anfragen.`,
         )}
       </p>
       <input

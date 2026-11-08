@@ -199,7 +199,7 @@ function CostsPage() {
     try {
       await downloadUsageExport({}, "csv");
       toast.success(t("Report exported", "Bericht exportiert"), {
-        description: t("CSV downloaded to your device.", "CSV auf Ihr Gerät geladen."),
+        description: t("CSV downloaded to your device.", "CSV auf dein Gerät geladen."),
       });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : t("Export failed", "Export fehlgeschlagen"));
@@ -931,7 +931,7 @@ function LimitsTab({ currency }: { currency: Currency }) {
               <p className="mt-1 text-xs italic text-muted-foreground">
                 {t(
                   "Usage below is an estimate from the editable pricing model (see Models), not the platform's recorded spend — see the Overview/By Agent/By Department tabs for metered figures.",
-                  "Der Verbrauch unten ist eine Schätzung anhand des editierbaren Preismodells (siehe Modelle), nicht die vom System erfassten Ausgaben — gemessene Werte finden Sie unter Übersicht/Pro Agent/Pro Abteilung.",
+                  "Der Verbrauch unten ist eine Schätzung anhand des editierbaren Preismodells (siehe Modelle), nicht die vom System erfassten Ausgaben — gemessene Werte findest du unter Übersicht/Pro Agent/Pro Abteilung.",
                 )}
               </p>
               <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
@@ -1121,7 +1121,7 @@ function LimitsTab({ currency }: { currency: Currency }) {
                   >
                     {t(
                       "No limits set yet. Add one to protect your budget.",
-                      "Noch keine Limits gesetzt. Fügen Sie eines hinzu, um Ihr Budget zu schützen.",
+                      "Noch keine Limits gesetzt. Füge eines hinzu, um dein Budget zu schützen.",
                     )}
                   </TableCell>
                 </TableRow>

@@ -176,7 +176,7 @@ export function KbContentView({ kbId }: { kbId: string }) {
             <p className="py-4 text-sm text-muted-foreground">
               {t(
                 "You don't have permission to view this content.",
-                "Sie haben keine Berechtigung, diesen Inhalt anzuzeigen.",
+                "Du hast keine Berechtigung, diesen Inhalt anzuzeigen.",
               )}
             </p>
           ) : chunks.length === 0 ? (

@@ -60,7 +60,7 @@ export function CredentialsPage() {
     return (
       <Panel className="p-6">
         <p className="text-sm text-muted-foreground">
-          {t("Your role does not include secret:view.", "Ihre Rolle enthält secret:view nicht.")}
+          {t("Your role does not include secret:view.", "Deine Rolle enthält secret:view nicht.")}
         </p>
       </Panel>
     );

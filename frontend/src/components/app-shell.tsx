@@ -476,7 +476,7 @@ export function EditionCapabilityGate({ path, children }: { path: string; childr
     <div role="alert" className="mx-auto max-w-md py-16 text-center text-sm text-muted-foreground">
       {t(
         "This feature is not available for your organisation.",
-        "Diese Funktion ist für Ihre Organisation nicht verfügbar.",
+        "Diese Funktion ist für deine Organisation nicht verfügbar.",
       )}
     </div>
   );
@@ -736,7 +736,7 @@ export function AppShell() {
     if (p === "/")
       return t(
         "Your company as a living floor — each department a room.",
-        "Ihr Unternehmen als lebendiges Stockwerk — jede Abteilung ein Raum.",
+        "Dein Unternehmen als lebendiges Stockwerk — jede Abteilung ein Raum.",
       );
     // The departments you cover, so the page says whose desk it is before you
     // read a row. Names, not ids, and never a hardcoded department: they come
@@ -796,12 +796,12 @@ export function AppShell() {
     if (p.startsWith("/governance"))
       return t(
         "Who may do what — and why you were refused.",
-        "Wer was darf — und warum Sie abgewiesen wurden.",
+        "Wer was darf — und warum du abgewiesen wurdest.",
       );
     if (p.startsWith("/members"))
       return t(
         "Manage user roles for your organization.",
-        "Verwalten Sie Benutzerrollen für Ihre Organisation.",
+        "Verwalte Benutzerrollen für deine Organisation.",
       );
     if (p.startsWith("/models"))
       return t("LLM providers, costs, and assignments.", "LLM-Anbieter, Kosten und Zuweisungen.");

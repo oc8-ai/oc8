@@ -85,7 +85,7 @@ function MemberDetail() {
         <p className="text-sm text-muted-foreground">
           {t(
             "Your role does not include member:manage, so you cannot manage users.",
-            "Ihre Rolle enthält member:manage nicht, daher können Sie Benutzer nicht verwalten.",
+            "Deine Rolle enthält member:manage nicht, daher kannst du Benutzer nicht verwalten.",
           )}
         </p>
       </Panel>
@@ -333,7 +333,7 @@ export function MemberDetailForm({ member }: { member: Member }) {
 
   const addSeat = () => {
     if (!newSeatDepartmentId) {
-      toast.error(t("Choose a department.", "Wählen Sie ein Department."));
+      toast.error(t("Choose a department.", "Wähle ein Department."));
       return;
     }
     grantSeat.mutate(
@@ -502,7 +502,7 @@ export function MemberDetailForm({ member }: { member: Member }) {
           <p className="mt-1 text-sm text-muted-foreground">
             {t(
               "Set a new password so this person can sign in. There is no way to view their current password.",
-              "Vergeben Sie ein neues Passwort, damit sich diese Person anmelden kann. Das aktuelle Passwort kann nicht eingesehen werden.",
+              "Vergib ein neues Passwort, damit sich diese Person anmelden kann. Das aktuelle Passwort kann nicht eingesehen werden.",
             )}
           </p>
           <div className="mt-4 flex max-w-md gap-2 text-sm">
@@ -531,7 +531,7 @@ export function MemberDetailForm({ member }: { member: Member }) {
             <p className="text-sm text-muted-foreground">
               {t(
                 "Or send them a link to set their own password. The mail is tried first; if no mail server is configured, you get a copyable link instead.",
-                "Oder senden Sie ihnen einen Link, damit sie selbst ein Passwort setzen. Zuerst wird die E-Mail versucht; ist kein Mailserver konfiguriert, erhalten Sie stattdessen einen kopierbaren Link.",
+                "Oder sende ihnen einen Link, damit sie selbst ein Passwort setzen. Zuerst wird die E-Mail versucht; ist kein Mailserver konfiguriert, erhältst du stattdessen einen kopierbaren Link.",
               )}
             </p>
             <button
@@ -770,7 +770,7 @@ function ResetLinkDialog({
           <DialogDescription>
             {t(
               "No mail server is configured for this instance, so the reset could not be emailed. Copy this link and send it to them yourself — it lets them set a new password.",
-              "Für diese Instanz ist kein Mailserver konfiguriert, daher konnte der Reset nicht per E-Mail versendet werden. Kopieren Sie diesen Link und senden Sie ihn selbst — damit kann ein neues Passwort gesetzt werden.",
+              "Für diese Instanz ist kein Mailserver konfiguriert, daher konnte der Reset nicht per E-Mail versendet werden. Kopiere diesen Link und sende ihn selbst — damit kann ein neues Passwort gesetzt werden.",
             )}
           </DialogDescription>
         </DialogHeader>
