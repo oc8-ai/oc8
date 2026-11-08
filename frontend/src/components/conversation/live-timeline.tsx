@@ -264,8 +264,9 @@ export function LiveTimeline({
           });
           return true;
         }}
+        promptStarters={promptStarters.map((title) => ({ title, subtitle: "" }))}
         emptyState={
-          <p className="py-12 text-center text-sm text-muted-foreground">
+          <p className="pt-12 pb-6 text-center text-sm text-muted-foreground">
             {promptStarters.length > 0
               ? t(
                   "This is where this agent works. Ask it something, or wait for its next run.",

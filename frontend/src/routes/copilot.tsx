@@ -103,9 +103,21 @@ export function CopilotPage({
   if (!may("copilot:use")) return null; // nav is the main gate; defense in depth
   const name = profile?.displayName ?? "Copilot";
   const starters = [
-    t("Keep an eye on something for me", "Behalte etwas für mich im Blick"),
-    t("What are you working on for me?", "Woran arbeitest du gerade für mich?"),
-    t("What is waiting on me?", "Was wartet auf mich?"),
+    {
+      title: t("Keep an eye on something for me", "Behalte etwas für mich im Blick"),
+      subtitle: t(
+        "I check it and tell you when it matters",
+        "Ich prüfe es und melde mich, wenn es wichtig wird",
+      ),
+    },
+    {
+      title: t("What are you working on for me?", "Woran arbeitest du gerade für mich?"),
+      subtitle: t("Open responsibilities and follow-ups", "Offene Aufgaben und Nachfassungen"),
+    },
+    {
+      title: t("What is waiting on me?", "Was wartet auf mich?"),
+      subtitle: t("Approvals and questions", "Freigaben und Fragen"),
+    },
   ];
   const chat = agentId ? (
     <Conversation
@@ -113,8 +125,9 @@ export function CopilotPage({
       sessionId={sessionId}
       onSessionChange={setSessionId}
       variant="full"
-      emptyState={(send) => (
-        <div className="flex flex-col items-center gap-3 py-12 text-center">
+      promptStarters={starters}
+      emptyState={
+        <div className="flex flex-col items-center gap-3 pt-12 pb-6 text-center">
           <CopilotAvatar
             avatar={profile?.avatar ?? { shape: "round", color: "indigo" }}
             state={mascotState(profile?.status ?? "ready")}
@@ -126,20 +139,8 @@ export function CopilotPage({
               "Ich bin {name}. Sag mir, was ich im Blick behalten soll, den Rest übernehme ich.",
             ).replace("{name}", name)}
           </p>
-          <div className="flex flex-wrap justify-center gap-2">
-            {starters.map((starter) => (
-              <button
-                key={starter}
-                type="button"
-                onClick={() => send(starter)}
-                className="rounded-full border border-border px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                {starter}
-              </button>
-            ))}
-          </div>
         </div>
-      )}
+      }
     />
   ) : (
     <div className="mx-auto w-full max-w-[760px] space-y-3 p-6" aria-busy="true">

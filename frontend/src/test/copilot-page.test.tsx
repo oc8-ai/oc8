@@ -41,16 +41,23 @@ vi.mock("@/components/conversation", () => ({
     sessionId,
     onSessionChange,
     emptyState,
+    promptStarters = [],
   }: {
     sessionId: string | null;
     onSessionChange: (id: string) => void;
     emptyState?: React.ReactNode | ((send: (text: string) => void) => React.ReactNode);
+    promptStarters?: { title: string; subtitle: string }[];
   }) => (
     <div data-testid="chat" data-session={sessionId ?? ""}>
       <button type="button" onClick={() => onSessionChange("s-8")}>
         switch
       </button>
       {typeof emptyState === "function" ? emptyState((text) => m.sent.push(text)) : emptyState}
+      {promptStarters.map((s) => (
+        <button key={s.title} type="button" onClick={() => m.sent.push(s.title)}>
+          {s.title}
+        </button>
+      ))}
     </div>
   ),
 }));

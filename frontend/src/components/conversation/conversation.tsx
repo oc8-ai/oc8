@@ -15,7 +15,8 @@ import {
   type ChatSessionDetailDTO,
   type LiveRunDTO,
 } from "@/lib/conversation-api";
-import { useAuth, useBudgetStatus } from "@/lib/hooks";
+import { nextStepChips } from "@/lib/chat-suggestions";
+import { mayActOn, useApprovals, useAuth, useBudgetStatus, type Approval } from "@/lib/hooks";
 import {
   chatKeys,
   useCreateChatSession,
@@ -28,7 +29,10 @@ import { cn } from "@/lib/utils";
 
 import { AssistantTurn } from "./assistant-turn";
 import { Composer, type ComposerSubmit } from "./composer";
+import { DecisionCard } from "./decision-card";
+import { PromptStarters } from "./prompt-starters";
 import { QuestionCard } from "./question-card";
+import { SuggestionChips } from "./suggestion-chips";
 import type { AssistantTurnModel, ConversationVariant, TurnModel } from "./types";
 import { useTimelineRuns } from "./timeline-runs";
 import { useConversation } from "./use-conversation";
@@ -84,9 +88,10 @@ export interface ConversationProps {
   onSessionChange: (sessionId: string) => void;
   variant: ConversationVariant;
   /** Shown while the chat has no turns. A function receives `send`, so
-   *  prompt starters can go out as the first message (C2 replaces this
-   *  with PromptStarters). */
+   *  anything in it can go out as the first message. */
   emptyState?: ReactNode | ((send: (text: string) => void) => ReactNode);
+  /** Cards under the empty state; picking one sends its title. */
+  promptStarters?: { title: string; subtitle: string }[];
   draft?: string;
   onDraftChange?: (text: string) => void;
   agentItems?: SigilItem[];
@@ -219,6 +224,56 @@ export function Conversation(props: ConversationProps) {
   }, [pending]);
   const busy = conv.liveRunIds.some((id) => id !== pending?.runId);
   const lastUser = [...conv.turns].reverse().find((turn) => turn.kind === "user");
+
+  // request_decision approvals this chat's run raised (spec §4.2). Pending
+  // approvals are `approval:view`-gated: without it the query fails, the list
+  // stays empty and the decision is the inbox's alone.
+  const { data: pendingApprovals = [] } = useApprovals("pending");
+  const taskId = conv.session?.taskId ?? null;
+  // Decided here: the pending list drops them, the chat keeps the answer.
+  const [decidedHere, setDecidedHere] = useState<Approval[]>([]);
+  useEffect(() => {
+    setDecidedHere([]);
+  }, [props.sessionId]);
+  const sessionDecisions = taskId
+    ? [
+        ...pendingApprovals.filter(
+          (a) =>
+            a.actionType === "decision" &&
+            a.taskId === taskId &&
+            !decidedHere.some((d) => d.id === a.id),
+        ),
+        ...decidedHere.filter((a) => a.taskId === taskId),
+      ]
+    : [];
+  const mayDecide = (approval: Approval) =>
+    mayActOn(me?.seats ?? [], me?.decidesAllDepartments === true, approval.departmentId ?? null);
+  const lastAssistant = [...conv.turns].reverse().find((turn) => turn.kind === "assistant");
+  // Replies are offered only under a finished answer that is the newest turn,
+  // and only while the reader could send one.
+  const lastTurn = conv.turns[conv.turns.length - 1];
+  const latestAnswer =
+    lastTurn?.kind === "assistant" && !lastTurn.liveRunId
+      ? (lastTurn.variants[lastTurn.variants.length - 1] ?? null)
+      : null;
+  const offerChips = !!latestAnswer && !busy && !pending && !readOnly;
+  const lastMessage = conv.messages[conv.messages.length - 1];
+  const suggestions = !offerChips
+    ? []
+    : latestAnswer.suggestions?.length
+      ? latestAnswer.suggestions
+      : nextStepChips(
+          {
+            hasMessages: conv.turns.length > 0,
+            lastTurnRole: lastMessage?.role ?? null,
+            lastUserMode: [...conv.messages].reverse().find((m) => m.role === "user")?.mode ?? null,
+            pendingApprovals: pendingApprovals.length,
+            budgetSoftExceeded: false,
+            mayViewBudget: false,
+            promptStarters: [],
+          },
+          t,
+        ).map((chip) => chip.insert);
 
   // One creation in flight at a time: a multi-file drop and a send during an
   // upload all wait for the same new chat instead of each making one.
@@ -356,9 +411,55 @@ export function Conversation(props: ConversationProps) {
         turn={turn}
         readOnly={readOnly}
         onRegenerate={(replyToId) => regenerate.mutate(replyToId)}
-        {...(props.renderAssistantExtras?.(turn) ?? {})}
+        {...assistantExtras(turn)}
       />
     );
+  }
+
+  /** The surface's own extras first, then this chat's decisions and replies
+   *  on the newest answer. */
+  function assistantExtras(turn: AssistantTurnModel): { cards?: ReactNode; footer?: ReactNode } {
+    const own = props.renderAssistantExtras?.(turn) ?? {};
+    const decisions =
+      turn === lastAssistant && sessionDecisions.length > 0
+        ? sessionDecisions.map((approval) => (
+            <DecisionCard
+              key={approval.id}
+              approval={approval}
+              mayDecide={mayDecide(approval)}
+              onDecided={(option) =>
+                setDecidedHere((prev) => [
+                  ...prev.filter((d) => d.id !== approval.id),
+                  { ...approval, status: "approved", decisionOption: option },
+                ])
+              }
+            />
+          ))
+        : null;
+    const chips =
+      turn === lastTurn && suggestions.length > 0 ? (
+        <SuggestionChips
+          suggestions={suggestions}
+          onSend={sendText}
+          onInsert={(text) => setDraft(draft.trim() ? `${draft.trimEnd()} ${text}` : text)}
+        />
+      ) : null;
+    return {
+      cards:
+        own.cards || decisions ? (
+          <>
+            {own.cards}
+            {decisions}
+          </>
+        ) : undefined,
+      footer:
+        own.footer || chips ? (
+          <>
+            {own.footer}
+            {chips}
+          </>
+        ) : undefined,
+    };
   }
 
   const sendText = (text: string) => {
@@ -424,7 +525,10 @@ export function Conversation(props: ConversationProps) {
           {conv.isLoading ? (
             <TurnSkeletons />
           ) : rows.length === 0 ? (
-            (empty ?? null)
+            <>
+              {empty ?? null}
+              <PromptStarters starters={props.promptStarters ?? []} onPick={sendText} />
+            </>
           ) : (
             rows.map((row, i) => (
               <Fragment key={row.kind === "turn" ? row.turn.key : `extra-${row.extra.run.id}`}>
