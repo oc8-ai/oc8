@@ -111,7 +111,7 @@ export function CopilotPersonaHeader({
       <CopilotAvatar avatar={avatar} state={state} size={page ? 40 : 32} />
       <div className="min-w-0 flex-1 leading-tight">
         <div className={cn("truncate font-serif", page ? "text-lg" : "text-base")}>{name}</div>
-        <div className="text-[11px] text-muted-foreground">
+        <div className="text-xs text-muted-foreground">
           {statusLabel(t, status, profile?.activeCount ?? 0)}
         </div>
       </div>

@@ -85,7 +85,7 @@ export function NotificationsSheet({
             <button
               type="button"
               onClick={() => setItems((prev) => prev.map((i) => ({ ...i, read: true })))}
-              className="rounded-md border border-border bg-background/40 px-2 py-1 text-[11px] text-muted-foreground transition hover:text-foreground"
+              className="rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground transition hover:text-foreground"
             >
               Mark all read
             </button>
@@ -98,7 +98,7 @@ export function NotificationsSheet({
                 type="button"
                 onClick={() => setFilter(f)}
                 className={cn(
-                  "rounded-full border px-2.5 py-1 text-[11px] capitalize transition",
+                  "rounded-full border px-2.5 py-1 text-xs capitalize transition",
                   filter === f
                     ? "border-primary/40 bg-primary/10 text-primary"
                     : "border-border bg-background/40 text-muted-foreground hover:text-foreground",
@@ -131,7 +131,7 @@ export function NotificationsSheet({
                       <div className="flex items-center gap-2">
                         <span className="truncate text-sm font-medium">{a?.name ?? "Agent"}</span>
                         {dept && (
-                          <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                          <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-micro text-muted-foreground">
                             {dept.name}
                           </span>
                         )}
@@ -141,7 +141,7 @@ export function NotificationsSheet({
                       </div>
                       <p className="mt-0.5 text-sm text-foreground/90">{n.message}</p>
                       {n.detail && <p className="mt-1 text-xs text-muted-foreground">{n.detail}</p>}
-                      <div className="mt-1.5 flex items-center gap-3 text-[11px] text-muted-foreground">
+                      <div className="mt-1.5 flex items-center gap-3 text-xs text-muted-foreground">
                         <span className="inline-flex items-center gap-1">
                           <Clock className="h-3 w-3" /> {n.time}
                         </span>

@@ -58,9 +58,7 @@ export function CredentialPicker({
     return (
       <div className="space-y-3 rounded-md border border-border bg-background/30 p-3">
         <label className="block text-xs text-muted-foreground">
-          <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
-            {t("Name", "Name")}
-          </span>
+          <span className="mb-1 block micro-label">{t("Name", "Name")}</span>
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -81,7 +79,7 @@ export function CredentialPicker({
           const help = resolveTranslation(field.help, field.help_translations, lang);
           return (
             <label key={field.key} className="block text-xs text-muted-foreground">
-              <span className="mb-1 flex items-center gap-1.5 text-[10px] uppercase tracking-widest text-muted-foreground">
+              <span className="mb-1 flex items-center gap-1.5 micro-label">
                 {field.kind === "password" && <KeyRound className="h-3 w-3 text-primary" />}
                 {label}
               </span>
@@ -94,9 +92,7 @@ export function CredentialPicker({
                 placeholder={placeholder}
                 className="w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm text-foreground outline-none focus:border-primary/50"
               />
-              {help && (
-                <span className="mt-1 block text-[11px] text-muted-foreground/80">{help}</span>
-              )}
+              {help && <span className="mt-1 block text-xs text-muted-foreground/80">{help}</span>}
             </label>
           );
         })}

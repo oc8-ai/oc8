@@ -59,7 +59,7 @@ function computeChartGeometry(labels: string[], series: ChartSeries[]) {
 function ChartLegend({ series }: { series: ChartSeries[] }) {
   if (series.length <= 1) return null;
   return (
-    <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-muted-foreground">
+    <div className="mt-2 flex flex-wrap gap-3 text-xs text-muted-foreground">
       {series.map((s, i) => (
         <span key={s.name} className="inline-flex items-center gap-1.5">
           <span

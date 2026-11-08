@@ -201,7 +201,7 @@ export function AddToolPicker({
                 </div>
                 {requiresLogin && (
                   <div className="mt-2 pl-7">
-                    <p className="mb-1 text-[11px] text-muted-foreground">
+                    <p className="mb-1 text-xs text-muted-foreground">
                       {t(
                         "This tool needs a login before it can be enabled.",
                         "Dieses Tool braucht einen Login, bevor es aktiviert werden kann.",

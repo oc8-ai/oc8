@@ -241,7 +241,7 @@ function GrantChip({ on, label }: { on: boolean; label: string }) {
   return (
     <span
       className={cn(
-        "rounded-full border px-2 py-0.5 text-[11px]",
+        "rounded-full border px-2 py-0.5 text-micro",
         on
           ? "border-primary/60 bg-primary/10 text-primary"
           : "border-border text-muted-foreground line-through",
@@ -310,7 +310,7 @@ function FreeTextApprovalActions({
                 : undefined
             }
             className={cn(
-              "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] normal-case",
+              "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-micro normal-case",
               unknown(name)
                 ? "border-amber-500/60 bg-amber-500/10 text-amber-600 dark:text-amber-400"
                 : "border-border bg-background/40 text-foreground",
@@ -357,7 +357,7 @@ function FreeTextApprovalActions({
         </datalist>
       </div>
       {catalogIsReliable && (
-        <p className="mt-1 text-[11px] normal-case text-muted-foreground">
+        <p className="mt-1 text-xs normal-case text-muted-foreground">
           {t(
             "Must exactly match a tool this connection exposes -- pick from the suggestions.",
             "Muss exakt einem Tool dieser Verbindung entsprechen -- am besten aus den Vorschlägen wählen.",
@@ -465,7 +465,7 @@ function FreeGuardrailControls({
             {value.only.map((surface) => (
               <span
                 key={surface}
-                className="inline-flex items-center gap-1 rounded-full border border-border bg-background/40 px-2 py-0.5 text-[11px] normal-case text-foreground"
+                className="inline-flex items-center gap-1 rounded-full border border-border bg-background/40 px-2 py-0.5 text-micro normal-case text-foreground"
               >
                 {surface}
                 <button
@@ -588,7 +588,7 @@ export function GuardrailPresetPicker({
                       <GrantChip on={entry.read} label={t("Read", "Lesen")} />
                       <GrantChip on={entry.modify} label={t("Modify", "Verändern")} />
                       {entry.approvalActions.length > 0 && (
-                        <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
+                        <span className="rounded-full border border-border px-2 py-0.5 text-micro text-muted-foreground">
                           {t("Approval for:", "Freigabe für:")}{" "}
                           {entry.approvalActions
                             .map((a) => {
@@ -608,12 +608,12 @@ export function GuardrailPresetPicker({
                         </span>
                       )}
                       {hasValueSpec && entry.approvalEur != null && (
-                        <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
+                        <span className="rounded-full border border-border px-2 py-0.5 text-micro text-muted-foreground">
                           &ge; {entry.approvalEur} €
                         </span>
                       )}
                       {entry.only.length > 0 && (
-                        <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
+                        <span className="rounded-full border border-border px-2 py-0.5 text-micro text-muted-foreground">
                           {t("Only:", "Nur:")} {entry.only.join(", ")}
                         </span>
                       )}
@@ -673,7 +673,7 @@ export function GuardrailPresetPicker({
                   <GrantChip on={preset.read} label={t("Read", "Lesen")} />
                   <GrantChip on={preset.modify} label={t("Modify", "Verändern")} />
                   {preset.approvalActions.length > 0 && (
-                    <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
+                    <span className="rounded-full border border-border px-2 py-0.5 text-micro text-muted-foreground">
                       {t("Approval for:", "Freigabe für:")}{" "}
                       {preset.approvalActions
                         .map((a) => {
@@ -684,12 +684,12 @@ export function GuardrailPresetPicker({
                     </span>
                   )}
                   {hasValueSpec && preset.approvalEur != null && (
-                    <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
+                    <span className="rounded-full border border-border px-2 py-0.5 text-micro text-muted-foreground">
                       &ge; {preset.approvalEur} €
                     </span>
                   )}
                   {preset.only.length > 0 && (
-                    <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
+                    <span className="rounded-full border border-border px-2 py-0.5 text-micro text-muted-foreground">
                       {t("Only:", "Nur:")} {preset.only.join(", ")}
                     </span>
                   )}

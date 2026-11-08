@@ -37,11 +37,11 @@ export function McpConnectionsPanel() {
     <section>
       <div className="mb-3 flex items-center gap-2">
         <Server className="h-4 w-4 text-muted-foreground" />
-        <h2 className="font-serif text-lg">
+        <h2 className="font-serif text-xl">
           {t("MCP Connections", "MCP-Verbindungen")}{" "}
           <span className="text-muted-foreground">({connections.length})</span>
         </h2>
-        <span className="rounded-full border border-border bg-background/30 px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+        <span className="rounded-full border border-border bg-background/30 px-2 py-0.5 micro-label">
           {t("Live", "Live")}
         </span>
         <button
@@ -308,7 +308,7 @@ export function McpConnectionBody({ connection }: { connection: McpConnection })
           <button
             type="button"
             onClick={() => setToolsOpen((o) => !o)}
-            className="mb-1 inline-flex items-center gap-1 text-[10px] uppercase tracking-widest text-muted-foreground hover:text-foreground"
+            className="mb-1 inline-flex items-center gap-1 micro-label hover:text-foreground"
           >
             {toolsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
             {t("Discovered tools", "Erkannte Tools")} ({toolCount})
@@ -318,7 +318,7 @@ export function McpConnectionBody({ connection }: { connection: McpConnection })
               {tools.map((tool) => (
                 <span
                   key={tool}
-                  className="rounded-full border border-border bg-background/30 px-2 py-0.5 text-[10px] text-muted-foreground"
+                  className="rounded-full border border-border bg-background/30 px-2 py-0.5 text-micro text-muted-foreground"
                 >
                   {tool}
                 </span>

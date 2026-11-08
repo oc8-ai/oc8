@@ -140,7 +140,7 @@ export function DepartmentsPage() {
                     <div className="flex items-center gap-2">
                       <span className="font-serif text-xl leading-tight">{d.name}</span>
                       {archived && (
-                        <span className="rounded-full border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-[color:var(--status-warning)]">
+                        <span className="rounded-full border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 px-1.5 py-0.5 micro-label text-[color:var(--status-warning)]">
                           {t("Archived", "Archiviert")}
                         </span>
                       )}
@@ -149,7 +149,7 @@ export function DepartmentsPage() {
                   </div>
                 </div>
                 {waiting > 0 && (
-                  <span className="rounded-full bg-[color:var(--status-warning)]/15 px-2 py-0.5 text-[10px] font-medium text-[color:var(--status-warning)]">
+                  <span className="rounded-full bg-[color:var(--status-warning)]/15 px-2 py-0.5 text-micro font-medium text-[color:var(--status-warning)]">
                     {waiting}{" "}
                     {waiting > 1 ? t("approvals", "Freigaben") : t("approval", "Freigabe")}
                   </span>
@@ -188,7 +188,7 @@ export function DepartmentsPage() {
                   }}
                 />
               </div>
-              <div className="mt-3 flex items-center justify-between text-[11px]">
+              <div className="mt-3 flex items-center justify-between text-xs">
                 <span className="rounded-md border border-border bg-background/40 px-2 py-0.5 font-mono text-muted-foreground">
                   {d.kpiValue} · {d.kpiLabel}
                 </span>
@@ -283,7 +283,7 @@ function NewDepartmentDialog({
         // stopPropagation handled by inner div
       >
         <div onClick={(e) => e.stopPropagation()}>
-          <h2 className="font-serif text-2xl">{t("New department", "Neue Abteilung")}</h2>
+          <h2 className="font-serif text-xl">{t("New department", "Neue Abteilung")}</h2>
           <p className="mt-1 text-sm text-muted-foreground">
             {t(
               "Create a room for a new team. You can assign agents later.",

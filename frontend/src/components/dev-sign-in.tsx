@@ -121,7 +121,9 @@ function TenantPicker({
         ))}
       </div>
       <div className="mt-6 border-t border-border pt-5">
-        <h2 className="font-medium">{t("Create a local company", "Lokale Firma anlegen")}</h2>
+        <h2 className="font-serif text-xl">
+          {t("Create a local company", "Lokale Firma anlegen")}
+        </h2>
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
           <input
             value={name}
@@ -156,7 +158,7 @@ function TenantPicker({
       {(error || createError) && (
         <p className="mt-3 text-sm text-[color:var(--status-error)]">{error || createError}</p>
       )}
-      <p className="mt-5 text-[11px] text-muted-foreground">
+      <p className="mt-5 text-xs text-muted-foreground">
         {t(
           "Development only. Production instances are set up once through POST /auth/setup, not this picker.",
           "Nur für die Entwicklung. Produktivinstanzen werden einmalig über POST /auth/setup eingerichtet, nicht über diesen Dialog.",
@@ -315,7 +317,7 @@ function PersonaPicker({ tenant, onBack }: { tenant: DevTenant; onBack: () => vo
       </div>
 
       {error && <p className="mt-4 text-sm text-[color:var(--status-error)]">{error}</p>}
-      <p className="mt-5 text-[11px] text-muted-foreground">
+      <p className="mt-5 text-xs text-muted-foreground">
         {t(
           "Development only. A person's authority comes from their seats and any tenant role assigned to them, never from this screen.",
           "Nur für die Entwicklung. Die Berechtigung kommt aus Sitzen und einer zugewiesenen Rolle, nie von diesem Bildschirm.",

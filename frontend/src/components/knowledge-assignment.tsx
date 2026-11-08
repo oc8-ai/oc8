@@ -70,7 +70,7 @@ export function KnowledgeAssignment({
             </p>
           </div>
         </div>
-        <div className="hidden items-center gap-1.5 rounded-md border border-border bg-background/40 px-2 py-1 text-[10px] text-muted-foreground sm:inline-flex">
+        <div className="hidden items-center gap-1.5 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground sm:inline-flex">
           <Info className="h-3 w-3" />
           {readOnly ? "Read-only" : "Department = inherited · Agent = additional"}
         </div>
@@ -102,13 +102,13 @@ export function KnowledgeAssignment({
                   <span className="truncate text-sm font-medium">{kb.name}</span>
                   <SensitivityBadge kb={kb} />
                   {inheritedFromDept && (
-                    <span className="inline-flex items-center gap-1 rounded-full border border-primary/50 bg-primary/15 px-1.5 py-0.5 text-[10px] uppercase tracking-widest text-primary">
+                    <span className="inline-flex items-center gap-1 rounded-full border border-primary/50 bg-primary/15 px-1.5 py-0.5 micro-label text-primary">
                       inherited from dept
                     </span>
                   )}
                   {kb.localOnly && (
                     <span
-                      className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px]"
+                      className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-micro"
                       style={{
                         color: sens.color,
                         borderColor: `color-mix(in oklab, ${sens.color} 40%, transparent)`,
@@ -185,7 +185,7 @@ function SensitivityBadge({ kb }: { kb: KnowledgeBase }) {
   const isRestricted = kb.sensitivity === "restricted";
   return (
     <span
-      className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px]"
+      className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-micro"
       style={{
         color: sens.color,
         borderColor: `color-mix(in oklab, ${sens.color} 40%, transparent)`,

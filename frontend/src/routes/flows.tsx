@@ -140,11 +140,11 @@ function FlowsPage() {
               <div className="flex items-center gap-2">
                 <Sparkles className="h-4 w-4 text-primary" />
                 <span className="font-serif text-base">{f.name}</span>
-                <span className="ml-auto rounded-full border border-border bg-background/40 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                <span className="ml-auto rounded-full border border-border bg-background/40 px-1.5 py-0.5 font-mono text-micro text-muted-foreground">
                   {f.version}
                 </span>
               </div>
-              <div className="mt-2 flex items-center gap-2 text-[11px]">
+              <div className="mt-2 flex items-center gap-2 text-xs">
                 <StatusBadge s={f.status} />
                 <span className="text-muted-foreground">· {f.runs} runs</span>
               </div>
@@ -185,11 +185,11 @@ function FlowsPage() {
         <Panel className="overflow-hidden">
           <header className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
             <h4 className="font-serif text-base">{flow.name}</h4>
-            <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+            <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 font-mono text-micro text-muted-foreground">
               {flow.version}
             </span>
             {problems.length > 0 && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-[color:var(--status-error)]/40 bg-[color:var(--status-error)]/10 px-2 py-0.5 text-[10px] text-[color:var(--status-error)]">
+              <span className="inline-flex items-center gap-1 rounded-full border border-[color:var(--status-error)]/40 bg-[color:var(--status-error)]/10 px-2 py-0.5 text-micro text-[color:var(--status-error)]">
                 <AlertTriangle className="h-3 w-3" /> {problems.length} contract issue
               </span>
             )}
@@ -199,7 +199,7 @@ function FlowsPage() {
                   key={v}
                   onClick={() => setView(v)}
                   className={cn(
-                    "px-3 py-1 text-[11px] uppercase tracking-widest",
+                    "px-3 py-1 micro-label",
                     view === v ? "bg-primary/15 text-primary" : "text-muted-foreground",
                   )}
                 >
@@ -232,7 +232,7 @@ function FlowsPage() {
               >
                 <div className="min-w-0 flex-1">
                   <div className="text-sm font-medium">{r.customer}</div>
-                  <div className="text-[11px] text-muted-foreground">{r.startedAt}</div>
+                  <div className="text-xs text-muted-foreground">{r.startedAt}</div>
                 </div>
                 <RunPipelineMini flow={flow} run={r} />
                 <ChevronRight
@@ -432,7 +432,7 @@ function StatusBadge({ s }: { s: FlowDef["status"] }) {
   }[s];
   return (
     <span
-      className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px]"
+      className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-micro"
       style={{
         color: map.c,
         borderColor: `color-mix(in oklab, ${map.c} 35%, transparent)`,
@@ -462,7 +462,7 @@ function DeptChip({ id }: { id: string }) {
   const accent = deptAccent(id);
   return (
     <span
-      className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px]"
+      className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-micro"
       style={{
         borderColor: `color-mix(in oklab, ${accent} 40%, transparent)`,
         color: accent,
@@ -513,9 +513,7 @@ function FlowCanvas({
                 </div>
                 <div>
                   <div className="font-serif text-sm">{id}</div>
-                  <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                    Room
-                  </div>
+                  <div className="micro-label">Room</div>
                 </div>
               </div>
             </div>
@@ -558,11 +556,11 @@ function FlowCanvas({
                     <Bolt className="h-3.5 w-3.5 text-primary" />
                   )}
                 </div>
-                <div className="mt-0.5 flex items-center gap-2 text-[10px] text-muted-foreground">
+                <div className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
                   <Clock className="h-2.5 w-2.5" /> {st.timeout}
                 </div>
                 {invalid && (
-                  <div className="mt-1 text-[10px] text-[color:var(--status-error)]">{invalid}</div>
+                  <div className="mt-1 text-xs text-[color:var(--status-error)]">{invalid}</div>
                 )}
               </div>
               <span
@@ -619,9 +617,7 @@ function RunPipelineMini({ flow, run }: { flow: FlowDef; run: FlowRun }) {
               className={cn("h-2 w-6 rounded-full", s === "active" && "animate-pulse")}
               style={{ background: color, opacity: s === "pending" ? 0.3 : 1 }}
             />
-            {i < flow.stages.length - 1 && (
-              <span className="text-[10px] text-muted-foreground">·</span>
-            )}
+            {i < flow.stages.length - 1 && <span className="text-xs text-muted-foreground">·</span>}
           </span>
         );
       })}
@@ -635,7 +631,7 @@ function RunDetail({ flow, run }: { flow: FlowDef; run: FlowRun }) {
       <div className="mb-3 flex items-center justify-between">
         <div>
           <div className="font-serif text-base">{run.customer}</div>
-          <div className="text-[11px] text-muted-foreground">Run · started {run.startedAt}</div>
+          <div className="text-xs text-muted-foreground">Run · started {run.startedAt}</div>
         </div>
       </div>
 
@@ -672,7 +668,7 @@ function RunDetail({ flow, run }: { flow: FlowDef; run: FlowRun }) {
               {gated && (
                 <Link
                   to="/workspace"
-                  className="text-[10px] text-primary underline-offset-2 hover:underline"
+                  className="text-xs text-primary underline-offset-2 hover:underline"
                 >
                   Waiting for approval →
                 </Link>
@@ -687,15 +683,13 @@ function RunDetail({ flow, run }: { flow: FlowDef; run: FlowRun }) {
 
       <div className="grid gap-4 md:grid-cols-2">
         <div>
-          <div className="mb-2 text-[10px] uppercase tracking-widest text-muted-foreground">
-            Stages
-          </div>
+          <div className="mb-2 micro-label">Stages</div>
           <ul className="space-y-1.5 text-xs">
             {flow.stages.map((st) => (
               <li key={st.id} className="rounded-md border border-border bg-panel/50 px-2.5 py-1.5">
                 <div className="flex items-center gap-2">
                   <span className="font-medium">{st.label}</span>
-                  <span className="ml-auto font-mono text-[10px] text-muted-foreground">
+                  <span className="ml-auto font-mono text-xs text-muted-foreground">
                     {st.handoffType}
                   </span>
                 </div>
@@ -704,10 +698,8 @@ function RunDetail({ flow, run }: { flow: FlowDef; run: FlowRun }) {
           </ul>
         </div>
         <div>
-          <div className="mb-2 text-[10px] uppercase tracking-widest text-muted-foreground">
-            Event log
-          </div>
-          <ol className="space-y-1.5 text-[11px]">
+          <div className="mb-2 micro-label">Event log</div>
+          <ol className="space-y-1.5 text-xs">
             {run.events.map((e, i) => (
               <li key={i} className="flex items-center gap-2">
                 <span className="font-mono text-muted-foreground">{e.at}</span>

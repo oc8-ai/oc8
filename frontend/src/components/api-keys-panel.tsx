@@ -128,7 +128,7 @@ export function ApiKeysPanel() {
               placeholder="https://claude.ai"
               className="mt-1 w-full rounded-md border border-border bg-background/30 px-3 py-2 text-sm text-foreground"
             />
-            <span className="mt-1 block text-[11px] text-muted-foreground">
+            <span className="mt-1 block text-xs text-muted-foreground">
               {t("Leave empty to allow any origin.", "Leer lassen, um jede Origin zuzulassen.")}
             </span>
           </label>
@@ -141,7 +141,7 @@ export function ApiKeysPanel() {
               onChange={(e) => setExpiresAt(e.target.value)}
               className="mt-1 w-full rounded-md border border-border bg-background/30 px-3 py-2 text-sm text-foreground"
             />
-            <span className="mt-1 block text-[11px] text-muted-foreground">
+            <span className="mt-1 block text-xs text-muted-foreground">
               {t("Leave empty to never expire.", "Leer lassen, damit der Key nie abläuft.")}
             </span>
           </label>
@@ -192,16 +192,16 @@ export function ApiKeysPanel() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <span className="truncate font-medium">{key.name}</span>
-                    <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                    <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-micro text-muted-foreground">
                       oc8_ak_{key.tokenPrefix}…
                     </span>
                     {expired && (
-                      <span className="rounded-full border border-[color:var(--status-error)]/40 px-1.5 py-0.5 text-[10px] text-[color:var(--status-error)]">
+                      <span className="rounded-full border border-[color:var(--status-error)]/40 px-1.5 py-0.5 text-micro text-[color:var(--status-error)]">
                         {t("Expired", "Abgelaufen")}
                       </span>
                     )}
                   </div>
-                  <p className="mt-0.5 text-[11px] text-muted-foreground">
+                  <p className="mt-0.5 text-xs text-muted-foreground">
                     {key.allowedOrigins.length > 0
                       ? key.allowedOrigins.join(", ")
                       : t("Any origin", "Jede Origin")}
@@ -287,7 +287,7 @@ function RevealedToken({ keyDto, onDismiss }: { keyDto: ApiKeyCreatedDTO; onDism
       <button
         type="button"
         onClick={onDismiss}
-        className="text-[11px] text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-foreground"
+        className="text-xs text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-foreground"
       >
         {t("I've saved it", "Ich habe ihn gespeichert")}
       </button>

@@ -324,9 +324,7 @@ function SetupForm({
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       <div>
-        <h2 className="text-lg font-semibold">
-          {t("Create Admin Account", "Admin-Konto erstellen")}
-        </h2>
+        <h2 className="font-serif text-xl">{t("Create Admin Account", "Admin-Konto erstellen")}</h2>
         <p className="mt-1 text-sm text-muted-foreground">
           {t(
             "Set up your first administrator account to get started.",
@@ -430,7 +428,7 @@ function LoginForm({
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       <div>
-        <h2 className="text-lg font-semibold">{t("Sign In", "Anmelden")}</h2>
+        <h2 className="font-serif text-xl">{t("Sign In", "Anmelden")}</h2>
         <p className="mt-1 text-sm text-muted-foreground">
           {t("Enter your credentials to continue.", "Geben Sie Ihre Zugangsdaten ein.")}
         </p>

@@ -138,9 +138,7 @@ export function AgentRuntimePanel({
     <Panel className="p-5">
       <div className="flex items-start justify-between gap-2">
         <div>
-          <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-            {t("execution environment", "Ausführungsumgebung")}
-          </div>
+          <div className="micro-label">{t("execution environment", "Ausführungsumgebung")}</div>
           <h3 className="mt-0.5 font-serif text-lg">{t("Runtime", "Runtime")}</h3>
         </div>
         <button
@@ -165,7 +163,7 @@ export function AgentRuntimePanel({
                   {current.capabilities.map((cap) => (
                     <span
                       key={cap}
-                      className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                      className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-micro text-muted-foreground"
                     >
                       {cap}
                     </span>
@@ -189,7 +187,7 @@ export function AgentRuntimePanel({
                 type="button"
                 onClick={resetToDefault}
                 disabled={updateRuntime.isPending}
-                className="mt-2 rounded-md border border-[color:var(--status-warning)]/50 bg-background/40 px-2.5 py-1 text-[11px] font-medium text-foreground/90 transition hover:bg-background/70 disabled:cursor-not-allowed disabled:opacity-50"
+                className="mt-2 rounded-md border border-[color:var(--status-warning)]/50 bg-background/40 px-2.5 py-1 text-xs font-medium text-foreground/90 transition hover:bg-background/70 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {updateRuntime.isPending
                   ? t("Resetting…", "Wird zurückgesetzt…")
@@ -232,9 +230,7 @@ export function AgentRuntimePanel({
           >
             <div className="flex items-center justify-between border-b border-border px-5 py-4">
               <div>
-                <div className="text-[11px] uppercase tracking-widest text-muted-foreground">
-                  {t("Runtime", "Runtime")}
-                </div>
+                <div className="micro-label">{t("Runtime", "Runtime")}</div>
                 <h2 className="font-serif text-xl">{t("Change runtime", "Runtime ändern")}</h2>
               </div>
               <button

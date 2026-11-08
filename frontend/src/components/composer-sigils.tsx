@@ -97,9 +97,7 @@ export function SigilPopover({
       aria-label={title}
       className="mb-2 max-h-56 overflow-y-auto rounded-lg border border-border bg-panel p-1 shadow-lg"
     >
-      <div className="px-2 py-1 text-[10px] uppercase tracking-widest text-muted-foreground">
-        {title}
-      </div>
+      <div className="px-2 py-1 micro-label">{title}</div>
       {items.length === 0 ? (
         <div className="px-2 py-2 text-xs text-muted-foreground">{emptyText}</div>
       ) : (
@@ -122,8 +120,8 @@ export function SigilPopover({
             )}
           >
             <span className="text-sm">{item.label}</span>
-            {item.hint && <span className="text-[11px] text-muted-foreground">{item.hint}</span>}
-            {item.blocked && <span className="text-[11px] text-amber-600">{item.blocked}</span>}
+            {item.hint && <span className="text-xs text-muted-foreground">{item.hint}</span>}
+            {item.blocked && <span className="text-xs text-amber-600">{item.blocked}</span>}
           </button>
         ))
       )}
@@ -137,7 +135,7 @@ export function ComposerHint({ className }: { className?: string }) {
   return (
     <div
       data-testid="composer-hint"
-      className={cn("mt-1.5 text-[11px] text-muted-foreground", className)}
+      className={cn("mt-1.5 text-xs text-muted-foreground", className)}
     >
       <code className="text-foreground/80">/</code> {t("commands", "Befehle")}
       {" · "}

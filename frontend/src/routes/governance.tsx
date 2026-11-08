@@ -170,13 +170,13 @@ function YourAccess({ data }: { data: Governance }) {
           <ShieldCheck className="mt-0.5 size-5 shrink-0 text-emerald-500" />
         )}
         <div className="min-w-0 flex-1">
-          <h2 className="flex flex-wrap items-center gap-2 text-sm font-medium">
+          <h2 className="flex flex-wrap items-center gap-2 font-serif text-xl">
             {t("Your access", "Ihr Zugriff")}
             <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
               {assignedName ?? data.callerRole}
             </span>
             {assignedName && (
-              <span className="rounded border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+              <span className="rounded border border-border px-1.5 py-0.5 micro-label">
                 {t("assigned", "zugewiesen")}
               </span>
             )}
@@ -279,9 +279,7 @@ function YourSeats({ seats, seatRoles }: { seats: Seat[]; seatRoles: Record<stri
 
   return (
     <div className="mt-4">
-      <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-        {t("Your seats", "Ihre Plätze")}
-      </div>
+      <div className="micro-label">{t("Your seats", "Ihre Plätze")}</div>
       <ul className="mt-2 grid gap-1.5">
         {seats.map((seat) => (
           <li
@@ -292,7 +290,7 @@ function YourSeats({ seats, seatRoles }: { seats: Seat[]; seatRoles: Record<stri
             <span className="font-medium">
               {seat.departmentName || t("Unnamed department", "Unbenannte Abteilung")}
             </span>
-            <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">
+            <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-micro">
               {seat.seatRole}
             </span>
             {/* What the seat role actually carries, read off the wire rather
@@ -569,7 +567,7 @@ function RoleDetail({
 
   return (
     <div className="mt-1 rounded-md border border-border bg-background/30 p-4">
-      <label className="block text-[10px] uppercase tracking-widest text-muted-foreground">
+      <label className="block micro-label">
         {t("What this role is for", "Wofür diese Rolle da ist")}
       </label>
       <input
@@ -763,16 +761,14 @@ function RoleComposer({
       />
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
         <div>
-          <label className="block text-[10px] uppercase tracking-widest text-muted-foreground">
-            {t("Name", "Name")}
-          </label>
+          <label className="block micro-label">{t("Name", "Name")}</label>
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder={t("e.g. Sales sign-off", "z. B. Freigabe Vertrieb")}
             className="mt-1 w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
           />
-          <p className="mt-1 text-[11px] text-muted-foreground">
+          <p className="mt-1 text-xs text-muted-foreground">
             {t(
               "Cannot be changed later, and cannot be the name of a built-in role.",
               "Später nicht änderbar und nicht der Name einer eingebauten Rolle.",
@@ -780,9 +776,7 @@ function RoleComposer({
           </p>
         </div>
         <div>
-          <label className="block text-[10px] uppercase tracking-widest text-muted-foreground">
-            {t("Start from", "Vorlage")}
-          </label>
+          <label className="block micro-label">{t("Start from", "Vorlage")}</label>
           <select
             value={basedOn}
             onChange={(e) => {
@@ -804,7 +798,7 @@ function RoleComposer({
               </option>
             ))}
           </select>
-          <p className="mt-1 text-[11px] text-muted-foreground">
+          <p className="mt-1 text-xs text-muted-foreground">
             {t(
               "A template only — it ticks boxes now and is not stored. There is no inheritance.",
               "Nur eine Vorlage — sie setzt jetzt Häkchen und wird nicht gespeichert. Es gibt keine Vererbung.",
@@ -813,7 +807,7 @@ function RoleComposer({
         </div>
       </div>
       <div className="mt-3">
-        <label className="block text-[10px] uppercase tracking-widest text-muted-foreground">
+        <label className="block micro-label">
           {t("What this role is for", "Wofür diese Rolle da ist")}
         </label>
         <input
@@ -942,9 +936,7 @@ function PermissionPicker({
   return (
     <div className="mt-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-          {t("Rights", "Rechte")}
-        </div>
+        <div className="micro-label">{t("Rights", "Rechte")}</div>
         <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <input
             type="checkbox"
@@ -990,7 +982,7 @@ function PermissionPicker({
                       <span className="min-w-0">
                         <span className="flex flex-wrap items-center gap-1.5">
                           <span>{label(entry)}</span>
-                          <span className="font-mono text-[10px] text-muted-foreground">
+                          <span className="font-mono text-xs text-muted-foreground">
                             {entry.permission}
                           </span>
                           {!entry.delegatable && (
@@ -998,12 +990,12 @@ function PermissionPicker({
                           )}
                         </span>
                         {describe(entry) && (
-                          <span className="block text-[11px] text-muted-foreground">
+                          <span className="block text-xs text-muted-foreground">
                             {describe(entry)}
                           </span>
                         )}
                         {!entry.delegatable && entry.reason && (
-                          <span className="mt-0.5 block text-[11px] text-amber-600 dark:text-amber-400">
+                          <span className="mt-0.5 block text-xs text-amber-600 dark:text-amber-400">
                             {t("Not available: ", "Nicht vergebbar: ")}
                             {entry.reason}
                           </span>
@@ -1086,13 +1078,13 @@ function AssignPicker({
   return (
     <div className="mt-3 rounded-md border border-border p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <label className="text-[10px] uppercase tracking-widest text-muted-foreground">
+        <label className="micro-label">
           {t(
             `Assign ${roleLabel(roleName, t)} to`,
             `${roleLabel(roleName, t)} zuweisen an`,
           )}
         </label>
-        <span className="text-[11px] text-muted-foreground">
+        <span className="text-xs text-muted-foreground">
           {t(
             `${candidates.length} available · ${picked.size} selected`,
             `${candidates.length} verfügbar · ${picked.size} ausgewählt`,
@@ -1138,7 +1130,7 @@ function AssignPicker({
                 </span>
                 {/* What the assignment REPLACES. Absent means the token decides,
                     which is not "no permissions" and is said as itself. */}
-                <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">
+                <span className="ml-auto shrink-0 text-xs text-muted-foreground">
                   {a.roleName ? roleLabel(a.roleName, t) : t("from their sign-in", "aus ihrer Anmeldung")}
                 </span>
               </label>
@@ -1148,7 +1140,7 @@ function AssignPicker({
       )}
 
       {shown.length < candidates.length && (
-        <p className="mt-1 text-[11px] text-muted-foreground">
+        <p className="mt-1 text-xs text-muted-foreground">
           {t(
             `Showing ${shown.length} of ${candidates.length} — narrow the search.`,
             `${shown.length} von ${candidates.length} angezeigt — Suche eingrenzen.`,
@@ -1156,7 +1148,7 @@ function AssignPicker({
         </p>
       )}
       {truncated && (
-        <p className="mt-1 text-[11px] text-[color:var(--status-warning)]">
+        <p className="mt-1 text-xs text-[color:var(--status-warning)]">
           {t(
             `This tenant has more than ${ASSIGNEE_LIMIT} people, so this list is incomplete. Use oc8 member import --csv for the rest.`,
             `Dieser Mandant hat mehr als ${ASSIGNEE_LIMIT} Personen — diese Liste ist unvollständig. Für den Rest: oc8 member import --csv.`,
@@ -1213,7 +1205,7 @@ function Holders({
   }
   return (
     <div className="mt-3">
-      <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
+      <div className="micro-label">
         {total > holders.length
           ? t(
               `Held by ${total} — showing ${holders.length}`,
@@ -1294,7 +1286,7 @@ function BuiltInRoles({ data }: { data: Governance }) {
                 >
                   {role.name}
                   {role.name === data.callerRole && (
-                    <span className="ml-1 text-[10px] uppercase">{t("you", "Sie")}</span>
+                    <span className="ml-1 micro-label">{t("you", "Sie")}</span>
                   )}
                 </th>
               ))}
@@ -1362,8 +1354,8 @@ function AgentRoles({ data }: { data: Governance }) {
 function PanelHeading({ title, hint }: { title: string; hint: string }) {
   return (
     <div>
-      <div className="text-[10px] uppercase tracking-widest text-muted-foreground">{hint}</div>
-      <h2 className="text-sm font-medium">{title}</h2>
+      <div className="micro-label">{hint}</div>
+      <h2 className="font-serif text-xl">{title}</h2>
     </div>
   );
 }

@@ -166,7 +166,7 @@ export function AgentsPage() {
                             <div className="flex items-center gap-2">
                               <span className="font-medium group-hover:text-primary">{a.name}</span>
                               {archived && (
-                                <span className="rounded-full border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-[color:var(--status-warning)]">
+                                <span className="rounded-full border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 px-1.5 py-0.5 micro-label text-[color:var(--status-warning)]">
                                   {t("Archived", "Archiviert")}
                                 </span>
                               )}
@@ -209,13 +209,13 @@ export function AgentsPage() {
                               {a.tools.slice(0, 3).map((tool) => (
                                 <span
                                   key={tool}
-                                  className="rounded-full border border-border bg-background/30 px-2 py-0.5 text-[10px] text-muted-foreground"
+                                  className="rounded-full border border-border bg-background/30 px-2 py-0.5 text-micro text-muted-foreground"
                                 >
                                   {tool}
                                 </span>
                               ))}
                               {a.tools.length > 3 && (
-                                <span className="text-[10px] text-muted-foreground">
+                                <span className="text-xs text-muted-foreground">
                                   +{a.tools.length - 3}
                                 </span>
                               )}
@@ -263,7 +263,7 @@ export function AgentsPage() {
                         <div className="flex items-center gap-2">
                           <span className="truncate font-medium">{a.name}</span>
                           {archived && (
-                            <span className="shrink-0 rounded-full border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-[color:var(--status-warning)]">
+                            <span className="shrink-0 rounded-full border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 px-1.5 py-0.5 micro-label text-[color:var(--status-warning)]">
                               {t("Archived", "Archiviert")}
                             </span>
                           )}

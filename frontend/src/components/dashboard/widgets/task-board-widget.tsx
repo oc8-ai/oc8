@@ -124,13 +124,13 @@ export function TaskBoardWidget(_props: {
                   <div className="mb-1.5 flex items-center justify-between">
                     <span
                       className={cn(
-                        "text-[10px] uppercase tracking-widest",
+                        "micro-label",
                         isWaiting ? "text-[color:var(--status-warning)]" : "text-muted-foreground",
                       )}
                     >
                       {col.label}
                     </span>
-                    <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                    <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 font-mono text-micro text-muted-foreground">
                       {items.length}
                     </span>
                   </div>
@@ -162,7 +162,7 @@ function TaskCard({ row }: { row: TaskBoardRow }) {
       )}
     >
       <div className={cn("leading-snug", isDone && "line-through")}>{row.title}</div>
-      <div className="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
+      <div className="mt-1 flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
         <span className="truncate">{row.departmentName}</span>
         {row.agentName && (
           <>

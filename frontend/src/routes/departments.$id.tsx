@@ -274,9 +274,7 @@ function DepartmentDetail() {
                 />
               </div>
               <div className="leading-tight">
-                <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                  {t("Team lead", "Teamleitung")}
-                </div>
+                <div className="micro-label">{t("Team lead", "Teamleitung")}</div>
                 <div className="text-sm font-medium">{lead.name}</div>
                 <div className="text-xs text-muted-foreground">{lead.role}</div>
               </div>
@@ -375,7 +373,7 @@ function DepartmentDetail() {
                       </div>
                       <StatusPill status={m.status} />
                     </div>
-                    <div className="mt-3 flex items-center justify-between text-[11px] text-muted-foreground">
+                    <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
                       <span className="rounded border border-border bg-background/40 px-1.5 py-0.5 font-mono">
                         {m.llm}
                       </span>
@@ -449,7 +447,7 @@ function DepartmentDetail() {
                     <div className="mb-2 flex items-center justify-between">
                       <span
                         className={cn(
-                          "text-[10px] uppercase tracking-widest",
+                          "micro-label",
                           isWaiting
                             ? "text-[color:var(--status-warning)]"
                             : "text-muted-foreground",
@@ -457,7 +455,7 @@ function DepartmentDetail() {
                       >
                         {col.label}
                       </span>
-                      <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                      <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 font-mono text-micro text-muted-foreground">
                         {(boardTotals[col.id] ?? columnItems.length) > columnItems.length
                           ? `${columnItems.length}/${boardTotals[col.id]}`
                           : columnItems.length}
@@ -484,9 +482,7 @@ function DepartmentDetail() {
                     {t("Department knowledge", "Abteilungswissen")}
                   </h3>
                 </div>
-                <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                  {t("Team shared", "Team-geteilt")}
-                </span>
+                <span className="micro-label">{t("Team shared", "Team-geteilt")}</span>
               </div>
               <p className="mb-3 text-xs text-muted-foreground">
                 {t(
@@ -518,9 +514,7 @@ function DepartmentDetail() {
                   <Sparkles className="h-4 w-4 text-primary" />
                   <h3 className="font-serif text-base">Live feed</h3>
                 </div>
-                <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                  {t("Recent", "Zuletzt")}
-                </span>
+                <span className="micro-label">{t("Recent", "Zuletzt")}</span>
               </header>
               <ol className="flex-1 space-y-3 overflow-y-auto px-4 py-3 text-xs">
                 {feed.map((f, idx) => (
@@ -533,7 +527,7 @@ function DepartmentDetail() {
                         "animate-in fade-in slide-in-from-top-2 duration-500",
                     )}
                   >
-                    <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       <span className="font-medium text-foreground">{f.agent}</span>
                       <span>·</span>
                       <span>{f.time}</span>
@@ -929,7 +923,7 @@ export function DepartmentGuardrailsPanel({ departmentId }: { departmentId: stri
 function ConfigSectionHeader({ hint, title }: { hint: string; title: string }) {
   return (
     <div>
-      <div className="text-[10px] uppercase tracking-widest text-muted-foreground">{hint}</div>
+      <div className="micro-label">{hint}</div>
       <h3 className="mt-0.5 font-serif text-lg">{title}</h3>
     </div>
   );
@@ -958,12 +952,12 @@ function TaskCard({ task, members }: { task: Task; members: Agent[] }) {
             href={task.recordUrl}
             target="_blank"
             rel="noreferrer"
-            className="mt-1 block font-mono text-[10px] text-primary underline"
+            className="mt-1 block font-mono text-xs text-primary underline"
           >
             {task.meta}
           </a>
         ) : (
-          <div className="mt-1 font-mono text-[10px] text-muted-foreground">{task.meta}</div>
+          <div className="mt-1 font-mono text-xs text-muted-foreground">{task.meta}</div>
         ))}
     </div>
   );
@@ -973,7 +967,7 @@ function AgentBadge({ agentId, members }: { agentId: string | null; members: Age
   const t = useT();
   if (!agentId) {
     return (
-      <span className="shrink-0 rounded-full border border-dashed border-border px-1.5 py-0.5 text-[9px] text-muted-foreground">
+      <span className="shrink-0 rounded-full border border-dashed border-border px-1.5 py-0.5 text-micro text-muted-foreground">
         {t("unassigned", "nicht zugewiesen")}
       </span>
     );
@@ -1016,9 +1010,7 @@ function TaskDistribution({ lead, members }: { lead: Agent; members: Agent[] }) 
           <Sparkles className="h-4 w-4 text-primary" />
           <h3 className="font-serif text-lg">{t("Task distribution", "Aufgabenverteilung")}</h3>
         </div>
-        <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
-          {t("Lead → Team", "Leitung → Team")}
-        </span>
+        <span className="micro-label">{t("Lead → Team", "Leitung → Team")}</span>
       </div>
       <div className="relative w-full">
         <svg
@@ -1173,10 +1165,8 @@ function TaskDistribution({ lead, members }: { lead: Agent; members: Agent[] }) 
 
       <div className="mt-4 border-t border-border pt-3">
         <div className="mb-2 flex items-center justify-between">
-          <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-            {t("Reporting hierarchy", "Berichtshierarchie")}
-          </div>
-          <span className="text-[10px] text-muted-foreground">
+          <div className="micro-label">{t("Reporting hierarchy", "Berichtshierarchie")}</div>
+          <span className="text-xs text-muted-foreground">
             {t("agent → supervisor (thinking oversight)", "Agent → Teamleiter (Denk-Überwachung)")}
           </span>
         </div>
@@ -1199,7 +1189,7 @@ function TaskDistribution({ lead, members }: { lead: Agent; members: Agent[] }) 
                     <AgentAvatar seed={sup.agent.id} size={16} title={sup.agent.name} />
                     <span className="text-foreground">{sup.agent.name}</span>
                     {sup.agent.isLead && (
-                      <span className="rounded-full border border-primary/40 bg-primary/10 px-1 py-0 text-[9px] uppercase tracking-widest text-primary">
+                      <span className="rounded-full border border-primary/40 bg-primary/10 px-1 py-0 micro-label text-primary">
                         lead
                       </span>
                     )}
@@ -1335,15 +1325,13 @@ function CollaborationTab({ deptId }: { deptId: string }) {
       <Panel className="p-5">
         <div className="mb-3 flex items-center justify-between">
           <h3 className="font-serif text-lg">Emits</h3>
-          <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
-            Business events published
-          </span>
+          <span className="micro-label">Business events published</span>
         </div>
         <div className="flex flex-wrap gap-1.5">
           {emits.map((e) => (
             <span
               key={e}
-              className="group inline-flex items-center gap-1 rounded-full border border-border bg-background/40 px-2 py-0.5 font-mono text-[11px]"
+              className="group inline-flex items-center gap-1 rounded-full border border-border bg-background/40 px-2 py-0.5 font-mono text-micro"
             >
               {e}
               <button
@@ -1395,7 +1383,7 @@ function CollaborationTab({ deptId }: { deptId: string }) {
             <button
               onClick={() => setForm({ ...form, gate: form.gate === "auto" ? "approval" : "auto" })}
               className={cn(
-                "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px]",
+                "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-micro",
                 form.gate === "approval"
                   ? "border-[color:var(--status-warning)]/50 text-[color:var(--status-warning)]"
                   : "border-primary/40 text-primary",
@@ -1418,7 +1406,7 @@ function CollaborationTab({ deptId }: { deptId: string }) {
         )}
         <div className="overflow-hidden rounded-md border border-border">
           <table className="w-full text-xs">
-            <thead className="bg-background/40 text-[10px] uppercase tracking-widest text-muted-foreground">
+            <thead className="bg-background/40 micro-label">
               <tr>
                 <th className="px-3 py-2 text-left">Handoff type</th>
                 <th className="px-3 py-2 text-left">Payload schema</th>
@@ -1446,7 +1434,7 @@ function CollaborationTab({ deptId }: { deptId: string }) {
                     </button>
                   </td>
                   <td className="px-3 py-2">
-                    <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-[10px]">
+                    <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-micro">
                       {it.route}
                     </span>
                   </td>
@@ -1454,7 +1442,7 @@ function CollaborationTab({ deptId }: { deptId: string }) {
                     <button
                       onClick={() => toggleGate(it.id)}
                       className={cn(
-                        "inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] transition",
+                        "inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-micro transition",
                         it.gate === "approval"
                           ? "border-[color:var(--status-warning)]/50 bg-[color:var(--status-warning)]/10 text-[color:var(--status-warning)]"
                           : "border-primary/40 bg-primary/10 text-primary",
@@ -1490,7 +1478,7 @@ function CollaborationTab({ deptId }: { deptId: string }) {
                 <XIcon className="h-4 w-4 text-muted-foreground" />
               </button>
             </div>
-            <pre className="overflow-x-auto rounded-md bg-background/60 p-3 font-mono text-[11px] leading-relaxed">
+            <pre className="overflow-x-auto rounded-md bg-background/60 p-3 font-mono text-xs leading-relaxed">
               {JSON.stringify(
                 {
                   $schema: "https://json-schema.org/draft/2020-12/schema",

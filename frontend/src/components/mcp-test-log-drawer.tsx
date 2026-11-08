@@ -87,7 +87,7 @@ export function McpTestLogDrawer({
             </span>
           )}
           {t("Connection log", "Verbindungs-Log")}
-          <span className="text-[10px] text-muted-foreground/70">({lines.length})</span>
+          <span className="text-xs text-muted-foreground/70">({lines.length})</span>
           <span className="ml-auto">
             {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronUp className="h-3.5 w-3.5" />}
           </span>
@@ -96,7 +96,7 @@ export function McpTestLogDrawer({
           <div
             ref={scrollRef}
             onScroll={onScroll}
-            className="max-h-[240px] overflow-auto border-t border-border bg-black/90 p-3 font-mono text-[11px] leading-relaxed text-emerald-300"
+            className="max-h-[240px] overflow-auto border-t border-border bg-black/90 p-3 font-mono text-xs leading-relaxed text-emerald-300"
           >
             {lines.map((line, i) => {
               const isError = line.step === "result" && line.message.startsWith("Error:");

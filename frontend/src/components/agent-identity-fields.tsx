@@ -43,7 +43,7 @@ export function AgentIdentityFields({
           onClick={() =>
             onChange({ ...value, avatarIdx: (value.avatarIdx + 1) % AVATAR_COLORS.length })
           }
-          className="text-[10px] uppercase tracking-widest text-muted-foreground hover:text-primary"
+          className="micro-label hover:text-primary"
         >
           {t("Change color", "Farbe ändern")}
         </button>

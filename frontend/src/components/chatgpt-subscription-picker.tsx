@@ -212,7 +212,7 @@ export function ChatGptSubscriptionPicker({
         <div className="space-y-2.5 rounded-md border border-dashed border-border bg-background/20 p-3">
           <ol className="space-y-2.5">
             <li className="flex items-start gap-2 text-sm">
-              <span className="mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded-full border border-primary/50 text-[10px] font-semibold text-primary">
+              <span className="mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded-full border border-primary/50 text-micro font-semibold text-primary">
                 1
               </span>
               <span className="min-w-0">
@@ -229,7 +229,7 @@ export function ChatGptSubscriptionPicker({
               </span>
             </li>
             <li className="flex items-start gap-2 text-sm">
-              <span className="mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded-full border border-primary/50 text-[10px] font-semibold text-primary">
+              <span className="mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded-full border border-primary/50 text-micro font-semibold text-primary">
                 2
               </span>
               <div className="min-w-0">
@@ -243,7 +243,7 @@ export function ChatGptSubscriptionPicker({
                   <button
                     type="button"
                     onClick={copyCode}
-                    className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
+                    className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
                   >
                     {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
                     {copied ? t("Copied", "Kopiert") : t("Copy", "Kopieren")}
@@ -251,7 +251,7 @@ export function ChatGptSubscriptionPicker({
                 </div>
                 {/* The one thing people get wrong on this flow: the link does
                     not carry the code, so the page will sit there waiting. */}
-                <p className="mt-1 text-[11px] text-muted-foreground">
+                <p className="mt-1 text-xs text-muted-foreground">
                   {t(
                     "The link doesn't fill the code in for you — type or paste it yourself.",
                     "Der Link trägt den Code nicht ein — bitte selbst eintippen oder einfügen.",
@@ -261,7 +261,7 @@ export function ChatGptSubscriptionPicker({
             </li>
           </ol>
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-2">
-            <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
               <Loader2 className="h-3 w-3 animate-spin" />
               {t("Waiting for confirmation…", "Warte auf Bestätigung …")}
               {secondsLeft > 0 && (
@@ -273,7 +273,7 @@ export function ChatGptSubscriptionPicker({
             <button
               type="button"
               onClick={cancel}
-              className="rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
+              className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
             >
               {t("Cancel", "Abbrechen")}
             </button>
@@ -290,7 +290,7 @@ export function ChatGptSubscriptionPicker({
             {startLogin.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
             {t("Sign in with ChatGPT", "Mit ChatGPT anmelden")}
           </button>
-          <span className="text-[11px] text-muted-foreground">
+          <span className="text-xs text-muted-foreground">
             {t(
               "Uses your personal subscription — agents on it can only be started manually.",
               "Nutzt dein persönliches Abo — Agenten damit lassen sich nur manuell starten.",
@@ -300,7 +300,7 @@ export function ChatGptSubscriptionPicker({
       )}
 
       {failure && (
-        <p className="text-[11px] text-[color:var(--status-warning)]">
+        <p className="text-xs text-[color:var(--status-warning)]">
           {failure.kind === "expired"
             ? t(
                 "The code expired before it was confirmed. Start again to get a new one.",

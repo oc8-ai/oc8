@@ -179,7 +179,7 @@ export function AccountPanel({ initialDisplayName }: { initialDisplayName: strin
 
   return (
     <Panel className="p-4">
-      <h2 className="mb-3 text-sm font-semibold text-foreground">{t("Account", "Konto")}</h2>
+      <h2 className="mb-3 font-serif text-xl text-foreground">{t("Account", "Konto")}</h2>
 
       <div className="mb-4">
         <label className="mb-1 block text-xs font-medium text-muted-foreground">
@@ -426,7 +426,7 @@ export function ProfilePage() {
     <div className="grid gap-4 md:grid-cols-2">
       <AccountPanel initialDisplayName={currentUser?.displayName ?? ""} />
       <Panel className="p-4">
-        <h2 className="mb-3 text-sm font-semibold text-foreground">
+        <h2 className="mb-3 font-serif text-xl text-foreground">
           {t("Notifications", "Benachrichtigungen")}
         </h2>
         {!isPushSupported() ? (
@@ -466,7 +466,7 @@ export function ProfilePage() {
         )}
       </Panel>
       <Panel className="p-4">
-        <h2 className="mb-3 text-sm font-semibold text-foreground">
+        <h2 className="mb-3 font-serif text-xl text-foreground">
           {t("Two-factor authentication", "Zwei-Faktor-Authentifizierung")}
         </h2>
         {enrolling && enrollToken !== null ? (
@@ -561,7 +561,7 @@ function ApprovalChannelsPanel() {
 
   return (
     <Panel className="p-4 md:col-span-2">
-      <h2 className="mb-3 text-sm font-semibold text-foreground">
+      <h2 className="mb-3 font-serif text-xl text-foreground">
         {t("Approval channels", "Freigabe-Kanäle")}
       </h2>
       <p className="mb-3 text-xs text-muted-foreground">
@@ -611,13 +611,13 @@ function ApprovalChannelsPanel() {
             <button
               type="button"
               onClick={copyCode}
-              className="inline-flex items-center gap-1 rounded-md border border-border bg-panel px-2 py-1 text-[11px] text-muted-foreground transition hover:text-foreground"
+              className="inline-flex items-center gap-1 rounded-md border border-border bg-panel px-2 py-1 text-xs text-muted-foreground transition hover:text-foreground"
             >
               {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
               {copied ? t("Copied", "Kopiert") : t("Copy", "Kopieren")}
             </button>
           </div>
-          <p className="mt-1.5 text-[11px] text-muted-foreground">
+          <p className="mt-1.5 text-xs text-muted-foreground">
             {t("Expires", "Läuft ab")}: {new Date(issued.expiresAt).toLocaleString()}
           </p>
         </div>
@@ -625,7 +625,7 @@ function ApprovalChannelsPanel() {
 
       {canView && (
         <div>
-          <div className="mb-1.5 text-[10px] uppercase tracking-widest text-muted-foreground">
+          <div className="mb-1.5 micro-label">
             {t("Linked in this tenant", "Verknüpft in diesem Mandanten")}
           </div>
           {bindings.length === 0 ? (

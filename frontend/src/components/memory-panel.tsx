@@ -66,7 +66,7 @@ export function MemoryPanel({
                 </button>
               )}
             </div>
-            <div className="mt-2 text-[11px] text-muted-foreground">
+            <div className="mt-2 text-xs text-muted-foreground">
               {new Date(r.createdAt).toLocaleString()}
             </div>
           </li>

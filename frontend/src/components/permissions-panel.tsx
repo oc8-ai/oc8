@@ -288,9 +288,7 @@ export function PermissionsPanel(props: DeptProps | AgentProps) {
                       className="w-full min-w-0 border-t border-border/60 pt-2"
                       onClick={(e) => e.stopPropagation()}
                     >
-                      <div className="mb-1 text-[10px] uppercase tracking-widest text-muted-foreground">
-                        Default login
-                      </div>
+                      <div className="mb-1 micro-label">Default login</div>
                       <CredentialPicker
                         credentialType={credentialType}
                         value={pickedCredentialId}
@@ -403,12 +401,12 @@ export function PermissionsPanel(props: DeptProps | AgentProps) {
                       />
                     </div>
                     {mode === "agent" && dTool.approvalEUR != null && (
-                      <span className="rounded-full border border-border bg-background/40 px-2 py-0.5 text-[10px] text-muted-foreground">
+                      <span className="rounded-full border border-border bg-background/40 px-2 py-0.5 text-micro text-muted-foreground">
                         Department: max €{dTool.approvalEUR.toLocaleString("en-US")}
                       </span>
                     )}
                     {mode === "agent" && dTool.approvalEUR == null && (
-                      <span className="rounded-full border border-border bg-background/40 px-2 py-0.5 text-[10px] text-muted-foreground">
+                      <span className="rounded-full border border-border bg-background/40 px-2 py-0.5 text-micro text-muted-foreground">
                         Department: no threshold
                       </span>
                     )}
@@ -454,9 +452,7 @@ export function PermissionsPanel(props: DeptProps | AgentProps) {
               >
                 <div className="flex items-center justify-between border-b border-border px-5 py-4">
                   <div>
-                    <div className="text-[11px] uppercase tracking-widest text-muted-foreground">
-                      Tenant connections
-                    </div>
+                    <div className="micro-label">Tenant connections</div>
                     <h2 className="font-serif text-xl">Add tool</h2>
                   </div>
                   <button
@@ -513,7 +509,7 @@ export function PermissionsPanel(props: DeptProps | AgentProps) {
 function SectionHeader({ title, hint }: { title: string; hint: string }) {
   return (
     <div>
-      <div className="text-[10px] uppercase tracking-widest text-muted-foreground">{hint}</div>
+      <div className="micro-label">{hint}</div>
       <h3 className="mt-0.5 font-serif text-lg">{title}</h3>
     </div>
   );
@@ -580,11 +576,11 @@ function ToolTile({
         <div className="text-xs text-muted-foreground">{tool.desc}</div>
       </button>
       <div className="flex w-full items-center gap-1.5">
-        <span className="rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-widest text-primary">
+        <span className="rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 font-mono micro-label text-primary">
           via MCP
         </span>
         {disabled && (
-          <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-[9px] text-muted-foreground">
+          <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-micro text-muted-foreground">
             not enabled at department level
           </span>
         )}
@@ -640,7 +636,7 @@ function PermChip({
       disabled={locked}
       title={locked ? "Not allowed by the department" : undefined}
       className={cn(
-        "inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] transition",
+        "inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs transition",
         locked
           ? "cursor-not-allowed border-dashed border-border/60 bg-background/30 text-muted-foreground/60"
           : on
@@ -657,17 +653,17 @@ function PermChip({
 function InheritanceBadge({ restricted, mode }: { restricted: boolean; mode: Mode }) {
   if (mode === "department") {
     return (
-      <span className="rounded-full border border-border bg-background/40 px-2 py-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">
+      <span className="rounded-full border border-border bg-background/40 px-2 py-0.5 micro-label">
         Frame
       </span>
     );
   }
   return restricted ? (
-    <span className="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[10px] uppercase tracking-widest text-primary">
+    <span className="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 micro-label text-primary">
       tightened by agent
     </span>
   ) : (
-    <span className="rounded-full border border-border bg-background/40 px-2 py-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">
+    <span className="rounded-full border border-border bg-background/40 px-2 py-0.5 micro-label">
       inherited
     </span>
   );
@@ -702,14 +698,12 @@ function InheritanceHeader({
       <div className="relative">
         <div className="flex items-center justify-between">
           <div>
-            <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-              Inheritance
-            </div>
+            <div className="micro-label">Inheritance</div>
             <h3 className="font-serif text-lg">
               Department <span style={{ color: dept.accent }}>{dept.name}</span> = Frame
             </h3>
           </div>
-          <span className="rounded-full border border-border bg-background/40 px-2 py-1 text-[11px] text-muted-foreground">
+          <span className="rounded-full border border-border bg-background/40 px-2 py-1 text-xs text-muted-foreground">
             {activeCount} of {tools.length} MCP interfaces active
           </span>
         </div>
@@ -744,11 +738,11 @@ function InheritanceHeader({
                   <AgentAvatar seed={m.id} size={20} title={m.name} />
                   <span className="font-medium text-foreground">{m.name}</span>
                   {restricted ? (
-                    <span className="rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[9px] uppercase tracking-widest text-primary">
+                    <span className="rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 micro-label text-primary">
                       tighter
                     </span>
                   ) : (
-                    <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-[9px] uppercase tracking-widest text-muted-foreground">
+                    <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 micro-label">
                       full frame
                     </span>
                   )}
@@ -756,7 +750,7 @@ function InheritanceHeader({
               );
             })}
           </div>
-          <div className="mt-3 flex items-center gap-2 text-[11px] text-muted-foreground">
+          <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
             <ArrowDown className="h-3.5 w-3.5" />
             <span>
               inherits ↓ agents can only <b>tighten</b>, never expand — the frame stays the upper
@@ -766,7 +760,7 @@ function InheritanceHeader({
         </div>
 
         {agent && (
-          <div className="mt-3 text-[11px] text-muted-foreground">
+          <div className="mt-3 text-xs text-muted-foreground">
             Focus: <span className="text-foreground">{agent.name}</span> · {agent.role}
           </div>
         )}

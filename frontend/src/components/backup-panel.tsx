@@ -137,10 +137,7 @@ export function BackupPanel() {
           )}
         </p>
 
-        <label
-          htmlFor="backup-export-passphrase"
-          className="mt-3 block text-[11px] uppercase tracking-wider text-muted-foreground"
-        >
+        <label htmlFor="backup-export-passphrase" className="mt-3 block micro-label">
           {t("Passphrase (optional)", "Passphrase (optional)")}
         </label>
         <input
@@ -201,10 +198,7 @@ export function BackupPanel() {
           </p>
         </div>
 
-        <label
-          htmlFor="backup-restore-file"
-          className="mt-3 block text-[11px] uppercase tracking-wider text-muted-foreground"
-        >
+        <label htmlFor="backup-restore-file" className="mt-3 block micro-label">
           {t("Archive file", "Archivdatei")}
         </label>
         <input
@@ -232,7 +226,7 @@ export function BackupPanel() {
 
         {preview.data && (
           <div className="mt-3">
-            <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
+            <p className="micro-label">
               {t(
                 "Currently in this company → in the archive",
                 "Derzeit in diesem Unternehmen → im Archiv",
@@ -267,7 +261,7 @@ export function BackupPanel() {
             </div>
 
             {manifestExcluded(preview.data.manifest).length > 0 && (
-              <p className="mt-2 text-[11px] text-muted-foreground">
+              <p className="mt-2 text-xs text-muted-foreground">
                 {t("Not part of any backup:", "Nicht Teil einer Sicherung:")}{" "}
                 {manifestExcluded(preview.data.manifest).join(", ")}
               </p>
@@ -291,10 +285,7 @@ export function BackupPanel() {
 
             {preview.data.has_secrets && blockingProblems.length === 0 && (
               <div className="mt-3">
-                <label
-                  htmlFor="backup-restore-passphrase"
-                  className="block text-[11px] uppercase tracking-wider text-muted-foreground"
-                >
+                <label htmlFor="backup-restore-passphrase" className="block micro-label">
                   {t("Passphrase", "Passphrase")}
                 </label>
                 <input
@@ -320,16 +311,13 @@ export function BackupPanel() {
 
             {blockingProblems.length === 0 && (
               <div className="mt-3">
-                <label
-                  htmlFor="backup-confirm-name"
-                  className="block text-[11px] uppercase tracking-wider text-muted-foreground"
-                >
+                <label htmlFor="backup-confirm-name" className="block micro-label">
                   {t(
                     "Type this company's name to confirm",
                     "Gib den Namen dieses Unternehmens zur Bestätigung ein",
                   )}
                 </label>
-                <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">
+                <p className="mt-0.5 font-mono text-xs text-muted-foreground">
                   {organization?.name}
                 </p>
                 <input
@@ -345,7 +333,7 @@ export function BackupPanel() {
             )}
 
             {blockingProblems.length === 0 && !hasExportedThisSession && (
-              <p className="mt-2 text-[11px] text-[color:var(--status-warning)]">
+              <p className="mt-2 text-xs text-[color:var(--status-warning)]">
                 {t(
                   "Download a fresh backup above first — restoring is irreversible, and this is the recovery path if it goes wrong.",
                   "Lade oben zuerst eine aktuelle Sicherung herunter — die Wiederherstellung ist unwiderruflich, und das ist der Weg zurück, falls dabei etwas schiefgeht.",
@@ -381,7 +369,7 @@ export function BackupPanel() {
             </div>
             <ul className="mt-2 space-y-0.5">
               {Object.entries(restore.data.tables).map(([table, count]) => (
-                <li key={table} className="flex justify-between font-mono text-[11px]">
+                <li key={table} className="flex justify-between font-mono text-xs">
                   <span>{table}</span>
                   <span>{count}</span>
                 </li>

@@ -33,7 +33,7 @@ export function BudgetWidget({
 
   return (
     <div className="flex h-full flex-col justify-center gap-2 p-4">
-      <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
+      <div className="micro-label">
         {status.scope === "tenant"
           ? t("Tenant-wide", "Unternehmensweit")
           : t("Department", "Abteilung")}

@@ -90,10 +90,8 @@ function Row({ row, agentId }: { row: RunStepRow; agentId?: string }) {
             <dl className="space-y-0.5">
               {args.map(([key, value]) => (
                 <div key={key} className="grid grid-cols-[minmax(0,8rem)_1fr] gap-2">
-                  <dt className="truncate text-[10px] uppercase tracking-widest text-muted-foreground">
-                    {key}
-                  </dt>
-                  <dd className="min-w-0 break-words font-mono text-[11px]">
+                  <dt className="truncate micro-label">{key}</dt>
+                  <dd className="min-w-0 break-words font-mono text-xs">
                     {typeof value === "object" && value !== null
                       ? JSON.stringify(value)
                       : String(value)}
@@ -104,7 +102,7 @@ function Row({ row, agentId }: { row: RunStepRow; agentId?: string }) {
           )}
 
           {row.reason && (
-            <p className="text-[11px] text-[color:var(--status-warning)]">
+            <p className="text-xs text-[color:var(--status-warning)]">
               {row.state === "awaiting_approval"
                 ? t(
                     `Waiting for a decision: ${row.reason}`,
@@ -116,14 +114,12 @@ function Row({ row, agentId }: { row: RunStepRow; agentId?: string }) {
 
           {row.result && (
             <div>
-              <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                {t("What came back", "Was zurückkam")}
-              </div>
-              <p className="mt-0.5 whitespace-pre-wrap break-words font-mono text-[11px] text-muted-foreground">
+              <div className="micro-label">{t("What came back", "Was zurückkam")}</div>
+              <p className="mt-0.5 whitespace-pre-wrap break-words font-mono text-xs text-muted-foreground">
                 {row.result}
               </p>
               {row.resultShortened && (
-                <p className="mt-0.5 text-[10px] text-muted-foreground">
+                <p className="mt-0.5 text-xs text-muted-foreground">
                   {t(
                     "Shortened — only the first part of a result is kept.",
                     "Gekürzt — es wird nur der Anfang eines Ergebnisses gespeichert.",

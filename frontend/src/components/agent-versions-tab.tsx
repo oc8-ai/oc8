@@ -118,7 +118,7 @@ export function AgentVersionsTab({ agentId, mayManage }: { agentId: string; mayM
                   <td className="py-2 pr-3 whitespace-nowrap">
                     <span className="font-mono">{`v${version.versionNo}`}</span>
                     {version.isCurrent && (
-                      <span className="ml-2 inline-flex items-center rounded-full border border-[color:var(--status-running)]/50 bg-[color:var(--status-running)]/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-[color:var(--status-running)]">
+                      <span className="ml-2 inline-flex items-center rounded-full border border-[color:var(--status-running)]/50 bg-[color:var(--status-running)]/15 px-2 py-0.5 micro-label text-[color:var(--status-running)]">
                         {t("running", "läuft")}
                       </span>
                     )}
@@ -181,7 +181,7 @@ export function AgentVersionsTab({ agentId, mayManage }: { agentId: string; mayM
           >
             <div className="flex items-center justify-between border-b border-border px-5 py-4">
               <div>
-                <div className="text-[11px] uppercase tracking-widest text-muted-foreground">
+                <div className="micro-label">
                   {open.intent === "rollback"
                     ? t("Confirm rollback", "Zurücksetzen bestätigen")
                     : t("Compare", "Vergleich")}

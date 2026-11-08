@@ -58,7 +58,7 @@ export function DataTable({ props }: { props: Record<string, unknown> }) {
           </tbody>
         </table>
       </div>
-      {caption && <div className="mt-2 text-[11px] text-muted-foreground">{caption}</div>}
+      {caption && <div className="mt-2 text-xs text-muted-foreground">{caption}</div>}
     </section>
   );
 }

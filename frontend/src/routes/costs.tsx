@@ -283,7 +283,7 @@ function CostsPage() {
                 {t("Output", "Output")}:{" "}
                 <span className="font-mono text-foreground">{formatTokens(recorded.outTok)}</span>
               </span>
-              <span className="text-[10px] text-muted-foreground">
+              <span className="text-xs text-muted-foreground">
                 {t("metered by the platform", "vom System gemessen")}
               </span>
             </>
@@ -351,11 +351,11 @@ function Metric({
         highlight && "border-primary/40 bg-primary/5",
       )}
     >
-      <div className="text-[10px] uppercase tracking-widest text-muted-foreground">{label}</div>
+      <div className="micro-label">{label}</div>
       <div className={cn("mt-1 font-serif text-2xl leading-none", highlight && "text-primary")}>
         {value}
       </div>
-      {hint && <div className="mt-1 text-[10px] text-muted-foreground">{hint}</div>}
+      {hint && <div className="mt-1 text-xs text-muted-foreground">{hint}</div>}
     </div>
   );
 }
@@ -419,9 +419,7 @@ function OverviewTab({
       <Panel className="p-5">
         <div className="mb-4 flex items-center justify-between">
           <div>
-            <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-              {t("Top agents", "Top-Agenten")}
-            </div>
+            <div className="micro-label">{t("Top agents", "Top-Agenten")}</div>
             <div className="font-serif text-base">{t("By spend", "Nach Ausgaben")}</div>
           </div>
           <Users className="h-4 w-4 text-muted-foreground" />
@@ -436,7 +434,7 @@ function OverviewTab({
                     style={{ background: r.avatarColor }}
                   />
                   <span className="truncate font-medium">{r.name}</span>
-                  {r.llm && <span className="text-[11px] text-muted-foreground">· {r.llm}</span>}
+                  {r.llm && <span className="text-xs text-muted-foreground">· {r.llm}</span>}
                 </div>
                 <span className="font-mono text-xs">
                   {formatMoney(convert(r.costUSD, currency), currency)}
@@ -446,7 +444,7 @@ function OverviewTab({
             </div>
           ))}
           {topAgents.length === 0 && (
-            <div className="rounded-md border border-dashed border-border/60 px-2 py-3 text-center text-[11px] text-muted-foreground">
+            <div className="rounded-md border border-dashed border-border/60 px-2 py-3 text-center text-xs text-muted-foreground">
               {noUsage}
             </div>
           )}
@@ -456,9 +454,7 @@ function OverviewTab({
       <Panel className="p-5">
         <div className="mb-4 flex items-center justify-between">
           <div>
-            <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-              {t("Departments", "Abteilungen")}
-            </div>
+            <div className="micro-label">{t("Departments", "Abteilungen")}</div>
             <div className="font-serif text-base">
               {t("Spend distribution", "Ausgabenverteilung")}
             </div>
@@ -477,7 +473,7 @@ function OverviewTab({
                       style={{ background: d.accent }}
                     />
                     <span className="truncate font-medium">{d.name}</span>
-                    <span className="text-[11px] text-muted-foreground">
+                    <span className="text-xs text-muted-foreground">
                       · {agentCount} {t("agents", "Agenten")}
                     </span>
                   </div>
@@ -490,7 +486,7 @@ function OverviewTab({
             );
           })}
           {topDept.length === 0 && (
-            <div className="rounded-md border border-dashed border-border/60 px-2 py-3 text-center text-[11px] text-muted-foreground">
+            <div className="rounded-md border border-dashed border-border/60 px-2 py-3 text-center text-xs text-muted-foreground">
               {noUsage}
             </div>
           )}
@@ -500,9 +496,7 @@ function OverviewTab({
       <Panel className="p-5 lg:col-span-2">
         <div className="mb-4 flex items-center justify-between">
           <div>
-            <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-              {t("By provider", "Nach Anbieter")}
-            </div>
+            <div className="micro-label">{t("By provider", "Nach Anbieter")}</div>
             <div className="font-serif text-base">
               {t("Where the money goes", "Wohin das Geld fließt")}
             </div>
@@ -514,7 +508,7 @@ function OverviewTab({
             <div key={prov} className="rounded-lg border border-border bg-background/30 p-4">
               <div className="flex items-center justify-between">
                 <div className="text-sm font-medium">{prov}</div>
-                <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-micro text-muted-foreground">
                   {Math.round((total / (provMax || 1)) * 100)}%
                 </span>
               </div>
@@ -527,7 +521,7 @@ function OverviewTab({
             </div>
           ))}
           {providers.length === 0 && (
-            <div className="rounded-md border border-dashed border-border/60 px-2 py-3 text-center text-[11px] text-muted-foreground sm:col-span-2 lg:col-span-4">
+            <div className="rounded-md border border-dashed border-border/60 px-2 py-3 text-center text-xs text-muted-foreground sm:col-span-2 lg:col-span-4">
               {noUsage}
             </div>
           )}
@@ -605,7 +599,7 @@ export function ReconciliationCard({ currency }: { currency: Currency }) {
     <Panel className="p-5 opacity-90 lg:col-span-2">
       <div className="mb-3 flex items-center justify-between gap-3">
         <div>
-          <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
+          <div className="micro-label">
             {t("Provider-reported cost", "Vom Anbieter gemeldete Kosten")}
           </div>
           <div className="font-serif text-sm">
@@ -623,7 +617,7 @@ export function ReconciliationCard({ currency }: { currency: Currency }) {
         </button>
       </div>
       {rows.length === 0 ? (
-        <div className="rounded-md border border-dashed border-border/60 px-2 py-3 text-center text-[11px] text-muted-foreground">
+        <div className="rounded-md border border-dashed border-border/60 px-2 py-3 text-center text-xs text-muted-foreground">
           {t(
             "Not refreshed yet — click Refresh to fetch provider-reported cost.",
             "Noch nicht aktualisiert — auf „Aktualisieren“ klicken, um die vom Anbieter gemeldeten Kosten abzurufen.",
@@ -645,7 +639,7 @@ export function ReconciliationCard({ currency }: { currency: Currency }) {
                 <div className="flex items-center justify-between font-medium">
                   <span>{p.provider}</span>
                   {!p.hasReported && (
-                    <span className="text-[10px] font-normal text-muted-foreground">
+                    <span className="text-xs font-normal text-muted-foreground">
                       {t("no report yet", "noch kein Bericht")}
                     </span>
                   )}
@@ -692,9 +686,7 @@ function AgentsTab({ agentRows, currency }: { agentRows: AgentSpendRow[]; curren
   return (
     <Panel className="overflow-hidden">
       <div className="border-b border-border px-5 py-3">
-        <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-          {t("Cost per agent", "Kosten pro Agent")}
-        </div>
+        <div className="micro-label">{t("Cost per agent", "Kosten pro Agent")}</div>
         <div className="font-serif text-base">{t("Recorded usage", "Erfasster Verbrauch")}</div>
       </div>
       <div className="overflow-x-auto">
@@ -717,7 +709,7 @@ function AgentsTab({ agentRows, currency }: { agentRows: AgentSpendRow[]; curren
                     <span className="h-2 w-2 rounded-full" style={{ background: r.avatarColor }} />
                     <div>
                       <div className="font-medium">{r.name}</div>
-                      <div className="text-[11px] text-muted-foreground">
+                      <div className="text-xs text-muted-foreground">
                         {r.role ?? t("unassigned agent", "nicht zugeordneter Agent")}
                         {r.departmentName && ` · ${r.departmentName}`}
                       </div>
@@ -781,7 +773,7 @@ function DeptTab({
                 />
                 <div>
                   <div className="font-serif text-lg leading-tight">{d.name}</div>
-                  <div className="text-[11px] text-muted-foreground">
+                  <div className="text-xs text-muted-foreground">
                     {deptAgents.length} {t("agents", "Agenten")}
                   </div>
                 </div>
@@ -790,11 +782,9 @@ function DeptTab({
                 <div className="font-serif text-2xl text-primary">
                   {formatMoney(convert(d.costUSD, currency), currency)}
                 </div>
-                <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                  {t("Recorded spend", "Erfasste Ausgaben")}
-                </div>
+                <div className="micro-label">{t("Recorded spend", "Erfasste Ausgaben")}</div>
                 {d.savedCostUSD > 0 && (
-                  <div className="mt-2 flex items-center justify-end gap-1.5 text-[11px] text-primary">
+                  <div className="mt-2 flex items-center justify-end gap-1.5 text-xs text-primary">
                     <span>{t("Saved by caching:", "Durch Caching gespart:")}</span>
                     <span className="font-mono">
                       {formatMoney(convert(d.savedCostUSD, currency), currency)}
@@ -810,23 +800,17 @@ function DeptTab({
 
             <div className="mt-4 grid grid-cols-2 gap-2 text-xs">
               <div className="rounded-md border border-border bg-background/30 p-2">
-                <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                  {t("Input", "Input")}
-                </div>
+                <div className="micro-label">{t("Input", "Input")}</div>
                 <div className="font-mono">{formatTokens(d.tokensIn)}</div>
               </div>
               <div className="rounded-md border border-border bg-background/30 p-2">
-                <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                  {t("Output", "Output")}
-                </div>
+                <div className="micro-label">{t("Output", "Output")}</div>
                 <div className="font-mono">{formatTokens(d.tokensOut)}</div>
               </div>
             </div>
 
             <div className="mt-4">
-              <div className="mb-1.5 text-[10px] uppercase tracking-widest text-muted-foreground">
-                {t("Agents", "Agenten")}
-              </div>
+              <div className="mb-1.5 micro-label">{t("Agents", "Agenten")}</div>
               <div className="space-y-1.5">
                 {deptAgents.map((r) => (
                   <div
@@ -840,7 +824,7 @@ function DeptTab({
                       />
                       <span className="truncate">{r.name}</span>
                       {r.llm && (
-                        <span className="truncate text-[10px] text-muted-foreground">{r.llm}</span>
+                        <span className="truncate text-xs text-muted-foreground">{r.llm}</span>
                       )}
                     </div>
                     <span className="font-mono">
@@ -849,7 +833,7 @@ function DeptTab({
                   </div>
                 ))}
                 {deptAgents.length === 0 && (
-                  <div className="rounded-md border border-dashed border-border/60 px-2 py-3 text-center text-[11px] text-muted-foreground">
+                  <div className="rounded-md border border-dashed border-border/60 px-2 py-3 text-center text-xs text-muted-foreground">
                     {t("No usage recorded yet.", "Noch kein Verbrauch erfasst.")}
                   </div>
                 )}
@@ -927,13 +911,13 @@ function LimitsTab({ currency }: { currency: Currency }) {
                   "Diese Altansicht ist schreibgeschützt. Die Live-Token-Budgets oben sind bis zu einer Kostenlimit-API die einzigen durchgesetzten Budgetkontrollen.",
                 )}
               </p>
-              <p className="mt-1 text-[11px] italic text-muted-foreground">
+              <p className="mt-1 text-xs italic text-muted-foreground">
                 {t(
                   "Usage below is an estimate from the editable pricing model (see Models), not the platform's recorded spend — see the Overview/By Agent/By Department tabs for metered figures.",
                   "Der Verbrauch unten ist eine Schätzung anhand des editierbaren Preismodells (siehe Modelle), nicht die vom System erfassten Ausgaben — gemessene Werte finden Sie unter Übersicht/Pro Agent/Pro Abteilung.",
                 )}
               </p>
-              <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+              <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
                 {summary.map((s) => {
                   const Icon = s.icon;
                   return (
@@ -1056,7 +1040,7 @@ function LimitsTab({ currency }: { currency: Currency }) {
                     </td>
                     <td className="px-5 py-3">
                       <div className="min-w-[140px]">
-                        <div className="mb-1 flex items-center justify-between text-[11px]">
+                        <div className="mb-1 flex items-center justify-between text-xs">
                           <span className="font-mono" style={{ color: tone }}>
                             {formatMoney(convert(spend, currency), currency)}
                           </span>
@@ -1121,7 +1105,7 @@ function LimitsTab({ currency }: { currency: Currency }) {
             </tbody>
           </table>
         </div>
-        <div className="flex flex-wrap items-center gap-3 border-t border-border px-5 py-3 text-[11px] text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-3 border-t border-border px-5 py-3 text-xs text-muted-foreground">
           <span className="inline-flex items-center gap-1">
             <Bell className="h-3 w-3" />
             {t("Notify — alert only", "Benachrichtigen — nur Hinweis")}
@@ -1276,7 +1260,7 @@ function BudgetRow({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
           <div className="truncate text-sm font-medium">{label}</div>
-          <div className="mt-0.5 font-mono text-[11px] text-muted-foreground">
+          <div className="mt-0.5 font-mono text-xs text-muted-foreground">
             {formatTokens(status?.currentTokens ?? 0)}{" "}
             {t("used this month", "verbraucht diesen Monat")}
           </div>
@@ -1340,7 +1324,7 @@ function BudgetRow({
         </div>
       </div>
       {mode === "dollar" && budget?.dollarBudgetUsd != null && budget.hardLimitTokens != null && (
-        <div className="mt-1.5 text-[11px] text-muted-foreground">
+        <div className="mt-1.5 text-xs text-muted-foreground">
           {t(
             `≈ ${formatTokens(budget.hardLimitTokens)} tokens (at ${budget.dollarReferenceModel} pricing)`,
             `≈ ${formatTokens(budget.hardLimitTokens)} Token (zu ${budget.dollarReferenceModel}-Preisen)`,
@@ -1362,7 +1346,7 @@ function BudgetRow({
         </div>
       )}
       {status?.hardExceeded && (
-        <div className="mt-2 flex items-center gap-1.5 text-[11px] text-[color:var(--status-error)]">
+        <div className="mt-2 flex items-center gap-1.5 text-xs text-[color:var(--status-error)]">
           <ShieldAlert className="h-3 w-3" />
           {t(
             "Hard limit exceeded — new tasks are paused.",
@@ -1456,9 +1440,7 @@ function AddLimitDialog({
 
         <div className="space-y-3 text-sm">
           <div>
-            <label className="mb-1 block text-[11px] uppercase tracking-widest text-muted-foreground">
-              {t("Scope", "Ebene")}
-            </label>
+            <label className="mb-1 block micro-label">{t("Scope", "Ebene")}</label>
             <div className="grid grid-cols-3 gap-1 rounded-md border border-border bg-background/40 p-0.5">
               {(["agent", "department", "model"] as LimitScope[]).map((s) => (
                 <button
@@ -1486,17 +1468,13 @@ function AddLimitDialog({
           </div>
 
           <div>
-            <label className="mb-1 block text-[11px] uppercase tracking-widest text-muted-foreground">
-              {t("Target", "Ziel")}
-            </label>
+            <label className="mb-1 block micro-label">{t("Target", "Ziel")}</label>
             <TargetSelect scope={scope} value={targetId} onChange={setTargetId} />
           </div>
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="mb-1 block text-[11px] uppercase tracking-widest text-muted-foreground">
-                {t("Amount (USD)", "Betrag (USD)")}
-              </label>
+              <label className="mb-1 block micro-label">{t("Amount (USD)", "Betrag (USD)")}</label>
               <input
                 type="number"
                 min="0"
@@ -1507,9 +1485,7 @@ function AddLimitDialog({
               />
             </div>
             <div>
-              <label className="mb-1 block text-[11px] uppercase tracking-widest text-muted-foreground">
-                {t("Period", "Zeitraum")}
-              </label>
+              <label className="mb-1 block micro-label">{t("Period", "Zeitraum")}</label>
               <select
                 value={period}
                 onChange={(e) => setPeriod(e.target.value as LimitPeriod)}
@@ -1522,7 +1498,7 @@ function AddLimitDialog({
           </div>
 
           <div>
-            <label className="mb-1 block text-[11px] uppercase tracking-widest text-muted-foreground">
+            <label className="mb-1 block micro-label">
               {t("Action on threshold", "Aktion bei Schwelle")}
             </label>
             <select

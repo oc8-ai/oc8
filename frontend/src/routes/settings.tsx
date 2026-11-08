@@ -62,7 +62,7 @@ function SettingsPage() {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="font-serif text-lg">{t("Guided setup", "Geführte Einrichtung")}</h2>
+              <h2 className="font-serif text-xl">{t("Guided setup", "Geführte Einrichtung")}</h2>
               <button
                 type="button"
                 onClick={() => setSetupOpen(false)}
@@ -159,7 +159,7 @@ function PilotSetup({ onOpenWizard }: { onOpenWizard: () => void }) {
           </li>
         ))}
       </ol>
-      <p className="mt-3 text-[11px] text-muted-foreground">
+      <p className="mt-3 text-xs text-muted-foreground">
         {t(
           "The guided setup configures the tenant you are signed into. New tenants are deliberately provisioned by the administrator CLI so the application role never receives cross-tenant write authority.",
           "Die geführte Einrichtung konfiguriert den angemeldeten Mandanten. Neue Mandanten werden bewusst über die Administrator-CLI provisioniert, damit die App-Rolle nie mandantenübergreifende Schreibrechte erhält.",
@@ -361,7 +361,7 @@ export function MailServerSetting() {
             type="button"
             onClick={() => setActive("")}
             disabled={update.isPending}
-            className="text-[11px] text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-[color:var(--status-error)] disabled:cursor-not-allowed disabled:opacity-50"
+            className="text-xs text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-[color:var(--status-error)] disabled:cursor-not-allowed disabled:opacity-50"
           >
             {t("None (disable)", "Keine (deaktivieren)")}
           </button>
@@ -452,7 +452,7 @@ export function CopilotSettingsPanel() {
           className="mt-1 block w-24 rounded-md border border-border bg-background/40 px-2 py-1 text-sm text-foreground"
         />
       </label>
-      <p className="mt-1 text-[11px] text-muted-foreground">
+      <p className="mt-1 text-xs text-muted-foreground">
         {t(
           "Between 1 and 100. Lowering it keeps existing follow-ups but blocks new ones above the limit.",
           "Zwischen 1 und 100. Ein niedrigerer Wert behält bestehende Wiedervorlagen, blockiert aber neue über dem Limit.",

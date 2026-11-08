@@ -291,7 +291,7 @@ export function AgentPublishBar({ agentId, mayManage }: { agentId: string; mayMa
           >
             <div className="flex items-center justify-between border-b border-border px-5 py-4">
               <div>
-                <div className="text-[11px] uppercase tracking-widest text-muted-foreground">
+                <div className="micro-label">
                   {t("Unpublished changes", "Unveröffentlichte Änderungen")}
                 </div>
                 <h2 className="font-serif text-xl">

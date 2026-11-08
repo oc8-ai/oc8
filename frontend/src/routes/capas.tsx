@@ -613,7 +613,7 @@ export function CapasPage() {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="font-serif text-lg">{t("Export as Capa", "Als Capa exportieren")}</h2>
+              <h2 className="font-serif text-xl">{t("Export as Capa", "Als Capa exportieren")}</h2>
               <button
                 type="button"
                 onClick={closeExportWizard}
@@ -786,13 +786,13 @@ function CapaCard({
                 <BadgeCheck className="h-3.5 w-3.5 shrink-0 text-primary" />
               )}
               {showRestore && (
-                <span className="rounded-full border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-[color:var(--status-warning)]">
+                <span className="rounded-full border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 px-1.5 py-0.5 micro-label text-[color:var(--status-warning)]">
                   {t("Disabled", "Deaktiviert")}
                 </span>
               )}
               {!showRestore && plugin.disabledReason === UPDATE_PENDING_CONSENT && (
                 <span
-                  className="rounded-full border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-[color:var(--status-warning)]"
+                  className="rounded-full border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 px-1.5 py-0.5 micro-label text-[color:var(--status-warning)]"
                   title={t(
                     "The update changed the setup form -- click Enable to review and confirm it.",
                     "Das Update hat das Setup-Formular geändert -- auf Aktivieren klicken, um es zu bestätigen.",
@@ -878,7 +878,7 @@ function CapaCard({
             </button>
           ) : plugin.installed && plugin.installationStatus === "enabled" ? (
             <div className="flex shrink-0 items-center gap-1.5">
-              <span className="inline-flex items-center gap-1 rounded-md bg-[color:var(--status-running)]/15 px-2 py-1 text-[11px] text-[color:var(--status-running)]">
+              <span className="inline-flex items-center gap-1 rounded-md bg-[color:var(--status-running)]/15 px-2 py-1 text-xs text-[color:var(--status-running)]">
                 <CheckCircle2 className="h-3 w-3" />
                 {t("Enabled", "Aktiviert")}
               </span>
@@ -919,7 +919,7 @@ function CapaCard({
               {busy ? t("Installing…", "Wird installiert …") : t("Install", "Installieren")}
             </button>
           ) : (
-            <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-[color:var(--status-error)]/15 px-2 py-1 text-[11px] text-[color:var(--status-error)]">
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-[color:var(--status-error)]/15 px-2 py-1 text-xs text-[color:var(--status-error)]">
               <AlertTriangle className="h-3 w-3" />
               {t("Invalid", "Ungültig")}
             </span>
@@ -985,7 +985,7 @@ export function CapaDetailSheet({
       {plugin.installed &&
         plugin.installationStatus === "enabled" &&
         plugin.surfaces.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 text-[11px]">
+          <div className="flex flex-wrap gap-1.5 text-xs">
             <span className="text-muted-foreground">{t("Available in:", "Verfügbar in:")}</span>
             {plugin.surfaces.map((surface) => (
               <a
@@ -1020,16 +1020,14 @@ export function CapaDetailSheet({
         )}
 
       {!plugin.valid && plugin.error && (
-        <p className="rounded-md bg-[color:var(--status-error)]/10 px-2 py-1.5 font-mono text-[11px] text-[color:var(--status-error)]">
+        <p className="rounded-md bg-[color:var(--status-error)]/10 px-2 py-1.5 font-mono text-xs text-[color:var(--status-error)]">
           {plugin.error}
         </p>
       )}
 
       {connections.length > 0 && (
         <div className="space-y-4 border-t border-border pt-4">
-          <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-            {t("Connection", "Verbindung")}
-          </div>
+          <div className="micro-label">{t("Connection", "Verbindung")}</div>
           {connections.map((c) => (
             <div key={c.id}>
               {connections.length > 1 && <div className="mb-1.5 text-xs font-medium">{c.name}</div>}

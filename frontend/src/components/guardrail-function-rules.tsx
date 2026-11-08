@@ -771,9 +771,7 @@ export function GuardrailFunctionRules({
               : t("Suggest from instructions", "Aus Instruction vorschlagen")}
           </button>
         )}
-        <span className="self-center text-[11px] uppercase tracking-wider text-muted-foreground">
-          {t("Filter", "Filter")}
-        </span>
+        <span className="self-center micro-label">{t("Filter", "Filter")}</span>
         {(["read", "modify"] as const).map((right) => (
           <button
             key={right}
@@ -792,7 +790,7 @@ export function GuardrailFunctionRules({
       </div>
       <table className="w-full text-left text-sm">
         <thead>
-          <tr className="border-b border-border/70 bg-background/30 text-[11px] uppercase tracking-wider text-muted-foreground">
+          <tr className="border-b border-border/70 bg-background/30 micro-label">
             <th className="p-2.5">{t("Allowed", "Erlaubt")}</th>
             <th className="p-2.5">{t("Function", "Funktion")}</th>
             <th className="w-2/5 p-2.5">{t("Definition", "Definition")}</th>
@@ -947,9 +945,7 @@ export function GuardrailFunctionRules({
                     </span>
                   )}
                   {!isGateRow && mode !== "allow" && (
-                    <div className="mt-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
-                      {decisionLabel(t, mode)}
-                    </div>
+                    <div className="mt-0.5 micro-label">{decisionLabel(t, mode)}</div>
                   )}
                 </td>
                 <td className="p-2.5 align-top">
@@ -1053,7 +1049,7 @@ export function GuardrailFunctionRules({
         >
           <Plus className="h-3.5 w-3.5" /> {t("New guardrail", "Neue Guardrail")}
         </button>
-        <p className="text-[11px] text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           {t(
             "Check a box to allow/deny it right away; ✓ interprets a Definition text into a structured rule you then Accept or Discard. Either way, use the panel's Save button to store your changes.",
             "Häkchen setzen erlaubt/verbietet sofort; ✓ übersetzt einen Definitionstext in eine strukturierte Regel, die du übernimmst oder verwirfst. So oder so speichert erst der Speichern-Button des Panels.",

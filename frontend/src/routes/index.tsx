@@ -162,11 +162,11 @@ function OfficePage() {
         <div className="relative mb-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[color:var(--status-running)] shadow-[0_0_8px_var(--status-running)]" />
-            <span className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
+            <span className="micro-label">
               {t("Floor 1 · Live operations", "Etage 1 · Live-Betrieb")}
             </span>
           </div>
-          <span className="text-[11px] text-muted-foreground">
+          <span className="text-xs text-muted-foreground">
             {departments.length} {t("rooms", "Räume")} · {totalAgents} {t("staff", "Mitarbeiter")}
           </span>
         </div>
@@ -206,11 +206,9 @@ function HUD({
           <Gauge className="h-5 w-5" />
         </div>
         <div>
-          <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-            {t("Company", "Unternehmen")}
-          </div>
+          <div className="micro-label">{t("Company", "Unternehmen")}</div>
           <div className="font-serif text-lg leading-tight">{companyName}</div>
-          <div className="font-mono text-[11px] text-muted-foreground">{clock}</div>
+          <div className="font-mono text-xs text-muted-foreground">{clock}</div>
         </div>
       </div>
 
@@ -227,7 +225,7 @@ function HUD({
         label={t("Active agents", "Aktive Agenten")}
         value={`${activeAgents}/${totalAgents}`}
       >
-        <div className="mt-2 flex items-center gap-1 text-[11px] text-muted-foreground">
+        <div className="mt-2 flex items-center gap-1 text-xs text-muted-foreground">
           <Users className="h-3 w-3" />
           {totalDepartments} {t("departments", "Abteilungen")}
         </div>
@@ -244,7 +242,7 @@ function HUD({
           value={String(pendingApprovals)}
           highlight={pendingApprovals > 0}
         >
-          <div className="mt-2 inline-flex items-center gap-1 text-[11px] text-[color:var(--status-warning)]">
+          <div className="mt-2 inline-flex items-center gap-1 text-xs text-[color:var(--status-warning)]">
             <Bell className="h-3 w-3" /> {t("Click to review", "Zum Prüfen klicken")}
           </div>
         </HudStat>
@@ -266,7 +264,7 @@ function HudStat({
 }) {
   return (
     <div>
-      <div className="text-[10px] uppercase tracking-widest text-muted-foreground">{label}</div>
+      <div className="micro-label">{label}</div>
       <div
         className={cn(
           "mt-1 font-serif text-3xl leading-none tabular-nums",
@@ -378,7 +376,7 @@ function DepartmentRoom({
         </div>
         <span
           className={cn(
-            "flex items-center gap-1.5 text-[10px] uppercase tracking-widest",
+            "flex items-center gap-1.5 micro-label",
             hasWarning ? "text-[color:var(--status-warning)]" : "text-muted-foreground",
           )}
         >
@@ -405,7 +403,7 @@ function DepartmentRoom({
       </div>
 
       <footer className="relative mt-4 space-y-2">
-        <div className="flex items-center justify-between text-[11px]">
+        <div className="flex items-center justify-between text-xs">
           <span className="text-muted-foreground">{t("Load", "Auslastung")}</span>
           <span className="font-mono text-foreground/80 tabular-nums">{liveActivity}%</span>
         </div>
@@ -419,7 +417,7 @@ function DepartmentRoom({
           />
         </div>
         <div className="mt-2 flex items-center justify-between text-xs">
-          <span className="rounded-md border border-border bg-background/40 px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
+          <span className="rounded-md border border-border bg-background/40 px-2 py-0.5 font-mono text-micro text-muted-foreground">
             {d.kpiValue} · {d.kpiLabel}
           </span>
           <span className="text-primary opacity-0 transition-opacity group-hover:opacity-100">
@@ -472,7 +470,7 @@ function AgentTile({ agent, isLead }: { agent: Agent; isLead: boolean }) {
           />
         </span>
       </div>
-      <div className="mt-1.5 truncate text-[10px] text-muted-foreground hover:text-foreground">
+      <div className="mt-1.5 truncate text-xs text-muted-foreground hover:text-foreground">
         {agent.name}
       </div>
     </Link>

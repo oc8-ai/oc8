@@ -619,7 +619,7 @@ function PreviewStep({ preview }: { preview: ReturnType<typeof usePreviewCapaExp
           </pre>
           {Object.entries(item.extra_files).map(([path, content]) => (
             <div key={path} className="mt-2">
-              <p className="text-[11px] text-muted-foreground">{path}</p>
+              <p className="text-xs text-muted-foreground">{path}</p>
               <pre className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-all rounded bg-background/40 p-2 text-xs text-muted-foreground">
                 {content}
               </pre>

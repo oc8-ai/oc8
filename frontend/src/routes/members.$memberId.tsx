@@ -413,7 +413,7 @@ export function MemberDetailForm({ member }: { member: Member }) {
           <div>
             <h3 className="font-serif text-lg">{member.displayName || signInEmail}</h3>
             {isAdmin && (
-              <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
+              <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-primary/15 px-2 py-0.5 micro-label text-primary">
                 <ShieldCheck className="size-3" />
                 {t("Administrator", "Administrator")}
               </span>
