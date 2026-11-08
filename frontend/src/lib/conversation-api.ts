@@ -61,6 +61,17 @@ export function useSetSessionModel(sessionId: string | null) {
   });
 }
 
+/** `prev` with `run` among its active runs, never twice: the regenerate
+ *  response and the conversation's own pending-run bookkeeping can both
+ *  report the same run. */
+export function withActiveRun(
+  prev: ChatSessionDetailDTO | undefined,
+  run: ActiveRunDTO,
+): ChatSessionDetailDTO | undefined {
+  if (!prev || prev.activeRuns.some((r) => r.runId === run.runId)) return prev;
+  return { ...prev, activeRuns: [...prev.activeRuns, run] };
+}
+
 export function useRegenerate(sessionId: string | null) {
   const qc = useQueryClient();
   return useMutation({
@@ -69,7 +80,7 @@ export function useRegenerate(sessionId: string | null) {
     onSuccess: (run) => {
       if (!sessionId) return;
       qc.setQueryData<ChatSessionDetailDTO>(conversationKeys.session(sessionId), (prev) =>
-        prev ? { ...prev, activeRuns: [...prev.activeRuns, run] } : prev,
+        withActiveRun(prev, run),
       );
     },
   });

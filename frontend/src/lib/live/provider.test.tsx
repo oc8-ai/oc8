@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -152,5 +152,58 @@ describe("useWatchRuns", () => {
 
   it("is a no-op outside the provider", () => {
     expect(() => render(<Watcher runIds={["r1"]} />)).not.toThrow();
+  });
+});
+
+function ChatProbe({ fetches }: { fetches: { count: number } }) {
+  useQuery({
+    queryKey: ["chat", "messages", "s1"],
+    queryFn: () => {
+      fetches.count += 1;
+      return Promise.resolve([]);
+    },
+  });
+  return null;
+}
+
+describe("reconnect resync", () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = [];
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("refetches the chat transcript and session caches after the socket reopens", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    const fetches = { count: 0 };
+    const { unmount } = render(
+      <QueryClientProvider client={qc}>
+        <LiveUpdatesProvider>
+          <ChatProbe fetches={fetches} />
+        </LiveUpdatesProvider>
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(fetches.count).toBe(1));
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const ws = FakeWebSocket.instances[0];
+    act(() => ws.open());
+    act(() => ws.close());
+    spy.mockClear();
+    const before = fetches.count;
+    act(() => ws.open());
+    await waitFor(() => expect(fetches.count).toBe(before + 1));
+    const keys = spy.mock.calls.map((c) => JSON.stringify(c[0]?.queryKey));
+    expect(keys).toEqual(
+      expect.arrayContaining([
+        JSON.stringify(["chat", "messages"]),
+        JSON.stringify(["chat", "session"]),
+        JSON.stringify(["chat", "sessions"]),
+      ]),
+    );
+    unmount();
   });
 });

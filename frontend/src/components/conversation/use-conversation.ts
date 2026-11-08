@@ -6,6 +6,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   conversationKeys,
   useChatSession,
+  withActiveRun,
   type ActiveRunDTO,
   type ChatSessionDetailDTO,
 } from "@/lib/conversation-api";
@@ -32,7 +33,9 @@ export function buildTurns(messages: ChatMessageDTO[], activeRuns: ActiveRunDTO[
   const turns: TurnModel[] = [];
   for (const m of messages) {
     if (m.role === "assistant") {
-      if (!m.replyToId) {
+      // No reply link (older rows), or the turn it answers is not in this
+      // list: show it on its own where it sits rather than dropping it.
+      if (!m.replyToId || !userIds.has(m.replyToId)) {
         turns.push({
           kind: "assistant",
           key: m.id,
@@ -98,9 +101,7 @@ export function useConversation(sessionId: string | null) {
     (run: ActiveRunDTO) => {
       if (!sessionId) return;
       qc.setQueryData<ChatSessionDetailDTO>(conversationKeys.session(sessionId), (prev) =>
-        prev && !prev.activeRuns.some((r) => r.runId === run.runId)
-          ? { ...prev, activeRuns: [...prev.activeRuns, run] }
-          : prev,
+        withActiveRun(prev, run),
       );
     },
     [qc, sessionId],

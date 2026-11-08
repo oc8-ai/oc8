@@ -20,6 +20,11 @@ export const liveQueryKeys: readonly unknown[][] = [
   ["copilot", "followups"],
   ["copilot", "delegations"],
   ["copilot", "notes"],
+  // The chat no longer polls: a turn whose "chat.message_created" arrived
+  // while the socket was down only shows up through this resync.
+  ["chat", "messages"],
+  ["chat", "session"],
+  ["chat", "sessions"],
 ];
 
 export interface McpTestLogLine {

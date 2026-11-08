@@ -86,4 +86,52 @@ describe("buildTurns", () => {
     const turns = buildTurns([msg("u1", "user"), msg("a1", "assistant")], []);
     expect(turns.map((t) => t.kind)).toEqual(["user", "assistant"]);
   });
+
+  it("keeps an answer whose user turn is missing from the list", () => {
+    const turns = buildTurns(
+      [
+        msg("a0", "assistant", { replyToId: "gone" }),
+        msg("u1", "user"),
+        msg("a1", "assistant", { replyToId: "u1" }),
+      ],
+      [],
+    );
+    expect(
+      turns.map((t) => (t.kind === "assistant" ? t.variants.map((v) => v.id).join() : t.key)),
+    ).toEqual(["a0", "u1", "a1"]);
+    const orphan = turns[0];
+    expect(orphan.kind === "assistant" && orphan.replyToId).toBeNull();
+  });
+
+  it("keeps three regenerated answers as variants of one turn", () => {
+    const turns = buildTurns(
+      [
+        msg("u1", "user"),
+        msg("a1", "assistant", { replyToId: "u1" }),
+        msg("a2", "assistant", { replyToId: "u1" }),
+        msg("a3", "assistant", { replyToId: "u1" }),
+      ],
+      [],
+    );
+    expect(turns).toHaveLength(2);
+    const answer = turns[1];
+    expect(answer.kind === "assistant" && answer.variants.map((v) => v.id)).toEqual([
+      "a1",
+      "a2",
+      "a3",
+    ]);
+  });
+
+  it("pairs a follow-up turn with its answer like a user turn", () => {
+    const turns = buildTurns(
+      [
+        msg("u1", "user"),
+        msg("a1", "assistant", { replyToId: "u1" }),
+        msg("f1", "followup"),
+        msg("a2", "assistant", { replyToId: "f1" }),
+      ],
+      [],
+    );
+    expect(turns.map((t) => t.key)).toEqual(["u1", "answer-u1", "f1", "answer-f1"]);
+  });
 });
