@@ -79,4 +79,54 @@ def test_the_metadata_address_is_refused_even_when_its_range_is_allowed(
     for ip in ("169.254.169.254", "fd00:ec2::254"):
         with pytest.raises(OutboundBlocked):
             guard_outbound_url("http://metadata.lan", resolver=lambda h, ip=ip: [ip])
-    assert guard_outbound_url("http://x.lan", resolver=lambda h: ["169.254.1.1"]) == "169.254.1.1"
+    with pytest.raises(OutboundBlocked):  # the whole link-local range, not just the one address
+        guard_outbound_url("http://x.lan", resolver=lambda h: ["169.254.1.1"])
+
+
+def test_a_url_without_a_scheme_is_checked_as_https() -> None:
+    assert guard_outbound_url("s3.example.com", resolver=lambda h: ["93.184.216.34"]) == "93.184.216.34"
+    assert guard_outbound_url("minio:9000/x", resolver=lambda h: ["93.184.216.34"]) == "93.184.216.34"
+    with pytest.raises(OutboundBlocked):
+        guard_outbound_url("localhost:9000", resolver=lambda h: ["127.0.0.1"])
+
+
+@pytest.mark.parametrize(
+    "ip",
+    [
+        "169.254.170.2",
+        "169.254.169.254",
+        "fe80::1",
+        "100.100.100.200",
+        "fd00:ec2::254",
+        "fd00:ec2::1",
+        "64:ff9b::a00:1",  # NAT64 around 10.0.0.1
+        "64:ff9b::a9fe:a9fe",  # NAT64 around 169.254.169.254
+        "2002:0a00:0001::1",  # 6to4 around 10.0.0.1
+        "2002:a9fe:a9fe::1",  # 6to4 around 169.254.169.254
+    ],
+)
+def test_link_local_and_metadata_ranges_are_refused_even_when_allowed(
+    monkeypatch: pytest.MonkeyPatch, ip: str
+) -> None:
+    _allow(monkeypatch, "169.254.0.0/16,fe80::/10,100.64.0.0/10,fd00:ec2::/32,meta.lan")
+    with pytest.raises(OutboundBlocked):
+        guard_outbound_url("http://x.lan", resolver=lambda h: [ip])
+    if ip.startswith(("169.254", "fe80", "100.100", "fd00:ec2")):  # even an allowed hostname
+        with pytest.raises(OutboundBlocked):
+            guard_outbound_url("http://meta.lan", resolver=lambda h: [ip])
+
+
+def test_an_embedded_public_address_is_judged_as_that_address() -> None:
+    assert guard_outbound_url("http://x.test", resolver=lambda h: ["64:ff9b::808:808"])
+    with pytest.raises(OutboundBlocked):
+        guard_outbound_url("http://x.test", resolver=lambda h: ["64:ff9b::7f00:1"])
+
+
+def test_a_bare_host_is_resolved_and_judged_like_a_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    from oc8.net.outbound import guard_outbound_host
+
+    assert guard_outbound_host("db.example.com", resolver=lambda h: ["93.184.216.34"])
+    with pytest.raises(OutboundBlocked):
+        guard_outbound_host("db.internal", resolver=lambda h: ["10.0.0.9"])
+    _allow(monkeypatch, "db.internal")
+    assert guard_outbound_host("db.internal", resolver=lambda h: ["10.0.0.9"]) == "10.0.0.9"
