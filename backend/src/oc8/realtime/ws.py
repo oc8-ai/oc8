@@ -4,15 +4,20 @@ tenant's fan-out set."""
 
 from __future__ import annotations
 
+import json
 import logging
+import uuid
 
 from fastapi import APIRouter, WebSocket, status
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from oc8.auth.provider import InvalidToken, get_identity_provider
 from oc8.authz.authority import resolve_authority
 from oc8.authz.permissions import RUN, VIEW, perm
+from oc8.chat.watch import may_watch_run
 from oc8.db.session import tenant_session
+from oc8.models import OrgMember
 from oc8.realtime.manager import ConnectionManager
 
 logger = logging.getLogger(__name__)
@@ -86,27 +91,80 @@ async def events_ws(websocket: WebSocket) -> None:
     try:
         async with tenant_session(principal.tenant_id) as db:
             authority = await resolve_authority(db, principal)
+            member = (
+                await db.execute(
+                    select(OrgMember).where(
+                        OrgMember.tenant_id == principal.tenant_id,
+                        OrgMember.subject == principal.subject,
+                        OrgMember.deleted_at.is_(None),
+                    )
+                )
+            ).scalar_one_or_none()
+            member_id = member.id if member is not None else None
     except SQLAlchemyError:
         logger.exception("could not resolve the caller's authority for the realtime feed")
         await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
         return
-    if _FEED_PERMISSION not in authority.tenant_wide:
+    feed = _FEED_PERMISSION in authority.tenant_wide
+    # A member-only socket (spec §2.4) carries nothing but this member's own
+    # events (`audience` envelopes) and the runs they were allowed to watch --
+    # never the feed. Without a member row there is nothing it could carry, so
+    # the old refusal stands.
+    if not feed and member_id is None:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
     manager: ConnectionManager = websocket.app.state.realtime_manager
     tenant_id = principal.tenant_id
     await websocket.accept()
-    await manager.connect(tenant_id, websocket)
+    await manager.connect(tenant_id, websocket, member_id=member_id, feed=feed)
     # Handshake: connect() only returns once the tenant subscription is live,
     # so this genuinely means events are now being received. The client uses
-    # it to (re)sync.
-    await websocket.send_json({"type": "realtime.connected"})
+    # it to (re)sync, and `feed` to know whether it gets the tenant feed.
+    await websocket.send_json({"type": "realtime.connected", "feed": feed})
     try:
         while True:
-            # We don't consume client messages; block on receive to detect close.
-            await websocket.receive_text()
+            raw = await websocket.receive_text()
+            await _handle_client_message(
+                websocket, manager, tenant_id, member_id, principal.role, raw
+            )
     except Exception:
         pass
     finally:
         await manager.disconnect(tenant_id, websocket)
+
+
+async def _handle_client_message(
+    websocket: WebSocket,
+    manager: ConnectionManager,
+    tenant_id: uuid.UUID,
+    member_id: uuid.UUID | None,
+    token_role: str | None,
+    raw: str,
+) -> None:
+    """`{"type": "run.watch", "runId": ...}` is the only client message. An
+    unknown or unauthorised run is ignored silently -- an id that answers
+    differently is an id somebody can test. Authorisation is re-read from the
+    database on every request (`may_watch_run`), so a member who lost the
+    run's agent cannot start watching it."""
+    try:
+        msg = json.loads(raw)
+        if not isinstance(msg, dict) or msg.get("type") != "run.watch":
+            return
+        run_id = uuid.UUID(str(msg.get("runId")))
+    except (ValueError, TypeError):
+        return
+    if member_id is None:
+        return
+    try:
+        async with tenant_session(tenant_id) as db:
+            member = await db.get(OrgMember, member_id)
+            allowed = member is not None and await may_watch_run(
+                db, member=member, run_id=run_id, token_role=token_role
+            )
+    except SQLAlchemyError:
+        logger.warning("could not decide a run.watch request", exc_info=True)
+        return
+    if allowed:
+        manager.watch_run(tenant_id, websocket, str(run_id))
+        await websocket.send_json({"type": "run.watching", "runId": str(run_id)})

@@ -5,8 +5,10 @@ sockets -- the security-critical isolation invariant."""
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
+from dataclasses import dataclass, field
 from typing import Protocol
 
 import redis.asyncio as redis
@@ -26,15 +28,70 @@ class SupportsSend(Protocol):
     async def send_text(self, data: str) -> None: ...
 
 
+@dataclass(eq=False)
+class _Conn:
+    ws: SupportsSend
+    member_id: str | None
+    feed: bool
+    runs: set[str] = field(default_factory=set)
+
+
+def _deliverable(conn: _Conn, raw: str) -> str | None:
+    """What this socket receives for one channel message, or None.
+
+    The isolation invariant per TENANT is the channel; this is the second one,
+    per MEMBER:
+
+    1. an envelope with an `audience` goes to those members' sockets only --
+       feed sockets outside it included -- with the `audience` key stripped;
+    2. otherwise a feed socket (`run:view`) gets everything, as before;
+    3. a member-only socket gets nothing but `run.*` events of runs it was
+       allowed to watch (`ws.py`'s `run.watch`).
+
+    Unparseable frames are only ever sent to feed sockets (the legacy
+    behaviour), never to member-only sockets."""
+    try:
+        env = json.loads(raw)
+    except ValueError:
+        return raw if conn.feed else None
+    if not isinstance(env, dict):
+        return raw if conn.feed else None
+    if "audience" in env:
+        audience = env["audience"]
+        if not isinstance(audience, list) or conn.member_id is None:
+            return None
+        if conn.member_id not in audience:
+            return None
+        trimmed = {k: v for k, v in env.items() if k != "audience"}
+        return json.dumps(trimmed)
+    if conn.feed:
+        return raw
+    type_ = str(env.get("type", ""))
+    data = env.get("data")
+    run_id = data.get("run_id") if isinstance(data, dict) else None
+    if type_.startswith("run.") and isinstance(run_id, str) and run_id in conn.runs:
+        return raw
+    return None
+
+
 class ConnectionManager:
     def __init__(self, url: str) -> None:
         self._client: redis.Redis = redis.from_url(url, decode_responses=True)
-        self._conns: dict[uuid.UUID, set[SupportsSend]] = {}
+        self._conns: dict[uuid.UUID, dict[int, _Conn]] = {}
         self._tasks: dict[uuid.UUID, asyncio.Task[None]] = {}
 
-    async def connect(self, tenant_id: uuid.UUID, ws: SupportsSend) -> None:
+    async def connect(
+        self,
+        tenant_id: uuid.UUID,
+        ws: SupportsSend,
+        *,
+        member_id: uuid.UUID | None = None,
+        feed: bool = True,
+    ) -> None:
         first = tenant_id not in self._conns
-        self._conns.setdefault(tenant_id, set()).add(ws)
+        self._conns.setdefault(tenant_id, {})[id(ws)] = _Conn(
+            ws=ws, member_id=str(member_id) if member_id else None, feed=feed
+        )
         if first:
             ready = asyncio.Event()
             self._tasks[tenant_id] = asyncio.create_task(
@@ -56,7 +113,7 @@ class ConnectionManager:
         conns = self._conns.get(tenant_id)
         if conns is None:
             return
-        conns.discard(ws)
+        conns.pop(id(ws), None)
         if not conns:
             self._conns.pop(tenant_id, None)
             task = self._tasks.pop(tenant_id, None)
@@ -66,13 +123,23 @@ class ConnectionManager:
     def subscriber_count(self) -> int:
         return len(self._tasks)
 
+    def watch_run(self, tenant_id: uuid.UUID, ws: SupportsSend, run_id: str) -> None:
+        """Let this socket receive `run.*` events of `run_id`. The caller has
+        already decided it may (`oc8.chat.watch.may_watch_run`)."""
+        conn = self._conns.get(tenant_id, {}).get(id(ws))
+        if conn is not None:
+            conn.runs.add(run_id)
+
     async def _broadcast(self, tenant_id: uuid.UUID, text: str) -> None:
         dead: list[SupportsSend] = []
-        for ws in list(self._conns.get(tenant_id, set())):
+        for conn in list(self._conns.get(tenant_id, {}).values()):
+            frame = _deliverable(conn, text)
+            if frame is None:
+                continue
             try:
-                await ws.send_text(text)
+                await conn.ws.send_text(frame)
             except Exception:
-                dead.append(ws)
+                dead.append(conn.ws)
         for ws in dead:
             await self.disconnect(tenant_id, ws)
 

@@ -392,15 +392,14 @@ async def test_create_chat_session_actually_calls_the_assistant_visible_bypass(
     app_session: AppSessionFactory,
 ) -> None:
     """The previous test cannot, by itself, prove `create_chat_session`'s
-    `tenant_wide_read(...) or await _assistant_visible(...)` line is wired in
+    Assistant branch (`oc8.chat.reach.reachable_chat_agent`) is wired in
     correctly -- `org_admin` (the only real copilot:manage holder in today's
     permission catalog) already satisfies `tenant_wide_read` on its own, so
-    that `or` never even needs to evaluate its right-hand side for org_admin.
+    the scoped load would admit org_admin even without the Assistant branch.
     This test forces `tenant_wide_read` to return False, so the ONLY way the
-    request can still succeed is if `_assistant_visible` is actually being
-    called, actually being awaited, and its result actually being OR'd in --
-    catching a reverted or dropped `or` clause that the helper's own unit
-    test (`test_assistant_visible_requires_...`) cannot catch."""
+    request can still succeed is the `copilot:use` Assistant branch --
+    catching a reverted or dropped branch that the helper's own unit test
+    (`test_assistant_visible_requires_...`) cannot catch."""
     tenant = uuid.uuid4()
     app = create_app()
     async with LifespanManager(app):
@@ -409,7 +408,7 @@ async def test_create_chat_session_actually_calls_the_assistant_visible_bypass(
             assert assistant_r.status_code == 200, assistant_r.text
             assistant_agent_id = assistant_r.json()["agentId"]
 
-            with patch("oc8.api.v1.chat.tenant_wide_read", return_value=False):
+            with patch("oc8.chat.reach.tenant_wide_read", return_value=False):
                 create_r = await c.post(
                     "/api/v1/chat/sessions",
                     json={"agentId": assistant_agent_id},

@@ -13,16 +13,16 @@ from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.agent.assistant import get_or_create_assistant
-from oc8.agents.repo import visible_agent
 from oc8.agents.versioning import pinned_model_config_id, pinned_version_no, resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession, require_departmental, require_permission
 from oc8.api.v1.run import run_to_dto
 from oc8.audit import append_event
-from oc8.authz.authority import Authority, authority_for_principal, tenant_wide_read
+from oc8.authz.authority import Authority, authority_for_principal
 from oc8.authz.permissions import AGENT, COPILOT, COPILOT_USE, MANAGE, RUN_START, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.chat.model_choice import is_allowed_override, model_options
 from oc8.chat.modes import MODES
+from oc8.chat.reach import reachable_chat_agent
 from oc8.chat.service import (
     active_runs_for_session,
     create_session,
@@ -227,21 +227,11 @@ async def create_chat_session(
     ],
 ) -> ChatSessionDTO:
     authority = await authority_for_principal(request, db, actor.principal)
-    is_assistant = await _assistant_visible(
-        db, tenant_id=actor.principal.tenant_id, authority=authority, agent_id=body.agent_id
-    )
-    tenant_wide = tenant_wide_read(authority, perm(AGENT, VIEW)) or is_assistant
-    agent = await visible_agent(
-        db,
-        scope=actor.scope,
-        tenant_wide=tenant_wide,
-        agent_id=body.agent_id,
-        # `visible_agents`/`visible_agent` hide the Assistant from every screen
-        # that browses agents, so this -- the one door that is deliberately
-        # ABOUT the Assistant -- has to say so. `_assistant_visible` has already
-        # established both halves: this caller holds copilot:use, and this id
-        # is the tenant's Assistant and nothing else.
-        include_tenant_assistant=is_assistant,
+    # The same predicate the realtime socket asks before it delivers this
+    # agent's events (`oc8.chat.reach`): the Assistant with `copilot:use`,
+    # every other agent through the scoped repository.
+    agent = await reachable_chat_agent(
+        db, authority=authority, scope=actor.scope, agent_id=body.agent_id
     )
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")

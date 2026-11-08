@@ -1,0 +1,49 @@
+"""May this member receive a run's live events on a member-only socket?"""
+
+from __future__ import annotations
+
+import uuid
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from oc8 import models as m
+from oc8.chat.audience import session_audience
+from oc8.chat.reach import member_can_reach_agent
+
+
+async def may_watch_run(
+    db: AsyncSession,
+    *,
+    member: m.OrgMember,
+    run_id: uuid.UUID,
+    token_role: str | None = None,
+) -> bool:
+    """A run the member started (`originating_operator`), or a chat run of a
+    session whose audience includes them -- and in BOTH cases only while they
+    can still reach the run's agent. `token_role` is the member's own live
+    token role (the socket has it), see `member_can_reach_agent`."""
+    run = (await db.execute(select(m.AgentRun).where(m.AgentRun.id == run_id))).scalar_one_or_none()
+    if run is None or run.tenant_id != member.tenant_id:
+        return False
+    if not await member_can_reach_agent(
+        db, member=member, agent_id=run.agent_id, token_role=token_role
+    ):
+        return False
+    context = run.context or {}
+    if context.get("originating_operator") == member.subject:
+        return True
+    session_raw = context.get("chat_session_id")
+    if not session_raw:
+        return False
+    try:
+        session_id = uuid.UUID(str(session_raw))
+    except ValueError:
+        return False
+    session = await db.get(m.ChatSession, session_id)
+    if session is None or session.agent_id != run.agent_id:
+        return False
+    audience = await session_audience(
+        db, session=session, acting_subject=member.subject, acting_role=token_role
+    )
+    return member.id in audience
