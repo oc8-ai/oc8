@@ -72,6 +72,15 @@ describe("StepList", () => {
     expect(screen.getByText(/100 → 20 tokens/)).toBeInTheDocument();
   });
 
+  it("never makes the browser contact a host a tool call named", () => {
+    const { container } = wrap(<StepList run={run} />);
+    expect(screen.getByText("gov.test")).toBeInTheDocument();
+    const external = [...container.querySelectorAll("img")].filter((img) =>
+      /^(https?:)?\/\//.test(img.getAttribute("src") ?? ""),
+    );
+    expect(external).toEqual([]);
+  });
+
   it("renders nothing for a run without tool calls", () => {
     const { container } = wrap(<StepList run={{ state: "done", steps: 1, toolCalls: [] }} />);
     expect(container).toBeEmptyDOMElement();

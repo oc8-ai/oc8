@@ -68,14 +68,19 @@ function WebPreview({ row }: { row: RunStepRow }) {
       {hits.map((h) => (
         <span
           key={h.url}
+          title={h.title}
           className="inline-flex min-w-0 items-center gap-1 rounded-full border border-border px-2 text-xs"
         >
-          <img
-            src={`https://${domain(h.url)}/favicon.ico`}
-            alt=""
-            className="size-3"
-            loading="lazy"
-          />
+          {/* A neutral initial, never the site's favicon: the browser must not
+              contact a host a tool call (or the model) chose. */}
+          <span
+            aria-hidden
+            className="grid size-3.5 place-items-center rounded-full bg-muted font-mono uppercase"
+          >
+            {domain(h.url)
+              .replace(/^www\./, "")
+              .slice(0, 1)}
+          </span>
           <span className="truncate">{domain(h.url)}</span>
         </span>
       ))}
