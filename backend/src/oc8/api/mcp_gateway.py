@@ -1101,6 +1101,37 @@ async def _call_tool(
     return _tool_result(fence(shorten_long_strings(output), source=f"{conn.name}:{tc.name}"))
 
 
+async def _with_run_inputs(
+    db: DbSession, *, run: m.AgentRun, payload: dict[str, Any]
+) -> dict[str, Any]:
+    """An external runtime has no step loop oc8 can reach into, so a message
+    written to its run rides on the next tool result (spec §3.2).
+
+    Stamped and committed before the result leaves: the tool call has already
+    committed its own work above, and this request's transaction is short, so
+    the consumer lock is held only for this. Delivered at most once -- a
+    result lost on the wire after the commit takes its inputs with it, the
+    same as the tool output it carries."""
+    from oc8.runtime.run_inputs import (
+        consume_run_inputs,
+        format_input_message,
+        publish_inputs_consumed,
+        step_hint,
+    )
+
+    # `_call_tool` may have committed, which drops the transaction-local GUC.
+    await _rebind_tenant(db, run.tenant_id)
+    consumed = await consume_run_inputs(db, run_id=run.id, step=step_hint(run.context or {}))
+    if not consumed:
+        return payload
+    await db.commit()
+    await publish_inputs_consumed(run.tenant_id, run_id=run.id, consumed=consumed)
+    extra = [
+        {"type": "text", "text": format_input_message(c.author_name, c.text)} for c in consumed
+    ]
+    return {**payload, "content": [*payload.get("content", []), *extra]}
+
+
 # --------------------------------------------------------------------- route
 
 
@@ -1163,6 +1194,7 @@ async def mcp_endpoint(
             raise
         except Exception as exc:
             return _error(rpc_id, _INTERNAL_ERROR, str(exc))
+        payload = await _with_run_inputs(db, run=run, payload=payload)
         return _result(rpc_id, payload)
 
     return _error(rpc_id, _METHOD_NOT_FOUND, f"unknown method: {method}")

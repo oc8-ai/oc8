@@ -846,6 +846,22 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
             ctx["unavailable_connections"] = unavailable
         ctx["tool_schemas"] = tool_schemas_raw
 
+    # Run inputs (spec §3.2), consumed in THIS request's transaction: the stamp
+    # commits together with the `ctx["transcript"]` that carries the message
+    # (the one commit at the bottom of the step loop), so a step that dies
+    # before it rolls both back and the input waits for the next /step.
+    from oc8.runtime.run_inputs import consume_run_inputs, format_input_message, step_hint
+
+    consumed_inputs = await consume_run_inputs(db, run_id=run.id, step=step_hint(ctx))
+    for item in consumed_inputs:
+        transcript.append(
+            _from_message(
+                NeutralMessage(
+                    role="user", content=format_input_message(item.author_name, item.text)
+                )
+            )
+        )
+
     mcp_tools = [
         NeutralTool(
             name=t["name"],
@@ -1255,6 +1271,10 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
     ctx["transcript"] = transcript
     run.context = ctx
     await db.commit()
+    if consumed_inputs:
+        from oc8.runtime.run_inputs import publish_inputs_consumed
+
+        await publish_inputs_consumed(run.tenant_id, run_id=run.id, consumed=consumed_inputs)
     # Only now, after the commit that actually persists these entries in
     # `ctx["stepTimings"]`, tell an open tab about them -- publishing any
     # earlier (right when finish_step ran, above) could hand out a live

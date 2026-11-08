@@ -1700,3 +1700,24 @@ class CopilotNoteDTO(CamelModel):
     id: str
     content: str
     created_at: datetime
+
+
+class RunInputDTO(CamelModel):
+    """A message written to a running run (spec §3.2)."""
+
+    id: str
+    text: str
+    author_name: str
+    created_at: str
+    consumed_at: str | None = None
+    consumed_step: int | None = None
+
+
+class RunSteeringDTO(CamelModel):
+    """What the composer under a running run may do: write to it (`may_write`
+    -- still running), and whether its runtime takes messages at all
+    (`accepts_inputs`; when not, the composer offers Stop instead)."""
+
+    may_write: bool
+    accepts_inputs: bool
+    inputs: list[RunInputDTO] = []

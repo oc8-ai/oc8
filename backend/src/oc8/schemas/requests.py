@@ -822,3 +822,9 @@ class UpdateCopilotProfileRequest(CamelModel):
 class UpdateResponsibilityRequest(CamelModel):
     state: Literal["active", "paused", "done", "cancelled"]
     reason: str = ""
+
+
+class RunInputRequest(CamelModel):
+    """Mirrors `ck_run_input_text` (migration 0108) and MAX_INPUT_CHARS."""
+
+    text: str = Field(min_length=1, max_length=4000)

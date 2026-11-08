@@ -30,9 +30,11 @@ from oc8.authz.authority import Authority
 from oc8.authz.permissions import AGENT, MANAGE, perm
 from oc8.authz.scope import DepartmentScope
 from oc8.chat.reach import reachable_chat_agent
+from oc8.db.session import tenant_session
 from oc8.runtime.states import TERMINAL, RunState
 
 if TYPE_CHECKING:
+    from oc8.auth.principal import Principal
     from oc8.realtime.bus import EventBus
 
 #: Mirrors `ck_run_input_text` (migration 0108).
@@ -173,10 +175,7 @@ async def consume_run_inputs(
         row.consumed_at = now
         row.consumed_step = step
         if row.author_member_id not in authors:
-            author = await db.get(m.OrgMember, row.author_member_id)
-            authors[row.author_member_id] = (
-                (author.display_name or author.subject) if author is not None else "a colleague"
-            )
+            authors[row.author_member_id] = await _author_name(db, row.author_member_id)
         out.append(
             ConsumedInput(
                 id=row.id, author_name=authors[row.author_member_id], text=row.text, step=step
@@ -184,6 +183,78 @@ async def consume_run_inputs(
         )
     await db.flush()
     return out
+
+
+async def take_run_inputs(
+    tenant_id: uuid.UUID, *, run_id: uuid.UUID, step: int, probe: AsyncSession | None = None
+) -> list[ConsumedInput]:
+    """`consume_run_inputs` in its OWN short transaction, for the in-process
+    engine, whose session is the executor's run-long one.
+
+    Committed before the engine appends the messages: the stamped row (author,
+    text, `consumed_step`) is itself the durable copy of the message the run
+    received, written in the same transaction as the stamp. The engine's
+    conversation lives only in memory for one leg, so a later leg rebuilds
+    those messages from these rows (`delivered_run_inputs`) -- a crash after
+    this commit loses nothing the run can still act on. Consuming inside the
+    run-long transaction instead would hold the consumer lock and row locks
+    for the whole run and hide the stamp (and the composer's "read") until
+    the run ends.
+
+    `probe` (the caller's own session) is asked first, with a plain read, so
+    the common step with nothing waiting opens no second connection."""
+    if probe is not None and not await has_pending_run_inputs(probe, run_id=run_id):
+        return []
+    async with tenant_session(tenant_id) as db:
+        return await consume_run_inputs(db, run_id=run_id, step=step)
+
+
+async def has_pending_run_inputs(db: AsyncSession, *, run_id: uuid.UUID) -> bool:
+    return bool(
+        (
+            await db.execute(
+                select(
+                    select(m.RunInput.id)
+                    .where(m.RunInput.run_id == run_id, m.RunInput.consumed_at.is_(None))
+                    .exists()
+                )
+            )
+        ).scalar_one()
+    )
+
+
+async def delivered_run_inputs(db: AsyncSession, *, run_id: uuid.UUID) -> list[ConsumedInput]:
+    """Every input `run_id` already received, in acceptance order -- the part
+    of the run's conversation a fresh in-process leg (resume, retry) starts
+    without. A plain read: no locks, nothing stamped."""
+    rows = list(
+        (
+            await db.execute(
+                select(m.RunInput)
+                .where(m.RunInput.run_id == run_id, m.RunInput.consumed_at.is_not(None))
+                .order_by(m.RunInput.seq)
+            )
+        ).scalars()
+    )
+    authors: dict[uuid.UUID, str] = {}
+    out: list[ConsumedInput] = []
+    for row in rows:
+        if row.author_member_id not in authors:
+            authors[row.author_member_id] = await _author_name(db, row.author_member_id)
+        out.append(
+            ConsumedInput(
+                id=row.id,
+                author_name=authors[row.author_member_id],
+                text=row.text,
+                step=row.consumed_step or 0,
+            )
+        )
+    return out
+
+
+async def _author_name(db: AsyncSession, member_id: uuid.UUID) -> str:
+    author = await db.get(m.OrgMember, member_id)
+    return (author.display_name or author.subject) if author is not None else "a colleague"
 
 
 def format_input_message(author_name: str, text: str) -> str:
@@ -226,4 +297,28 @@ async def publish_inputs_consumed(
             "step": consumed[0].step,
         },
         source=f"oc8/run/{run_id}",
+    )
+
+
+def runtime_accepts_inputs(adapter: object) -> bool:
+    """In-process: the step loop. Containers: the MCP gateway or the isolated
+    control plane. A runtime that can reach neither declares
+    `accepts_inputs = False`; the composer then offers Stop instead."""
+    return bool(getattr(adapter, "accepts_inputs", True))
+
+
+async def request_stop(
+    db: AsyncSession, *, run: m.AgentRun, actor_member_id: uuid.UUID, principal: Principal
+) -> None:
+    """The composer's Stop: the same run_cancellation row the admin cancel
+    writes, so the executor stops the run at its next step boundary. The
+    caller has checked `may_steer_run` and refused a terminal run."""
+    from oc8.runtime.cancellation import record_operator_cancel
+
+    await record_operator_cancel(
+        db,
+        run=run,
+        principal=principal,
+        actor_id=actor_member_id,
+        resource_extra={"door": "chat"},
     )

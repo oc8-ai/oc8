@@ -702,6 +702,19 @@ async def run_agent(
             pinned=pinned,
         )
         messages: list[NeutralMessage] = list(preamble.messages)
+        if run_id is not None:
+            # Inputs an earlier leg of this run already received: a leg starts
+            # from a fresh conversation, and the stamped rows are the durable
+            # copy of those messages (spec §3.2, take_run_inputs).
+            from oc8.runtime.run_inputs import delivered_run_inputs, format_input_message
+
+            for earlier in await delivered_run_inputs(db, run_id=run_id):
+                messages.append(
+                    NeutralMessage(
+                        role="user",
+                        content=format_input_message(earlier.author_name, earlier.text),
+                    )
+                )
         assigned_skills = preamble.assigned_skills
         skill_tool_names = preamble.skill_tool_names
         contains_restricted = preamble.contains_restricted
@@ -1003,6 +1016,31 @@ async def run_agent(
                             status="info",
                             message=f"💬 Operator: {operator_msg}",
                         )
+                # Run inputs (spec §3.2): written by the person the run acts for,
+                # or a manager for an autonomous run; consumed once, in order,
+                # here at the step boundary -- in their own short transaction,
+                # never this run-long one (see take_run_inputs for why that
+                # loses nothing if this step dies after it).
+                if run_id is not None:
+                    from oc8.runtime.run_inputs import (
+                        format_input_message,
+                        publish_inputs_consumed,
+                        take_run_inputs,
+                    )
+
+                    consumed_inputs = await take_run_inputs(
+                        tenant_id, run_id=run_id, step=harness.state.step_no, probe=db
+                    )
+                    for item in consumed_inputs:
+                        messages.append(
+                            NeutralMessage(
+                                role="user",
+                                content=format_input_message(item.author_name, item.text),
+                            )
+                        )
+                    await publish_inputs_consumed(
+                        tenant_id, run_id=run_id, consumed=consumed_inputs
+                    )
 
                 ledger_hash = ledger_fingerprint(harness.state.ledger)
                 if ledger_hash != harness.state.ledger_sent_hash:

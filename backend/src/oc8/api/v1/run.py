@@ -15,8 +15,8 @@ from sqlalchemy import func, select
 from oc8 import models as m
 from oc8.agents.versioning import pinned_version_no
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
-from oc8.audit import append_event
 from oc8.authz.permissions import RUN, RUN_CONTROL, RUN_START, VIEW, perm
+from oc8.runtime.cancellation import record_operator_cancel
 from oc8.runtime.clarification import resolve_clarification
 from oc8.runtime.intake import enqueue_run, publish_run
 from oc8.runtime.states import TERMINAL, RunState
@@ -475,34 +475,8 @@ async def cancel_run(
     if current in TERMINAL:
         raise HTTPException(status.HTTP_409_CONFLICT, f"run already {current.value}")
 
-    # Record the cancel on an UNLOCKED row. NEVER write agent_run here: a running
-    # executor holds that row's lock for the whole run, so a write would block
-    # until the run ends. The executor is the sole agent_run.state mutator and
-    # honors this row -- skipping a queued run before start, or stopping a running
-    # run at its next step boundary. Idempotent: a second cancel adds no row.
-    existing = (
-        await db.execute(select(m.RunCancellation).where(m.RunCancellation.run_id == run_id))
-    ).scalar_one_or_none()
-    if existing is None:
-        db.add(
-            m.RunCancellation(
-                tenant_id=principal.tenant_id,
-                run_id=run_id,
-                requested_at=dt.datetime.now(tz=dt.UTC),
-                cancellation_kind="operator_interrupted",
-            )
-        )
-
-    await append_event(
-        db,
-        tenant_id=principal.tenant_id,
-        actor_type="operator",
-        actor_id=None,
-        category="run",
-        action="run.cancel",
-        resource={"run_id": str(run_id), "was_state": current.value},
-        decision="allow",
-        principal=principal,
-    )
+    # The same unlocked run_cancellation row the chat's Stop writes; see
+    # oc8.runtime.cancellation.
+    await record_operator_cancel(db, run=run_row, principal=principal, actor_id=None)
     await db.commit()
     return run_to_dto(run_row)
