@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "@/lib/api";
 import { chatKeys, type ChatSessionDTO, type RunActivityDTO } from "@/lib/hooks-chat";
+import { useKnowledgeBases } from "@/lib/hooks";
 
 export interface ActiveRunDTO {
   runId: string;
@@ -116,3 +117,23 @@ export function useTurnRun(sessionId: string | null, runId: string | null) {
 }
 
 export { chatKeys };
+
+export interface ContextItem {
+  kind: string;
+  id: string;
+  label: string;
+  hint?: string;
+}
+
+/** What `#` offers while the reader types. C1: knowledge bases. Task 36
+ *  replaces the body with GET /chat/context/search, which covers every kind. */
+export function useContextSearch(query: string | null): ContextItem[] {
+  const { data } = useKnowledgeBases({ search: query ?? undefined, pageSize: 8 });
+  if (query === null) return [];
+  return (data?.items ?? []).map((kb) => ({
+    kind: "knowledge_base",
+    id: kb.id,
+    label: kb.name,
+    hint: kb.description || undefined,
+  }));
+}
