@@ -5,6 +5,14 @@ import { Panel } from "@/components/app-shell";
 import { exportBackup } from "@/lib/api";
 import { useOrganizationSettings, usePreviewBackup, useRestoreBackup } from "@/lib/hooks";
 import { useT } from "@/lib/i18n";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 /** The archive's own manifest carries an "excluded" list (design doc §2.3/§3:
  * audit log, metering, and run evidence blobs never become rows) — read from
@@ -233,31 +241,37 @@ export function BackupPanel() {
               )}
             </p>
             <div className="mt-1.5 overflow-hidden rounded-md border border-border">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="border-b border-border bg-background/60 text-left text-muted-foreground">
-                    <th className="px-3 py-1.5 font-normal">{t("Table", "Tabelle")}</th>
-                    <th className="px-3 py-1.5 font-normal">{t("Currently", "Derzeit")}</th>
-                    <th className="px-3 py-1.5 font-normal">{t("In archive", "Im Archiv")}</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
+              <Table className="text-xs">
+                <TableHeader>
+                  <TableRow className="border-b border-border bg-background/60 text-left text-muted-foreground">
+                    <TableHead className="px-3 py-1.5 micro-label">
+                      {t("Table", "Tabelle")}
+                    </TableHead>
+                    <TableHead className="px-3 py-1.5 micro-label">
+                      {t("Currently", "Derzeit")}
+                    </TableHead>
+                    <TableHead className="px-3 py-1.5 micro-label">
+                      {t("In archive", "Im Archiv")}
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody className="divide-y divide-border">
                   {Object.entries(preview.data.table_counts).map(([table, counts]) => (
-                    <tr key={table}>
-                      <td className="px-3 py-1.5 font-mono">{table}</td>
-                      <td className="px-3 py-1.5">{counts.current}</td>
-                      <td className="px-3 py-1.5">{counts.archive}</td>
-                    </tr>
+                    <TableRow key={table}>
+                      <TableCell className="px-3 py-1.5 font-mono">{table}</TableCell>
+                      <TableCell className="px-3 py-1.5">{counts.current}</TableCell>
+                      <TableCell className="px-3 py-1.5">{counts.archive}</TableCell>
+                    </TableRow>
                   ))}
                   {Object.keys(preview.data.table_counts).length === 0 && (
-                    <tr>
-                      <td colSpan={3} className="px-3 py-1.5 text-muted-foreground">
+                    <TableRow>
+                      <TableCell colSpan={3} className="px-3 py-1.5 text-muted-foreground">
                         {t("Nothing on either side.", "Nichts auf beiden Seiten.")}
-                      </td>
-                    </tr>
+                      </TableCell>
+                    </TableRow>
                   )}
-                </tbody>
-              </table>
+                </TableBody>
+              </Table>
             </div>
 
             {manifestExcluded(preview.data.manifest).length > 0 && (

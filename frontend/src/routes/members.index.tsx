@@ -17,6 +17,14 @@ import { useAuthConfig } from "@/lib/hooks";
 import { useMay } from "@/lib/governance-hooks";
 import { useT } from "@/lib/i18n";
 import { SkeletonRows } from "@/components/skeleton-rows";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 export const Route = createFileRoute("/members/")({
   component: MembersPage,
@@ -450,29 +458,25 @@ function MembersTable() {
       ) : (
         <>
           <div className="mt-6 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border">
-                  <th className="py-3 text-left font-medium text-muted-foreground">
-                    {t("Name", "Name")}
-                  </th>
-                  <th className="py-3 text-left font-medium text-muted-foreground">
+            <Table className="text-sm">
+              <TableHeader>
+                <TableRow className="border-b border-border">
+                  <TableHead className="py-3 micro-label">{t("Name", "Name")}</TableHead>
+                  <TableHead className="py-3 micro-label">
                     {t("Sign-in email", "Anmelde-E-Mail")}
-                  </th>
-                  <th className="py-3 text-left font-medium text-muted-foreground">
-                    {t("Role", "Rolle")}
-                  </th>
-                  <th className="py-3 text-right font-medium text-muted-foreground">
+                  </TableHead>
+                  <TableHead className="py-3 micro-label">{t("Role", "Rolle")}</TableHead>
+                  <TableHead className="py-3 text-right micro-label">
                     {t("Action", "Aktion")}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {assignees.map((member) => (
                   <MemberRow key={member.id} member={member} t={t} />
                 ))}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           </div>
         </>
       )}
@@ -494,17 +498,21 @@ function MemberRow({ member, t }: MemberRowProps) {
     : t("from their sign-in", "aus ihrer Anmeldung");
 
   return (
-    <tr className="border-b border-border/50 hover:bg-muted/20">
-      <td className="py-3">
-        <Link to="/members/$memberId" params={{ memberId: member.id }} className="block hover:underline">
+    <TableRow className="border-b border-border/50 hover:bg-muted/20">
+      <TableCell className="py-3">
+        <Link
+          to="/members/$memberId"
+          params={{ memberId: member.id }}
+          className="block hover:underline"
+        >
           <div className="font-medium">{member.displayName || signInEmail}</div>
         </Link>
-      </td>
-      <td className="py-3 text-muted-foreground">{signInEmail}</td>
-      <td className="py-3">
+      </TableCell>
+      <TableCell className="py-3 text-muted-foreground">{signInEmail}</TableCell>
+      <TableCell className="py-3">
         <span className="text-sm">{currentRoleName}</span>
-      </td>
-      <td className="py-3 text-right">
+      </TableCell>
+      <TableCell className="py-3 text-right">
         {/* Role changes live on the detail page now -- it already has the full
             picture (admin toggle, exact role override, per-department seats),
             so this was a second, more confusing way to do the same thing. */}
@@ -516,7 +524,7 @@ function MemberRow({ member, t }: MemberRowProps) {
           {t("Open", "Öffnen")}
           <ChevronRight className="size-3" />
         </Link>
-      </td>
-    </tr>
+      </TableCell>
+    </TableRow>
   );
 }

@@ -23,6 +23,14 @@ import {
   type AgentVersionFieldDiff,
 } from "@/lib/agent-versions";
 import { SkeletonRows } from "@/components/skeleton-rows";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 /** A JSON value rendered for a diff cell. Objects are stringified rather than
  *  expanded: a `narrowing.odoo` entry is a small flat object and one line of
@@ -48,32 +56,30 @@ export function DiffTable({ entries }: { entries: AgentVersionFieldDiff[] }) {
     );
   }
   return (
-    <table className="w-full text-sm">
-      <thead>
-        <tr className="border-b border-border">
-          <th className="py-2 text-left font-medium text-muted-foreground">{t("Field", "Feld")}</th>
-          <th className="py-2 text-left font-medium text-muted-foreground">
-            {t("Running now", "Läuft aktuell")}
-          </th>
-          <th className="py-2 text-left font-medium text-muted-foreground">
+    <Table className="text-sm">
+      <TableHeader>
+        <TableRow className="border-b border-border">
+          <TableHead className="py-2 micro-label">{t("Field", "Feld")}</TableHead>
+          <TableHead className="py-2 micro-label">{t("Running now", "Läuft aktuell")}</TableHead>
+          <TableHead className="py-2 micro-label">
             {t("After publishing", "Nach Veröffentlichung")}
-          </th>
-        </tr>
-      </thead>
-      <tbody>
+          </TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
         {entries.map((entry) => (
-          <tr key={entry.field} className="border-b border-border/50 align-top">
-            <td className="py-2 pr-3 font-mono text-xs">{entry.field}</td>
-            <td className="py-2 pr-3 text-muted-foreground">
+          <TableRow key={entry.field} className="border-b border-border/50 align-top">
+            <TableCell className="py-2 pr-3 font-mono text-xs">{entry.field}</TableCell>
+            <TableCell className="py-2 pr-3 text-muted-foreground">
               <DiffValue value={entry.before} />
-            </td>
-            <td className="py-2">
+            </TableCell>
+            <TableCell className="py-2">
               <DiffValue value={entry.after} />
-            </td>
-          </tr>
+            </TableCell>
+          </TableRow>
         ))}
-      </tbody>
-    </table>
+      </TableBody>
+    </Table>
   );
 }
 

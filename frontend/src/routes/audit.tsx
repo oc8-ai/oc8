@@ -12,6 +12,14 @@ import {
 } from "@/lib/audit-hooks";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 export const Route = createFileRoute("/audit")({
   component: AuditPage,
@@ -357,52 +365,60 @@ function AuditPage() {
 
       <Panel className="overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
-                <th className="px-5 py-3 font-medium" />
-                <th className="px-5 py-3 font-medium">{t("Time", "Zeit")}</th>
-                <th className="px-5 py-3 font-medium">{t("Category", "Kategorie")}</th>
-                <th className="px-5 py-3 font-medium">{t("Action", "Aktion")}</th>
-                <th className="px-5 py-3 font-medium">{t("Actor type", "Akteurtyp")}</th>
-                <th className="px-5 py-3 font-medium">{t("Decision", "Entscheidung")}</th>
-                <th className="px-5 py-3 font-medium">{t("Responsible", "Verantwortlich")}</th>
-              </tr>
-            </thead>
-            <tbody>
+          <Table className="text-sm">
+            <TableHeader>
+              <TableRow className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
+                <TableHead className="px-5 py-3 micro-label" />
+                <TableHead className="px-5 py-3 micro-label">{t("Time", "Zeit")}</TableHead>
+                <TableHead className="px-5 py-3 micro-label">
+                  {t("Category", "Kategorie")}
+                </TableHead>
+                <TableHead className="px-5 py-3 micro-label">{t("Action", "Aktion")}</TableHead>
+                <TableHead className="px-5 py-3 micro-label">
+                  {t("Actor type", "Akteurtyp")}
+                </TableHead>
+                <TableHead className="px-5 py-3 micro-label">
+                  {t("Decision", "Entscheidung")}
+                </TableHead>
+                <TableHead className="px-5 py-3 micro-label">
+                  {t("Responsible", "Verantwortlich")}
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {events.map((ev) => {
                 const isOpen = openId === ev.id;
                 const flagged = broken !== null && ev.seq >= broken;
                 return (
                   <Fragment key={ev.id}>
-                    <tr
+                    <TableRow
                       onClick={() => setOpenId(isOpen ? null : ev.id)}
                       className={cn(
                         "cursor-pointer border-b border-border/60 last:border-none transition hover:bg-primary/5",
                         flagged && "border-l-2 border-l-status-error",
                       )}
                     >
-                      <td className="px-5 py-3">
+                      <TableCell className="px-5 py-3">
                         {isOpen ? (
                           <ChevronDown className="h-4 w-4 text-muted-foreground" />
                         ) : (
                           <ChevronRight className="h-4 w-4 text-muted-foreground" />
                         )}
-                      </td>
-                      <td className="whitespace-nowrap px-5 py-3 font-mono text-xs text-muted-foreground">
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap px-5 py-3 font-mono text-xs text-muted-foreground">
                         {new Date(ev.ts).toLocaleString()}
-                      </td>
-                      <td className="px-5 py-3">{ev.category}</td>
-                      <td className="px-5 py-3">{ev.action}</td>
-                      <td className="px-5 py-3">{ev.actorType}</td>
-                      <td className="px-5 py-3">{ev.decision ?? "—"}</td>
-                      <td className="px-5 py-3 font-mono text-xs text-muted-foreground">
+                      </TableCell>
+                      <TableCell className="px-5 py-3">{ev.category}</TableCell>
+                      <TableCell className="px-5 py-3">{ev.action}</TableCell>
+                      <TableCell className="px-5 py-3">{ev.actorType}</TableCell>
+                      <TableCell className="px-5 py-3">{ev.decision ?? "—"}</TableCell>
+                      <TableCell className="px-5 py-3 font-mono text-xs text-muted-foreground">
                         {ev.responsibleId ?? "—"}
-                      </td>
-                    </tr>
+                      </TableCell>
+                    </TableRow>
                     {isOpen && (
-                      <tr className="border-b border-border/60 bg-background/30">
-                        <td colSpan={7} className="space-y-2 px-14 py-3 text-xs">
+                      <TableRow className="border-b border-border/60 bg-background/30">
+                        <TableCell colSpan={7} className="space-y-2 px-14 py-3 text-xs">
                           <pre className="overflow-x-auto whitespace-pre-wrap break-all text-muted-foreground">
                             {JSON.stringify(ev.resource, null, 2)}
                           </pre>
@@ -411,24 +427,24 @@ function AuditPage() {
                             <br />
                             prevHash: {ev.prevHash}
                           </div>
-                        </td>
-                      </tr>
+                        </TableCell>
+                      </TableRow>
                     )}
                   </Fragment>
                 );
               })}
               {events.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="px-5 py-8 text-center text-muted-foreground">
+                <TableRow>
+                  <TableCell colSpan={7} className="px-5 py-8 text-center text-muted-foreground">
                     {t(
                       "No audit events for this filter.",
                       "Keine Prüfprotokoll-Einträge für diesen Filter.",
                     )}
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               )}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
         {hasNextPage && (
           <div className="flex justify-center border-t border-border p-3">

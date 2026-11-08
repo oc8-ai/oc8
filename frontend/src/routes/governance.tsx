@@ -40,6 +40,14 @@ import {
 import type { Seat } from "@/lib/hooks";
 import { useLang, useT } from "@/lib/i18n";
 import { SkeletonRows } from "@/components/skeleton-rows";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 export const Route = createFileRoute("/governance")({
   component: GovernancePage,
@@ -1275,12 +1283,14 @@ function BuiltInRoles({ data }: { data: Governance }) {
 
       {/* Wide content scrolls inside its own container; the page never does. */}
       <div className="mt-4 overflow-x-auto">
-        <table className="w-full min-w-[36rem] border-collapse text-sm">
-          <thead>
-            <tr className="border-b border-border">
-              <th className="px-2 py-2 text-left font-medium">{t("Permission", "Berechtigung")}</th>
+        <Table className="min-w-[36rem] border-collapse text-sm">
+          <TableHeader>
+            <TableRow className="border-b border-border">
+              <TableHead className="px-2 py-2 micro-label">
+                {t("Permission", "Berechtigung")}
+              </TableHead>
               {humans.map((role) => (
-                <th
+                <TableHead
                   key={role.name}
                   className={`px-2 py-2 text-center font-mono text-xs font-medium ${
                     role.name === data.callerRole ? "text-foreground" : "text-muted-foreground"
@@ -1290,11 +1300,11 @@ function BuiltInRoles({ data }: { data: Governance }) {
                   {role.name === data.callerRole && (
                     <span className="ml-1 micro-label">{t("you", "Sie")}</span>
                   )}
-                </th>
+                </TableHead>
               ))}
-            </tr>
-          </thead>
-          <tbody>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {[...grouped.entries()].map(([resource, permissions]) => (
               <ResourceRows
                 key={resource}
@@ -1304,8 +1314,8 @@ function BuiltInRoles({ data }: { data: Governance }) {
                 held={held}
               />
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
     </Panel>
   );
@@ -1375,26 +1385,26 @@ function ResourceRows({
 }) {
   return (
     <>
-      <tr className="border-b border-border/50 bg-muted/30">
-        <td colSpan={roles.length + 1} className="px-2 py-1.5 font-mono text-xs">
+      <TableRow className="border-b border-border/50 bg-muted/30">
+        <TableCell colSpan={roles.length + 1} className="px-2 py-1.5 font-mono text-xs">
           {resource}
-        </td>
-      </tr>
+        </TableCell>
+      </TableRow>
       {permissions.map((permission) => (
-        <tr key={permission} className="border-b border-border/30">
-          <td className="px-2 py-1.5 pl-6 font-mono text-xs text-muted-foreground">
+        <TableRow key={permission} className="border-b border-border/30">
+          <TableCell className="px-2 py-1.5 pl-6 font-mono text-xs text-muted-foreground">
             {permission.split(":")[1]}
-          </td>
+          </TableCell>
           {roles.map((role) => (
-            <td key={role} className="px-2 py-1.5 text-center">
+            <TableCell key={role} className="px-2 py-1.5 text-center">
               {held.get(role)?.has(permission) ? (
                 <Check className="mx-auto size-3.5 text-status-running" aria-label="granted" />
               ) : (
                 <Minus className="mx-auto size-3.5 text-muted-foreground/40" aria-label="—" />
               )}
-            </td>
+            </TableCell>
           ))}
-        </tr>
+        </TableRow>
       ))}
     </>
   );

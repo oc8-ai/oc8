@@ -47,6 +47,14 @@ import {
 } from "@/lib/hooks";
 import { useReconciliation, useRefreshReconciliation } from "@/lib/reconciliation-hooks";
 import { downloadUsageExport } from "@/lib/usage-export";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 export const Route = createFileRoute("/costs")({
   component: CostsPage,
@@ -690,21 +698,27 @@ function AgentsTab({ agentRows, currency }: { agentRows: AgentSpendRow[]; curren
         <div className="font-serif text-base">{t("Recorded usage", "Erfasster Verbrauch")}</div>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
-              <th className="px-5 py-3 font-medium">{t("Agent", "Agent")}</th>
-              <th className="px-5 py-3 font-medium">{t("Model", "Modell")}</th>
-              <th className="px-5 py-3 font-medium text-right">{t("Input", "Input")}</th>
-              <th className="px-5 py-3 font-medium text-right">{t("Output", "Output")}</th>
-              <th className="px-5 py-3 font-medium text-right">{t("Cost", "Kosten")}</th>
-              <th className="px-5 py-3 font-medium">{t("Share", "Anteil")}</th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table className="text-sm">
+          <TableHeader>
+            <TableRow className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
+              <TableHead className="px-5 py-3 micro-label">{t("Agent", "Agent")}</TableHead>
+              <TableHead className="px-5 py-3 micro-label">{t("Model", "Modell")}</TableHead>
+              <TableHead className="px-5 py-3 text-right micro-label">
+                {t("Input", "Input")}
+              </TableHead>
+              <TableHead className="px-5 py-3 text-right micro-label">
+                {t("Output", "Output")}
+              </TableHead>
+              <TableHead className="px-5 py-3 text-right micro-label">
+                {t("Cost", "Kosten")}
+              </TableHead>
+              <TableHead className="px-5 py-3 micro-label">{t("Share", "Anteil")}</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {sorted.map((r) => (
-              <tr key={r.id} className="border-b border-border/60 last:border-none">
-                <td className="px-5 py-3">
+              <TableRow key={r.id} className="border-b border-border/60 last:border-none">
+                <TableCell className="px-5 py-3">
                   <div className="flex items-center gap-2">
                     <span className="h-2 w-2 rounded-full" style={{ background: r.avatarColor }} />
                     <div>
@@ -715,31 +729,34 @@ function AgentsTab({ agentRows, currency }: { agentRows: AgentSpendRow[]; curren
                       </div>
                     </div>
                   </div>
-                </td>
-                <td className="px-5 py-3 font-mono text-xs">{r.llm ?? "—"}</td>
-                <td className="px-5 py-3 text-right font-mono text-xs">
+                </TableCell>
+                <TableCell className="px-5 py-3 font-mono text-xs">{r.llm ?? "—"}</TableCell>
+                <TableCell className="px-5 py-3 text-right font-mono text-xs">
                   {formatTokens(r.tokensIn)}
-                </td>
-                <td className="px-5 py-3 text-right font-mono text-xs">
+                </TableCell>
+                <TableCell className="px-5 py-3 text-right font-mono text-xs">
                   {formatTokens(r.tokensOut)}
-                </td>
-                <td className="px-5 py-3 text-right font-mono text-sm font-medium text-primary">
+                </TableCell>
+                <TableCell className="px-5 py-3 text-right font-mono text-sm font-medium text-primary">
                   {formatMoney(convert(r.costUSD, currency), currency)}
-                </td>
-                <td className="px-5 py-3">
+                </TableCell>
+                <TableCell className="px-5 py-3">
                   <Bar value={r.costUSD} max={max} />
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             ))}
             {sorted.length === 0 && (
-              <tr>
-                <td colSpan={6} className="px-5 py-10 text-center text-sm text-muted-foreground">
+              <TableRow>
+                <TableCell
+                  colSpan={6}
+                  className="px-5 py-10 text-center text-sm text-muted-foreground"
+                >
                   {t("No usage recorded yet.", "Noch kein Verbrauch erfasst.")}
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             )}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
     </Panel>
   );
@@ -946,22 +963,26 @@ function LimitsTab({ currency }: { currency: Currency }) {
 
       <Panel className="overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
-                <th className="px-5 py-3 font-medium">{t("Scope", "Ebene")}</th>
-                <th className="px-5 py-3 font-medium">{t("Target", "Ziel")}</th>
-                <th className="px-5 py-3 font-medium text-right">{t("Limit", "Limit")}</th>
-                <th className="px-5 py-3 font-medium">{t("Period", "Zeitraum")}</th>
-                <th className="px-5 py-3 font-medium">{t("Action", "Aktion")}</th>
-                <th className="px-5 py-3 font-medium">
+          <Table className="text-sm">
+            <TableHeader>
+              <TableRow className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
+                <TableHead className="px-5 py-3 micro-label">{t("Scope", "Ebene")}</TableHead>
+                <TableHead className="px-5 py-3 micro-label">{t("Target", "Ziel")}</TableHead>
+                <TableHead className="px-5 py-3 text-right micro-label">
+                  {t("Limit", "Limit")}
+                </TableHead>
+                <TableHead className="px-5 py-3 micro-label">{t("Period", "Zeitraum")}</TableHead>
+                <TableHead className="px-5 py-3 micro-label">{t("Action", "Aktion")}</TableHead>
+                <TableHead className="px-5 py-3 micro-label">
                   {t("Usage (est.)", "Verbrauch (geschätzt)")}
-                </th>
-                <th className="px-5 py-3 font-medium text-right">{t("Enabled", "Aktiv")}</th>
-                <th className="px-5 py-3 font-medium" />
-              </tr>
-            </thead>
-            <tbody>
+                </TableHead>
+                <TableHead className="px-5 py-3 text-right micro-label">
+                  {t("Enabled", "Aktiv")}
+                </TableHead>
+                <TableHead className="px-5 py-3 micro-label" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {rows.map(({ limit, spend, pct }) => {
                 const scopeMeta = scopes.find((s) => s.id === limit.scope)!;
                 const Icon = scopeMeta.icon;
@@ -972,22 +993,22 @@ function LimitsTab({ currency }: { currency: Currency }) {
                       ? "var(--status-warning)"
                       : "var(--status-running)";
                 return (
-                  <tr key={limit.id} className="border-b border-border/60 last:border-none">
-                    <td className="px-5 py-3">
+                  <TableRow key={limit.id} className="border-b border-border/60 last:border-none">
+                    <TableCell className="px-5 py-3">
                       <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background/40 px-2 py-0.5 text-xs">
                         <Icon className="h-3 w-3" />
                         {scopeMeta.label}
                       </span>
-                    </td>
-                    <td className="px-5 py-3">
+                    </TableCell>
+                    <TableCell className="px-5 py-3">
                       <TargetSelect
                         scope={limit.scope}
                         value={limit.targetId}
                         disabled
                         onChange={(v) => update(limit.id, { targetId: v })}
                       />
-                    </td>
-                    <td className="px-5 py-3">
+                    </TableCell>
+                    <TableCell className="px-5 py-3">
                       <div className="flex items-center justify-end gap-1">
                         <span className="text-muted-foreground">
                           {currency === "USD" ? "$" : "€"}
@@ -1010,8 +1031,8 @@ function LimitsTab({ currency }: { currency: Currency }) {
                           className="w-24 rounded-md border border-border bg-background/40 px-2 py-1 text-right font-mono text-xs focus:border-primary focus:outline-none"
                         />
                       </div>
-                    </td>
-                    <td className="px-5 py-3">
+                    </TableCell>
+                    <TableCell className="px-5 py-3">
                       <select
                         disabled
                         value={limit.period}
@@ -1023,8 +1044,8 @@ function LimitsTab({ currency }: { currency: Currency }) {
                         <option value="daily">{t("Daily", "Täglich")}</option>
                         <option value="monthly">{t("Monthly", "Monatlich")}</option>
                       </select>
-                    </td>
-                    <td className="px-5 py-3">
+                    </TableCell>
+                    <TableCell className="px-5 py-3">
                       <select
                         disabled
                         value={limit.action}
@@ -1037,8 +1058,8 @@ function LimitsTab({ currency }: { currency: Currency }) {
                         <option value="throttle">{t("Throttle", "Drosseln")}</option>
                         <option value="block">{t("Block", "Sperren")}</option>
                       </select>
-                    </td>
-                    <td className="px-5 py-3">
+                    </TableCell>
+                    <TableCell className="px-5 py-3">
                       <div className="min-w-[140px]">
                         <div className="mb-1 flex items-center justify-between text-xs">
                           <span className="font-mono" style={{ color: tone }}>
@@ -1057,8 +1078,8 @@ function LimitsTab({ currency }: { currency: Currency }) {
                           />
                         </div>
                       </div>
-                    </td>
-                    <td className="px-5 py-3 text-right">
+                    </TableCell>
+                    <TableCell className="px-5 py-3 text-right">
                       <button
                         type="button"
                         role="switch"
@@ -1077,8 +1098,8 @@ function LimitsTab({ currency }: { currency: Currency }) {
                           )}
                         />
                       </button>
-                    </td>
-                    <td className="px-5 py-3 text-right">
+                    </TableCell>
+                    <TableCell className="px-5 py-3 text-right">
                       <button
                         type="button"
                         onClick={() => remove(limit.id)}
@@ -1088,22 +1109,25 @@ function LimitsTab({ currency }: { currency: Currency }) {
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 );
               })}
               {rows.length === 0 && (
-                <tr>
-                  <td colSpan={8} className="px-5 py-10 text-center text-sm text-muted-foreground">
+                <TableRow>
+                  <TableCell
+                    colSpan={8}
+                    className="px-5 py-10 text-center text-sm text-muted-foreground"
+                  >
                     {t(
                       "No limits set yet. Add one to protect your budget.",
                       "Noch keine Limits gesetzt. Fügen Sie eines hinzu, um Ihr Budget zu schützen.",
                     )}
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               )}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
         <div className="flex flex-wrap items-center gap-3 border-t border-border px-5 py-3 text-xs text-muted-foreground">
           <span className="inline-flex items-center gap-1">

@@ -62,6 +62,14 @@ import {
 import { type Agent, type Supervisor, type Task, type TaskColumn } from "@/lib/mock-data";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 const iconMap = {
   sales: TrendingUp,
@@ -1398,40 +1406,40 @@ function CollaborationTab({ deptId }: { deptId: string }) {
           </div>
         )}
         <div className="overflow-hidden rounded-md border border-border">
-          <table className="w-full text-xs">
-            <thead className="bg-background/40 micro-label">
-              <tr>
-                <th className="px-3 py-2 text-left">Handoff type</th>
-                <th className="px-3 py-2 text-left">Payload schema</th>
-                <th className="px-3 py-2 text-left">Route</th>
-                <th className="px-3 py-2 text-left">Gate</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border">
+          <Table className="text-xs">
+            <TableHeader className="bg-background/40">
+              <TableRow>
+                <TableHead className="px-3 py-2 micro-label">Handoff type</TableHead>
+                <TableHead className="px-3 py-2 micro-label">Payload schema</TableHead>
+                <TableHead className="px-3 py-2 micro-label">Route</TableHead>
+                <TableHead className="px-3 py-2 micro-label">Gate</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody className="divide-y divide-border">
               {intakes.length === 0 && (
-                <tr>
-                  <td colSpan={4} className="px-3 py-4 text-center text-muted-foreground">
+                <TableRow>
+                  <TableCell colSpan={4} className="px-3 py-4 text-center text-muted-foreground">
                     This department doesn't declare any intakes yet.
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               )}
               {intakes.map((it) => (
-                <tr key={it.id}>
-                  <td className="px-3 py-2 font-mono">{it.type}</td>
-                  <td className="px-3 py-2">
+                <TableRow key={it.id}>
+                  <TableCell className="px-3 py-2 font-mono">{it.type}</TableCell>
+                  <TableCell className="px-3 py-2">
                     <button
                       onClick={() => setSchemaFor(it.id)}
                       className="text-primary underline-offset-2 hover:underline"
                     >
                       View schema
                     </button>
-                  </td>
-                  <td className="px-3 py-2">
+                  </TableCell>
+                  <TableCell className="px-3 py-2">
                     <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 text-micro">
                       {it.route}
                     </span>
-                  </td>
-                  <td className="px-3 py-2">
+                  </TableCell>
+                  <TableCell className="px-3 py-2">
                     <button
                       onClick={() => toggleGate(it.id)}
                       className={cn(
@@ -1448,11 +1456,11 @@ function CollaborationTab({ deptId }: { deptId: string }) {
                       )}
                       {it.gate}
                     </button>
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
       </Panel>
 

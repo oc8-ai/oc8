@@ -53,6 +53,14 @@ import {
   useModelPricesPolicy,
   type ModelPrice,
 } from "@/lib/model-prices-hooks";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 export const Route = createFileRoute("/models")({
   component: ModelsPage,
@@ -359,25 +367,32 @@ export function ModelsPage() {
           </div>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
-                <th className="px-5 py-3 font-medium">{t("Model", "Modell")}</th>
-                <th className="px-5 py-3 font-medium">{t("Provider", "Anbieter")}</th>
-                <th className="px-5 py-3 font-medium">{t("Status", "Status")}</th>
-                <th className="px-5 py-3 font-medium">{t("Latency", "Latenz")}</th>
-                <th className="px-5 py-3 font-medium">{t("Cost", "Kosten")}</th>
-                <th className="px-5 py-3 font-medium">{t("Assigned to", "Zugewiesen an")}</th>
-                <th className="px-5 py-3 font-medium text-right">{t("Actions", "Aktionen")}</th>
-              </tr>
-            </thead>
-            <tbody>
+          <Table className="text-sm">
+            <TableHeader>
+              <TableRow className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
+                <TableHead className="px-5 py-3 micro-label">{t("Model", "Modell")}</TableHead>
+                <TableHead className="px-5 py-3 micro-label">{t("Provider", "Anbieter")}</TableHead>
+                <TableHead className="px-5 py-3 micro-label">{t("Status", "Status")}</TableHead>
+                <TableHead className="px-5 py-3 micro-label">{t("Latency", "Latenz")}</TableHead>
+                <TableHead className="px-5 py-3 micro-label">{t("Cost", "Kosten")}</TableHead>
+                <TableHead className="px-5 py-3 micro-label">
+                  {t("Assigned to", "Zugewiesen an")}
+                </TableHead>
+                <TableHead className="px-5 py-3 text-right micro-label">
+                  {t("Actions", "Aktionen")}
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {models.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="px-5 py-8 text-center text-sm text-muted-foreground">
+                <TableRow>
+                  <TableCell
+                    colSpan={7}
+                    className="px-5 py-8 text-center text-sm text-muted-foreground"
+                  >
                     {t("No models configured yet.", "Noch keine Modelle konfiguriert.")}
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               )}
               {models.map((m) => {
                 const color =
@@ -389,24 +404,24 @@ export function ModelsPage() {
                         ? "var(--muted-foreground)"
                         : "var(--status-error)";
                 return (
-                  <tr key={m.id} className="border-b border-border/60 last:border-none">
-                    <td className="px-5 py-4">
+                  <TableRow key={m.id} className="border-b border-border/60 last:border-none">
+                    <TableCell className="px-5 py-4">
                       <div className="flex items-center gap-2 font-medium">
                         <Cpu className="h-4 w-4 text-primary" />
                         {m.name}
                         {isAutoProvider(m.provider) && <AutoRouterBadge />}
                       </div>
                       <div className="mt-0.5 text-xs text-muted-foreground">{m.note}</div>
-                    </td>
-                    <td className="px-5 py-4">
+                    </TableCell>
+                    <TableCell className="px-5 py-4">
                       <div className="flex flex-wrap items-center gap-1">
                         <span className="rounded-full border border-border bg-background/40 px-2 py-0.5 text-xs">
                           {isAutoProvider(m.provider) ? t("Auto", "Auto") : m.provider}
                         </span>
                         {m.provider === SUBSCRIPTION_PROVIDER && <SubscriptionRiskBadge />}
                       </div>
-                    </td>
-                    <td className="px-5 py-4">
+                    </TableCell>
+                    <TableCell className="px-5 py-4">
                       <span
                         className="inline-flex items-center gap-1.5 text-xs"
                         style={{ color }}
@@ -433,9 +448,9 @@ export function ModelsPage() {
                           {m.healthError}
                         </div>
                       )}
-                    </td>
-                    <td className="px-5 py-4 font-mono text-xs">{m.latency}</td>
-                    <td className="px-5 py-4">
+                    </TableCell>
+                    <TableCell className="px-5 py-4 font-mono text-xs">{m.latency}</TableCell>
+                    <TableCell className="px-5 py-4">
                       <div className="flex gap-0.5">
                         {[1, 2, 3].map((n) => (
                           <span
@@ -448,8 +463,8 @@ export function ModelsPage() {
                           />
                         ))}
                       </div>
-                    </td>
-                    <td className="px-5 py-4">
+                    </TableCell>
+                    <TableCell className="px-5 py-4">
                       <div className="flex flex-wrap gap-1">
                         {m.assignedTo.map((id) => {
                           const a = agents.find((x) => x.id === id);
@@ -468,8 +483,8 @@ export function ModelsPage() {
                           );
                         })}
                       </div>
-                    </td>
-                    <td className="px-5 py-4 text-right">
+                    </TableCell>
+                    <TableCell className="px-5 py-4 text-right">
                       {mayManage && (
                         <div className="flex items-center justify-end gap-1.5">
                           <button
@@ -499,12 +514,12 @@ export function ModelsPage() {
                           </button>
                         </div>
                       )}
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 );
               })}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
       </Panel>
 
@@ -2032,28 +2047,30 @@ export function ModelPricingPanel() {
         )}
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
-              <th className="px-5 py-3 font-medium">{t("Model", "Modell")}</th>
-              <th className="px-5 py-3 font-medium">{t("Provider", "Anbieter")}</th>
-              <th className="px-5 py-3 font-medium text-right">
+        <Table className="text-sm">
+          <TableHeader>
+            <TableRow className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
+              <TableHead className="px-5 py-3 micro-label">{t("Model", "Modell")}</TableHead>
+              <TableHead className="px-5 py-3 micro-label">{t("Provider", "Anbieter")}</TableHead>
+              <TableHead className="px-5 py-3 text-right micro-label">
                 {t("Input / 1M", "Input / 1 Mio.")}
-              </th>
-              <th className="px-5 py-3 font-medium text-right">
+              </TableHead>
+              <TableHead className="px-5 py-3 text-right micro-label">
                 {t("Output / 1M", "Output / 1 Mio.")}
-              </th>
-              <th className="px-5 py-3 font-medium text-right">
+              </TableHead>
+              <TableHead className="px-5 py-3 text-right micro-label">
                 {t("Est. cost / 1k req", "Ø / 1k Anfr.")}
-              </th>
-              <th className="px-5 py-3 font-medium">{t("Used by", "Verwendet von")}</th>
-              {mayManage && <th className="px-5 py-3 font-medium text-right" />}
-            </tr>
-          </thead>
-          <tbody>
+              </TableHead>
+              <TableHead className="px-5 py-3 micro-label">
+                {t("Used by", "Verwendet von")}
+              </TableHead>
+              {mayManage && <TableHead className="px-5 py-3 text-right micro-label" />}
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {adding && (
-              <tr className="border-b border-border/60 bg-background/20">
-                <td className="px-5 py-3">
+              <TableRow className="border-b border-border/60 bg-background/20">
+                <TableCell className="px-5 py-3">
                   {manualEntry || models.length === 0 ? (
                     <input
                       type="text"
@@ -2087,8 +2104,8 @@ export function ModelPricingPanel() {
                         : t("Enter manually", "Manuell eingeben")}
                     </button>
                   )}
-                </td>
-                <td className="px-5 py-3">
+                </TableCell>
+                <TableCell className="px-5 py-3">
                   <input
                     type="text"
                     readOnly={!manualEntry && models.length > 0}
@@ -2108,8 +2125,8 @@ export function ModelPricingPanel() {
                       !manualEntry && models.length > 0 && "cursor-not-allowed opacity-70",
                     )}
                   />
-                </td>
-                <td className="px-5 py-3">
+                </TableCell>
+                <TableCell className="px-5 py-3">
                   <div className="flex items-center justify-end gap-1">
                     <span className="text-muted-foreground">$</span>
                     <input
@@ -2121,8 +2138,8 @@ export function ModelPricingPanel() {
                       className="w-20 rounded-md border border-border bg-background/40 px-2 py-1 text-right font-mono text-xs focus:border-primary focus:outline-none"
                     />
                   </div>
-                </td>
-                <td className="px-5 py-3">
+                </TableCell>
+                <TableCell className="px-5 py-3">
                   <div className="flex items-center justify-end gap-1">
                     <span className="text-muted-foreground">$</span>
                     <input
@@ -2134,10 +2151,10 @@ export function ModelPricingPanel() {
                       className="w-20 rounded-md border border-border bg-background/40 px-2 py-1 text-right font-mono text-xs focus:border-primary focus:outline-none"
                     />
                   </div>
-                </td>
-                <td className="px-5 py-3" />
-                <td className="px-5 py-3" />
-                <td className="px-5 py-3 text-right">
+                </TableCell>
+                <TableCell className="px-5 py-3" />
+                <TableCell className="px-5 py-3" />
+                <TableCell className="px-5 py-3 text-right">
                   <div className="flex items-center justify-end gap-1.5">
                     <button
                       type="button"
@@ -2155,27 +2172,27 @@ export function ModelPricingPanel() {
                       <X className="h-3 w-3" />
                     </button>
                   </div>
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             )}
             {prices.map((p) => {
               const usingAgents = agents.filter((a) => a.llm === p.modelPattern);
               const per1kUSD = (1500 * p.priceInUsdPer1M + 500 * p.priceOutUsdPer1M) / 1000;
               const isEditing = editingId === p.id;
               return (
-                <tr key={p.id} className="border-b border-border/60 last:border-none">
-                  <td className="px-5 py-3">
+                <TableRow key={p.id} className="border-b border-border/60 last:border-none">
+                  <TableCell className="px-5 py-3">
                     <div className="flex items-center gap-2 font-medium">
                       <Cpu className="h-3.5 w-3.5 text-primary" />
                       {p.modelPattern}
                     </div>
-                  </td>
-                  <td className="px-5 py-3">
+                  </TableCell>
+                  <TableCell className="px-5 py-3">
                     <span className="rounded-full border border-border bg-background/40 px-2 py-0.5 text-xs">
                       {p.provider}
                     </span>
-                  </td>
-                  <td className="px-5 py-3">
+                  </TableCell>
+                  <TableCell className="px-5 py-3">
                     <div className="flex items-center justify-end gap-1">
                       <span className="text-muted-foreground">$</span>
                       {isEditing ? (
@@ -2191,8 +2208,8 @@ export function ModelPricingPanel() {
                         <span className="font-mono text-xs">{p.priceInUsdPer1M.toFixed(2)}</span>
                       )}
                     </div>
-                  </td>
-                  <td className="px-5 py-3">
+                  </TableCell>
+                  <TableCell className="px-5 py-3">
                     <div className="flex items-center justify-end gap-1">
                       <span className="text-muted-foreground">$</span>
                       {isEditing ? (
@@ -2208,11 +2225,11 @@ export function ModelPricingPanel() {
                         <span className="font-mono text-xs">{p.priceOutUsdPer1M.toFixed(2)}</span>
                       )}
                     </div>
-                  </td>
-                  <td className="px-5 py-3 text-right font-mono text-xs text-muted-foreground">
+                  </TableCell>
+                  <TableCell className="px-5 py-3 text-right font-mono text-xs text-muted-foreground">
                     ${per1kUSD.toFixed(2)}
-                  </td>
-                  <td className="px-5 py-3">
+                  </TableCell>
+                  <TableCell className="px-5 py-3">
                     <div className="flex flex-wrap gap-1">
                       {usingAgents.map((a) => (
                         <span
@@ -2232,9 +2249,9 @@ export function ModelPricingPanel() {
                         </span>
                       )}
                     </div>
-                  </td>
+                  </TableCell>
                   {mayManage && (
-                    <td className="px-5 py-3 text-right">
+                    <TableCell className="px-5 py-3 text-right">
                       {isEditing ? (
                         <div className="flex items-center justify-end gap-1.5">
                           <button
@@ -2271,13 +2288,13 @@ export function ModelPricingPanel() {
                           </button>
                         </div>
                       )}
-                    </td>
+                    </TableCell>
                   )}
-                </tr>
+                </TableRow>
               );
             })}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
       <div className="border-t border-border px-5 py-3 text-xs text-muted-foreground">
         {t(

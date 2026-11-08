@@ -10,6 +10,14 @@ import { useT } from "@/lib/i18n";
 import { useAgents, useDepartments, useRestoreAgent } from "@/lib/hooks";
 import type { Agent, AgentStatus } from "@/lib/mock-data";
 import { cn } from "@/lib/utils";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 export const Route = createFileRoute("/agents/")({
   component: AgentsPage,
@@ -131,19 +139,25 @@ export function AgentsPage() {
 
             <Panel className="overflow-hidden">
               <div className="hidden overflow-x-auto md:block">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
-                      <th className="px-5 py-3 font-medium">{t("Agent", "Agent")}</th>
-                      <th className="px-5 py-3 font-medium">{t("Status", "Status")}</th>
-                      <th className="px-5 py-3 font-medium">{t("LLM", "LLM")}</th>
-                      <th className="px-5 py-3 font-medium">{t("Tools", "Werkzeuge")}</th>
-                      <th className="px-5 py-3 font-medium">{t("Last run", "Letzter Lauf")}</th>
-                      <th className="px-5 py-3 font-medium">{t("Today", "Heute")}</th>
-                      <th className="px-5 py-3 font-medium" />
-                    </tr>
-                  </thead>
-                  <tbody>
+                <Table className="text-sm">
+                  <TableHeader>
+                    <TableRow className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
+                      <TableHead className="px-5 py-3 micro-label">{t("Agent", "Agent")}</TableHead>
+                      <TableHead className="px-5 py-3 micro-label">
+                        {t("Status", "Status")}
+                      </TableHead>
+                      <TableHead className="px-5 py-3 micro-label">{t("LLM", "LLM")}</TableHead>
+                      <TableHead className="px-5 py-3 micro-label">
+                        {t("Tools", "Werkzeuge")}
+                      </TableHead>
+                      <TableHead className="px-5 py-3 micro-label">
+                        {t("Last run", "Letzter Lauf")}
+                      </TableHead>
+                      <TableHead className="px-5 py-3 micro-label">{t("Today", "Heute")}</TableHead>
+                      <TableHead className="px-5 py-3 micro-label" />
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
                     {groupAgents.map((a) => {
                       const archived = queryState.includeArchived && Boolean(a.deletedAt);
                       const rowBody = (
@@ -176,14 +190,14 @@ export function AgentsPage() {
                         </>
                       );
                       return (
-                        <tr
+                        <TableRow
                           key={a.id}
                           className={cn(
                             "group border-b border-border/60 last:border-none transition hover:bg-primary/5",
                             archived && "opacity-60",
                           )}
                         >
-                          <td className="px-5 py-4">
+                          <TableCell className="px-5 py-4">
                             {archived ? (
                               <div className="flex items-center gap-3">{rowBody}</div>
                             ) : (
@@ -195,16 +209,16 @@ export function AgentsPage() {
                                 {rowBody}
                               </Link>
                             )}
-                          </td>
-                          <td className="px-5 py-4">
+                          </TableCell>
+                          <TableCell className="px-5 py-4">
                             <StatusPill status={a.status} />
-                          </td>
-                          <td className="px-5 py-4">
+                          </TableCell>
+                          <TableCell className="px-5 py-4">
                             <span className="rounded border border-border bg-background/40 px-2 py-1 font-mono text-xs">
                               {a.llm}
                             </span>
-                          </td>
-                          <td className="px-5 py-4">
+                          </TableCell>
+                          <TableCell className="px-5 py-4">
                             <div className="flex flex-wrap gap-1">
                               {a.tools.slice(0, 3).map((tool) => (
                                 <span
@@ -220,10 +234,14 @@ export function AgentsPage() {
                                 </span>
                               )}
                             </div>
-                          </td>
-                          <td className="px-5 py-4 text-xs text-muted-foreground">{a.lastRun}</td>
-                          <td className="px-5 py-4 font-mono text-sm">{a.tasksToday}</td>
-                          <td className="px-5 py-4 text-right">
+                          </TableCell>
+                          <TableCell className="px-5 py-4 text-xs text-muted-foreground">
+                            {a.lastRun}
+                          </TableCell>
+                          <TableCell className="px-5 py-4 font-mono text-sm">
+                            {a.tasksToday}
+                          </TableCell>
+                          <TableCell className="px-5 py-4 text-right">
                             {archived && (
                               <button
                                 type="button"
@@ -236,12 +254,12 @@ export function AgentsPage() {
                                   : t("Restore", "Wiederherstellen")}
                               </button>
                             )}
-                          </td>
-                        </tr>
+                          </TableCell>
+                        </TableRow>
                       );
                     })}
-                  </tbody>
-                </table>
+                  </TableBody>
+                </Table>
               </div>
 
               {/* Mobile cards */}

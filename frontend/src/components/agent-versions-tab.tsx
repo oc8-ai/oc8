@@ -20,6 +20,14 @@ import {
   useRollbackAgentVersion,
 } from "@/lib/agent-versions";
 import { SkeletonRows } from "@/components/skeleton-rows";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 type Intent = "diff" | "rollback";
 
@@ -98,36 +106,32 @@ export function AgentVersionsTab({ agentId, mayManage }: { agentId: string; mayM
           )}
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border">
-                <th className="py-2 text-left font-medium text-muted-foreground">
-                  {t("Version", "Version")}
-                </th>
-                <th className="py-2 text-left font-medium text-muted-foreground">
+          <Table className="text-sm">
+            <TableHeader>
+              <TableRow className="border-b border-border">
+                <TableHead className="py-2 micro-label">{t("Version", "Version")}</TableHead>
+                <TableHead className="py-2 micro-label">
                   {t("Published", "Veröffentlicht")}
-                </th>
-                <th className="py-2 text-left font-medium text-muted-foreground">
-                  {t("Note", "Notiz")}
-                </th>
-                <th className="py-2 text-right font-medium text-muted-foreground" />
-              </tr>
-            </thead>
-            <tbody>
+                </TableHead>
+                <TableHead className="py-2 micro-label">{t("Note", "Notiz")}</TableHead>
+                <TableHead className="py-2 text-right micro-label" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {versions.map((version) => (
-                <tr key={version.id} className="border-b border-border/50 align-top">
-                  <td className="py-2 pr-3 whitespace-nowrap">
+                <TableRow key={version.id} className="border-b border-border/50 align-top">
+                  <TableCell className="py-2 pr-3 whitespace-nowrap">
                     <span className="font-mono">{`v${version.versionNo}`}</span>
                     {version.isCurrent && (
                       <span className="ml-2 inline-flex items-center rounded-full border border-status-running/50 bg-status-running/15 px-2 py-0.5 micro-label text-status-running">
                         {t("running", "läuft")}
                       </span>
                     )}
-                  </td>
-                  <td className="py-2 pr-3 whitespace-nowrap text-muted-foreground">
+                  </TableCell>
+                  <TableCell className="py-2 pr-3 whitespace-nowrap text-muted-foreground">
                     {new Date(version.publishedAt).toLocaleString()}
-                  </td>
-                  <td className="py-2 pr-3">
+                  </TableCell>
+                  <TableCell className="py-2 pr-3">
                     {version.note ?? (
                       <span className="italic text-muted-foreground">
                         {t("no note", "keine Notiz")}
@@ -141,8 +145,8 @@ export function AgentVersionsTab({ agentId, mayManage }: { agentId: string; mayM
                         )}
                       </div>
                     )}
-                  </td>
-                  <td className="py-2 text-right whitespace-nowrap">
+                  </TableCell>
+                  <TableCell className="py-2 text-right whitespace-nowrap">
                     <button
                       type="button"
                       onClick={() => setOpen({ versionNo: version.versionNo, intent: "diff" })}
@@ -161,11 +165,11 @@ export function AgentVersionsTab({ agentId, mayManage }: { agentId: string; mayM
                         <RotateCcw className="h-3.5 w-3.5" /> {t("Roll back", "Zurücksetzen")}
                       </button>
                     )}
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
       </Panel>
 

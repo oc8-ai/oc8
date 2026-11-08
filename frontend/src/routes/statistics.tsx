@@ -17,6 +17,14 @@ import { useAgents, useDepartments, useTenantKpis } from "@/lib/hooks";
 import { formatMs } from "@/lib/format";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 export const Route = createFileRoute("/statistics")({
   component: StatisticsPage,
@@ -300,48 +308,54 @@ export function StatisticsPage() {
           </Panel>
 
           <Panel className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
-                  <th className="px-4 py-2 font-medium">{groupByLabel(groupBy)}</th>
-                  <th className="px-4 py-2 text-right font-medium">{t("Runs", "Runs")}</th>
-                  <th className="px-4 py-2 text-right font-medium">
+            <Table className="text-sm">
+              <TableHeader>
+                <TableRow className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
+                  <TableHead className="px-4 py-2 micro-label">{groupByLabel(groupBy)}</TableHead>
+                  <TableHead className="px-4 py-2 text-right micro-label">
+                    {t("Runs", "Runs")}
+                  </TableHead>
+                  <TableHead className="px-4 py-2 text-right micro-label">
                     {t("Total duration", "Gesamtdauer")}
-                  </th>
-                  <th className="px-4 py-2 text-right font-medium">
+                  </TableHead>
+                  <TableHead className="px-4 py-2 text-right micro-label">
                     {t("Execution", "Ausführung")}
-                  </th>
-                  <th className="px-4 py-2 text-right font-medium">
+                  </TableHead>
+                  <TableHead className="px-4 py-2 text-right micro-label">
                     {t("Approval wait", "Approval-Wartezeit")}
-                  </th>
-                  <th className="px-4 py-2 text-right font-medium">
+                  </TableHead>
+                  <TableHead className="px-4 py-2 text-right micro-label">
                     {t("Response time", "Antwortzeit")}
-                  </th>
-                  <th className="px-4 py-2 text-right font-medium">
+                  </TableHead>
+                  <TableHead className="px-4 py-2 text-right micro-label">
                     {t("Avg. tool call", "Ø Tool-Aufruf")}
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody className="divide-y divide-border">
                 {rows.map((r) => (
-                  <tr key={r.groupKey} data-testid="kpi-row">
-                    <td className="px-4 py-2">{labelFor(r.groupKey)}</td>
-                    <td className="px-4 py-2 text-right font-mono">{r.runCount}</td>
-                    <td className="px-4 py-2 text-right font-mono">
+                  <TableRow key={r.groupKey} data-testid="kpi-row">
+                    <TableCell className="px-4 py-2">{labelFor(r.groupKey)}</TableCell>
+                    <TableCell className="px-4 py-2 text-right font-mono">{r.runCount}</TableCell>
+                    <TableCell className="px-4 py-2 text-right font-mono">
                       {formatMs(r.totalDurationMs)}
-                    </td>
-                    <td className="px-4 py-2 text-right font-mono">
+                    </TableCell>
+                    <TableCell className="px-4 py-2 text-right font-mono">
                       {formatMs(r.executionDurationMs)}
-                    </td>
-                    <td className="px-4 py-2 text-right font-mono">{formatMs(r.approvalWaitMs)}</td>
-                    <td className="px-4 py-2 text-right font-mono">{formatMs(r.responseTimeMs)}</td>
-                    <td className="px-4 py-2 text-right font-mono">
+                    </TableCell>
+                    <TableCell className="px-4 py-2 text-right font-mono">
+                      {formatMs(r.approvalWaitMs)}
+                    </TableCell>
+                    <TableCell className="px-4 py-2 text-right font-mono">
+                      {formatMs(r.responseTimeMs)}
+                    </TableCell>
+                    <TableCell className="px-4 py-2 text-right font-mono">
                       {formatMs(r.avgToolCallDurationMs)}
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 ))}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
             {rows.length === 0 && (
               // "Loading" and "nothing here" are different statements, and
               // saying the second one while the first is true is a lie the

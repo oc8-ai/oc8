@@ -49,6 +49,14 @@ import {
 } from "@/lib/roles-hooks";
 import { SkeletonRows } from "@/components/skeleton-rows";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 export const Route = createFileRoute("/members/$memberId")({
   component: MemberDetail,
@@ -618,22 +626,20 @@ export function MemberDetailForm({ member }: { member: Member }) {
           </p>
         ) : (
           <div className="mt-4 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border">
-                  <th className="py-2 text-left font-medium text-muted-foreground">
+            <Table className="text-sm">
+              <TableHeader>
+                <TableRow className="border-b border-border">
+                  <TableHead className="py-2 micro-label">
                     {t("Department", "Department")}
-                  </th>
-                  <th className="py-2 text-left font-medium text-muted-foreground">
-                    {t("Seat role", "Sitz-Rolle")}
-                  </th>
-                  <th className="py-2 text-left font-medium text-muted-foreground">
+                  </TableHead>
+                  <TableHead className="py-2 micro-label">{t("Seat role", "Sitz-Rolle")}</TableHead>
+                  <TableHead className="py-2 micro-label">
                     {t("Manages agents", "Verwaltet Agenten")}
-                  </th>
-                  <th className="py-2 text-right font-medium text-muted-foreground" />
-                </tr>
-              </thead>
-              <tbody>
+                  </TableHead>
+                  <TableHead className="py-2 text-right micro-label" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {seats.map((seat) => (
                   <SeatRow
                     key={seat.departmentId}
@@ -649,8 +655,8 @@ export function MemberDetailForm({ member }: { member: Member }) {
                     t={t}
                   />
                 ))}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           </div>
         )}
 
@@ -813,9 +819,9 @@ function SeatRow({
   t: (en: string, de: string) => string;
 }) {
   return (
-    <tr className="border-b border-border/50">
-      <td className="py-2">{seat.departmentName || seat.departmentId}</td>
-      <td className="py-2">
+    <TableRow className="border-b border-border/50">
+      <TableCell className="py-2">{seat.departmentName || seat.departmentId}</TableCell>
+      <TableCell className="py-2">
         <Select value={seat.seatRole} onValueChange={onChangeRole}>
           <SelectTrigger className="h-8 w-40 text-xs">
             <SelectValue />
@@ -828,15 +834,15 @@ function SeatRow({
             ))}
           </SelectContent>
         </Select>
-      </td>
-      <td className="py-2">
+      </TableCell>
+      <TableCell className="py-2">
         <Switch
           checked={seat.agentManage}
           onCheckedChange={onToggleAgentManage}
           disabled={pending}
         />
-      </td>
-      <td className="py-2 text-right">
+      </TableCell>
+      <TableCell className="py-2 text-right">
         <button
           type="button"
           onClick={onRemove}
@@ -846,7 +852,7 @@ function SeatRow({
         >
           <Trash2 className="size-3" />
         </button>
-      </td>
-    </tr>
+      </TableCell>
+    </TableRow>
   );
 }
