@@ -1328,7 +1328,7 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
                     {discoveredModels?.map((id) => (
                       <label
                         key={id}
-                        className="flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-background/50"
+                        className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-background/50"
                       >
                         <input
                           type="checkbox"

@@ -1223,7 +1223,7 @@ function CandidateRow({
               : t("Read the text before importing", "Text vor dem Import lesen")}
           </button>
           {expanded && (
-            <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded border border-border bg-background p-2 text-xs leading-relaxed">
+            <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background p-2 text-xs leading-relaxed">
               {candidate.instruction}
             </pre>
           )}

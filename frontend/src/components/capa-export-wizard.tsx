@@ -555,7 +555,7 @@ function DetailsStep({
             <label className="block text-xs text-muted-foreground">
               {t("Capa name", "Capa-Name")}
               <input
-                className="mt-1 w-full rounded border border-border bg-background/40 px-2 py-1 text-sm text-foreground"
+                className="mt-1 w-full rounded-md border border-border bg-background/40 px-2 py-1 text-sm text-foreground"
                 value={current.name}
                 onChange={(e) => onChange(kind, id, "name", e.target.value)}
               />
@@ -563,7 +563,7 @@ function DetailsStep({
             <label className="block text-xs text-muted-foreground">
               {t("Version", "Version")}
               <input
-                className="mt-1 w-full rounded border border-border bg-background/40 px-2 py-1 text-sm text-foreground"
+                className="mt-1 w-full rounded-md border border-border bg-background/40 px-2 py-1 text-sm text-foreground"
                 value={current.version}
                 onChange={(e) => onChange(kind, id, "version", e.target.value)}
               />
@@ -571,7 +571,7 @@ function DetailsStep({
             <label className="block text-xs text-muted-foreground">
               {t("Summary", "Kurzbeschreibung")}
               <input
-                className="mt-1 w-full rounded border border-border bg-background/40 px-2 py-1 text-sm text-foreground"
+                className="mt-1 w-full rounded-md border border-border bg-background/40 px-2 py-1 text-sm text-foreground"
                 value={current.summary}
                 onChange={(e) => onChange(kind, id, "summary", e.target.value)}
               />
@@ -610,13 +610,13 @@ function PreviewStep({ preview }: { preview: ReturnType<typeof usePreviewCapaExp
               ⚠ {w}
             </p>
           ))}
-          <pre className="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap break-all rounded bg-background/40 p-2 text-xs text-muted-foreground">
+          <pre className="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap break-all rounded-md bg-background/40 p-2 text-xs text-muted-foreground">
             {item.manifest_toml}
           </pre>
           {Object.entries(item.extra_files).map(([path, content]) => (
             <div key={path} className="mt-2">
               <p className="text-xs text-muted-foreground">{path}</p>
-              <pre className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-all rounded bg-background/40 p-2 text-xs text-muted-foreground">
+              <pre className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-all rounded-md bg-background/40 p-2 text-xs text-muted-foreground">
                 {content}
               </pre>
             </div>

@@ -605,7 +605,7 @@ function ApprovalChannelsPanel() {
             )}
           </p>
           <div className="flex items-center gap-2">
-            <code className="flex-1 rounded border border-border bg-background/60 px-2 py-1 font-mono text-sm">
+            <code className="flex-1 rounded-md border border-border bg-background/60 px-2 py-1 font-mono text-sm">
               {issued.code}
             </code>
             <button

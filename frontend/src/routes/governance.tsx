@@ -293,7 +293,7 @@ function YourSeats({ seats, seatRoles }: { seats: Seat[]; seatRoles: Record<stri
         {seats.map((seat) => (
           <li
             key={seat.departmentId}
-            className="flex flex-wrap items-center gap-2 rounded border border-border px-2 py-1.5 text-xs"
+            className="flex flex-wrap items-center gap-2 rounded-md border border-border px-2 py-1.5 text-xs"
           >
             <MapPin className="size-3.5 shrink-0 text-muted-foreground" />
             <span className="font-medium">
@@ -1121,7 +1121,7 @@ function AssignPicker({
         <ul className="mt-2 max-h-56 space-y-0.5 overflow-y-auto pr-1">
           {shown.map((a) => (
             <li key={a.id}>
-              <label className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-sm hover:bg-muted/50">
+              <label className="flex cursor-pointer items-center gap-2 rounded-md px-1 py-1 text-sm hover:bg-muted/50">
                 <input
                   type="checkbox"
                   className="size-3.5 shrink-0 accent-[color:var(--primary)]"
@@ -1349,7 +1349,7 @@ function AgentRoles({ data }: { data: Governance }) {
         {agents.map((role) => (
           <li
             key={role.name}
-            className="flex flex-wrap items-center gap-2 rounded border border-border px-3 py-2 text-sm"
+            className="flex flex-wrap items-center gap-2 rounded-md border border-border px-3 py-2 text-sm"
           >
             <Bot className="size-3.5 shrink-0 text-muted-foreground" />
             <span className="font-mono text-xs">{role.name}</span>
