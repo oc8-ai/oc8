@@ -57,7 +57,7 @@ export function ForgotPasswordPage() {
           <button
             type="submit"
             disabled={busy || !email}
-            className="h-9 w-full rounded-md bg-primary text-sm font-medium text-primary-foreground disabled:opacity-50"
+            className="h-9 w-full rounded-md bg-brand-gradient text-sm font-medium text-primary-foreground hover:brightness-110 disabled:opacity-50"
           >
             {t("Send reset link", "Reset-Link senden")}
           </button>

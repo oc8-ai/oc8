@@ -53,7 +53,7 @@ export function TotpChallenge({
         type="button"
         disabled={verifying || !code}
         onClick={handleVerify}
-        className="w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+        className="w-full rounded-md bg-brand-gradient px-4 py-2 text-sm font-medium text-primary-foreground hover:brightness-110 disabled:opacity-50"
       >
         {verifying ? t("Verifying…", "Wird geprüft…") : t("Verify", "Verifizieren")}
       </button>

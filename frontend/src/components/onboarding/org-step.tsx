@@ -54,7 +54,7 @@ export function OrgStep({ onDone }: { onDone: () => void }) {
       <button
         onClick={submit}
         disabled={update.isPending || !name.trim() || !region.trim()}
-        className="w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+        className="w-full rounded-md bg-brand-gradient px-4 py-2 text-sm font-medium text-primary-foreground transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
       >
         {update.isPending ? t("Saving…", "Wird gespeichert …") : t("Continue", "Weiter")}
       </button>
