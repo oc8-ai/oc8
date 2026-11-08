@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy import select
 
 from oc8 import models as m
+from oc8.connections.access import ToolAccess, resolve_tool_access
 from tests.conftest import AppSessionFactory
 from tests.connections.helpers import api, credential_row, headers, install, member, oauth_row
 from tests.factories import _make_agent
@@ -276,3 +277,82 @@ async def test_a_leftover_row_of_a_removed_integration_can_still_be_reset(
         assert (
             await c.delete(f"/api/v1/agents/{agent.id}/tool-access/gone", headers=admin)
         ).status_code == 404
+
+
+async def _resolve(app_session: AppSessionFactory, agent: m.Agent, operator: str) -> ToolAccess:
+    async with app_session(agent.tenant_id) as db:
+        conn = (
+            (
+                await db.execute(
+                    select(m.McpConnection).where(m.McpConnection.name == "microsoft365")
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if conn is None:
+            conn = m.McpConnection(
+                tenant_id=agent.tenant_id,
+                name="microsoft365",
+                server_url="",
+                transport="stdio",
+                config={"_plugin_name": "microsoft365", "_connection_key": "primary"},
+            )
+            db.add(conn)
+        run = m.AgentRun(
+            tenant_id=agent.tenant_id,
+            agent_id=agent.id,
+            source="manual",
+            context={"originating_operator": operator},
+        )
+        db.add(run)
+        await db.flush()
+        live = await db.get(m.Agent, agent.id)
+        assert live is not None
+        return await resolve_tool_access(db, run=run, agent=live, conn=conn)
+
+
+async def test_an_organisation_account_an_administrator_chose_is_used_at_runtime(
+    app_session: AppSessionFactory,
+) -> None:
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    await member(app_session, tenant, "ben@acme.test", name="Ben")
+    shared = await oauth_row(app_session, tenant, owner=None, label="shared@acme.test")
+    async with api() as c:
+        await install(c, headers(tenant, "root@acme.test", ADMIN), "microsoft365")
+        r = await c.put(
+            f"/api/v1/agents/{agent.id}/tool-access/microsoft365",
+            json={"mode": "fixed", "oauthConnectionId": str(shared)},
+            headers=headers(tenant, "root@acme.test", ADMIN),
+        )
+        assert r.status_code == 200, r.text
+    assert (await _row(app_session, agent)).set_with_manage is True
+    access = await _resolve(app_session, agent, "ben@acme.test")
+    assert (access.kind, access.oauth_connection.id) == ("oauth", shared)  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("versioned", [True, False])
+async def test_an_owners_binding_saved_through_the_api_is_used_at_runtime(
+    app_session: AppSessionFactory, versioned: bool
+) -> None:
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    if not versioned:
+        async with app_session(tenant) as db:
+            live = await db.get(m.Agent, agent.id)
+            assert live is not None
+            live.current_version_id = None
+    anna = await member(app_session, tenant, "anna@acme.test", name="Anna")
+    await member(app_session, tenant, "ben@acme.test", name="Ben")
+    annas = await oauth_row(app_session, tenant, owner=anna)
+    async with api() as c:
+        await install(c, headers(tenant, "root@acme.test", ADMIN), "microsoft365")
+        r = await c.put(
+            f"/api/v1/agents/{agent.id}/tool-access/microsoft365",
+            json={"mode": "fixed", "oauthConnectionId": str(annas), "confirmShare": True},
+            headers=headers(tenant, "anna@acme.test", MANAGER),
+        )
+        assert r.status_code == 200, r.text
+    access = await _resolve(app_session, agent, "ben@acme.test")
+    assert access.oauth_connection.id == annas  # type: ignore[union-attr]

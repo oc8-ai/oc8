@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.agents.versioning import snapshot_agent
 from oc8.connections.acting import ActingPerson, resolve_acting_person
 from oc8.connections.integrations import Integration, integration_for_connection
 
@@ -154,28 +155,15 @@ async def department_targets(db: AsyncSession, agent: m.Agent, tool_key: str) ->
     return out
 
 
-_SECRETISH = ("secret", "token", "password", "key")
-
-
-def _public(config: object) -> object:
-    if isinstance(config, dict):
-        return {
-            k: _public(v)
-            for k, v in sorted(config.items())
-            if not any(word in str(k).lower() for word in _SECRETISH)
-        }
-    if isinstance(config, list):
-        return [_public(v) for v in config]
-    return config
-
-
 async def binding_fingerprint(
     db: AsyncSession, agent: m.Agent, tool_key: str, *, version_id: uuid.UUID | None
 ) -> str:
     """What the person who confirmed a binding to their own account saw: the
-    agent version, the skills the agent (or its department or the whole
-    organisation) gets, the department's frame and the department's setup of
-    this tool. Anything else (status, routing hints) does not change it."""
+    agent version (or, for an agent without one, its working copy), the
+    skills the agent (or its department or the whole organisation) gets, the
+    department's frame and the department's setup of this tool. Anything else
+    (status, routing hints) does not change it. The setup is hashed whole: the
+    result is a digest, and the config holds references, not secret values."""
     assignments = (
         await db.execute(
             select(m.SkillAssignment).where(
@@ -207,9 +195,12 @@ async def binding_fingerprint(
             )
         )
     ).scalars()
-    setup = sorted([str(c.id), str(c.credential_id), _public(c.config)] for c in conns)
+    setup = sorted(
+        [str(c.id), str(c.credential_id), c.server_url, c.transport, c.scopes, c.config]
+        for c in conns
+    )
     payload = {
-        "version": str(version_id) if version_id else None,
+        "version": str(version_id) if version_id else await snapshot_agent(db, agent),
         "skills": skills,
         "department": None if dept is None else [dept.goal, dept.frame, dept.frame_capa_defaults],
         "setup": setup,
@@ -218,15 +209,27 @@ async def binding_fingerprint(
 
 
 async def _trigger_owner_ok(db: AsyncSession, run: m.AgentRun, owner: uuid.UUID) -> bool:
+    """A run a trigger started (a schedule, a webhook, an event, a Copilot
+    follow-up) acts through a person's account only if that person created
+    the trigger. A webhook or event trigger, which anyone who reaches it can
+    fire, additionally needs its creator's explicit `acts_for_creator`."""
     ctx = run.context if isinstance(run.context, dict) else {}
-    raw = ctx.get("trigger_id")
-    if raw is None:
-        return True
-    try:
-        trigger = await db.get(m.Trigger, uuid.UUID(str(raw)))
-    except ValueError:
-        return False
-    return trigger is not None and trigger.created_by_member_id == owner
+    followup = ctx.get("followup")
+    raws = [ctx.get("trigger_id")]
+    if isinstance(followup, dict):
+        raws.append(followup.get("trigger_id"))
+    for raw in raws:
+        if raw is None:
+            continue
+        try:
+            trigger = await db.get(m.Trigger, uuid.UUID(str(raw)))
+        except ValueError:
+            return False
+        if trigger is None or trigger.created_by_member_id != owner:
+            return False
+        if trigger.kind in ("webhook", "event") and not trigger.acts_for_creator:
+            return False
+    return True
 
 
 async def _consented(

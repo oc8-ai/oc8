@@ -287,7 +287,9 @@ async def set_tool_access(
     row.oauth_connection_id = oauth_id
     row.credential_id = credential_id
     row.set_by_member_id = actor.member.id
-    row.set_with_manage = consent == "manage"
+    # An administrator's choice stands on its own (an organisation account or a
+    # colleague's); otherwise it rests on the owner or the department's setup.
+    row.set_with_manage = consent in ("manage", "organisation") and admin
     row.binding_fingerprint = await binding_fingerprint(
         db, agent, tool_key, version_id=agent.current_version_id
     )

@@ -485,3 +485,170 @@ async def test_an_organisation_target_needs_manage_or_the_departments_own_setup(
         row.department_id = agent.department_id
         row.config = {**row.config, "oauth_connection_id": str(shared)}
     assert (await _access(app_session, agent, conn, run)).oauth_connection.id == shared  # type: ignore[union-attr]
+
+
+async def _confirm_again(app_session: AppSessionFactory, agent: m.Agent) -> None:
+    async with app_session(agent.tenant_id) as db:
+        row = await db.scalar(
+            select(m.AgentToolAccess).where(m.AgentToolAccess.agent_id == agent.id)
+        )
+        assert row is not None
+        row.binding_fingerprint = await _fp(app_session, agent)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"config": {**MS_CFG, "secret_env": {"GRAPH_ACCESS_TOKEN": "oauth:other_mint"}}},
+        {"config": {**MS_CFG, "env": {**MS_CFG["env"], "MAILBOX_KEY": "boss@acme.test"}}},
+        {"server_url": "https://elsewhere.test/mcp"},
+        {"transport": "http"},
+        {"scopes": {"send_mail": "read"}},
+    ],
+)
+async def test_any_change_to_the_departments_tool_setup_needs_confirmation(
+    app_session: AppSessionFactory, change: dict[str, Any]
+) -> None:
+    agent, _anna, conn, run, _annas = await _bound_to_anna(app_session, department=True)
+    await _access(app_session, agent, conn, run)
+    async with app_session(agent.tenant_id) as db:
+        row = await db.get(m.McpConnection, conn)
+        assert row is not None
+        for attr, value in change.items():
+            setattr(row, attr, value)
+    with pytest.raises(ConnectionRequired) as exc:
+        await _access(app_session, agent, conn, run)
+    assert exc.value.reason == "binding_needs_confirmation"
+
+
+async def test_an_agent_without_a_version_is_fingerprinted_by_its_working_copy(
+    app_session: AppSessionFactory,
+) -> None:
+    agent = await _make_agent(app_session)
+    async with app_session(agent.tenant_id) as db:
+        live = await db.get(m.Agent, agent.id)
+        assert live is not None
+        live.current_version_id = None
+    agent, _anna, conn, run, annas = await _bound_to_anna_on(app_session, agent)
+    assert (await _access(app_session, agent, conn, run)).oauth_connection.id == annas  # type: ignore[union-attr]
+    async with app_session(agent.tenant_id) as db:
+        live = await db.get(m.Agent, agent.id)
+        assert live is not None
+        live.mission = "Something else entirely"
+    with pytest.raises(ConnectionRequired) as exc:
+        await _access(app_session, agent, conn, run)
+    assert exc.value.reason == "binding_needs_confirmation"
+
+
+async def _bound_to_anna_on(
+    app_session: AppSessionFactory, agent: m.Agent
+) -> tuple[m.Agent, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
+    anna = await member(app_session, agent.tenant_id, "anna@acme.test")
+    async with app_session(agent.tenant_id) as db:
+        conn = m.McpConnection(
+            tenant_id=agent.tenant_id,
+            name="microsoft365",
+            server_url="",
+            transport="stdio",
+            config=dict(MS_CFG),
+        )
+        db.add(conn)
+        run = m.AgentRun(
+            tenant_id=agent.tenant_id,
+            agent_id=agent.id,
+            source="manual",
+            context={"originating_operator": "anna@acme.test"},
+        )
+        db.add(run)
+        await db.flush()
+        conn_id, run_id = conn.id, run.id
+    annas = await oauth_row(app_session, agent.tenant_id, owner=anna)
+    await _bind(
+        app_session,
+        agent,
+        tool_key="microsoft365",
+        mode="fixed",
+        oauth_connection_id=annas,
+        set_by_member_id=anna,
+        binding_fingerprint=await _fp(app_session, agent),
+    )
+    return agent, anna, conn_id, run_id, annas
+
+
+async def _trigger(
+    app_session: AppSessionFactory, agent: m.Agent, creator: uuid.UUID, **fields: Any
+) -> uuid.UUID:
+    async with app_session(agent.tenant_id) as db:
+        trigger = m.Trigger(
+            tenant_id=agent.tenant_id,
+            agent_id=agent.id,
+            task_text="t",
+            created_by_member_id=creator,
+            **fields,
+        )
+        db.add(trigger)
+        await db.flush()
+        return trigger.id
+
+
+async def _run(
+    app_session: AppSessionFactory, agent: m.Agent, context: dict[str, Any]
+) -> uuid.UUID:
+    async with app_session(agent.tenant_id) as db:
+        run = m.AgentRun(
+            tenant_id=agent.tenant_id, agent_id=agent.id, source="chat", context=context
+        )
+        db.add(run)
+        await db.flush()
+        return run.id
+
+
+async def test_a_copilot_follow_up_counts_as_its_triggers_run(
+    app_session: AppSessionFactory,
+) -> None:
+    import datetime as dt
+
+    agent, anna, conn, _run_id, annas = await _bound_to_anna(app_session)
+    ben = await member(app_session, agent.tenant_id, "ben@acme.test")
+    due = dt.datetime.now(dt.UTC)
+    for creator, allowed in ((ben, False), (anna, True)):
+        trigger = await _trigger(app_session, agent, creator, kind="once", next_run_at=due)
+        run = await _run(
+            app_session,
+            agent,
+            {
+                "originating_operator": "anna@acme.test",
+                "followup": {"responsibility_id": str(uuid.uuid4()), "trigger_id": str(trigger)},
+            },
+        )
+        if allowed:
+            assert (await _access(app_session, agent, conn, run)).oauth_connection.id == annas  # type: ignore[union-attr]
+        else:
+            with pytest.raises(ConnectionRequired) as exc:
+                await _access(app_session, agent, conn, run)
+            assert exc.value.reason == "binding_needs_confirmation"
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"kind": "webhook", "webhook_token": None},
+        {"kind": "event", "event_source": "github", "event_type": "push"},
+    ],
+)
+async def test_a_webhook_or_event_trigger_needs_acts_for_creator(
+    app_session: AppSessionFactory, fields: dict[str, Any]
+) -> None:
+    agent, anna, conn, _run_id, annas = await _bound_to_anna(app_session)
+    for acts in (False, True):
+        extra = dict(fields)
+        if "webhook_token" in extra:
+            extra["webhook_token"] = uuid.uuid4().hex
+        trigger = await _trigger(app_session, agent, anna, acts_for_creator=acts, **extra)
+        run = await _run(app_session, agent, {"trigger_id": str(trigger)})
+        if acts:
+            assert (await _access(app_session, agent, conn, run)).oauth_connection.id == annas  # type: ignore[union-attr]
+        else:
+            with pytest.raises(ConnectionRequired) as exc:
+                await _access(app_session, agent, conn, run)
+            assert exc.value.reason == "binding_needs_confirmation"
