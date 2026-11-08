@@ -12,7 +12,7 @@ import datetime as dt
 import uuid
 from typing import Any
 
-from sqlalchemy import CheckConstraint, DateTime, Text, Uuid
+from sqlalchemy import CheckConstraint, DateTime, Index, Text, Uuid, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -22,6 +22,17 @@ from oc8.models._mixins import PkMixin, TenantMixin
 
 class ChatSession(Base, PkMixin, TenantMixin, TimestampMixin):
     __tablename__ = "chat_session"
+    __table_args__ = (
+        CheckConstraint("kind IN ('chat','live')", name="ck_chat_session_kind"),
+        Index(
+            "uq_chat_session_live",
+            "tenant_id",
+            "member_id",
+            "agent_id",
+            unique=True,
+            postgresql_where=text("kind = 'live'"),
+        ),
+    )
 
     agent_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
     member_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
@@ -37,6 +48,10 @@ class ChatSession(Base, PkMixin, TenantMixin, TimestampMixin):
     #: its version, so a model later removed from the set of chat-enabled
     #: models stops being used without anybody editing the chat.
     model_override_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    #: "chat" for an ordinary conversation, "live" for the one continuous
+    #: Live timeline per (member, agent) (spec §3.1); `uq_chat_session_live`
+    #: (migration 0108) keeps that to one row.
+    kind: Mapped[str] = mapped_column(Text, nullable=False, default="chat", server_default="chat")
 
 
 class ChatMessage(Base, PkMixin, TenantMixin, TimestampMixin):

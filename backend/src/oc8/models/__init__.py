@@ -62,6 +62,7 @@ from oc8.models.run import (
     RunMessage,
     ToolInvocation,
 )
+from oc8.models.run_input import RunInput
 from oc8.models.secrets import Secret, TenantDek
 from oc8.models.skills import ImportedSkillFile, Skill, SkillAssignment, SkillVersion
 from oc8.models.triggers import Trigger
@@ -125,6 +126,7 @@ __all__ = [
     "Role",
     "RolePermission",
     "RunCancellation",
+    "RunInput",
     "RunMessage",
     "RunStateTransition",
     "Secret",
