@@ -55,6 +55,11 @@ class RenameChatSessionRequest(CamelModel):
     title: str = Field(min_length=1, max_length=200)
 
 
+class MessageFeedbackRequest(CamelModel):
+    rating: Literal["up", "down"]
+    note: str = Field(default="", max_length=500)
+
+
 class SetChatModelRequest(CamelModel):
     #: None selects "Auto" (the agent's own model).
     model_config_id: uuid.UUID | None = None

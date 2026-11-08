@@ -31,7 +31,7 @@ from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.chat.modes import ChatMode, mode_directive, parse_command
+from oc8.chat.modes import MODES, ChatMode, mode_directive, parse_command
 from oc8.copilot.redaction import is_secret_request, redact_text
 from oc8.copilot.responsibilities import close_responsibility
 from oc8.runtime.intake import enqueue_run
@@ -583,6 +583,91 @@ async def send_message(
             text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": str(tenant_id)}
         )
     return user_message, run
+
+
+async def regenerate_reply(
+    db: AsyncSession,
+    *,
+    session: m.ChatSession,
+    tenant_id: uuid.UUID,
+    user_message: m.ChatMessage,
+    originating_operator: str | None,
+    operator_role: str | None,
+) -> m.AgentRun:
+    """A second answer to an existing user turn (spec §2.1 "Regenerate").
+
+    No new user turn and no history rewrite: the transcript is everything
+    before `user_message` plus that turn, the new run carries the same
+    `reply_to_message_id`, and `record_assistant_reply` files its answer next to
+    the first one. The turn's mode, `#` references and attachments apply again.
+
+    COMMITS `db` (via `enqueue_run`) and re-binds the RLS tenant afterwards,
+    like `send_message`.
+    """
+    history = await list_messages(db, tenant_id=tenant_id, session_id=session.id)
+    before = [msg for msg in history if msg.id < user_message.id]
+    mode = MODES.get(user_message.mode or "")
+    refs = [
+        {"kind": str(r.get("kind")), "id": str(r.get("id"))}
+        for r in (user_message.context_refs or [])
+        if isinstance(r, dict)
+    ]
+    resolved_refs = await _resolve_context_refs(db, tenant_id=tenant_id, refs=refs)
+    task_text = _build_task_text(before, user_message.content, new_role="user")
+    if resolved_refs:
+        named = ", ".join(f'"{ref["label"]}"' for ref in resolved_refs)
+        if mode is not None and not mode.allows_tools:
+            task_text += f"\n\n[Context attached by the operator: knowledge base {named}.]"
+        else:
+            task_text += (
+                f"\n\n[Context attached by the operator: knowledge base {named}. "
+                "Search it with search_knowledge before answering; for this turn "
+                "that tool reads nothing else.]"
+            )
+    attachments = list(
+        (
+            await db.execute(
+                select(m.FileAttachment).where(
+                    m.FileAttachment.tenant_id == tenant_id,
+                    m.FileAttachment.owner_type == "chat_message",
+                    m.FileAttachment.owner_id == user_message.id,
+                )
+            )
+        ).scalars()
+    )
+    for att in attachments:
+        if att.is_image:
+            continue
+        task_text += f"\n\n[Attached file: {att.filename}]\n"
+        task_text += (
+            att.extracted_text if att.extracted_text else "(could not read this file's content)"
+        )
+    context = _build_turn_context(
+        session=session,
+        task_text=task_text,
+        reply_to_message_id=user_message.id,
+        image_attachments=[att for att in attachments if att.is_image],
+        originating_operator=originating_operator,
+        operator_role=operator_role,
+        chat_channel=None,
+        chat_channel_external_id=None,
+        role="user",
+        mode=mode,
+        resolved_refs=resolved_refs,
+        extra_context={"regenerated": True},
+    )
+    run, _published = await enqueue_run(
+        db,
+        tenant_id=tenant_id,
+        agent_id=session.agent_id,
+        context=context,
+        source="chat",
+        task_id=session.task_id,
+    )
+    await db.execute(
+        text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": str(tenant_id)}
+    )
+    return run
 
 
 async def record_assistant_reply(db: AsyncSession, *, run: m.AgentRun, output: str) -> None:

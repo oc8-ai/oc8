@@ -295,6 +295,8 @@ _CHAT_ROUTES: dict[tuple[str, str], str] = {
     ("GET", "/api/v1/chat/sessions/{}"): "agent:view",
     ("GET", "/api/v1/chat/sessions/{}/models"): "agent:view",
     ("PUT", "/api/v1/chat/sessions/{}/model"): "agent:view",
+    ("POST", "/api/v1/chat/sessions/{}/messages/{}/regenerate"): "agent:view",
+    ("POST", "/api/v1/chat/sessions/{}/messages/{}/feedback"): "agent:view",
 }
 
 

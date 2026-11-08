@@ -17,6 +17,7 @@ from oc8.agents.repo import visible_agent
 from oc8.agents.versioning import pinned_model_config_id, pinned_version_no, resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession, require_departmental, require_permission
 from oc8.api.v1.run import run_to_dto
+from oc8.audit import append_event
 from oc8.authz.authority import Authority, authority_for_principal, tenant_wide_read
 from oc8.authz.permissions import AGENT, COPILOT, COPILOT_USE, MANAGE, RUN_START, VIEW, perm
 from oc8.authz.scope import HumanActor
@@ -29,6 +30,7 @@ from oc8.chat.service import (
     get_session,
     list_messages,
     list_sessions,
+    regenerate_reply,
     rename_session,
     send_message,
 )
@@ -45,6 +47,7 @@ from oc8.schemas.dto import (
 )
 from oc8.schemas.requests import (
     CreateChatSessionRequest,
+    MessageFeedbackRequest,
     RenameChatSessionRequest,
     SendChatMessageRequest,
     SetChatModelRequest,
@@ -448,6 +451,87 @@ async def post_message(
         # runId matches, regardless of what else lands in between.
         dto = dto.model_copy(update={"run_id": str(run.id)})
     return dto
+
+
+async def _session_message(
+    db: DbSession, *, session: m.ChatSession, message_id: uuid.UUID
+) -> m.ChatMessage:
+    msg = await db.get(m.ChatMessage, message_id)
+    if msg is None or msg.session_id != session.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "message not found")
+    return msg
+
+
+@router.post(
+    "/chat/sessions/{session_id}/messages/{message_id}/regenerate",
+    response_model=ActiveRunDTO,
+    status_code=status.HTTP_201_CREATED,
+)
+async def regenerate_message(
+    request: Request,
+    session_id: uuid.UUID,
+    message_id: uuid.UUID,
+    db: DbSession,
+    actor: _ChatActor,
+) -> ActiveRunDTO:
+    """Answer a user turn again; both answers stay (spec §2.1)."""
+    session = await _owned_session(request, session_id, db, actor)
+    msg = await _session_message(db, session=session, message_id=message_id)
+    if msg.role != "user":
+        raise HTTPException(status.HTTP_409_CONFLICT, "only a member's turn can be answered again")
+    running = await active_runs_for_session(
+        db, tenant_id=actor.principal.tenant_id, session_id=session.id
+    )
+    if any((r.context or {}).get("reply_to_message_id") == str(msg.id) for r in running):
+        raise HTTPException(status.HTTP_409_CONFLICT, "an answer to this turn is still running")
+    authority = await authority_for_principal(request, db, actor.principal)
+    is_assistant = await _assistant_visible(
+        db, tenant_id=actor.principal.tenant_id, authority=authority, agent_id=session.agent_id
+    )
+    if not is_assistant and RUN_START not in authority.tenant_wide:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, f"requires permission: {RUN_START}")
+    run = await regenerate_reply(
+        db,
+        session=session,
+        tenant_id=actor.principal.tenant_id,
+        user_message=msg,
+        originating_operator=actor.principal.subject,
+        operator_role=actor.principal.role,
+    )
+    return ActiveRunDTO(run_id=str(run.id), reply_to_id=str(msg.id), state=run.state)
+
+
+@router.post(
+    "/chat/sessions/{session_id}/messages/{message_id}/feedback",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def message_feedback(
+    request: Request,
+    session_id: uuid.UUID,
+    message_id: uuid.UUID,
+    body: MessageFeedbackRequest,
+    db: DbSession,
+    actor: _ChatActor,
+) -> None:
+    session = await _owned_session(request, session_id, db, actor)
+    msg = await _session_message(db, session=session, message_id=message_id)
+    await append_event(
+        db,
+        tenant_id=actor.principal.tenant_id,
+        actor_type="operator",
+        actor_id=actor.member.id,
+        category="chat",
+        action="chat.feedback",
+        resource={
+            "session_id": str(session.id),
+            "message_id": str(msg.id),
+            "run_id": str(msg.run_id) if msg.run_id else None,
+            "rating": body.rating,
+            "note": body.note,
+        },
+        principal=actor.principal,
+    )
+    await db.commit()
 
 
 @router.get("/chat/sessions/{session_id}/runs/{run_id}", response_model=RunDTO)
