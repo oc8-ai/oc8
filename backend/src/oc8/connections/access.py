@@ -10,6 +10,8 @@ organisation's.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from dataclasses import dataclass
 
@@ -120,7 +122,7 @@ async def resolve_tool_access(
         )
     )
     if row is not None and row.mode == "fixed":
-        return await _fixed(db, row, agent, integration, acting)
+        return await _fixed(db, row, agent, run, conn.name, integration, acting)
     if row is None:
         if conn.credential_id is not None:
             return ToolAccess("legacy", integration, acting.member_id)
@@ -130,21 +132,134 @@ async def resolve_tool_access(
     return await _user(db, integration, acting)
 
 
-def _consented(row: m.AgentToolAccess, agent: m.Agent, owner: uuid.UUID | None) -> bool:
-    """A person's own account may only be acted through when that person (or an
-    administrator) set the binding, and the agent is unchanged since."""
-    if owner is None:
-        return True
-    basis = row.set_with_manage or (
-        row.set_by_member_id is not None and row.set_by_member_id == owner
+async def department_targets(db: AsyncSession, agent: m.Agent, tool_key: str) -> list[uuid.UUID]:
+    """The accounts the agent's own department already set up for this tool
+    (its MCP connection's OAuth connection or pinned login)."""
+    conns = (
+        await db.execute(
+            select(m.McpConnection).where(
+                m.McpConnection.name == tool_key,
+                m.McpConnection.department_id == agent.department_id,
+            )
+        )
+    ).scalars()
+    out: list[uuid.UUID] = []
+    for conn in conns:
+        cfg = conn.config if isinstance(conn.config, dict) else {}
+        for raw in (cfg.get("oauth_connection_id"), conn.credential_id):
+            try:
+                out.append(raw if isinstance(raw, uuid.UUID) else uuid.UUID(str(raw)))
+            except ValueError:
+                continue
+    return out
+
+
+_SECRETISH = ("secret", "token", "password", "key")
+
+
+def _public(config: object) -> object:
+    if isinstance(config, dict):
+        return {
+            k: _public(v)
+            for k, v in sorted(config.items())
+            if not any(word in str(k).lower() for word in _SECRETISH)
+        }
+    if isinstance(config, list):
+        return [_public(v) for v in config]
+    return config
+
+
+async def binding_fingerprint(
+    db: AsyncSession, agent: m.Agent, tool_key: str, *, version_id: uuid.UUID | None
+) -> str:
+    """What the person who confirmed a binding to their own account saw: the
+    agent version, the skills the agent (or its department or the whole
+    organisation) gets, the department's frame and the department's setup of
+    this tool. Anything else (status, routing hints) does not change it."""
+    assignments = (
+        await db.execute(
+            select(m.SkillAssignment).where(
+                m.SkillAssignment.deleted_at.is_(None),
+                (m.SkillAssignment.agent_id == agent.id)
+                | (m.SkillAssignment.department_id == agent.department_id)
+                | (
+                    m.SkillAssignment.agent_id.is_(None) & m.SkillAssignment.department_id.is_(None)
+                ),
+            )
+        )
+    ).scalars()
+    skills = sorted(
+        [
+            str(a.id),
+            str(a.skill_version_id),
+            bool(a.enabled),
+            a.overrides,
+            a.updated_at.isoformat() if a.updated_at else None,
+        ]
+        for a in assignments
     )
-    return basis and row.agent_revision is not None and row.agent_revision == agent.config_revision
+    dept = await db.get(m.Department, agent.department_id)
+    conns = (
+        await db.execute(
+            select(m.McpConnection).where(
+                m.McpConnection.name == tool_key,
+                m.McpConnection.department_id == agent.department_id,
+            )
+        )
+    ).scalars()
+    setup = sorted([str(c.id), str(c.credential_id), _public(c.config)] for c in conns)
+    payload = {
+        "version": str(version_id) if version_id else None,
+        "skills": skills,
+        "department": None if dept is None else [dept.goal, dept.frame, dept.frame_capa_defaults],
+        "setup": setup,
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+
+
+async def _trigger_owner_ok(db: AsyncSession, run: m.AgentRun, owner: uuid.UUID) -> bool:
+    ctx = run.context if isinstance(run.context, dict) else {}
+    raw = ctx.get("trigger_id")
+    if raw is None:
+        return True
+    try:
+        trigger = await db.get(m.Trigger, uuid.UUID(str(raw)))
+    except ValueError:
+        return False
+    return trigger is not None and trigger.created_by_member_id == owner
+
+
+async def _consented(
+    db: AsyncSession,
+    row: m.AgentToolAccess,
+    agent: m.Agent,
+    run: m.AgentRun,
+    tool_key: str,
+    target_id: uuid.UUID,
+    owner: uuid.UUID | None,
+) -> bool:
+    if owner is None:
+        # An organisation account: an administrator chose it, or it still is
+        # the department's own setup.
+        return row.set_with_manage or target_id in await department_targets(db, agent, tool_key)
+    # A person's own account: that person (or an administrator) chose it, the
+    # agent is unchanged since, and a schedule or trigger is that person's.
+    if not (row.set_with_manage or row.set_by_member_id == owner):
+        return False
+    current = await binding_fingerprint(
+        db, agent, tool_key, version_id=run.agent_version_id or agent.current_version_id
+    )
+    if row.binding_fingerprint is None or row.binding_fingerprint != current:
+        return False
+    return await _trigger_owner_ok(db, run, owner)
 
 
 async def _fixed(
     db: AsyncSession,
     row: m.AgentToolAccess,
     agent: m.Agent,
+    run: m.AgentRun,
+    tool_key: str,
     integration: Integration,
     acting: ActingPerson,
 ) -> ToolAccess:
@@ -153,13 +268,15 @@ async def _fixed(
         if target is not None and target.provider == integration.provider:
             if target.status != "active":
                 raise ConnectionRequired(integration, "needs_reauth")
-            if not _consented(row, agent, target.owner_member_id):
+            if not await _consented(
+                db, row, agent, run, tool_key, target.id, target.owner_member_id
+            ):
                 raise ConnectionRequired(integration, "binding_needs_confirmation")
             return ToolAccess("oauth", integration, acting.member_id, oauth_connection=target)
     if integration.kind == "credential" and row.credential_id is not None:
         cred = await db.get(m.Credential, row.credential_id)
         if cred is not None and cred.credential_type == integration.credential_type:
-            if not _consented(row, agent, cred.owner_member_id):
+            if not await _consented(db, row, agent, run, tool_key, cred.id, cred.owner_member_id):
                 raise ConnectionRequired(integration, "binding_needs_confirmation")
             return ToolAccess("credential", integration, acting.member_id, credential=cred)
     # The target is gone (ON DELETE SET NULL) or never matched: refuse, never re-choose.

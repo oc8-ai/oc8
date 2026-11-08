@@ -1,9 +1,9 @@
 """Agent tool access: consent for a fixed binding to a personal account.
 
 `set_with_manage` records that an administrator set the binding;
-`agent_revision` is the agent's config_revision when it was confirmed. A
-personal target is only used while both the consent basis holds and the agent
-is unchanged since then.
+`binding_fingerprint` hashes what the confirming person saw (agent version,
+skills, department frame and setup). A personal target is only used while the
+consent basis holds and that fingerprint is unchanged.
 
 Revision ID: 0109
 Revises: 0108
@@ -27,7 +27,7 @@ def add_consent_columns(conn: sa.Connection) -> None:
         sa.text(
             "ALTER TABLE agent_tool_access "
             "ADD COLUMN IF NOT EXISTS set_with_manage boolean NOT NULL DEFAULT false, "
-            "ADD COLUMN IF NOT EXISTS agent_revision integer"
+            "ADD COLUMN IF NOT EXISTS binding_fingerprint text"
         )
     )
 
@@ -36,7 +36,7 @@ def remove_consent_columns(conn: sa.Connection) -> None:
     conn.execute(
         sa.text(
             "ALTER TABLE agent_tool_access DROP COLUMN IF EXISTS set_with_manage, "
-            "DROP COLUMN IF EXISTS agent_revision"
+            "DROP COLUMN IF EXISTS binding_fingerprint"
         )
     )
 

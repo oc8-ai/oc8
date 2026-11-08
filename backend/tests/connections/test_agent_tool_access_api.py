@@ -119,12 +119,18 @@ async def test_binding_your_own_account_needs_confirm_share_and_is_audited(
         assert ok.status_code == 200, ok.text
     row = await _row(app_session, agent)
     assert (row.set_by_member_id, row.set_with_manage) == (anna, False)
-    assert row.agent_revision is not None
+    assert row.binding_fingerprint
     event = (await _events(app_session, tenant, "agent.tool_access.updated"))[-1]
     assert event["target_owner_member_id"] == str(anna)
     assert event["consent"] == "owner" and event["confirm_share"] is True
     assert event["target_label"] == "anna@acme.test"
-    assert event["previous"] == {"mode": None, "oauth_connection_id": None, "credential_id": None}
+    assert event["previous"] == {
+        "mode": None,
+        "oauth_connection_id": None,
+        "credential_id": None,
+        "set_by_member_id": None,
+        "set_with_manage": None,
+    }
 
 
 async def test_an_administrator_may_bind_another_persons_account(
@@ -253,3 +259,20 @@ async def test_other_tenants_ids_are_not_found_and_nothing_secret_is_returned(
         )
     for text in (listing.text.lower(), options.text.lower()):
         assert "secret" not in text and "token" not in text
+
+
+async def test_a_leftover_row_of_a_removed_integration_can_still_be_reset(
+    app_session: AppSessionFactory,
+) -> None:
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    async with app_session(tenant) as db:
+        db.add(m.AgentToolAccess(tenant_id=tenant, agent_id=agent.id, tool_key="gone", mode="user"))
+    async with api() as c:
+        admin = headers(tenant, "root@acme.test", ADMIN)
+        assert (
+            await c.delete(f"/api/v1/agents/{agent.id}/tool-access/gone", headers=admin)
+        ).status_code == 204
+        assert (
+            await c.delete(f"/api/v1/agents/{agent.id}/tool-access/gone", headers=admin)
+        ).status_code == 404

@@ -19,6 +19,7 @@ from oc8.api.deps import DbSession, authorize_agent_write, require_agent_write
 from oc8.api.v1.connections import may_manage_integrations
 from oc8.audit import append_event
 from oc8.authz.scope import HumanActor
+from oc8.connections.access import binding_fingerprint, department_targets
 from oc8.connections.integrations import Integration, installed_integrations
 from oc8.schemas.dto import AccessOptionDTO, AgentToolAccessDTO
 from oc8.schemas.requests import SetAgentToolAccessRequest
@@ -48,29 +49,6 @@ async def _integrations(db: AsyncSession) -> dict[str, Integration]:
         for i in await installed_integrations(db)
         if i.available
     }
-
-
-async def _department_targets(db: AsyncSession, agent: m.Agent, tool_key: str) -> list[uuid.UUID]:
-    """The accounts the agent's own department already set up for this tool
-    (its MCP connection's OAuth connection or pinned login). Choosing these
-    needs no administrator: the department already runs on them."""
-    conns = (
-        await db.execute(
-            select(m.McpConnection).where(
-                m.McpConnection.name == tool_key,
-                m.McpConnection.department_id == agent.department_id,
-            )
-        )
-    ).scalars()
-    out: list[uuid.UUID] = []
-    for conn in conns:
-        cfg = conn.config if isinstance(conn.config, dict) else {}
-        for raw in (cfg.get("oauth_connection_id"), conn.credential_id):
-            try:
-                out.append(raw if isinstance(raw, uuid.UUID) else uuid.UUID(str(raw)))
-            except ValueError:
-                continue
-    return out
 
 
 async def _names(db: AsyncSession, ids: set[uuid.UUID | None]) -> dict[uuid.UUID, str]:
@@ -195,7 +173,7 @@ async def list_options(
             .all()
         )
         items = [(c.id, c.name, c.owner_member_id) for c in creds]
-    dept_ids = set(await _department_targets(db, agent, tool_key))
+    dept_ids = set(await department_targets(db, agent, tool_key))
     names = await _names(db, {owner for _, _, owner in items})
     kind = "oauth" if integ.kind == "oauth" else "credential"
     for owner_group in ("organisation", "me", "member"):
@@ -267,7 +245,7 @@ async def set_tool_access(
             raise HTTPException(unprocessable, "a fixed access names exactly one matching target")
         target_id = oauth_id or credential_id
         if owner is None:
-            if not admin and target_id not in await _department_targets(db, agent, tool_key):
+            if not admin and target_id not in await department_targets(db, agent, tool_key):
                 raise HTTPException(
                     status.HTTP_403_FORBIDDEN,
                     "only an administrator may bind an agent to an organisation account",
@@ -297,6 +275,8 @@ async def set_tool_access(
         if row and row.oauth_connection_id
         else None,
         "credential_id": str(row.credential_id) if row and row.credential_id else None,
+        "set_by_member_id": str(row.set_by_member_id) if row and row.set_by_member_id else None,
+        "set_with_manage": row.set_with_manage if row else None,
     }
     if row is None:
         row = m.AgentToolAccess(
@@ -308,7 +288,9 @@ async def set_tool_access(
     row.credential_id = credential_id
     row.set_by_member_id = actor.member.id
     row.set_with_manage = consent == "manage"
-    row.agent_revision = agent.config_revision
+    row.binding_fingerprint = await binding_fingerprint(
+        db, agent, tool_key, version_id=agent.current_version_id
+    )
     await db.flush()
     await append_event(
         db,
@@ -345,13 +327,13 @@ async def reset_tool_access(
     actor: Annotated[HumanActor, Depends(require_agent_write())],
 ) -> None:
     agent = await _agent(request, db, actor, agent_id)
-    if tool_key not in await _integrations(db):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "no connectable integration for this tool")
     row = await db.scalar(
         select(m.AgentToolAccess).where(
             m.AgentToolAccess.agent_id == agent.id, m.AgentToolAccess.tool_key == tool_key
         )
     )
+    if row is None and tool_key not in await _integrations(db):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no connectable integration for this tool")
     if row is not None:
         previous = {
             "mode": row.mode,
@@ -359,6 +341,8 @@ async def reset_tool_access(
             if row.oauth_connection_id
             else None,
             "credential_id": str(row.credential_id) if row.credential_id else None,
+            "set_by_member_id": str(row.set_by_member_id) if row.set_by_member_id else None,
+            "set_with_manage": row.set_with_manage,
         }
         await db.delete(row)
         await append_event(

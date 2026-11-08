@@ -11,7 +11,12 @@ import pytest
 from sqlalchemy import select
 
 from oc8 import models as m
-from oc8.connections.access import ConnectionRequired, ToolAccess, resolve_tool_access
+from oc8.connections.access import (
+    ConnectionRequired,
+    ToolAccess,
+    binding_fingerprint,
+    resolve_tool_access,
+)
 from oc8.connections.revoke import purge_member_connections
 from tests.conftest import AppSessionFactory
 from tests.connections.helpers import credential_row, member, oauth_row
@@ -131,7 +136,7 @@ async def test_a_fixed_binding_is_used_for_everyone(app_session: AppSessionFacto
         mode="fixed",
         oauth_connection_id=annas,
         set_by_member_id=anna,
-        agent_revision=await _revision(app_session, agent),
+        binding_fingerprint=await _fp(app_session, agent),
     )
     # A scheduled run nobody is working with still uses the fixed account.
     async with app_session(agent.tenant_id) as db:
@@ -225,18 +230,19 @@ async def test_trigger_owner_removed_fails_cleanly(app_session: AppSessionFactor
     assert exc.value.reason == "not_connected"
 
 
-async def _revision(app_session: AppSessionFactory, agent: m.Agent) -> int:
+async def _fp(app_session: AppSessionFactory, agent: m.Agent, tool: str = "microsoft365") -> str:
     async with app_session(agent.tenant_id) as db:
         live = await db.get(m.Agent, agent.id)
         assert live is not None
-        return live.config_revision
+        return await binding_fingerprint(db, live, tool, version_id=live.current_version_id)
 
 
 async def _edit_agent(app_session: AppSessionFactory, agent: m.Agent) -> None:
+    """Publishing a new agent version."""
     async with app_session(agent.tenant_id) as db:
         live = await db.get(m.Agent, agent.id)
         assert live is not None
-        live.mission = "changed by somebody else"
+        live.current_version_id = uuid.uuid4()
 
 
 async def test_an_owners_own_binding_works_until_the_agent_is_edited(
@@ -251,7 +257,7 @@ async def test_an_owners_own_binding_works_until_the_agent_is_edited(
         mode="fixed",
         oauth_connection_id=annas,
         set_by_member_id=anna,
-        agent_revision=await _revision(app_session, agent),
+        binding_fingerprint=await _fp(app_session, agent),
     )
     assert (await _access(app_session, agent, conn, run)).oauth_connection.id == annas  # type: ignore[union-attr]
     await _edit_agent(app_session, agent)
@@ -264,7 +270,7 @@ async def test_an_owners_own_binding_works_until_the_agent_is_edited(
             select(m.AgentToolAccess).where(m.AgentToolAccess.agent_id == agent.id)
         )
         assert row is not None
-        row.agent_revision = await _revision(app_session, agent)
+        row.binding_fingerprint = await _fp(app_session, agent)
     assert (await _access(app_session, agent, conn, run)).oauth_connection.id == annas  # type: ignore[union-attr]
 
 
@@ -282,7 +288,7 @@ async def test_a_third_partys_binding_to_a_personal_account_is_refused(
         oauth_connection_id=annas,
         set_by_member_id=ben,
         set_with_manage=False,
-        agent_revision=await _revision(app_session, agent),
+        binding_fingerprint=await _fp(app_session, agent),
     )
     with pytest.raises(ConnectionRequired) as exc:
         await _access(app_session, agent, conn, run)
@@ -303,16 +309,23 @@ async def test_an_administrators_binding_to_a_personal_account_works(
         oauth_connection_id=annas,
         set_by_member_id=root,
         set_with_manage=True,
-        agent_revision=await _revision(app_session, agent),
+        binding_fingerprint=await _fp(app_session, agent),
     )
     assert (await _access(app_session, agent, conn, run)).oauth_connection.id == annas  # type: ignore[union-attr]
 
 
-async def test_an_organisation_target_needs_no_consent(app_session: AppSessionFactory) -> None:
+async def test_an_organisation_target_set_by_an_administrator_works(
+    app_session: AppSessionFactory,
+) -> None:
     agent, _anna, conn, run = await _setup(app_session)
     shared = await oauth_row(app_session, agent.tenant_id, owner=None, label="shared@acme.test")
     await _bind(
-        app_session, agent, tool_key="microsoft365", mode="fixed", oauth_connection_id=shared
+        app_session,
+        agent,
+        tool_key="microsoft365",
+        mode="fixed",
+        oauth_connection_id=shared,
+        set_with_manage=True,
     )
     assert (await _access(app_session, agent, conn, run)).oauth_connection.id == shared  # type: ignore[union-attr]
 
@@ -344,3 +357,131 @@ async def test_an_access_setting_applies_to_a_pinned_login_too(
     await _bind(app_session, agent, tool_key="odoo", mode="user")
     access = await _access(app_session, agent, conn, run)
     assert (access.kind, access.credential.id) == ("credential", mine)  # type: ignore[union-attr]
+
+
+async def _bound_to_anna(
+    app_session: AppSessionFactory, **kw: Any
+) -> tuple[m.Agent, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
+    agent, anna, conn, run = await _setup(app_session, **kw)
+    annas = await oauth_row(app_session, agent.tenant_id, owner=anna)
+    await _bind(
+        app_session,
+        agent,
+        tool_key="microsoft365",
+        mode="fixed",
+        oauth_connection_id=annas,
+        set_by_member_id=anna,
+        binding_fingerprint=await _fp(app_session, agent),
+    )
+    return agent, anna, conn, run, annas
+
+
+async def test_ordinary_agent_activity_keeps_a_binding_valid(
+    app_session: AppSessionFactory,
+) -> None:
+    agent, _anna, conn, run, annas = await _bound_to_anna(app_session)
+    for status in ("running", "idle"):
+        async with app_session(agent.tenant_id) as db:
+            live = await db.get(m.Agent, agent.id)
+            assert live is not None
+            live.status = status
+            live.definition = {
+                **live.definition,
+                "auto_router_affinity": {"tier": "x", "config_id": "y"},
+            }
+        assert (await _access(app_session, agent, conn, run)).oauth_connection.id == annas  # type: ignore[union-attr]
+
+
+async def test_a_skill_or_department_change_needs_confirmation(
+    app_session: AppSessionFactory,
+) -> None:
+    agent, _anna, conn, run, _annas = await _bound_to_anna(app_session)
+    async with app_session(agent.tenant_id) as db:
+        skill = m.Skill(tenant_id=agent.tenant_id, name="s")
+        db.add(skill)
+        await db.flush()
+        version = m.SkillVersion(
+            tenant_id=agent.tenant_id,
+            skill_id=skill.id,
+            semver="1.0.0",
+            definition={},
+            artifact_hash=b"x",
+        )
+        db.add(version)
+        await db.flush()
+        db.add(
+            m.SkillAssignment(
+                tenant_id=agent.tenant_id, agent_id=agent.id, skill_version_id=version.id
+            )
+        )
+    with pytest.raises(ConnectionRequired) as exc:
+        await _access(app_session, agent, conn, run)
+    assert exc.value.reason == "binding_needs_confirmation"
+    # Confirm again, then change the department's frame.
+    async with app_session(agent.tenant_id) as db:
+        row = await db.scalar(
+            select(m.AgentToolAccess).where(m.AgentToolAccess.agent_id == agent.id)
+        )
+        assert row is not None
+        row.binding_fingerprint = await _fp(app_session, agent)
+    await _access(app_session, agent, conn, run)
+    async with app_session(agent.tenant_id) as db:
+        dept = await db.get(m.Department, agent.department_id)
+        assert dept is not None
+        dept.frame = {**dept.frame, "allowed": ["something new"]}
+    with pytest.raises(ConnectionRequired) as exc:
+        await _access(app_session, agent, conn, run)
+    assert exc.value.reason == "binding_needs_confirmation"
+
+
+async def test_a_trigger_acts_through_a_personal_binding_only_for_its_owner(
+    app_session: AppSessionFactory,
+) -> None:
+    agent, anna, conn, _run, annas = await _bound_to_anna(app_session)
+    ben = await member(app_session, agent.tenant_id, "ben@acme.test")
+
+    async def fire(creator: uuid.UUID) -> uuid.UUID:
+        async with app_session(agent.tenant_id) as db:
+            trigger = m.Trigger(
+                tenant_id=agent.tenant_id,
+                agent_id=agent.id,
+                kind="cron",
+                task_text="t",
+                cron_expression="0 8 * * *",
+                created_by_member_id=creator,
+            )
+            db.add(trigger)
+            await db.flush()
+            run = m.AgentRun(
+                tenant_id=agent.tenant_id,
+                agent_id=agent.id,
+                source="cron",
+                context={"trigger_id": str(trigger.id)},
+            )
+            db.add(run)
+            await db.flush()
+            return run.id
+
+    with pytest.raises(ConnectionRequired) as exc:
+        await _access(app_session, agent, conn, await fire(ben))
+    assert exc.value.reason == "binding_needs_confirmation"
+    assert (await _access(app_session, agent, conn, await fire(anna))).oauth_connection.id == annas  # type: ignore[union-attr]
+
+
+async def test_an_organisation_target_needs_manage_or_the_departments_own_setup(
+    app_session: AppSessionFactory,
+) -> None:
+    agent, _anna, conn, run = await _setup(app_session)
+    shared = await oauth_row(app_session, agent.tenant_id, owner=None, label="shared@acme.test")
+    await _bind(
+        app_session, agent, tool_key="microsoft365", mode="fixed", oauth_connection_id=shared
+    )
+    with pytest.raises(ConnectionRequired) as exc:
+        await _access(app_session, agent, conn, run)
+    assert exc.value.reason == "binding_needs_confirmation"
+    async with app_session(agent.tenant_id) as db:
+        row = await db.get(m.McpConnection, conn)
+        assert row is not None
+        row.department_id = agent.department_id
+        row.config = {**row.config, "oauth_connection_id": str(shared)}
+    assert (await _access(app_session, agent, conn, run)).oauth_connection.id == shared  # type: ignore[union-attr]

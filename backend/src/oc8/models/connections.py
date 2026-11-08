@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import Boolean, CheckConstraint, Integer, Text, UniqueConstraint, Uuid
+from sqlalchemy import Boolean, CheckConstraint, Text, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from oc8.db.base import Base, TimestampMixin
@@ -33,9 +33,9 @@ class AgentToolAccess(Base, PkMixin, TenantMixin, TimestampMixin):
     set_with_manage: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
-    #: agent.config_revision when the binding was confirmed. A personal target
-    #: is only used while the agent is unchanged since then.
-    agent_revision: Mapped[int | None] = mapped_column(Integer)
+    #: What the confirming person saw (agent version, skills, department frame
+    #: and setup); a personal target is only used while it is unchanged.
+    binding_fingerprint: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (
         UniqueConstraint("agent_id", "tool_key", name="uq_agent_tool_access"),
