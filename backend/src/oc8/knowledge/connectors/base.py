@@ -163,3 +163,42 @@ class AttestingConnector(Protocol):
     async def attest_listing(
         self, config: dict[str, Any], auth: AuthContext | None = None
     ) -> SourceListing: ...
+
+
+@dataclass(frozen=True)
+class BrowseEntry:
+    id: str
+    name: str
+    is_folder: bool
+    size: int | None = None
+    content_type: str | None = None
+
+
+@dataclass(frozen=True)
+class FetchedFile:
+    name: str
+    content_type: str
+    data: bytes
+    #: Extracted text -- what read_context pages through.
+    text: str
+
+
+class BrowsingConnector(Protocol):
+    """The OPTIONAL browsing half of the seam (oc8 Chat spec §5.4), resolved by
+    `getattr` exactly like `AttestingConnector`: a source without it can still
+    be pinned as a whole. Capas implement it; core names no vendor.
+
+    `fetch_file` and not `fetch`: `Connector.fetch` already streams every
+    document for ingestion.
+
+    Implementations must treat `path` and `file_id` as untrusted input (core
+    only rejects traversal and control characters) and must never put config
+    values or credentials in an error message."""
+
+    async def browse(
+        self, config: dict[str, Any], path: str, auth: AuthContext | None = None
+    ) -> list[BrowseEntry]: ...
+
+    async def fetch_file(
+        self, config: dict[str, Any], file_id: str, auth: AuthContext | None = None
+    ) -> FetchedFile: ...
