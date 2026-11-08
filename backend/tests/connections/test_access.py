@@ -8,6 +8,7 @@ import uuid
 from typing import Any
 
 import pytest
+from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.connections.access import ConnectionRequired, ToolAccess, resolve_tool_access
@@ -124,7 +125,13 @@ async def test_a_fixed_binding_is_used_for_everyone(app_session: AppSessionFacto
     agent, anna, conn, _run_id = await _setup(app_session)
     annas = await oauth_row(app_session, agent.tenant_id, owner=anna)
     await _bind(
-        app_session, agent, tool_key="microsoft365", mode="fixed", oauth_connection_id=annas
+        app_session,
+        agent,
+        tool_key="microsoft365",
+        mode="fixed",
+        oauth_connection_id=annas,
+        set_by_member_id=anna,
+        agent_revision=await _revision(app_session, agent),
     )
     # A scheduled run nobody is working with still uses the fixed account.
     async with app_session(agent.tenant_id) as db:
@@ -216,3 +223,124 @@ async def test_trigger_owner_removed_fails_cleanly(app_session: AppSessionFactor
     with pytest.raises(ConnectionRequired) as exc:
         await _access(app_session, agent, conn, run_id)
     assert exc.value.reason == "not_connected"
+
+
+async def _revision(app_session: AppSessionFactory, agent: m.Agent) -> int:
+    async with app_session(agent.tenant_id) as db:
+        live = await db.get(m.Agent, agent.id)
+        assert live is not None
+        return live.config_revision
+
+
+async def _edit_agent(app_session: AppSessionFactory, agent: m.Agent) -> None:
+    async with app_session(agent.tenant_id) as db:
+        live = await db.get(m.Agent, agent.id)
+        assert live is not None
+        live.mission = "changed by somebody else"
+
+
+async def test_an_owners_own_binding_works_until_the_agent_is_edited(
+    app_session: AppSessionFactory,
+) -> None:
+    agent, anna, conn, run = await _setup(app_session)
+    annas = await oauth_row(app_session, agent.tenant_id, owner=anna)
+    await _bind(
+        app_session,
+        agent,
+        tool_key="microsoft365",
+        mode="fixed",
+        oauth_connection_id=annas,
+        set_by_member_id=anna,
+        agent_revision=await _revision(app_session, agent),
+    )
+    assert (await _access(app_session, agent, conn, run)).oauth_connection.id == annas  # type: ignore[union-attr]
+    await _edit_agent(app_session, agent)
+    with pytest.raises(ConnectionRequired) as exc:
+        await _access(app_session, agent, conn, run)
+    assert exc.value.reason == "binding_needs_confirmation"
+    # Re-confirming (the owner saves the binding again) stores the new revision.
+    async with app_session(agent.tenant_id) as db:
+        row = await db.scalar(
+            select(m.AgentToolAccess).where(m.AgentToolAccess.agent_id == agent.id)
+        )
+        assert row is not None
+        row.agent_revision = await _revision(app_session, agent)
+    assert (await _access(app_session, agent, conn, run)).oauth_connection.id == annas  # type: ignore[union-attr]
+
+
+async def test_a_third_partys_binding_to_a_personal_account_is_refused(
+    app_session: AppSessionFactory,
+) -> None:
+    agent, anna, conn, run = await _setup(app_session)
+    ben = await member(app_session, agent.tenant_id, "ben@acme.test")
+    annas = await oauth_row(app_session, agent.tenant_id, owner=anna)
+    await _bind(
+        app_session,
+        agent,
+        tool_key="microsoft365",
+        mode="fixed",
+        oauth_connection_id=annas,
+        set_by_member_id=ben,
+        set_with_manage=False,
+        agent_revision=await _revision(app_session, agent),
+    )
+    with pytest.raises(ConnectionRequired) as exc:
+        await _access(app_session, agent, conn, run)
+    assert exc.value.reason == "binding_needs_confirmation"
+
+
+async def test_an_administrators_binding_to_a_personal_account_works(
+    app_session: AppSessionFactory,
+) -> None:
+    agent, anna, conn, run = await _setup(app_session)
+    root = await member(app_session, agent.tenant_id, "root@acme.test")
+    annas = await oauth_row(app_session, agent.tenant_id, owner=anna)
+    await _bind(
+        app_session,
+        agent,
+        tool_key="microsoft365",
+        mode="fixed",
+        oauth_connection_id=annas,
+        set_by_member_id=root,
+        set_with_manage=True,
+        agent_revision=await _revision(app_session, agent),
+    )
+    assert (await _access(app_session, agent, conn, run)).oauth_connection.id == annas  # type: ignore[union-attr]
+
+
+async def test_an_organisation_target_needs_no_consent(app_session: AppSessionFactory) -> None:
+    agent, _anna, conn, run = await _setup(app_session)
+    shared = await oauth_row(app_session, agent.tenant_id, owner=None, label="shared@acme.test")
+    await _bind(
+        app_session, agent, tool_key="microsoft365", mode="fixed", oauth_connection_id=shared
+    )
+    assert (await _access(app_session, agent, conn, run)).oauth_connection.id == shared  # type: ignore[union-attr]
+
+
+async def test_a_fixed_target_that_needs_reconnecting_asks_to_reconnect(
+    app_session: AppSessionFactory,
+) -> None:
+    agent, _anna, conn, run = await _setup(app_session)
+    shared = await oauth_row(app_session, agent.tenant_id, owner=None, status="needs_reauth")
+    await _bind(
+        app_session, agent, tool_key="microsoft365", mode="fixed", oauth_connection_id=shared
+    )
+    with pytest.raises(ConnectionRequired) as exc:
+        await _access(app_session, agent, conn, run)
+    assert exc.value.reason == "needs_reauth"
+
+
+async def test_an_access_setting_applies_to_a_pinned_login_too(
+    app_session: AppSessionFactory,
+) -> None:
+    agent, anna, conn, run = await _setup(app_session, name="odoo", cfg=ODOO_CFG)
+    pinned = await credential_row(app_session, agent.tenant_id, owner=None, name="Pinned")
+    mine = await credential_row(app_session, agent.tenant_id, owner=anna)
+    async with app_session(agent.tenant_id) as db:
+        row = await db.get(m.McpConnection, conn)
+        assert row is not None
+        row.credential_id = pinned
+    assert (await _access(app_session, agent, conn, run)).kind == "legacy"
+    await _bind(app_session, agent, tool_key="odoo", mode="user")
+    access = await _access(app_session, agent, conn, run)
+    assert (access.kind, access.credential.id) == ("credential", mine)  # type: ignore[union-attr]

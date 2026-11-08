@@ -50,6 +50,29 @@ async def _integrations(db: AsyncSession) -> dict[str, Integration]:
     }
 
 
+async def _department_targets(db: AsyncSession, agent: m.Agent, tool_key: str) -> list[uuid.UUID]:
+    """The accounts the agent's own department already set up for this tool
+    (its MCP connection's OAuth connection or pinned login). Choosing these
+    needs no administrator: the department already runs on them."""
+    conns = (
+        await db.execute(
+            select(m.McpConnection).where(
+                m.McpConnection.name == tool_key,
+                m.McpConnection.department_id == agent.department_id,
+            )
+        )
+    ).scalars()
+    out: list[uuid.UUID] = []
+    for conn in conns:
+        cfg = conn.config if isinstance(conn.config, dict) else {}
+        for raw in (cfg.get("oauth_connection_id"), conn.credential_id):
+            try:
+                out.append(raw if isinstance(raw, uuid.UUID) else uuid.UUID(str(raw)))
+            except ValueError:
+                continue
+    return out
+
+
 async def _names(db: AsyncSession, ids: set[uuid.UUID | None]) -> dict[uuid.UUID, str]:
     wanted = {i for i in ids if i is not None}
     if not wanted:
@@ -136,7 +159,7 @@ async def list_options(
     db: DbSession,
     actor: Annotated[HumanActor, Depends(require_agent_write())],
 ) -> list[AccessOptionDTO]:
-    await _agent(request, db, actor, agent_id)
+    agent = await _agent(request, db, actor, agent_id)
     integ = (await _integrations(db)).get(tool_key)
     if integ is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no connectable integration for this tool")
@@ -172,12 +195,15 @@ async def list_options(
             .all()
         )
         items = [(c.id, c.name, c.owner_member_id) for c in creds]
+    dept_ids = set(await _department_targets(db, agent, tool_key))
     names = await _names(db, {owner for _, _, owner in items})
     kind = "oauth" if integ.kind == "oauth" else "credential"
     for owner_group in ("organisation", "me", "member"):
         for row_id, label, owner in items:
             group = "organisation" if owner is None else ("me" if owner == me else "member")
             if group != owner_group or (group == "member" and not admin):
+                continue
+            if group == "organisation" and not admin and row_id not in dept_ids:
                 continue
             out.append(
                 AccessOptionDTO(
@@ -204,10 +230,17 @@ async def set_tool_access(
     integ = (await _integrations(db)).get(tool_key)
     if integ is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no connectable integration for this tool")
+    unprocessable = status.HTTP_422_UNPROCESSABLE_CONTENT
     oauth_id: uuid.UUID | None = None
     credential_id: uuid.UUID | None = None
-    if body.mode == "fixed":
-        owner: uuid.UUID | None
+    owner: uuid.UUID | None = None
+    target_label: str | None = None
+    admin = await may_manage_integrations(request, db, actor.principal)
+    consent: str | None = None
+    if body.mode == "user":
+        if body.oauth_connection_id is not None or body.credential_id is not None:
+            raise HTTPException(unprocessable, "user mode names no target")
+    else:
         if (
             integ.kind == "oauth"
             and body.oauth_connection_id is not None
@@ -219,10 +252,8 @@ async def set_tool_access(
                 or target.provider != integ.provider
                 or target.grant_type == "device_code"
             ):
-                raise HTTPException(
-                    status.HTTP_422_UNPROCESSABLE_CONTENT, "not a connection of this integration"
-                )
-            oauth_id, owner = target.id, target.owner_member_id
+                raise HTTPException(unprocessable, "not a connection of this integration")
+            oauth_id, owner, target_label = target.id, target.owner_member_id, target.account_label
         elif (
             integ.kind == "credential"
             and body.credential_id is not None
@@ -230,20 +261,27 @@ async def set_tool_access(
         ):
             cred = await db.get(m.Credential, body.credential_id)
             if cred is None or cred.credential_type != integ.credential_type:
-                raise HTTPException(
-                    status.HTTP_422_UNPROCESSABLE_CONTENT, "not a login of this integration"
-                )
-            credential_id, owner = cred.id, cred.owner_member_id
+                raise HTTPException(unprocessable, "not a login of this integration")
+            credential_id, owner, target_label = cred.id, cred.owner_member_id, cred.name
         else:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_CONTENT,
-                "a fixed access names exactly one matching target",
-            )
-        if (
-            owner is not None
-            and owner != actor.member.id
-            and not await may_manage_integrations(request, db, actor.principal)
-        ):
+            raise HTTPException(unprocessable, "a fixed access names exactly one matching target")
+        target_id = oauth_id or credential_id
+        if owner is None:
+            if not admin and target_id not in await _department_targets(db, agent, tool_key):
+                raise HTTPException(
+                    status.HTTP_403_FORBIDDEN,
+                    "only an administrator may bind an agent to an organisation account",
+                )
+            consent = "organisation"
+        elif owner == actor.member.id:
+            if not body.confirm_share:
+                raise HTTPException(
+                    unprocessable, "binding your own account shares it: confirmShare is required"
+                )
+            consent = "owner"
+        elif admin:
+            consent = "manage"
+        else:
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN,
                 "only its owner or an administrator may bind an agent to a person's account",
@@ -253,6 +291,13 @@ async def set_tool_access(
             m.AgentToolAccess.agent_id == agent.id, m.AgentToolAccess.tool_key == tool_key
         )
     )
+    previous = {
+        "mode": row.mode if row else None,
+        "oauth_connection_id": str(row.oauth_connection_id)
+        if row and row.oauth_connection_id
+        else None,
+        "credential_id": str(row.credential_id) if row and row.credential_id else None,
+    }
     if row is None:
         row = m.AgentToolAccess(
             tenant_id=agent.tenant_id, agent_id=agent.id, tool_key=tool_key, mode=body.mode
@@ -262,6 +307,8 @@ async def set_tool_access(
     row.oauth_connection_id = oauth_id
     row.credential_id = credential_id
     row.set_by_member_id = actor.member.id
+    row.set_with_manage = consent == "manage"
+    row.agent_revision = agent.config_revision
     await db.flush()
     await append_event(
         db,
@@ -276,6 +323,11 @@ async def set_tool_access(
             "mode": body.mode,
             "oauth_connection_id": str(oauth_id) if oauth_id else None,
             "credential_id": str(credential_id) if credential_id else None,
+            "target_label": target_label,
+            "target_owner_member_id": str(owner) if owner else None,
+            "previous": previous,
+            "consent": consent,
+            "confirm_share": bool(body.confirm_share),
         },
         principal=actor.principal,
     )
@@ -293,12 +345,21 @@ async def reset_tool_access(
     actor: Annotated[HumanActor, Depends(require_agent_write())],
 ) -> None:
     agent = await _agent(request, db, actor, agent_id)
+    if tool_key not in await _integrations(db):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no connectable integration for this tool")
     row = await db.scalar(
         select(m.AgentToolAccess).where(
             m.AgentToolAccess.agent_id == agent.id, m.AgentToolAccess.tool_key == tool_key
         )
     )
     if row is not None:
+        previous = {
+            "mode": row.mode,
+            "oauth_connection_id": str(row.oauth_connection_id)
+            if row.oauth_connection_id
+            else None,
+            "credential_id": str(row.credential_id) if row.credential_id else None,
+        }
         await db.delete(row)
         await append_event(
             db,
@@ -307,7 +368,7 @@ async def reset_tool_access(
             actor_id=actor.member.id,
             category="authz",
             action="agent.tool_access.reset",
-            resource={"agent_id": str(agent.id), "tool": tool_key},
+            resource={"agent_id": str(agent.id), "tool": tool_key, "previous": previous},
             principal=actor.principal,
         )
     await db.commit()

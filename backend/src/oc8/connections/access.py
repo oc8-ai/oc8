@@ -53,6 +53,12 @@ class ConnectionRequired(Exception):
                 f"connection_required: {what} must be connected again. "
                 "Tell the user to reconnect it under Connections."
             )
+        if self.reason == "binding_needs_confirmation":
+            return (
+                f"connection_required: this agent's access to {self.integration.label} uses a "
+                "person's account and was not confirmed since the agent last changed. "
+                "The account's owner or an administrator must save the access setting again."
+            )
         if self.reason == "not_configured":
             return (
                 f"connection_required: no access to {self.integration.label} "
@@ -106,34 +112,55 @@ async def resolve_tool_access(
 ) -> ToolAccess:
     acting = await resolve_acting_person(db, run)
     integration = integration_for_connection(conn)
-    if conn.credential_id is not None or integration is None:
-        return ToolAccess("legacy", integration, acting.member_id)
+    if integration is None:
+        return ToolAccess("legacy", None, acting.member_id)
     row = await db.scalar(
         select(m.AgentToolAccess).where(
             m.AgentToolAccess.agent_id == agent.id, m.AgentToolAccess.tool_key == conn.name
         )
     )
     if row is not None and row.mode == "fixed":
-        return await _fixed(db, row, integration, acting)
+        return await _fixed(db, row, agent, integration, acting)
     if row is None:
+        if conn.credential_id is not None:
+            return ToolAccess("legacy", integration, acting.member_id)
         default = await _default(db, conn, integration, acting)
         if default is not None:
             return default
     return await _user(db, integration, acting)
 
 
+def _consented(row: m.AgentToolAccess, agent: m.Agent, owner: uuid.UUID | None) -> bool:
+    """A person's own account may only be acted through when that person (or an
+    administrator) set the binding, and the agent is unchanged since."""
+    if owner is None:
+        return True
+    basis = row.set_with_manage or (
+        row.set_by_member_id is not None and row.set_by_member_id == owner
+    )
+    return basis and row.agent_revision is not None and row.agent_revision == agent.config_revision
+
+
 async def _fixed(
-    db: AsyncSession, row: m.AgentToolAccess, integration: Integration, acting: ActingPerson
+    db: AsyncSession,
+    row: m.AgentToolAccess,
+    agent: m.Agent,
+    integration: Integration,
+    acting: ActingPerson,
 ) -> ToolAccess:
     if integration.kind == "oauth" and row.oauth_connection_id is not None:
         target = await db.get(m.OAuthConnection, row.oauth_connection_id)
         if target is not None and target.provider == integration.provider:
             if target.status != "active":
                 raise ConnectionRequired(integration, "needs_reauth")
+            if not _consented(row, agent, target.owner_member_id):
+                raise ConnectionRequired(integration, "binding_needs_confirmation")
             return ToolAccess("oauth", integration, acting.member_id, oauth_connection=target)
     if integration.kind == "credential" and row.credential_id is not None:
         cred = await db.get(m.Credential, row.credential_id)
         if cred is not None and cred.credential_type == integration.credential_type:
+            if not _consented(row, agent, cred.owner_member_id):
+                raise ConnectionRequired(integration, "binding_needs_confirmation")
             return ToolAccess("credential", integration, acting.member_id, credential=cred)
     # The target is gone (ON DELETE SET NULL) or never matched: refuse, never re-choose.
     raise ConnectionRequired(integration, "not_connected")

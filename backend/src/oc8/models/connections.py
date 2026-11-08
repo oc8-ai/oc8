@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import CheckConstraint, Text, UniqueConstraint, Uuid
+from sqlalchemy import Boolean, CheckConstraint, Integer, Text, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from oc8.db.base import Base, TimestampMixin
@@ -28,6 +28,14 @@ class AgentToolAccess(Base, PkMixin, TenantMixin, TimestampMixin):
     oauth_connection_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
     credential_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
     set_by_member_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
+    #: The binding was set by someone holding integration:manage (consent basis
+    #: when the target is another person's account).
+    set_with_manage: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    #: agent.config_revision when the binding was confirmed. A personal target
+    #: is only used while the agent is unchanged since then.
+    agent_revision: Mapped[int | None] = mapped_column(Integer)
 
     __table_args__ = (
         UniqueConstraint("agent_id", "tool_key", name="uq_agent_tool_access"),

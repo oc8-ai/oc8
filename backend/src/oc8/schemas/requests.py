@@ -840,3 +840,5 @@ class SetAgentToolAccessRequest(CamelModel):
     mode: Literal["user", "fixed"]
     oauth_connection_id: uuid.UUID | None = None
     credential_id: uuid.UUID | None = None
+    #: Required when the target is the caller's own account.
+    confirm_share: bool = False
