@@ -1,8 +1,8 @@
 // Direct 1:1 chat with a single agent (oc8.chat.service on the backend).
 // Every message is a real AgentRun under the hood, so guardrails/approvals
 // apply exactly as they do to an autonomous run -- this file only has to
-// manage the session/message list and the "is the agent still thinking"
-// poll, not any of that.
+// manage the session/message list, not any of that. Live updates arrive on
+// the socket (lib/live/apply-event.ts); nothing here polls.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, uploadChatAttachment, type FileAttachmentDTO } from "@/lib/api";
@@ -38,16 +38,41 @@ export interface ChatMessageDTO {
   // itself is not part of `content` (the backend strips it).
   mode: string | null;
   contextRefs: ChatContextRefDTO[];
+  // The member who wrote a human turn (null for assistant turns and old rows).
+  authorMemberId: string | null;
+  authorName: string | null;
+  // For an assistant turn: the user turn it answers. Regenerated answers share it.
+  replyToId: string | null;
+  // C2: one-click replies the model offered with suggest_replies.
+  suggestions?: string[];
+  // Typed parts an edition tool returned (spec §6.2), e.g.
+  // {type: "sources", items: ChatSourceDTO[]} -- stored and delivered unchanged.
+  parts?: Record<string, unknown>[];
 }
 
-const keys = {
+export interface ChatSourceDTO {
+  n: number;
+  title: string;
+  url: string;
+  favicon: string | null;
+  snippet: string;
+  kind: "web" | "knowledge";
+}
+
+/** The items of a message's `sources` part, if an edition tool added one. */
+export function sourcesOf(message: ChatMessageDTO | null | undefined): ChatSourceDTO[] {
+  const part = (message?.parts ?? []).find((p) => p.type === "sources");
+  return Array.isArray(part?.items) ? (part.items as ChatSourceDTO[]) : [];
+}
+
+export const chatKeys = {
   sessions: (agentId?: string) => ["chat", "sessions", agentId ?? "all"] as const,
   messages: (sessionId: string) => ["chat", "messages", sessionId] as const,
 };
 
 export function useChatSessions(agentId?: string) {
   return useQuery({
-    queryKey: keys.sessions(agentId),
+    queryKey: chatKeys.sessions(agentId),
     queryFn: () =>
       api.get<ChatSessionDTO[]>(`/chat/sessions${agentId ? `?agentId=${agentId}` : ""}`),
   });
@@ -58,28 +83,20 @@ export function useCreateChatSession() {
   return useMutation({
     mutationFn: (agentId: string) => api.post<ChatSessionDTO>("/chat/sessions", { agentId }),
     onSuccess: (session) => {
-      qc.invalidateQueries({ queryKey: keys.sessions(session.agentId) });
-      qc.invalidateQueries({ queryKey: keys.sessions() });
+      qc.invalidateQueries({ queryKey: chatKeys.sessions(session.agentId) });
+      qc.invalidateQueries({ queryKey: chatKeys.sessions() });
     },
   });
 }
 
-// Polls only while the transcript's last turn is the user's own -- i.e. the
-// run answering it hasn't reached a terminal state yet. There is no WS event
-// dedicated to chat (a run's "run.status" event doesn't know it's answering
-// a chat session), so this is the whole "is the agent still typing" signal.
-// Stops the moment an assistant turn lands, same shape as
-// knowledge-connector-hooks.ts's useIngestionJob poll-or-stop.
+// No polling (spec §2.1): new turns arrive as "chat.message_created" on the
+// live socket (lib/live/apply-event.ts), and a terminal "run.status" refetches
+// as a backstop.
 export function useChatMessages(sessionId: string | null) {
   return useQuery({
-    queryKey: keys.messages(sessionId ?? ""),
+    queryKey: chatKeys.messages(sessionId ?? ""),
     queryFn: () => api.get<ChatMessageDTO[]>(`/chat/sessions/${sessionId}/messages`),
     enabled: !!sessionId,
-    refetchInterval: (query) => {
-      const data = query.state.data as ChatMessageDTO[] | undefined;
-      if (!data || data.length === 0) return false;
-      return data[data.length - 1].role === "user" ? 2000 : false;
-    },
   });
 }
 
@@ -89,8 +106,8 @@ export function useRenameChatSession(agentId: string) {
     mutationFn: ({ sessionId, title }: { sessionId: string; title: string }) =>
       api.patch<ChatSessionDTO>(`/chat/sessions/${sessionId}`, { title }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: keys.sessions(agentId) });
-      qc.invalidateQueries({ queryKey: keys.sessions() });
+      qc.invalidateQueries({ queryKey: chatKeys.sessions(agentId) });
+      qc.invalidateQueries({ queryKey: chatKeys.sessions() });
     },
   });
 }
@@ -100,8 +117,8 @@ export function useDeleteChatSession(agentId: string) {
   return useMutation({
     mutationFn: (sessionId: string) => api.delete<void>(`/chat/sessions/${sessionId}`),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: keys.sessions(agentId) });
-      qc.invalidateQueries({ queryKey: keys.sessions() });
+      qc.invalidateQueries({ queryKey: chatKeys.sessions(agentId) });
+      qc.invalidateQueries({ queryKey: chatKeys.sessions() });
     },
   });
 }
@@ -124,11 +141,11 @@ export function useSendChatMessage(sessionId: string) {
         contextRefs,
       }),
     onSuccess: (message) => {
-      qc.setQueryData<ChatMessageDTO[]>(keys.messages(sessionId), (prev) => [
+      qc.setQueryData<ChatMessageDTO[]>(chatKeys.messages(sessionId), (prev) => [
         ...(prev ?? []),
         message,
       ]);
-      qc.invalidateQueries({ queryKey: keys.sessions(message.sessionId) });
+      qc.invalidateQueries({ queryKey: chatKeys.sessions(message.sessionId) });
     },
   });
 }
