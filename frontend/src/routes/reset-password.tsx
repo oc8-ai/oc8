@@ -61,7 +61,7 @@ export function ResetPasswordPage() {
         <button
           type="submit"
           disabled={busy || newPassword.length < 8 || !token}
-          className="h-9 w-full rounded-md bg-brand-gradient text-sm font-medium text-primary-foreground hover:brightness-110 disabled:opacity-50"
+          className="h-9 w-full rounded-md bg-brand-gradient text-sm font-medium text-brand-gradient-foreground hover:brightness-110 disabled:opacity-50"
         >
           {t("Set new password", "Neues Passwort setzen")}
         </button>

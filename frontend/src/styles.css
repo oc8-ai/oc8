@@ -118,6 +118,7 @@
   --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
+  --color-brand-gradient-foreground: var(--brand-gradient-foreground);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
@@ -175,6 +176,9 @@
   --popover-foreground: #0b1020;
   --primary: #286bff; /* doc: --primary, same both themes */
   --primary-foreground: #ffffff; /* doc: --btn-primary-fg (light) */
+  /* Text on bg-brand-gradient, both themes: dark ink reads on every stop
+     (>= 4.0:1); white drops to 1.7:1 on the cyan and 2.1:1 on the orange. */
+  --brand-gradient-foreground: #0b0d18;
   --secondary: #eef1f6; /* doc: --secondary / --muted / --accent share one value */
   --secondary-foreground: #0b1020;
   --muted: #eef1f6;
@@ -223,7 +227,10 @@
   --popover: #0e1220;
   --popover-foreground: #f6f8fa;
   --primary: #286bff; /* doc: Electric Blue, same both themes */
-  --primary-foreground: #0b0d18; /* doc: --btn-primary-fg (dark) */
+  /* White on the flat Electric Blue (4.5:1). The brand sheet's dark
+     --btn-primary-fg (#0b0d18) was chosen for the gradient fill and lives on
+     as --brand-gradient-foreground. */
+  --primary-foreground: #ffffff;
   --secondary: #141827; /* doc: --secondary / --muted / --accent share one value */
   --secondary-foreground: #f6f8fa;
   --muted: #141827;

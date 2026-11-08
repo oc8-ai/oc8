@@ -399,7 +399,7 @@ function SetupForm({
       <button
         type="submit"
         disabled={loading || !email || !password || !confirmPassword}
-        className="w-full rounded-md bg-brand-gradient px-4 py-2 text-sm font-medium text-primary-foreground hover:brightness-110 disabled:opacity-50"
+        className="w-full rounded-md bg-brand-gradient px-4 py-2 text-sm font-medium text-brand-gradient-foreground hover:brightness-110 disabled:opacity-50"
       >
         {loading ? t("Creating…", "Erstelle…") : t("Create Account", "Konto erstellen")}
       </button>
@@ -476,7 +476,7 @@ function LoginForm({
       <button
         type="submit"
         disabled={loading || !email || !password}
-        className="w-full rounded-md bg-brand-gradient px-4 py-2 text-sm font-medium text-primary-foreground hover:brightness-110 disabled:opacity-50"
+        className="w-full rounded-md bg-brand-gradient px-4 py-2 text-sm font-medium text-brand-gradient-foreground hover:brightness-110 disabled:opacity-50"
       >
         {loading ? t("Signing in…", "Melde mich an…") : t("Sign In", "Anmelden")}
       </button>

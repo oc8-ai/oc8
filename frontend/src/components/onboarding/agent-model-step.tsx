@@ -123,7 +123,7 @@ export function AgentModelStep({
       <button
         onClick={create}
         disabled={!selectedId || createAgent.isPending}
-        className="w-full rounded-md bg-brand-gradient px-4 py-2 text-sm font-medium text-primary-foreground transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+        className="w-full rounded-md bg-brand-gradient px-4 py-2 text-sm font-medium text-brand-gradient-foreground transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
       >
         {createAgent.isPending
           ? t("Creating…", "Wird erstellt …")
