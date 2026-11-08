@@ -8,6 +8,7 @@
 //   extraPlusItems C3 data source, knowledge base, oc8 object
 //   trailing       C5 dictation (Enterprise; core ships no mic)
 import {
+  useEffect,
   useRef,
   useState,
   type ClipboardEvent,
@@ -25,7 +26,13 @@ import {
   type SigilItem,
   type SigilToken,
 } from "@/components/composer-sigils";
-import { MAX_ATTACHMENT_BYTES, uploadChatAttachment, type FileAttachmentDTO } from "@/lib/api";
+import {
+  ATTACHMENT_ACCEPT,
+  MAX_ATTACHMENT_BYTES,
+  isAllowedAttachment,
+  uploadChatAttachment,
+  type FileAttachmentDTO,
+} from "@/lib/api";
 import {
   chatCommands,
   commandSummary,
@@ -83,6 +90,7 @@ export interface ComposerProps {
 }
 
 const MAX_REFS = 10;
+const MAX_MB = Math.round(MAX_ATTACHMENT_BYTES / (1024 * 1024));
 
 const ICON_BUTTON =
   "grid size-9 place-items-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
@@ -103,7 +111,43 @@ export function Composer(props: ComposerProps) {
   const [uploading, setUploading] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const sigil: SigilToken | null = props.disabled ? null : activeSigil(props.draft, caret);
+  // The token Esc closed; it stays closed until the caret moves or the
+  // token changes, so Esc is not swallowed by a popover that reopens at once.
+  const [dismissed, setDismissed] = useState<SigilToken | null>(null);
+  const rawSigil = props.disabled ? null : activeSigil(props.draft, caret);
+  const sigil: SigilToken | null =
+    rawSigil &&
+    !(
+      dismissed &&
+      dismissed.kind === rawSigil.kind &&
+      dismissed.start === rawSigil.start &&
+      dismissed.end === rawSigil.end &&
+      dismissed.query === rawSigil.query
+    )
+      ? rawSigil
+      : null;
+
+  // Attachments and context belong to one chat. Switching chats drops them
+  // (and ignores uploads still running for the old one); the first session
+  // being created under a draft (null -> id) keeps them.
+  const generation = useRef(0);
+  const [seenSession, setSeenSession] = useState(props.sessionId);
+  if (seenSession !== props.sessionId) {
+    setSeenSession(props.sessionId);
+    if (seenSession !== null) {
+      generation.current += 1;
+      setAttachments([]);
+      setOwnRefs([]);
+      setError(null);
+    }
+  }
+  const { onContextRefsChange } = props;
+  const previousSession = useRef(props.sessionId);
+  useEffect(() => {
+    const before = previousSession.current;
+    previousSession.current = props.sessionId;
+    if (before !== null && before !== props.sessionId) onContextRefsChange?.([]);
+  }, [props.sessionId, onContextRefsChange]);
   const contextItems = useContextSearch(sigil?.kind === "#" ? sigil.query : null);
 
   const sigilItems: SigilItem[] =
@@ -148,23 +192,37 @@ export function Composer(props: ComposerProps) {
   }
 
   async function addFiles(files: File[]) {
-    setError(null);
+    const refused: string[] = [];
+    const accepted: File[] = [];
     for (const file of files) {
-      if (file.size > MAX_ATTACHMENT_BYTES) {
-        setError(
+      if (!isAllowedAttachment(file)) {
+        refused.push(
           t(
-            `${file.name} is larger than 25 MB. Pick a smaller file.`,
-            `${file.name} ist größer als 25 MB. Wähl eine kleinere Datei.`,
+            `${file.name}: file type not supported`,
+            `${file.name}: Dateityp wird nicht unterstützt`,
           ),
         );
-        continue;
+      } else if (file.size > MAX_ATTACHMENT_BYTES) {
+        refused.push(
+          t(
+            `${file.name} is larger than ${MAX_MB} MB. Pick a smaller file.`,
+            `${file.name} ist größer als ${MAX_MB} MB. Wähl eine kleinere Datei.`,
+          ),
+        );
+      } else {
+        accepted.push(file);
       }
+    }
+    setError(refused.length > 0 ? refused.join(". ") : null);
+    const mine = generation.current;
+    for (const file of accepted) {
       setUploading((n) => n + 1);
       try {
         const sessionId = props.sessionId ?? (await props.ensureSession());
         const uploaded = await uploadChatAttachment(sessionId, file);
-        setAttachments((prev) => [...prev, uploaded]);
+        if (mine === generation.current) setAttachments((prev) => [...prev, uploaded]);
       } catch {
+        if (mine !== generation.current) continue;
         setError(
           t(
             `${file.name} could not be uploaded. Try again.`,
@@ -193,7 +251,14 @@ export function Composer(props: ComposerProps) {
   }
 
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.nativeEvent.isComposing) return;
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+    // Ctrl/Cmd/Alt chords belong to the browser and the OS, not to us.
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key === "Escape" && sigil) {
+      e.preventDefault();
+      setDismissed(sigil);
+      return;
+    }
     if (sigil && sigilItems.length > 0) {
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
@@ -230,14 +295,29 @@ export function Composer(props: ComposerProps) {
     }
   }
 
+  function carriesFiles(e: DragEvent<HTMLDivElement>): boolean {
+    const dt = e.dataTransfer;
+    return Array.from(dt?.types ?? []).includes("Files") || (dt?.files?.length ?? 0) > 0;
+  }
+
+  function onDragOver(e: DragEvent<HTMLDivElement>) {
+    if (!carriesFiles(e)) return;
+    // Always claim a file drag, read-only too: otherwise the browser
+    // navigates away to open the dropped file.
+    e.preventDefault();
+    if (!props.disabled) setDragging(true);
+  }
+
+  function onDragLeave(e: DragEvent<HTMLDivElement>) {
+    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false);
+  }
+
   function onDrop(e: DragEvent<HTMLDivElement>) {
     setDragging(false);
-    if (props.disabled) return;
     const files = Array.from(e.dataTransfer?.files ?? []);
-    if (files.length > 0) {
-      e.preventDefault();
-      void addFiles(files);
-    }
+    if (files.length === 0) return;
+    e.preventDefault();
+    if (!props.disabled) void addFiles(files);
   }
 
   const plusItems: PlusMenuItem[] = [
@@ -253,16 +333,7 @@ export function Composer(props: ComposerProps) {
   const chips = attachments.length > 0 || refs.length > 0 || uploading > 0;
 
   return (
-    <div
-      className="space-y-2"
-      onDragOver={(e) => {
-        if (props.disabled) return;
-        e.preventDefault();
-        setDragging(true);
-      }}
-      onDragLeave={() => setDragging(false)}
-      onDrop={onDrop}
-    >
+    <div className="space-y-2" onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
       {props.above}
       {sigil && (
         <SigilPopover
@@ -396,7 +467,7 @@ export function Composer(props: ComposerProps) {
         type="file"
         multiple
         hidden
-        accept=".pdf,.docx,.xlsx,.csv,.txt,.md,image/*"
+        accept={ATTACHMENT_ACCEPT}
         onChange={(e) => {
           void addFiles(Array.from(e.target.files ?? []));
           e.target.value = "";

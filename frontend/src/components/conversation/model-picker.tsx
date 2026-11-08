@@ -25,6 +25,17 @@ export function ModelPicker({
   // The pick in flight, shown until the server answers. `undefined` = none.
   const [pending, setPending] = useState<string | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
+  // A pick belongs to the chat and model it was made against: when either
+  // changes, the pick in flight and its error no longer apply.
+  const scope = `${sessionId ?? ""}|${value ?? ""}`;
+  const [seenScope, setSeenScope] = useState(scope);
+  const request = useRef(0);
+  if (seenScope !== scope) {
+    setSeenScope(scope);
+    setPending(undefined);
+    setError(null);
+  }
+  const root = useRef<HTMLDivElement>(null);
   const { data: options = [] } = useSessionModels(sessionId, true);
   const setModel = useSetSessionModel(sessionId);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -48,6 +59,19 @@ export function ModelPicker({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
+  useEffect(() => {
+    request.current += 1;
+  }, [scope]);
+
+  useEffect(() => {
+    if (!open) return;
+    function onPointerDown(e: PointerEvent) {
+      if (!root.current?.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [open]);
+
   function close() {
     setOpen(false);
     trigger.current?.focus();
@@ -60,9 +84,13 @@ export function ModelPicker({
     if (option.id === shown) return;
     setError(null);
     setPending(option.id);
+    const mine = ++request.current;
     setModel.mutate(option.id, {
-      onSuccess: () => setPending(undefined),
+      onSuccess: () => {
+        if (mine === request.current) setPending(undefined);
+      },
       onError: (err: unknown) => {
+        if (mine !== request.current) return;
         setPending(undefined);
         setError(
           err instanceof ApiError && err.status === 422
@@ -102,7 +130,7 @@ export function ModelPicker({
   const label = isAuto ? t("Auto", "Auto") : current.label;
   const effective = isAuto && fallback ? `${label} (${fallback.label})` : label;
   return (
-    <div className="relative">
+    <div ref={root} className="relative">
       <button
         ref={trigger}
         type="button"
@@ -122,6 +150,9 @@ export function ModelPicker({
           role="radiogroup"
           aria-label={t("Model", "Modell")}
           onKeyDown={onKeyDown}
+          onBlur={(e) => {
+            if (!root.current?.contains(e.relatedTarget as Node | null)) setOpen(false);
+          }}
           className="absolute bottom-full left-0 z-50 mb-1 w-64 rounded-lg border border-border bg-popover p-1 shadow-lg"
         >
           {options.map((o, i) => (

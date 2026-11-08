@@ -76,4 +76,32 @@ describe("ModelPicker", () => {
     for (const radio of screen.getAllByRole("radio"))
       expect(radio.className).toMatch(/\bmin-h-11\b/);
   });
+
+  it("closes on a pointerdown outside and when focus leaves", () => {
+    render(
+      <div>
+        <ModelPicker sessionId="s" value={null} />
+        <button type="button">elsewhere</button>
+      </div>,
+    );
+    const trigger = screen.getByRole("button", { name: /Model: Auto/ });
+    fireEvent.click(trigger);
+    fireEvent.pointerDown(screen.getByRole("button", { name: "elsewhere" }));
+    expect(screen.queryByRole("radiogroup")).toBeNull();
+    fireEvent.click(trigger);
+    fireEvent.blur(screen.getAllByRole("radio")[0], {
+      relatedTarget: screen.getByRole("button", { name: "elsewhere" }),
+    });
+    expect(screen.queryByRole("radiogroup")).toBeNull();
+  });
+
+  it("drops a pick in flight when the chat or its model changes", () => {
+    const { rerender } = render(<ModelPicker sessionId="s" value="m1" />);
+    fireEvent.click(screen.getByRole("button", { name: /Model: GPT X/ }));
+    fireEvent.keyDown(screen.getByRole("radiogroup"), { key: "ArrowDown" });
+    fireEvent.keyDown(screen.getByRole("radiogroup"), { key: "Enter" });
+    expect(screen.getByRole("button", { name: /Model: Llama/ })).toBeInTheDocument();
+    rerender(<ModelPicker sessionId="t" value="m1" />);
+    expect(screen.getByRole("button", { name: /Model: GPT X/ })).toBeInTheDocument();
+  });
 });

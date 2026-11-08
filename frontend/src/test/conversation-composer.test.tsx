@@ -147,12 +147,12 @@ describe("Composer", () => {
   it("says inline when a file is too large and does not upload it", () => {
     upload.mockClear();
     render(<Harness />);
-    const big = new File(["x"], "huge.mov", { type: "video/quicktime" });
+    const big = new File(["x"], "huge.pdf", { type: "application/pdf" });
     Object.defineProperty(big, "size", { value: 26 * 1024 * 1024 });
     fireEvent.paste(screen.getByRole("textbox", { name: /Message/ }), {
       clipboardData: { files: [big], items: [] },
     });
-    expect(screen.getByRole("alert")).toHaveTextContent(/huge.mov is larger than 25 MB/);
+    expect(screen.getByRole("alert")).toHaveTextContent(/huge.pdf is larger than 25 MB/);
     expect(upload).not.toHaveBeenCalled();
   });
 
@@ -224,5 +224,117 @@ describe("Composer", () => {
     render(<Harness />);
     expect(screen.getByRole("button", { name: /Add/ }).className).toMatch(/\bsize-9\b/);
     expect(screen.getByRole("button", { name: "Send" }).className).toMatch(/\bsize-9\b/);
+  });
+
+  it("lets Esc close a sigil popover first and stop the run only on the next Esc", () => {
+    const onStop = vi.fn();
+    render(<Harness busy onStop={onStop} />);
+    const box = screen.getByRole("textbox", { name: /Message/ }) as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: "#hand", selectionStart: 5 } });
+    expect(screen.getByRole("listbox")).toBeInTheDocument();
+    fireEvent.keyDown(box, { key: "Escape" });
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(box.value).toBe("#hand");
+    expect(onStop).not.toHaveBeenCalled();
+    fireEvent.keyDown(box, { key: "Escape" });
+    expect(onStop).toHaveBeenCalledTimes(1);
+  });
+
+  it("reopens a dismissed popover once the next character is typed", () => {
+    render(<Harness />);
+    const box = screen.getByRole("textbox", { name: /Message/ });
+    fireEvent.change(box, { target: { value: "#ha", selectionStart: 3 } });
+    fireEvent.keyDown(box, { key: "Escape" });
+    expect(screen.queryByRole("listbox")).toBeNull();
+    fireEvent.change(box, { target: { value: "#han", selectionStart: 4 } });
+    expect(screen.getByRole("listbox")).toBeInTheDocument();
+  });
+
+  it("refuses a dropped file of a type it cannot read", () => {
+    upload.mockClear();
+    render(<Harness />);
+    const exe = new File(["MZ"], "setup.exe", { type: "application/x-msdownload" });
+    fireEvent.drop(screen.getByRole("textbox", { name: /Message/ }), {
+      dataTransfer: { files: [exe] },
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent("setup.exe: file type not supported");
+    expect(upload).not.toHaveBeenCalled();
+  });
+
+  it("refuses a pasted file of a type it cannot read", () => {
+    upload.mockClear();
+    render(<Harness />);
+    const svg = new File(["<svg/>"], "logo.svg", { type: "image/svg+xml" });
+    fireEvent.paste(screen.getByRole("textbox", { name: /Message/ }), {
+      clipboardData: { files: [svg], items: [] },
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent("logo.svg: file type not supported");
+    expect(upload).not.toHaveBeenCalled();
+  });
+
+  it("offers the same types in the file picker", () => {
+    const { container } = render(<Harness />);
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    expect(input.accept).toContain(".pdf");
+    expect(input.accept).toContain("image/png");
+    expect(input.accept).not.toContain("image/*");
+  });
+
+  it("keeps the browser from opening a file dropped on a read-only composer", () => {
+    upload.mockClear();
+    render(<Harness disabled />);
+    const box = screen.getByRole("textbox", { name: /Message/ });
+    const file = new File(["abc"], "a.pdf", { type: "application/pdf" });
+    expect(fireEvent.dragOver(box, { dataTransfer: { files: [file] } })).toBe(false);
+    expect(fireEvent.drop(box, { dataTransfer: { files: [file] } })).toBe(false);
+    expect(upload).not.toHaveBeenCalled();
+  });
+
+  it("ignores Enter, Esc and ArrowUp with ctrl, meta or alt held", () => {
+    const onSend = vi.fn();
+    const onStop = vi.fn();
+    const onEditLast = vi.fn();
+    const { rerender } = render(<Harness onSend={onSend} onEditLast={onEditLast} />);
+    const box = screen.getByRole("textbox", { name: /Message/ });
+    fireEvent.keyDown(box, { key: "ArrowUp", altKey: true });
+    expect(onEditLast).not.toHaveBeenCalled();
+    fireEvent.change(box, { target: { value: "hi" } });
+    fireEvent.keyDown(box, { key: "Enter", metaKey: true });
+    fireEvent.keyDown(box, { key: "Enter", ctrlKey: true });
+    expect(onSend).not.toHaveBeenCalled();
+    rerender(<Harness busy onStop={onStop} />);
+    fireEvent.keyDown(screen.getByRole("textbox", { name: /Message/ }), {
+      key: "Escape",
+      ctrlKey: true,
+    });
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
+  it("ignores Enter while an IME is composing", () => {
+    const onSend = vi.fn();
+    render(<Harness onSend={onSend} />);
+    const box = screen.getByRole("textbox", { name: /Message/ });
+    fireEvent.change(box, { target: { value: "かな" } });
+    fireEvent.keyDown(box, { key: "Enter", keyCode: 229 });
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("drops attachments and context when the chat changes", async () => {
+    upload.mockResolvedValue({
+      id: "att3",
+      filename: "a.png",
+      contentType: "image/png",
+      sizeBytes: 3,
+      isImage: true,
+      createdAt: "",
+    });
+    const { rerender } = render(<Harness sessionId="s" />);
+    const file = new File(["abc"], "a.png", { type: "image/png" });
+    fireEvent.paste(screen.getByRole("textbox", { name: /Message/ }), {
+      clipboardData: { files: [file], items: [] },
+    });
+    await waitFor(() => expect(screen.getByText("a.png")).toBeInTheDocument());
+    rerender(<Harness sessionId="other" />);
+    expect(screen.queryByText("a.png")).toBeNull();
   });
 });
