@@ -25,6 +25,7 @@ from oc8.connections.revoke import revoke_oauth_connection
 from oc8.db.session import tenant_session
 from oc8.oauth.client import resolve_client
 from oc8.oauth.errors import (
+    OAuthAccountUnresolved,
     OAuthError,
     OAuthNotConfigured,
     OAuthStateInvalid,
@@ -36,7 +37,7 @@ from oc8.oauth.tokens import (
     access_ref,
     exchange_code,
     expiry_from,
-    fetch_account_label,
+    fetch_account_identity,
     persist_tokens,
     refresh_ref,
 )
@@ -246,14 +247,15 @@ async def oauth_callback(
                 verifier=st.verifier,
                 redirect_uri=redirect_uri_for(provider),
             )
-            label = await fetch_account_label(
-                provider_id=provider, access_token=tokens.access_token
-            )
-            if label == "unknown":
-                # An unresolvable label would collide with any other account
-                # that also failed userinfo, silently overwriting its token
-                # refs. Refuse to connect rather than create/overwrite a
-                # `(tenant_id, provider, "unknown")` row.
+            try:
+                identity = await fetch_account_identity(
+                    provider_id=provider,
+                    access_token=tokens.access_token,
+                    id_token=tokens.id_token,
+                )
+            except OAuthAccountUnresolved:
+                # Refuse to connect rather than create/overwrite a row for an
+                # account without a stable, verified identity.
                 logger.warning(
                     "oauth callback: could not resolve an account label for "
                     "provider=%s tenant=%s; refusing to create a connection",
@@ -261,6 +263,7 @@ async def oauth_callback(
                     st.tenant_id,
                 )
                 return _frontend_redirect(oauthError="account_unresolved", provider=provider)
+            label = identity.label
 
             existing = (
                 await db.execute(
@@ -283,6 +286,7 @@ async def oauth_callback(
                     status="active",
                     client_source=client.source,
                     created_by_user_id=None,
+                    provider_metadata={"subject": identity.subject},
                 )
                 db.add(conn)
                 await db.flush()
@@ -290,6 +294,10 @@ async def oauth_callback(
                 conn = existing
                 conn.status = "active"
                 conn.client_source = client.source
+                conn.provider_metadata = {
+                    **(conn.provider_metadata or {}),
+                    "subject": identity.subject,
+                }
                 if tokens.scope:
                     conn.scopes = list(tokens.scope.split())
 

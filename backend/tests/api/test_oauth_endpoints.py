@@ -38,7 +38,7 @@ def _transport() -> Iterator[None]:
                 200, json={"access_token": "at1", "refresh_token": "rt1", "expires_in": 3600}
             )
         if "userinfo" in str(request.url):
-            return httpx.Response(200, json={"email": "person@example.com"})
+            return httpx.Response(200, json={"sub": "g-1", "email": "person@example.com", "email_verified": True})
         if "revoke" in str(request.url):
             return httpx.Response(200, json={})
         return httpx.Response(404, json={})

@@ -23,6 +23,15 @@ class OAuthReauthRequired(OAuthError):
     """The refresh token is dead — the user must re-authorize."""
 
 
+class OAuthAccountUnresolved(OAuthError):
+    """The provider gave no stable, verified identity for the connected account."""
+
+
+class OAuthTenantMismatch(OAuthError):
+    """A single-tenant app registration was used on the multi-tenant endpoint
+    (Microsoft AADSTS50194)."""
+
+
 class OAuthConsentRequired(OAuthReauthRequired):
     """The provider wants an administrator's consent before this account may
     grant the requested access (Microsoft AADSTS65001/AADSTS90094)."""
