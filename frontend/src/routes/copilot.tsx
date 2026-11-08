@@ -23,11 +23,17 @@ export interface CopilotSearch {
   /** A conversation to open -- where an answer's session chip
    *  ("oc8://chat_session/<id>") lands. */
   session?: string;
+  /** An object to pin to a new conversation, as "<kind>:<id>" -- the Live
+   *  tab's "Continue" sends "run:<id>". Accepted here so the link keeps it;
+   *  the Copilot pins it once C3 pinning lands (Task 37). */
+  pin?: string;
 }
 
 export const Route = createFileRoute("/copilot")({
-  validateSearch: (search: Record<string, unknown>): CopilotSearch =>
-    typeof search.session === "string" && search.session ? { session: search.session } : {},
+  validateSearch: (search: Record<string, unknown>): CopilotSearch => ({
+    ...(typeof search.session === "string" && search.session ? { session: search.session } : {}),
+    ...(typeof search.pin === "string" && search.pin ? { pin: search.pin } : {}),
+  }),
   component: CopilotRoute,
 });
 

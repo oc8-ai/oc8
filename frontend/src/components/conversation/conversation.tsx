@@ -93,6 +93,8 @@ export interface ConversationProps {
   renderAssistantExtras?: (turn: AssistantTurnModel) => { cards?: ReactNode; footer?: ReactNode };
   composerAbove?: ReactNode;
   composerTarget?: ReactNode;
+  /** Beside Send (the Live tab's Stop for a timeline run). */
+  composerTrailing?: ReactNode;
   onSendOverride?: (submit: ComposerSubmit) => boolean;
   onStopOverride?: () => void;
   /** Focus the composer on mount (the dock, when it opens). */
@@ -473,6 +475,7 @@ export function Conversation(props: ConversationProps) {
           agentItems={props.agentItems}
           onAddressAgent={props.onAddressAgent}
           target={props.composerTarget}
+          trailing={props.composerTrailing}
           above={props.composerAbove}
           disabled={readOnly}
           autoFocus={props.autoFocus}

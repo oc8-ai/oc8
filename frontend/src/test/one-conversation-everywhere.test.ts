@@ -10,6 +10,7 @@ const SURFACES = [
   "routes/copilot.tsx",
   "components/copilot-dock.tsx",
   "components/dashboard/widgets/chat-widget.tsx",
+  "components/conversation/live-timeline.tsx",
 ];
 
 describe("one conversation everywhere", () => {
@@ -20,5 +21,15 @@ describe("one conversation everywhere", () => {
     expect(source).not.toMatch(/useChatMessages\(/);
     expect(source).not.toMatch(/RUN_COMPONENT_REGISTRY/);
     expect(source).not.toMatch(/\bChatWindow\b|\bCopilotChatTab\b/);
+  });
+
+  // The agent page's Live tab is the Live timeline's Conversation. (Its
+  // operator Live Log legitimately renders run detail, so the page itself
+  // is not held to the rules above.)
+  it("routes/agents.$id.tsx mounts the Live timeline, not the old chat window", () => {
+    const source = readFileSync(join(SRC, "routes/agents.$id.tsx"), "utf8");
+    expect(source).toMatch(/import \{ LiveTimeline \}/);
+    expect(source).toMatch(/<LiveTimeline\b/);
+    expect(source).not.toMatch(/\bChatWindow\b/);
   });
 });

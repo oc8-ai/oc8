@@ -117,7 +117,7 @@ import { type Skill } from "@/lib/skills";
 import { AgentPublishBar } from "@/components/agent-publish-bar";
 import { AgentVersionsTab } from "@/components/agent-versions-tab";
 import { AgentRuntimePanel } from "@/components/agent-runtime-panel";
-import { ChatWindow } from "@/components/chat-window";
+import { LiveTimeline } from "@/components/conversation/live-timeline";
 import { ComponentGrantPanel } from "@/components/component-grant-panel";
 import { InlineRename } from "@/components/inline-rename";
 import { AgentInstructionsPanel } from "@/components/agent-instructions-panel";
@@ -149,7 +149,20 @@ function mapAgentStatus(s: string): AgentStatus {
   return "paused";
 }
 
+export interface AgentSearch {
+  /** The tab to open; the old "chat" tab is now "live". */
+  tab?: TabId;
+  /** A run for the Live Log ("Technical view" on the Live tab). */
+  runId?: string;
+}
+
 export const Route = createFileRoute("/agents/$id")({
+  validateSearch: (search: Record<string, unknown>): AgentSearch => {
+    const raw = search.tab === "chat" ? "live" : search.tab;
+    const tab = TAB_IDS.find((id) => id === raw);
+    const runId = typeof search.runId === "string" && search.runId ? search.runId : undefined;
+    return { ...(tab ? { tab } : {}), ...(runId ? { runId } : {}) };
+  },
   component: AgentDetail,
   notFoundComponent: () => (
     <div className="p-8 text-center text-muted-foreground">Agent not found.</div>
@@ -161,7 +174,7 @@ const TAB_IDS = [
   "instructions",
   "guardrails",
   "livelog",
-  "chat",
+  "live",
   "files",
   "config",
   "skills",
@@ -193,11 +206,18 @@ function AgentDetail() {
   // skill-assign button, and the model select.
   const mayManage = useMayManageAgent()(agent?.departmentId);
   const renameAgent = useRenameAgent();
-  const [tab, setTab] = useState<TabId>("overview");
+  const search = Route.useSearch();
+  const [tab, setTab] = useState<TabId>(search.tab ?? "overview");
   // Id of the most recently enqueued run for this agent (drives the Live Log
   // transcript below via useRun). Resets on page load — the user re-runs to
   // reattach to a fresh run; older runs remain visible in History.
-  const [runId, setRunId] = useState<string | null>(null);
+  const [runId, setRunId] = useState<string | null>(search.runId ?? null);
+  // A link into this page (the Live tab's "Technical view") picks the tab
+  // and the run, also when the page is already open.
+  useEffect(() => {
+    if (search.tab) setTab(search.tab);
+    if (search.runId) setRunId(search.runId);
+  }, [search.tab, search.runId]);
   const [runPickerOpen, setRunPickerOpen] = useState(false);
   const [runTask, setRunTask] = useState("");
   // Which knowledge bases are enabled directly on this agent. Seeded from the
@@ -253,7 +273,7 @@ function AgentDetail() {
     { id: "instructions", label: t("Instructions", "Anweisungen") },
     { id: "guardrails", label: t("Tools & Access", "Tools & Zugriff") },
     { id: "livelog", label: t("Live Log", "Live-Log") },
-    { id: "chat", label: t("Chat", "Chat") },
+    { id: "live", label: t("Live", "Live") },
     { id: "files", label: t("Files", "Dateien") },
     { id: "config", label: t("Configuration", "Konfiguration") },
     { id: "skills", label: t("Skills", "Skills") },
@@ -459,11 +479,11 @@ function AgentDetail() {
         />
       )}
 
-      {tab === "chat" && (
-        <ChatWindow
+      {tab === "live" && (
+        <LiveTimeline
           key={agent.id}
           agentId={agent.id}
-          agentName={agent.name}
+          departmentId={agent.departmentId ?? null}
           promptStarters={agent.promptStarters ?? []}
         />
       )}
