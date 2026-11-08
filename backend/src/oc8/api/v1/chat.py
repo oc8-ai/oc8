@@ -453,6 +453,18 @@ async def post_message(
     return dto
 
 
+async def _session_owned_by_caller(
+    session_id: uuid.UUID, db: DbSession, actor: HumanActor
+) -> m.ChatSession:
+    """Owner-only: no `copilot:manage` oversight carve-out. Acting on a turn
+    (regenerating it, rating it) replays or speaks for the member's own
+    conversation, which an overseer reading it must not be able to do."""
+    session = await get_session(db, tenant_id=actor.principal.tenant_id, session_id=session_id)
+    if session is None or session.member_id != actor.member.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "chat session not found")
+    return session
+
+
 async def _session_message(
     db: DbSession, *, session: m.ChatSession, message_id: uuid.UUID
 ) -> m.ChatMessage:
@@ -475,10 +487,15 @@ async def regenerate_message(
     actor: _ChatActor,
 ) -> ActiveRunDTO:
     """Answer a user turn again; both answers stay (spec §2.1)."""
-    session = await _owned_session(request, session_id, db, actor)
+    session = await _session_owned_by_caller(session_id, db, actor)
     msg = await _session_message(db, session=session, message_id=message_id)
     if msg.role != "user":
         raise HTTPException(status.HTTP_409_CONFLICT, "only a member's turn can be answered again")
+    # Serialise concurrent regenerates: the lock is held until `enqueue_run`
+    # commits, so a second click waits and then sees the first one's run.
+    await db.execute(
+        select(m.ChatSession.id).where(m.ChatSession.id == session.id).with_for_update()
+    )
     running = await active_runs_for_session(
         db, tenant_id=actor.principal.tenant_id, session_id=session.id
     )
@@ -513,8 +530,10 @@ async def message_feedback(
     db: DbSession,
     actor: _ChatActor,
 ) -> None:
-    session = await _owned_session(request, session_id, db, actor)
+    session = await _session_owned_by_caller(session_id, db, actor)
     msg = await _session_message(db, session=session, message_id=message_id)
+    if msg.role != "assistant":
+        raise HTTPException(status.HTTP_409_CONFLICT, "only an answer can be rated")
     await append_event(
         db,
         tenant_id=actor.principal.tenant_id,
