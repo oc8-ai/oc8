@@ -442,6 +442,10 @@ class UpdatePolicyRequest(CamelModel):
     judge_rubric: dict[str, Any] | None = None
 
 
+class CompleteOAuthRequest(CamelModel):
+    pending: str
+
+
 class StartOAuthRequest(CamelModel):
     """`owner`: whose account the result is -- the caller's own ("me") or the
     organisation's (needs integration:manage). `scopes` overrides the tool

@@ -1725,3 +1725,8 @@ class CopilotNoteDTO(CamelModel):
     id: str
     content: str
     created_at: datetime
+
+
+class CompleteOAuthDTO(CamelModel):
+    connected: str
+    connection: ConnectionDTO

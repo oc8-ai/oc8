@@ -41,7 +41,12 @@ async def test_put_then_consume_roundtrips_the_payload(redis_url: str) -> None:
 async def test_challenge_is_the_s256_hash_of_the_verifier(redis_url: str) -> None:
     tenant = uuid.uuid4()
     state, challenge = await put_state(
-        tenant_id=tenant, user_id=None, member_id=uuid.uuid4(), owner="me", provider="google", scopes=()
+        tenant_id=tenant,
+        user_id=None,
+        member_id=uuid.uuid4(),
+        owner="me",
+        provider="google",
+        scopes=(),
     )
     got = await consume_state(state)
     expected = (
@@ -56,7 +61,12 @@ async def test_state_is_single_use(redis_url: str) -> None:
     # The callback carries no bearer token, so the state entry IS the
     # authorization. Replaying it must fail.
     state, _ = await put_state(
-        tenant_id=uuid.uuid4(), user_id=None, member_id=uuid.uuid4(), owner="me", provider="google", scopes=()
+        tenant_id=uuid.uuid4(),
+        user_id=None,
+        member_id=uuid.uuid4(),
+        owner="me",
+        provider="google",
+        scopes=(),
     )
     await consume_state(state)
     with pytest.raises(OAuthStateInvalid):
@@ -73,11 +83,29 @@ async def test_states_are_unguessable_and_distinct(redis_url: str) -> None:
     seen = set()
     for _ in range(5):
         state, _ = await put_state(
-            tenant_id=tenant, user_id=None, member_id=uuid.uuid4(), owner="me", provider="google", scopes=()
+            tenant_id=tenant,
+            user_id=None,
+            member_id=uuid.uuid4(),
+            owner="me",
+            provider="google",
+            scopes=(),
         )
         assert len(state) >= 32
         seen.add(state)
     assert len(seen) == 5
+
+
+async def test_a_state_with_an_unknown_owner_is_rejected(redis_url: str) -> None:
+    state, _ = await put_state(
+        tenant_id=uuid.uuid4(),
+        user_id=None,
+        member_id=uuid.uuid4(),
+        owner="everyone",
+        provider="google",
+        scopes=(),
+    )
+    with pytest.raises(OAuthStateInvalid):
+        await consume_state(state)
 
 
 def test_ttl_is_ten_minutes() -> None:
