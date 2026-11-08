@@ -65,6 +65,24 @@ export function sourcesOf(message: ChatMessageDTO | null | undefined): ChatSourc
   return Array.isArray(part?.items) ? (part.items as ChatSourceDTO[]) : [];
 }
 
+/** The `answers` part of a user turn that answered an agent's questions
+ *  (spec §4.1). Its questions are stored unchanged, so in snake_case; only
+ *  the fields the summary reads are typed. */
+export interface ChatAnswersPart {
+  questions: Array<{ id: string; prompt: string; options: Array<{ key: string; label: string }> }>;
+  answers: Record<string, string[] | string>;
+}
+
+export function answersOf(message: ChatMessageDTO | null | undefined): ChatAnswersPart | null {
+  const part = (message?.parts ?? []).find((p) => p.type === "answers");
+  if (!part || !Array.isArray(part.questions) || typeof part.answers !== "object" || !part.answers)
+    return null;
+  return {
+    questions: part.questions as ChatAnswersPart["questions"],
+    answers: part.answers as ChatAnswersPart["answers"],
+  };
+}
+
 export const chatKeys = {
   sessions: (agentId?: string) => ["chat", "sessions", agentId ?? "all"] as const,
   messages: (sessionId: string) => ["chat", "messages", sessionId] as const,

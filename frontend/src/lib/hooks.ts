@@ -42,6 +42,7 @@ import type {
   Task,
 } from "@/lib/mock-data";
 import type { Skill } from "@/lib/skills";
+import type { QuestionDTO } from "@/lib/conversation-api";
 import { useLang } from "@/lib/i18n";
 import {
   localizeActivity,
@@ -144,6 +145,8 @@ export interface Clarification {
   question: string;
   status: string;
   createdAt: string;
+  /** The structured questions behind `question`; empty for a plain one. */
+  questions?: QuestionDTO[];
 }
 
 /** One card on the My Work task board -- across every department the caller

@@ -3,8 +3,10 @@ import { BookOpen, Paperclip, Pencil } from "lucide-react";
 
 import { ChatMarkdown } from "@/components/chat-markdown";
 import { downloadFileAttachment } from "@/lib/api";
+import { answersOf } from "@/lib/hooks-chat";
 import { useT } from "@/lib/i18n";
 
+import { QuestionSummary } from "./question-card";
 import type { UserTurnModel } from "./types";
 import { useObjectNavigation } from "./use-object-navigation";
 
@@ -48,11 +50,19 @@ export function UserTurn({
   const t = useT();
   const m = turn.message;
   const openObject = useObjectNavigation();
+  // An admin's answer from the inbox has no author name: no author line then.
   const showAuthor = !!m.authorName && !!m.authorMemberId && m.authorMemberId !== viewerMemberId;
+  // The turn that answered an agent's questions: its one-line summary, not
+  // the readable `content` the model reads.
+  const answered = answersOf(m);
   return (
     <article
       className="turn-in group flex flex-col items-end gap-1"
-      aria-label={t("Your message", "Deine Nachricht")}
+      aria-label={
+        answered
+          ? t("Answers to the questions", "Antworten auf die Fragen")
+          : t("Your message", "Deine Nachricht")
+      }
     >
       {showAuthor && (
         <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
@@ -71,7 +81,11 @@ export function UserTurn({
             /{m.mode}
           </span>
         )}
-        <ChatMarkdown text={m.content} onObjectClick={openObject} />
+        {answered ? (
+          <QuestionSummary questions={answered.questions} answers={answered.answers} />
+        ) : (
+          <ChatMarkdown text={m.content} onObjectClick={openObject} />
+        )}
         {m.attachments.length > 0 && (
           <ul className="flex flex-wrap gap-1">
             {m.attachments.map((a) =>
@@ -105,7 +119,7 @@ export function UserTurn({
           </ul>
         )}
       </div>
-      {canEdit && (
+      {canEdit && !answered && (
         <button
           type="button"
           onClick={() => onEdit(m.content)}

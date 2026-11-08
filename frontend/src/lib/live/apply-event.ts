@@ -110,6 +110,9 @@ const patchers: Record<string, Patcher> = {
     // the workspace queue on all of them would be a request per step.
     if (d.state === "waiting_for_input") {
       qc.invalidateQueries({ queryKey: ["clarifications"] });
+      // The chat's session detail carries the parked question (pendingQuestion)
+      // its QuestionCard shows above the composer.
+      qc.invalidateQueries({ queryKey: ["chat", "session"] });
     }
   },
   // Incremental container stdout, fired by the three containerized runtimes

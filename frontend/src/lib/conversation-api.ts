@@ -10,7 +10,7 @@ import {
   type InfiniteData,
 } from "@tanstack/react-query";
 
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import {
   chatKeys,
   type ChatMessageDTO,
@@ -30,6 +30,9 @@ export interface ChatSessionDetailDTO extends ChatSessionDTO {
   kind: "chat" | "live";
   activeRuns: ActiveRunDTO[];
   readOnly: boolean;
+  /** What the chat's run is parked on (spec §4.1), or null. */
+  pendingQuestion: PendingQuestionDTO | null;
+  taskId: string | null;
 }
 
 export interface ChatModelOptionDTO {
@@ -130,6 +133,65 @@ export function useTurnRun(sessionId: string | null, runId: string | null) {
 }
 
 export { chatKeys };
+
+export interface QuestionOptionDTO {
+  key: string;
+  label: string;
+  detail: string;
+}
+
+/** One structured `ask_user` question (spec §4.1). */
+export interface QuestionDTO {
+  id: string;
+  prompt: string;
+  kind: "single" | "multi" | "text";
+  options: QuestionOptionDTO[];
+  allowOther: boolean;
+  required: boolean;
+}
+
+/** `questions` is empty for a plain question: `text` is then all there is. */
+export interface PendingQuestionDTO {
+  clarificationId: string;
+  runId: string;
+  text: string;
+  questions: QuestionDTO[];
+}
+
+/** Per question id: the option keys picked, or a free-text answer. */
+export type QuestionAnswers = Record<string, string[] | string>;
+
+/** Answer the question the chat's run is parked on. The answered turn and the
+ *  cleared `pendingQuestion` also arrive live (chat.message_created); the
+ *  refetch is the backstop. 409 (already answered) and 404 (gone) refetch too,
+ *  so the card goes away. Refusals come back as ApiError. */
+export function useAnswerQuestion(sessionId: string | null) {
+  const qc = useQueryClient();
+  const refetch = () => {
+    if (!sessionId) return;
+    void qc.invalidateQueries({ queryKey: conversationKeys.session(sessionId) });
+    void qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
+  };
+  return useMutation({
+    mutationFn: ({
+      clarificationId,
+      answers,
+      text,
+    }: {
+      clarificationId: string;
+      answers?: QuestionAnswers;
+      text?: string;
+    }) =>
+      api.post<{ runId: string }>(
+        `/chat/sessions/${sessionId}/questions/${clarificationId}/answer`,
+        answers !== undefined ? { answers } : { text },
+      ),
+    onSuccess: refetch,
+    onError: (error) => {
+      if (error instanceof ApiError && (error.status === 409 || error.status === 404)) refetch();
+    },
+  });
+}
 
 export interface ContextItem {
   kind: string;

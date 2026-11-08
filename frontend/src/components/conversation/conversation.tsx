@@ -7,9 +7,10 @@ import { ArrowDown, X } from "lucide-react";
 
 import type { SigilItem } from "@/components/composer-sigils";
 import { Skeleton } from "@/components/ui/skeleton";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import {
   conversationKeys,
+  useAnswerQuestion,
   useRegenerate,
   type ChatSessionDetailDTO,
   type LiveRunDTO,
@@ -27,6 +28,7 @@ import { cn } from "@/lib/utils";
 
 import { AssistantTurn } from "./assistant-turn";
 import { Composer, type ComposerSubmit } from "./composer";
+import { QuestionCard } from "./question-card";
 import type { AssistantTurnModel, ConversationVariant, TurnModel } from "./types";
 import { useTimelineRuns } from "./timeline-runs";
 import { useConversation } from "./use-conversation";
@@ -206,7 +208,16 @@ export function Conversation(props: ConversationProps) {
     return () => el.removeEventListener("scroll", onScroll);
   }, [ref]);
   const readOnly = !!conv.session?.readOnly;
-  const busy = conv.liveRunIds.length > 0;
+  // The question the chat's run is parked on (spec §4.1). That run waits for
+  // the reader, so it does not make the chat busy: the composer answers it.
+  const pending = (!readOnly && conv.session?.pendingQuestion) || null;
+  const answerQuestion = useAnswerQuestion(props.sessionId);
+  const [dismissed, setDismissed] = useState<string | null>(null);
+  const [questionNotice, setQuestionNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (pending) setQuestionNotice(null);
+  }, [pending]);
+  const busy = conv.liveRunIds.some((id) => id !== pending?.runId);
   const lastUser = [...conv.turns].reverse().find((turn) => turn.kind === "user");
 
   // One creation in flight at a time: a multi-file drop and a send during an
@@ -232,6 +243,8 @@ export function Conversation(props: ConversationProps) {
               kind: "chat",
               activeRuns: [],
               readOnly: false,
+              pendingQuestion: null,
+              taskId: null,
             },
         );
         props.onSessionChange(session.id);
@@ -253,6 +266,10 @@ export function Conversation(props: ConversationProps) {
     }
     setSendError(null);
     if (fromComposer) setDraft("");
+    if (pending && props.sessionId) {
+      await answerFreely(pending.clarificationId, submit.text, fromComposer);
+      return;
+    }
     const body = {
       message: submit.text,
       attachmentIds: submit.attachmentIds,
@@ -286,6 +303,29 @@ export function Conversation(props: ConversationProps) {
           "Your message was not sent. Try again.",
           "Deine Nachricht wurde nicht gesendet. Versuch es noch einmal.",
         ),
+      );
+    }
+  }
+
+  /** While a question is open, what the composer sends is its answer. */
+  async function answerFreely(clarificationId: string, text: string, fromComposer: boolean) {
+    try {
+      await answerQuestion.mutateAsync({ clarificationId, text });
+    } catch (error) {
+      const status = error instanceof ApiError ? error.status : null;
+      if (status === 409) {
+        setQuestionNotice(t("Already answered", "Schon beantwortet"));
+        return;
+      }
+      if (status === 404) return;
+      if (fromComposer) setDraft(text);
+      setSendError(
+        status === 422 && error instanceof ApiError && error.message
+          ? error.message
+          : t(
+              "Your answer was not sent. Try again.",
+              "Deine Antwort wurde nicht gesendet. Versuch es noch einmal.",
+            ),
       );
     }
   }
@@ -326,6 +366,33 @@ export function Conversation(props: ConversationProps) {
   const empty =
     typeof props.emptyState === "function" ? props.emptyState(sendText) : props.emptyState;
   const full = props.variant === "full";
+  const questionAbove =
+    pending && props.sessionId ? (
+      dismissed === pending.clarificationId ? (
+        <button
+          type="button"
+          onClick={() => setDismissed(null)}
+          className="inline-flex min-h-9 items-center gap-2 rounded-md px-2 text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <span className="size-2 rounded-full bg-status-warning" aria-hidden />
+          {t("Show questions", "Fragen anzeigen")}
+        </button>
+      ) : (
+        <QuestionCard
+          key={pending.clarificationId}
+          sessionId={props.sessionId}
+          pending={pending}
+          onClose={(notice) => {
+            if (notice) setQuestionNotice(notice);
+            setDismissed(pending.clarificationId);
+          }}
+        />
+      )
+    ) : questionNotice ? (
+      <p role="status" className="text-xs text-muted-foreground">
+        {questionNotice}
+      </p>
+    ) : null;
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       <div
@@ -469,14 +536,23 @@ export function Conversation(props: ConversationProps) {
           onLocalCommand={(key) => {
             if (key === "budget") setShowBudget(true);
           }}
-          placeholder={props.placeholder}
+          placeholder={
+            pending ? t("Or answer freely …", "Oder frei antworten …") : props.placeholder
+          }
           modelValue={conv.session?.modelOverrideId ?? null}
           showModelPicker={!!props.sessionId}
           agentItems={props.agentItems}
           onAddressAgent={props.onAddressAgent}
           target={props.composerTarget}
           trailing={props.composerTrailing}
-          above={props.composerAbove}
+          above={
+            questionAbove || props.composerAbove ? (
+              <>
+                {questionAbove}
+                {props.composerAbove}
+              </>
+            ) : undefined
+          }
           disabled={readOnly}
           autoFocus={props.autoFocus}
         />
