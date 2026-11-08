@@ -308,9 +308,11 @@ _PROSE: Final[dict[str, tuple[str, str, str, str]]] = {
     ),
     "connection:own": (
         "Eigene Verbindungen verwalten",
-        "Verbindet die eigenen Konten (z. B. Microsoft, Google, Odoo) und trennt sie wieder -- nur die eigenen.",
+        "Verbindet die eigenen Konten (z. B. Microsoft, Google, Odoo) und trennt sie wieder "
+        "-- nur die eigenen.",
         "Manage own connections",
-        "Connects and disconnects the caller's own accounts (e.g. Microsoft, Google, Odoo) -- only their own.",
+        "Connects and disconnects the caller's own accounts (e.g. Microsoft, Google, Odoo) "
+        "-- only their own.",
     ),
     "plugin:manage": (
         "Erweiterungen installieren",

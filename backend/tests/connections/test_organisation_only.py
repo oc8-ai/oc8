@@ -133,13 +133,68 @@ async def test_the_smtp_picker_cannot_activate_a_personal_credential(
     assert "smtp_server credential not found" in r.text
 
 
-async def test_an_mcp_launch_never_mints_a_token_for_a_personal_connection(
-    app_session: AppSessionFactory,
+async def test_an_mcp_launch_refuses_a_personal_connection_unless_allowed(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from oc8.agent import mcp_env
+
     tenant = uuid.uuid4()
     anna = await member(app_session, tenant, "anna@acme.test")
     mine = await oauth_row(app_session, tenant, owner=anna)
-    cfg = {"secret_env": {"TOKEN": "oauth:self"}, "oauth_connection_id": str(mine)}
+
+    async def fake_token(*_a: object, **_k: object) -> str:
+        return "minted"
+
+    monkeypatch.setattr(mcp_env, "get_access_token", fake_token)
+    monkeypatch.setattr(mcp_env, "mint_delegated_token", fake_token)
+    for ref in ("oauth:self", "oauth-delegated:a@acme.test"):
+        cfg = {"secret_env": {"TOKEN": ref}, "oauth_connection_id": str(mine)}
+        async with app_session(tenant) as db:
+            with pytest.raises(RuntimeError, match="personal connection"):
+                await resolve_mcp_env(db, tenant_id=tenant, cfg=cfg)
+            env = await resolve_mcp_env(db, tenant_id=tenant, cfg=cfg, allow_personal=True)
+        assert env["TOKEN"] == "minted"
+
+
+async def test_a_model_never_uses_a_personal_credential_or_connection(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8.modelrouter import keys
+
+    tenant = uuid.uuid4()
+    anna = await member(app_session, tenant, "anna@acme.test")
+    personal_key = await credential_row(
+        app_session, tenant, owner=anna, credential_type="openai_api_key", name="Anna key"
+    )
+    personal_conn = await oauth_row(app_session, tenant, owner=anna, provider="openai_chatgpt")
     async with app_session(tenant) as db:
-        with pytest.raises(RuntimeError, match="personal connection"):
-            await resolve_mcp_env(db, tenant_id=tenant, cfg=cfg)
+        sub = m.Credential(
+            tenant_id=tenant,
+            name="ChatGPT",
+            credential_type="openai_chatgpt_subscription",
+            field_values={"oauth_connection_id": str(personal_conn)},
+            secret_refs={},
+        )
+        db.add(sub)
+        await db.flush()
+        sub_id = sub.id
+
+    async def boom(*_a: object, **_k: object) -> str:
+        raise AssertionError("a token was minted for a personal connection")
+
+    monkeypatch.setattr(keys, "get_access_token", boom)
+    async with app_session(tenant) as db:
+        assert (
+            await keys.resolve_model_key(
+                db, tenant_id=tenant, provider="openai", credential_id=personal_key
+            )
+            is None
+        )
+        # the tenant-wide fallback pick must not choose it either
+        assert await keys.resolve_model_key(db, tenant_id=tenant, provider="openai") is None
+        assert (
+            await keys.resolve_model_key(
+                db, tenant_id=tenant, provider="openai", credential_id=sub_id
+            )
+            is None
+        )

@@ -125,7 +125,8 @@ async def test_an_employee_is_told_where_he_stands_and_not_that_he_is_a_typo(
         "have his identity provider remapped onto a company-wide role"
     )
     assert body["callerPermissions"] == ["connection:own", "copilot:use"], (
-        "defining the role must not grant anything beyond the universal copilot:use and connection:own defaults"
+        "defining the role must not grant anything beyond the universal "
+        "copilot:use and connection:own defaults"
     )
     # The sentence the design promised the screen could say, with the data to
     # say it: which department, at which seat role, carrying which permissions.

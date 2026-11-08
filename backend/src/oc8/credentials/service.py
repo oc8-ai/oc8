@@ -54,7 +54,9 @@ class CredentialFieldNotSet(Exception):
     def __init__(self, credential_name: str, field_key: str) -> None:
         self.credential_name = credential_name
         self.field_key = field_key
-        super().__init__(f"credential {credential_name!r} has no value set for field {field_key!r}")
+        super().__init__(
+            f"credential {credential_name!r} has no value set for field {field_key!r}"
+        )
 
 
 class CredentialInUse(Exception):

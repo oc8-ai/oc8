@@ -284,7 +284,9 @@ async def list_bases(
     )
     rows, total = await paginate(db, stmt, limit=limit, offset=offset)
     return Page(
-        items=[kb_to_dto(kb, *grants.get(kb.id, ([], [])), sources.get(kb.id, [])) for kb in rows],
+        items=[
+            kb_to_dto(kb, *grants.get(kb.id, ([], [])), sources.get(kb.id, [])) for kb in rows
+        ],
         total_count=total,
     )
 
@@ -372,7 +374,9 @@ async def preview_index(
     if kb.credential_id is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "knowledge base has no credential")
     try:
-        index = await resolve_vector_index(db, tenant_id=principal.tenant_id, type_id=kb.index_type)
+        index = await resolve_vector_index(
+            db, tenant_id=principal.tenant_id, type_id=kb.index_type
+        )
         query_embedding = await get_model_router().embed(
             body.query,
             model=kb.embedding_model,
@@ -582,13 +586,16 @@ async def create_source(
     # (api/v1/capas.py), which was building the row by hand and running
     # neither check. See oc8/knowledge/sources.py.
     if body.oauth_connection_id is not None:
-        source_conn = await db.get(m.OAuthConnection, body.oauth_connection_id)
-        if source_conn is not None and source_conn.owner_member_id is not None:
+        conn = await db.get(m.OAuthConnection, body.oauth_connection_id)
+        if conn is None or conn.tenant_id != principal.tenant_id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "oauth connection not found")
+        if conn.owner_member_id is not None:
             # A knowledge base is the organisation's; indexing somebody's own
             # mailbox or drive into it would publish it to every reader.
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
-                "a personal connection cannot feed a knowledge base; use an organisation connection",
+                "a personal connection cannot feed a knowledge base; "
+                "use an organisation connection",
             )
     try:
         await validate_source_config(
@@ -602,10 +609,6 @@ async def create_source(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     except SourceRejected as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
-    if body.oauth_connection_id is not None:
-        conn = await db.get(m.OAuthConnection, body.oauth_connection_id)
-        if conn is None or conn.tenant_id != principal.tenant_id:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "oauth connection not found")
     ds = m.DataSource(
         tenant_id=principal.tenant_id,
         connector_type=body.connector_type,
@@ -711,7 +714,8 @@ async def sync_source(
     if (kb.index_type or INTERNAL_INDEX_TYPE) != INTERNAL_INDEX_TYPE:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            "this knowledge base is connected to an external vector index — sync is not supported",
+            "this knowledge base is connected to an external vector index — "
+            "sync is not supported",
         )
 
     job = m.IngestionJob(

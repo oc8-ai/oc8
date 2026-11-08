@@ -1014,7 +1014,6 @@ async def _configure_without_connection(
     await db.commit()
     return PluginSetupResult(connection_id=None)
 
-
 @router.post(
     "/capas/install-from-disk",
     response_model=PluginVersionDTO,

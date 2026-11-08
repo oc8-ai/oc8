@@ -73,6 +73,7 @@ async def resolve_mcp_env(
     tenant_id: uuid.UUID,
     cfg: dict[str, Any],
     connection_name: str = "",
+    allow_personal: bool = False,
 ) -> dict[str, str]:
     """Plain `env` plus every `secret_env` entry resolved to a real value.
 
@@ -101,10 +102,13 @@ async def resolve_mcp_env(
             connection_id = _require_oauth_connection_id(
                 cfg, env_name=str(env_name), connection_name=connection_name
             )
-            try:
+            if not allow_personal:
+                # Outside the degrade-one-identity guard below: a refusal is a
+                # configuration error, not a failed mint.
                 await _refuse_personal_connection(
                     db, tenant_id=tenant_id, connection_id=connection_id
                 )
+            try:
                 env[str(env_name)] = await mint_delegated_token(
                     db,
                     tenant_id=tenant_id,
@@ -130,6 +134,7 @@ async def resolve_mcp_env(
                 cfg=cfg,
                 env_name=str(env_name),
                 connection_name=connection_name,
+                allow_personal=allow_personal,
             )
         else:
             env[str(env_name)] = await resolve_secret(db, tenant_id=tenant_id, ref=ref)
@@ -175,9 +180,11 @@ async def _mint_oauth_token(
     cfg: dict[str, Any],
     env_name: str,
     connection_name: str,
+    allow_personal: bool = False,
 ) -> str:
     connection_id = _require_oauth_connection_id(
         cfg, env_name=env_name, connection_name=connection_name
     )
-    await _refuse_personal_connection(db, tenant_id=tenant_id, connection_id=connection_id)
+    if not allow_personal:
+        await _refuse_personal_connection(db, tenant_id=tenant_id, connection_id=connection_id)
     return await get_access_token(db, tenant_id=tenant_id, connection_id=connection_id)
