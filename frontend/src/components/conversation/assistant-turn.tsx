@@ -61,6 +61,7 @@ export function AssistantTurn({
   cards,
   footer,
   readOnly = false,
+  labelsOnly = false,
   onRegenerate,
 }: {
   sessionId: string | null;
@@ -70,6 +71,8 @@ export function AssistantTurn({
   cards?: ReactNode;
   footer?: ReactNode;
   readOnly?: boolean;
+  /** A colleague's run: steps as labels only (see StepList). */
+  labelsOnly?: boolean;
   onRegenerate?: (replyToId: string) => void;
 }) {
   const t = useT();
@@ -87,7 +90,11 @@ export function AssistantTurn({
   const { data: fetchedRun } = useTurnRun(suppliedRun ? null : sessionId, runId);
   const run = suppliedRun ?? fetchedRun;
   const live = showingLive && !!run && !TERMINAL.has(run.state);
-  const answer = message ? message.content : (run?.liveAnswer ?? "");
+  // A run that is not a chat turn (a timeline run) has no answer message:
+  // once it has ended, its output is the answer.
+  const answer = message
+    ? message.content
+    : run?.liveAnswer || (run && TERMINAL.has(run.state) ? (run.output ?? "") : "");
   const thought = run ? thoughtOf(run) : { text: null, seconds: null };
   // Copied and rated belong to the answer on screen, not to the turn.
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -124,7 +131,7 @@ export function AssistantTurn({
     <article className="turn-in space-y-2" aria-label={t("Answer", "Antwort")}>
       {trigger}
       <ThoughtDisclosure live={live && !answer} text={thought.text} seconds={thought.seconds} />
-      {run && <StepList run={run} />}
+      {run && <StepList run={run} labelsOnly={labelsOnly} />}
       <StreamingText
         text={answer}
         streaming={live}

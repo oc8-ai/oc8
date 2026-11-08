@@ -25,6 +25,9 @@ export const liveQueryKeys: readonly unknown[][] = [
   ["chat", "messages"],
   ["chat", "session"],
   ["chat", "sessions"],
+  // The Live tab: runs that started or ended, inputs a run read, while down.
+  ["chat", "live"],
+  ["run-steering"],
 ];
 
 export interface McpTestLogLine {
@@ -97,6 +100,9 @@ const patchers: Record<string, Patcher> = {
       // re-check was failing (backend realtime/manager.py), so what streamed in
       // can be short. The persisted run is complete once it has ended.
       if (runId) qc.invalidateQueries({ queryKey: ["run", runId] });
+      // The Live tab's timeline carries the run's final output and state.
+      qc.invalidateQueries({ queryKey: ["chat", "live"] });
+      if (runId) qc.invalidateQueries({ queryKey: ["run-steering", runId] });
     }
     // A run parking on a question is the only signal that a clarification
     // appeared — there is no `clarification.created` event. Narrowed to that one
@@ -245,6 +251,12 @@ const patchers: Record<string, Patcher> = {
     qc.setQueryData(["run", runId], (prev: unknown) =>
       prev ? { ...(prev as object), todos } : prev,
     );
+  },
+  // A message written to a running run was read at step N (backend
+  // runtime/run_inputs.py publish_inputs_consumed).
+  "run.input_consumed": (qc, d) => {
+    const runId = d.run_id as string | undefined;
+    if (runId) qc.invalidateQueries({ queryKey: ["run-steering", runId] });
   },
   "agent.status": (qc, d) => {
     const agentId = d.agent_id as string | undefined;

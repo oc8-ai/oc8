@@ -1,10 +1,21 @@
 // REST hooks for the one chat (components/conversation). Session detail,
 // the model picker, regenerate and feedback; the transcript itself stays in
 // hooks-chat.ts.
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type InfiniteData,
+} from "@tanstack/react-query";
 
 import { api } from "@/lib/api";
-import { chatKeys, type ChatSessionDTO, type RunActivityDTO } from "@/lib/hooks-chat";
+import {
+  chatKeys,
+  type ChatMessageDTO,
+  type ChatSessionDTO,
+  type RunActivityDTO,
+} from "@/lib/hooks-chat";
 import { useKnowledgeBases } from "@/lib/hooks";
 
 export interface ActiveRunDTO {
@@ -136,4 +147,133 @@ export function useContextSearch(query: string | null): ContextItem[] {
     label: kb.name,
     hint: kb.description || undefined,
   }));
+}
+
+/** A run on the Live timeline (backend LiveRunDTO). For a colleague's run
+ *  under "All runs", `toolCalls`/`stepTimings` carry step labels only. */
+export interface LiveRunDTO {
+  id: string;
+  state: string;
+  source: string;
+  createdAt: string;
+  /** `kind` is the run's source; `label` the name beside it (a cron
+   *  expression, "<source>/<type>", the delegating agent, the member). */
+  trigger: { kind: string; label: string | null };
+  output: string | null;
+  steps: number;
+  toolCalls: Array<Record<string, unknown>>;
+  stepTimings: Array<Record<string, unknown>>;
+  startedBy: string | null;
+}
+
+export interface LiveItemDTO {
+  kind: "message" | "run";
+  at: string;
+  message: ChatMessageDTO | null;
+  run: LiveRunDTO | null;
+}
+
+export interface LiveTimelineDTO {
+  sessionId: string;
+  items: LiveItemDTO[];
+  /** Cursor for the next older page; null at the start of the timeline. */
+  nextBefore: string | null;
+  mayViewAllRuns: boolean;
+}
+
+export interface RunInputDTO {
+  id: string;
+  text: string;
+  authorName: string;
+  createdAt: string;
+  consumedAt: string | null;
+  consumedStep: number | null;
+}
+
+export interface RunSteeringDTO {
+  /** The run is still running, so the reader may write to or stop it. */
+  mayWrite: boolean;
+  /** Its runtime reads messages at all; when not, only Stop is offered. */
+  acceptsInputs: boolean;
+  inputs: RunInputDTO[];
+}
+
+export const liveTimelineKey = (agentId: string, allRuns: boolean) =>
+  ["chat", "live", agentId, allRuns] as const;
+
+/** Every loaded page, oldest first, as one timeline: page 0 is the newest,
+ *  each further page the one before it (`before` = the previous cursor). */
+export function flattenLivePages(data: InfiniteData<LiveTimelineDTO>): LiveTimelineDTO {
+  const newest = data.pages[0];
+  const last = data.pages[data.pages.length - 1];
+  return {
+    sessionId: newest?.sessionId ?? "",
+    mayViewAllRuns: newest?.mayViewAllRuns ?? false,
+    nextBefore: last?.nextBefore ?? null,
+    items: [...data.pages].reverse().flatMap((page) => page.items),
+  };
+}
+
+/** The Live tab's timeline. `data` is every loaded page merged; `fetchOlder`
+ *  loads the page before the oldest one (scrolling up). */
+export function useLiveTimeline(agentId: string, allRuns: boolean) {
+  const query = useInfiniteQuery({
+    queryKey: liveTimelineKey(agentId, allRuns),
+    queryFn: ({ pageParam }) => {
+      const params = new URLSearchParams();
+      if (allRuns) params.set("allRuns", "true");
+      if (pageParam) params.set("before", pageParam);
+      const qs = params.toString();
+      return api.get<LiveTimelineDTO>(`/agents/${agentId}/live${qs ? `?${qs}` : ""}`);
+    },
+    initialPageParam: null as string | null,
+    getNextPageParam: (page) => page.nextBefore,
+    select: flattenLivePages,
+    enabled: !!agentId,
+  });
+  return {
+    ...query,
+    hasOlder: query.hasNextPage,
+    loadingOlder: query.isFetchingNextPage,
+    fetchOlder: () => {
+      if (query.hasNextPage && !query.isFetchingNextPage) void query.fetchNextPage();
+    },
+  };
+}
+
+export const runSteeringKey = (runId: string | null) => ["run-steering", runId ?? ""] as const;
+
+export function useRunSteering(runId: string | null) {
+  return useQuery({
+    queryKey: runSteeringKey(runId),
+    queryFn: () => api.get<RunSteeringDTO>(`/runs/${runId}/steering`),
+    enabled: !!runId,
+  });
+}
+
+/** Write to a running run. Refusals (409 finished / takes no messages, 422
+ *  too long, 429 too many waiting) come back as ApiError -- word them with
+ *  `runInputError` (components/conversation/run-steering.tsx). */
+export function useSendRunInput(runId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (text: string) => api.post<RunInputDTO>(`/runs/${runId}/inputs`, { text }),
+    onSuccess: (input) =>
+      qc.setQueryData<RunSteeringDTO>(runSteeringKey(runId), (prev) =>
+        prev && !prev.inputs.some((i) => i.id === input.id)
+          ? { ...prev, inputs: [...prev.inputs, input] }
+          : prev,
+      ),
+    onSettled: () => qc.invalidateQueries({ queryKey: runSteeringKey(runId) }),
+  });
+}
+
+/** Cooperative stop (202): the run ends at its next step boundary, and
+ *  "run.status" reports it. 409 when it had already finished. */
+export function useStopRun() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (runId: string) => api.post<void>(`/runs/${runId}/stop`),
+    onSettled: (_data, _error, runId) => qc.invalidateQueries({ queryKey: runSteeringKey(runId) }),
+  });
 }

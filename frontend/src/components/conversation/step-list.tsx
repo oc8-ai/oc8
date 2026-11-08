@@ -29,7 +29,15 @@ function tokensFor(
   return { tokensIn: entry.tokensIn, tokensOut: entry.tokensOut };
 }
 
-function Step({ row, timings }: { row: RunStepRow; timings?: Array<Record<string, unknown>> }) {
+function Step({
+  row,
+  timings,
+  labelsOnly,
+}: {
+  row: RunStepRow;
+  timings?: Array<Record<string, unknown>>;
+  labelsOnly: boolean;
+}) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const Preview = TOOL_PREVIEWS[toolKind(row)];
@@ -49,21 +57,23 @@ function Step({ row, timings }: { row: RunStepRow; timings?: Array<Record<string
         {row.durationMs !== null && (
           <span className="shrink-0 font-mono tabular-nums">{formatMs(row.durationMs)}</span>
         )}
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          aria-expanded={open}
-          aria-label={t(`Details: ${row.label}`, `Details: ${row.label}`)}
-          className="inline-flex min-h-9 shrink-0 items-center gap-0.5 rounded-md px-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <ChevronRight
-            className={cn("size-3.5 transition-transform duration-150", open && "rotate-90")}
-            aria-hidden
-          />
-          {t("Details", "Details")}
-        </button>
+        {!labelsOnly && (
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            aria-expanded={open}
+            aria-label={t(`Details: ${row.label}`, `Details: ${row.label}`)}
+            className="inline-flex min-h-9 shrink-0 items-center gap-0.5 rounded-md px-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <ChevronRight
+              className={cn("size-3.5 transition-transform duration-150", open && "rotate-90")}
+              aria-hidden
+            />
+            {t("Details", "Details")}
+          </button>
+        )}
       </div>
-      {open && (
+      {open && !labelsOnly && (
         <div className="mt-1 space-y-1 rounded-md border border-border bg-muted/40 p-2 font-mono text-xs">
           <pre className="whitespace-pre-wrap break-words">{JSON.stringify(row.args, null, 2)}</pre>
           {row.result && (
@@ -85,7 +95,9 @@ function Step({ row, timings }: { row: RunStepRow; timings?: Array<Record<string
   );
 }
 
-export function StepList({ run }: { run: StepListRun }) {
+/** `labelsOnly`: a colleague's run (Ruling 15) -- each step's label and
+ *  duration, never a Details expander with its arguments or result. */
+export function StepList({ run, labelsOnly = false }: { run: StepListRun; labelsOnly?: boolean }) {
   const t = useT();
   const { lang } = useLang();
   const connection = useMemo(
@@ -111,7 +123,7 @@ export function StepList({ run }: { run: StepListRun }) {
   return (
     <ol className="space-y-1" aria-label={t("Steps", "Schritte")}>
       {steps.rows.map((row) => (
-        <Step key={row.key} row={row} timings={run.stepTimings} />
+        <Step key={row.key} row={row} timings={run.stepTimings} labelsOnly={labelsOnly} />
       ))}
     </ol>
   );

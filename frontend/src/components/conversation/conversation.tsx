@@ -1,14 +1,19 @@
 // frontend/src/components/conversation/conversation.tsx
 // The one chat (spec §2.1). Every surface mounts this; only spacing differs
 // between "full" (Copilot page, Live tab) and "compact" (dock, My Work).
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, X } from "lucide-react";
 
 import type { SigilItem } from "@/components/composer-sigils";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
-import { conversationKeys, useRegenerate, type ChatSessionDetailDTO } from "@/lib/conversation-api";
+import {
+  conversationKeys,
+  useRegenerate,
+  type ChatSessionDetailDTO,
+  type LiveRunDTO,
+} from "@/lib/conversation-api";
 import { useAuth, useBudgetStatus } from "@/lib/hooks";
 import {
   chatKeys,
@@ -16,15 +21,54 @@ import {
   useSendChatMessage,
   type ChatMessageDTO,
 } from "@/lib/hooks-chat";
-import { useT } from "@/lib/i18n";
+import { useLang, useT } from "@/lib/i18n";
+import { useWatchRuns } from "@/lib/live/provider";
 import { cn } from "@/lib/utils";
 
 import { AssistantTurn } from "./assistant-turn";
 import { Composer, type ComposerSubmit } from "./composer";
-import type { AssistantTurnModel, ConversationVariant } from "./types";
+import type { AssistantTurnModel, ConversationVariant, TurnModel } from "./types";
+import { useTimelineRuns } from "./timeline-runs";
 import { useConversation } from "./use-conversation";
 import { useScrollAnchor } from "./use-scroll-anchor";
 import { UserTurn } from "./user-turn";
+
+/** A run that is not a chat turn (a schedule, a webhook, a delegation, a
+ *  colleague's chat under "All runs"), shown in the conversation at `at`. */
+export interface ExtraRunTurn {
+  at: string;
+  run: LiveRunDTO;
+  /** The line above it: "Schedule · 09:00", "Delegated by Copilot", … */
+  trigger: ReactNode;
+  footer?: ReactNode;
+  /** A colleague's run: step labels and result only, no Details. */
+  labelsOnly?: boolean;
+}
+
+type Row =
+  | { at: string; kind: "turn"; turn: TurnModel }
+  | { at: string; kind: "run"; extra: ExtraRunTurn };
+
+const TERMINAL = new Set(["done", "failed", "interrupted"]);
+/** How close to the top (px) the reader must scroll for older items to load. */
+const TOP_THRESHOLD = 120;
+
+/** Each turn's time. An answer still being written has none of its own: it
+ *  sits right after the turn before it, as in the transcript. */
+function turnRows(turns: TurnModel[]): Row[] {
+  let last = "";
+  return turns.map((turn): Row => {
+    const at =
+      turn.kind === "user" ? turn.message.createdAt : (turn.variants[0]?.createdAt ?? last);
+    last = at || last;
+    return { at, kind: "turn", turn };
+  });
+}
+
+function localDay(at: string): string {
+  const d = new Date(at);
+  return Number.isNaN(d.getTime()) ? "" : d.toDateString();
+}
 
 export interface ConversationProps {
   agentId: string;
@@ -47,6 +91,15 @@ export interface ConversationProps {
   onStopOverride?: () => void;
   /** Focus the composer on mount (the dock, when it opens). */
   autoFocus?: boolean;
+  /** Runs merged with the transcript by time (the Live tab). */
+  extraRuns?: ExtraRunTurn[];
+  /** A dated line wherever the local day changes. */
+  daySeparators?: boolean;
+  /** There is more above the oldest item; `onLoadOlder` fetches it when the
+   *  reader scrolls to the top. The reader's place is kept as it lands. */
+  hasOlder?: boolean;
+  onLoadOlder?: () => void;
+  loadingOlder?: boolean;
 }
 
 function TurnSkeletons() {
@@ -66,7 +119,18 @@ export function Conversation(props: ConversationProps) {
   const t = useT();
   const qc = useQueryClient();
   const { data: me } = useAuth();
+  const { lang } = useLang();
   const conv = useConversation(props.sessionId);
+  const extraRuns = props.extraRuns ?? [];
+  const timelineRuns = useTimelineRuns(
+    extraRuns.map((e) => e.run),
+    props.agentId,
+  );
+  useWatchRuns(extraRuns.filter((e) => !TERMINAL.has(e.run.state)).map((e) => e.run.id));
+  const rows: Row[] = [
+    ...turnRows(conv.turns),
+    ...extraRuns.map((extra): Row => ({ at: extra.at, kind: "run", extra })),
+  ].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
   const [ownDraft, setOwnDraft] = useState("");
   const draft = props.draft ?? ownDraft;
   const setDraft = props.onDraftChange ?? setOwnDraft;
@@ -76,10 +140,44 @@ export function Conversation(props: ConversationProps) {
   const createSession = useCreateChatSession();
   const sendMessage = useSendChatMessage(props.sessionId ?? "");
   const regenerate = useRegenerate(props.sessionId);
+  // Any new row re-checks the bottom; an older page landing on top moves
+  // only a reader already there (the anchoring below keeps everyone else).
+  const newest = rows[rows.length - 1];
+  const newestKey = newest ? (newest.kind === "turn" ? newest.turn.key : newest.extra.run.id) : "";
   const { ref, contentRef, atBottom, scrollToBottom } = useScrollAnchor(
-    `${conv.turns.length}:${conv.liveRunIds.join()}:${sendError ?? ""}`,
+    `${newestKey}:${rows.length}:${conv.liveRunIds.join()}:${sendError ?? ""}`,
     props.sessionId,
   );
+  // Older items land above the reader: keep what they were looking at where
+  // it was, by the growth of the scroll height.
+  const oldest = rows[0];
+  const oldestKey = oldest ? (oldest.kind === "turn" ? oldest.turn.key : oldest.extra.run.id) : "";
+  const beforeLoad = useRef<{ key: string; height: number; top: number } | null>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    const saved = beforeLoad.current;
+    if (!el || !saved || saved.key === oldestKey) return;
+    beforeLoad.current = null;
+    el.scrollTop = saved.top + (el.scrollHeight - saved.height);
+  }, [oldestKey, ref]);
+  const { hasOlder, onLoadOlder, loadingOlder } = props;
+  function loadOlder() {
+    const el = ref.current;
+    if (!onLoadOlder || !hasOlder || loadingOlder) return;
+    if (el) beforeLoad.current = { key: oldestKey, height: el.scrollHeight, top: el.scrollTop };
+    onLoadOlder();
+  }
+  const loadOlderRef = useRef(loadOlder);
+  loadOlderRef.current = loadOlder;
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const onScroll = () => {
+      if (el.scrollTop <= TOP_THRESHOLD) loadOlderRef.current();
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [ref]);
   const readOnly = !!conv.session?.readOnly;
   const busy = conv.liveRunIds.length > 0;
   const lastUser = [...conv.turns].reverse().find((turn) => turn.kind === "user");
@@ -175,6 +273,25 @@ export function Conversation(props: ConversationProps) {
     }
   }
 
+  function renderTurn(turn: TurnModel) {
+    return turn.kind === "user" ? (
+      <UserTurn
+        turn={turn}
+        viewerMemberId={me?.memberId ?? null}
+        canEdit={!readOnly && turn === lastUser && !busy}
+        onEdit={(text) => setDraft(text)}
+      />
+    ) : (
+      <AssistantTurn
+        sessionId={props.sessionId}
+        turn={turn}
+        readOnly={readOnly}
+        onRegenerate={(replyToId) => regenerate.mutate(replyToId)}
+        {...(props.renderAssistantExtras?.(turn) ?? {})}
+      />
+    );
+  }
+
   const sendText = (text: string) => {
     if (busy || readOnly) return;
     void onSend({ text, attachmentIds: [], contextRefs: [] }, false);
@@ -193,32 +310,65 @@ export function Conversation(props: ConversationProps) {
           ref={contentRef}
           className={cn("mx-auto w-full max-w-[760px]", full ? "space-y-6" : "space-y-4")}
         >
+          {hasOlder && onLoadOlder && !conv.isLoading && (
+            <div className="flex justify-center">
+              {loadingOlder ? (
+                <Skeleton className="h-4 w-1/3 rounded-md" aria-label={t("Loading", "Lädt")} />
+              ) : (
+                <button
+                  type="button"
+                  onClick={loadOlder}
+                  className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  {t("Show earlier", "Früheres anzeigen")}
+                </button>
+              )}
+            </div>
+          )}
           {conv.isLoading ? (
             <TurnSkeletons />
-          ) : conv.turns.length === 0 ? (
+          ) : rows.length === 0 ? (
             (empty ?? null)
           ) : (
-            conv.turns.map((turn) =>
-              turn.kind === "user" ? (
-                <UserTurn
-                  key={turn.key}
-                  turn={turn}
-                  viewerMemberId={me?.memberId ?? null}
-                  canEdit={!readOnly && turn === lastUser && !busy}
-                  onEdit={(text) => setDraft(text)}
-                />
-              ) : (
-                <AssistantTurn
-                  key={turn.key}
-                  sessionId={props.sessionId}
-                  turn={turn}
-                  readOnly={readOnly}
-                  onRegenerate={(replyToId) => regenerate.mutate(replyToId)}
-                  {...(props.renderAssistantExtras?.(turn) ?? {})}
-                />
-              ),
-            )
+            rows.map((row, i) => (
+              <Fragment key={row.kind === "turn" ? row.turn.key : `extra-${row.extra.run.id}`}>
+                {props.daySeparators && localDay(row.at) !== localDay(rows[i - 1]?.at ?? "") && (
+                  <div
+                    role="separator"
+                    className="flex items-center gap-3 text-micro text-muted-foreground"
+                  >
+                    <span className="h-px flex-1 bg-border" />
+                    {new Date(row.at).toLocaleDateString(lang === "de" ? "de-DE" : "en-US", {
+                      weekday: "short",
+                      day: "numeric",
+                      month: "short",
+                    })}
+                    <span className="h-px flex-1 bg-border" />
+                  </div>
+                )}
+                {row.kind === "run" ? (
+                  <AssistantTurn
+                    sessionId={null}
+                    turn={{
+                      kind: "assistant",
+                      key: row.extra.run.id,
+                      replyToId: null,
+                      variants: [],
+                      liveRunId: row.extra.run.id,
+                    }}
+                    run={timelineRuns[row.extra.run.id]}
+                    trigger={row.extra.trigger}
+                    footer={row.extra.footer}
+                    labelsOnly={row.extra.labelsOnly}
+                    readOnly
+                  />
+                ) : (
+                  renderTurn(row.turn)
+                )}
+              </Fragment>
+            ))
           )}
+
           {sendError && (
             <p role="alert" className="text-xs text-status-error">
               {sendError}

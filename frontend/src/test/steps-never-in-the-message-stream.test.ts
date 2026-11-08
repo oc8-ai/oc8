@@ -24,16 +24,20 @@ const SRC = join(process.cwd(), "src");
  *  - routes/agents.$id.tsx is the OPERATOR run drawer, a different surface
  *    with a different audience (see the spec's non-goals),
  *  - lib/live/apply-event.ts patches the cache,
- *  - lib/hooks*.ts declare the DTO field,
- *  - components/conversation/step-list.tsx is the one chat's inline steps. */
+ *  - lib/hooks*.ts and lib/conversation-api.ts declare the DTO field,
+ *  - components/conversation/step-list.tsx is the one chat's inline steps,
+ *  - components/conversation/timeline-runs.ts hands a timeline run's steps
+ *    to step-list.tsx (the Live tab), the same cache entry the patchers fill. */
 const ALLOWED = new Set([
   "lib/run-steps.ts",
   "lib/hooks.ts",
   "lib/hooks-chat.ts",
+  "lib/conversation-api.ts",
   "lib/live/apply-event.ts",
   "components/run-step-timeline.tsx",
   "components/copilot-run-activity.tsx",
   "components/conversation/step-list.tsx",
+  "components/conversation/timeline-runs.ts",
   "components/dashboard/widgets/activity-widget.tsx",
   "components/dashboard/widgets/needs-me-widget.tsx",
   "routes/agents.$id.tsx",
