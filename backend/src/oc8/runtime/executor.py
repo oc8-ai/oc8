@@ -773,6 +773,12 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             await publish_agent_status(agent)
 
             pinned = await resolve_version(db, run, agent)
+            # The chat's model choice (spec §2.3): resolve_version already fell
+            # back to the default if it is not a chat-enabled model; this writes
+            # the one audit line saying so.
+            from oc8.chat.model_choice import audit_model_override
+
+            await audit_model_override(db, run=run, agent=agent)
             choice = await _resolve_mcp_connection(
                 db,
                 agent=agent,

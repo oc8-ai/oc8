@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -73,3 +74,57 @@ async def model_options(
         for c in configs
     )
     return options
+
+
+def _requested_override(run: m.AgentRun | None) -> uuid.UUID | None:
+    raw = (run.context or {}).get("model_override_id") if run is not None else None
+    if not raw:
+        return None
+    try:
+        return uuid.UUID(str(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+async def apply_model_override(
+    db: AsyncSession, *, run: m.AgentRun | None, agent: m.Agent, payload: dict[str, Any]
+) -> dict[str, Any]:
+    """The run's behavioural payload with the chat's model in place of the
+    pinned one -- only when that model is still a chat-enabled model of the
+    tenant. Every runtime reads its model through `resolve_version`, so this one
+    seam is what makes the in-process engine, the isolated control plane and
+    both gateways agree (and what `control_tools._model_locality` judges
+    retrieval by)."""
+    requested = _requested_override(run)
+    if requested is None:
+        return payload
+    if not await is_allowed_override(db, agent=agent, model_config_id=requested):
+        return payload
+    return {**payload, "model_config_id": str(requested)}
+
+
+async def audit_model_override(db: AsyncSession, *, run: m.AgentRun, agent: m.Agent) -> None:
+    """One audit line when a run's requested model was refused. Called once at
+    run start by the executor; the context flag keeps a resumed leg silent."""
+    from oc8.audit import append_event
+    from oc8.runtime.run_context import merge_context
+
+    requested = _requested_override(run)
+    if requested is None or (run.context or {}).get("model_override_checked"):
+        return
+    allowed = await is_allowed_override(db, agent=agent, model_config_id=requested)
+    await merge_context(db, run, {"model_override_checked": True})
+    if allowed:
+        return
+    await append_event(
+        db,
+        tenant_id=run.tenant_id,
+        actor_type="agent",
+        actor_id=agent.id,
+        category="run",
+        action="chat.model_override_rejected",
+        resource={"run_id": str(run.id), "requested_model_config_id": str(requested)},
+        decision="deny",
+        reason="model is not a chat-enabled model; the agent's default model was used",
+        originating_operator=(run.context or {}).get("originating_operator"),
+    )
