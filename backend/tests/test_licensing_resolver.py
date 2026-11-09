@@ -52,8 +52,20 @@ async def _capabilities() -> object:
     return r.json()["callerCapabilities"]
 
 
-def test_all_capabilities_holds_both_constants() -> None:
-    assert ALL_CAPABILITIES == frozenset({ENTERPRISE_SUPERVISION_ADVANCED, ENTERPRISE_SSO_SAML})
+def test_all_capabilities_holds_every_named_constant() -> None:
+    assert ALL_CAPABILITIES == frozenset(
+        {
+            ENTERPRISE_SUPERVISION_ADVANCED,
+            ENTERPRISE_SSO_SAML,
+            "enterprise.web_search",
+            "enterprise.canvas",
+            "enterprise.data_analysis",
+            "enterprise.chat_search",
+            "enterprise.chat_sharing",
+            "enterprise.dictation",
+            "enterprise.prompt_templates",
+        }
+    )
 
 
 def test_the_resolver_seam_sets_and_clears() -> None:

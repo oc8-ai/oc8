@@ -934,18 +934,28 @@ async def record_assistant_reply(db: AsyncSession, *, run: m.AgentRun, output: s
             reply_to_id = uuid.UUID(str(reply_to_raw))
         except (TypeError, ValueError):
             reply_to_id = None
+    from oc8.edition.tools import clean_parts
     from oc8.runtime.run_context import clean_suggestions
 
     raw_suggestions = (run.context or {}).get("suggestions")
     suggestions = clean_suggestions(raw_suggestions) if isinstance(raw_suggestions, list) else []
-    reply_parts: list[dict[str, Any]] = (
-        [{"type": "suggestions", "options": suggestions}] if suggestions else []
-    )
-    if raw_suggestions is not None:
-        # Consumed: a later answer on this run must not inherit stale chips.
+    # Edition tools' parts (ControlOutcome.parts, appended to the run's context
+    # by the caller) are untrusted: cleaned here, at the one place they are
+    # persisted, and kept ahead of core's own suggestions part, never over it.
+    raw_parts = (run.context or {}).get("parts")
+    reply_parts: list[dict[str, Any]] = clean_parts(raw_parts)
+    if suggestions:
+        reply_parts.append({"type": "suggestions", "options": suggestions})
+    consumed = {
+        key: None
+        for key, raw in (("suggestions", raw_suggestions), ("parts", raw_parts))
+        if raw is not None
+    }
+    if consumed:
+        # Consumed: a later answer on this run must not inherit stale chips or parts.
         from oc8.runtime.run_context import merge_context
 
-        await merge_context(db, run, {"suggestions": None})
+        await merge_context(db, run, consumed)
     reply = m.ChatMessage(
         tenant_id=run.tenant_id,
         session_id=session.id,

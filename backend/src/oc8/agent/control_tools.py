@@ -1265,6 +1265,13 @@ class ControlOutcome:
     #: marker inside `output` -- `output` stays the readable text every model
     #: and the inbox see. None for a plain one-question ask.
     questions: list[dict[str, Any]] | None = None
+    #: Typed JSON an edition tool returns for the chat to show
+    #: (`{"type": "sources", "items": [...]}`, `{"type": "document_ref", "id": ...}`).
+    #: Untrusted, extension-produced data: the CALLER appends them to the run's
+    #: `context["parts"]`; `record_assistant_reply` cleans them
+    #: (`oc8.edition.tools.clean_parts`) and stores them on `ChatMessage.parts`.
+    #: Core never renders or interprets them.
+    parts: list[dict[str, Any]] | None = None
 
 
 async def _member_behind_task(
