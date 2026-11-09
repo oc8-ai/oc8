@@ -1701,6 +1701,14 @@ async def _execute_read_context(
     )
 
 
+def skipped_local_line(kb_name: str) -> str:
+    """The line a `search_knowledge` result carries for a base it could not
+    search: the question had to stay on a local model and the base embeds
+    with a cloud one. Its wording is matched by the chat's step list
+    (`frontend/src/lib/run-steps.ts`), so it changes in both places."""
+    return f"[Skipped: {kb_name} \u2013 needs a local embedding model]"
+
+
 async def _released_bases_refusal(
     db: AsyncSession,
     *,
@@ -2421,6 +2429,7 @@ async def execute_control_tool(
         )
         # The model the run really uses, chat override included.
         locality = await _run_locality(db, agent, pinned, run_id)
+        skipped_local: list[str] = []
         context, contains_restricted = await retrieve_kb_context(
             db,
             agent=agent,
@@ -2433,6 +2442,14 @@ async def execute_control_tool(
             only_kb_ids=await _context_kb_ids(db, tenant_id=tenant_id, run_id=run_id),
             # What the member pinned to the chat or its project: their release.
             released_kb_ids=released,
+            skipped_local=skipped_local,
+        )
+        # A base that could not be searched with this model is said, once per
+        # base, in a fixed line the chat shows the member under the answer's
+        # steps -- otherwise it looks merely empty. First, because a step's
+        # stored result is cut at 300 characters.
+        skipped_note = "".join(
+            f"{skipped_local_line(name)}\n" for name in dict.fromkeys(skipped_local)
         )
         # A trail, because "did it consult the handbook or guess?" has to be
         # answerable afterwards. Without it I drew the wrong conclusion myself:
@@ -2483,11 +2500,12 @@ async def execute_control_tool(
             if refusal is not None:
                 # Nothing came back because a pinned base may not reach this
                 # run -- said as such, not as "the knowledge base is empty".
-                return ControlOutcome(output=refusal)
+                return ControlOutcome(output=skipped_note + refusal)
             # Said plainly, because a silent empty answer is filled in by the
             # model with something it made up.
             return ControlOutcome(
-                output=(
+                output=skipped_note
+                + (
                     "Dazu steht nichts in der Wissensdatenbank. Sage dem Kunden "
                     "nichts, was du dir selbst zusammenreimst -- frage nach oder "
                     "gib an einen Menschen ab."
@@ -2496,7 +2514,9 @@ async def execute_control_tool(
         # The caller marks the run: every later completion then carries
         # contains_restricted, so the router refuses a cloud model or fallback
         # and the department cache skips it.
-        return ControlOutcome(output=context, contains_restricted=contains_restricted)
+        return ControlOutcome(
+            output=skipped_note + context, contains_restricted=contains_restricted
+        )
 
     if tc.name == FETCH_URL.name:
         url = str(tc.arguments.get("url", "")).strip()

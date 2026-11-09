@@ -114,6 +114,30 @@ describe("StepList", () => {
     expect(items[1].querySelector("span.flex-1")?.className).toContain("text-status-error");
   });
 
+  it("says once which pinned base this model could not search (E2E H)", () => {
+    const line = "[Skipped: Sales KB \u2013 needs a local embedding model]";
+    wrap(
+      <StepList
+        run={{
+          state: "done",
+          steps: 2,
+          toolCalls: [1, 2].map((step) => ({
+            tool: "search_knowledge",
+            step,
+            arguments: { query: "q" },
+            result: `${line}\nDazu steht nichts in der Wissensdatenbank.`,
+            state: "done",
+          })),
+        }}
+      />,
+    );
+    expect(
+      screen.getAllByText(
+        "Sales KB can't be searched with this model – it needs a local embedding model.",
+      ),
+    ).toHaveLength(1);
+  });
+
   it("renders nothing for a run without tool calls", () => {
     const { container } = wrap(<StepList run={{ state: "done", steps: 1, toolCalls: [] }} />);
     expect(container).toBeEmptyDOMElement();

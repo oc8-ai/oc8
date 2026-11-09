@@ -30,7 +30,7 @@ from oc8.knowledge.embedding_policy import (
 )
 from oc8.knowledge.vector_indexes.base import VectorIndexError
 from oc8.knowledge.vector_indexes.registry import INTERNAL_INDEX_TYPE, resolve_vector_index
-from oc8.modelrouter import EmbeddingUnavailable, get_model_router
+from oc8.modelrouter import EmbeddingMustStayLocal, EmbeddingUnavailable, get_model_router
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +94,7 @@ async def _embed_for_kb(
     kb: m.KnowledgeBase,
     query_text: str,
     local_agent: bool,
+    skipped_local: list[str] | None = None,
 ) -> list[float] | None:
     """Query embedding with the KB's own model, through the tenant's own
     provider credentials. Skip this KB on failure -- at WARNING with the
@@ -114,6 +115,10 @@ async def _embed_for_kb(
             require_local=require_local,
         )
     except EmbeddingUnavailable as exc:
+        # A base whose cloud embedding the question may not reach: the caller
+        # tells the member, who otherwise sees the base as merely empty.
+        if isinstance(exc, EmbeddingMustStayLocal) and skipped_local is not None:
+            skipped_local.append(kb.name)
         logger.warning(
             "embedding unavailable for kb %s model %s, skipping: %s",
             kb.id,
@@ -237,6 +242,7 @@ async def retrieve_kb_context(
     token_budget: int = KB_TOKEN_BUDGET,
     only_kb_ids: frozenset[uuid.UUID] | None = None,
     released_kb_ids: frozenset[uuid.UUID] | None = None,
+    skipped_local: list[str] | None = None,
 ) -> tuple[str, bool]:
     """Returns (context, contains_restricted). `contains_restricted` is true
     when any returned text is restricted or from a local-only base: text that
@@ -260,7 +266,11 @@ async def retrieve_kb_context(
     holds a grant, IN ADDITION to the agent's own grants (narrowed by
     `only_kb_ids` when given). The caller re-checks the member's right to
     each one first. Classification and the model's locality still filter
-    every hit below."""
+    every hit below.
+
+    `skipped_local`, when given, receives the name of every base that was not
+    searched because the question must stay local and the base embeds with a
+    cloud model."""
     kb_ids = await granted_kb_ids(db, agent=agent)
     if only_kb_ids is not None:
         # Intersection, never replacement. A `#` reference cannot reach a base
@@ -293,7 +303,12 @@ async def retrieve_kb_context(
     all_hits: list[_Hit] = []
     for kb in bases:
         query_embedding = await _embed_for_kb(
-            db, tenant_id=tenant_id, kb=kb, query_text=query_text, local_agent=local_agent
+            db,
+            tenant_id=tenant_id,
+            kb=kb,
+            query_text=query_text,
+            local_agent=local_agent,
+            skipped_local=skipped_local,
         )
         if query_embedding is None:
             continue
