@@ -517,3 +517,58 @@ def test_every_block_gets_its_own_nonce() -> None:
     blocks = [_BLOCK.search(fence("x", tag="pinned_context")) for _ in range(20)]
     nonces = {b.group(2) for b in blocks if b is not None}
     assert len(nonces) == 20
+
+
+async def _overseer_turn(
+    db: AsyncSession, tenant: uuid.UUID, *, kb: m.KnowledgeBase, role: str | None, as_overseer: bool
+) -> tuple[m.ChatMessage, m.AgentRun | None]:
+    _agent, _owner, session = await _chat(db, tenant, subject="owner")
+    overseer = m.OrgMember(tenant_id=tenant, subject="boss", subject_uuid=uuid.uuid4())
+    db.add_all([kb, overseer])
+    await db.flush()
+    return await send_message(
+        db,
+        session=session,
+        tenant_id=tenant,
+        message="what does it say?",
+        context_refs=[{"kind": "knowledge_base", "id": str(kb.id)}],
+        originating_operator="boss" if as_overseer else None,
+        operator_role=role,
+        acting_member=overseer if as_overseer else None,
+    )
+
+
+async def test_an_overseer_turn_never_names_a_restricted_base(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """No manifest on this path, but the name is still restricted content."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        kb = m.KnowledgeBase(
+            tenant_id=tenant, name="Layoff plan", embedding_model="x", local_only=True
+        )
+        msg, run = await _overseer_turn(db, tenant, kb=kb, role="org_admin", as_overseer=True)
+    assert run is not None and "context_manifest" not in run.context
+    assert "Layoff plan" not in run.context["task"]
+    assert "(a restricted knowledge base)" in run.context["task"]
+    assert run.context["context_kb_ids"] == [str(kb.id)]
+    # The chip keeps its label for the member's own view; no flag is stored.
+    assert msg.context_refs == [
+        {"kind": "knowledge_base", "id": str(kb.id), "label": "Layoff plan"}
+    ]
+
+
+@pytest.mark.parametrize(("role", "as_overseer"), [("member", True), (None, False)])
+async def test_a_hash_ref_without_knowledge_view_is_dropped(
+    app_session: AppSessionFactory, redis_url: str, role: str | None, as_overseer: bool
+) -> None:
+    """An overseer without knowledge:view, and a channel turn with nobody
+    behind it, lose every `#` knowledge base -- as the resolver would."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        kb = m.KnowledgeBase(tenant_id=tenant, name="Prices", embedding_model="x")
+        msg, run = await _overseer_turn(db, tenant, kb=kb, role=role, as_overseer=as_overseer)
+    assert msg.context_refs == []
+    assert run is not None
+    assert "context_kb_ids" not in run.context
+    assert "Prices" not in run.context["task"]

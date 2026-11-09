@@ -43,6 +43,7 @@ from oc8.chat.context.manifest import (
     is_restricted,
     manifest_text,
 )
+from oc8.chat.context.registry import RESOLVERS
 from oc8.chat.modes import MODES, ChatMode, mode_directive, parse_command
 from oc8.chat.questions import (
     PLAIN_ID,
@@ -55,6 +56,7 @@ from oc8.chat.questions import (
 )
 from oc8.copilot.redaction import is_secret_request, redact_text
 from oc8.copilot.responsibilities import close_responsibility
+from oc8.knowledge.embedding_policy import strictest
 from oc8.realtime.bus import get_event_bus
 from oc8.realtime.emit import publish_chat_message_created
 from oc8.runtime.clarification import resolve_clarification
@@ -238,22 +240,34 @@ def _build_task_text(history: list[m.ChatMessage], new_message: str, new_role: s
 
 
 async def _resolve_context_refs(
-    db: AsyncSession, *, tenant_id: uuid.UUID, refs: list[dict[str, str]] | None
-) -> list[dict[str, str]]:
-    """The `#` references that actually exist, with their labels.
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    refs: list[dict[str, str]] | None,
+    acting_member: m.OrgMember | None,
+    token_role: str | None,
+) -> tuple[list[dict[str, str]], set[str]]:
+    """The `#` knowledge-base references of a turn WITHOUT a context manifest
+    (an overseer's reply, a channel turn), with their labels, plus the ids of
+    those that are restricted.
 
     Anything unresolvable is DROPPED, not passed on: an id naming another
     tenant's knowledge base (RLS makes it invisible here), a soft-deleted one,
-    or a `kind` this version does not implement. A dropped reference is visible
-    -- the chip is gone from the sent message -- which is the honest outcome;
-    the alternative is a turn instructed to consult something nobody can read.
+    or a `kind` this path does not implement. So is every ref when the acting
+    member does not hold `knowledge:view` -- the knowledge-base resolver's own
+    rule (`chat.context.sources`, Ruling 27) -- or when there is no member
+    behind the turn at all (a channel sender). `token_role` MUST be the role on
+    `acting_member`'s live request token. A dropped reference is visible --
+    the chip is gone from the sent message -- which is the honest outcome.
 
-    `knowledge_base` is the only kind in Phase 1. A document or an external
-    record is a bigger question (a record reference has to name a connection
-    too) and belongs with the room work.
+    Restricted ids (a `restricted` or local-only base) are returned apart, so
+    the task text never names them; nothing about them is persisted.
     """
-    if not refs:
-        return []
+    if not refs or acting_member is None or acting_member.deleted_at is not None:
+        return [], set()
+    viewer = await viewer_for_member(db, acting_member, token_role=token_role)
+    if not RESOLVERS["knowledge_base"].admits(viewer):
+        return [], set()
     wanted: list[uuid.UUID] = []
     for ref in refs:
         if ref.get("kind") != "knowledge_base":
@@ -263,7 +277,7 @@ async def _resolve_context_refs(
         except (ValueError, TypeError):
             continue
     if not wanted:
-        return []
+        return [], set()
     rows = (
         await db.execute(
             select(m.KnowledgeBase).where(
@@ -274,17 +288,26 @@ async def _resolve_context_refs(
         )
     ).scalars()
     by_id = {kb.id: kb for kb in rows}
+    restricted = {
+        str(kb.id)
+        for kb in by_id.values()
+        if is_restricted(strictest(kb.classification, "restricted" if kb.local_only else None))
+    }
     # Caller order preserved, so the chips read back in the order they were
     # attached rather than in whatever order the database returned.
     return [
         {"kind": "knowledge_base", "id": str(kb_id), "label": by_id[kb_id].name}
         for kb_id in wanted
         if kb_id in by_id
-    ]
+    ], restricted
 
 
 def _kb_reference_text(
-    resolved_refs: list[dict[str, str]], mode: ChatMode | None, manifest: Manifest | None
+    resolved_refs: list[dict[str, str]],
+    mode: ChatMode | None,
+    manifest: Manifest | None,
+    *,
+    restricted: set[str] | None = None,
 ) -> str:
     """The note naming the knowledge bases attached to this one message, or "".
 
@@ -298,11 +321,9 @@ def _kb_reference_text(
     kbs = [ref for ref in resolved_refs if ref.get("kind") == "knowledge_base"]
     if not kbs:
         return ""
-    restricted = (
-        {e["id"] for e in manifest.entries if is_restricted(str(e["classification"]))}
-        if manifest is not None
-        else set()
-    )
+    if manifest is not None:
+        restricted = {e["id"] for e in manifest.entries if is_restricted(str(e["classification"]))}
+    restricted = restricted or set()
     names = "\n".join(
         "(a restricted knowledge base)" if ref["id"] in restricted else one_line(ref["label"], 120)
         for ref in kbs
@@ -554,7 +575,6 @@ async def send_message(
         mode, body = None, message
     else:
         mode, body = parse_command(message)
-    resolved_refs = await _resolve_context_refs(db, tenant_id=tenant_id, refs=context_refs)
     manifest = await _turn_manifest(
         db,
         session=session,
@@ -562,8 +582,17 @@ async def send_message(
         token_role=operator_role,
         message_refs=context_refs or [],
     )
+    restricted_ids: set[str] = set()
     if manifest is not None:
         resolved_refs = _message_refs(manifest)
+    else:
+        resolved_refs, restricted_ids = await _resolve_context_refs(
+            db,
+            tenant_id=tenant_id,
+            refs=context_refs,
+            acting_member=acting_member if role == "user" else None,
+            token_role=operator_role,
+        )
     user_message = m.ChatMessage(
         tenant_id=tenant_id,
         session_id=session.id,
@@ -650,7 +679,7 @@ async def send_message(
         return user_message, None
 
     task_text = _build_task_text(history, body, new_role=role)
-    task_text += _kb_reference_text(resolved_refs, mode, manifest)
+    task_text += _kb_reference_text(resolved_refs, mode, manifest, restricted=restricted_ids)
     for att in attachments:
         if att.is_image:
             continue
@@ -782,7 +811,6 @@ async def regenerate_reply(
         for r in (user_message.context_refs or [])
         if isinstance(r, dict)
     ]
-    resolved_refs = await _resolve_context_refs(db, tenant_id=tenant_id, refs=refs)
     manifest = await _turn_manifest(
         db,
         session=session,
@@ -790,10 +818,19 @@ async def regenerate_reply(
         token_role=operator_role,
         message_refs=refs,
     )
+    restricted_ids: set[str] = set()
     if manifest is not None:
         resolved_refs = _message_refs(manifest)
+    else:
+        resolved_refs, restricted_ids = await _resolve_context_refs(
+            db,
+            tenant_id=tenant_id,
+            refs=refs,
+            acting_member=acting_member,
+            token_role=operator_role,
+        )
     task_text = _build_task_text(before, user_message.content, new_role="user")
-    task_text += _kb_reference_text(resolved_refs, mode, manifest)
+    task_text += _kb_reference_text(resolved_refs, mode, manifest, restricted=restricted_ids)
     attachments = list(
         (
             await db.execute(
