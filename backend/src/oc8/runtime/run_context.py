@@ -21,10 +21,11 @@ This column predates that pattern and is read by too many callers to move now.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Any
 
-from sqlalchemy import bindparam, text
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import Text, bindparam, text
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
@@ -76,6 +77,40 @@ def _adopt(run: AgentRun, context: dict[str, Any]) -> dict[str, Any]:
 async def merge_context(db: AsyncSession, run: AgentRun, patch: dict[str, Any]) -> dict[str, Any]:
     """Merge `patch` into the run's context, keeping every key it does not name."""
     stored = (await db.execute(_MERGE, {"patch": patch, "id": run.id})).scalar_one()
+    return _adopt(run, stored)
+
+
+_WRITE_BACK = text(
+    "UPDATE agent_run SET context = (context - CAST(:removed AS text[])) || :patch "
+    "WHERE id = :id RETURNING context"
+).bindparams(bindparam("patch", type_=JSONB), bindparam("removed", type_=ARRAY(Text)))
+
+
+async def write_back_context(
+    db: AsyncSession,
+    run: AgentRun,
+    *,
+    before: Mapping[str, Any],
+    after: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Write back what a request changed in its own copy of the context.
+
+    `before` is the (deep-copied) context the request started from, `after`
+    its edited copy. Only the keys it changed or removed are written, in one
+    statement, so whatever else wrote the row meanwhile -- a tool's
+    `merge_context` during the same request (`suggestions`, `parts`, ...), or
+    another writer altogether -- survives. A key both changed is the
+    request's: it is the last writer, exactly as before.
+    """
+    patch = {
+        key: value for key, value in after.items() if key not in before or before[key] != value
+    }
+    removed = [key for key in before if key not in after]
+    if not patch and not removed:
+        return dict(run.context or {})
+    stored = (
+        await db.execute(_WRITE_BACK, {"patch": patch, "removed": removed, "id": run.id})
+    ).scalar_one()
     return _adopt(run, stored)
 
 
