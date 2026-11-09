@@ -15,6 +15,7 @@ from oc8.connections.access import ConnectionRequired, binding_fingerprint
 from oc8.connections.runtime_env import integration_connections, run_mcp_env
 from oc8.oauth.tokens import access_ref
 from oc8.secrets.service import store_secret
+from tests.audit.helpers import flush_audit
 from tests.conftest import AppSessionFactory
 from tests.connections.helpers import credential_row, enable_plugin_row, member, oauth_row
 from tests.connections.test_access import MS_CFG, ODOO_CFG
@@ -91,6 +92,7 @@ async def test_a_persons_token_is_injected_and_the_call_audited(
         conn = await db.get(m.McpConnection, conn_id)
         assert run is not None and conn is not None
         launch = await run_mcp_env(db, run=run, conn=conn, tool="mail_send")
+        await flush_audit(db)  # staged audit events reach the chain at commit
         events = (
             (await db.execute(select(m.AuditEvent).where(m.AuditEvent.action == "connection.used")))
             .scalars()
@@ -313,6 +315,7 @@ async def test_the_in_process_engine_audits_each_session_it_opens(
         conn = await db.get(m.McpConnection, conn_id)
         assert run is not None and conn is not None
         opened = await engine._open_mcp_session(db, tenant_id=tenant, mcp_conn=conn, run=run)
+        await flush_audit(db)  # staged audit events reach the chain at commit
         events = (
             (await db.execute(select(m.AuditEvent).where(m.AuditEvent.action == "connection.used")))
             .scalars()
