@@ -622,12 +622,61 @@ async def _mcp_env(conn: m.McpConnection, db: DbSession, tenant_id: uuid.UUID) -
 # --------------------------------------------------------------------- step
 
 
+def _refuse_held_call(
+    *,
+    agent: m.Agent,
+    dept: m.Department | None,
+    conn: m.McpConnection,
+    pinned: Mapping[str, Any],
+    ctx: Mapping[str, Any],
+    tool: str,
+    arguments: dict[str, Any],
+) -> str | None:
+    """Why a held connection call may not run now, or None.
+
+    An answered elicitation re-runs the call on a later /step. It runs NOW, so
+    the PEP decides it now -- the frame, the narrowing and the run's mode as
+    they are at this moment. A call that needs approval runs only once an
+    operator approved this exact call.
+    """
+    frame = dept.frame if dept is not None else {}
+    narrowing = pinned["narrowing"] or {}
+    cfg = _mcp_params(conn)
+    decision = _authorize(
+        agent,
+        ToolCall(id="held", name=tool, arguments=arguments),
+        frame=frame,
+        tool_policies=effective_tool_policies(frame, narrowing),
+        connection_key=conn.name,
+        tool_scopes=_manifest_scopes(conn),
+        value_spec=cfg.get("value_spec") if isinstance(cfg.get("value_spec"), dict) else None,
+        guardrail_attribute_specs=_manifest_guardrail_attributes(conn),
+        narrowing=narrowing,
+        is_team_lead=bool(pinned["is_team_lead"]),
+        chat_mode=mode_from_context(ctx),
+        # Always the connection's tool, whatever core tool shares its name.
+        routed=True,
+    )
+    if decision.effect is Effect.ALLOW:
+        return None
+    if decision.effect is Effect.REQUIRE_APPROVAL:
+        verdict = pre_decided_map(ctx.get("resolved_tool_approvals", [])).get(
+            _call_sig(ToolCall(id="held", name=tool, arguments=arguments))
+        )
+        if verdict == "approve":
+            return None
+    return decision.reason or "denied"
+
+
 async def _finish_elicitation(
     db: DbSession,
     run: m.AgentRun,
     dept: m.Department | None,
     ctx: dict[str, Any],
     transcript: list[dict[str, Any]],
+    *,
+    agent: m.Agent,
+    pinned: Mapping[str, Any],
 ) -> None:
     """Send the operator's answer back to the server and finish the same call."""
     pending = ctx.get("pending_elicitation")
@@ -651,8 +700,23 @@ async def _finish_elicitation(
         (item for item in await _connections(db, run, dept) if item.name == connection_name),
         None,
     )
+    refusal = (
+        _refuse_held_call(
+            agent=agent,
+            dept=dept,
+            conn=conn,
+            pinned=pinned,
+            ctx=ctx,
+            tool=tool,
+            arguments=dict(pending.get("arguments") or {}),
+        )
+        if conn is not None and tool
+        else None
+    )
     if conn is None or not tool:
         output = "ERROR: the connection that asked for this answer is no longer available"
+    elif refusal is not None:
+        output = f"ERROR: {refusal}"
     else:
         try:
             env = await _mcp_env(conn, db, run.tenant_id)
@@ -844,7 +908,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         return StepResult(done=True, text="Reached step limit.", status_override="done")
 
     transcript: list[dict[str, Any]] = list(ctx.get("transcript", []))
-    await _finish_elicitation(db, run, dept, ctx, transcript)
+    await _finish_elicitation(db, run, dept, ctx, transcript, agent=agent, pinned=pinned)
     tool_schemas_raw: list[dict[str, Any]] = list(ctx.get("tool_schemas", []))
 
     # Resolved BEFORE seeding, because the preamble's KB retrieval needs the

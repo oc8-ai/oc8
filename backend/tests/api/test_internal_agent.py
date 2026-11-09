@@ -3058,3 +3058,65 @@ async def test_ask_prefetches_no_read_from_the_tool_server(
 
     assert len(reached) == prefetched
     assert len(result) == prefetched
+
+
+@pytest.mark.parametrize(("chat_mode", "reaches_server"), [(None, True), ("plan", False)])
+@pytest.mark.asyncio
+async def test_an_answered_elicitation_is_authorized_again_before_the_call_runs(
+    app_session: object,
+    monkeypatch: pytest.MonkeyPatch,
+    chat_mode: str | None,
+    reaches_server: bool,
+) -> None:
+    """The operator's answer re-runs a held connection call on the next /step.
+    That call runs NOW, so it is decided now -- by the frame and the run's mode
+    as they are at this moment -- not on the strength of an earlier verdict."""
+    from oc8 import models as m
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    reached: list[str] = []
+
+    async def fake_call(*args: Any, tool: str, **kw: Any) -> str:
+        reached.append(tool)
+        return "created"
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        return CompletionResult(
+            text="ok", tool_calls=[], usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="stop", provider="ollama", model="m",
+        )
+
+    monkeypatch.setattr("oc8.agent.mcp_pool.call", fake_call)
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id = await _mcp_backed_run(db, tenant)
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {
+            **run.context,
+            **({"chat_mode": chat_mode} if chat_mode else {}),
+            "transcript": [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+            "pending_elicitation": {
+                "connection": "odoo",
+                "tool": "create_record",
+                "arguments": {"model": "sale.order"},
+                "question": "Which customer?",
+            },
+            "clarifications": [{"question": "Which customer?", "answer": "ACME"}],
+        }
+        await db.flush()
+
+    await _post_step(tenant, agent_id, run_id)
+
+    assert reached == (["create_record"] if reaches_server else [])
+    if not reaches_server:
+        async with app_session(tenant) as db:  # type: ignore[operator]
+            row = await db.get(m.AgentRun, run_id)
+            assert row is not None
+            assert "pending_elicitation" not in row.context
+            assert any(
+                "/plan" in str(e.get("content", "")) for e in row.context["transcript"]
+            ), "the model must hear why the held call did not run"
