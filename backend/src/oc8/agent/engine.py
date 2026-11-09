@@ -818,9 +818,7 @@ async def run_agent(
             # are taken -- an edition tool never shadows one.
             taken = {t.name for t in tools} | set(skill_tool_names)
             if isinstance(server, RoutedToolset):
-                taken |= {
-                    found.tool for t in tools if (found := server.route(t.name)) is not None
-                }
+                taken |= {found.tool for t in tools if (found := server.route(t.name)) is not None}
             edition = await edition_offer(
                 tenant_id,
                 door=chat_door(run_row.source, run_row.context) if run_row is not None else None,

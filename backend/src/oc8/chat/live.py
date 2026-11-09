@@ -286,10 +286,12 @@ async def live_timeline(
     if before is not None:
         if before_id is not None:
             msg_stmt = msg_stmt.where(
-                tuple_(m.ChatMessage.created_at, m.ChatMessage.id) < tuple_(before, before_id)
+                tuple_(m.ChatMessage.created_at, m.ChatMessage.id)
+                < tuple_(literal(before), literal(before_id))
             )
             run_stmt = run_stmt.where(
-                tuple_(m.AgentRun.created_at, m.AgentRun.id) < tuple_(before, before_id)
+                tuple_(m.AgentRun.created_at, m.AgentRun.id)
+                < tuple_(literal(before), literal(before_id))
             )
         else:
             msg_stmt = msg_stmt.where(m.ChatMessage.created_at < before)

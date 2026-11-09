@@ -2108,12 +2108,10 @@ async def _dispatch_one_tool(
             edition_offer=edition,
         )
         if task is not None
+        # Never on to the MCP server: an edition call with no task to run
+        # it against is refused here.
         else (
-            # Never on to the MCP server: an edition call with no task to run
-            # it against is refused here.
-            ControlOutcome(output=f"ERROR: unknown tool {tc.name!r}")
-            if is_edition_call
-            else None
+            ControlOutcome(output=f"ERROR: unknown tool {tc.name!r}") if is_edition_call else None
         )
     )
 
