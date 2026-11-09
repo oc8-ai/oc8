@@ -20,10 +20,11 @@ from typing import Any
 import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
+from tests.audit.helpers import flush_audit
 from tests.conftest import AppSessionFactory
 
 from oc8 import models as m
-from oc8.audit.chain import append_event, flush_audit, verify_chain
+from oc8.audit.chain import AuditChainPoisoned, append_event, verify_chain
 from oc8.constants import ACME_TENANT_ID
 from oc8.db.session import owner_session
 from oc8.modelrouter import CompletionResult, ToolCall, Usage, chunk_from_result
@@ -314,3 +315,107 @@ async def test_in_process_run_does_not_hold_the_tenant_audit_lock(
         # The run committed last, so its tool call follows the unrelated write.
         assert list(actions) == ["tool.call:noop", "unrelated.login"]
         assert await verify_chain(s, tenant) is True
+
+
+# ------------------------------------------------------- failed and odd commits
+
+
+async def _keyed_head(app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch) -> uuid.UUID:
+    """A tenant whose chain head is keyed (mac_version 1), with the flag then
+    turned OFF -- so the next commit that writes the chain raises MacDowngrade."""
+    import base64
+
+    from oc8.config import get_settings
+
+    tenant = uuid.uuid4()
+    monkeypatch.setenv("OC8_SECRET_KEK", base64.b64encode(b"\x33" * 32).decode())
+    monkeypatch.setenv("OC8_AUDIT_MAC_ENABLED", "true")
+    get_settings.cache_clear()
+    async with app_session(tenant) as s:
+        await _append(s, tenant, "keyed.head")
+    monkeypatch.setenv("OC8_AUDIT_MAC_ENABLED", "false")
+    get_settings.cache_clear()
+    return tenant
+
+
+async def _business_rows(app_session: AppSessionFactory, tenant: uuid.UUID, name: str) -> int:
+    async with app_session(tenant) as s:
+        return (
+            await s.execute(
+                sa.select(sa.func.count())
+                .select_from(m.Department)
+                .where(m.Department.tenant_id == tenant, m.Department.name == name)
+            )
+        ).scalar_one()
+
+
+async def test_a_failed_commit_poisons_the_session_until_rollback(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """C1: a chain write that fails at commit must not leave a session that a
+    second commit() persists WITHOUT its audit rows."""
+    from oc8.audit.chain import MacDowngrade
+    from oc8.config import get_settings
+
+    try:
+        tenant = await _keyed_head(app_session, monkeypatch)
+        async with app_session(tenant) as s:
+            s.add(m.Department(tenant_id=tenant, name="poisoned", frame={}))
+            await _append(s, tenant, "lost?")
+            with pytest.raises(MacDowngrade):
+                await s.commit()
+            # The retry must refuse, not silently persist the department.
+            with pytest.raises(AuditChainPoisoned):
+                await s.commit()
+            await s.rollback()
+            # A rollback clears the mark: the session is usable again.
+            await s.execute(
+                sa.text("SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant)}
+            )
+            await s.execute(sa.text("SELECT 1"))
+        assert await _business_rows(app_session, tenant, "poisoned") == 0
+        assert await _actions(app_session, tenant) == ["keyed.head"]
+    finally:
+        get_settings.cache_clear()
+
+
+async def test_a_downgrade_at_commit_writes_neither_the_business_row_nor_the_event(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """I1: a real failure driven through commit() leaves no trace."""
+    from oc8.audit.chain import MacDowngrade
+    from oc8.config import get_settings
+
+    try:
+        tenant = await _keyed_head(app_session, monkeypatch)
+        with pytest.raises(MacDowngrade):
+            async with app_session(tenant) as s:
+                s.add(m.Department(tenant_id=tenant, name="business", frame={}))
+                await _append(s, tenant, "downgraded")
+        assert await _business_rows(app_session, tenant, "business") == 0
+        assert await _actions(app_session, tenant) == ["keyed.head"]
+    finally:
+        get_settings.cache_clear()
+
+
+async def test_committing_the_root_with_a_savepoint_open_is_refused(
+    app_session: AppSessionFactory,
+) -> None:
+    """C2: SessionTransaction.commit() on the root while a savepoint is still
+    open looks like a RELEASE to before_commit. The engine-level guard must
+    stop the DBAPI COMMIT rather than persist the rows without their audit."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as s:
+        s.add(m.Department(tenant_id=tenant, name="unaudited", frame={}))
+        await _append(s, tenant, "outer")
+
+        def _commit_root_under_savepoint(sync: Any) -> None:
+            sync.begin_nested()
+            root = sync.get_transaction()
+            root.commit()
+
+        with pytest.raises(AuditChainPoisoned):
+            await s.run_sync(_commit_root_under_savepoint)
+        await s.rollback()
+    assert await _business_rows(app_session, tenant, "unaudited") == 0
+    assert await _actions(app_session, tenant) == []

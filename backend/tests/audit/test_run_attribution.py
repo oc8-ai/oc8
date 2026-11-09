@@ -6,10 +6,10 @@ from typing import Any
 import pytest
 from sqlalchemy import select
 from tests.conftest import AppSessionFactory
+from tests.audit.helpers import flush_audit
 
 from oc8 import models as m
 from oc8.agent.engine import run_agent
-from oc8.audit.chain import flush_audit
 from oc8.constants import ACME_TENANT_ID
 from oc8.modelrouter import CompletionResult, ToolCall, Usage, chunk_from_result
 

@@ -11,7 +11,6 @@ from sqlalchemy import select
 
 from oc8 import config
 from oc8 import models as m
-from oc8.audit.chain import flush_audit
 from oc8.constants import ACME_TENANT_ID
 from oc8.modelrouter.auto_router import (
     AUTO_MODEL,
@@ -32,6 +31,7 @@ from oc8.modelrouter.auto_router import (
 )
 from oc8.modelrouter.types import NeutralMessage, NeutralTool
 from tests.conftest import AppSessionFactory
+from tests.audit.helpers import flush_audit
 
 
 @dataclass

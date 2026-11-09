@@ -9,10 +9,10 @@ from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.agent.engine import run_agent
-from oc8.audit.chain import flush_audit
 from oc8.modelrouter import CompletionResult, NeutralTool, ToolCall, Usage, chunk_from_result
 from oc8.modelrouter.types import CompletionRequest
 from tests.conftest import AppSessionFactory
+from tests.audit.helpers import flush_audit
 
 pytestmark = pytest.mark.asyncio
 

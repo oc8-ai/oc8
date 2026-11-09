@@ -8,7 +8,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.audit.chain import flush_audit
 from oc8.copilot.responsibilities import (
     ResponsibilityError,
     can_transition,
@@ -18,6 +17,7 @@ from oc8.copilot.responsibilities import (
     update_responsibility,
 )
 from tests.conftest import AppSessionFactory
+from tests.audit.helpers import flush_audit
 
 
 async def _open(

@@ -22,10 +22,11 @@ import hmac
 import json
 import logging
 import uuid
+import weakref
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import event, select, text
+from sqlalchemy import Connection, Engine, event, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session, SessionTransaction
 
@@ -163,6 +164,7 @@ def recompute_hash(event: AuditEvent, prev_hash: bytes) -> bytes:
 # --------------------------------------------------------------------------
 
 _PENDING_KEY = "oc8_pending_audit"
+_POISONED_KEY = "oc8_audit_poisoned"
 
 _LOCK_SQL = text("SELECT pg_advisory_xact_lock(hashtextextended(:tenant, 0))")
 
@@ -226,38 +228,106 @@ def _write_tenant(session: Session, tenant_id: uuid.UUID, staged: list[_Staged])
 
 
 def _write_staged(session: Session) -> None:
-    """Write the session's staged events to their tenants' chains."""
-    pending = session.info.pop(_PENDING_KEY, None)
+    """Write the session's staged events to their tenants' chains.
+
+    The staged list is cleared only once EVERY event has been written. Any
+    failure (MacDowngrade, a hashing error, a database error) poisons the
+    session instead: the transaction is still open and usable, and a second
+    commit() would otherwise persist the caller's business rows with none of
+    their audit rows. A poisoned session refuses every root commit until a
+    root rollback clears the mark.
+    """
+    if session.info.get(_POISONED_KEY):
+        raise AuditChainPoisoned(
+            "an earlier audit chain write in this transaction failed; roll back first"
+        )
+    pending = session.info.get(_PENDING_KEY)
     if not pending:
         return
     by_tenant: dict[uuid.UUID, list[_Staged]] = {}
     for item in pending:
         by_tenant.setdefault(item.tenant_id, []).append(item)
-    # Flushed FIRST, and that is a lock-order rule rather than housekeeping:
-    # the caller's pending row work must go out BEFORE the tenant lock, never
-    # after it. Measured on the old append path: `knowledge/reconcile.py::_hold`
-    # dirtied `data_source` and then appended, emitting ['ADVISORY',
-    # 'data_source'], while an operator source delete emitted ['data_source',
-    # ..., 'ADVISORY'] -- an AB/BA that Postgres aborted ("deadlock detected").
-    session.flush()
-    # Sorted by the same string the lock hashes, so every session takes a set
-    # of tenant locks in one global order.
-    for tenant_id in sorted(by_tenant, key=str):
-        _write_tenant(session, tenant_id, by_tenant[tenant_id])
+    try:
+        # Flushed FIRST, and that is a lock-order rule rather than housekeeping:
+        # the caller's pending row work must go out BEFORE the tenant lock, never
+        # after it. Measured on the old append path: `knowledge/reconcile.py::_hold`
+        # dirtied `data_source` and then appended, emitting ['ADVISORY',
+        # 'data_source'], while an operator source delete emitted ['data_source',
+        # ..., 'ADVISORY'] -- an AB/BA that Postgres aborted ("deadlock detected").
+        session.flush()
+        # Sorted by the same string the lock hashes, so every session takes a set
+        # of tenant locks in one global order.
+        for tenant_id in sorted(by_tenant, key=str):
+            _write_tenant(session, tenant_id, by_tenant[tenant_id])
+    except BaseException:
+        session.info[_POISONED_KEY] = True
+        raise
+    # In place: the same list object is registered for the connection in the
+    # engine-level commit guard (see _guard_dbapi_commit).
+    pending.clear()
+
+
+class AuditChainPoisoned(Exception):
+    """A root commit was attempted after an audit chain write in the same
+    transaction failed. Roll the transaction back."""
 
 
 @event.listens_for(Session, "before_commit")
 def _on_before_commit(session: Session) -> None:
     # before_commit also fires when a SAVEPOINT is released. That is not the
     # commit: the events stay staged (and the lock untaken) until the root
-    # transaction commits.
+    # transaction commits. The one case this cannot tell apart from a RELEASE
+    # -- the root SessionTransaction committed directly while a savepoint is
+    # still open -- is caught by _guard_dbapi_commit below.
     if session.in_nested_transaction():
         return
     _write_staged(session)
 
 
+# The staged list of the session using each Connection, for the engine-level
+# commit guard. Keyed by the Connection OBJECT (one per checkout), weakly, and
+# deliberately not stored in `Connection.info`: that property goes through
+# `Connection.connection`, which REVALIDATES -- checks a connection out again --
+# when the DBAPI connection is gone, and doing that from a commit/rollback
+# listener during a cancelled task's teardown hung the event loop (measured:
+# tests/runtime/test_workspace_archive_sync.py). It also keeps a pooled DBAPI
+# connection from carrying a reference to an earlier session's list.
+_PENDING_BY_CONNECTION: weakref.WeakKeyDictionary[Connection, list[_Staged]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+@event.listens_for(Engine, "commit")
+def _guard_dbapi_commit(conn: Connection) -> None:
+    """Last line of defence: refuse the DBAPI COMMIT while audit events staged
+    on this connection are still unwritten.
+
+    Reached with events pending only when before_commit did not write them:
+    the root SessionTransaction was committed directly with a savepoint still
+    open, or an earlier chain write failed and the session is being committed
+    regardless. Raising here stops the COMMIT, so the business rows are not
+    persisted without their audit rows.
+    """
+    pending = _PENDING_BY_CONNECTION.get(conn)
+    if pending:
+        raise AuditChainPoisoned(
+            f"refusing to COMMIT: {len(pending)} staged audit event(s) were not "
+            "written to the chain"
+        )
+    _PENDING_BY_CONNECTION.pop(conn, None)
+
+
+@event.listens_for(Engine, "rollback")
+def _forget_on_rollback(conn: Connection) -> None:
+    # The connection's transaction is over; whatever was staged against it is
+    # gone with it.
+    _PENDING_BY_CONNECTION.pop(conn, None)
+
+
 @event.listens_for(Session, "after_soft_rollback")
 def _drop_rolled_back(session: Session, previous_transaction: SessionTransaction) -> None:
+    if not previous_transaction.nested:
+        session.info.pop(_POISONED_KEY, None)
     pending = session.info.get(_PENDING_KEY)
     if not pending:
         return
@@ -272,32 +342,18 @@ def _drop_rolled_back(session: Session, previous_transaction: SessionTransaction
             scope = scope.parent
         return False
 
-    session.info[_PENDING_KEY] = [p for p in pending if not _inside(p.scope)]
-
-
-@event.listens_for(Session, "after_commit")
-def _check_nothing_left(session: Session) -> None:
-    # Only reachable if the root transaction was committed directly while a
-    # savepoint was still open (before_commit could not tell that commit from a
-    # RELEASE). Every savepoint in this code base is context-managed, so this
-    # is a tripwire for a future caller, not an expected path.
-    if session.in_nested_transaction():
-        return
-    pending = session.info.pop(_PENDING_KEY, None)
-    if pending:
-        logger.error(
-            "audit: %d staged event(s) were not written: the transaction was "
-            "committed while a savepoint was still open",
-            len(pending),
-        )
+    pending[:] = [p for p in pending if not _inside(p.scope)]
 
 
 @event.listens_for(Session, "after_transaction_end")
 def _clear_on_end(session: Session, transaction: SessionTransaction) -> None:
     # The root transaction is over (committed, rolled back, or closed): nothing
-    # staged in it can be written any more.
+    # staged in it can be written any more. Cleared in place, see _write_staged.
     if transaction.parent is None:
-        session.info.pop(_PENDING_KEY, None)
+        pending = session.info.get(_PENDING_KEY)
+        if pending:
+            pending.clear()
+        session.info.pop(_POISONED_KEY, None)
 
 
 async def append_event(
@@ -359,29 +415,32 @@ async def append_event(
     )
     await session.flush()
     sync = session.sync_session
-    _pending(sync).append(
+    pending = _pending(sync)
+    pending.append(
         _Staged(tenant_id=tenant_id, event=ev, payload=payload, scope=sync.get_nested_transaction())
     )
+    # The same list, registered on the connection, so the engine-level guard
+    # sees it at the DBAPI COMMIT (see _guard_dbapi_commit).
+    conn = await session.connection()
+    sync_conn = conn.sync_connection
+    assert sync_conn is not None  # session.connection() always returns a live one
+    _PENDING_BY_CONNECTION[sync_conn] = pending
     return ev
 
 
-async def flush_audit(session: AsyncSession) -> None:
-    """Write the session's staged audit events to the chain NOW, instead of at
-    commit.
+def _write_staged_now(session: Session) -> None:
+    """TESTS ONLY: write the session's staged events now instead of at commit.
 
-    The exception path: it takes the tenant's advisory lock immediately, and
-    that lock is then held until the transaction ends -- exactly what staging
-    avoids -- so never call it from a long transaction (an agent run). It exists
-    for code that must read its own events back, or their ``seq``/``hash``,
-    inside the transaction that appended them (tests, chain maintenance).
-
-    Refused inside a SAVEPOINT: events staged outside it would be written into
-    it, and a rollback of the savepoint would then lose them although the
-    transaction that staged them commits.
+    Not part of the audit API. It takes the tenant lock immediately and keeps it
+    until the transaction ends, and mixing it with commit-time writes can take
+    the tenant lock BEFORE later row work -- the lock-order inversion the
+    commit-time path exists to avoid. Tests reach it through
+    `tests/audit/helpers.py::flush_audit` (via ``AsyncSession.run_sync``) to
+    read their own events back inside the transaction that appended them.
     """
     if session.in_nested_transaction():
-        raise RuntimeError("flush_audit() inside a savepoint would tie its events to it")
-    await session.run_sync(_write_staged)
+        raise RuntimeError("writing staged events inside a savepoint would tie them to it")
+    _write_staged(session)
 
 
 async def verify_chain(session: AsyncSession, tenant_id: uuid.UUID) -> bool:

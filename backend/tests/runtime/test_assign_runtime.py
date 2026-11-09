@@ -8,7 +8,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.audit.chain import flush_audit
 from oc8.auth import Principal
 from oc8.capas.lifecycle import enable_plugin
 from oc8.capas.service import install_plugin
@@ -23,6 +22,7 @@ from oc8.runtime.registry import (
 )
 from oc8.runtime.supervision_hook import NOOP_SUPERVISION_RUN_HOOK, use_supervision_runtime
 from tests.conftest import AppSessionFactory
+from tests.audit.helpers import flush_audit
 
 pytestmark = pytest.mark.asyncio
 

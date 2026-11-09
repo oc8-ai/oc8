@@ -25,7 +25,7 @@ from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from oc8 import models as m
-from oc8.audit.chain import flush_audit, verify_chain
+from oc8.audit.chain import verify_chain
 from oc8.auth import get_identity_provider
 from oc8.knowledge.chunks import list_documents
 from oc8.knowledge.connectors import registry
@@ -51,6 +51,7 @@ from oc8.knowledge.tombstone import (
 from oc8.main import create_app
 from oc8.models.knowledge import EMBED_DIM
 from tests.conftest import AppSessionFactory
+from tests.audit.helpers import flush_audit
 
 pytestmark = pytest.mark.asyncio
 

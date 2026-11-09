@@ -17,12 +17,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from testcontainers.postgres import PostgresContainer
 
 from oc8 import models as m
-from oc8.audit import append_event, flush_audit
+from oc8.audit import append_event
 from oc8.backup.archive import export_archive
 from oc8.backup.secrets_envelope import WrongPassphrase
 from oc8.backup.service import preview_restore, restore_from_archive
 from oc8.secrets.service import resolve_secret, store_secret
 from tests.conftest import _ROLE_BOOTSTRAP, AppSessionFactory
+from tests.audit.helpers import flush_audit
 
 pytestmark = pytest.mark.asyncio
 

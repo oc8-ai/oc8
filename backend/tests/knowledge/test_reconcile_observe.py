@@ -24,7 +24,6 @@ import pytest
 from sqlalchemy import select
 
 from oc8 import models as m
-from oc8.audit.chain import flush_audit
 from oc8.config import Settings, get_settings
 from oc8.knowledge.connectors import registry
 from oc8.knowledge.connectors.base import (
@@ -39,6 +38,7 @@ from oc8.knowledge.reconcile import observe_listing, sweep_knowledge_deletions
 from oc8.knowledge.tombstone import RECONCILE_HELD
 from oc8.models.knowledge import EMBED_DIM
 from tests.conftest import AppSessionFactory
+from tests.audit.helpers import flush_audit
 
 pytestmark = pytest.mark.asyncio
 

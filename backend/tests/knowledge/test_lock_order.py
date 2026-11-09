@@ -33,7 +33,6 @@ import pytest
 from sqlalchemy import event, select, text, update
 
 from oc8 import models as m
-from oc8.audit.chain import flush_audit
 from oc8.config import Settings, get_settings
 from oc8.knowledge.connectors import registry
 from oc8.knowledge.connectors.base import Attestation, SourceListing
@@ -50,6 +49,7 @@ from oc8.knowledge.tombstone import (
     unlink_source_from_base,
 )
 from tests.conftest import AppSessionFactory
+from tests.audit.helpers import flush_audit
 from tests.knowledge.test_tombstone import (
     STUB,
     _FakeEmbedRouter,
@@ -287,8 +287,9 @@ async def test_every_path_takes_data_source_then_knowledge_base_then_the_audit_l
         stop = _trace(db, orders["operator source delete"])
         try:
             await tombstone_source(db, tenant_id=tenant, data_source=source, now=now)
-            # The chain is written at commit; do it here so the trace sees it.
-            await flush_audit(db)
+            # Through a REAL commit: this is where production writes the chain,
+            # so at least one path's trace covers the commit-time lock.
+            await db.commit()
         finally:
             stop()
 
@@ -387,6 +388,8 @@ async def test_every_path_takes_data_source_then_knowledge_base_then_the_audit_l
         "operator document delete"
     ]
     assert orders["held sync"].index("ADVISORY") > orders["held sync"].index("knowledge_base")
+    # The path traced through a real commit() really took the audit lock there.
+    assert "ADVISORY" in orders["operator source delete"], orders["operator source delete"]
 
 
 async def test_a_sync_whose_bookkeeping_dies_still_keeps_the_documents_it_ingested(
