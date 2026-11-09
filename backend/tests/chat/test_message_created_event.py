@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any
 from unittest.mock import patch
 
@@ -151,6 +152,55 @@ async def test_a_savepoint_rollback_keeps_the_pending_event(
         await savepoint.rollback()
     await asyncio.sleep(0.01)
     assert fired == ["x"]
+
+
+async def test_a_released_savepoint_does_not_publish_early(
+    app_session: AppSessionFactory,
+) -> None:
+    """A SAVEPOINT released inside the transaction is not the commit: the
+    event waits for the root transaction."""
+    fired: list[str] = []
+
+    async def _publish() -> None:
+        fired.append("x")
+
+    async with app_session(uuid.uuid4()) as db:
+        publish_after_commit(db, _publish)
+        async with db.begin_nested():
+            pass
+        await asyncio.sleep(0.01)
+        assert fired == []
+    await asyncio.sleep(0.01)
+    assert fired == ["x"]
+
+
+async def test_an_event_queued_in_a_rolled_back_savepoint_is_never_published(
+    app_session: AppSessionFactory,
+) -> None:
+    """The savepoint's rows never existed, so neither does its event; the
+    events queued before it, and in a released savepoint around it, stay."""
+    fired: list[str] = []
+
+    def _publish(name: str) -> Callable[[], Awaitable[None]]:
+        async def _go() -> None:
+            fired.append(name)
+
+        return _go
+
+    async with app_session(uuid.uuid4()) as db:
+        publish_after_commit(db, _publish("before"))
+        async with db.begin_nested():
+            publish_after_commit(db, _publish("outer"))
+            inner = await db.begin_nested()
+            publish_after_commit(db, _publish("inner"))
+            await inner.rollback()
+            publish_after_commit(db, _publish("after-inner"))
+        rolled = await db.begin_nested()
+        publish_after_commit(db, _publish("rolled"))
+        await rolled.rollback()
+        publish_after_commit(db, _publish("last"))
+    await asyncio.sleep(0.01)
+    assert fired == ["before", "outer", "after-inner", "last"]
 
 
 async def test_an_audience_lookup_failure_never_breaks_the_reply(
