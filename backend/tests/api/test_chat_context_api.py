@@ -157,7 +157,7 @@ async def test_pinned_chats_list_first(app_session: AppSessionFactory) -> None:
     assert after == [before[-1], *before[:-1]]
 
 
-async def test_only_the_owner_writes_a_chats_pins_project_and_pinned_state(
+async def test_only_the_owner_writes_a_chats_pins_project_pinned_state_and_model(
     app_session: AppSessionFactory,
 ) -> None:
     """An org_admin may READ a colleague's Assistant chat (`copilot:manage`),
@@ -179,8 +179,11 @@ async def test_only_the_owner_writes_a_chats_pins_project_and_pinned_state(
                 await c.put(
                     f"/api/v1/chat/sessions/{sid}/pinned", json={"pinned": True}, headers=h
                 ),
+                await c.put(
+                    f"/api/v1/chat/sessions/{sid}/model", json={"modelConfigId": None}, headers=h
+                ),
             ]
-    assert [r.status_code for r in replies] == [404, 404, 404]
+    assert [r.status_code for r in replies] == [404, 404, 404, 404]
 
 
 async def test_a_chat_moves_only_into_the_callers_own_project(

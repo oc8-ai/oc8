@@ -465,8 +465,10 @@ async def set_chat_model(
     actor: _ChatActor,
 ) -> ChatSessionDTO:
     """Pin this chat to one model, or back to "Auto" with `null`. Only a model
-    the picker offers is accepted; the run re-checks it when it resolves."""
-    session = await _owned_session(request, session_id, db, actor)
+    the picker offers is accepted; the run re-checks it when it resolves.
+    Owner-only, like every other rearrangement of a chat: an overseer reading
+    a colleague's chat does not pick its model."""
+    session = await session_owned_by_caller(session_id, db, actor)
     if body.model_config_id is not None:
         agent = await _session_agent(request, db, actor, session)
         if not await is_allowed_override(db, agent=agent, model_config_id=body.model_config_id):
