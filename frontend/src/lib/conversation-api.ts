@@ -77,7 +77,8 @@ export function useChatSession(sessionId: string | null) {
 export function useSessionModels(sessionId: string | null, enabled: boolean) {
   return useQuery({
     queryKey: conversationKeys.models(sessionId ?? ""),
-    queryFn: () => api.get<ChatModelOptionDTO[]>(`/chat/sessions/${sessionId}/models`),
+    queryFn: () =>
+      api.get<ChatModelOptionDTO[]>(`/chat/sessions/${encodeURIComponent(sessionId ?? "")}/models`),
     enabled: !!sessionId && enabled,
     staleTime: 60_000,
   });
@@ -87,7 +88,9 @@ export function useSetSessionModel(sessionId: string | null) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (modelConfigId: string | null) =>
-      api.put<ChatSessionDetailDTO>(`/chat/sessions/${sessionId}/model`, { modelConfigId }),
+      api.put<ChatSessionDetailDTO>(`/chat/sessions/${encodeURIComponent(sessionId ?? "")}/model`, {
+        modelConfigId,
+      }),
     onSuccess: (session) =>
       qc.setQueryData<ChatSessionDetailDTO>(conversationKeys.session(session.id), (prev) =>
         prev ? { ...prev, modelOverrideId: session.modelOverrideId } : session,
@@ -110,7 +113,9 @@ export function useRegenerate(sessionId: string | null) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (messageId: string) =>
-      api.post<ActiveRunDTO>(`/chat/sessions/${sessionId}/messages/${messageId}/regenerate`),
+      api.post<ActiveRunDTO>(
+        `/chat/sessions/${encodeURIComponent(sessionId ?? "")}/messages/${encodeURIComponent(messageId)}/regenerate`,
+      ),
     onSuccess: (run) => {
       if (!sessionId) return;
       qc.setQueryData<ChatSessionDetailDTO>(conversationKeys.session(sessionId), (prev) =>
@@ -131,10 +136,13 @@ export function useMessageFeedback(sessionId: string | null) {
       rating: "up" | "down";
       note?: string;
     }) =>
-      api.post<void>(`/chat/sessions/${sessionId}/messages/${messageId}/feedback`, {
-        rating,
-        note: note ?? "",
-      }),
+      api.post<void>(
+        `/chat/sessions/${encodeURIComponent(sessionId ?? "")}/messages/${encodeURIComponent(messageId)}/feedback`,
+        {
+          rating,
+          note: note ?? "",
+        },
+      ),
   });
 }
 
@@ -143,7 +151,10 @@ export function useMessageFeedback(sessionId: string | null) {
 export function useTurnRun(sessionId: string | null, runId: string | null) {
   return useQuery({
     queryKey: ["run", runId ?? ""],
-    queryFn: () => api.get<RunActivityDTO>(`/chat/sessions/${sessionId}/runs/${runId}`),
+    queryFn: () =>
+      api.get<RunActivityDTO>(
+        `/chat/sessions/${encodeURIComponent(sessionId ?? "")}/runs/${encodeURIComponent(runId ?? "")}`,
+      ),
     enabled: !!sessionId && !!runId,
     staleTime: Infinity,
   });
@@ -200,7 +211,7 @@ export function useAnswerQuestion(sessionId: string | null) {
       text?: string;
     }) =>
       api.post<{ runId: string }>(
-        `/chat/sessions/${sessionId}/questions/${clarificationId}/answer`,
+        `/chat/sessions/${encodeURIComponent(sessionId ?? "")}/questions/${encodeURIComponent(clarificationId)}/answer`,
         answers !== undefined ? { answers } : { text },
       ),
     onSuccess: refetch,
@@ -618,7 +629,7 @@ export function useSaveProject() {
       pinnedRefs?: { kind: string; id: string }[];
     }) =>
       id
-        ? api.patch<ChatProjectDTO>(`/chat/projects/${id}`, {
+        ? api.patch<ChatProjectDTO>(`/chat/projects/${encodeURIComponent(id)}`, {
             name,
             ...(instructions !== undefined ? { instructions } : {}),
             ...(pinnedRefs !== undefined ? { pinnedRefs } : {}),
@@ -642,7 +653,7 @@ export function useSaveProject() {
 export function useDeleteProject() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.delete<void>(`/chat/projects/${id}`),
+    mutationFn: (id: string) => api.delete<void>(`/chat/projects/${encodeURIComponent(id)}`),
     onSuccess: (_void, id) => {
       qc.setQueryData<ChatProjectDTO[]>(projectKeys.all, (prev) =>
         prev?.filter((p) => p.id !== id),
@@ -661,7 +672,10 @@ export function useSetSessionPinned() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ sessionId, pinned }: { sessionId: string; pinned: boolean }) =>
-      api.put<ChatSessionDetailDTO>(`/chat/sessions/${sessionId}/pinned`, { pinned }),
+      api.put<ChatSessionDetailDTO>(
+        `/chat/sessions/${encodeURIComponent(sessionId ?? "")}/pinned`,
+        { pinned },
+      ),
     onSuccess: (session) => writeSessionToCache(qc, session),
   });
 }
@@ -670,7 +684,10 @@ export function useSetSessionProject() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ sessionId, projectId }: { sessionId: string; projectId: string | null }) =>
-      api.put<ChatSessionDetailDTO>(`/chat/sessions/${sessionId}/project`, { projectId }),
+      api.put<ChatSessionDetailDTO>(
+        `/chat/sessions/${encodeURIComponent(sessionId ?? "")}/project`,
+        { projectId },
+      ),
     onSuccess: (session) => writeSessionToCache(qc, session),
   });
 }
