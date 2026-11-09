@@ -26,6 +26,13 @@ import { useObjectNavigation } from "./use-object-navigation";
 
 const TERMINAL = new Set(["done", "failed", "interrupted"]);
 
+/** The tab sits on a page that scrolls as a whole, so it brings its own
+ *  bounded height: the conversation scrolls inside it (sticking to the
+ *  newest item, loading older ones at the top) and the composer stays in
+ *  view under it. Roughly the viewport below the app and agent headers. */
+const LIVE_FRAME =
+  "flex h-[calc(100dvh-14rem)] min-h-[28rem] flex-col overflow-hidden rounded-lg border border-border";
+
 type Translate = (en: string, de?: string) => string;
 
 /** " (Europe/Berlin)" when the schedule's zone is not the reader's. */
@@ -156,7 +163,8 @@ export function LiveTimeline({
     ),
     footer: (
       <>
-        <RunInputs runId={run.id} runState={run.state} />
+        {/* Only the run being steered asks the server for its inputs. */}
+        <RunInputs runId={run.id} runState={run.state} enabled={run.id === running?.id} />
         {/* A new Copilot chat with the run pinned. Only for a run the reader
             can reach: a colleague's (`redacted`) run is labels only here. */}
         {TERMINAL.has(run.state) && !run.redacted && (
@@ -183,7 +191,7 @@ export function LiveTimeline({
 
   if (!data) {
     return (
-      <div className="flex h-full min-h-0 flex-col">
+      <div data-testid="live-frame" className={LIVE_FRAME}>
         {allRunsSwitch}
         {error ? (
           <p role="alert" className="px-4 py-6 text-center text-sm text-status-error">
@@ -229,7 +237,7 @@ export function LiveTimeline({
               ),
           });
         }}
-        className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+        className="inline-flex h-11 items-center gap-1.5 rounded-md border sm:h-9 border-border px-2.5 text-xs font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
       >
         <Square className="size-3" aria-hidden />
         {t("Stop run", "Lauf stoppen")}
@@ -237,7 +245,7 @@ export function LiveTimeline({
     ) : null;
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div data-testid="live-frame" className={LIVE_FRAME}>
       {allRunsSwitch}
       <Conversation
         agentId={agentId}
@@ -262,6 +270,8 @@ export function LiveTimeline({
           )
         }
         composerTrailing={stop}
+        sendWhileBusy={!!running && route}
+        steeringRunId={running?.id ?? null}
         onSendOverride={(submit) => {
           if (!running || !route) return false;
           setInputError(null);

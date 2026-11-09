@@ -16,6 +16,7 @@ const state = vi.hoisted(() => ({
   allRunsCalls: [] as boolean[],
   mayWrite: true,
   stopPending: false,
+  steeringAsked: [] as Array<string | null>,
 }));
 vi.mock("@/components/conversation/conversation", () => ({
   Conversation: (p: Record<string, unknown>) => {
@@ -68,7 +69,10 @@ vi.mock("@/lib/conversation-api", async (orig) => ({
       fetchOlder: vi.fn(),
     };
   },
-  useRunSteering: () => ({ data: { mayWrite: state.mayWrite, acceptsInputs: true, inputs: [] } }),
+  useRunSteering: (runId: string | null) => {
+    state.steeringAsked.push(runId);
+    return { data: { mayWrite: state.mayWrite, acceptsInputs: true, inputs: [] } };
+  },
   useSendRunInput: () => ({ mutate: sendInput }),
   useStopRun: () => ({ mutate: stopRun, isPending: state.stopPending }),
 }));
@@ -109,6 +113,7 @@ beforeEach(() => {
   state.allRunsCalls = [];
   state.mayWrite = true;
   state.stopPending = false;
+  state.steeringAsked = [];
   sendInput.mockReset();
   stopRun.mockReset();
 });
@@ -128,6 +133,19 @@ describe("Live tab", () => {
     expect(sendInput).toHaveBeenCalledWith("skip ticket 4", expect.anything());
     expect(conversationProps.last?.sessionId).toBe("live-1");
     expect(conversationProps.last?.daySeparators).toBe(true);
+  });
+
+  it("asks for steering only for the running run, never finished or colleague runs (I5)", () => {
+    state.runs = [
+      run({ id: "old", state: "done", createdAt: "2026-11-08T07:00:00Z" }),
+      run({ id: "colleague", redacted: true, createdAt: "2026-11-08T08:00:00Z" }),
+      run({ id: "r1" }),
+    ];
+    wrap(tab());
+    expect(new Set(state.steeringAsked.filter(Boolean))).toEqual(new Set(["r1"]));
+    // Send stays beside Stop while the composer's text goes to that run.
+    expect(conversationProps.last?.sendWhileBusy).toBe(true);
+    expect(conversationProps.last?.steeringRunId).toBe("r1");
   });
 
   it("stops the running run with a Stop of its own, told apart from the composer's", () => {
