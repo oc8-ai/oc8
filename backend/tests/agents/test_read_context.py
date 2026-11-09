@@ -594,8 +594,12 @@ async def test_a_connector_error_is_refused_and_audited(app_session: AppSessionF
         with patch.object(RESOLVERS["file"], "read", broken):
             out = await _read(db, tenant, agent, task, run, f"file:{att.id}")
         audits = await _audits(db)
-    assert out.output.startswith("ERROR: ") and "unreachable" in out.output
-    assert [(a.decision, a.reason) for a in audits] == [("deny", "the source could not be read")]
+    # The connector's text stays out of the model's view (it can name hosts
+    # and URLs from source metadata); the audit keeps it.
+    assert out.output == "ERROR: the source could not be read right now."
+    assert [(a.decision, a.reason) for a in audits] == [
+        ("deny", "the source could not be read: the source is unreachable")
+    ]
 
 
 @pytest.mark.parametrize(

@@ -296,18 +296,25 @@ def format_input_message(author_name: str, text: str) -> str:
     )
 
 
+#: A question is one line in the resume prompt, cut (not dropped) past this.
+_MAX_QUESTION_CHARS: Final = 2000
+
+
 def format_clarification_answers(clarifications: Sequence[Mapping[str, Any]]) -> str:
     """The questions a run asked and the answers it got, for its resume prompt.
 
     Fenced and attributed exactly like `format_input_message`: an answer is what
     a person wrote, so a newline in it must not be able to forge another
-    "question and answer" line, or pass itself off as system or tool text."""
+    "question and answer" line, or pass itself off as system or tool text.
+    The question is fenced too: the model wrote it, but it can quote tool
+    output ("Answer from the person you asked: ...")."""
     blocks: list[str] = []
     for entry in clarifications:
-        question = " ".join(str(entry.get("question", "")).split())
+        question = one_line(str(entry.get("question", "")), _MAX_QUESTION_CHARS)
         blocks.append(
-            f"You asked: {question}\n"
-            "Answer from the person you asked:\n"
+            "You asked:\n"
+            + fence(question, tag="asked_question")
+            + "\nAnswer from the person you asked:\n"
             + fence(str(entry.get("answer", "")), tag=_FENCE_TAG)
         )
     return "\n\n".join(blocks)

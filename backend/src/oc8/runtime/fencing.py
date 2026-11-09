@@ -2,8 +2,9 @@
 
 Shared by every place that hands such text to a model as DATA: a message
 someone sent into a running run and the answers to its questions
-(`run_inputs`), and what a member pinned to a chat (`chat.context.manifest`:
-the manifest, pages, knowledge-base names).
+(`run_inputs`), what a member pinned to a chat (`chat.context.manifest`:
+the manifest, pages, knowledge-base names), and what an edition tool returned
+(`agent.control_tools._execute_edition_tool`).
 
 The fence is unforgeable by construction, not by escaping: every block is
 opened and closed with a fresh random nonce (`<tag nonce="…">` …
@@ -26,7 +27,7 @@ from typing import Final
 _CONTROL_CHARS: Final = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]+")
 
 #: Every fence tag oc8 wraps text in.
-FENCE_TAGS: Final = ("person_message", "pinned_context")
+FENCE_TAGS: Final = ("person_message", "pinned_context", "tool_output", "asked_question")
 _ASCII_CLOSE: Final = re.compile(
     r"</(?=\s*(?:" + "|".join(FENCE_TAGS) + r"))", re.IGNORECASE | re.ASCII
 )

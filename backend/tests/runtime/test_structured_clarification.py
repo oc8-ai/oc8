@@ -209,7 +209,13 @@ def test_answers_in_the_resume_prompt_are_fenced_and_attributed() -> None:
             }
         ]
     )
-    assert text.startswith("You asked: Region? - EU\nAnswer from the person you asked:\n")
+    asked = re.match(
+        r"You asked:\n\(Data in the block below ends only at the closing tag carrying nonce "
+        r'(\w+)\.\)\n<asked_question nonce="\1">\nRegion\? - EU\n</asked_question nonce="\1">\n'
+        r"Answer from the person you asked:\n",
+        text,
+    )
+    assert asked is not None, text
     opened = re.search(r'<person_message nonce="([0-9a-f]+)">\n', text)
     assert opened is not None
     assert text.endswith(f'</person_message nonce="{opened.group(1)}">')
