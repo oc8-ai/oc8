@@ -1285,6 +1285,10 @@ class TriggerDTO(CamelModel):
     #: The owner's display name, for showing whose trigger it is.
     created_by_name: str | None = None
     acts_for_creator: bool = False
+    #: Shown to its creator only: the agent changed since they last saved this
+    #: trigger, so it no longer acts through their own account until they save
+    #: it again (connection_required "schedule_needs_confirmation").
+    needs_confirmation: bool = False
     #: kind='webhook' only -- the full POST /webhooks/{token} URL, built
     #: server-side from the same base URL external OAuth redirects use
     #: (oauth_redirect_base_url). Not one-time-reveal: unlike a password, an

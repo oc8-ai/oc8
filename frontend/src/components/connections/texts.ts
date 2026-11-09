@@ -3,6 +3,13 @@ import type { CredentialCheck, Integration, OAuthErrorCode } from "@/lib/connect
 
 type T = (en: string, de: string) => string;
 
+/** A schedule whose agent changed since its creator last saved it no longer
+ *  acts through their accounts (`schedule_needs_confirmation`). */
+export const SCHEDULE_CHANGED = {
+  en: "The agent was changed. Please open and save the schedule again so it works on your behalf again.",
+  de: "Der Agent wurde geändert. Bitte öffnen und speichern Sie den Zeitplan erneut, damit er wieder in Ihrem Namen arbeitet.",
+} as const;
+
 export function providerName(provider: string | null | undefined): string {
   if (provider === "google") return "Google";
   if (provider === "microsoft") return "Microsoft";

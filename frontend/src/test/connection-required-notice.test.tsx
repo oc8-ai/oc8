@@ -178,4 +178,35 @@ describe("ConnectionRequiredNotice", () => {
     const { container } = renderNotice(null);
     expect(container).toBeEmptyDOMElement();
   });
+  it("asks the creator to save a schedule again after the agent changed", async () => {
+    window.localStorage.setItem("oc8-lang", "de");
+    renderNotice({
+      integration: "microsoft365",
+      provider: "microsoft",
+      label: "Microsoft 365",
+      reason: "schedule_needs_confirmation",
+    });
+    expect(
+      await screen.findByText(
+        "Der Agent wurde geändert. Bitte öffnen und speichern Sie den Zeitplan erneut, damit er wieder in Ihrem Namen arbeitet.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("link")).toBeNull();
+  });
+
+  it("does not ask to connect when a trigger may not act for its creator", async () => {
+    window.localStorage.setItem("oc8-lang", "en");
+    renderNotice({
+      integration: "microsoft365",
+      provider: "microsoft",
+      label: "Microsoft 365",
+      reason: "trigger_without_person",
+    });
+    expect(
+      await screen.findByText(
+        "This trigger may use its creator's account only if the creator allows it in the trigger's settings.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("link")).toBeNull();
+  });
 });

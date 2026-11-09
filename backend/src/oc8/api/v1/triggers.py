@@ -13,6 +13,7 @@ from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
 from oc8.authz.permissions import MANAGE, TRIGGER, VIEW, perm
 from oc8.authz.scope import scope_for_principal
 from oc8.config import get_settings
+from oc8.connections.access import trigger_fingerprint
 from oc8.modelrouter.subscription_guard import (
     SubscriptionModelNotManualOnly,
     assert_manual_only_compatible,
@@ -48,11 +49,32 @@ async def _owner_names(db: DbSession, triggers: list[m.Trigger]) -> dict[uuid.UU
     return {r.id: r.display_name for r in rows}
 
 
-async def _to_dto(db: DbSession, t: m.Trigger) -> TriggerDTO:
-    return _dto_with(t, await _owner_names(db, [t]))
+async def _needs_confirmation(
+    db: DbSession, triggers: list[m.Trigger], caller: uuid.UUID | None
+) -> set[uuid.UUID]:
+    """The caller's own triggers that act through their account and whose
+    agent changed since they last saved them (the runtime rule:
+    connections.access.schedule_confirmed). Nobody else is asked."""
+    out: set[uuid.UUID] = set()
+    for t in triggers:
+        if caller is None or t.created_by_member_id != caller:
+            continue
+        if t.kind in ("webhook", "event") and not t.acts_for_creator:
+            continue
+        current = await trigger_fingerprint(db, t)
+        if t.access_fingerprint is None or t.access_fingerprint != current:
+            out.add(t.id)
+    return out
 
 
-def _dto_with(t: m.Trigger, names: dict[uuid.UUID, str]) -> TriggerDTO:
+async def _to_dto(db: DbSession, t: m.Trigger, caller: uuid.UUID | None) -> TriggerDTO:
+    flagged = await _needs_confirmation(db, [t], caller)
+    return _dto_with(t, await _owner_names(db, [t]), needs_confirmation=flagged)
+
+
+def _dto_with(
+    t: m.Trigger, names: dict[uuid.UUID, str], *, needs_confirmation: set[uuid.UUID]
+) -> TriggerDTO:
     return TriggerDTO(
         id=str(t.id),
         agent_id=str(t.agent_id),
@@ -68,6 +90,7 @@ def _dto_with(t: m.Trigger, names: dict[uuid.UUID, str]) -> TriggerDTO:
         created_by_member_id=str(t.created_by_member_id) if t.created_by_member_id else None,
         created_by_name=names.get(t.created_by_member_id) if t.created_by_member_id else None,
         acts_for_creator=t.acts_for_creator,
+        needs_confirmation=t.id in needs_confirmation,
     )
 
 
@@ -104,6 +127,7 @@ async def create_agent_trigger(
     agent = await db.get(m.Agent, agent_id)
     if agent is None or agent.deleted_at is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
+    caller = await _caller_member_id(db, principal)
     try:
         trigger = await create_trigger(
             db,
@@ -114,7 +138,7 @@ async def create_agent_trigger(
             cron_expression=body.cron_expression,
             event_source=body.event_source,
             event_type=body.event_type,
-            created_by_member_id=await _caller_member_id(db, principal),
+            created_by_member_id=caller,
             acts_for_creator=body.acts_for_creator,
         )
     except InvalidTriggerConfig as exc:
@@ -128,7 +152,7 @@ async def create_agent_trigger(
     # service flushed before checking never reaches the database.
     except SubscriptionModelNotManualOnly as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
-    return await _to_dto(db, trigger)
+    return await _to_dto(db, trigger, caller)
 
 
 @router.get(
@@ -139,9 +163,10 @@ async def create_agent_trigger(
 async def list_agent_triggers(
     agent_id: uuid.UUID, db: DbSession, principal: CurrentPrincipal
 ) -> list[TriggerDTO]:
-    rows = await list_triggers_for_agent(db, agent_id=agent_id)
-    names = await _owner_names(db, list(rows))
-    return [_dto_with(t, names) for t in rows]
+    rows = list(await list_triggers_for_agent(db, agent_id=agent_id))
+    names = await _owner_names(db, rows)
+    flagged = await _needs_confirmation(db, rows, await _caller_member_id(db, principal))
+    return [_dto_with(t, names, needs_confirmation=flagged) for t in rows]
 
 
 @router.patch(
@@ -185,6 +210,10 @@ async def update_agent_trigger(
         )
     except InvalidTriggerConfig as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    if caller is not None and updated.created_by_member_id == caller:
+        # Its creator saved it: they confirm the agent as it is now.
+        updated.access_fingerprint = await trigger_fingerprint(db, updated)
+        await db.flush()
     # The guard only matters when this update is turning the trigger ON
     # (`body.enabled is True`, whether that flips a disabled row or
     # re-affirms an already-enabled one). Disabling it (`enabled=False`), or
@@ -205,7 +234,7 @@ async def update_agent_trigger(
             )
         except SubscriptionModelNotManualOnly as exc:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
-    return await _to_dto(db, updated)
+    return await _to_dto(db, updated, caller)
 
 
 @router.delete(

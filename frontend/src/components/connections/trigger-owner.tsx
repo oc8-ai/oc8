@@ -1,6 +1,7 @@
 import { toast } from "sonner";
 import { type TriggerDTO, useAuth, useUpdateAgentTrigger } from "@/lib/hooks";
 import { useT } from "@/lib/i18n";
+import { SCHEDULE_CHANGED } from "./texts";
 
 /** Whose trigger this is, and (webhook and event triggers, which anyone who
  *  reaches them can fire) whether its runs act for that person. Only the
@@ -14,18 +15,23 @@ export function TriggerOwner({ agentId, trigger }: { agentId: string; trigger: T
   const isCreator = !!owner && !!me?.memberId && me.memberId === owner;
   const offersActing = trigger.kind === "webhook" || trigger.kind === "event";
 
+  const onError = () =>
+    toast.error(
+      t(
+        "The setting could not be saved. Please try again.",
+        "Die Einstellung konnte nicht gespeichert werden. Bitte versuchen Sie es erneut.",
+      ),
+    );
   const toggle = (next: boolean) =>
+    update.mutate({ agentId, triggerId: trigger.id, actsForCreator: next }, { onError });
+  // Its creator saving it again confirms the agent as it is now (the server
+  // sets `needsConfirmation` for the creator only).
+  const confirm = () =>
     update.mutate(
-      { agentId, triggerId: trigger.id, actsForCreator: next },
-      {
-        onError: () =>
-          toast.error(
-            t(
-              "The setting could not be saved. Please try again.",
-              "Die Einstellung konnte nicht gespeichert werden. Bitte versuchen Sie es erneut.",
-            ),
-          ),
-      },
+      trigger.kind === "cron" && trigger.cronExpression
+        ? { agentId, triggerId: trigger.id, cronExpression: trigger.cronExpression }
+        : { agentId, triggerId: trigger.id, actsForCreator: trigger.actsForCreator },
+      { onError },
     );
 
   let hint: string | null = null;
@@ -40,6 +46,22 @@ export function TriggerOwner({ agentId, trigger }: { agentId: string; trigger: T
 
   return (
     <div className="space-y-1.5 text-[11px] text-muted-foreground">
+      {trigger.needsConfirmation && isCreator && (
+        <div
+          role="status"
+          className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-foreground"
+        >
+          <span>{t(SCHEDULE_CHANGED.en, SCHEDULE_CHANGED.de)}</span>
+          <button
+            type="button"
+            onClick={confirm}
+            disabled={update.isPending}
+            className="min-h-11 font-medium underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-60"
+          >
+            {t("Save the schedule again", "Zeitplan erneut speichern")}
+          </button>
+        </div>
+      )}
       {owner ? (
         <p>{t(`Created by ${ownerName}`, `Angelegt von ${ownerName}`)}</p>
       ) : (

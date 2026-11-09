@@ -65,6 +65,11 @@ class Trigger(Base, PkMixin, TenantMixin, TimestampMixin):
     acts_for_creator: Mapped[bool] = mapped_column(
         nullable=False, default=False, server_default="false"
     )
+    #: The agent's access fingerprint (connections.access.trigger_fingerprint)
+    #: when the creator last created or saved this trigger. Its runs act
+    #: through the creator's own account only while it still matches; NULL
+    #: (saved before migration 0110) never does.
+    access_fingerprint: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (
         CheckConstraint("kind IN ('cron','event','webhook','once')", name="ck_trigger_kind"),

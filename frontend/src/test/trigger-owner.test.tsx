@@ -33,6 +33,7 @@ const BASE: TriggerDTO = {
   createdByMemberId: "anna",
   createdByName: "Anna",
   actsForCreator: false,
+  needsConfirmation: false,
 };
 
 function renderOwner(trigger: Partial<TriggerDTO> = {}) {
@@ -101,6 +102,33 @@ describe("TriggerOwner", () => {
     expect(
       screen.getByText("Dieser Zeitplan hat keinen Besitzer. Bitte speichern Sie ihn einmal neu."),
     ).toBeInTheDocument();
+  });
+
+  it("asks its creator to save a schedule again after the agent changed", async () => {
+    renderOwner({
+      kind: "cron",
+      cronExpression: "0 9 * * *",
+      webhookUrl: null,
+      needsConfirmation: true,
+    });
+    expect(
+      screen.getByText(
+        "Der Agent wurde geändert. Bitte öffnen und speichern Sie den Zeitplan erneut, damit er wieder in Ihrem Namen arbeitet.",
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Zeitplan erneut speichern" }));
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith(
+        { agentId: "a1", triggerId: "t1", cronExpression: "0 9 * * *" },
+        expect.anything(),
+      ),
+    );
+  });
+
+  it("shows no confirmation notice while the schedule is confirmed", () => {
+    renderOwner({ kind: "cron", cronExpression: "0 9 * * *", webhookUrl: null });
+    expect(screen.queryByText(/Der Agent wurde geändert/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Zeitplan erneut speichern" })).toBeNull();
   });
 
   it("keeps a webhook without owner switched off", () => {

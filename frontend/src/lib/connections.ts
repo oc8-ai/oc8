@@ -71,6 +71,8 @@ export interface ConnectionRequiredInfo {
     | "needs_reauth"
     | "no_acting_person"
     | "schedule_without_owner"
+    | "schedule_needs_confirmation"
+    | "trigger_without_person"
     | "binding_needs_confirmation"
     | "not_configured";
 }

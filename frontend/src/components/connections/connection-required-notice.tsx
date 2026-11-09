@@ -1,7 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import type { ConnectionRequiredInfo } from "@/lib/connections";
 import { useT } from "@/lib/i18n";
-import { providerName } from "./texts";
+import { providerName, SCHEDULE_CHANGED } from "./texts";
 
 /** A tool call needed an account that is not there: say which, and link to
  *  where it gets fixed. Shown in the run detail and the Copilot's run
@@ -41,6 +41,17 @@ export function ConnectionRequiredNotice({
       text = t(
         "This schedule has no owner. Please save it once again.",
         "Dieser Zeitplan hat keinen Besitzer. Bitte speichern Sie ihn einmal neu.",
+      );
+      target = null;
+      break;
+    case "schedule_needs_confirmation":
+      text = t(SCHEDULE_CHANGED.en, SCHEDULE_CHANGED.de);
+      target = null;
+      break;
+    case "trigger_without_person":
+      text = t(
+        "This trigger may use its creator's account only if the creator allows it in the trigger's settings.",
+        "Dieser Auslöser darf das Konto der Person, die ihn angelegt hat, nur nutzen, wenn diese Person es in den Einstellungen des Auslösers erlaubt.",
       );
       target = null;
       break;

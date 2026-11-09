@@ -2297,6 +2297,10 @@ export interface TriggerDTO {
   createdByMemberId: string | null;
   createdByName: string | null;
   actsForCreator: boolean;
+  //: Set for its creator only: the agent changed since they last saved the
+  //: trigger, so its runs no longer use their own accounts until they save
+  //: it again.
+  needsConfirmation: boolean;
 }
 
 export function useAgentTriggers(agentId: string) {

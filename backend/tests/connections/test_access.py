@@ -16,6 +16,7 @@ from oc8.connections.access import (
     ToolAccess,
     binding_fingerprint,
     resolve_tool_access,
+    trigger_fingerprint,
 )
 from oc8.connections.revoke import purge_member_connections
 from tests.conftest import AppSessionFactory
@@ -216,6 +217,7 @@ async def test_trigger_owner_removed_fails_cleanly(app_session: AppSessionFactor
         )
         db.add(trigger)
         await db.flush()
+        trigger.access_fingerprint = await trigger_fingerprint(db, trigger)  # Anna saved it
         run = m.AgentRun(
             tenant_id=agent.tenant_id,
             agent_id=agent.id,

@@ -49,6 +49,17 @@ class ConnectionRequired(Exception):
                 f"so it cannot act through {what}. "
                 "It must be saved once again by the person whose account it should use."
             )
+        if self.reason == "schedule_needs_confirmation":
+            return (
+                f"connection_required: this agent changed since the schedule's creator last "
+                f"saved it, so it cannot act through {what}. "
+                "The creator must open and save the schedule again."
+            )
+        if self.reason == "trigger_without_person":
+            return (
+                f"connection_required: this trigger may act through {what} of its creator "
+                "only if the creator allows it in the trigger's settings."
+            )
         if self.reason == "no_acting_person":
             return (
                 f"connection_required: nobody is working with this run, "
@@ -138,6 +149,9 @@ async def resolve_tool_access(
         default = await _default(db, conn, agent, integration, acting)
         if default is not None:
             return default
+    if acting.member_id is not None and not await schedule_confirmed(db, run):
+        # The person's own account, unattended: only for the agent its creator saw.
+        raise ConnectionRequired(integration, "schedule_needs_confirmation")
     return await _user(db, integration, acting)
 
 
@@ -164,14 +178,16 @@ async def department_targets(db: AsyncSession, agent: m.Agent, tool_key: str) ->
 
 
 async def binding_fingerprint(
-    db: AsyncSession, agent: m.Agent, tool_key: str, *, version_id: uuid.UUID | None
+    db: AsyncSession, agent: m.Agent, tool_key: str | None, *, version_id: uuid.UUID | None
 ) -> str:
     """What the person who confirmed a binding to their own account saw: the
     agent version (or, for an agent without one, its working copy), the
     skills the agent (or its department or the whole organisation) gets, the
     department's frame and the department's setup of this tool. Anything else
     (status, routing hints) does not change it. The setup is hashed whole: the
-    result is a digest, and the config holds references, not secret values."""
+    result is a digest, and the config holds references, not secret values.
+    `tool_key` None: the department's setup of every tool (a trigger's runs
+    may use any of them)."""
     assignments = (
         await db.execute(
             select(m.SkillAssignment).where(
@@ -195,14 +211,10 @@ async def binding_fingerprint(
         for a in assignments
     )
     dept = await db.get(m.Department, agent.department_id)
-    conns = (
-        await db.execute(
-            select(m.McpConnection).where(
-                m.McpConnection.name == tool_key,
-                m.McpConnection.department_id == agent.department_id,
-            )
-        )
-    ).scalars()
+    which = select(m.McpConnection).where(m.McpConnection.department_id == agent.department_id)
+    if tool_key is not None:
+        which = which.where(m.McpConnection.name == tool_key)
+    conns = (await db.execute(which)).scalars()
     setup = sorted(
         [str(c.id), str(c.credential_id), c.server_url, c.transport, c.scopes, c.config]
         for c in conns
@@ -214,6 +226,53 @@ async def binding_fingerprint(
         "setup": setup,
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+
+
+async def trigger_fingerprint(
+    db: AsyncSession, trigger: m.Trigger, *, version_id: uuid.UUID | None = None
+) -> str | None:
+    """What a trigger's creator saw of its agent when they last saved it (the
+    binding fingerprint over every tool). `version_id`: the version a run
+    executes; default the agent's published one. None: the agent is gone."""
+    agent = await db.get(m.Agent, trigger.agent_id)
+    if agent is None or agent.tenant_id != trigger.tenant_id:
+        return None
+    return await binding_fingerprint(
+        db, agent, None, version_id=version_id or agent.current_version_id
+    )
+
+
+def _trigger_ids(run: m.AgentRun) -> list[object]:
+    """The triggers a run descends from: its own (a schedule's run, a
+    delegated sub-run or wake-up carrying it) and a Copilot follow-up's."""
+    ctx = run.context if isinstance(run.context, dict) else {}
+    raws: list[object] = [ctx.get("trigger_id")]
+    followup = ctx.get("followup")
+    if isinstance(followup, dict):
+        raws.append(followup.get("trigger_id"))
+    return [raw for raw in raws if raw is not None]
+
+
+async def schedule_confirmed(db: AsyncSession, run: m.AgentRun) -> bool:
+    """A run a trigger started may use a person's own account only while the
+    trigger's agent is what its creator last saved (fingerprint stored on the
+    trigger). A trigger saved before fingerprints existed (NULL) never is."""
+    for raw in _trigger_ids(run):
+        try:
+            trigger = await db.get(m.Trigger, uuid.UUID(str(raw)))
+        except ValueError:
+            return False
+        if trigger is None or trigger.tenant_id != run.tenant_id:
+            return False
+        if trigger.access_fingerprint is None:
+            return False
+        own_run = run.agent_id == trigger.agent_id
+        current = await trigger_fingerprint(
+            db, trigger, version_id=run.agent_version_id if own_run else None
+        )
+        if current != trigger.access_fingerprint:
+            return False
+    return True
 
 
 async def _trigger_owner_ok(db: AsyncSession, run: m.AgentRun, owner: uuid.UUID) -> bool:
