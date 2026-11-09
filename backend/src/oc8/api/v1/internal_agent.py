@@ -700,7 +700,31 @@ def _active_skills_of(ctx: Mapping[str, Any], assigned: Sequence[LoadedSkill]) -
     return [s for s in assigned if str(s.skill_version_id) in active_ids]
 
 
-def _refuse_held_call(
+def _skill_guard(
+    active_skills: Sequence[LoadedSkill], value_spec: dict[str, Any] | None
+) -> tuple[tuple[float | None, ...], dict[str, Any] | None]:
+    """The active skills' value thresholds, and the value spec that measures them.
+
+    A skill's value_threshold guardrail names both its threshold and the
+    argument it measures (`metric`); that key is the skill's config, so it is
+    merged into the connection's value spec here -- the same merge the
+    in-process engine makes -- or the threshold could never see a value.
+    """
+    guards = [
+        g
+        for s in active_skills
+        for g in s.definition.guardrails
+        if g.type == "value_threshold" and g.then == "require_approval"
+    ]
+    metrics = [g.metric for g in guards if g.metric]
+    spec = value_spec
+    if metrics:
+        spec = dict(value_spec or {})
+        spec["direct_fields"] = [*(spec.get("direct_fields") or []), *metrics]
+    return tuple(g.gt for g in guards), spec
+
+
+def _held_call_verdict(
     *,
     agent: m.Agent,
     dept: m.Department | None,
@@ -708,28 +732,39 @@ def _refuse_held_call(
     pinned: Mapping[str, Any],
     ctx: Mapping[str, Any],
     tool: str,
+    advertised: str,
     arguments: dict[str, Any],
     active_skills: Sequence[LoadedSkill],
-) -> str | None:
-    """Why a held connection call may not run now, or None.
+) -> tuple[str, str]:
+    """What happens to a held connection call now: ("run" | "refuse" | "park", why).
 
     An answered elicitation re-runs the call on a later /step. It runs NOW, so
-    it is decided now, on exactly the `arguments` that will be sent (the answer
-    merged in): the PEP -- frame, narrowing and the run's mode as they are at
-    this moment -- and the B gate. A call either of them would hold for a
-    human runs only once an operator approved this exact call.
+    it is decided now, as /tools would decide it, on exactly the `arguments`
+    that will be sent (the answer merged in): the PEP -- frame, narrowing, the
+    active skills' thresholds and the run's mode as they are at this moment --
+    then the B gate, tiered with the annotations /tools saw under `advertised`.
+
+    Either one holding it for a human parks it for an approval of THIS call. An
+    approval of the call as it was before the answer covers it only when the
+    answer left the arguments unchanged -- the signatures then match.
     """
     frame = dept.frame if dept is not None else {}
     narrowing = pinned["narrowing"] or {}
     cfg = _mcp_params(conn)
+    thresholds, value_spec = _skill_guard(
+        active_skills, cfg.get("value_spec") if isinstance(cfg.get("value_spec"), dict) else None
+    )
+    held = ToolCall(id="held", name=tool, arguments=arguments)
     decision = _authorize(
         agent,
-        ToolCall(id="held", name=tool, arguments=arguments),
+        held,
         frame=frame,
         tool_policies=effective_tool_policies(frame, narrowing),
         connection_key=conn.name,
         tool_scopes=_manifest_scopes(conn),
-        value_spec=cfg.get("value_spec") if isinstance(cfg.get("value_spec"), dict) else None,
+        skill_tool_names=frozenset(s.tool_name for s in active_skills),
+        skill_thresholds=thresholds,
+        value_spec=value_spec,
         guardrail_attribute_specs=_manifest_guardrail_attributes(conn),
         narrowing=narrowing,
         is_team_lead=bool(pinned["is_team_lead"]),
@@ -737,30 +772,71 @@ def _refuse_held_call(
         # Always the connection's tool, whatever core tool shares its name.
         routed=True,
     )
-    held = ToolCall(id="held", name=tool, arguments=arguments)
-    approved = (
-        pre_decided_map(ctx.get("resolved_tool_approvals", []) or []).get(_call_sig(held))
-        == "approve"
-    )
+    verdict = pre_decided_map(ctx.get("resolved_tool_approvals", []) or []).get(_call_sig(held))
     if decision.effect is Effect.DENY:
-        return decision.reason or "denied"
-    if decision.effect is Effect.REQUIRE_APPROVAL and not approved:
-        return f"{decision.reason or 'this call needs approval'} -- call it again to ask for it"
+        return "refuse", decision.reason or "denied"
+    if verdict == "reject":
+        return "refuse", "operator rejected this action"
+    if decision.effect is Effect.REQUIRE_APPROVAL and verdict != "approve":
+        return "park", decision.reason or ""
     gate = _b_gate(
         Harness.from_run_context(dict(ctx)),
         held,
-        advertised=tool,
+        advertised=advertised,
         renamed=True,
         conn=conn,
         pinned=pinned,
         active_skills=active_skills,
-        schemas=[],
+        schemas=ctx.get("tool_schemas", []),
     )
     if gate.effect == "deny":
-        return gate.reason or "denied"
-    if gate.effect == "ask" and not approved:
-        return "this call needs approval -- call it again to ask for it"
-    return None
+        return "refuse", gate.reason or "denied"
+    if gate.effect == "ask" and verdict != "approve":
+        return "park", gate.preview or ""
+    return "run", ""
+
+
+async def _park_held_call(
+    db: DbSession,
+    *,
+    run: m.AgentRun,
+    agent: m.Agent,
+    ctx: dict[str, Any],
+    pending: Mapping[str, Any],
+    tool: str,
+    arguments: dict[str, Any],
+    reason: str,
+) -> None:
+    """Hold the answered call for a human, exactly as /tools holds a new write:
+    an approval of the MERGED call, and the run parked on it. The pending entry
+    keeps the merged arguments, so the approved call is the one that runs."""
+    ar = await raise_approval(
+        db,
+        tenant_id=run.tenant_id,
+        agent_id=agent.id,
+        task_id=run.task_id,
+        action_type="tool_send",
+        title=f"{agent.name} wants to call {tool}",
+        detail=reason,
+        payload={"tool": tool, "arguments": arguments, "justification": "", "preview": reason},
+    )
+    ctx["pending_elicitation"] = {**pending, "arguments": arguments, "merged": True}
+    ctx["isolated_result"] = {"status": "waiting_for_approval", "output": reason}
+    run.context = ctx
+    from oc8.realtime.bus import get_event_bus
+
+    await get_event_bus().publish_event(
+        run.tenant_id,
+        "approval.created",
+        {
+            "approval_id": str(ar.id),
+            "action_type": ar.action_type,
+            "status": ar.status,
+            "title": ar.title,
+            "detail": ar.detail,
+        },
+        source=f"oc8/approval/{ar.id}",
+    )
 
 
 async def _finish_elicitation(
@@ -773,44 +849,68 @@ async def _finish_elicitation(
     agent: m.Agent,
     pinned: Mapping[str, Any],
     active_skills: Sequence[LoadedSkill],
-) -> None:
-    """Send the operator's answer back to the server and finish the same call."""
+) -> str | None:
+    """Send the operator's answer back to the server and finish the same call.
+
+    Returns the reason when the answered call is parked for an approval
+    instead (`_held_call_verdict`); the caller then ends this /step suspended.
+    """
     pending = ctx.get("pending_elicitation")
     if not isinstance(pending, dict):
-        return
+        return None
     answers = [
         item
         for item in ctx.get("clarifications", [])
         if isinstance(item, dict) and item.get("answer")
     ]
     if not answers:
-        return
+        return None
     from oc8.api.mcp_gateway import _connections
 
     tool = str(pending.get("tool") or "")
     connection_name = str(pending.get("connection") or "")
-    arguments = arguments_with_answer(
-        dict(pending.get("arguments") or {}), str(answers[-1]["answer"])
+    advertised = str(pending.get("advertised") or tool)
+    # Already merged when it was parked for an approval of the merged call:
+    # merging the answer again would change nothing a JSON answer set, but an
+    # approval is matched on the exact arguments, so never touch them twice.
+    arguments = (
+        dict(pending.get("arguments") or {})
+        if pending.get("merged")
+        else arguments_with_answer(dict(pending.get("arguments") or {}), str(answers[-1]["answer"]))
     )
     conn = next(
         (item for item in await _connections(db, run, dept) if item.name == connection_name),
         None,
     )
-    refusal = (
-        _refuse_held_call(
+    effect, why = (
+        _held_call_verdict(
             agent=agent,
             dept=dept,
             conn=conn,
             pinned=pinned,
             ctx=ctx,
             tool=tool,
+            advertised=advertised,
             # The arguments that will actually be sent, answer included.
             arguments=arguments,
             active_skills=active_skills,
         )
         if conn is not None and tool
-        else None
+        else ("refuse", "")
     )
+    if conn is not None and tool and effect == "park":
+        await _park_held_call(
+            db,
+            run=run,
+            agent=agent,
+            ctx=ctx,
+            pending=pending,
+            tool=tool,
+            arguments=arguments,
+            reason=why,
+        )
+        return why
+    refusal = why if effect == "refuse" else None
     if conn is None or not tool:
         output = "ERROR: the connection that asked for this answer is no longer available"
     elif refusal is not None:
@@ -839,6 +939,7 @@ async def _finish_elicitation(
             ctx["pending_elicitation"] = {
                 "connection": connection_name,
                 "tool": tool,
+                "advertised": advertised,
                 "arguments": arguments,
                 "question": exc.message,
             }
@@ -852,7 +953,7 @@ async def _finish_elicitation(
             )
             ctx["transcript"] = transcript
             run.context = ctx
-            return
+            return None
         except Exception as exc:
             output = f"ERROR: {exc}"
     ctx.pop("pending_elicitation", None)
@@ -866,6 +967,7 @@ async def _finish_elicitation(
     )
     ctx["transcript"] = transcript
     run.context = ctx
+    return None
 
 
 class StepResult(BaseModel):
@@ -1006,7 +1108,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         return StepResult(done=True, text="Reached step limit.", status_override="done")
 
     transcript: list[dict[str, Any]] = list(ctx.get("transcript", []))
-    await _finish_elicitation(
+    parked_reason = await _finish_elicitation(
         db,
         run,
         dept,
@@ -1018,6 +1120,9 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
             ctx, await load_assigned_skills(db, agent=agent, tenant_id=run.tenant_id)
         ),
     )
+    if parked_reason is not None:
+        await db.commit()
+        return StepResult(done=True, text=parked_reason, status_override="waiting_for_approval")
     tool_schemas_raw: list[dict[str, Any]] = list(ctx.get("tool_schemas", []))
 
     # Resolved BEFORE seeding, because the preamble's KB retrieval needs the
@@ -1622,16 +1727,11 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
                 frame=frame,
                 skill_tool_names=skill_tool_names,
                 delegation_depth=int(ctx.get("delegation_depth", 0)),
-                skill_thresholds=tuple(
-                    g.gt
-                    for s in active_skills
-                    for g in s.definition.guardrails
-                    if g.type == "value_threshold" and g.then == "require_approval"
-                ),
+                skill_thresholds=_skill_guard(active_skills, value_spec)[0],
                 tool_policies=effective_tool_policies(frame, pinned["narrowing"] or {}),
                 connection_key=conn.name if conn is not None else None,
                 tool_scopes=scopes,
-                value_spec=value_spec,
+                value_spec=_skill_guard(active_skills, value_spec)[1],
                 guardrail_attribute_specs=guardrail_attribute_specs,
                 # A hint only, but it must agree with /tools: a call the mode
                 # withholds is not a batchable read.
@@ -1789,16 +1889,11 @@ async def _precompute_leading_reads(
             frame=frame,
             skill_tool_names=skill_tool_names,
             delegation_depth=int(ctx.get("delegation_depth", 0)),
-            skill_thresholds=tuple(
-                g.gt
-                for s in active_skills
-                for g in s.definition.guardrails
-                if g.type == "value_threshold" and g.then == "require_approval"
-            ),
+            skill_thresholds=_skill_guard(active_skills, value_spec)[0],
             tool_policies=effective_tool_policies(frame, pinned["narrowing"] or {}),
             connection_key=conn.name,
             tool_scopes=scopes,
-            value_spec=value_spec,
+            value_spec=_skill_guard(active_skills, value_spec)[1],
             guardrail_attribute_specs=guardrail_attribute_specs,
             # Prefetched from the tool server before /tools decides: a call the
             # mode withholds (/ask) must break the batch, never be fetched.
@@ -2018,6 +2113,7 @@ async def _dispatch_one_tool(
 
     active_ids = {str(s) for s in run.context.get("active_skill_ids", [])}
     active_skills = [s for s in assigned_skills if str(s.skill_version_id) in active_ids]
+    skill_thresholds, call_value_spec = _skill_guard(active_skills, value_spec)
 
     decision = _authorize(
         agent,
@@ -2029,16 +2125,12 @@ async def _dispatch_one_tool(
         # chain could run past MAX_DELEGATION_DEPTH.
         skill_tool_names=skill_tool_names,
         delegation_depth=int(run.context.get("delegation_depth", 0)),
-        skill_thresholds=tuple(
-            g.gt
-            for s in active_skills
-            for g in s.definition.guardrails
-            if g.type == "value_threshold" and g.then == "require_approval"
-        ),
+        skill_thresholds=skill_thresholds,
         tool_policies=effective_tool_policies(frame, pinned["narrowing"] or {}),
         connection_key=conn.name if conn is not None else None,
         tool_scopes=scopes,
-        value_spec=value_spec,
+        # The active skills' metrics merged in (`_skill_guard`), as the engine does.
+        value_spec=call_value_spec,
         narrowing=pinned["narrowing"] or {},
         is_team_lead=bool(pinned["is_team_lead"]),
         guardrail_attribute_specs=guardrail_attribute_specs,
@@ -2547,6 +2639,9 @@ async def _dispatch_one_tool(
                     ctx["pending_elicitation"] = {
                         "connection": conn.name,
                         "tool": tc.name,
+                        # The name the model saw: the re-run tiers the call with
+                        # the annotations listed under it, as /tools did.
+                        "advertised": body.name,
                         "arguments": dict(tc.arguments),
                         "question": exc.message,
                     }

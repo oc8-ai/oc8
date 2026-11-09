@@ -3270,3 +3270,214 @@ async def test_a_renamed_call_is_never_prefetched_under_its_advertised_name(
 
     assert reached == []
     assert result == {}
+
+
+# ------------------------------------------- held elicitation: decided as it runs
+
+
+async def _with_guarded_skill(db: Any, tenant: uuid.UUID, agent: Any, run: Any, gt: float) -> None:
+    """Assign and activate a skill whose guardrail holds amount_total > gt."""
+    from oc8 import models as m
+
+    skill = m.Skill(tenant_id=tenant, name="Guarded", description="", author="oc8 core")
+    db.add(skill)
+    await db.flush()
+    version = m.SkillVersion(
+        tenant_id=tenant, skill_id=skill.id, semver="1.0.0", artifact_hash=b"\x00" * 32,
+        definition={
+            "oc8_skill": 1, "id": "sk-guarded", "version": "1.0.0",
+            "instruction": "Be careful.",
+            "requires": {"tools": [], "kbs": []},
+            "guardrails": [
+                {"type": "value_threshold", "action": "send_action", "metric": "amount_total",
+                 "gt": gt, "then": "require_approval"}
+            ],
+        },
+    )
+    db.add(version)
+    await db.flush()
+    skill.current_version_id = version.id
+    db.add(m.SkillAssignment(
+        tenant_id=tenant, agent_id=agent.id, skill_version_id=version.id, enabled=True
+    ))
+    run.context = {**run.context, "active_skill_ids": [str(version.id)]}
+    await db.flush()
+
+
+async def _resume_held_call(
+    app_session: object,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    answer: str,
+    held_arguments: dict[str, Any] | None = None,
+    autonomy: str = "default",
+    approved_original: bool = False,
+    skill_gt: float | None = None,
+    annotations: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any], list[Any]]:
+    """A run parked on an elicitation for odoo's create_record, answered, then
+    one /step. Returns what reached the server, the /step body, the run's
+    context after it, and the approval requests raised."""
+    from sqlalchemy import select
+
+    from oc8 import models as m
+    from oc8.modelrouter.types import CompletionResult, Usage
+    from oc8.runtime.approval_resume import call_signature
+
+    reached: list[dict[str, Any]] = []
+
+    async def fake_call(*args: Any, tool: str, arguments: dict[str, Any], **kw: Any) -> str:
+        reached.append(arguments)
+        return "created"
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        return CompletionResult(
+            text="ok", tool_calls=[], usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="stop", provider="ollama", model="m",
+        )
+
+    monkeypatch.setattr("oc8.agent.mcp_pool.call", fake_call)
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+    held = held_arguments if held_arguments is not None else {"model": "sale.order"}
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id = await _mcp_backed_run(db, tenant)
+        agent = await db.get(m.Agent, agent_id)
+        run = await db.get(m.AgentRun, run_id)
+        assert agent is not None and run is not None
+        agent.definition = {"autonomy": autonomy}
+        conn = (
+            await db.execute(
+                select(m.McpConnection).where(m.McpConnection.department_id == agent.department_id)
+            )
+        ).scalar_one()
+        conn.scopes = {"read": ["search_records"], "write": ["create_record"]}
+        context: dict[str, Any] = {
+            "transcript": [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+            "pending_elicitation": {
+                "connection": "odoo",
+                "tool": "create_record",
+                "advertised": "create_record",
+                "arguments": held,
+                "question": "Which?",
+            },
+            "clarifications": [{"question": "Which?", "answer": answer}],
+        }
+        if annotations is not None:
+            context["tool_schemas"] = [
+                {"name": "create_record", "description": "", "parameters": {},
+                 "annotations": annotations}
+            ]
+        if approved_original:
+            context["resolved_tool_approvals"] = [
+                {"sig": call_signature("create_record", held), "tool": "create_record",
+                 "arguments": held, "decision": "approve"}
+            ]
+        run.context = {**run.context, **context}
+        await db.flush()
+        if skill_gt is not None:
+            await _with_guarded_skill(db, tenant, agent, run, skill_gt)
+
+    body = await _post_step(tenant, agent_id, run_id)
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        row = await db.get(m.AgentRun, run_id)
+        assert row is not None
+        held_for = select(m.ApprovalRequest).where(m.ApprovalRequest.tenant_id == tenant)
+        approvals = (await db.execute(held_for)).scalars().all()
+        return reached, body, dict(row.context), list(approvals)
+
+
+@pytest.mark.asyncio
+async def test_a_held_call_answer_over_a_skill_threshold_is_parked_for_approval(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An active skill's guardrail measures amount_total. The answer lifts it
+    over the skill's threshold, so the merged call waits for a human."""
+    reached, body, _ctx, approvals = await _resume_held_call(
+        app_session, monkeypatch, answer='{"amount_total": 5000}', skill_gt=1000
+    )
+    assert reached == []
+    assert body.get("status_override") == "waiting_for_approval"
+    assert [a.payload["arguments"] for a in approvals] == [
+        {"model": "sale.order", "amount_total": 5000}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_held_call_is_tiered_with_the_annotations_tools_saw(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """/tools tiers create_record by its advertised annotations: destructive,
+    so the gate asks under default autonomy. The re-run must do the same."""
+    reached, body, _ctx, approvals = await _resume_held_call(
+        app_session, monkeypatch, answer="ACME", annotations={"destructiveHint": True}
+    )
+    assert reached == []
+    assert body.get("status_override") == "waiting_for_approval"
+    assert len(approvals) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_approval_of_the_original_call_does_not_cover_the_answered_one(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Conservative autonomy: the operator approved the call before it asked
+    its question. The answer changed the arguments, so the merged call gets
+    its own approval -- it parks rather than looping on "call it again"."""
+    reached, body, ctx, approvals = await _resume_held_call(
+        app_session, monkeypatch, answer="ACME", autonomy="conservative", approved_original=True
+    )
+    assert reached == []
+    assert body.get("status_override") == "waiting_for_approval"
+    merged = {"model": "sale.order", "elicitation_answer": "ACME"}
+    assert [a.payload["arguments"] for a in approvals] == [merged]
+    assert ctx["pending_elicitation"]["arguments"] == merged
+
+
+@pytest.mark.asyncio
+async def test_an_approval_stands_when_the_answer_leaves_the_call_unchanged(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reached, _body, ctx, approvals = await _resume_held_call(
+        app_session,
+        monkeypatch,
+        answer='{"model": "sale.order"}',
+        autonomy="conservative",
+        approved_original=True,
+    )
+    assert reached == [{"model": "sale.order"}]
+    assert approvals == []
+    assert "pending_elicitation" not in ctx
+
+
+@pytest.mark.asyncio
+async def test_tools_measures_an_active_skills_metric(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The skill's guardrail names the argument it measures (`metric`); /tools
+    has to read it, as the in-process engine does, or the threshold never bites."""
+    from oc8 import models as m
+
+    calls: list[str] = []
+
+    async def fake_call(*args: Any, tool: str, **kw: Any) -> str:
+        calls.append(tool)
+        return "created"
+
+    monkeypatch.setattr("oc8.agent.mcp_pool.call", fake_call)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id = await _mcp_backed_run(db, tenant)
+        agent = await db.get(m.Agent, agent_id)
+        run = await db.get(m.AgentRun, run_id)
+        assert agent is not None and run is not None
+        await _with_guarded_skill(db, tenant, agent, run, 1000)
+
+    code, body = await _post_tool(
+        tenant, agent_id, run_id, "create_record", {"model": "sale.order", "amount_total": 5000}
+    )
+    assert code == 200, body
+    assert body["status"] == "waiting_for_approval", body
+    assert calls == []
