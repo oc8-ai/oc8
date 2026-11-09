@@ -31,10 +31,7 @@ export function OrganisationIdLine({ tenantId }: { tenantId: string }) {
         testId="organisation-id"
       />
       <span className="text-xs text-muted-foreground">
-        {t(
-          "Please include it when you contact support.",
-          "Gib sie bei Support-Anfragen an.",
-        )}
+        {t("Please include it when you contact support.", "Gib sie bei Support-Anfragen an.")}
       </span>
     </div>
   );
