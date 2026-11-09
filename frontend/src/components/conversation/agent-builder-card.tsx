@@ -17,11 +17,11 @@ import {
   useRequestAgentBuilder,
   type AgentBuilderDTO,
   type BuilderTriggerDTO,
-  type Translate,
 } from "@/lib/agent-builder-api";
 import { useMay } from "@/lib/governance-hooks";
 import { useRunAgent } from "@/lib/hooks";
 import { useT } from "@/lib/i18n";
+import type { Translate } from "@/lib/tool-labels";
 import { cn } from "@/lib/utils";
 
 function whenText(trigger: BuilderTriggerDTO, t: Translate): string {
@@ -66,7 +66,7 @@ function StatusLine({ card, t }: { card: AgentBuilderDTO; t: Translate }) {
   };
   const s = map[card.status] ?? map.draft;
   return (
-    <span className="inline-flex items-center gap-1.5 text-micro" aria-live="polite">
+    <span className="inline-flex items-center gap-1.5 text-micro" role="status">
       <span className={cn("size-2 rounded-full", s.dot)} aria-hidden />
       {s.text}
     </span>
@@ -100,8 +100,11 @@ export function AgentBuilderCard({
     );
   }
   const actionsAllowed = !readOnly && !card.readOnly;
-  const errorCode = builderRefusalCode(apply.error) ?? builderRefusalCode(request.error);
-  const refusal = errorCode ?? card.refusal;
+  // A refusal stored on the proposal (read back after a refetch) wins over the
+  // mutation's own error; any other failure still gets the generic text.
+  const clientError = apply.error ?? request.error;
+  const clientCode = clientError ? (builderRefusalCode(clientError) ?? "failed") : null;
+  const refusal = card.refusal ?? clientCode;
   const testTask =
     card.triggers[0]?.taskText ||
     t(

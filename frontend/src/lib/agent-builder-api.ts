@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api, ApiError, retryUnlessRefused } from "@/lib/api";
+import type { Translate } from "@/lib/tool-labels";
 
 export type BuilderStatus =
   | "draft"
@@ -118,8 +119,6 @@ export function builderRefusalCode(error: unknown): string | null {
   return null;
 }
 
-export type Translate = (en: string, de?: string) => string;
-
 /** Why the agent was not created, in the member's words. */
 export function builderRefusalText(code: string, step: number | null, t: Translate): string {
   switch (code) {
@@ -150,6 +149,11 @@ export function builderRefusalText(code: string, step: number | null, t: Transla
       return t("This proposal has expired.", "Dieser Vorschlag ist abgelaufen.");
     case "not_open":
       return t("This proposal is no longer open.", "Dieser Vorschlag ist nicht mehr offen.");
+    case "superseded_concurrently":
+      return t(
+        "Replaced by a newer proposal meanwhile.",
+        "Inzwischen durch einen neueren Vorschlag ersetzt.",
+      );
     case "step_failed":
       return t(
         `Step ${(step ?? 0) + 1} could not be applied. Nothing was created.`,

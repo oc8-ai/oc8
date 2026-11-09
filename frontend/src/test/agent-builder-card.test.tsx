@@ -1,7 +1,9 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ApiError } from "@/lib/api";
 import type { AgentBuilderDTO } from "@/lib/agent-builder-api";
+import { builderRefusalText } from "@/lib/agent-builder-api";
 
 const m = vi.hoisted(() => ({
   card: undefined as unknown,
@@ -10,11 +12,17 @@ const m = vi.hoisted(() => ({
   run: vi.fn(),
   navigate: vi.fn(),
   may: true,
+  applyError: null as unknown,
+  applyPending: false,
 }));
 vi.mock("@/lib/agent-builder-api", async (orig) => ({
   ...(await orig<typeof import("@/lib/agent-builder-api")>()),
   useAgentBuilder: () => ({ data: m.card, isLoading: false }),
-  useApplyAgentBuilder: () => ({ mutate: m.apply, isPending: false, error: null }),
+  useApplyAgentBuilder: () => ({
+    mutate: m.apply,
+    isPending: m.applyPending,
+    error: m.applyError,
+  }),
   useRequestAgentBuilder: () => ({ mutate: m.request, isPending: false, error: null }),
 }));
 vi.mock("@/lib/hooks", async (orig) => ({
@@ -67,6 +75,8 @@ beforeEach(() => {
   m.run.mockReset();
   m.navigate.mockReset();
   m.may = true;
+  m.applyError = null;
+  m.applyPending = false;
 });
 
 describe("AgentBuilderCard", () => {
@@ -157,5 +167,87 @@ describe("AgentBuilderCard", () => {
     m.card = { ...draft, refusal: "name_taken", failedStep: 0 };
     render(<AgentBuilderCard proposalId="p1" />);
     expect(screen.getByRole("alert")).toHaveTextContent("That name is already taken.");
+  });
+
+  it("says so when the agent was already created", () => {
+    m.card = draft;
+    m.applyError = new ApiError("agent_builder:already_applied", 409);
+    render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByRole("alert")).toHaveTextContent("This agent was already created.");
+  });
+
+  it("shows the generic text for any other failure", () => {
+    m.card = draft;
+    m.applyError = new ApiError("boom", 500);
+    const { unmount } = render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByRole("alert")).toHaveTextContent("The agent was not created. Try again.");
+    unmount();
+    m.applyError = new TypeError("Failed to fetch");
+    render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByRole("alert")).toHaveTextContent("The agent was not created. Try again.");
+  });
+
+  it("prefers the refusal stored on the proposal over a client error", () => {
+    m.card = { ...draft, refusal: "name_taken" };
+    m.applyError = new ApiError("boom", 500);
+    render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByRole("alert")).toHaveTextContent("That name is already taken.");
+  });
+
+  it("disables the button while creating", () => {
+    m.card = draft;
+    m.applyPending = true;
+    render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByRole("button", { name: "Create this agent" })).toBeDisabled();
+  });
+
+  it("labels the applied and expired states", () => {
+    m.card = { ...draft, status: "applied", mayCreate: false, agent: null };
+    const { unmount } = render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByRole("status")).toHaveTextContent("Created");
+    unmount();
+    m.card = { ...draft, status: "expired" };
+    render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByRole("status")).toHaveTextContent("Expired");
+  });
+
+  it("asks the copilot to propose again", () => {
+    const propose = vi.fn();
+    m.card = { ...draft, status: "expired" };
+    render(<AgentBuilderCard proposalId="p1" onPropose={propose} />);
+    fireEvent.click(screen.getByRole("button", { name: "Propose again" }));
+    expect(propose).toHaveBeenCalledWith("/agent Please propose Rechnungsprüfer again.");
+  });
+});
+
+describe("builderRefusalText", () => {
+  const t = (en: string) => en;
+  const codes = [
+    "name_taken",
+    "department_unknown",
+    "connection_not_allowed",
+    "model_not_allowed",
+    "skill_not_allowed",
+    "secret_value",
+    "already_applied",
+    "expired",
+    "not_open",
+    "superseded_concurrently",
+    "step_failed",
+    "something_else",
+  ];
+  it("has a distinct non-empty text for every code", () => {
+    const texts = codes.map((c) => builderRefusalText(c, 1, t));
+    for (const x of texts) expect(x).not.toBe("");
+    expect(new Set(texts).size).toBe(codes.length);
+  });
+  it("numbers the failed step and tolerates none", () => {
+    expect(builderRefusalText("step_failed", 2, t)).toContain("Step 3");
+    expect(builderRefusalText("step_failed", null, t)).toContain("Step 1");
+  });
+  it("names a concurrent replacement", () => {
+    expect(builderRefusalText("superseded_concurrently", null, t)).toBe(
+      "Replaced by a newer proposal meanwhile.",
+    );
   });
 });
