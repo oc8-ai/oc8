@@ -237,7 +237,9 @@ async def test_a_held_call_keeps_its_skills_guardrail_and_runs_once_after_approv
     """Leg 1: a skill with a value guardrail (> 100) is active; the write asks
     a question. Leg 2 starts with no active skills -- the answer lifts the
     value to 500, and the guardrail stored with the call still parks it for an
-    approval of the merged call. Leg 3: approved, exactly that call runs, once."""
+    approval of the merged call. Leg 3: approved, exactly that call runs, once.
+    Leg 4: the model repeats it; the approval still matches, and the earlier
+    result is replayed rather than written again."""
     from tests.agents.test_skill_invocation import (
         SKILL_DEF,
         _setup,
@@ -266,7 +268,17 @@ async def test_a_held_call_keeps_its_skills_guardrail_and_runs_once_after_approv
             self.ran.append(dict(arguments))
             return "written"
 
-    install(monkeypatch, [call_skill(), call_tool("fs_write", value_eur=50), stop()])
+    install(
+        monkeypatch,
+        [
+            call_skill(),
+            call_tool("fs_write", value_eur=50),
+            stop(),
+            # Leg 4: the model repeats the approved merged call verbatim.
+            call_tool("fs_write", value_eur=500),
+            stop(),
+        ],
+    )
     toolset = _AskingToolset()
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
@@ -302,6 +314,8 @@ async def test_a_held_call_keeps_its_skills_guardrail_and_runs_once_after_approv
         assert first.status == "waiting_for_input", first
         await db.flush()
         await db.refresh(run)
+        # As the executor records it: later legs resume the same task.
+        run.task_id = first.task_id
         run.context = {
             **run.context,
             "clarifications": [{"question": "How much?", "answer": '{"value_eur": 500}'}],
@@ -332,3 +346,18 @@ async def test_a_held_call_keeps_its_skills_guardrail_and_runs_once_after_approv
         await db.flush()
         await db.refresh(run)
         assert "pending_elicitation" not in run.context
+
+        # The approval holds for the whole run, so only replay-safety stops an
+        # identical later call from writing a second time.
+        fourth = await run_agent(
+            db,
+            agent=agent,
+            task_text="go",
+            tenant_id=tenant,
+            toolset=toolset,
+            run_id=run.id,
+            pre_decided={merged: "approve"},
+        )
+        assert fourth.status == "done", fourth
+        assert toolset.ran == [{"value_eur": 500}], "replayed, not executed again"
+        assert "replay" in fourth.tool_calls[-1]["result"]

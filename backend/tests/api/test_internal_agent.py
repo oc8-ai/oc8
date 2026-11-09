@@ -3569,4 +3569,84 @@ async def test_a_parked_held_call_runs_exactly_once_after_its_approval(
 
     await _post_step(tenant, agent_id, run_id)
     await _post_step(tenant, agent_id, run_id)
-    assert reached == [{"model": "sale.order", "elicitation_answer": "ACME"}]
+    merged = {"model": "sale.order", "elicitation_answer": "ACME"}
+    assert reached == [merged]
+
+    # The approval holds for the whole run: only replay-safety stops the model
+    # repeating the merged call from writing a second time.
+    code, repeated = await _post_tool(tenant, agent_id, run_id, "create_record", merged)
+    assert code == 200, repeated
+    assert reached == [merged], "replayed, not executed again"
+    assert "replay" in repeated["output"]
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        row = await db.get(m.AgentRun, run_id)
+        assert row is not None
+        held_rows = [c for c in row.context.get("toolCalls", []) if c.get("arguments") == merged]
+        assert held_rows and held_rows[0]["state"] == "done", "the re-run is on the timeline"
+        audited = (
+            (
+                await db.execute(
+                    select(m.AuditEvent).where(
+                        m.AuditEvent.tenant_id == tenant,
+                        m.AuditEvent.action == "tool.call:create_record",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert any((e.resource or {}).get("arguments") == merged for e in audited)
+
+
+@pytest.mark.asyncio
+async def test_a_held_call_that_asks_again_suspends_for_the_operator(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The re-run asks a second question: /step ends waiting for input, as the
+    engine does -- the model is not asked to carry on around it."""
+    from oc8.agent.elicitation import ElicitationNeeded
+
+    completions = {"n": 0}
+
+    async def asks(*args: Any, **kw: Any) -> str:
+        raise ElicitationNeeded("And which warehouse?")
+
+    from oc8 import models as m
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        completions["n"] += 1
+        return CompletionResult(
+            text="ok", tool_calls=[], usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="stop", provider="ollama", model="m",
+        )
+
+    monkeypatch.setattr("oc8.agent.mcp_pool.call", asks)
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id = await _mcp_backed_run(db, tenant)
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {
+            **run.context,
+            "transcript": [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+            "pending_elicitation": {
+                "connection": "odoo",
+                "tool": "search_records",
+                "arguments": {"model": "sale.order"},
+                "question": "Which customer?",
+            },
+            "clarifications": [{"question": "Which customer?", "answer": "ACME"}],
+        }
+        await db.flush()
+
+    body = await _post_step(tenant, agent_id, run_id)
+    assert body.get("status_override") == "waiting_for_input"
+    assert completions["n"] == 0
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        row = await db.get(m.AgentRun, run_id)
+        assert row is not None
+        assert row.context["pending_elicitation"]["question"] == "And which warehouse?"

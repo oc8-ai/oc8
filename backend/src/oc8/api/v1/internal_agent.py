@@ -891,11 +891,13 @@ async def _finish_elicitation(
     agent: m.Agent,
     pinned: Mapping[str, Any],
     active_skills: Sequence[LoadedSkill],
-) -> str | None:
+) -> tuple[str, str] | None:
     """Send the operator's answer back to the server and finish the same call.
 
-    Returns the reason when the answered call is parked for an approval
-    instead (`_held_call_verdict`); the caller then ends this /step suspended.
+    Returns `(status, text)` when this /step has to end suspended instead:
+    ("waiting_for_approval", reason) when the answered call is parked for an
+    approval (`_held_call_verdict`), ("waiting_for_input", question) when the
+    server asks again.
     """
     pending = ctx.get("pending_elicitation")
     if not isinstance(pending, dict):
@@ -941,6 +943,20 @@ async def _finish_elicitation(
         if conn is not None and tool
         else ("refuse", "")
     )
+    if conn is not None and tool:
+        # Audited like any call: the held re-run is a new one.
+        await append_event(
+            db,
+            tenant_id=run.tenant_id,
+            actor_type="agent",
+            actor_id=agent.id,
+            category="tool_action",
+            action=f"tool.call:{tool}",
+            resource={"tool": tool, "arguments": arguments},
+            decision={"run": "allow", "refuse": "deny", "park": "require_approval"}[effect],
+            reason=why or None,
+            originating_operator=ctx.get("originating_operator"),
+        )
     if conn is not None and tool and effect == "park":
         await _park_held_call(
             db,
@@ -952,57 +968,99 @@ async def _finish_elicitation(
             arguments=arguments,
             reason=why,
         )
-        return why
+        return "waiting_for_approval", why
     refusal = why if effect == "refuse" else None
+    dispatched = False
     if conn is None or not tool:
         output = "ERROR: the connection that asked for this answer is no longer available"
     elif refusal is not None:
         output = f"ERROR: {refusal}"
     else:
-        try:
-            # `ctx` is written back whole below: the call to action goes in too.
-            launch = await _mcp_env(conn, db, run, tool=tool, ctx=ctx)
-            env = launch.env
-            cfg = _mcp_params(conn)
-            headers = resolve_auth_header(cfg, env)
-            command, args = wrap_with_requirements(cfg.get("command", ""), cfg.get("args", []), cfg)
-            output = await mcp_pool.call(
-                conn.id,
-                command=command,
-                args=args,
-                env=env,
-                tool=tool,
-                arguments=arguments,
-                transport=conn.transport,
-                server_url=conn.server_url or "",
-                headers=headers,
-                http_tools=list(cfg.get("http_tools", [])),
-                reusable=launch.reusable,
-            )
-        except ElicitationNeeded as exc:
-            output = exc.message
-            ctx["pending_elicitation"] = {
-                "connection": connection_name,
-                "tool": tool,
-                "advertised": advertised,
-                "arguments": arguments,
-                "question": exc.message,
-                "skill_guards": pending.get("skill_guards") or [],
-                "skill_tool_names": pending.get("skill_tool_names") or [],
-            }
-            transcript.append(
-                _from_message(
-                    NeutralMessage(
-                        role="user",
-                        content=f"The same call {tool} still needs an answer:\n{output}",
+        # The same replay-safety as /tools (B9), keyed on the merged call: an
+        # identical later call -- which the run-long approval would also let
+        # through -- gets this result back instead of acting twice, and so
+        # does a re-run after a crash before this request committed.
+        held_tc = ToolCall(id="held", name=tool, arguments=arguments)
+        held_writes = required_right(tool, _manifest_scopes(conn)) != "read"
+        schema = next(
+            (
+                raw
+                for raw in ctx.get("tool_schemas", []) or []
+                if isinstance(raw, dict) and raw.get("name") == advertised
+            ),
+            None,
+        )
+        notes = schema.get("annotations") if schema is not None else None
+        held_idempotent = isinstance(notes, dict) and notes.get("idempotentHint") is True
+        replayed = await replay_for(
+            db,
+            tenant_id=run.tenant_id,
+            task_id=run.task_id,
+            tc=held_tc,
+            writes=held_writes,
+            idempotent=held_idempotent,
+        )
+        if replayed is not None:
+            output = replayed
+        else:
+            dispatched = True
+            try:
+                # `ctx` is written back whole below: the call to action goes in too.
+                launch = await _mcp_env(conn, db, run, tool=tool, ctx=ctx)
+                env = launch.env
+                cfg = _mcp_params(conn)
+                headers = resolve_auth_header(cfg, env)
+                command, args = wrap_with_requirements(
+                    cfg.get("command", ""), cfg.get("args", []), cfg
+                )
+                output = await mcp_pool.call(
+                    conn.id,
+                    command=command,
+                    args=args,
+                    env=env,
+                    tool=tool,
+                    arguments=arguments,
+                    transport=conn.transport,
+                    server_url=conn.server_url or "",
+                    headers=headers,
+                    http_tools=list(cfg.get("http_tools", [])),
+                    reusable=launch.reusable,
+                )
+                await record_for(
+                    db,
+                    tenant_id=run.tenant_id,
+                    task_id=run.task_id,
+                    tc=held_tc,
+                    writes=held_writes,
+                    output=output,
+                    idempotent=held_idempotent,
+                )
+            except ElicitationNeeded as exc:
+                # Asked again: suspend for the operator, as the engine does and
+                # as /tools does on a first question -- not on to the model.
+                ctx["pending_elicitation"] = {
+                    "connection": connection_name,
+                    "tool": tool,
+                    "advertised": advertised,
+                    "arguments": arguments,
+                    "question": exc.message,
+                    "skill_guards": pending.get("skill_guards") or [],
+                    "skill_tool_names": pending.get("skill_tool_names") or [],
+                }
+                transcript.append(
+                    _from_message(
+                        NeutralMessage(
+                            role="user",
+                            content=f"The same call {tool} still needs an answer:\n{exc.message}",
+                        )
                     )
                 )
-            )
-            ctx["transcript"] = transcript
-            run.context = ctx
-            return None
-        except Exception as exc:
-            output = f"ERROR: {exc}"
+                ctx["transcript"] = transcript
+                ctx["isolated_result"] = {"status": "waiting_for_input", "output": exc.message}
+                run.context = ctx
+                return "waiting_for_input", exc.message
+            except Exception as exc:
+                output = f"ERROR: {exc}"
     ctx.pop("pending_elicitation", None)
     transcript.append(
         _from_message(
@@ -1012,6 +1070,20 @@ async def _finish_elicitation(
             )
         )
     )
+    # The held re-run in the run's timeline, like any call. Into `ctx` -- which
+    # /step writes back whole -- not appended in SQL, which that write-back
+    # would overwrite.
+    ctx["toolCalls"] = [
+        *(ctx.get("toolCalls") or []),
+        {
+            "tool": tool,
+            "arguments": arguments,
+            "result": output[:300],
+            "step": int(ctx.get("steps", 0)),
+            "connection": connection_name or None,
+            "state": call_state_for(output, dispatched=dispatched),
+        },
+    ]
     ctx["transcript"] = transcript
     run.context = ctx
     return None
@@ -1169,7 +1241,8 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
     )
     if parked_reason is not None:
         await db.commit()
-        return StepResult(done=True, text=parked_reason, status_override="waiting_for_approval")
+        suspended_as, said = parked_reason
+        return StepResult(done=True, text=said, status_override=suspended_as)
     tool_schemas_raw: list[dict[str, Any]] = list(ctx.get("tool_schemas", []))
 
     # Resolved BEFORE seeding, because the preamble's KB retrieval needs the

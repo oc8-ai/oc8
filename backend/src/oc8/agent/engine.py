@@ -1099,6 +1099,23 @@ async def run_agent(
                         )
                         parked_ctx = dict(parked.context or {})
                         effect, why = _held_verdict(tool_name, arguments, held_route, pending)
+                        # Audited like any call: the held re-run is a new one.
+                        await append_event(
+                            db,
+                            tenant_id=tenant_id,
+                            actor_type="agent",
+                            actor_id=agent.id,
+                            category="tool_action",
+                            action=f"tool.call:{tool_name}",
+                            resource={"tool": tool_name, "arguments": arguments},
+                            decision={
+                                "run": "allow",
+                                "refuse": "deny",
+                                "park": "require_approval",
+                            }[effect],
+                            reason=why or None,
+                            originating_operator=originating_operator,
+                        )
                         if effect == "park":
                             held_ar = await raise_approval(
                                 db,
@@ -1150,11 +1167,47 @@ async def run_agent(
                                 todos,
                                 step_timings,
                             )
+                        # The same replay-safety as the step loop's dispatch
+                        # (B9), keyed on the merged call: an identical later
+                        # call -- which the run-long approval would also let
+                        # through -- gets this result back instead of acting
+                        # twice, and so does a re-run after a crash.
+                        held_tc = ToolCall(id="held", name=tool_name, arguments=arguments)
+                        held_writes = required_right(held_route[6], held_route[1]) != "read"
+                        held_offer = next((t for t in _offered() if t.name == tool_name), None)
+                        held_idempotent = (
+                            held_offer is not None
+                            and held_offer.annotations is not None
+                            and held_offer.annotations.get("idempotentHint") is True
+                        )
+                        replayed = (
+                            await replay_for(
+                                db,
+                                tenant_id=tenant_id,
+                                task_id=task.id,
+                                tc=held_tc,
+                                writes=held_writes,
+                                idempotent=held_idempotent,
+                            )
+                            if effect == "run"
+                            else None
+                        )
                         if effect == "refuse":
                             finished = f"ERROR: {why}"
+                        elif replayed is not None:
+                            finished = replayed
                         else:
                             try:
                                 finished = await server.call(tool_name, arguments)
+                                await record_for(
+                                    db,
+                                    tenant_id=tenant_id,
+                                    task_id=task.id,
+                                    tc=held_tc,
+                                    writes=held_writes,
+                                    output=finished,
+                                    idempotent=held_idempotent,
+                                )
                             except ElicitationNeeded as exc:
                                 parked_ctx["pending_elicitation"] = {
                                     "connection": held_route[0] or "",
@@ -1198,6 +1251,19 @@ async def run_agent(
                                 ),
                             )
                         )
+                        tool_trace.append(
+                            {
+                                "tool": tool_name,
+                                "arguments": arguments,
+                                "result": str(finished)[:300],
+                                "step": 0,
+                                "connection": held_route[0],
+                                "state": call_state_for(
+                                    str(finished), dispatched=effect != "refuse"
+                                ),
+                            }
+                        )
+                        await _live_tool_call(tool_trace[-1])
                         parked_ctx.pop("pending_elicitation", None)
                         parked.context = parked_ctx
                 if not session_state["started"]:
