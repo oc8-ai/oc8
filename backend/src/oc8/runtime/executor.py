@@ -103,6 +103,24 @@ def _chat_run_failed_answer(run_id: uuid.UUID) -> str:
     return f"That didn't work out \u2013 [see the run](oc8://run/{run_id}) for what happened."
 
 
+async def _answer_failed_chat_run(
+    db: AsyncSession, run: m.AgentRun, channel_replies: list[tuple[uuid.UUID, str, str, str]]
+) -> None:
+    """A chat turn that FAILED without an output of its own still answers: the
+    canned failure line in the transcript, the plain one to a channel sender,
+    and the unread follow-ups told they were not read. No-op for other runs."""
+    if run.source != "chat":
+        return
+    from oc8.chat.service import record_assistant_reply
+
+    await record_assistant_reply(db, run=run, output=_chat_run_failed_answer(run.id))
+    sender = await _current_chat_sender(db, run)
+    if sender is not None:
+        channel, external_id = sender
+        channel_replies.append((run.tenant_id, channel, external_id, _CHAT_RUN_FAILED))
+    await _tell_unread_inputs(db, run, channel_replies)
+
+
 async def _current_chat_sender(db: AsyncSession, run: m.AgentRun) -> tuple[str, str] | None:
     """`_chat_channel_sender_of`, but for a follow-up re-resolved against the
     member's CURRENT binding at send time (invariant 12): a binding revoked
@@ -1121,19 +1139,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 # user's message and nothing after it, on every surface, for
                 # ever. The generic status branch below has always recorded
                 # one; this one now does too.
-                if run.source == "chat":
-                    from oc8.chat.service import record_assistant_reply
-
-                    await record_assistant_reply(
-                        db, run=run, output=_chat_run_failed_answer(run.id)
-                    )
-                    failed_sender = await _current_chat_sender(db, run)
-                    if failed_sender is not None:
-                        failed_channel, failed_external_id = failed_sender
-                        channel_replies.append(
-                            (run.tenant_id, failed_channel, failed_external_id, _CHAT_RUN_FAILED)
-                        )
-                    await _tell_unread_inputs(db, run, channel_replies)
+                await _answer_failed_chat_run(db, run, channel_replies)
             else:
                 pending_runs.extend(result.pending_runs)
                 if result.status == "waiting_for_input":
@@ -1273,6 +1279,8 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                                 "run %s: failed to wake parent after sub-task failure", run_id
                             )
                         await sync_run_output(db, tenant_id=tenant_id, run_id=run_id)
+                        # As at every end: no input arrives until this commits.
+                        await lock_run_inputs(db, tenant_id=tenant_id, run_id=run.id)
                         await repo.transition(run, RunState.FAILED)
                         await record_activity(
                             db,
@@ -1285,6 +1293,9 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         logger.warning("run %s marked FAILED: %s", run_id, run_error)
                         logger.info("run %s finished in state %s", run_id, RunState.FAILED.value)
                         record_run_outcome(RunState.FAILED.value)
+                        # Same gap the crash path had: without this the member's
+                        # answer stays the chat's last line for ever.
+                        await _answer_failed_chat_run(db, run, channel_replies)
                 else:
                     run.task_id = result.task_id
                     await merge_context(
