@@ -8,6 +8,9 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
+
 from oc8.edition.runtime import COMMUNITY_RUNTIME_COMPOSITION, EditionRuntimeComposition
 from oc8.runtime import reconcile
 from oc8.runtime.executor import RunDeferred, execute_run, recover_reclaimed
@@ -16,6 +19,16 @@ from oc8.runtime.queue import RunMessage, RunQueue
 logger = logging.getLogger(__name__)
 
 Handler = Callable[[RunMessage], Awaitable[None]]
+
+#: Redis could not be reached for one queue call. A blip, not a death: before
+#: these were caught, one connect timeout in claim_stale ended run_worker, the
+#: process exited, and every run it held -- including one mid-execution in the
+#: sibling loop -- waited out the whole lease window before anyone reclaimed it
+#: (seen live 2026-11-09 on a loaded Docker Desktop host, three restarts an hour).
+_QUEUE_UNREACHABLE = (RedisConnectionError, RedisTimeoutError)
+
+#: Pause after an unreachable queue, so a Redis that is down is not hammered.
+_QUEUE_RETRY_SECONDS = 1.0
 
 #: How long a consumer may stop renewing before another worker treats it as dead
 #: and reclaims its entry. The SAME window as the reconciler's ABANDONED_AFTER,
@@ -159,7 +172,12 @@ async def _process(
             message.get("run_id"),
         )
         return
-    await queue.ack(message["entry_id"])
+    try:
+        await queue.ack(message["entry_id"])
+    except _QUEUE_UNREACHABLE:
+        # The work is done; only the ack is lost. The entry goes stale and is
+        # reclaimed, and recover_reclaimed reads the run's row before it acts.
+        logger.warning("could not ack entry %s; it will be reclaimed", message["entry_id"])
 
 
 #: How often the worker sweeps for runs nothing is running any more. Cheap when
@@ -219,7 +237,12 @@ async def run_worker(
             # finds nothing left to say. (Correctness does not depend on this:
             # both take the run's row lock, so at worst the more specific
             # diagnosis is the one that loses. Only the message is at stake.)
-            for reclaimed in await queue.claim_stale(min_idle_ms=LEASE_LOST_AFTER_MS):
+            try:
+                stale = await queue.claim_stale(min_idle_ms=LEASE_LOST_AFTER_MS)
+            except _QUEUE_UNREACHABLE:
+                logger.warning("run queue unreachable while reclaiming; retrying")
+                stale = []
+            for reclaimed in stale:
                 await _process(queue, reclaimed, recovery, runtime_composition)
 
             if housekeeping is not None and loop.time() >= next_housekeeping:
@@ -229,7 +252,12 @@ async def run_worker(
                 except Exception:
                     logger.exception("unhandled error in worker housekeeping")
 
-            message = await queue.dequeue(timeout=5.0)
+            try:
+                message = await queue.dequeue(timeout=5.0)
+            except _QUEUE_UNREACHABLE:
+                logger.warning("run queue unreachable while dequeuing; retrying")
+                await asyncio.sleep(_QUEUE_RETRY_SECONDS)
+                message = None
             if message is not None:
                 await _process(queue, message, handler, runtime_composition)
 
