@@ -58,8 +58,8 @@ function CopilotRoute() {
       initialSessionId={session ?? null}
       navKey={navKey}
       pin={pin}
-      // The open chat was deleted: the address follows the chat that replaced it.
-      onSessionRemoved={(next) => {
+      // The address follows the open chat, without a history entry per click.
+      onSessionOpened={(next) => {
         void navigate({ to: "/copilot", search: next ? { session: next } : {}, replace: true });
       }}
       // So a reload does not create another chat.
@@ -103,7 +103,7 @@ export function CopilotPage({
   navKey,
   pin,
   onPinHandled,
-  onSessionRemoved,
+  onSessionOpened,
 }: {
   initialSessionId?: string | null;
   navKey?: string;
@@ -112,8 +112,9 @@ export function CopilotPage({
   /** The pin was handled (chat created, or the link refused): drop it from
    *  the address, selecting `sessionId` when there is one. */
   onPinHandled?: (sessionId: string | null) => void;
-  /** The open chat was deleted from the sidebar; `nextId` replaced it, if any. */
-  onSessionRemoved?: (nextId: string | null) => void;
+  /** The open chat changed (picked in the sidebar, deleted, or a new one
+   *  created): the address is replaced with it, null for no chat. */
+  onSessionOpened?: (sessionId: string | null) => void;
 } = {}) {
   const t = useT();
   const may = useMay();
@@ -199,6 +200,10 @@ export function CopilotPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once per pin value; the ref guards re-runs
   }, [pin, mayUse]);
   const [panelOpen, setPanelOpen] = useState(true);
+  const openSession = (id: string | null) => {
+    setSessionId(id);
+    onSessionOpened?.(id);
+  };
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const { data: current } = useChatSession(sessionId);
   const mobile = useIsMobile();
@@ -225,7 +230,7 @@ export function CopilotPage({
     <Conversation
       agentId={agentId}
       sessionId={sessionId}
-      onSessionChange={setSessionId}
+      onSessionChange={openSession}
       variant="full"
       promptStarters={starters}
       emptyState={
@@ -257,8 +262,7 @@ export function CopilotPage({
           <CopilotSidebar
             agentId={agentId}
             sessionId={sessionId}
-            onSelect={setSessionId}
-            onRemoved={onSessionRemoved}
+            onSelect={openSession}
             collapsed={sidebarCollapsed}
             onToggle={() => setSidebarCollapsed((v) => !v)}
           />

@@ -284,8 +284,6 @@ interface SidebarProps {
   sessionId: string | null;
   /** A chat to open; null starts a new one. */
   onSelect: (id: string | null) => void;
-  /** The open chat was deleted: `nextId` is the chat that took its place, if any. */
-  onRemoved?: (nextId: string | null) => void;
   collapsed: boolean;
   onToggle: () => void;
 }
@@ -294,7 +292,6 @@ export function CopilotSidebar({
   agentId,
   sessionId,
   onSelect,
-  onRemoved,
   collapsed,
   onToggle,
 }: SidebarProps) {
@@ -338,7 +335,6 @@ export function CopilotSidebar({
         // The next most recent chat, whatever is pinned; a new chat if none.
         const next = mostRecentSession(sessions.filter((x) => x.id !== s.id))?.id ?? null;
         onSelect(next);
-        onRemoved?.(next);
       },
     });
   }

@@ -245,25 +245,21 @@ describe("Copilot sidebar", () => {
 
   it("deleting the open chat selects the most recent remaining one, not the list head", async () => {
     // The list is pinned first: "Pinned one" leads but is the oldest.
-    const onRemoved = vi.fn();
-    const { onSelect } = mount({ sessionId: "b", onRemoved });
+    const { onSelect } = mount({ sessionId: "b" });
     await confirmDelete("Today chat");
     await waitFor(() => expect(m.del).toHaveBeenCalled());
     const options = m.del.mock.calls[0][1] as { onSuccess: () => void };
     act(() => options.onSuccess());
     expect(onSelect).toHaveBeenCalledWith("c");
-    expect(onRemoved).toHaveBeenCalledWith("c");
   });
 
   it("deleting the only open chat starts a new one", async () => {
     m.sessions = [session("only", { id: "only", title: "Only chat" })];
-    const onRemoved = vi.fn();
-    const { onSelect } = mount({ sessionId: "only", onRemoved });
+    const { onSelect } = mount({ sessionId: "only" });
     await confirmDelete("Only chat");
     await waitFor(() => expect(m.del).toHaveBeenCalled());
     act(() => (m.del.mock.calls[0][1] as { onSuccess: () => void }).onSuccess());
     expect(onSelect).toHaveBeenCalledWith(null);
-    expect(onRemoved).toHaveBeenCalledWith(null);
   });
 
   it("deleting another chat leaves the open one alone", async () => {

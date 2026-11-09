@@ -170,6 +170,20 @@ describe("CopilotPage", () => {
     expect(screen.getByTestId("chat")).toHaveAttribute("data-session", "s-sidebar");
   });
 
+  it("replaces the address with the chat picked in the sidebar or created by the chat", () => {
+    const opened = vi.fn();
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <CopilotPage onSessionOpened={opened} />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "sidebar pick" }));
+    expect(opened).toHaveBeenLastCalledWith("s-sidebar");
+    fireEvent.click(screen.getByRole("button", { name: "switch" }));
+    expect(opened).toHaveBeenLastCalledWith("s-8");
+    expect(opened).toHaveBeenCalledTimes(2);
+  });
+
   it("sends a prompt starter from the empty chat", () => {
     wrap();
     fireEvent.click(screen.getByRole("button", { name: "What is waiting on me?" }));
