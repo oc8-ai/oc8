@@ -111,9 +111,15 @@ async def list_sessions(
 ) -> list[m.ChatSession]:
     """The member's chats, most recently active first. `pinned_first` lifts
     pinned chats to the top -- the member's own list only; a caller asking
-    "which chat is current" (a messenger's next message) wants recency alone."""
+    "which chat is current" (a messenger's next message) wants recency alone.
+
+    Ordinary chats only: a Live session (`kind='live'`) is the Live tab's,
+    reached through its own route, never a chat in the list nor the one a
+    messenger's next message lands in."""
     stmt = select(m.ChatSession).where(
-        m.ChatSession.tenant_id == tenant_id, m.ChatSession.member_id == member_id
+        m.ChatSession.tenant_id == tenant_id,
+        m.ChatSession.member_id == member_id,
+        m.ChatSession.kind == "chat",
     )
     if agent_id is not None:
         stmt = stmt.where(m.ChatSession.agent_id == agent_id)

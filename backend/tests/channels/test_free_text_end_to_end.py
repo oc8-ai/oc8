@@ -519,7 +519,8 @@ async def test_messenger_text_goes_to_the_latest_chat_not_a_pinned_older_one(
     app_session: AppSessionFactory, redis_url: str
 ) -> None:
     """Pinning is how the web UI orders the member's list; it must not move
-    where a messenger message lands, which is the most recent Assistant chat."""
+    where a messenger message lands, which is the most recent Assistant chat
+    -- and never the Live session, however recent."""
     from oc8.agent.assistant import get_or_create_assistant
 
     tenant = uuid.uuid4()
@@ -545,7 +546,15 @@ async def test_messenger_text_goes_to_the_latest_chat_not_a_pinned_older_one(
             member_id=member.id,
             last_message_at=now - dt.timedelta(hours=1),
         )
-        db.add_all([old, latest])
+        # The Live tab's session is more recent still, but it is not a chat.
+        live = m.ChatSession(
+            tenant_id=tenant,
+            agent_id=assistant.id,
+            member_id=member.id,
+            kind="live",
+            last_message_at=now,
+        )
+        db.add_all([old, latest, live])
         await db.flush()
         old_id, latest_id, member_id = old.id, latest.id, member.id
         row = await issue_code(
