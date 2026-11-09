@@ -218,6 +218,14 @@ class ToolPolicy:
         return self.only is None or tool in self.only
 
 
+#: `Decision.reason_code` of the frame's DENY for a CORE tool that has no
+#: branch of its own in `authorize`: decided against the run's bound
+#: connection, which the tool does not belong to. The verdict says nothing
+#: about the tool, so a reading core tool still runs under it -- and under no
+#: other denial (see `execute_control_tool`).
+NOT_THIS_CONNECTION = "not_this_connection"
+
+
 @dataclass(frozen=True)
 class Decision:
     effect: Effect

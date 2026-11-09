@@ -76,7 +76,11 @@ vi.mock("@/components/connections/connect-dialog", () => ({
     open ? <div role="dialog">dialog:{integration}</div> : null,
 }));
 
-import { ConnectionsPage, type ConnectionsSearch } from "@/components/connections/connections-page";
+import {
+  ConnectionsPage,
+  type ConnectionsSearch,
+  type ConnectionsTab,
+} from "@/components/connections/connections-page";
 import { OAuthCompleteError } from "@/lib/connections";
 
 const MS = {
@@ -124,8 +128,13 @@ const row = (over: Record<string, unknown>) => ({
 
 function renderPage(search: ConnectionsSearch = {}, onConsume = vi.fn(), strict = false) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  let current = search;
+  // Stands in for the route: a chosen tab lands in the search, like the URL.
+  const onTabChange = vi.fn((tab: ConnectionsTab) => setSearch({ ...current, tab }));
   const tree = (next: ConnectionsSearch) => {
-    const page = <ConnectionsPage search={next} onConsumeSearch={onConsume} />;
+    const page = (
+      <ConnectionsPage search={next} onConsumeSearch={onConsume} onTabChange={onTabChange} />
+    );
     // StrictMode wraps the page only: LanguageProvider's own mount effects
     // would otherwise reset the stored language on their second run.
     return (
@@ -135,9 +144,19 @@ function renderPage(search: ConnectionsSearch = {}, onConsume = vi.fn(), strict 
     );
   };
   const view = render(tree(search));
-  const setSearch = (next: ConnectionsSearch) => view.rerender(tree(next));
-  return { onConsume, setSearch, ...view };
+  function setSearch(next: ConnectionsSearch) {
+    current = next;
+    view.rerender(tree(next));
+  }
+  return { onConsume, onTabChange, setSearch, ...view };
 }
+
+// Radix menus open on pointerdown, which fireEvent.click does not send.
+function openMenu(name: string | RegExp) {
+  fireEvent.pointerDown(screen.getByRole("button", { name }), { button: 0 });
+}
+
+const ADMIN = (p: string) => p === "integration:manage";
 
 describe("ConnectionsPage", () => {
   beforeEach(() => {
@@ -197,17 +216,17 @@ describe("ConnectionsPage", () => {
       isLoading: false,
     });
     renderPage();
-    await screen.findByRole("region", { name: "Organisation" });
+    await screen.findByRole("tab", { name: "Organisation" });
     expect(screen.queryByRole("button", { name: "Odoo bereitstellen" })).not.toBeInTheDocument();
   });
 
-  it("shows a member only their own connections", async () => {
-    renderPage();
+  it("shows a member only their own connections, without tabs", async () => {
+    renderPage({ tab: "members" });
     const mineSection = await screen.findByRole("region", { name: "Meine Verbindungen" });
-    expect(within(mineSection).getByText(/Verbunden als anna@acme.de/)).toBeInTheDocument();
+    expect(within(mineSection).getByText("anna@acme.de · seit 8. Nov.")).toBeInTheDocument();
+    expect(within(mineSection).getByText("Nicht verbunden")).toBeInTheDocument();
     expect(within(mineSection).getByRole("button", { name: "Odoo verbinden" })).toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "Organisation" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "Mitglieder" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
     expect(screen.queryByText("Ben")).not.toBeInTheDocument();
     // The admin-only lists are never even fetched for a member.
     expect(orgEnabled).toHaveBeenCalledWith(false);
@@ -215,25 +234,70 @@ describe("ConnectionsPage", () => {
     expect(membersEnabled).not.toHaveBeenCalledWith(true);
   });
 
-  it("shows admins the organisation and the members' connections", async () => {
-    may.mockImplementation((p: string) => p === "integration:manage");
+  it("gives admins three tabs, the member count on the last", async () => {
+    may.mockImplementation(ADMIN);
     renderPage();
-    const orgSection = await screen.findByRole("region", { name: "Organisation" });
-    expect(within(orgSection).getByText("Odoo system")).toBeInTheDocument();
-    expect(
-      within(screen.getByRole("region", { name: "Mitglieder" })).getByText("Ben"),
-    ).toBeInTheDocument();
-    expect(screen.getByText("further-credentials")).toBeInTheDocument();
+    const tabs = within(await screen.findByRole("tablist")).getAllByRole("tab");
+    expect(tabs.map((tab) => tab.textContent)).toEqual(["Meine", "Organisation", "Mitglieder (1)"]);
+    expect(screen.getByRole("tab", { name: "Meine" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tabpanel", { name: "Meine" })).toHaveTextContent("Microsoft 365");
     expect(orgEnabled).toHaveBeenCalledWith(true);
     expect(membersEnabled).toHaveBeenCalledWith(true);
   });
 
-  it("asks before revoking a member's connection", async () => {
-    may.mockImplementation((p: string) => p === "integration:manage");
+  it("opens the tab the URL names and writes a chosen tab back", () => {
+    may.mockImplementation(ADMIN);
+    const { onTabChange } = renderPage({ tab: "organisation" });
+    const orgPanel = screen.getByRole("tabpanel", { name: "Organisation" });
+    expect(within(orgPanel).getByText(/^Odoo system ·/)).toBeInTheDocument();
+    expect(screen.getByText("further-credentials")).toBeInTheDocument();
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Mitglieder (1)" }));
+    expect(onTabChange).toHaveBeenCalledWith("members");
+    expect(
+      within(screen.getByRole("tabpanel", { name: "Mitglieder (1)" })).getByText("Ben"),
+    ).toBeInTheDocument();
+  });
+
+  it("marks a personal login an organisation access already covers", () => {
+    may.mockImplementation(ADMIN);
+    renderPage();
+    const panel = screen.getByRole("tabpanel", { name: "Meine" });
+    expect(within(panel).getByText("Organisationszugang aktiv")).toBeInTheDocument();
+  });
+
+  it("asks to reconnect a broken connection and opens its assistant", () => {
+    mine.mockReturnValue({ data: [row({ status: "needs_reauth" })], isLoading: false });
+    renderPage();
+    expect(screen.getByText("anna@acme.de · Erneut verbinden nötig")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Erneut verbinden" }));
+    expect(screen.getByRole("dialog")).toHaveTextContent("dialog:microsoft365");
+  });
+
+  it("asks before disconnecting the caller's own account", async () => {
     disconnect.mockResolvedValue(undefined);
     renderPage();
-    const membersSection = screen.getByRole("region", { name: "Mitglieder" });
-    fireEvent.click(within(membersSection).getByRole("button", { name: "Widerrufen" }));
+    fireEvent.click(screen.getByRole("button", { name: "anna@acme.de trennen" }));
+    const confirmBox = await screen.findByRole("alertdialog");
+    fireEvent.click(within(confirmBox).getByRole("button", { name: "Trennen" }));
+    await waitFor(() =>
+      expect(disconnect).toHaveBeenCalledWith(expect.objectContaining({ id: "r1" })),
+    );
+  });
+
+  it("adds an organisation access for the chosen app", async () => {
+    may.mockImplementation(ADMIN);
+    renderPage({ tab: "organisation" });
+    openMenu("Zugang hinzufügen");
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Odoo" }));
+    expect(screen.getByRole("dialog")).toHaveTextContent("dialog:odoo_mcp");
+  });
+
+  it("asks before revoking a member's connection", async () => {
+    may.mockImplementation(ADMIN);
+    disconnect.mockResolvedValue(undefined);
+    renderPage({ tab: "members" });
+    openMenu("Aktionen für Ben (ben@acme.de)");
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Widerrufen" }));
     const confirmBox = await screen.findByRole("alertdialog");
     expect(confirmBox).toHaveTextContent("Ben verliert diese Verbindung (ben@acme.de)");
     expect(disconnect).not.toHaveBeenCalled();
@@ -243,7 +307,7 @@ describe("ConnectionsPage", () => {
     );
   });
 
-  it("shows the logo on a card when the integration has one, the name alone otherwise", () => {
+  it("shows the logo in a row when the integration has one, the name alone otherwise", () => {
     capaIcon.mockImplementation((id: string) => ({ data: id === "c1" ? "blob:ms-logo" : null }));
     renderPage();
     const mineSection = screen.getByRole("region", { name: "Meine Verbindungen" });
@@ -368,8 +432,8 @@ describe("ConnectionsPage", () => {
     expect(link).toHaveAttribute("data-router-link");
   });
 
-  it("offers no edit for an organisation access without an integration", () => {
-    may.mockImplementation((p: string) => p === "integration:manage");
+  it("offers no edit for an organisation access without an integration", async () => {
+    may.mockImplementation(ADMIN);
     org.mockReturnValue({
       data: [
         row({
@@ -385,15 +449,97 @@ describe("ConnectionsPage", () => {
       ],
       isLoading: false,
     });
-    renderPage();
-    const orgSection = screen.getByRole("region", { name: "Organisation" });
-    expect(within(orgSection).getByText("Loose login")).toBeInTheDocument();
-    expect(
-      within(orgSection).queryByRole("button", { name: "Bearbeiten" }),
-    ).not.toBeInTheDocument();
-    expect(within(orgSection).getByRole("button", { name: "Testen" })).toBeInTheDocument();
-    // Who added it and when are separate columns.
-    expect(within(orgSection).getByRole("cell", { name: "Admin Anna" })).toBeInTheDocument();
-    expect(within(orgSection).getByRole("cell", { name: /8\. Nov/ })).toBeInTheDocument();
+    renderPage({ tab: "organisation" });
+    const orgPanel = screen.getByRole("tabpanel", { name: "Organisation" });
+    // Account, who added it and when, on one line.
+    expect(within(orgPanel).getByText("Loose login · Admin Anna · 8. Nov.")).toBeInTheDocument();
+    expect(within(orgPanel).getByText("Aktiv")).toBeInTheDocument();
+    openMenu(/Aktionen für .*Loose login/);
+    expect(await screen.findByRole("menuitem", { name: "Testen" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Bearbeiten" })).not.toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Entfernen" })).toBeInTheDocument();
+  });
+
+  describe("members tab", () => {
+    const many = Array.from({ length: 60 }, (_, i) =>
+      row({
+        id: `m${i}`,
+        owner: "member",
+        ownerName: `Person ${i}`,
+        accountLabel: `p${i}@acme.de`,
+        ...(i % 2 === 1
+          ? { kind: "credential", integration: "odoo_mcp", provider: null, status: "ok" }
+          : {}),
+        ...(i % 3 === 0 ? { status: i % 2 === 1 ? "failed" : "needs_reauth" } : {}),
+      }),
+    );
+
+    beforeEach(() => {
+      may.mockImplementation(ADMIN);
+      members.mockReturnValue({ data: many, isLoading: false });
+    });
+
+    const bodyRows = () => within(screen.getByRole("table")).getAllByRole("row").slice(1);
+
+    it("pages through the connections 25 at a time", () => {
+      renderPage({ tab: "members" });
+      expect(screen.getByRole("tab", { name: "Mitglieder (60)" })).toBeInTheDocument();
+      expect(screen.getByText("1–25 von 60")).toBeInTheDocument();
+      expect(bodyRows()).toHaveLength(25);
+      expect(screen.getByRole("button", { name: "Vorherige Seite" })).toBeDisabled();
+      fireEvent.click(screen.getByRole("button", { name: "Nächste Seite" }));
+      expect(screen.getByText("26–50 von 60")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Nächste Seite" }));
+      expect(screen.getByText("51–60 von 60")).toBeInTheDocument();
+      expect(bodyRows()).toHaveLength(10);
+      expect(screen.getByRole("button", { name: "Nächste Seite" })).toBeDisabled();
+    });
+
+    it("finds a person by name or account and goes back to the first page", () => {
+      renderPage({ tab: "members" });
+      fireEvent.click(screen.getByRole("button", { name: "Nächste Seite" }));
+      const search = screen.getByRole("searchbox", { name: "Person oder Konto suchen" });
+      fireEvent.change(search, { target: { value: "person 42" } });
+      expect(bodyRows()).toHaveLength(1);
+      expect(screen.getByText("p42@acme.de")).toBeInTheDocument();
+      expect(screen.getByText("1–1 von 1")).toBeInTheDocument();
+      fireEvent.change(search, { target: { value: "P7@ACME" } });
+      expect(bodyRows()).toHaveLength(1);
+      expect(screen.getByText("Person 7")).toBeInTheDocument();
+    });
+
+    it("filters by app and by status", () => {
+      renderPage({ tab: "members" });
+      fireEvent.change(screen.getByRole("combobox", { name: "App" }), {
+        target: { value: "Odoo" },
+      });
+      expect(screen.getByText("1–25 von 30")).toBeInTheDocument();
+      fireEvent.change(screen.getByRole("combobox", { name: "Status" }), {
+        target: { value: "needs_reauth" },
+      });
+      // Odd indices divisible by 3: 3, 9, 15, ... 57.
+      expect(screen.getByText("1–10 von 10")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Nächste Seite" })).not.toBeInTheDocument();
+      fireEvent.change(screen.getByRole("combobox", { name: "Status" }), {
+        target: { value: "active" },
+      });
+      expect(screen.getByText("1–20 von 20")).toBeInTheDocument();
+    });
+
+    it("says so in one line when nothing matches", () => {
+      renderPage({ tab: "members" });
+      fireEvent.change(screen.getByRole("searchbox", { name: "Person oder Konto suchen" }), {
+        target: { value: "nobody" },
+      });
+      expect(screen.getByText("Keine Verbindung passt zur Suche.")).toBeInTheDocument();
+      expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    });
+
+    it("says so in one line when no member has connected anything", () => {
+      members.mockReturnValue({ data: [], isLoading: false });
+      renderPage({ tab: "members" });
+      expect(screen.getByText("Noch kein Mitglied hat ein Konto verbunden.")).toBeInTheDocument();
+      expect(screen.queryByRole("searchbox")).not.toBeInTheDocument();
+    });
   });
 });

@@ -8,16 +8,27 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
   return { ...actual, useNavigate: () => navigate };
 });
 vi.mock("@/components/connections/connections-page", () => ({
+  CONNECTIONS_TABS: ["mine", "organisation", "members"],
   ConnectionsPage: ({
     search,
     onConsumeSearch,
+    onTabChange,
   }: {
     search: unknown;
     onConsumeSearch: () => void;
+    onTabChange: (tab: string) => void;
   }) => (
-    <button type="button" onClick={onConsumeSearch}>
-      {JSON.stringify(search)}
-    </button>
+    <>
+      <button type="button" onClick={onConsumeSearch}>
+        {JSON.stringify(search)}
+      </button>
+      <button type="button" onClick={() => onTabChange("members")}>
+        members
+      </button>
+      <button type="button" onClick={() => onTabChange("mine")}>
+        mine
+      </button>
+    </>
   ),
 }));
 
@@ -31,6 +42,47 @@ describe("/connections route", () => {
       error: undefined,
       provider: "microsoft",
       connect: undefined,
+      tab: undefined,
+    });
+  });
+
+  it("reads a known tab from the query and drops anything else", () => {
+    const validate = Route.options.validateSearch as (s: Record<string, unknown>) => {
+      tab?: string;
+    };
+    expect(validate({ tab: "organisation" }).tab).toBe("organisation");
+    expect(validate({ tab: "members" }).tab).toBe("members");
+    expect(validate({ tab: "mine" }).tab).toBeUndefined();
+    expect(validate({ tab: "evil" }).tab).toBeUndefined();
+  });
+
+  it("writes the chosen tab into the URL, the default tab as a clean URL", () => {
+    navigate.mockReset();
+    vi.spyOn(Route, "useSearch").mockReturnValue({} as never);
+    render(<ConnectionsRoute />);
+    fireEvent.click(screen.getByRole("button", { name: "members" }));
+    expect(navigate).toHaveBeenCalledWith({
+      to: "/connections",
+      search: { tab: "members" },
+      replace: true,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "mine" }));
+    expect(navigate).toHaveBeenLastCalledWith({ to: "/connections", search: {}, replace: true });
+  });
+
+  it("keeps the open tab when it cleans the return values out of the URL", () => {
+    navigate.mockReset();
+    vi.spyOn(Route, "useSearch").mockReturnValue({
+      pending: "p-1",
+      provider: "microsoft",
+      tab: "organisation",
+    } as never);
+    render(<ConnectionsRoute />);
+    fireEvent.click(screen.getByRole("button", { name: /pending/ }));
+    expect(navigate).toHaveBeenCalledWith({
+      to: "/connections",
+      search: { tab: "organisation" },
+      replace: true,
     });
   });
 
@@ -40,7 +92,7 @@ describe("/connections route", () => {
       provider: "microsoft",
     } as never);
     render(<ConnectionsRoute />);
-    fireEvent.click(screen.getByRole("button"));
+    fireEvent.click(screen.getByRole("button", { name: /pending/ }));
     expect(navigate).toHaveBeenCalledWith({ to: "/connections", search: {}, replace: true });
   });
 

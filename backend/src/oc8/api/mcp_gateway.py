@@ -456,13 +456,19 @@ async def _list_tools(
             and policy.has_right(required_right(t.name, scopes))
             # Scopes are known HERE (unlike in offered_tools), so a read-only
             # mode's writing tools are withheld rather than offered-then-denied.
-            and mode_refusal(chat_mode, t.name, tool_scopes=scopes, connection_tool=True) is None
+            and mode_refusal(
+                chat_mode, t.name, tool_scopes=scopes, connection_tool=True, core=False
+            )
+            is None
         ]
 
     # Built from what the agent may ACTUALLY use: a tool the frame withholds on
     # one system must not force the other system's identical tool to be
     # advertised qualified, when from the model's side there is no ambiguity.
-    routes = build_routes({name: [t.name for t in tools] for name, tools in allowed.items()})
+    routes = build_routes(
+        {name: [t.name for t in tools] for name, tools in allowed.items()},
+        reserved=CONTROL_TOOL_NAMES,
+    )
     await _remember_routes(db, run, routes)
     by_route = {(r.connection, r.tool): advertised for advertised, r in routes.items()}
 
@@ -700,11 +706,17 @@ async def _call_tool(
     conn: m.McpConnection | None = None
     routes: dict[str, Route] = {}
     route: Route | None = None
+    #: The route rewrote the name (`<connection>.ask_user` -> `ask_user`): the model
+    #: named a CONNECTION's tool, whatever core tool shares its real name. It
+    #: skips every core branch below and is decided by the frame like any
+    #: other tool of that connection -- never by the core tool's allowance.
+    routed = False
     if conns:
         routes = await _routes(db, run, agent, dept, conns)
         route = resolve(name, routes)
         if route is not None:
             conn = next((c for c in conns if c.name == route.connection), None)
+            routed = route.tool != name
             name = route.tool
         else:
             conn = None if len(conns) > 1 else conns[0]
@@ -722,7 +734,21 @@ async def _call_tool(
     active = [s for s in assigned if str(s.skill_version_id) in active_ids]
     edition = await _edition_offer(run, routes, assigned)
 
-    if name in skill_tool_names:
+    core_call = not routed and (name in CONTROL_TOOL_NAMES or name in skill_tool_names)
+    if core_call:
+        # Before ask_user's and memory_write's own branches, which never asked:
+        # a mode is not enforced by hiding a tool from tools/list, since a
+        # harness may hold an older list.
+        mode_denial = mode_refusal(
+            mode_from_context(run.context),
+            name,
+            # A skill only loads a procedure -- a read, as in `authorize`.
+            tool_scopes={"read": [name]} if name in skill_tool_names else None,
+        )
+        if mode_denial is not None:
+            return _tool_result(f"ERROR: {mode_denial}", is_error=True)
+
+    if core_call and name in skill_tool_names:
         skill = next(s for s in assigned if s.tool_name == name)
         if skill in active:
             return _tool_result(f"Skill '{skill.name}' is already active.")
@@ -758,7 +784,7 @@ async def _call_tool(
             f"Skill '{skill.name}' activated. Follow this procedure:\n\n{instruction_block(skill)}"
         )
 
-    if name == ASK_USER.name:
+    if core_call and name == ASK_USER.name:
         from oc8.chat.questions import (
             QuestionError,
             is_plain,
@@ -819,7 +845,7 @@ async def _call_tool(
             is_error=True,
         )
 
-    if name in (
+    if core_call and name in (
         REQUEST_DECISION.name,
         SEARCH_KNOWLEDGE.name,
         SEARCH_MEMORY.name,
@@ -964,7 +990,7 @@ async def _call_tool(
             edition_outcome.output, is_error=edition_outcome.output.startswith("ERROR")
         )
 
-    if name in CONTROL_TOOL_NAMES:
+    if core_call and name in CONTROL_TOOL_NAMES:
         # Every member of CONTROL_TOOL_NAMES is intercepted by name above --
         # REQUEST_DECISION/SEARCH_KNOWLEDGE/SEARCH_MEMORY/MEMORY_WRITE/
         # DELEGATE_TASK by the block just before this one, ASK_USER by its own
@@ -1001,6 +1027,7 @@ async def _call_tool(
         guardrail_attribute_specs=_manifest_guardrail_attributes(conn),
         chat_mode=mode_from_context(run.context),
         edition_offer=edition,
+        routed=routed,
     )
     # Honour an operator's earlier decision on this exact call (resume).
     if decision.effect is Effect.REQUIRE_APPROVAL:

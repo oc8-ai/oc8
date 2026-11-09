@@ -1,5 +1,5 @@
 import { ApiError } from "@/lib/api";
-import type { CredentialCheck, Integration, OAuthErrorCode } from "@/lib/connections";
+import type { Connection, CredentialCheck, Integration, OAuthErrorCode } from "@/lib/connections";
 
 type T = (en: string, de: string) => string;
 
@@ -171,4 +171,17 @@ export function saveErrorText(err: unknown, t: T, action: "save" | "check" = "sa
         "Saving failed. Please try again.",
         "Das Speichern ist fehlgeschlagen. Bitte versuchen Sie es erneut.",
       );
+}
+
+/** A connection that no longer works and needs its owner to sign in again. */
+export function isBroken(c: Connection): boolean {
+  return c.kind === "oauth" ? c.status !== "active" : c.status === "failed";
+}
+
+/** "8. Nov." / "8 Nov" -- the short date the connection lists show. */
+export function shortDate(iso: string, lang: string): string {
+  return new Date(iso).toLocaleDateString(lang === "de" ? "de-DE" : "en-GB", {
+    day: "numeric",
+    month: "short",
+  });
 }

@@ -1,7 +1,7 @@
-import { KeyRound, Plus } from "lucide-react";
+import { Plus } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Panel } from "@/components/app-shell";
+import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   useCreateCredential,
@@ -17,6 +17,7 @@ import { useMay } from "@/lib/governance-hooks";
 import { resolveTranslation, useLang, useT } from "@/lib/i18n";
 import { useConfirm } from "@/hooks/use-confirm";
 import { ApiError } from "@/lib/api";
+import { ConnectionRow, RowList, RowMenu } from "./connection-row";
 import { checkErrorText, saveErrorText } from "./texts";
 
 /** The organisation's other credentials (storage, mail server, model keys):
@@ -55,134 +56,108 @@ export function OrganisationCredentials({
   // such section.
   if (!mayView) return null;
 
+  const runTest = (cred: CredentialDTO) =>
+    testCredential.mutate(cred.id, {
+      onSuccess: (result) =>
+        result.ok
+          ? toast.success(t("Credential works", "Zugangsdaten funktionieren"))
+          : toast.error(checkErrorText({ ok: false, reason: null, detail: null }, t)),
+      onError: (e: unknown) => toast.error(saveErrorText(e, t, "check")),
+    });
+
+  const remove = async (cred: CredentialDTO) => {
+    const ok = await confirm({
+      title: t("Delete credential?", "Zugangsdaten löschen?"),
+      description: t(
+        `Delete "${cred.name}"? Anything still using it will break.`,
+        `"${cred.name}" löschen? Alles, was sie noch nutzt, hört auf zu funktionieren.`,
+      ),
+      confirmLabel: t("Delete", "Löschen"),
+      cancelLabel: t("Cancel", "Abbrechen"),
+    });
+    if (!ok) return;
+    deleteCredential.mutate(cred.id, {
+      onSuccess: () => toast.success(t("Deleted", "Gelöscht")),
+      onError: (e: unknown) =>
+        toast.error(
+          e instanceof ApiError && e.status === 403
+            ? saveErrorText(e, t)
+            : t("Could not delete.", "Konnte nicht gelöscht werden."),
+        ),
+    });
+  };
+
   return (
-    <Panel className="p-6">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex items-start gap-3">
-          <div className="grid h-9 w-9 place-items-center rounded-md bg-primary/15 text-primary">
-            <KeyRound className="size-4" />
-          </div>
-          <div>
-            <h3 className="font-serif text-lg">
-              {t("Further credentials", "Weitere Zugangsdaten")}
-            </h3>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {t(
-                "Storage, mail server and model keys -- pick one wherever a Capa or data source needs one.",
-                "Speicher, Mailserver und Modellschlüssel -- auswählbar überall, wo eine Capa oder Datenquelle eine braucht.",
-              )}
-            </p>
-          </div>
+    <section aria-labelledby="further-credentials" className="mt-6">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <h3 id="further-credentials" className="text-sm font-medium">
+            {t("Further credentials", "Weitere Zugangsdaten")}
+          </h3>
+          <p className="text-xs text-muted-foreground">
+            {t(
+              "Storage, mail server and model keys, for any Capa or data source that needs one.",
+              "Speicher, Mailserver und Modellschlüssel für jede Capa oder Datenquelle, die eine braucht.",
+            )}
+          </p>
         </div>
         {mayManage && (
-          <button
-            type="button"
-            onClick={() => setCreateOpen(true)}
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90"
-          >
-            <Plus className="size-3.5" />
+          <Button size="sm" variant="outline" onClick={() => setCreateOpen(true)}>
+            <Plus />
             {t("New credential", "Neue Zugangsdaten")}
-          </button>
+          </Button>
         )}
       </div>
 
       {credentials.length === 0 ? (
-        <p className="mt-6 text-sm text-muted-foreground">
+        <p className="py-3 text-sm text-muted-foreground">
           {t("No credentials yet.", "Noch keine Zugangsdaten.")}
         </p>
       ) : (
-        <table className="mt-6 w-full text-sm">
-          <thead>
-            <tr className="border-b border-border">
-              <th className="py-3 text-left font-medium text-muted-foreground">
-                {t("Name", "Name")}
-              </th>
-              <th className="py-3 text-left font-medium text-muted-foreground">
-                {t("Type", "Typ")}
-              </th>
-              <th className="py-3 text-left font-medium text-muted-foreground">
-                {t("Last tested", "Zuletzt getestet")}
-              </th>
-              <th className="py-3 text-right font-medium text-muted-foreground">
-                {t("Action", "Aktion")}
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {credentials.map((cred) => (
-              <tr key={cred.id} className="border-b border-border/50">
-                <td className="py-3 font-medium">{cred.name}</td>
-                <td className="py-3 text-muted-foreground">{typeLabel(cred.credentialType)}</td>
-                <td className="py-3 text-muted-foreground">
-                  {cred.lastTestedAt == null
-                    ? t("Never tested", "Nie getestet")
-                    : cred.lastTestOk
-                      ? t("OK", "OK")
-                      : t("Failed", "Fehlgeschlagen")}
-                </td>
-                <td className="py-3 text-right">
-                  {mayManage && (
-                    <>
-                      <button
-                        type="button"
-                        disabled={testCredential.isPending}
-                        onClick={() =>
-                          testCredential.mutate(cred.id, {
-                            onSuccess: (result) =>
-                              result.ok
-                                ? toast.success(t("Credential works", "Zugangsdaten funktionieren"))
-                                : toast.error(
-                                    checkErrorText({ ok: false, reason: null, detail: null }, t),
-                                  ),
-                            onError: (e: unknown) => toast.error(saveErrorText(e, t, "check")),
-                          })
-                        }
-                        className="mr-2 rounded-md border border-border px-2 py-1 text-xs"
-                      >
-                        {t("Test", "Testen")}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setEditingCredential(cred)}
-                        className="mr-2 rounded-md border border-border px-2 py-1 text-xs"
-                      >
-                        {t("Edit", "Bearbeiten")}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={deleteCredential.isPending}
-                        onClick={async () => {
-                          const ok = await confirm({
-                            title: t("Delete credential?", "Zugangsdaten löschen?"),
-                            description: t(
-                              `Delete "${cred.name}"? Anything still using it will break.`,
-                              `"${cred.name}" löschen? Alles, was sie noch nutzt, hört auf zu funktionieren.`,
-                            ),
-                            confirmLabel: t("Delete", "Löschen"),
-                            cancelLabel: t("Cancel", "Abbrechen"),
-                          });
-                          if (!ok) return;
-                          deleteCredential.mutate(cred.id, {
-                            onSuccess: () => toast.success(t("Deleted", "Gelöscht")),
-                            onError: (e: unknown) =>
-                              toast.error(
-                                e instanceof ApiError && e.status === 403
-                                  ? saveErrorText(e, t)
-                                  : t("Could not delete.", "Konnte nicht gelöscht werden."),
-                              ),
-                          });
-                        }}
-                        className="rounded-md border border-destructive/40 px-2 py-1 text-xs text-destructive"
-                      >
-                        {t("Delete", "Löschen")}
-                      </button>
-                    </>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <RowList>
+          {credentials.map((cred) => {
+            const failed = cred.lastTestedAt != null && !cred.lastTestOk;
+            return (
+              <ConnectionRow
+                key={cred.id}
+                title={cred.name}
+                detail={typeLabel(cred.credentialType)}
+                aside={
+                  <span className={failed ? "text-amber-600 dark:text-amber-400" : undefined}>
+                    {cred.lastTestedAt == null
+                      ? t("Never tested", "Nie getestet")
+                      : cred.lastTestOk
+                        ? t("OK", "OK")
+                        : t("Test failed", "Test fehlgeschlagen")}
+                  </span>
+                }
+              >
+                {mayManage && (
+                  <RowMenu
+                    label={t(`Actions for ${cred.name}`, `Aktionen für ${cred.name}`)}
+                    items={[
+                      {
+                        label: t("Test", "Testen"),
+                        disabled: testCredential.isPending,
+                        onSelect: () => runTest(cred),
+                      },
+                      {
+                        label: t("Edit", "Bearbeiten"),
+                        onSelect: () => setEditingCredential(cred),
+                      },
+                      {
+                        label: t("Delete", "Löschen"),
+                        destructive: true,
+                        disabled: deleteCredential.isPending,
+                        onSelect: () => void remove(cred),
+                      },
+                    ]}
+                  />
+                )}
+              </ConnectionRow>
+            );
+          })}
+        </RowList>
       )}
 
       <CreateCredentialDialog open={createOpen} onOpenChange={setCreateOpen} types={types} />
@@ -194,7 +169,7 @@ export function OrganisationCredentials({
         types={types}
       />
       {ConfirmDialog}
-    </Panel>
+    </section>
   );
 }
 

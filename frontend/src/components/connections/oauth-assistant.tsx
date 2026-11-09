@@ -1,3 +1,4 @@
+import { Check } from "lucide-react";
 import { toast } from "sonner";
 import { type Integration, type Owner, useStartOAuth } from "@/lib/connections";
 import { useT } from "@/lib/i18n";
@@ -42,9 +43,14 @@ export function OAuthAssistant({
               `oc8 kann danach mit Ihrem ${name}-Konto arbeiten:`,
             )}
       </p>
-      <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
+      <ul className="space-y-2 rounded-lg border border-border bg-muted/40 p-3 text-sm">
         {benefits(provider, t).map((line) => (
-          <li key={line}>{line}</li>
+          <li key={line} className="flex items-start gap-2.5">
+            <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-primary/15 text-primary">
+              <Check className="size-3" aria-hidden />
+            </span>
+            <span>{line}</span>
+          </li>
         ))}
       </ul>
       <p className="text-xs text-muted-foreground">
