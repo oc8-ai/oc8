@@ -16,6 +16,8 @@ import {
 import { useMay } from "@/lib/governance-hooks";
 import { resolveTranslation, useLang, useT } from "@/lib/i18n";
 import { useConfirm } from "@/hooks/use-confirm";
+import { ApiError } from "@/lib/api";
+import { checkErrorText, saveErrorText } from "./texts";
 
 /** The organisation's other credentials (storage, mail server, model keys):
  *  the former Credentials page, now a section of the Connections page. */
@@ -126,14 +128,13 @@ export function OrganisationCredentials({
                         disabled={testCredential.isPending}
                         onClick={() =>
                           testCredential.mutate(cred.id, {
-                            onSuccess: () =>
-                              toast.success(t("Credential works", "Zugangsdaten funktionieren")),
-                            onError: (e: unknown) =>
-                              toast.error(
-                                e instanceof Error
-                                  ? e.message
-                                  : t("Test failed", "Test fehlgeschlagen"),
-                              ),
+                            onSuccess: (result) =>
+                              result.ok
+                                ? toast.success(t("Credential works", "Zugangsdaten funktionieren"))
+                                : toast.error(
+                                    checkErrorText({ ok: false, reason: null, detail: null }, t),
+                                  ),
+                            onError: (e: unknown) => toast.error(saveErrorText(e, t, "check")),
                           })
                         }
                         className="mr-2 rounded-md border border-border px-2 py-1 text-xs"
@@ -165,8 +166,8 @@ export function OrganisationCredentials({
                             onSuccess: () => toast.success(t("Deleted", "Gelöscht")),
                             onError: (e: unknown) =>
                               toast.error(
-                                e instanceof Error
-                                  ? e.message
+                                e instanceof ApiError && e.status === 403
+                                  ? saveErrorText(e, t)
                                   : t("Could not delete.", "Konnte nicht gelöscht werden."),
                               ),
                           });
@@ -234,12 +235,7 @@ function CreateCredentialDialog({
           reset();
           onOpenChange(false);
         },
-        onError: (e: unknown) =>
-          toast.error(
-            e instanceof Error
-              ? e.message
-              : t("Could not create.", "Konnte nicht angelegt werden."),
-          ),
+        onError: (e: unknown) => toast.error(saveErrorText(e, t)),
       },
     );
   };
@@ -363,12 +359,7 @@ function EditCredentialDialog({
           toast.success(t("Credential updated", "Zugangsdaten aktualisiert"));
           onOpenChange(false);
         },
-        onError: (e: unknown) =>
-          toast.error(
-            e instanceof Error
-              ? e.message
-              : t("Could not update.", "Konnte nicht aktualisiert werden."),
-          ),
+        onError: (e: unknown) => toast.error(saveErrorText(e, t)),
       },
     );
   };

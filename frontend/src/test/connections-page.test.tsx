@@ -44,6 +44,25 @@ vi.mock("@/lib/governance-hooks", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/governance-hooks")>();
   return { ...actual, useMay: () => may };
 });
+vi.mock("@tanstack/react-router", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@tanstack/react-router")>();
+  return {
+    ...actual,
+    Link: ({
+      to,
+      children,
+      className,
+    }: {
+      to: string;
+      children: React.ReactNode;
+      className?: string;
+    }) => (
+      <a href={to} className={className} data-router-link="">
+        {children}
+      </a>
+    ),
+  };
+});
 vi.mock("@/components/connections/organisation-credentials", () => ({
   OrganisationCredentials: () => <div>further-credentials</div>,
 }));
@@ -100,15 +119,19 @@ const row = (over: Record<string, unknown>) => ({
 
 function renderPage(search: ConnectionsSearch = {}, onConsume = vi.fn(), strict = false) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const page = <ConnectionsPage search={search} onConsumeSearch={onConsume} />;
-  // StrictMode wraps the page only: LanguageProvider's own mount effects
-  // would otherwise reset the stored language on their second run.
-  const view = render(
-    <QueryClientProvider client={qc}>
-      <LanguageProvider>{strict ? <StrictMode>{page}</StrictMode> : page}</LanguageProvider>
-    </QueryClientProvider>,
-  );
-  return { onConsume, ...view };
+  const tree = (next: ConnectionsSearch) => {
+    const page = <ConnectionsPage search={next} onConsumeSearch={onConsume} />;
+    // StrictMode wraps the page only: LanguageProvider's own mount effects
+    // would otherwise reset the stored language on their second run.
+    return (
+      <QueryClientProvider client={qc}>
+        <LanguageProvider>{strict ? <StrictMode>{page}</StrictMode> : page}</LanguageProvider>
+      </QueryClientProvider>
+    );
+  };
+  const view = render(tree(search));
+  const setSearch = (next: ConnectionsSearch) => view.rerender(tree(next));
+  return { onConsume, setSearch, ...view };
 }
 
 describe("ConnectionsPage", () => {
@@ -275,5 +298,70 @@ describe("ConnectionsPage", () => {
     expect(
       await screen.findByText("Ihr Admin hat noch keine Integration eingerichtet."),
     ).toBeInTheDocument();
+  });
+
+  it("never posts a pending id for an unknown provider", () => {
+    const { onConsume } = renderPage({ pending: "x", provider: "evil" });
+    expect(complete).not.toHaveBeenCalled();
+    expect(onConsume).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("alert")).toHaveTextContent("Das Verbinden hat nicht geklappt");
+  });
+
+  it("shows the reported error and posts nothing when the return carries both", () => {
+    renderPage({ pending: "p-1", provider: "microsoft", error: "access_denied" });
+    expect(complete).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Sie haben die Anmeldung abgebrochen");
+  });
+
+  it("follows a call to action while the page is already open, once per request", () => {
+    const { onConsume, setSearch } = renderPage({});
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(onConsume).not.toHaveBeenCalled();
+    setSearch({ connect: "odoo_mcp" });
+    expect(screen.getByRole("dialog")).toHaveTextContent("dialog:odoo_mcp");
+    expect(onConsume).toHaveBeenCalledTimes(1);
+    setSearch({ connect: "odoo_mcp" });
+    expect(onConsume).toHaveBeenCalledTimes(1);
+    setSearch({ connect: "microsoft365" });
+    expect(screen.getByRole("dialog")).toHaveTextContent("dialog:microsoft365");
+    expect(onConsume).toHaveBeenCalledTimes(2);
+  });
+
+  it("links an admin with nothing installed to the Capas page inside the app", () => {
+    may.mockImplementation((p: string) => p === "integration:manage");
+    integrations.mockReturnValue({ data: [], isLoading: false });
+    renderPage();
+    const link = screen.getByRole("link", { name: "Integration installieren" });
+    expect(link).toHaveAttribute("href", "/capas");
+    expect(link).toHaveAttribute("data-router-link");
+  });
+
+  it("offers no edit for an organisation access without an integration", () => {
+    may.mockImplementation((p: string) => p === "integration:manage");
+    org.mockReturnValue({
+      data: [
+        row({
+          id: "o2",
+          owner: "organisation",
+          accountLabel: "Loose login",
+          kind: "credential",
+          integration: null,
+          credentialType: "odoo_login",
+          status: "ok",
+          createdByName: "Admin Anna",
+        }),
+      ],
+      isLoading: false,
+    });
+    renderPage();
+    const orgSection = screen.getByRole("region", { name: "Organisation" });
+    expect(within(orgSection).getByText("Loose login")).toBeInTheDocument();
+    expect(
+      within(orgSection).queryByRole("button", { name: "Bearbeiten" }),
+    ).not.toBeInTheDocument();
+    expect(within(orgSection).getByRole("button", { name: "Testen" })).toBeInTheDocument();
+    // Who added it and when are separate columns.
+    expect(within(orgSection).getByRole("cell", { name: "Admin Anna" })).toBeInTheDocument();
+    expect(within(orgSection).getByRole("cell", { name: /8\. Nov/ })).toBeInTheDocument();
   });
 });

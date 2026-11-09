@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { Plug } from "lucide-react";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
@@ -104,7 +105,8 @@ export function ConnectionsPage({
     if (started.current) return;
     started.current = true;
     if (search.pending || search.error || search.connect) onConsumeSearch();
-    if (!search.pending) return;
+    // A reported error wins: the pending id is then never posted.
+    if (!search.pending || search.error) return;
     const provider = search.provider;
     if (provider !== "microsoft" && provider !== "google") {
       setReturned({ kind: "error", code: "provider_error", adminConsentUrl: null });
@@ -120,6 +122,21 @@ export function ConnectionsPage({
         ),
     );
   }, [search, onConsumeSearch, complete]);
+
+  // A call to action followed while the page is already open (same
+  // instance): open its assistant once per request, then clean the URL. The
+  // first one was taken over by the state initialiser above.
+  const handledConnect = useRef(search.connect);
+  useEffect(() => {
+    if (!search.connect) {
+      handledConnect.current = undefined;
+      return;
+    }
+    if (handledConnect.current === search.connect) return;
+    handledConnect.current = search.connect;
+    setDialog({ integration: search.connect, owner: "me" });
+    onConsumeSearch();
+  }, [search.connect, onConsumeSearch]);
 
   // A `?error=admin_consent_required` from the callback carries no link:
   // fetch the one the IT administrator opens.
@@ -240,9 +257,9 @@ export function ConnectionsPage({
           {!integrations.isLoading && available.length === 0 ? (
             <p className="mt-6 text-sm text-muted-foreground">
               {isAdmin ? (
-                <a href="/capas" className="underline">
+                <Link to="/capas" className="underline">
                   {t("Install an integration", "Integration installieren")}
-                </a>
+                </Link>
               ) : (
                 t(
                   "Your admin has not set up an integration yet.",
@@ -304,8 +321,9 @@ export function ConnectionsPage({
                       <tr key={c.id} className="border-b border-border/50">
                         <td className="py-3 pr-3">{labelOf(c)}</td>
                         <td className="py-3 pr-3">{c.accountLabel}</td>
+                        <td className="py-3 pr-3 text-muted-foreground">{c.createdByName ?? ""}</td>
                         <td className="py-3 pr-3 text-muted-foreground">
-                          {c.createdByName ?? since(c.createdAt, lang)}
+                          {since(c.createdAt, lang)}
                         </td>
                         <td className="py-3 pr-3">
                           <StatusBadge connection={c} />
@@ -316,15 +334,19 @@ export function ConnectionsPage({
                               <button type="button" className={SMALL} onClick={() => runTest(c)}>
                                 {t("Test", "Testen")}
                               </button>{" "}
-                              <button
-                                type="button"
-                                className={SMALL}
-                                onClick={() =>
-                                  c.integration && open(c.integration, "organisation", c.id)
-                                }
-                              >
-                                {t("Edit", "Bearbeiten")}
-                              </button>{" "}
+                              {c.integration && (
+                                <>
+                                  <button
+                                    type="button"
+                                    className={SMALL}
+                                    onClick={() =>
+                                      open(c.integration as string, "organisation", c.id)
+                                    }
+                                  >
+                                    {t("Edit", "Bearbeiten")}
+                                  </button>{" "}
+                                </>
+                              )}
                             </>
                           )}
                           {c.kind === "oauth" && c.status === "needs_reauth" && c.integration && (
