@@ -35,12 +35,19 @@ export function useScrollAnchor(dep: unknown, resetKey?: unknown) {
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
+    let lastTop = el.scrollTop;
     const onScroll = () => {
       const near = nearBottom(el);
+      // Only a move up leaves the bottom. A scroll event lands a frame after
+      // the jump that caused it: a streaming answer may have grown meanwhile,
+      // which is not the reader leaving.
+      const up = el.scrollTop < lastTop - 1;
+      lastTop = el.scrollTop;
       if (pinning.current) {
         if (near) pinning.current = false;
         return;
       }
+      if (!near && !up) return;
       atBottomRef.current = near;
       setAtBottom(near);
     };
@@ -58,6 +65,9 @@ export function useScrollAnchor(dep: unknown, resetKey?: unknown) {
         if (atBottomRef.current) scrollEl(el, el.scrollHeight);
       });
       observer.observe(content);
+      // The scroller itself shrinks when the composer grows (a pinned bar, a
+      // question card): the newest line stays in view above it.
+      observer.observe(el);
     }
     return () => {
       el.removeEventListener("scroll", onScroll);
@@ -92,5 +102,15 @@ export function useScrollAnchor(dep: unknown, resetKey?: unknown) {
     scrollEl(el, el.scrollHeight, reduce ? "auto" : "smooth");
   }, []);
 
-  return { ref, contentRef, atBottom, scrollToBottom };
+  /** The reader sent something: follow the conversation from here on, to
+   *  their message and the answer streaming under it. */
+  const followFromHere = useCallback(() => {
+    const el = ref.current;
+    pinning.current = false;
+    atBottomRef.current = true;
+    setAtBottom(true);
+    if (el) scrollEl(el, el.scrollHeight);
+  }, []);
+
+  return { ref, contentRef, atBottom, scrollToBottom, followFromHere };
 }

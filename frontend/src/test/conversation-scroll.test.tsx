@@ -64,7 +64,9 @@ describe("useScrollAnchor", () => {
   it("does not flash the button while the smooth scroll travels down", () => {
     render(<Harness />);
     const el = screen.getByTestId("scroller");
-    geometry(el, { scrollTop: 100, scrollHeight: 1200, clientHeight: 400 });
+    geometry(el, { scrollTop: 800, scrollHeight: 1200, clientHeight: 400 });
+    fireEvent.scroll(el);
+    el.scrollTop = 100;
     fireEvent.scroll(el);
     // A smooth scroll: the click only starts the trip.
     el.scrollTo = (() => undefined) as typeof el.scrollTo;
@@ -78,6 +80,54 @@ describe("useScrollAnchor", () => {
     el.scrollTop = 100;
     fireEvent.scroll(el);
     expect(screen.getByText("↓ Latest")).toBeInTheDocument();
+  });
+});
+
+describe("useScrollAnchor follows the reader's own send (E2E C)", () => {
+  it("does not leave the bottom when a scroll event lands after the content grew", () => {
+    render(<Harness />);
+    const el = screen.getByTestId("scroller");
+    geometry(el, { scrollTop: 800, scrollHeight: 1200, clientHeight: 400 });
+    fireEvent.scroll(el);
+    // The jump to the bottom was at 800; its scroll event arrives after a
+    // streamed chunk made the content taller.
+    geometry(el, { scrollTop: 800, scrollHeight: 1400, clientHeight: 400 });
+    fireEvent.scroll(el);
+    expect(screen.queryByText("↓ Latest")).toBeNull();
+    act(() => fireEvent.click(screen.getByText("more")));
+    expect(el.scrollTop).toBe(1400);
+  });
+
+  it("jumps to the bottom and follows again once the reader sends", () => {
+    function Sender() {
+      const [n, setN] = useState(1);
+      const { ref, atBottom, followFromHere } = useScrollAnchor(n);
+      return (
+        <>
+          <div ref={ref} data-testid="scroller" />
+          {!atBottom && <span>away</span>}
+          <button
+            onClick={() => {
+              followFromHere();
+              setN((x) => x + 1);
+            }}
+          >
+            send
+          </button>
+        </>
+      );
+    }
+    render(<Sender />);
+    const el = screen.getByTestId("scroller");
+    geometry(el, { scrollTop: 800, scrollHeight: 1200, clientHeight: 400 });
+    fireEvent.scroll(el);
+    el.scrollTop = 100;
+    fireEvent.scroll(el);
+    expect(screen.getByText("away")).toBeInTheDocument();
+    geometry(el, { scrollTop: 100, scrollHeight: 1500, clientHeight: 400 });
+    act(() => fireEvent.click(screen.getByText("send")));
+    expect(el.scrollTop).toBe(1500);
+    expect(screen.queryByText("away")).toBeNull();
   });
 });
 

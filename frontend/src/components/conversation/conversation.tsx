@@ -263,7 +263,7 @@ function ConversationBody(props: ConversationProps) {
   // only a reader already there (the anchoring below keeps everyone else).
   const newest = rows[rows.length - 1];
   const newestKey = newest ? (newest.kind === "turn" ? newest.turn.key : newest.extra.run.id) : "";
-  const { ref, contentRef, atBottom, scrollToBottom } = useScrollAnchor(
+  const { ref, contentRef, atBottom, scrollToBottom, followFromHere } = useScrollAnchor(
     `${newestKey}:${rows.length}:${conv.liveRunIds.join()}:${sendError?.text ?? ""}`,
     props.sessionId,
   );
@@ -553,6 +553,7 @@ function ConversationBody(props: ConversationProps) {
 
   /** `fromComposer` false: a prompt starter, which leaves the draft alone. */
   async function onSend(submit: ComposerSubmit, fromComposer = true) {
+    followFromHere();
     if (props.onSendOverride?.(submit)) {
       if (fromComposer) setDraft("");
       return;
