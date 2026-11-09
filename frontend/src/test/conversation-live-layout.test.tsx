@@ -85,9 +85,14 @@ describe("Live tab layout", () => {
   });
 
   it("fits the rest of the viewport, so the page does not scroll under the sticky header (E2E B)", () => {
-    const rect = vi
-      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
-      .mockReturnValue({ top: 447, bottom: 900, left: 0, right: 0, width: 0, height: 0 } as DOMRect);
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      top: 447,
+      bottom: 900,
+      left: 0,
+      right: 0,
+      width: 0,
+      height: 0,
+    } as DOMRect);
     const fit = (innerHeight: number) => {
       Object.defineProperty(window, "innerHeight", { configurable: true, value: innerHeight });
       const view = render(
