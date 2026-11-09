@@ -56,6 +56,14 @@ x-backend-env: &backend-env
   # :8080), neither of which is actually reachable in this compose stack.
   OC8_OAUTH_REDIRECT_BASE_URL: ${OC8_OAUTH_REDIRECT_BASE_URL:-http://localhost}
   OC8_FRONTEND_BASE_URL: ${OC8_FRONTEND_BASE_URL:-http://localhost}
+  # The app people sign in with to connect their own Microsoft or Google
+  # account (see .env.example and DEPLOY.md). Empty: only an organisation's
+  # own stored OAuth app can be used.
+  OC8_MICROSOFT_OAUTH_CLIENT_ID: ${OC8_MICROSOFT_OAUTH_CLIENT_ID:-}
+  OC8_MICROSOFT_OAUTH_CLIENT_SECRET: ${OC8_MICROSOFT_OAUTH_CLIENT_SECRET:-}
+  OC8_GOOGLE_OAUTH_CLIENT_ID: ${OC8_GOOGLE_OAUTH_CLIENT_ID:-}
+  OC8_GOOGLE_OAUTH_CLIENT_SECRET: ${OC8_GOOGLE_OAUTH_CLIENT_SECRET:-}
+  OC8_GOOGLE_FULL_SCOPES: ${OC8_GOOGLE_FULL_SCOPES:-false}
   # External OIDC identity provider's self-service account page, linked from
   # the members and profile screens. Empty: no link (see .env.example).
   OC8_ACCOUNT_MANAGEMENT_URL: ${OC8_ACCOUNT_MANAGEMENT_URL:-}

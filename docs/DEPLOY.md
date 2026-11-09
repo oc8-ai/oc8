@@ -293,6 +293,38 @@ comma-separated CIDRs and/or exact hostnames, for example
 `10.20.0.0/16,host.docker.internal`. Cloud metadata addresses
 (`169.254.169.254`, `fd00:ec2::254`) stay refused whatever is listed.
 
+## Letting people connect their Microsoft or Google account
+
+On the Connections page each person can connect their own Microsoft or Google
+account, so agents act in their name ("in the user's context"). For that, the
+deployment needs an app registered with the provider:
+
+1. Register an app (Microsoft Entra ID: a multi-tenant app registration with a
+   client secret; Google: an OAuth client of type "Web application").
+2. Add the redirect URI `<OC8_OAUTH_REDIRECT_BASE_URL>/api/v1/oauth/microsoft/callback`
+   (Google: `.../oauth/google/callback`). `OC8_OAUTH_REDIRECT_BASE_URL` is the
+   address browsers reach this stack at, e.g. `https://oc8.example.com`.
+3. Put the client into `.env` and restart the stack:
+
+   ```
+   OC8_OAUTH_REDIRECT_BASE_URL=https://oc8.example.com
+   OC8_FRONTEND_BASE_URL=https://oc8.example.com
+   OC8_MICROSOFT_OAUTH_CLIENT_ID=...
+   OC8_MICROSOFT_OAUTH_CLIENT_SECRET=...
+   OC8_GOOGLE_OAUTH_CLIENT_ID=...
+   OC8_GOOGLE_OAUTH_CLIENT_SECRET=...
+   ```
+
+Without these, connecting works only for an organisation that stored its own
+OAuth app credentials; everybody else is told that no client is configured.
+`OC8_GOOGLE_FULL_SCOPES=true` asks Google for the full Gmail and Drive scopes;
+those are restricted and need Google's security assessment of your app first.
+
+A passphrase-protected backup export contains every connection's tokens and
+logins, including people's personal ones, so whoever may export and restore
+backups holds them too. Treat the passphrase and the archive like the
+connections themselves.
+
 ## Operating notes
 
 - **Logs:** `docker compose logs -f backend` (or `worker`, `scheduler`, …).
