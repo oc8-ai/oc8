@@ -67,7 +67,6 @@ export interface ConnectionRequiredInfo {
   provider: string | null;
   label: string;
   reason:
-    | "connection_required"
     | "not_connected"
     | "needs_reauth"
     | "no_acting_person"
@@ -100,19 +99,7 @@ export interface AccessOption {
 
 /** Codes of `POST /oauth/{provider}/complete`'s typed failures, plus the
  *  provider-returned ones the callback redirect carries in `?error=`. */
-export type OAuthErrorCode =
-  | "admin_consent_required"
-  | "tenant_mismatch"
-  | "account_unresolved"
-  | "not_permitted"
-  | "account_conflict"
-  | "exchange_failed"
-  | "consent_required"
-  | "access_denied"
-  | "interaction_required"
-  | "provider_error";
-
-const OAUTH_ERROR_CODES: readonly string[] = [
+export const OAUTH_ERROR_CODES = [
   "admin_consent_required",
   "tenant_mismatch",
   "account_unresolved",
@@ -123,7 +110,12 @@ const OAUTH_ERROR_CODES: readonly string[] = [
   "access_denied",
   "interaction_required",
   "provider_error",
-];
+] as const;
+export type OAuthErrorCode = (typeof OAUTH_ERROR_CODES)[number];
+
+function isOAuthErrorCode(v: unknown): v is OAuthErrorCode {
+  return typeof v === "string" && (OAUTH_ERROR_CODES as readonly string[]).includes(v);
+}
 
 export class OAuthCompleteError extends Error {
   code: OAuthErrorCode;
@@ -187,9 +179,18 @@ export function useMemberConnections(enabled: boolean) {
   });
 }
 
+/** Connections changed: refresh them and every agent's tool-access data
+ *  (bindings, their labels and the pickable options depend on them). */
 function useInvalidateConnections() {
   const qc = useQueryClient();
-  return () => qc.invalidateQueries({ queryKey: connectionKeys.all });
+  return () =>
+    Promise.all([
+      qc.invalidateQueries({ queryKey: connectionKeys.all }),
+      qc.invalidateQueries({
+        queryKey: ["agents"],
+        predicate: (q) => q.queryKey[2] === "tool-access",
+      }),
+    ]);
 }
 
 export function useStartOAuth() {
@@ -211,10 +212,12 @@ export function useCompleteOAuth() {
         });
         return out.connection;
       } catch (err) {
-        const body = err instanceof ApiError ? (err.body as { error?: unknown; adminConsentUrl?: unknown } | undefined) : undefined;
-        if (body && typeof body.error === "string" && OAUTH_ERROR_CODES.includes(body.error)) {
+        const body = (err instanceof ApiError ? err.body : undefined) as
+          | { error?: unknown; adminConsentUrl?: unknown }
+          | undefined;
+        if (isOAuthErrorCode(body?.error)) {
           throw new OAuthCompleteError(
-            body.error as OAuthErrorCode,
+            body.error,
             typeof body.adminConsentUrl === "string" ? body.adminConsentUrl : null,
           );
         }

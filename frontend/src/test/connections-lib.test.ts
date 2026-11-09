@@ -5,6 +5,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const post = vi.fn();
 const put = vi.fn();
+const patch = vi.fn();
+const del = vi.fn();
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
   return {
@@ -13,6 +15,8 @@ vi.mock("@/lib/api", async (importOriginal) => {
       ...actual.api,
       post: (...args: unknown[]) => post(...args),
       put: (...args: unknown[]) => put(...args),
+      patch: (...args: unknown[]) => patch(...args),
+      delete: (...args: unknown[]) => del(...args),
     },
   };
 });
@@ -21,7 +25,12 @@ import { ApiError } from "@/lib/api";
 import {
   OAuthCompleteError,
   connectionStateOf,
+  useCheckCredential,
   useCompleteOAuth,
+  useCreateCredentialConnection,
+  useDisconnect,
+  useTestConnection,
+  useUpdateOrganisationCredential,
   useSetAgentToolAccess,
   useStartOAuth,
   type Connection,
@@ -62,8 +71,11 @@ function conn(over: Partial<Connection>): Connection {
   };
 }
 
-function wrapper() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+function makeClient() {
+  return new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+}
+
+function wrapper(qc: QueryClient = makeClient()) {
   return ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client: qc }, children);
 }
 
@@ -151,5 +163,66 @@ describe("oauth hooks", () => {
       oauthConnectionId: "c1",
       confirmShare: true,
     });
+  });
+});
+
+describe("connection mutations", () => {
+  beforeEach(() => {
+    post.mockReset();
+    put.mockReset();
+    patch.mockReset();
+    del.mockReset();
+  });
+
+  async function run<T>(hook: () => T, call: (h: T) => Promise<unknown>) {
+    const { result } = renderHook(hook, { wrapper: wrapper() });
+    await act(async () => {
+      await call(result.current);
+    });
+  }
+
+  it("uses the right method and url for each mutation", async () => {
+    del.mockResolvedValue(undefined);
+    post.mockResolvedValue({});
+    patch.mockResolvedValue({});
+    await run(useDisconnect, (h) => h.mutateAsync({ id: "o1", kind: "oauth" }));
+    expect(del).toHaveBeenLastCalledWith("/connections/oauth/o1");
+    await run(useDisconnect, (h) => h.mutateAsync({ id: "c1", kind: "credential" }));
+    expect(del).toHaveBeenLastCalledWith("/connections/credentials/c1");
+    const body = { integration: "odoo_mcp", owner: "me" as const, fieldValues: { a: "b" } };
+    await run(useCreateCredentialConnection, (h) => h.mutateAsync(body));
+    expect(post).toHaveBeenLastCalledWith("/connections/credentials", body);
+    await run(useUpdateOrganisationCredential, (h) => h.mutateAsync({ id: "c1", fieldValues: { a: "b" } }));
+    expect(patch).toHaveBeenLastCalledWith("/credentials/c1", { fieldValues: { a: "b" } });
+    await run(useTestConnection, (h) => h.mutateAsync("c1"));
+    expect(post).toHaveBeenLastCalledWith("/connections/credentials/c1/test");
+    await run(useCheckCredential, (h) => h.mutateAsync({ integration: "odoo_mcp", fieldValues: {} }));
+    expect(post).toHaveBeenLastCalledWith("/connections/credentials/check", { integration: "odoo_mcp", fieldValues: {} });
+  });
+
+  it("refreshes connections and agent tool access after disconnect", async () => {
+    del.mockResolvedValue(undefined);
+    const qc = makeClient();
+    qc.setQueryData(["connections", "mine"], []);
+    qc.setQueryData(["agents", "a1", "tool-access"], []);
+    qc.setQueryData(["agents", "a1", "tool-access", "microsoft365", "options"], []);
+    qc.setQueryData(["agents", "a1", "other"], []);
+    const { result } = renderHook(() => useDisconnect(), { wrapper: wrapper(qc) });
+    await act(() => result.current.mutateAsync({ id: "o1", kind: "oauth" }));
+    expect(qc.getQueryState(["connections", "mine"])?.isInvalidated).toBe(true);
+    expect(qc.getQueryState(["agents", "a1", "tool-access"])?.isInvalidated).toBe(true);
+    expect(qc.getQueryState(["agents", "a1", "tool-access", "microsoft365", "options"])?.isInvalidated).toBe(true);
+    expect(qc.getQueryState(["agents", "a1", "other"])?.isInvalidated).toBe(false);
+  });
+
+  it("refreshes connections and agent tool access after completing OAuth", async () => {
+    post.mockResolvedValue({ connected: "microsoft", connection: conn({}) });
+    const qc = makeClient();
+    qc.setQueryData(["connections", "mine"], []);
+    qc.setQueryData(["agents", "a1", "tool-access", "microsoft365", "options"], []);
+    const { result } = renderHook(() => useCompleteOAuth(), { wrapper: wrapper(qc) });
+    await act(() => result.current.mutateAsync({ provider: "microsoft", pending: "p1" }));
+    expect(qc.getQueryState(["connections", "mine"])?.isInvalidated).toBe(true);
+    expect(qc.getQueryState(["agents", "a1", "tool-access", "microsoft365", "options"])?.isInvalidated).toBe(true);
   });
 });
