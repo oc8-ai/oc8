@@ -13,12 +13,16 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 
 from oc8 import models as m
-from oc8.agents.repo import RunReach, restrict_to_run_reach, run_reach, run_reachable_agent
+from oc8.agents.repo import (
+    RunReach,
+    resolve_run_reach,
+    restrict_to_run_reach,
+    run_reachable_agent,
+)
 from oc8.agents.versioning import pinned_version_no
 from oc8.api.deps import DbSession, require_departmental
 from oc8.audit import append_event
-from oc8.authz.authority import authority_for_principal, tenant_wide_read
-from oc8.authz.permissions import AGENT, RUN, RUN_CONTROL, RUN_START, VIEW, perm
+from oc8.authz.permissions import RUN, RUN_CONTROL, RUN_START, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.runtime.clarification import resolve_clarification
 from oc8.runtime.intake import enqueue_run, publish_run
@@ -38,26 +42,6 @@ _SPILL_BASENAME = re.compile(r"^step-\d+-.*\.txt$")
 _RunViewer = Annotated[HumanActor, Depends(require_departmental(perm(RUN, VIEW)))]
 _RunStarter = Annotated[HumanActor, Depends(require_departmental(RUN_START))]
 _RunController = Annotated[HumanActor, Depends(require_departmental(RUN_CONTROL))]
-
-
-async def resolve_run_reach(
-    request: Request, db: DbSession, actor: HumanActor, permission: str
-) -> RunReach:
-    """Whose runs this caller may reach with `permission`.
-
-    A run is visible exactly when its agent is: the rule is `GET /agents/{id}`'s
-    (`visible_agent`: tenant-wide `agent:view` read, or a seat in the agent's
-    department) plus `permission`, held tenant-wide or in that seat. Asked of
-    `tenant_wide_read` for BOTH permissions, so a composed role never widens a
-    caller past their seats -- the same rule every agent read follows.
-    """
-    authority = await authority_for_principal(request, db, actor.principal)
-    return run_reach(
-        scope=actor.scope,
-        tenant_wide=tenant_wide_read(authority, perm(AGENT, VIEW))
-        and tenant_wide_read(authority, permission),
-        departmental=permission in authority.tenant_wide or actor.scope.holds_anywhere(permission),
-    )
 
 
 async def _reachable_run(
@@ -274,7 +258,9 @@ async def list_agent_runs(
     another tenant is a 404.
     """
     reach = await resolve_run_reach(request, db, actor, perm(RUN, VIEW))
-    agent = await run_reachable_agent(db, reach=reach, agent_id=agent_id)
+    agent = await run_reachable_agent(
+        db, reach=reach, tenant_id=actor.principal.tenant_id, agent_id=agent_id
+    )
     if agent is None or agent.tenant_id != actor.principal.tenant_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
 
@@ -341,7 +327,9 @@ async def run(
 ) -> RunDTO:
     principal = actor.principal
     reach = await resolve_run_reach(request, db, actor, RUN_START)
-    agent = await run_reachable_agent(db, reach=reach, agent_id=agent_id)
+    agent = await run_reachable_agent(
+        db, reach=reach, tenant_id=actor.principal.tenant_id, agent_id=agent_id
+    )
     if agent is None or agent.deleted_at is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
     if agent.status == "pending_approval":
@@ -383,7 +371,9 @@ async def list_workspace_files(
     the caller may not see is a 404."""
     principal = actor.principal
     reach = await resolve_run_reach(request, db, actor, perm(RUN, VIEW))
-    agent = await run_reachable_agent(db, reach=reach, agent_id=agent_id)
+    agent = await run_reachable_agent(
+        db, reach=reach, tenant_id=actor.principal.tenant_id, agent_id=agent_id
+    )
     if agent is None or agent.deleted_at is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
 
@@ -443,10 +433,14 @@ async def answer_run(
     # already-existing run (not a new one, so publish_run, not enqueue_run).
     await resolve_clarification(db, run=run_row, answer=body.answer)
     # No further DB query after commit (the transaction-local tenant binding
-    # ends); run_to_dto only reads already-loaded attributes.
+    # ends), so the DTO is built BEFORE it: the flush expires the server-side
+    # `updated_at`, and reading it after the commit raised MissingGreenlet.
+    await db.flush()
+    await db.refresh(run_row)
+    dto = run_to_dto(run_row)
     await db.commit()
     await publish_run(run_id=run_row.id, tenant_id=principal.tenant_id)
-    return run_to_dto(run_row)
+    return dto
 
 
 @router.post("/runs/{run_id}/message", status_code=status.HTTP_202_ACCEPTED)

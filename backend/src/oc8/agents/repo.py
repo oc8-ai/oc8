@@ -24,12 +24,24 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import ColumnElement, Select, and_, false, select
 
+from oc8.authz.authority import authority_for_principal, tenant_wide_read
+from oc8.authz.permissions import (
+    AGENT,
+    DEPARTMENT_SCOPABLE,
+    RUN,
+    RUN_CONTROL,
+    RUN_START,
+    VIEW,
+    perm,
+)
 from oc8.models.core import Agent
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from fastapi import Request
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from oc8.authz.scope import DepartmentScope
+    from oc8.authz.authority import Authority
+    from oc8.authz.scope import DepartmentScope, HumanActor
 
 
 async def visible_agents(
@@ -169,28 +181,65 @@ class RunReach:
     departments: frozenset[uuid.UUID]
 
 
-def run_reach(*, scope: DepartmentScope, tenant_wide: bool, departmental: bool) -> RunReach:
-    """Resolve a caller's run reach from caller-resolved flags.
+#: The permissions a run door asks for. None of them is a seat permission, and
+#: `run_reach` relies on that: a caller who holds one holds it TENANT-WIDE
+#: (`authority.tenant_wide`), and the departmental narrowing is then the agent
+#: term alone (`scope.viewable`). If one of these ever joined `SEAT_PERMISSIONS`,
+#: a seat could carry it in fewer departments than the caller sees agents in,
+#: and `scope.viewable` would be the wrong set -- so that is refused at import,
+#: where the commit making it fails CI rather than widening a read.
+RUN_PERMISSIONS: frozenset[str] = frozenset({perm(RUN, VIEW), RUN_START, RUN_CONTROL})
+if RUN_PERMISSIONS & DEPARTMENT_SCOPABLE:  # pragma: no cover - import-time guard
+    raise RuntimeError(
+        f"{sorted(RUN_PERMISSIONS & DEPARTMENT_SCOPABLE)} became seat permissions; "
+        "agents.repo.run_reach narrows by scope.viewable and must learn the seat's "
+        "own department set first"
+    )
 
-    `tenant_wide`: the caller reads BOTH the agent and the run permission
-    tenant-wide (`authz.authority.tenant_wide_read` for each) -- the
-    "company-wide role" fact `visible_agent(s)` already bypasses on. Such a
-    caller keeps every run in the tenant, including the tenant Assistant's and
+
+def reads_every_run(authority: Authority, permission: str) -> bool:
+    """Whether this caller reaches EVERY agent's runs with `permission`: a
+    tenant-wide read (`tenant_wide_read`) of both `agent:view` and `permission`.
+
+    The one definition of "company-wide run reader" -- `run_reach` uses it, and
+    so does the realtime socket, which has no scope and can only admit
+    every-agent readers to a tenant-wide fan-out.
+    """
+    if permission not in RUN_PERMISSIONS:
+        raise ValueError(f"{permission!r} is not a run permission")
+    return tenant_wide_read(authority, perm(AGENT, VIEW)) and tenant_wide_read(
+        authority, permission
+    )
+
+
+def run_reach(*, authority: Authority, scope: DepartmentScope, permission: str) -> RunReach:
+    """Whose runs this caller may reach with `permission`.
+
+    Every agent's (`reads_every_run`): including the tenant Assistant's and
     those of deleted agents, exactly as before this funnel existed.
 
-    `departmental`: the caller holds the run permission at all, whether in
-    `authority.tenant_wide` (a composed role never widens past its seats) or
-    in a seat. Such a caller reaches the runs of agents in `scope.viewable`
-    -- the departments where `visible_agent` would show them the agent --
-    deleted agents included (their history stays readable to whoever could
-    see their department), the tenant Assistant never (`visible_agent` never
-    shows it to a departmental caller either).
+    Departmental: the caller holds `permission` (always tenant-wide, see
+    `RUN_PERMISSIONS`) but does not read agents tenant-wide -- a composed role,
+    which never widens past its seats. Such a caller reaches the runs of agents
+    in `scope.viewable`, the departments where `visible_agent` shows them the
+    agent; deleted agents included (their history stays readable to whoever
+    may see their department), the tenant Assistant never (`visible_agent`
+    never shows it to a departmental caller either).
 
     Neither: nothing. Same fail-closed shape as `visible_agents`' early return.
     """
-    if tenant_wide:
+    if reads_every_run(authority, permission):
         return RunReach(every_agent=True, departments=frozenset())
-    return RunReach(every_agent=False, departments=scope.viewable if departmental else frozenset())
+    held = permission in authority.tenant_wide
+    return RunReach(every_agent=False, departments=scope.viewable if held else frozenset())
+
+
+async def resolve_run_reach(
+    request: Request, db: AsyncSession, actor: HumanActor, permission: str
+) -> RunReach:
+    """`run_reach` for an HTTP caller, with the request-memoised authority."""
+    authority = await authority_for_principal(request, db, actor.principal)
+    return run_reach(authority=authority, scope=actor.scope, permission=permission)
 
 
 def restrict_to_run_reach[TP: tuple[Any, ...]](
@@ -222,14 +271,15 @@ def _departmental_agent(reach: RunReach) -> ColumnElement[bool]:
 
 
 async def run_reachable_agent(
-    db: AsyncSession, *, reach: RunReach, agent_id: uuid.UUID
+    db: AsyncSession, *, reach: RunReach, tenant_id: uuid.UUID, agent_id: uuid.UUID
 ) -> Agent | None:
     """One agent whose runs `reach` admits, or `None` for both "no such row"
     and "exists outside reach" -- the caller 404s on either, as
     `visible_agent` does. Deleted agents are included; the run routes that
     must refuse one (starting a run) check `deleted_at` themselves.
     """
-    stmt = select(Agent).where(Agent.id == agent_id)
+    # The tenant is written out as well as left to RLS, as every run route does.
+    stmt = select(Agent).where(Agent.id == agent_id, Agent.tenant_id == tenant_id)
     if not reach.every_agent:
         stmt = stmt.where(_departmental_agent(reach))
     return (await db.execute(stmt.execution_options(populate_existing=True))).scalar_one_or_none()

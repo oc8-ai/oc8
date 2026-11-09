@@ -16,12 +16,11 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import Select, and_, func, or_, select
 
 from oc8 import models as m
-from oc8.agents.repo import restrict_to_run_reach
+from oc8.agents.repo import resolve_run_reach, restrict_to_run_reach
 from oc8.api.deps import DbSession, require_departmental, require_permission
 from oc8.api.v1._export_utils import csv_safe as _csv_safe
 from oc8.api.v1._export_utils import parse_date_bound as _parse_bound
 from oc8.api.v1._serializers import activity_to_dto, approval_to_dto, resolve_approval_names
-from oc8.api.v1.run import resolve_run_reach
 from oc8.approvals.repo import DEFAULT_LIMIT, visible_approvals
 from oc8.audit.integrity import (
     BATCH as BATCH,  # re-exported: tests monkeypatch this name, same as audit.py

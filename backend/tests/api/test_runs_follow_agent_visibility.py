@@ -78,12 +78,18 @@ class _Office:
     engineering_run: uuid.UUID
     archived_sales_run: uuid.UUID
     assistant_run: uuid.UUID
+    #: A deleted agent in Engineering, and a run naming no agent row at all.
+    archived_engineering_agent: uuid.UUID
+    archived_engineering_run: uuid.UUID
+    orphan_run: uuid.UUID
     #: A live `dept_viewer` seat in Sales only.
     sales_seat: str = "sales-employee"
     #: No seat anywhere, no assigned role.
     seatless: str = "seatless-employee"
     #: A tenant-defined role holding `run:start` + `run:control`, no seat.
     controller: str = "seatless-controller"
+    #: The same tenant-defined role, with a `dept_viewer` seat in Sales.
+    seated_controller: str = "sales-controller"
     #: Token `dept_manager`, seated in Sales: a department lead.
     lead: str = "sales-lead"
 
@@ -161,6 +167,9 @@ async def _office(app_session: AppSessionFactory) -> _Office:
         engineering_agent = await _agent(db, tenant, engineering.id, "Theo")
         archived_sales_agent = await _agent(db, tenant, sales.id, "Old Nora", archived=True)
         assistant = await _agent(db, tenant, sales.id, "Assistant", assistant=True)
+        archived_engineering_agent = await _agent(
+            db, tenant, engineering.id, "Old Theo", archived=True
+        )
 
         office = _Office(
             tenant=tenant,
@@ -174,6 +183,11 @@ async def _office(app_session: AppSessionFactory) -> _Office:
             engineering_run=await _run(db, tenant, engineering_agent, "Rotate the prod key"),
             archived_sales_run=await _run(db, tenant, archived_sales_agent, "Old quote"),
             assistant_run=await _run(db, tenant, assistant, "Chat with the CEO"),
+            archived_engineering_agent=archived_engineering_agent,
+            archived_engineering_run=await _run(
+                db, tenant, archived_engineering_agent, "Old prod migration"
+            ),
+            orphan_run=await _run(db, tenant, uuid.uuid4(), "Nobody's run"),
         )
         # An event that names no agent at all.
         db.add(m.ActivityEvent(tenant_id=tenant, agent_id=None, message="activity: system"))
@@ -190,6 +204,9 @@ async def _office(app_session: AppSessionFactory) -> _Office:
         await _member(db, tenant, office.sales_seat, seat_in=sales.id)
         await _member(db, tenant, office.seatless)
         await _member(db, tenant, office.controller, role_id=controller_role.id)
+        await _member(
+            db, tenant, office.seated_controller, seat_in=sales.id, role_id=controller_role.id
+        )
         await _member(db, tenant, office.lead, seat_in=sales.id)
     return office
 
@@ -297,6 +314,8 @@ async def test_a_sales_seated_employee_sees_sales_runs_only(
         for path in [
             *_per_run_reads(office.engineering_run, office.engineering_agent),
             *_per_run_reads(office.assistant_run, office.assistant),
+            *_per_run_reads(office.archived_engineering_run, office.archived_engineering_agent),
+            f"/api/v1/runs/{office.orphan_run}",
         ]:
             resp = await http.get(path, headers=h)
             assert resp.status_code == 404, (path, resp.text)
@@ -347,6 +366,8 @@ async def test_org_admin_and_department_lead_still_see_everything(
         str(office.engineering_run),
         str(office.archived_sales_run),
         str(office.assistant_run),
+        str(office.archived_engineering_run),
+        str(office.orphan_run),
     }
     async with _http() as http:
         runs = await http.get("/api/v1/runs", headers=h)
@@ -365,7 +386,155 @@ async def test_org_admin_and_department_lead_still_see_everything(
 
         feed = await http.get("/api/v1/activity", headers=h)
         assert feed.status_code == 200, feed.text
-        assert len(feed.json()) == 5  # four agents' events plus the agentless one
+        # Six runs' events (the orphan's included) plus the agentless one.
+        assert len(feed.json()) == 7
 
         cancel = await http.post(f"/api/v1/runs/{office.engineering_run}/cancel", headers=h)
         assert cancel.status_code == 200, cancel.text
+
+
+async def test_control_routes_answer_missing_and_foreign_identically(
+    app_session: AppSessionFactory,
+) -> None:
+    office = await _office(app_session)
+    h = _headers(office.tenant, office.controller)
+    async with _http() as http:
+        for suffix, body in [
+            ("answer", {"answer": "Acme"}),
+            ("message", {"body": "stop"}),
+            ("cancel", None),
+        ]:
+            foreign = await http.post(
+                f"/api/v1/runs/{office.engineering_run}/{suffix}", headers=h, json=body
+            )
+            missing = await http.post(f"/api/v1/runs/{uuid.uuid4()}/{suffix}", headers=h, json=body)
+            assert (foreign.status_code, foreign.json()) == (missing.status_code, missing.json())
+            assert foreign.status_code == 404
+        foreign_start = await http.post(
+            f"/api/v1/agents/{office.engineering_agent}/run", headers=h, json={"task": "go"}
+        )
+        missing_start = await http.post(
+            f"/api/v1/agents/{uuid.uuid4()}/run", headers=h, json={"task": "go"}
+        )
+        assert (foreign_start.status_code, foreign_start.json()) == (
+            missing_start.status_code,
+            missing_start.json(),
+        )
+
+
+@pytest.mark.usefixtures("redis_url")
+async def test_a_seated_controller_acts_on_runs_in_her_own_department(
+    app_session: AppSessionFactory,
+) -> None:
+    office = await _office(app_session)
+    h = _headers(office.tenant, office.seated_controller)
+    run_id = office.sales_run
+    async with _http() as http:
+        message = await http.post(f"/api/v1/runs/{run_id}/message", headers=h, json={"body": "hi"})
+        assert message.status_code == 202, message.text
+        answer = await http.post(f"/api/v1/runs/{run_id}/answer", headers=h, json={"answer": "x"})
+        assert answer.status_code == 200, answer.text
+        cancel = await http.post(f"/api/v1/runs/{run_id}/cancel", headers=h)
+        assert cancel.status_code == 200, cancel.text
+        start = await http.post(
+            f"/api/v1/agents/{office.sales_agent}/run", headers=h, json={"task": "go"}
+        )
+        assert start.status_code == 200, start.text
+        # Still nothing outside Sales, the Assistant included.
+        for agent in (office.engineering_agent, office.assistant):
+            resp = await http.post(f"/api/v1/agents/{agent}/run", headers=h, json={"task": "go"})
+            assert resp.status_code == 404, resp.text
+
+
+async def _run_file(app_session: AppSessionFactory, tenant: uuid.UUID, run_id: uuid.UUID) -> str:
+    async with app_session(tenant) as db:
+        row = m.FileAttachment(
+            tenant_id=tenant,
+            owner_type="agent_run",
+            owner_id=run_id,
+            bucket_key=f"test/{uuid.uuid4()}",
+            filename="quote.pdf",
+            content_type="application/pdf",
+            size_bytes=3,
+        )
+        db.add(row)
+        await db.flush()
+        return str(row.id)
+
+
+async def test_run_output_files_need_run_view_not_just_a_seat(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `dept_viewer` sees the Sales agent but holds no `run:view`: its run's
+    output file is a 404, as `GET /runs/{id}` would be."""
+    from oc8.storage import s3
+
+    async def _bytes(key: str) -> bytes:
+        return b"pdf"
+
+    monkeypatch.setattr(s3, "get_object", _bytes)
+    office = await _office(app_session)
+    file_id = await _run_file(app_session, office.tenant, office.sales_run)
+    async with _http() as http:
+        seat = _headers(office.tenant, office.sales_seat)
+        assert (
+            await http.get(f"/api/v1/agents/{office.sales_agent}", headers=seat)
+        ).status_code == 200
+        refused = await http.get(f"/api/v1/files/{file_id}", headers=seat)
+        assert refused.status_code == 404, refused.text
+        missing = await http.get(f"/api/v1/files/{uuid.uuid4()}", headers=seat)
+        assert refused.json() == missing.json()
+
+        admin = _headers(office.tenant, "admin", role="org_admin")
+        allowed = await http.get(f"/api/v1/files/{file_id}", headers=admin)
+        assert allowed.status_code == 200, allowed.text
+
+
+async def test_reports_follow_the_run_rule(app_session: AppSessionFactory) -> None:
+    office = await _office(app_session)
+    component = {"componentKey": "bar_chart", "props": {"title": "Q"}}
+    async with app_session(office.tenant) as db:
+        for agent in (office.sales_agent, office.engineering_agent):
+            db.add(
+                m.AgentRun(
+                    tenant_id=office.tenant,
+                    agent_id=agent,
+                    state="done",
+                    context={"task": "report", "rendered_components": [component]},
+                )
+            )
+    async with _http() as http:
+        seat = await http.get("/api/v1/reports", headers=_headers(office.tenant, office.sales_seat))
+        assert seat.status_code == 200, seat.text
+        assert seat.json() == []
+
+        admin = await http.get(
+            "/api/v1/reports", headers=_headers(office.tenant, "admin", role="org_admin")
+        )
+        assert admin.status_code == 200, admin.text
+        assert {r["agentId"] for r in admin.json()} == {
+            str(office.sales_agent),
+            str(office.engineering_agent),
+        }
+
+
+@pytest.mark.usefixtures("employee_reads_runs")
+async def test_reports_for_a_run_reader_are_narrowed_to_her_departments(
+    app_session: AppSessionFactory,
+) -> None:
+    office = await _office(app_session)
+    component = {"componentKey": "bar_chart", "props": {"title": "Q"}}
+    async with app_session(office.tenant) as db:
+        for agent in (office.sales_agent, office.engineering_agent):
+            db.add(
+                m.AgentRun(
+                    tenant_id=office.tenant,
+                    agent_id=agent,
+                    state="done",
+                    context={"task": "report", "rendered_components": [component]},
+                )
+            )
+    async with _http() as http:
+        resp = await http.get("/api/v1/reports", headers=_headers(office.tenant, office.sales_seat))
+        assert resp.status_code == 200, resp.text
+        assert [r["agentId"] for r in resp.json()] == [str(office.sales_agent)]
