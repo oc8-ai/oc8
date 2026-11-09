@@ -152,7 +152,9 @@ export function connectionStateOf(
   if (!integration || !integration.available) return { state: "unavailable", connections: [] };
   const own = mine.filter((c) => c.integration === integration.name && c.owner === "me");
   if (own.length === 0) return { state: "not_connected", connections: [] };
-  const healthy = own.some((c) => (c.kind === "oauth" ? c.status === "active" : c.status !== "failed"));
+  const healthy = own.some((c) =>
+    c.kind === "oauth" ? c.status === "active" : c.status !== "failed",
+  );
   return { state: healthy ? "connected" : "needs_reauth", connections: own };
 }
 
@@ -164,7 +166,10 @@ export function useIntegrations() {
 }
 
 export function useMyConnections() {
-  return useQuery({ queryKey: connectionKeys.mine, queryFn: () => api.get<Connection[]>("/connections/mine") });
+  return useQuery({
+    queryKey: connectionKeys.mine,
+    queryFn: () => api.get<Connection[]>("/connections/mine"),
+  });
 }
 
 export function useOrganisationConnections(enabled: boolean) {
@@ -200,7 +205,10 @@ function useInvalidateConnections() {
 export function useStartOAuth() {
   return useMutation({
     mutationFn: ({ provider, owner }: { provider: OAuthProviderId; owner: Owner }) =>
-      api.post<{ authorizationUrl: string }>(`/oauth/${provider}/start`, { scopeSet: "tools", owner }),
+      api.post<{ authorizationUrl: string }>(`/oauth/${provider}/start`, {
+        scopeSet: "tools",
+        owner,
+      }),
   });
 }
 
@@ -211,9 +219,12 @@ export function useCompleteOAuth() {
   return useMutation({
     mutationFn: async ({ provider, pending }: { provider: OAuthProviderId; pending: string }) => {
       try {
-        const out = await api.post<{ connected: string; connection: Connection }>(`/oauth/${provider}/complete`, {
-          pending,
-        });
+        const out = await api.post<{ connected: string; connection: Connection }>(
+          `/oauth/${provider}/complete`,
+          {
+            pending,
+          },
+        );
         return out.connection;
       } catch (err) {
         const body = (err instanceof ApiError ? err.body : undefined) as
@@ -236,7 +247,9 @@ export function useDisconnect() {
   const invalidate = useInvalidateConnections();
   return useMutation({
     mutationFn: (c: Pick<Connection, "id" | "kind">) =>
-      api.delete(c.kind === "oauth" ? `/connections/oauth/${c.id}` : `/connections/credentials/${c.id}`),
+      api.delete(
+        c.kind === "oauth" ? `/connections/oauth/${c.id}` : `/connections/credentials/${c.id}`,
+      ),
     onSuccess: invalidate,
   });
 }
@@ -251,8 +264,11 @@ export function useCheckCredential() {
 export function useCreateCredentialConnection() {
   const invalidate = useInvalidateConnections();
   return useMutation({
-    mutationFn: (body: { integration: string; owner: Owner; fieldValues: Record<string, string> }) =>
-      api.post<Connection>("/connections/credentials", body),
+    mutationFn: (body: {
+      integration: string;
+      owner: Owner;
+      fieldValues: Record<string, string>;
+    }) => api.post<Connection>("/connections/credentials", body),
     onSuccess: invalidate,
   });
 }
@@ -322,7 +338,12 @@ export function useSetAgentToolAccess(agentId: string) {
       body,
     }: {
       toolKey: string;
-      body: { mode: "user" | "fixed"; oauthConnectionId?: string; credentialId?: string; confirmShare?: boolean };
+      body: {
+        mode: "user" | "fixed";
+        oauthConnectionId?: string;
+        credentialId?: string;
+        confirmShare?: boolean;
+      };
     }) => api.put<AgentToolAccess>(`/agents/${agentId}/tool-access/${toolKey}`, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: accessKey(agentId) }),
   });

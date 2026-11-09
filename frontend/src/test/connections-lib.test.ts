@@ -72,11 +72,14 @@ function conn(over: Partial<Connection>): Connection {
 }
 
 function makeClient() {
-  return new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  return new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
 }
 
 function wrapper(qc: QueryClient = makeClient()) {
-  return ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client: qc }, children);
+  return ({ children }: { children: ReactNode }) =>
+    createElement(QueryClientProvider, { client: qc }, children);
 }
 
 describe("connectionStateOf", () => {
@@ -88,14 +91,24 @@ describe("connectionStateOf", () => {
   });
 
   it("counts only the caller's own rows of this integration", () => {
-    const others = [conn({ owner: "member" }), conn({ owner: "organisation" }), conn({ integration: "google_workspace" })];
+    const others = [
+      conn({ owner: "member" }),
+      conn({ owner: "organisation" }),
+      conn({ integration: "google_workspace" }),
+    ];
     expect(connectionStateOf(MS, others).state).toBe("not_connected");
     expect(connectionStateOf(MS, [...others, conn({})]).state).toBe("connected");
   });
 
   it("asks to reconnect when no own row is healthy", () => {
     expect(connectionStateOf(MS, [conn({ status: "needs_reauth" })]).state).toBe("needs_reauth");
-    const odoo: Integration = { ...MS, name: "odoo_mcp", kind: "credential", provider: null, credentialType: "odoo_login" };
+    const odoo: Integration = {
+      ...MS,
+      name: "odoo_mcp",
+      kind: "credential",
+      provider: null,
+      credentialType: "odoo_login",
+    };
     const failed = conn({ kind: "credential", integration: "odoo_mcp", status: "failed" });
     expect(connectionStateOf(odoo, [failed]).state).toBe("needs_reauth");
     expect(connectionStateOf(odoo, [{ ...failed, status: "untested" }]).state).toBe("connected");
@@ -112,7 +125,10 @@ describe("oauth hooks", () => {
     post.mockResolvedValue({ authorizationUrl: "https://idp/auth" });
     const { result } = renderHook(() => useStartOAuth(), { wrapper: wrapper() });
     await act(() => result.current.mutateAsync({ provider: "microsoft", owner: "organisation" }));
-    expect(post).toHaveBeenCalledWith("/oauth/microsoft/start", { scopeSet: "tools", owner: "organisation" });
+    expect(post).toHaveBeenCalledWith("/oauth/microsoft/start", {
+      scopeSet: "tools",
+      owner: "organisation",
+    });
   });
 
   it("completes with the pending id and returns the connection", async () => {
@@ -129,14 +145,20 @@ describe("oauth hooks", () => {
 
   it("surfaces a typed error with the admin consent url", async () => {
     post.mockRejectedValue(
-      new ApiError("admin_consent_required", 400, { error: "admin_consent_required", adminConsentUrl: "https://ms/consent" }),
+      new ApiError("admin_consent_required", 400, {
+        error: "admin_consent_required",
+        adminConsentUrl: "https://ms/consent",
+      }),
     );
     const { result } = renderHook(() => useCompleteOAuth(), { wrapper: wrapper() });
     await act(async () => {
       await result.current.mutateAsync({ provider: "microsoft", pending: "p1" }).catch(() => {});
     });
     await waitFor(() => expect(result.current.error).toBeInstanceOf(OAuthCompleteError));
-    expect(result.current.error).toMatchObject({ code: "admin_consent_required", adminConsentUrl: "https://ms/consent" });
+    expect(result.current.error).toMatchObject({
+      code: "admin_consent_required",
+      adminConsentUrl: "https://ms/consent",
+    });
   });
 
   it("keeps a non-typed failure as it is", async () => {
@@ -192,12 +214,19 @@ describe("connection mutations", () => {
     const body = { integration: "odoo_mcp", owner: "me" as const, fieldValues: { a: "b" } };
     await run(useCreateCredentialConnection, (h) => h.mutateAsync(body));
     expect(post).toHaveBeenLastCalledWith("/connections/credentials", body);
-    await run(useUpdateOrganisationCredential, (h) => h.mutateAsync({ id: "c1", fieldValues: { a: "b" } }));
+    await run(useUpdateOrganisationCredential, (h) =>
+      h.mutateAsync({ id: "c1", fieldValues: { a: "b" } }),
+    );
     expect(patch).toHaveBeenLastCalledWith("/credentials/c1", { fieldValues: { a: "b" } });
     await run(useTestConnection, (h) => h.mutateAsync("c1"));
     expect(post).toHaveBeenLastCalledWith("/connections/credentials/c1/test");
-    await run(useCheckCredential, (h) => h.mutateAsync({ integration: "odoo_mcp", fieldValues: {} }));
-    expect(post).toHaveBeenLastCalledWith("/connections/credentials/check", { integration: "odoo_mcp", fieldValues: {} });
+    await run(useCheckCredential, (h) =>
+      h.mutateAsync({ integration: "odoo_mcp", fieldValues: {} }),
+    );
+    expect(post).toHaveBeenLastCalledWith("/connections/credentials/check", {
+      integration: "odoo_mcp",
+      fieldValues: {},
+    });
   });
 
   it("refreshes connections and agent tool access after disconnect", async () => {
@@ -211,7 +240,9 @@ describe("connection mutations", () => {
     await act(() => result.current.mutateAsync({ id: "o1", kind: "oauth" }));
     expect(qc.getQueryState(["connections", "mine"])?.isInvalidated).toBe(true);
     expect(qc.getQueryState(["agents", "a1", "tool-access"])?.isInvalidated).toBe(true);
-    expect(qc.getQueryState(["agents", "a1", "tool-access", "microsoft365", "options"])?.isInvalidated).toBe(true);
+    expect(
+      qc.getQueryState(["agents", "a1", "tool-access", "microsoft365", "options"])?.isInvalidated,
+    ).toBe(true);
     expect(qc.getQueryState(["agents", "a1", "other"])?.isInvalidated).toBe(false);
   });
 
@@ -223,6 +254,8 @@ describe("connection mutations", () => {
     const { result } = renderHook(() => useCompleteOAuth(), { wrapper: wrapper(qc) });
     await act(() => result.current.mutateAsync({ provider: "microsoft", pending: "p1" }));
     expect(qc.getQueryState(["connections", "mine"])?.isInvalidated).toBe(true);
-    expect(qc.getQueryState(["agents", "a1", "tool-access", "microsoft365", "options"])?.isInvalidated).toBe(true);
+    expect(
+      qc.getQueryState(["agents", "a1", "tool-access", "microsoft365", "options"])?.isInvalidated,
+    ).toBe(true);
   });
 });

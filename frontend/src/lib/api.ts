@@ -262,7 +262,11 @@ async function toError(res: Response): Promise<Error> {
   } catch {
     detail = res.statusText;
   }
-  return new ApiError(typeof detail === "string" ? detail : JSON.stringify(detail), res.status, body);
+  return new ApiError(
+    typeof detail === "string" ? detail : JSON.stringify(detail),
+    res.status,
+    body,
+  );
 }
 
 export const api = {
