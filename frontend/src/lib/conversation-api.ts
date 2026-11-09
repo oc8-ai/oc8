@@ -15,6 +15,7 @@ import { api, ApiError } from "@/lib/api";
 import { isUuid } from "@/lib/ids";
 import {
   chatKeys,
+  writeSessionToCache,
   type ChatMessageDTO,
   type ChatSessionDTO,
   type RunActivityDTO,
@@ -560,5 +561,96 @@ export function useStopRun() {
   return useMutation({
     mutationFn: (runId: string) => api.post<void>(`/runs/${encodeURIComponent(runId)}/stop`),
     onSettled: (_data, _error, runId) => qc.invalidateQueries({ queryKey: runSteeringKey(runId) }),
+  });
+}
+
+// ---- Projects and pinned chats (the Copilot sidebar) -----------------------
+
+export interface ChatProjectDTO {
+  id: string;
+  name: string;
+  instructions: string;
+  pinnedRefs: ContextRefViewDTO[];
+  createdAt: string;
+}
+
+export const projectKeys = { all: ["chat", "projects"] as const };
+
+export function useChatProjects() {
+  return useQuery({
+    queryKey: projectKeys.all,
+    queryFn: () => api.get<ChatProjectDTO[]>("/chat/projects"),
+  });
+}
+
+/** Create a project, or change one: on a change `instructions` and
+ *  `pinnedRefs` are sent only when given (PATCH is partial; the name is
+ *  always sent). The reply is written into the cache, not refetched. */
+export function useSaveProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      name,
+      instructions,
+      pinnedRefs,
+    }: {
+      id?: string;
+      name: string;
+      instructions?: string;
+      pinnedRefs?: { kind: string; id: string }[];
+    }) =>
+      id
+        ? api.patch<ChatProjectDTO>(`/chat/projects/${id}`, {
+            name,
+            ...(instructions !== undefined ? { instructions } : {}),
+            ...(pinnedRefs !== undefined ? { pinnedRefs } : {}),
+          })
+        : api.post<ChatProjectDTO>("/chat/projects", {
+            name,
+            instructions: instructions ?? "",
+            pinnedRefs: pinnedRefs ?? [],
+          }),
+    onSuccess: (project) =>
+      qc.setQueryData<ChatProjectDTO[]>(projectKeys.all, (prev = []) =>
+        prev.some((p) => p.id === project.id)
+          ? prev.map((p) => (p.id === project.id ? project : p))
+          : [...prev, project],
+      ),
+  });
+}
+
+/** Delete a project. Its chats stay and are detached: the cached lists show
+ *  them in their date groups at once. */
+export function useDeleteProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete<void>(`/chat/projects/${id}`),
+    onSuccess: (_void, id) => {
+      qc.setQueryData<ChatProjectDTO[]>(projectKeys.all, (prev) =>
+        prev?.filter((p) => p.id !== id),
+      );
+      qc.setQueriesData<ChatSessionDTO[]>({ queryKey: ["chat", "sessions"] }, (prev) =>
+        prev?.map((s) => (s.projectId === id ? { ...s, projectId: null } : s)),
+      );
+    },
+  });
+}
+
+export function useSetSessionPinned() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sessionId, pinned }: { sessionId: string; pinned: boolean }) =>
+      api.put<ChatSessionDetailDTO>(`/chat/sessions/${sessionId}/pinned`, { pinned }),
+    onSuccess: (session) => writeSessionToCache(qc, session),
+  });
+}
+
+export function useSetSessionProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sessionId, projectId }: { sessionId: string; projectId: string | null }) =>
+      api.put<ChatSessionDetailDTO>(`/chat/sessions/${sessionId}/project`, { projectId }),
+    onSuccess: (session) => writeSessionToCache(qc, session),
   });
 }

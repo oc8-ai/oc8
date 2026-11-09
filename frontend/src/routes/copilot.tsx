@@ -2,8 +2,8 @@ import { createFileRoute, useNavigate, useRouterState } from "@tanstack/react-ro
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ChatHeaderActions, SidePanelHost, SidePanelProvider } from "@/edition/slots";
-import { ChatSessionPicker } from "@/components/chat-window";
 import { Conversation } from "@/components/conversation";
+import { CopilotSidebar } from "@/components/conversation/copilot-sidebar";
 import { CopilotAvatar, CopilotPersonaHeader } from "@/components/copilot-persona";
 import { CopilotWorkPanel } from "@/components/copilot-work-panel";
 import { isPlainClick } from "@/components/conversation/object-links";
@@ -58,6 +58,10 @@ function CopilotRoute() {
       initialSessionId={session ?? null}
       navKey={navKey}
       pin={pin}
+      // The open chat was deleted: the address follows the chat that replaced it.
+      onSessionRemoved={(next) => {
+        void navigate({ to: "/copilot", search: next ? { session: next } : {}, replace: true });
+      }}
       // So a reload does not create another chat.
       onPinHandled={(sessionId) => {
         // A link that also named a chat keeps it when the pin is refused.
@@ -99,6 +103,7 @@ export function CopilotPage({
   navKey,
   pin,
   onPinHandled,
+  onSessionRemoved,
 }: {
   initialSessionId?: string | null;
   navKey?: string;
@@ -107,6 +112,8 @@ export function CopilotPage({
   /** The pin was handled (chat created, or the link refused): drop it from
    *  the address, selecting `sessionId` when there is one. */
   onPinHandled?: (sessionId: string | null) => void;
+  /** The open chat was deleted from the sidebar; `nextId` replaced it, if any. */
+  onSessionRemoved?: (nextId: string | null) => void;
 } = {}) {
   const t = useT();
   const may = useMay();
@@ -192,6 +199,7 @@ export function CopilotPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once per pin value; the ref guards re-runs
   }, [pin, mayUse]);
   const [panelOpen, setPanelOpen] = useState(true);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const { data: current } = useChatSession(sessionId);
   const mobile = useIsMobile();
   if (!may("copilot:use")) return null; // nav is the main gate; defense in depth
@@ -244,16 +252,20 @@ export function CopilotPage({
   );
   return (
     <SidePanelProvider>
-      <div className="flex min-h-0 flex-1">
-        <section className="flex min-w-0 flex-1 flex-col border-r border-border">
+      <div className="flex min-h-0 flex-1 flex-col sm:flex-row">
+        {agentId && (
+          <CopilotSidebar
+            agentId={agentId}
+            sessionId={sessionId}
+            onSelect={setSessionId}
+            onRemoved={onSessionRemoved}
+            collapsed={sidebarCollapsed}
+            onToggle={() => setSidebarCollapsed((v) => !v)}
+          />
+        )}
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col border-r border-border">
           <div className="border-b border-border px-4 py-3">
             <CopilotPersonaHeader variant="page">
-              <ChatSessionPicker
-                agentId={agentId}
-                sessions={sessions}
-                sessionId={sessionId}
-                onSelect={setSessionId}
-              />
               <ChatHeaderActions sessionId={sessionId} readOnly={!!current?.readOnly} />
               {mobile ? (
                 <Sheet>

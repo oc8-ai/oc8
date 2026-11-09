@@ -4,7 +4,7 @@
 // manage the session/message list, not any of that. Live updates arrive on
 // the socket (lib/live/apply-event.ts); nothing here polls.
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { api, uploadChatAttachment, type FileAttachmentDTO } from "@/lib/api";
 import type { LiveReasoning, RunComponentDTO } from "@/lib/hooks";
 
@@ -122,25 +122,49 @@ export function useChatMessages(sessionId: string | null) {
   });
 }
 
-export function useRenameChatSession(agentId: string) {
+/** Newest activity first, pinned chats before the rest: the order of
+ *  `GET /chat/sessions`, kept when a write changes one row in the cache. */
+function inListOrder(sessions: ChatSessionDTO[]): ChatSessionDTO[] {
+  return [...sessions].sort(
+    (a, b) =>
+      Number(!!b.pinned) - Number(!!a.pinned) ||
+      (b.lastMessageAt ?? "").localeCompare(a.lastMessageAt ?? ""),
+  );
+}
+
+/** A write's reply (the session as the server now has it) written into every
+ *  cached session list and the session itself: no refetch of the whole list. */
+export function writeSessionToCache(qc: QueryClient, session: ChatSessionDTO) {
+  const { id, title, lastMessageAt, pinned, projectId } = session;
+  qc.setQueriesData<ChatSessionDTO[]>({ queryKey: ["chat", "sessions"] }, (prev) =>
+    prev?.some((s) => s.id === id)
+      ? inListOrder(
+          prev.map((s) => (s.id === id ? { ...s, title, lastMessageAt, pinned, projectId } : s)),
+        )
+      : prev,
+  );
+  qc.setQueryData<ChatSessionDTO>(["chat", "session", id], (prev) =>
+    prev ? { ...prev, title, lastMessageAt, pinned, projectId } : prev,
+  );
+}
+
+export function useRenameChatSession(_agentId?: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ sessionId, title }: { sessionId: string; title: string }) =>
       api.patch<ChatSessionDTO>(`/chat/sessions/${sessionId}`, { title }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: chatKeys.sessions(agentId) });
-      qc.invalidateQueries({ queryKey: chatKeys.sessions() });
-    },
+    onSuccess: (session) => writeSessionToCache(qc, session),
   });
 }
 
-export function useDeleteChatSession(agentId: string) {
+export function useDeleteChatSession(_agentId?: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (sessionId: string) => api.delete<void>(`/chat/sessions/${sessionId}`),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: chatKeys.sessions(agentId) });
-      qc.invalidateQueries({ queryKey: chatKeys.sessions() });
+    onSuccess: (_void, sessionId) => {
+      qc.setQueriesData<ChatSessionDTO[]>({ queryKey: ["chat", "sessions"] }, (prev) =>
+        prev?.filter((s) => s.id !== sessionId),
+      );
     },
   });
 }

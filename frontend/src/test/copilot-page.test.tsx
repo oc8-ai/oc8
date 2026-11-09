@@ -64,8 +64,14 @@ vi.mock("@/components/conversation", () => ({
     </div>
   ),
 }));
-vi.mock("@/components/chat-window", () => ({
-  ChatSessionPicker: () => <div data-testid="picker" />,
+vi.mock("@/components/conversation/copilot-sidebar", () => ({
+  CopilotSidebar: ({ onSelect }: { onSelect: (id: string | null) => void }) => (
+    <nav aria-label="Chats">
+      <button type="button" onClick={() => onSelect("s-sidebar")}>
+        sidebar pick
+      </button>
+    </nav>
+  ),
 }));
 vi.mock("@/components/copilot-work-panel", () => ({
   CopilotWorkPanel: () => <div data-testid="work-panel" />,
@@ -155,6 +161,13 @@ describe("CopilotPage", () => {
     const panel = screen.getByTestId("work-panel");
     expect(panel.closest("aside")).toBeNull();
     expect(panel.closest('[role="dialog"]')).not.toBeNull();
+  });
+
+  it("replaces the Chats picker with the sidebar and selects from it", () => {
+    wrap();
+    expect(screen.queryByTestId("picker")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "sidebar pick" }));
+    expect(screen.getByTestId("chat")).toHaveAttribute("data-session", "s-sidebar");
   });
 
   it("sends a prompt starter from the empty chat", () => {

@@ -57,6 +57,7 @@ vi.mock("@/components/conversation", () => ({
   ),
 }));
 vi.mock("@/components/chat-window", () => ({ ChatSessionPicker: () => null }));
+vi.mock("@/components/conversation/copilot-sidebar", () => ({ CopilotSidebar: () => null }));
 vi.mock("@/components/copilot-work-panel", () => ({ CopilotWorkPanel: () => null }));
 
 import { ApiError } from "@/lib/api";
