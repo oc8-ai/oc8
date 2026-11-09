@@ -62,6 +62,10 @@ class ChatSession(Base, PkMixin, TenantMixin, TimestampMixin):
     pinned: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    #: The sticky mode this chat is in (`oc8.chat.modes`, `ChatMode.sticky`):
+    #: every turn without its own command runs in it until the member leaves it.
+    #: NULL for an ordinary chat. No CHECK, like `ChatMessage.mode`.
+    mode: Mapped[str | None] = mapped_column(Text)
 
 
 class ChatMessage(Base, PkMixin, TenantMixin, TimestampMixin):
