@@ -28,7 +28,7 @@ from oc8.authz.permissions import AGENT, COPILOT, COPILOT_USE, MANAGE, RUN_START
 from oc8.authz.scope import HumanActor
 from oc8.chat.context.base import Viewer
 from oc8.chat.model_choice import is_allowed_override, model_options
-from oc8.chat.modes import MODES
+from oc8.chat.modes import ASSISTANT_ONLY_REFUSAL, MODES, ModeNotAvailable
 from oc8.chat.port import session_access
 from oc8.chat.questions import QuestionError
 from oc8.chat.reach import reachable_chat_agent
@@ -528,6 +528,10 @@ async def set_chat_mode(
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_ENTITY, "this mode cannot be kept on a chat"
             )
+        if mode.assistant_only:
+            agent = await db.get(m.Agent, session.agent_id)
+            if agent is None or not agent.is_tenant_assistant:
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, ASSISTANT_ONLY_REFUSAL)
     session.mode = body.mode
     await db.flush()
     dto = await session_detail(db, viewer=await actor_viewer(db, actor), session=session)
@@ -596,24 +600,28 @@ async def post_message(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail=f"requires permission: {RUN_START}"
         )
-    user_message, run = await send_message(
-        db,
-        session=session,
-        tenant_id=actor.principal.tenant_id,
-        message=body.message,
-        attachment_ids=body.attachment_ids,
-        context_refs=[{"kind": ref.kind, "id": ref.id} for ref in body.context_refs],
-        originating_operator=actor.principal.subject,
-        # The token's role claim, recorded on the run: a member with no
-        # ASSIGNED role resolves to `permissions_for(token.role)` everywhere
-        # else in this system, and the run that answers this message has no
-        # token to read it from later. See `control_tools._acting_token_role`.
-        operator_role=actor.principal.role,
-        author_member_id=actor.member.id,
-        # The member behind THIS request's token, whose role is the one above:
-        # the turn's pinned context is resolved under their rights.
-        acting_member=actor.member,
-    )
+    try:
+        user_message, run = await send_message(
+            db,
+            session=session,
+            tenant_id=actor.principal.tenant_id,
+            message=body.message,
+            attachment_ids=body.attachment_ids,
+            context_refs=[{"kind": ref.kind, "id": ref.id} for ref in body.context_refs],
+            originating_operator=actor.principal.subject,
+            # The token's role claim, recorded on the run: a member with no
+            # ASSIGNED role resolves to `permissions_for(token.role)` everywhere
+            # else in this system, and the run that answers this message has no
+            # token to read it from later. See `control_tools._acting_token_role`.
+            operator_role=actor.principal.role,
+            author_member_id=actor.member.id,
+            # The member behind THIS request's token, whose role is the one above:
+            # the turn's pinned context is resolved under their rights.
+            acting_member=actor.member,
+        )
+    except ModeNotAvailable as exc:
+        # Nothing was written: the refusal comes before the turn exists.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     dto = await _message_dto(user_message, db, actor.principal.tenant_id)
     if run is not None:
         # NOT persisted -- user_message.run_id stays NULL in the database,

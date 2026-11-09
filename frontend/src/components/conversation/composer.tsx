@@ -127,7 +127,9 @@ export function Composer(props: ComposerProps) {
   const t = useT();
   const can = useCan();
   const { data: modes } = useChatModes();
-  const commands = chatCommands(modes, can);
+  // A sticky mode is offered only where the conversation can enter it
+  // (Agent mode: the Copilot's chat alone).
+  const commands = chatCommands(modes, can).filter((c) => !c.sticky || !!props.onEnterMode);
   const readOnly = !!props.disabled;
   const composerActions = useChatSlot("composerActions");
   const editionPickers = useChatSlot("composerPickers");

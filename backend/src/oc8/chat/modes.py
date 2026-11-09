@@ -63,6 +63,18 @@ class ChatMode:
     #: `WRITING_CONTROL_TOOLS`. An exemption from the removal, never a grant:
     #: the frame, the narrowing and the tool's own dispatch still decide.
     permitted_writes: frozenset[str] = frozenset()
+    #: Only the tenant's Assistant (the Copilot) offers this mode: its tools
+    #: exist on no other agent. Anywhere else the command is refused where the
+    #: sender can be told (`ModeNotAvailable`) and is plain text otherwise.
+    assistant_only: bool = False
+
+
+class ModeNotAvailable(ValueError):
+    """A mode this chat does not offer (Agent mode outside the Copilot chat)."""
+
+
+#: The refusal's sentence: shown as-is by the composer, like every mode refusal.
+ASSISTANT_ONLY_REFUSAL = "agent mode is only available in the Copilot chat"
 
 
 ASK = ChatMode(
@@ -138,6 +150,7 @@ AGENT = ChatMode(
     allows_writes=False,
     sticky=True,
     permitted_writes=frozenset({"ask_user", "propose_agent"}),
+    assistant_only=True,
 )
 
 #: Keyed by command word. Insertion order is picker order.

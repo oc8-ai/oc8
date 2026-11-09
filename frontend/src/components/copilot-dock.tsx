@@ -531,6 +531,8 @@ function CopilotDockPanel() {
               sessionId={activeTab.sessionId}
               onSessionChange={(sid) => setTabSession(activeTab.uiId, sid)}
               variant="compact"
+              // A tab addressed to another agent is that agent's chat.
+              agentMode={!activeTab.agentId}
               autoFocus
               draft={drafts[activeTab.uiId] ?? ""}
               onDraftChange={(text) => setDraft(activeTab.uiId, text)}

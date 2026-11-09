@@ -230,6 +230,7 @@ export function CopilotPage({
       sessionId={sessionId}
       onSessionChange={openSession}
       variant="full"
+      agentMode
       promptStarters={starters}
       emptyState={
         <div className="flex flex-col items-center gap-3 pt-12 pb-6 text-center">

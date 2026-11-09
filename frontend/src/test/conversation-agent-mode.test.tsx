@@ -78,15 +78,21 @@ const base = {
 };
 
 const client = { current: new QueryClient() };
-function tree(sessionId: string | null) {
+function tree(sessionId: string | null, agentMode = true) {
   return (
     <QueryClientProvider client={client.current}>
-      <Conversation agentId="a1" sessionId={sessionId} onSessionChange={vi.fn()} variant="full" />
+      <Conversation
+        agentId="a1"
+        sessionId={sessionId}
+        onSessionChange={vi.fn()}
+        variant="full"
+        agentMode={agentMode}
+      />
     </QueryClientProvider>
   );
 }
-function wrap(sessionId: string | null = "s1") {
-  return render(tree(sessionId));
+function wrap(sessionId: string | null = "s1", agentMode = true) {
+  return render(tree(sessionId, agentMode));
 }
 
 beforeEach(() => {
@@ -171,6 +177,25 @@ describe("Agent mode in the chat", () => {
     expect(
       client.current.getQueryData<ChatSessionDetailDTO>(conversationKeys.session("new"))?.mode,
     ).toBe("agent");
+  });
+
+  it("offers /agent only in the Copilot's chat", () => {
+    session.current = { ...base, mode: null };
+    wrap("s1", false);
+    const box = screen.getByRole("textbox");
+    fireEvent.change(box, { target: { value: "/" } });
+    expect(screen.queryByText("/agent")).not.toBeInTheDocument();
+    fireEvent.change(box, { target: { value: "/agent" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(setMode).not.toHaveBeenCalled();
+    expect(screen.queryByText("Setting up an agent")).not.toBeInTheDocument();
+  });
+
+  it("lists /agent in the Copilot's picker", () => {
+    session.current = { ...base, mode: null };
+    wrap();
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "/" } });
+    expect(screen.getByText("/agent")).toBeInTheDocument();
   });
 
   it("shows a refused switch, keeps the chip, and drops the notice on another chat", () => {

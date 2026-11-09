@@ -190,6 +190,9 @@ export interface ConversationProps {
   hasOlder?: boolean;
   onLoadOlder?: () => void;
   loadingOlder?: boolean;
+  /** This is the Copilot's own chat: `/agent` (Agent mode) is offered. It is
+   *  the Assistant's alone -- the server refuses it in any other chat. */
+  agentMode?: boolean;
 }
 
 function TurnSkeletons() {
@@ -1094,7 +1097,7 @@ function ConversationBody(props: ConversationProps) {
               : undefined
           }
           onLocalCommand={onLocalCommand}
-          onEnterMode={enterMode}
+          onEnterMode={props.agentMode ? enterMode : undefined}
           placeholder={
             pending ? t("Or answer freely …", "Oder frei antworten …") : props.placeholder
           }

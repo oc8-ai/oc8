@@ -13,19 +13,26 @@ import uuid
 import pytest
 
 from oc8 import models as m
+from oc8.agent.assistant import get_or_create_assistant
+from oc8.chat.modes import ModeNotAvailable
 from oc8.chat.service import create_session, send_message
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
 
 
-async def _session(db: object, tenant: uuid.UUID) -> m.ChatSession:
-    dept = m.Department(tenant_id=tenant, name="Vertrieb")
-    db.add(dept)  # type: ignore[attr-defined]
-    await db.flush()  # type: ignore[attr-defined]
-    agent = m.Agent(tenant_id=tenant, department_id=dept.id, name="Nora", status="running")
-    db.add(agent)  # type: ignore[attr-defined]
-    await db.flush()  # type: ignore[attr-defined]
+async def _session(db: object, tenant: uuid.UUID, *, copilot: bool = False) -> m.ChatSession:
+    """A chat with an ordinary agent, or -- `copilot` -- with the tenant's
+    Assistant, the only one that offers Agent mode."""
+    if copilot:
+        agent = await get_or_create_assistant(db, tenant_id=tenant)  # type: ignore[arg-type]
+    else:
+        dept = m.Department(tenant_id=tenant, name="Vertrieb")
+        db.add(dept)  # type: ignore[attr-defined]
+        await db.flush()  # type: ignore[attr-defined]
+        agent = m.Agent(tenant_id=tenant, department_id=dept.id, name="Nora", status="running")
+        db.add(agent)  # type: ignore[attr-defined]
+        await db.flush()  # type: ignore[attr-defined]
     member = m.OrgMember(
         tenant_id=tenant, all_departments=True, subject="op", subject_uuid=uuid.uuid4()
     )
@@ -214,7 +221,7 @@ async def test_agent_command_makes_the_mode_stick(
 ) -> None:
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
-        session = await _session(db, tenant)
+        session = await _session(db, tenant, copilot=True)
         msg, run = await send_message(
             db,
             session=session,
@@ -231,7 +238,7 @@ async def test_a_plain_message_in_an_agent_session_runs_in_agent_mode(
 ) -> None:
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
-        session = await _session(db, tenant)
+        session = await _session(db, tenant, copilot=True)
         session.mode = "agent"
         await db.flush()
         msg, run = await send_message(
@@ -251,7 +258,7 @@ async def test_a_one_off_command_does_not_leave_the_sticky_mode(
 ) -> None:
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
-        session = await _session(db, tenant)
+        session = await _session(db, tenant, copilot=True)
         session.mode = "agent"
         await db.flush()
         msg, _run = await send_message(
@@ -269,7 +276,7 @@ async def test_a_followup_turn_ignores_the_sticky_mode(
 ) -> None:
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
-        session = await _session(db, tenant)
+        session = await _session(db, tenant, copilot=True)
         session.mode = "agent"
         await db.flush()
         msg, run = await send_message(
@@ -291,7 +298,7 @@ async def test_a_messenger_turn_neither_inherits_nor_sets_the_sticky_mode(
     sender must never be stuck read-only -- `/agent` there is one turn."""
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
-        session = await _session(db, tenant)
+        session = await _session(db, tenant, copilot=True)
         session.mode = "agent"
         await db.flush()
         msg, run = await send_message(
@@ -339,4 +346,57 @@ async def test_extra_context_cannot_set_the_mode(
             extra_context={"chat_mode": "agent", "mode": "agent"},
         )
         assert msg.mode is None and session.mode is None
+        assert run is not None and "chat_mode" not in run.context
+
+
+async def test_agent_mode_is_refused_outside_the_copilot_chat(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """Its tools exist on the Assistant alone: an ordinary agent's chat neither
+    takes `/agent ...` from the composer nor runs in a stored Agent mode."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        session = await _session(db, tenant)
+        member = await db.get(m.OrgMember, session.member_id)
+        with pytest.raises(ModeNotAvailable):
+            await send_message(
+                db,
+                session=session,
+                tenant_id=tenant,
+                message="/agent build me an invoice checker",
+                originating_operator="op",
+                acting_member=member,
+            )
+        assert session.mode is None
+
+        session.mode = "agent"  # stored before this rule
+        await db.flush()
+        msg, run = await send_message(
+            db,
+            session=session,
+            tenant_id=tenant,
+            message="mornings, please",
+            originating_operator="op",
+        )
+        assert msg.mode is None
+        assert run is not None and "chat_mode" not in run.context
+
+
+async def test_agent_outside_the_copilot_chat_is_plain_text_where_nobody_can_be_told(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """A carried-over run input has no composer to answer: what was written is
+    sent as it was, like an unknown command."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        session = await _session(db, tenant)
+        msg, run = await send_message(
+            db,
+            session=session,
+            tenant_id=tenant,
+            message="/agent build me an invoice checker",
+            originating_operator="op",
+        )
+        assert msg.mode is None and msg.content == "/agent build me an invoice checker"
+        assert session.mode is None
         assert run is not None and "chat_mode" not in run.context

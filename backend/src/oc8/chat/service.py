@@ -44,7 +44,14 @@ from oc8.chat.context.manifest import (
     manifest_text,
 )
 from oc8.chat.context.registry import RESOLVERS
-from oc8.chat.modes import MODES, ChatMode, mode_directive, parse_command
+from oc8.chat.modes import (
+    ASSISTANT_ONLY_REFUSAL,
+    MODES,
+    ChatMode,
+    ModeNotAvailable,
+    mode_directive,
+    parse_command,
+)
 from oc8.chat.questions import (
     PLAIN_ID,
     Answer,
@@ -505,6 +512,11 @@ def _build_turn_context(
     return context
 
 
+async def _is_assistant(db: AsyncSession, session: m.ChatSession) -> bool:
+    agent = await db.get(m.Agent, session.agent_id)
+    return agent is not None and agent.is_tenant_assistant
+
+
 async def send_message(
     db: AsyncSession,
     *,
@@ -595,6 +607,14 @@ async def send_message(
         mode, body = None, message
     else:
         mode, body = parse_command(message)
+        if mode is not None and mode.assistant_only and not await _is_assistant(db, session):
+            # Agent mode is the Copilot's alone (its tools exist nowhere else).
+            # A sender at the web composer is told; any other door (a carried-
+            # over run input) gets what it wrote sent as plain text, the way an
+            # unknown command is a message.
+            if acting_member is not None:
+                raise ModeNotAvailable(ASSISTANT_ONLY_REFUSAL)
+            mode, body = None, message
         # A sticky mode lives only on the web door (Ruling A7): the chip and
         # its ✕ exist nowhere else, so a messenger turn neither inherits it
         # (its sender could never leave it) nor sets it (`/agent` there is
@@ -608,6 +628,9 @@ async def send_message(
                 # know must not narrow anything (same fail-open as
                 # mode_from_context).
                 mode = MODES.get(session.mode)
+                if mode is not None and mode.assistant_only:
+                    if not await _is_assistant(db, session):
+                        mode = None
     manifest = await _turn_manifest(
         db,
         session=session,
