@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import datetime as dt
 import json
 import logging
@@ -114,7 +115,7 @@ from oc8.authz.pdp import (
 from oc8.capas.discovery import resolve_tool_pack_connection
 from oc8.chat.modes import mode_from_context
 from oc8.config import get_settings
-from oc8.copilot.door import door_of
+from oc8.copilot.door import chat_door, door_of
 from oc8.edition.tools import edition_offer, registered_edition_tool
 from oc8.metering import record_usage
 from oc8.modelrouter import (
@@ -144,7 +145,7 @@ from oc8.realtime.emit import (
 )
 from oc8.runtime.approval_resume import pre_decided_map
 from oc8.runtime.registry import BUILTIN_ISOLATED_RUNTIME_REF
-from oc8.runtime.run_context import append_tool_call
+from oc8.runtime.run_context import append_tool_call, write_back_context
 from oc8.runtime.step_record import call_state_for, step_timing_dto
 from oc8.skills.runtime import LoadedSkill, instruction_block, load_assigned_skills
 from oc8.storage import s3
@@ -922,7 +923,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
     )
     edition = await edition_offer(
         run.tenant_id,
-        door=door_of(ctx),
+        door=chat_door(run.source, ctx),
         taken=_taken_tool_names(ctx, assigned_skills),
         chat_mode=mode_from_context(ctx),
     )
@@ -1703,7 +1704,7 @@ async def _dispatch_one_tool(
     # tools computed it: a call is checked against what this leg offered.
     edition = await edition_offer(
         run.tenant_id,
-        door=door_of(run.context),
+        door=chat_door(run.source, run.context),
         taken=_taken_tool_names(dict(run.context), assigned_skills),
         chat_mode=mode_from_context(run.context),
     )
@@ -1740,6 +1741,10 @@ async def _dispatch_one_tool(
 
     scopes = _manifest_scopes(conn)
     ctx = dict(run.context)
+    # What this request started from, deep: ctx's lists are edited in place.
+    # The write-back below sends only what the request itself changed, so a
+    # key a tool merges meanwhile (suggestions, parts, ...) survives it.
+    ctx_before = copy.deepcopy(ctx)
     harness = Harness.from_run_context(ctx)
     harness.state.step_no = int(ctx.get("steps", 0))
 
@@ -1891,18 +1896,24 @@ async def _dispatch_one_tool(
         )
         # Record the suspend verdict so the isolated runtime maps the run to
         # waiting_for_approval after the container exits.
-        run.context = {
-            **ctx,
-            "isolated_result": {"status": "waiting_for_approval", "output": decision.reason or ""},
-        }
+        await write_back_context(
+            db,
+            run,
+            before=ctx_before,
+            after={
+                **ctx,
+                "isolated_result": {
+                    "status": "waiting_for_approval",
+                    "output": decision.reason or "",
+                },
+            },
+        )
         # The parked call itself, at parity with the in-process engine's own
         # require-approval append: without this the timeline of an isolated
         # run simply loses the step a human is being asked about, which is
-        # the one step they most need to see. Flush before the raw-SQL
-        # append -- append_tool_call's own _adopt() would otherwise read the
-        # row back before the isolated_result assignment above landed, and
-        # silently drop it from the ORM's view -- and commit ONCE after both,
-        # since a commit in between would unbind the tenant GUC.
+        # the one step they most need to see. The write-back above is one SQL
+        # statement already ordered before this append; commit ONCE after
+        # both, since a commit in between would unbind the tenant GUC.
         await db.flush()
         parked_call: dict[str, Any] = {
             "tool": tc.name,
@@ -2154,10 +2165,6 @@ async def _dispatch_one_tool(
                 {"run_id": str(run.id), **control.rendered_component},
                 source=f"oc8/run/{run.id}",
             )
-        if "parts" in (run.context or {}):
-            # An edition tool's parts were merged onto the row in SQL; carry
-            # them into this request's snapshot, which is written back whole.
-            ctx["parts"] = run.context["parts"]
         if control.todos is not None:
             # Whole-list replace, unlike rendered_components above -- this IS
             # the current state, not a log of every call. See RunResult.todos.
@@ -2454,25 +2461,18 @@ async def _dispatch_one_tool(
             # A structured ask_user (spec §4.1): its questions ride beside the
             # readable output, never inside it.
             ctx["isolated_result"]["questions"] = pending_questions
-    run.context = ctx
+    await write_back_context(db, run, before=ctx_before, after=ctx)
 
     # Live Log parity with the in-process engine (agent/engine.py's
-    # _live_tool_call): the append must land after the whole-column
-    # `run.context = ctx` write above (that assignment is a snapshot taken
-    # at the top of this request, so an append made before it would just be
-    # clobbered) but MUST NOT be split across a separate commit -- `db` is a
-    # `tenant_session`, whose RLS-scoping `app.tenant_id` GUC is
-    # `SET LOCAL` (transaction-scoped, per db/session.py); a commit in
-    # between ends that transaction and drops the GUC, so the raw-SQL
-    # append below would run unbound and get RLS-rejected (see project
-    # note: "Tenant GUC dies at commit"). An explicit flush -- not a
-    # commit -- sends the pending ORM `context = ctx` UPDATE ahead of the
-    # raw-SQL append while staying in the same transaction; append_tool_call's
-    # own `_adopt()` overwrites this session's in-memory `run.context` with
-    # whatever it read back, so if that read happened before this write
-    # landed, the flush's changes would be silently lost from the ORM's view
-    # (even though the DB row itself would still be correct) -- one commit
-    # at the end covers both writes atomically, in the GUC's own transaction.
+    # _live_tool_call): the append lands after the context write-back above
+    # and MUST NOT be split from it by a commit -- `db` is a `tenant_session`,
+    # whose RLS-scoping `app.tenant_id` GUC is `SET LOCAL` (transaction-scoped,
+    # per db/session.py); a commit in between would drop the GUC and the
+    # raw-SQL append below would run unbound and get RLS-rejected (see project
+    # note: "Tenant GUC dies at commit"). The write-back is itself a single
+    # SQL statement, so both writes are ordered within the one transaction and
+    # one commit at the end covers both. The flush only sends whatever other
+    # ORM changes this request made.
     await db.flush()
     live_call: dict[str, Any] = {
         "tool": tc.name,

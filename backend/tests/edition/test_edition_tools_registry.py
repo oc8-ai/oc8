@@ -34,8 +34,6 @@ from oc8.main import create_app
 from oc8.modelrouter import NeutralTool
 from oc8.runtime.supervision_hook import NOOP_SUPERVISION_RUN_HOOK
 
-pytestmark = pytest.mark.asyncio
-
 
 @dataclass(frozen=True)
 class _Granted:

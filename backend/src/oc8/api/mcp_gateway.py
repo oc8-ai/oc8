@@ -84,9 +84,10 @@ from oc8.authz.pdp import (
 )
 from oc8.capas.discovery import resolve_tool_pack_connection
 from oc8.chat.modes import mode_from_context, mode_refusal
-from oc8.copilot.door import door_of
+from oc8.copilot.door import chat_door
 from oc8.edition.tools import EditionOffer, edition_offer
 from oc8.memory.policy import authorize_memory_write
+from oc8.modelrouter import ToolCall
 from oc8.realtime.emit import note_focus, record_activity
 from oc8.runtime.approval_resume import pre_decided_map
 from oc8.runtime.run_context import merge_context
@@ -331,7 +332,7 @@ async def _edition_offer(
     taken = set(routes) | {r.tool for r in routes.values()} | {s.tool_name for s in skills}
     return await edition_offer(
         run.tenant_id,
-        door=door_of(run.context),
+        door=chat_door(run.source, run.context),
         taken=taken,
         chat_mode=mode_from_context(run.context),
     )
@@ -608,6 +609,47 @@ async def _stop_for_blast_radius(
     return _tool_result(blast_refusal(touched, limit), is_error=True)
 
 
+async def _run_task(db: DbSession, run: m.AgentRun, *, no_task: str) -> m.Task | dict[str, Any]:
+    """The task a core or edition tool runs against, or the tool result that
+    refuses the call (`no_task` when the run has none)."""
+    if run.task_id is None:
+        return _tool_result(no_task, is_error=True)
+    task = await db.get(m.Task, run.task_id)
+    if task is None:
+        return _tool_result("ERROR: task not found", is_error=True)
+    return task
+
+
+def _authorize_unbound(
+    agent: m.Agent,
+    tc: ToolCall,
+    *,
+    run: m.AgentRun,
+    frame: dict[str, Any],
+    narrowing: dict[str, Any],
+    pinned: Mapping[str, Any],
+    skill_tool_names: frozenset[str],
+    edition: EditionOffer,
+) -> Decision:
+    """The PEP for a tool that belongs to no connection (delegate_task, an
+    edition tool): no scopes and no connection key -- the checks that matter
+    for it (self, real id, depth; the edition offer) are inside _authorize."""
+    return _authorize(
+        agent,
+        tc,
+        frame=frame,
+        skill_tool_names=skill_tool_names,
+        delegation_depth=int(run.context.get("delegation_depth", 0)),
+        tool_policies=effective_tool_policies(frame, narrowing),
+        narrowing=narrowing,
+        is_team_lead=bool(pinned["is_team_lead"]),
+        tool_scopes=None,
+        connection_key=None,
+        chat_mode=mode_from_context(run.context),
+        edition_offer=edition,
+    )
+
+
 async def _call_tool(
     db: DbSession,
     *,
@@ -761,13 +803,11 @@ async def _call_tool(
         SUGGEST_REPLIES.name,
         READ_CONTEXT.name,
     ):
-        if run.task_id is None:
-            return _tool_result(
-                "ERROR: this run has no task to attach a decision to", is_error=True
-            )
-        task = await db.get(m.Task, run.task_id)
-        if task is None:
-            return _tool_result("ERROR: task not found", is_error=True)
+        task = await _run_task(
+            db, run, no_task="ERROR: this run has no task to attach a decision to"
+        )
+        if not isinstance(task, m.Task):
+            return task
         from oc8.modelrouter import ToolCall as _ToolCall
 
         # Reading and asking change nothing outside oc8, so they are allowed
@@ -787,23 +827,15 @@ async def _call_tool(
             # Not waved through: _authorize is where "not yourself", "a real
             # agent id" and the depth limit live, and the limit is the only thing
             # standing between a lead and a delegation loop.
-            core_decision = _authorize(
+            core_decision = _authorize_unbound(
                 agent,
                 core_tc,
+                run=run,
                 frame=frame,
-                skill_tool_names=skill_tool_names,
-                delegation_depth=int(run.context.get("delegation_depth", 0)),
-                skill_thresholds=(),
-                tool_policies=effective_tool_policies(frame, narrowing),
                 narrowing=narrowing,
-                is_team_lead=bool(pinned["is_team_lead"]),
-                # A core tool belongs to no connection, so it has neither scopes
-                # nor a connection key -- the checks that matter for it (self,
-                # real id, depth) are inside _authorize.
-                tool_scopes=None,
-                connection_key=None,
-                chat_mode=mode_from_context(run.context),
-                edition_offer=edition,
+                pinned=pinned,
+                skill_tool_names=skill_tool_names,
+                edition=edition,
             )
         else:
             mode_denial = mode_refusal(mode_from_context(run.context), name, tool_scopes=None)
@@ -871,27 +903,19 @@ async def _call_tool(
         # An edition tool: decided by the PEP against this run's offer, then
         # gated again (offer, entitlement, tenant) and audited by the
         # dispatcher. Never routed to a connection.
-        if run.task_id is None:
-            return _tool_result(f"ERROR: unknown tool {name!r}", is_error=True)
-        edition_task = await db.get(m.Task, run.task_id)
-        if edition_task is None:
-            return _tool_result("ERROR: task not found", is_error=True)
-        from oc8.modelrouter import ToolCall as _EditionToolCall
-
-        edition_tc = _EditionToolCall(id=str(uuid.uuid4()), name=name, arguments=arguments)
-        edition_decision = _authorize(
+        edition_task = await _run_task(db, run, no_task=f"ERROR: unknown tool {name!r}")
+        if not isinstance(edition_task, m.Task):
+            return edition_task
+        edition_tc = ToolCall(id=str(uuid.uuid4()), name=name, arguments=arguments)
+        edition_decision = _authorize_unbound(
             agent,
             edition_tc,
+            run=run,
             frame=frame,
-            skill_tool_names=skill_tool_names,
-            delegation_depth=int(run.context.get("delegation_depth", 0)),
-            tool_policies=effective_tool_policies(frame, narrowing),
             narrowing=narrowing,
-            is_team_lead=bool(pinned["is_team_lead"]),
-            tool_scopes=None,
-            connection_key=None,
-            chat_mode=mode_from_context(run.context),
-            edition_offer=edition,
+            pinned=pinned,
+            skill_tool_names=skill_tool_names,
+            edition=edition,
         )
         edition_outcome = await execute_control_tool(
             db,
@@ -929,8 +953,6 @@ async def _call_tool(
         return _tool_result(
             f"ERROR: '{name}' is not available through the tool gateway", is_error=True
         )
-
-    from oc8.modelrouter import ToolCall
 
     tc = ToolCall(id=str(uuid.uuid4()), name=name, arguments=arguments)
     decision = _authorize(

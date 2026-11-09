@@ -97,6 +97,9 @@ class _State:
     entitlements: TenantEntitlements
 
 
+#: Edition tool names whose clash with an agent's own tool was already logged.
+_WARNED_CLASHES: set[str] = set()
+
 _NO_TOOLS = _State(MappingProxyType({}), community_entitlements)
 _STATE: ContextVar[_State] = ContextVar("oc8_edition_tools", default=_NO_TOOLS)
 
@@ -176,7 +179,11 @@ async def offered_edition_tools(
         if tool.door_ok is not None and (door is None or door not in tool.door_ok):
             continue
         if name in taken:
-            logger.warning("edition tool %r withheld: the agent has a tool of that name", name)
+            if name not in _WARNED_CLASHES:
+                # Once per process and name: the offer is recomputed on every
+                # gateway call, and the clash does not change between them.
+                _WARNED_CLASHES.add(name)
+                logger.warning("edition tool %r withheld: the agent has a tool of that name", name)
             continue
         offered.append(tool)
     return offered

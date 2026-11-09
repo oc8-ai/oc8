@@ -30,6 +30,7 @@ from oc8.agent.control_tools import (
     CONTROL_TOOL_NAMES,
     FIND_TOOLS,
     MAX_DELEGATION_DEPTH,  # re-exported for tests/coding/test_engine_delegation.py
+    audit_edition_call,
     execute_control_tool,
     has_readable_context,
     has_released_knowledge,
@@ -121,7 +122,7 @@ from oc8.capas.discovery import resolve_tool_pack_connection
 from oc8.chat.modes import mode_from_context
 from oc8.coding.tools import CODING_FRAME_KEY, CODING_TOOL_RIGHTS, Toolset
 from oc8.config import get_settings
-from oc8.copilot.door import door_of
+from oc8.copilot.door import chat_door, door_of
 from oc8.copilot.notes import member_behind_run_task
 from oc8.edition.tools import edition_offer
 from oc8.hooks.bus import dispatch_filter
@@ -822,7 +823,7 @@ async def run_agent(
                 }
             edition = await edition_offer(
                 tenant_id,
-                door=door_of(run_row.context) if run_row is not None else None,
+                door=chat_door(run_row.source, run_row.context) if run_row is not None else None,
                 taken=taken,
                 chat_mode=chat_mode,
             )
@@ -1680,6 +1681,7 @@ async def run_agent(
                                 for g in s.definition.guardrails
                                 if g.type == "value_threshold" and g.then == "require_approval"
                             ),
+                            edition_offer=edition,
                         )
                         stripped, justification = strip_justification(_pre_tc.arguments)
                         _pre_tc.arguments = stripped
@@ -1869,6 +1871,18 @@ async def run_agent(
                         )
                         if pre_hook.blocked:
                             output = f"ERROR: {pre_hook.reason or 'blocked by plugin hook'}"
+                            if edition.claims(tc.name):
+                                # Never dispatched, but still a call: audited
+                                # like every other refused edition call.
+                                await audit_edition_call(
+                                    db,
+                                    tenant_id=tenant_id,
+                                    agent=agent,
+                                    tool=tc.name,
+                                    run_id=run_id,
+                                    refusal=pre_hook.reason or "blocked by plugin hook",
+                                    originating_operator=originating_operator,
+                                )
                             tool_trace.append(
                                 {
                                     "tool": tc.name,

@@ -1223,10 +1223,14 @@ def offered_tools(
     # already narrowed by entitlement, door, mode and the agent's own names.
     offered.extend(edition_tools)
     if chat_mode is not None and not chat_mode.allows_writes:
+        # By identity: only a tool that came in as an edition tool is judged
+        # by the edition registry, never the agent's own tool of that name.
+        from_edition = {id(t) for t in edition_tools}
         offered = [
             t
             for t in offered
-            if t.name not in WRITING_CONTROL_TOOLS and edition_tool_writes(t.name) is not True
+            if t.name not in WRITING_CONTROL_TOOLS
+            and not (id(t) in from_edition and edition_tool_writes(t.name) is True)
         ]
     return offered
 
@@ -2078,6 +2082,43 @@ async def _execute_read_resource(
 EDITION_TOOL_FAILED = "ERROR: The tool failed."
 
 
+async def audit_edition_call(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    agent: m.Agent,
+    tool: str,
+    run_id: uuid.UUID | None,
+    refusal: str | None,
+    originating_operator: str | None,
+    error: str | None = None,
+) -> None:
+    """The one `edition_tool.called` record of a claimed call: allowed iff no
+    `refusal`. Never its arguments or output; on a failure only the
+    exception's type (`error`)."""
+    edition = registered_edition_tool(tool)
+    resource: dict[str, Any] = {
+        "tool": tool,
+        "capability": edition.capability if edition is not None else None,
+        "run_id": str(run_id) if run_id is not None else None,
+        "allowed": refusal is None,
+    }
+    if error is not None:
+        resource["error"] = error
+    await append_event(
+        db,
+        tenant_id=tenant_id,
+        actor_type="agent",
+        actor_id=agent.id,
+        category="tool_action",
+        action="edition_tool.called",
+        resource=resource,
+        decision="allow" if refusal is None else "deny",
+        reason=refusal,
+        originating_operator=originating_operator,
+    )
+
+
 async def _execute_edition_tool(
     db: AsyncSession,
     *,
@@ -2142,8 +2183,17 @@ async def _execute_edition_tool(
     stored_parts = False
     if outcome is not None and outcome.parts and run_id is not None:
         # Appended, then bounded as a whole: clean_parts' count and size caps
-        # hold across every call of the run, not per call.
-        run_row = await db.get(m.AgentRun, run_id)
+        # hold across every call of the run, not per call. The row is locked
+        # and re-read first, so two calls of one run (concurrent gateway
+        # requests) append in turn instead of each overwriting the other.
+        run_row = (
+            await db.execute(
+                select(m.AgentRun)
+                .where(m.AgentRun.id == run_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
         if run_row is not None and run_row.tenant_id == tenant_id:
             from oc8.runtime.run_context import merge_context
 
@@ -2154,25 +2204,14 @@ async def _execute_edition_tool(
             await merge_context(db, run_row, {"parts": merged})
             stored_parts = True
 
-    allowed = refusal is None
-    resource: dict[str, Any] = {
-        "tool": tc.name,
-        "capability": edition.capability if edition is not None else None,
-        "run_id": str(run_id) if run_id is not None else None,
-        "allowed": allowed,
-    }
-    if error is not None:
-        resource["error"] = error
-    await append_event(
+    await audit_edition_call(
         db,
         tenant_id=tenant_id,
-        actor_type="agent",
-        actor_id=agent.id,
-        category="tool_action",
-        action="edition_tool.called",
-        resource=resource,
-        decision="allow" if allowed else "deny",
-        reason=refusal,
+        agent=agent,
+        tool=tc.name,
+        run_id=run_id,
+        refusal=refusal,
+        error=error,
         originating_operator=originating_operator,
     )
     if refusal is not None:
