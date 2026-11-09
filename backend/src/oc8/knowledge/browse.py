@@ -14,7 +14,12 @@ Guards applied here, whatever the connector does:
 * A fetched file larger than `MAX_FETCH_BYTES` is refused, never truncated.
 * A connector failure surfaces as a `ConnectorError` that names only the
   exception type, never its message: connector errors can echo URLs, tokens or
-  config values.
+  config values. That includes a `ConnectorError` the connector raised itself;
+  only the messages written in this module ("too large", "invalid file id",
+  ...) reach a caller verbatim.
+* `fetch_source_file` fetches only a file the connector confirms is inside the
+  source's configured scope (`in_scope`, required -- see `BrowsingConnector`).
+  A connector without `in_scope` fetches nothing.
 """
 
 from __future__ import annotations
@@ -67,10 +72,15 @@ def _check_path(path: str) -> str:
     return path
 
 
-def _check_file_id(file_id: str) -> str:
+def check_file_id(file_id: str) -> str:
+    """`file_id`, or `ConnectorError` if it is empty, oversized or holds
+    control characters."""
     if not file_id or len(file_id) > _MAX_REF_LEN or _has_control_chars(file_id):
         raise ConnectorError("invalid file id")
     return file_id
+
+
+_NOT_IN_SCOPE = "the file is not part of this source"
 
 
 def _too_large(size: int) -> str:
@@ -80,9 +90,9 @@ def _too_large(size: int) -> str:
 async def _call(source: m.DataSource, what: str, coro: Any) -> Any:
     try:
         return await coro
-    except ConnectorError:
-        raise
     except Exception as exc:
+        # A connector's own ConnectorError is treated like any other failure:
+        # its message is the connector's, not ours, and may echo config.
         status = getattr(exc, "status_code", None) or getattr(
             getattr(exc, "response", None), "status_code", None
         )
@@ -117,7 +127,7 @@ async def browse_source(db: AsyncSession, *, source: m.DataSource, path: str) ->
 async def fetch_source_file(
     db: AsyncSession, *, source: m.DataSource, file_id: str, known_size: int | None = None
 ) -> FetchedFile:
-    file_id = _check_file_id(file_id)
+    file_id = check_file_id(file_id)
     if known_size is not None and known_size > MAX_FETCH_BYTES:
         raise ConnectorError(_too_large(known_size))
     connector = await resolve_connector(
@@ -126,6 +136,8 @@ async def fetch_source_file(
     fetch_file = getattr(connector, "fetch_file", None)
     if fetch_file is None:
         raise BrowseUnsupported(source.connector_type)
+    if not await _in_scope(connector, source, file_id, db):
+        raise ConnectorError(_NOT_IN_SCOPE)
     fetched: FetchedFile = await _call(
         source,
         "fetch the file",
@@ -136,3 +148,35 @@ async def fetch_source_file(
     if size > MAX_FETCH_BYTES:
         raise ConnectorError(_too_large(size))
     return fetched
+
+
+async def _in_scope(connector: Any, source: m.DataSource, file_id: str, db: AsyncSession) -> bool:
+    """Fails closed: no `in_scope`, a failure, or anything but `True` is "no"."""
+    in_scope = getattr(connector, "in_scope", None)
+    if in_scope is None:
+        return False
+    try:
+        answer = await _call(
+            source,
+            "check the file",
+            in_scope(dict(source.config or {}), file_id, _auth(db, source)),
+        )
+    except ConnectorError:
+        return False
+    return answer is True
+
+
+async def source_file_in_scope(db: AsyncSession, *, source: m.DataSource, file_id: str) -> bool:
+    """Does `source` actually expose `file_id`? False for an invalid id, a
+    connector that cannot browse or cannot answer, and any failure -- never
+    raises, so a caller can drop the ref without telling the reasons apart."""
+    try:
+        file_id = check_file_id(file_id)
+        connector = await resolve_connector(
+            db, tenant_id=source.tenant_id, type_id=source.connector_type
+        )
+    except ConnectorError:
+        return False
+    if getattr(connector, "fetch_file", None) is None:
+        return False
+    return await _in_scope(connector, source, file_id, db)

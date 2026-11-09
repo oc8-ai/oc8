@@ -79,6 +79,13 @@ class UploadConnector:
             )
         ]
 
+    async def in_scope(
+        self, config: dict[str, Any], file_id: str, auth: AuthContext | None = None
+    ) -> bool:
+        """An upload source exposes exactly its one file."""
+        filename = str(config.get("filename", ""))
+        return bool(filename) and file_id == filename
+
     async def fetch_file(
         self,
         config: dict[str, Any],

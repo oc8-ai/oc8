@@ -200,7 +200,18 @@ class BrowsingConnector(Protocol):
     `fetch_file` must refuse (raise `ConnectorError`) or stop reading once the
     file exceeds `max_bytes`; core re-checks as defence in depth. Both `data`
     and `text` must be at most `max_bytes` (UTF-8 for `text`). A non-text file
-    decodes `text` with `errors="replace"` or raises `ConnectorError`."""
+    decodes `text` with `errors="replace"` or raises `ConnectorError`.
+
+    `in_scope` is a HARD requirement for any connector that implements
+    `fetch_file`: it answers whether `file_id` lies inside what THIS source's
+    `config` exposes (its configured folder, drive, site, ...) -- not merely
+    whether the credential can open it. A credential usually reaches far more
+    than the source was set up to share, and a pinned file id is untrusted
+    input, so without this check pinning would be a way to read anything the
+    connection can reach. Core calls it before every `fetch_file` and when a
+    file is pinned, and fails closed: a connector without `in_scope`, one that
+    raises, or one that answers anything but `True` fetches nothing. When the
+    connector cannot tell cheaply, it must answer `False`."""
 
     async def browse(
         self, config: dict[str, Any], path: str, auth: AuthContext | None = None
@@ -213,3 +224,7 @@ class BrowsingConnector(Protocol):
         max_bytes: int,
         auth: AuthContext | None = None,
     ) -> FetchedFile: ...
+
+    async def in_scope(
+        self, config: dict[str, Any], file_id: str, auth: AuthContext | None = None
+    ) -> bool: ...

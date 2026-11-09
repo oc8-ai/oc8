@@ -13,6 +13,7 @@ from oc8.knowledge.browse import (
     BrowseUnsupported,
     browse_source,
     fetch_source_file,
+    source_file_in_scope,
 )
 from oc8.knowledge.connectors.base import BrowseEntry, ConnectorError, FetchedFile
 from oc8.knowledge.connectors.upload import UploadConnector
@@ -31,6 +32,9 @@ class Browsing:
         self, config: dict[str, Any], file_id: str, max_bytes: int, auth: Any
     ) -> FetchedFile:
         return FetchedFile(name="Q3.xlsx", content_type="text/csv", data=b"a,b", text="a,b")
+
+    async def in_scope(self, config: dict[str, Any], file_id: str, auth: Any) -> bool:
+        return True
 
 
 class Plain:
@@ -175,3 +179,73 @@ async def test_upload_edge_cases() -> None:
         await up.fetch_file(cfg, "a.txt", 4, None)
     with pytest.raises(ConnectorError):
         await up.fetch_file({"filename": "", "content": "x"}, "", 10, None)
+
+
+class NoScopeCheck(Browsing):
+    in_scope = None  # type: ignore[assignment]
+
+
+class OnlyF1(Browsing):
+    async def in_scope(self, config: dict[str, Any], file_id: str, auth: Any) -> bool:
+        return file_id == "f1"
+
+
+class ScopeBoom(Browsing):
+    async def in_scope(self, config: dict[str, Any], file_id: str, auth: Any) -> bool:
+        raise RuntimeError("token=hunter2")
+
+
+async def test_only_a_file_inside_the_sources_scope_is_fetched(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    sid = await _source(app_session, tenant)
+    async with app_session(tenant) as db:
+        src = await db.get(m.DataSource, sid)
+        assert src is not None
+        with patch("oc8.knowledge.browse.resolve_connector", return_value=OnlyF1()):
+            assert await source_file_in_scope(db, source=src, file_id="f1")
+            assert not await source_file_in_scope(db, source=src, file_id="elsewhere")
+            assert not await source_file_in_scope(db, source=src, file_id="a\nb")
+            assert not await source_file_in_scope(db, source=src, file_id="")
+            assert (await fetch_source_file(db, source=src, file_id="f1")).text == "a,b"
+            with pytest.raises(ConnectorError, match="not part of this source"):
+                await fetch_source_file(db, source=src, file_id="elsewhere")
+        for connector in (NoScopeCheck(), ScopeBoom(), Plain()):
+            with patch("oc8.knowledge.browse.resolve_connector", return_value=connector):
+                assert not await source_file_in_scope(db, source=src, file_id="f1")
+        with patch("oc8.knowledge.browse.resolve_connector", return_value=NoScopeCheck()):
+            with pytest.raises(ConnectorError, match="not part of this source"):
+                await fetch_source_file(db, source=src, file_id="f1")
+        with patch("oc8.knowledge.browse.resolve_connector", side_effect=ConnectorError("unknown")):
+            assert not await source_file_in_scope(db, source=src, file_id="f1")
+
+
+class OwnError(Browsing):
+    async def fetch_file(
+        self, config: dict[str, Any], file_id: str, max_bytes: int, auth: Any
+    ) -> FetchedFile:
+        raise ConnectorError("cannot reach https://u:hunter2@host/drive")
+
+
+async def test_a_connectors_own_error_message_is_not_passed_through(
+    app_session: AppSessionFactory, caplog: pytest.LogCaptureFixture
+) -> None:
+    tenant = uuid.uuid4()
+    sid = await _source(app_session, tenant)
+    async with app_session(tenant) as db:
+        src = await db.get(m.DataSource, sid)
+        assert src is not None
+        with patch("oc8.knowledge.browse.resolve_connector", return_value=OwnError()):
+            with caplog.at_level("WARNING"), pytest.raises(ConnectorError) as ei:
+                await fetch_source_file(db, source=src, file_id="f1")
+    assert str(ei.value) == "the source could not fetch the file (ConnectorError)"
+    assert "hunter2" not in caplog.text
+
+
+async def test_upload_connector_scope() -> None:
+    cfg = {"filename": "a.txt", "content": "hello"}
+    up = UploadConnector()
+    assert await up.in_scope(cfg, "a.txt", None)
+    assert not await up.in_scope(cfg, "b.txt", None)
+    assert not await up.in_scope({"filename": ""}, "", None)
