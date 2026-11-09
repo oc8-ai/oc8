@@ -257,16 +257,19 @@ async def retrieve_kb_context(
     `released_kb_ids` are the bases the member pinned to the chat or its
     project (oc8 Chat §5.5, `chat.context.manifest`): THEIR release, made under
     their own `knowledge:view`, so these are searched whether or not the agent
-    holds a grant. The search is then narrowed to exactly what was pinned, plus
-    whatever a `#` on this message pointed at among the agent's grants.
-    Classification and the model's locality still filter every hit below."""
+    holds a grant, IN ADDITION to the agent's own grants (narrowed by
+    `only_kb_ids` when given). The caller re-checks the member's right to
+    each one first. Classification and the model's locality still filter
+    every hit below."""
     kb_ids = await granted_kb_ids(db, agent=agent)
     if only_kb_ids is not None:
         # Intersection, never replacement. A `#` reference cannot reach a base
         # the agent has no grant to.
         kb_ids = {kb_id for kb_id in kb_ids if kb_id in only_kb_ids}
     if released_kb_ids:
-        kb_ids = set(released_kb_ids) | (kb_ids if only_kb_ids is not None else set())
+        # In addition to the grants (Ruling 34): pinning never makes the agent
+        # know less. Only a `#` on the message narrows, and only the grants.
+        kb_ids = set(kb_ids) | set(released_kb_ids)
     if not kb_ids:
         return "", False
 

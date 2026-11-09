@@ -57,8 +57,6 @@ class ChatContextRefRequest(CamelModel):
 
 
 class SendChatMessageRequest(CamelModel):
-    model_config = ConfigDict(extra="forbid")
-
     message: str = Field(min_length=1, max_length=20_000)
     attachment_ids: list[uuid.UUID] = []
     #: `#` is for pointing at sources, and a turn that names more than this

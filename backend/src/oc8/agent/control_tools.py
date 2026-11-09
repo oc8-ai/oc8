@@ -18,7 +18,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 from sqlalchemy import case, select
@@ -65,6 +65,9 @@ from oc8.storage.attachments import (
     UnsupportedContentType,
     store_attachment_bytes,
 )
+
+if TYPE_CHECKING:
+    from oc8.chat.context.base import Viewer
 
 logger = logging.getLogger(__name__)
 
@@ -396,6 +399,8 @@ READ_CONTEXT = NeutralTool(
 
 #: What `read_context` answers when the source may not reach this run's model.
 LOCAL_ONLY_REFUSAL = "This source may only be used with local models."
+#: ... and when the department never cleared the source's classification.
+NOT_CLEARED_REFUSAL = "This source is not cleared for this department."
 
 
 FETCH_URL = NeutralTool(
@@ -1494,6 +1499,56 @@ async def _chat_owner_of_run(
     return member
 
 
+async def _acting_viewer(
+    db: AsyncSession, *, tenant_id: uuid.UUID, run: m.AgentRun
+) -> Viewer | None:
+    """The chat owner a turn acts for, as a `Viewer`, or None (refuse).
+
+    Their authority is re-resolved NOW from the database, with the role the
+    owner's own request token carried when they sent this turn
+    (`acting_token_role`, Ruling 33): written only by `chat/service.py` for
+    the session owner's live request, reserved against every caller, and
+    never copied into another run. `operator_role` is NOT used -- it is
+    recorded for whoever posted, which may be someone else."""
+    from oc8.chat.context.base import viewer_for_member
+
+    member = await _chat_owner_of_run(db, tenant_id=tenant_id, run=run)
+    if member is None:
+        return None
+    role = (run.context or {}).get("acting_token_role")
+    return await viewer_for_member(
+        db, member, token_role=role if isinstance(role, str) and role else None
+    )
+
+
+async def _released_for_member(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    run_id: uuid.UUID | None,
+    released: frozenset[uuid.UUID] | None,
+) -> frozenset[uuid.UUID] | None:
+    """The released bases the chat owner may STILL see (Ruling 35): each one
+    re-resolved through the registry with the same viewer `read_context`
+    uses. A base that fails is dropped silently; nobody to check for drops
+    them all."""
+    from oc8.chat.context.registry import resolve_ref
+
+    if not released or run_id is None:
+        return None
+    run = await db.get(m.AgentRun, run_id)
+    if run is None:
+        return None
+    viewer = await _acting_viewer(db, tenant_id=tenant_id, run=run)
+    if viewer is None:
+        return None
+    kept: set[uuid.UUID] = set()
+    for kb_id in sorted(released, key=str):
+        if await resolve_ref(db, viewer=viewer, kind="knowledge_base", ref_id=str(kb_id)):
+            kept.add(kb_id)
+    return frozenset(kept) or None
+
+
 async def _execute_read_context(
     db: AsyncSession,
     *,
@@ -1508,14 +1563,14 @@ async def _execute_read_context(
     Only a ref the turn's manifest lists, and only after re-authorising it NOW
     for the chat's owner: the manifest was built under their live request
     token when the turn was sent, but this runs later, with no token, so the
-    member is resolved fail-closed (`token_role=None`) -- a role recorded on
-    the run is never lent back. The object read is the one `resolve_ref` just
-    returned for that viewer, nothing looked up by another path.
+    member is resolved from the database again, with only the role their OWN
+    token carried when they sent the turn (`_acting_viewer`, Ruling 33). The
+    object read is the one `resolve_ref` just returned for that viewer,
+    nothing looked up by another path.
 
     Then classification against the model this run really uses: the stricter
     of the label recorded at send time and the object's live one."""
     from oc8.authz.pdp import classification_rule, effective_cleared_classes
-    from oc8.chat.context.base import viewer_for_member
     from oc8.chat.context.manifest import page_text, stricter
     from oc8.chat.context.registry import RESOLVERS, resolve_ref
     from oc8.knowledge.connectors.base import ConnectorError
@@ -1533,34 +1588,20 @@ async def _execute_read_context(
     readable = [e for e in manifest if e.get("readable")]
     if not readable:
         return ControlOutcome(output="Nothing readable is attached to this turn.")
-    entry = next((e for e in readable if e.get("ref_id") == ref_id), None)
+    entry = next((e for e in readable if ref_id in (e.get("ref_id"), e.get("handle"))), None)
     if entry is None:
         return ControlOutcome(
             output=f"ERROR: {ref_id[:200]!r} is not in this turn's readable context"
         )
-    member = await _chat_owner_of_run(db, tenant_id=tenant_id, run=run)
-    if member is None:
-        return ControlOutcome(output="ERROR: nobody is behind this turn to read context for")
-    viewer = await viewer_for_member(db, member, token_role=None)
-    resolved = await resolve_ref(
-        db, viewer=viewer, kind=str(entry.get("kind")), ref_id=str(entry.get("id"))
-    )
-    if resolved is None:
-        return ControlOutcome(output="Source not available.")
-    info, obj = resolved
-    classification = stricter(str(entry.get("classification") or "restricted"), info.classification)
-    locality = await _run_locality(db, agent, pinned, run_id)
-    cleared = effective_cleared_classes(await _department_frame(db, agent))
-    verdict = classification_rule(classification, cleared, locality)
-    audit_resource = {
-        "ref_id": ref_id,
+    operator = (run.context or {}).get("originating_operator")
+    audit_resource: dict[str, Any] = {
+        "ref_id": str(entry.get("ref_id")),
         "page": page_no,
         "run_id": str(run.id),
-        "classification": classification,
-        "model_locality": locality,
     }
-    operator = (run.context or {}).get("originating_operator")
-    if verdict.effect is not Effect.ALLOW:
+
+    async def refuse(output: str, reason: str) -> ControlOutcome:
+        # Every refusal leaves a deny row too: the reason, never content.
         await append_event(
             db,
             tenant_id=tenant_id,
@@ -1570,18 +1611,43 @@ async def _execute_read_context(
             action="context.read",
             resource=audit_resource,
             decision="deny",
-            reason=verdict.reason,
+            reason=reason,
             originating_operator=str(operator) if operator else None,
         )
-        if classification == "restricted" and locality != "local":
-            return ControlOutcome(output=LOCAL_ONLY_REFUSAL)
-        return ControlOutcome(output="This source is not cleared for this department.")
+        return ControlOutcome(output=output)
+
+    viewer = await _acting_viewer(db, tenant_id=tenant_id, run=run)
+    if viewer is None:
+        return await refuse(
+            "ERROR: nobody is behind this turn to read context for",
+            "no active chat owner behind this turn",
+        )
+    resolved = await resolve_ref(
+        db, viewer=viewer, kind=str(entry.get("kind")), ref_id=str(entry.get("id"))
+    )
+    if resolved is None:
+        return await refuse("Source not available.", "the owner may no longer open this source")
+    info, obj = resolved
+    classification = stricter(str(entry.get("classification") or "restricted"), info.classification)
+    locality = await _run_locality(db, agent, pinned, run_id)
+    cleared = effective_cleared_classes(await _department_frame(db, agent))
+    audit_resource["classification"] = classification
+    audit_resource["model_locality"] = locality
+    verdict = classification_rule(classification, cleared, locality)
+    if verdict.effect is not Effect.ALLOW:
+        # The department's clearance is the first question: a local model
+        # would not help with a class it never cleared.
+        if classification not in cleared:
+            return await refuse(NOT_CLEARED_REFUSAL, verdict.reason or "not cleared")
+        return await refuse(LOCAL_ONLY_REFUSAL, verdict.reason or "local models only")
     try:
         page = await RESOLVERS[info.kind].read(db, obj, page_no)
     except ConnectorError as exc:
-        return ControlOutcome(output=f"ERROR: could not read {ref_id[:200]!r}: {exc}")
+        return await refuse(
+            f"ERROR: could not read {ref_id[:200]!r}: {exc}", "the source could not be read"
+        )
     if page is None:
-        return ControlOutcome(output="Source not available.")
+        return await refuse("Source not available.", "the source cannot be read page by page")
     audit_resource["page"] = page.page
     await append_event(
         db,
@@ -1600,23 +1666,22 @@ async def _execute_read_context(
     )
 
 
-async def _released_bases_blocked(
+async def _released_bases_refusal(
     db: AsyncSession,
     *,
     tenant_id: uuid.UUID,
+    agent: m.Agent,
     released: frozenset[uuid.UUID],
     model_locality: str,
-) -> bool:
-    """Whether any pinned base is closed to this run's model because the model
-    is not local -- by the label `KnowledgeBaseResolver.classification`
-    reports (a local-only base counts as `restricted`), judged by the same
-    `classification_rule` retrieval filters its hits with."""
-    from oc8.authz.pdp import classification_rule
+) -> str | None:
+    """Why a pinned base gave nothing to this run, when its label is the
+    reason: by the label `KnowledgeBaseResolver.classification` reports (a
+    local-only base counts as `restricted`), judged by `classification_rule`
+    like retrieval judges every hit. Clearance first, locality second."""
+    from oc8.authz.pdp import classification_rule, effective_cleared_classes
     from oc8.knowledge.embedding_policy import strictest
 
-    if model_locality == "local":
-        return False
-    everything = frozenset({"public", "internal", "confidential", "restricted"})
+    cleared = effective_cleared_classes(await _department_frame(db, agent))
     rows = await db.execute(
         select(m.KnowledgeBase.classification, m.KnowledgeBase.local_only).where(
             m.KnowledgeBase.tenant_id == tenant_id,
@@ -1624,12 +1689,15 @@ async def _released_bases_blocked(
             m.KnowledgeBase.deleted_at.is_(None),
         )
     )
-    for label, local_only in rows.all():
-        effective = strictest(label, "restricted" if local_only else None)
-        # Every class counted as cleared: only the locality term is asked here.
-        if classification_rule(effective, everything, model_locality).effect is not Effect.ALLOW:
-            return True
-    return False
+    local_only = None
+    for label, is_local_only in rows.all():
+        effective = strictest(label, "restricted" if is_local_only else None)
+        if classification_rule(effective, cleared, model_locality).effect is Effect.ALLOW:
+            continue
+        if effective not in cleared:
+            return NOT_CLEARED_REFUSAL
+        local_only = LOCAL_ONLY_REFUSAL
+    return local_only
 
 
 async def _delegate(
@@ -2109,12 +2177,14 @@ async def execute_control_tool(
         # model runs locally. Passing the real locality matters -- text handed
         # back here goes on to the model through the LLM gateway, which cannot
         # tell what it is carrying.
-        released = await _released_kb_ids(db, tenant_id=tenant_id, run_id=run_id)
-        locality = (
-            await _run_locality(db, agent, pinned, run_id)
-            if released
-            else await _model_locality(db, agent, pinned)
+        released = await _released_for_member(
+            db,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            released=await _released_kb_ids(db, tenant_id=tenant_id, run_id=run_id),
         )
+        # The model the run really uses, chat override included.
+        locality = await _run_locality(db, agent, pinned, run_id)
         context, contains_restricted = await retrieve_kb_context(
             db,
             agent=agent,
@@ -2163,12 +2233,21 @@ async def execute_control_tool(
             detail=(context[:500] or None),
         )
         if not context.strip():
-            if released and await _released_bases_blocked(
-                db, tenant_id=tenant_id, released=released, model_locality=locality
-            ):
+            refusal = (
+                await _released_bases_refusal(
+                    db,
+                    tenant_id=tenant_id,
+                    agent=agent,
+                    released=released,
+                    model_locality=locality,
+                )
+                if released
+                else None
+            )
+            if refusal is not None:
                 # Nothing came back because a pinned base may not reach this
-                # model -- said as such, not as "the knowledge base is empty".
-                return ControlOutcome(output=LOCAL_ONLY_REFUSAL)
+                # run -- said as such, not as "the knowledge base is empty".
+                return ControlOutcome(output=refusal)
             # Said plainly, because a silent empty answer is filled in by the
             # model with something it made up.
             return ControlOutcome(

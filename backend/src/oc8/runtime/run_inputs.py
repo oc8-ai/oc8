@@ -15,7 +15,6 @@ Inputs are consumed exactly once, in order, at a step boundary
 from __future__ import annotations
 
 import datetime as dt
-import re
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -32,6 +31,7 @@ from oc8.authz.permissions import AGENT, MANAGE, perm
 from oc8.authz.scope import DepartmentScope
 from oc8.chat.reach import reachable_chat_agent
 from oc8.db.session import tenant_session
+from oc8.runtime.fencing import fence, one_line
 from oc8.runtime.states import TERMINAL, RunState
 
 if TYPE_CHECKING:
@@ -261,13 +261,10 @@ async def _author_name(db: AsyncSession, member_id: uuid.UUID) -> str:
 #: Display names longer than this are cut on the attribution line.
 MAX_AUTHOR_NAME_CHARS: Final = 80
 _FENCE_TAG: Final = "person_message"
-_CONTROL_CHARS: Final = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]+")
-_FENCE_CLOSE: Final = re.compile(rf"<\s*/\s*{_FENCE_TAG}", re.IGNORECASE)
 
 
 def _clean_author_name(name: str) -> str:
-    one_line = " ".join(_CONTROL_CHARS.sub(" ", name).split())
-    return one_line[:MAX_AUTHOR_NAME_CHARS].rstrip() or "a colleague"
+    return one_line(name, MAX_AUTHOR_NAME_CHARS).rstrip() or "a colleague"
 
 
 def format_input_message(author_name: str, text: str) -> str:
@@ -276,10 +273,8 @@ def format_input_message(author_name: str, text: str) -> str:
     Attributed to a person on its own line, and fenced: the text sits in a
     block it cannot close early, and the name cannot break out of its line, so
     what a person wrote cannot pass itself off as system or tool text."""
-    body = _FENCE_CLOSE.sub(f"<\\/{_FENCE_TAG}", text)
-    return (
-        f"Message from {_clean_author_name(author_name)} (a person, during the run):\n"
-        f"<{_FENCE_TAG}>\n{body}\n</{_FENCE_TAG}>"
+    return f"Message from {_clean_author_name(author_name)} (a person, during the run):\n" + fence(
+        text, tag=_FENCE_TAG
     )
 
 
@@ -292,10 +287,10 @@ def format_clarification_answers(clarifications: Sequence[Mapping[str, Any]]) ->
     blocks: list[str] = []
     for entry in clarifications:
         question = " ".join(str(entry.get("question", "")).split())
-        answer = _FENCE_CLOSE.sub(f"<\\/{_FENCE_TAG}", str(entry.get("answer", "")))
         blocks.append(
             f"You asked: {question}\n"
-            f"Answer from the person you asked:\n<{_FENCE_TAG}>\n{answer}\n</{_FENCE_TAG}>"
+            "Answer from the person you asked:\n"
+            + fence(str(entry.get("answer", "")), tag=_FENCE_TAG)
         )
     return "\n\n".join(blocks)
 
