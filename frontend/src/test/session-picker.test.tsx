@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const { renameMock, deleteMock } = vi.hoisted(() => ({ renameMock: vi.fn(), deleteMock: vi.fn() }));
 
 vi.mock("@/lib/hooks-chat", () => ({
-  useRenameChatSession: () => ({ mutate: renameMock }),
+  useRenameChatSession: () => ({ mutate: renameMock, isPending: false }),
   useDeleteChatSession: () => ({ mutate: deleteMock }),
 }));
 
@@ -26,7 +26,7 @@ function renderPicker(sessionId: string | null = "s1", onSelect = vi.fn()) {
 }
 
 // Radix's trigger opens on pointerdown, which fireEvent.click does not send.
-function openPicker(name: string) {
+function openPicker(name = "Switch chat") {
   fireEvent.pointerDown(screen.getByRole("button", { name }), { button: 0 });
 }
 
@@ -48,48 +48,86 @@ describe("SessionPicker", () => {
     expect(trigger).not.toHaveTextContent("VPN Tickets");
   });
 
-  it("lists every session, falling back to Untitled for an unnamed one", () => {
+  it("lists every chat as a menu radio item, the open one checked", () => {
     renderPicker("s1");
-    openPicker("Switch chat");
-    expect(screen.getAllByText(/VPN Tickets/).length).toBeGreaterThan(1);
-    expect(screen.getAllByText(/Untitled chat/).length).toBeGreaterThan(0);
+    openPicker();
+    const items = screen.getAllByRole("menuitemradio");
+    expect(items).toHaveLength(2);
+    expect(items[0]).toHaveTextContent("VPN Tickets");
+    expect(items[0]).toHaveAttribute("aria-checked", "true");
+    expect(items[1]).toHaveTextContent("Untitled chat");
   });
 
-  it("renaming commits the new title on Enter", async () => {
+  it("works by keyboard: open with Enter, arrows move, Enter opens a chat", async () => {
+    const onSelect = renderPicker("s1");
+    const trigger = screen.getByRole("button", { name: "Switch chat" });
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    const items = await screen.findAllByRole("menuitemradio");
+    await waitFor(() => expect(document.activeElement).toBe(items[0]));
+    fireEvent.keyDown(items[0], { key: "ArrowDown" });
+    await waitFor(() => expect(document.activeElement).toBe(items[1]));
+    fireEvent.keyDown(items[1], { key: "Enter" });
+    await waitFor(() => expect(onSelect).toHaveBeenCalledWith("s2"));
+  });
+
+  it("renames the open chat in a dialog", async () => {
     renderPicker("s1");
-    openPicker("Switch chat");
-    fireEvent.click(screen.getByRole("button", { name: "Rename VPN Tickets" }));
-    const input = screen.getByDisplayValue("VPN Tickets");
+    openPicker();
+    fireEvent.click(screen.getByRole("menuitem", { name: /Rename this chat/ }));
+    const input = await screen.findByRole("textbox", { name: "Chat title" });
+    expect(input).toHaveValue("VPN Tickets");
     fireEvent.change(input, { target: { value: "Zugriff Laufwerk" } });
-    fireEvent.keyDown(input, { key: "Enter" });
-    await waitFor(() =>
-      expect(renameMock).toHaveBeenCalledWith({ sessionId: "s1", title: "Zugriff Laufwerk" }),
+    fireEvent.click(screen.getByRole("button", { name: "Save title" }));
+    expect(renameMock).toHaveBeenCalledWith(
+      { sessionId: "s1", title: "Zugriff Laufwerk" },
+      expect.anything(),
     );
   });
 
-  it("a blank title on blur does not rename", () => {
+  it("says inline when a rename fails", async () => {
+    renameMock.mockImplementation((_v, opts: { onError: () => void }) => opts.onError());
     renderPicker("s1");
-    openPicker("Switch chat");
-    fireEvent.click(screen.getByRole("button", { name: "Rename VPN Tickets" }));
-    const input = screen.getByDisplayValue("VPN Tickets");
+    openPicker();
+    fireEvent.click(screen.getByRole("menuitem", { name: /Rename this chat/ }));
+    const input = await screen.findByRole("textbox", { name: "Chat title" });
+    fireEvent.change(input, { target: { value: "New" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save title" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("The chat was not renamed.");
+  });
+
+  it("a blank title does not rename", async () => {
+    renderPicker("s1");
+    openPicker();
+    fireEvent.click(screen.getByRole("menuitem", { name: /Rename this chat/ }));
+    const input = await screen.findByRole("textbox", { name: "Chat title" });
     fireEvent.change(input, { target: { value: "  " } });
-    fireEvent.blur(input);
+    fireEvent.click(screen.getByRole("button", { name: "Save title" }));
     expect(renameMock).not.toHaveBeenCalled();
   });
 
   it("deleting asks for confirmation before deleting", async () => {
     renderPicker("s1");
-    openPicker("Switch chat");
-    fireEvent.click(screen.getByRole("button", { name: "Delete VPN Tickets" }));
+    openPicker();
+    fireEvent.click(screen.getByRole("menuitem", { name: /Delete this chat/ }));
     expect(deleteMock).not.toHaveBeenCalled();
     fireEvent.click(await screen.findByRole("button", { name: /^delete$/i }));
     await waitFor(() => expect(deleteMock).toHaveBeenCalledWith("s1", expect.anything()));
   });
 
+  it("says inline when a delete fails", async () => {
+    deleteMock.mockImplementation((_id, opts: { onError: () => void }) => opts.onError());
+    renderPicker("s1");
+    openPicker();
+    fireEvent.click(screen.getByRole("menuitem", { name: /Delete this chat/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /^delete$/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("The chat was not deleted.");
+  });
+
   it("cancelling the confirmation leaves the session as it was", async () => {
     renderPicker("s1");
-    openPicker("Switch chat");
-    fireEvent.click(screen.getByRole("button", { name: "Delete VPN Tickets" }));
+    openPicker();
+    fireEvent.click(screen.getByRole("menuitem", { name: /Delete this chat/ }));
     fireEvent.click(await screen.findByRole("button", { name: /cancel/i }));
     expect(deleteMock).not.toHaveBeenCalled();
   });

@@ -459,7 +459,7 @@ describe("CopilotDock", () => {
     fireEvent.pointerDown(screen.getByText("Erste Frage", { selector: "span.truncate" }), {
       button: 0,
     });
-    fireEvent.click(screen.getByText("Zweite Frage"));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Zweite Frage/ }));
     // The picker's trigger now shows the newly-selected session's title.
     expect(screen.getByText("Zweite Frage", { selector: "span.truncate" })).toBeInTheDocument();
     expect(
@@ -586,7 +586,7 @@ describe("CopilotDock", () => {
     fireEvent.pointerDown(screen.getByText("Erste Frage", { selector: "span.truncate" }), {
       button: 0,
     });
-    fireEvent.click(screen.getByText("Zweite Frage"));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Zweite Frage/ }));
     expect(screen.getByText("Zweite Frage", { selector: "span.truncate" })).toBeInTheDocument();
     expect(document.querySelectorAll("[data-copilot-tab]")).toHaveLength(2);
 
@@ -595,7 +595,7 @@ describe("CopilotDock", () => {
     fireEvent.pointerDown(screen.getByText("Zweite Frage", { selector: "span.truncate" }), {
       button: 0,
     });
-    fireEvent.click(screen.getByText("Erste Frage", { selector: "button" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Erste Frage/ }));
 
     expect(screen.getByText("Erste Frage", { selector: "span.truncate" })).toBeInTheDocument();
     expect(document.querySelectorAll("[data-copilot-tab]")).toHaveLength(2);
