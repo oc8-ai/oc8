@@ -808,14 +808,13 @@ async def _call_tool(
         )
         if not isinstance(task, m.Task):
             return task
-        from oc8.modelrouter import ToolCall as _ToolCall
 
         # Reading and asking change nothing outside oc8, so they are allowed
         # outright -- knowledge and memory carry their own grant checks inside.
         # WRITING memory does not: the tier policy is the whole protection there
         # (§10.1), so it is evaluated properly rather than waved through, and a
         # company-tier write comes back as REQUIRE_APPROVAL.
-        core_tc = _ToolCall(id=str(uuid.uuid4()), name=name, arguments=arguments)
+        core_tc = ToolCall(id=str(uuid.uuid4()), name=name, arguments=arguments)
         if name == MEMORY_WRITE.name:
             core_decision = authorize_memory_write(
                 frame,

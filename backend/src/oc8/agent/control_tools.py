@@ -2186,6 +2186,9 @@ async def _execute_edition_tool(
         # hold across every call of the run, not per call. The row is locked
         # and re-read first, so two calls of one run (concurrent gateway
         # requests) append in turn instead of each overwriting the other.
+        # Flushed first: populate_existing would otherwise discard a pending
+        # ORM change on this run (the session does not autoflush).
+        await db.flush()
         run_row = (
             await db.execute(
                 select(m.AgentRun)
