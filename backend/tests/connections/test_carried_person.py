@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.agent.control_tools import REQUEST_DECISION, execute_control_tool
-from oc8.agent.decision_followup import carry_out_decision
+from oc8.approvals.service import decide_approval
 from oc8.auth.principal import Principal
 from oc8.authz.pdp import Decision, Effect
 from oc8.authz.scope import HumanActor, scope_for_principal
@@ -62,24 +62,30 @@ async def test_a_board_task_acts_for_the_member_who_asked(
         assert (await resolve_acting_person(db, run)).member_id == anna.id
 
 
-@pytest.mark.parametrize("trigger", [False, True])
+@pytest.mark.parametrize("origin", ["operator", "cron", "webhook_without_consent", "nobody"])
 async def test_carrying_out_a_decision_acts_for_the_original_runs_person(
-    app_session: AppSessionFactory, queue: Any, trigger: bool
+    app_session: AppSessionFactory, queue: Any, origin: str
 ) -> None:
+    """An administrator approves: the follow-up acts for whoever the asking run
+    acted for -- never the approver, never more than the asking run had --
+    and keeps its trigger so the trigger's own rules still apply."""
     tenant = uuid.uuid4()
     anna = await member(app_session, tenant, "anna@acme.test")
     async with app_session(tenant) as db:
         agent = m.Agent(tenant_id=tenant, department_id=uuid.uuid4(), name="Sina")
         db.add(agent)
         await db.flush()
-        context: dict[str, Any] = {"originating_operator": "anna@acme.test"}
-        if trigger:
+        context: dict[str, Any] = {}
+        if origin == "operator":
+            context = {"originating_operator": "anna@acme.test"}
+        elif origin in ("cron", "webhook_without_consent"):
             row = m.Trigger(
                 tenant_id=tenant,
                 agent_id=agent.id,
-                kind="cron",
+                kind="cron" if origin == "cron" else "webhook",
                 task_text="Täglich",
-                cron_expression="0 8 * * *",
+                cron_expression="0 8 * * *" if origin == "cron" else None,
+                webhook_token=None if origin == "cron" else uuid.uuid4().hex,
                 created_by_member_id=anna,
             )
             db.add(row)
@@ -113,13 +119,23 @@ async def test_carrying_out_a_decision_acts_for_the_original_runs_person(
             run_id=run.id,
         )
         approval = (await db.execute(select(m.ApprovalRequest))).scalar_one()
-        followup_id = await carry_out_decision(
-            db, approval=approval, decision="approve", reason="", option=None
+        principal = Principal(subject="boss@acme.test", tenant_id=tenant, role="org_admin")
+        boss, scope = await scope_for_principal(db, principal, upsert=True)
+        assert boss is not None
+        await decide_approval(
+            db,
+            approval,
+            decision="approve",
+            tenant_id=tenant,
+            actor=HumanActor(principal=principal, member=boss, scope=scope),
         )
-    assert followup_id is not None
     async with app_session(tenant) as db:
-        followup = await db.get(m.AgentRun, followup_id)
-        assert followup is not None
-        assert (await resolve_acting_person(db, followup)).member_id == anna
-        # A schedule's own conditions keep applying to what it set off.
-        assert followup.context.get("trigger_id") == (context.get("trigger_id"))
+        followup = (
+            await db.execute(select(m.AgentRun).where(m.AgentRun.source == "decision"))
+        ).scalar_one()
+        acting = await resolve_acting_person(db, followup)
+        expected = anna if origin in ("operator", "cron") else None
+        assert acting.member_id == expected
+        assert followup.context.get("on_behalf_of") == (str(anna) if expected else None)
+        assert "originating_operator" not in followup.context
+        assert followup.context.get("trigger_id") == context.get("trigger_id")
