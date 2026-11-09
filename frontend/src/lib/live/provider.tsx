@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 
+import { useT } from "@/lib/i18n";
 import { applyEvent, liveQueryKeys } from "@/lib/live/apply-event";
 import { useLiveConnection, type LiveSocket } from "@/lib/live/connection";
 import { toastForEvent } from "@/lib/live/toast-for-event";
@@ -49,6 +50,10 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const qc = useQueryClient();
   const seen = useRef<Set<string>>(new Set());
   const [status, setStatus] = useState<LiveConnectionStatus>("connected");
+  // Read through a ref: a language switch must not reconnect the socket.
+  const t = useT();
+  const tRef = useRef(t);
+  tRef.current = t;
 
   const onEvent = useCallback(
     (e: RealtimeEvent) => {
@@ -59,7 +64,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
         seen.current = new Set(Array.from(seen.current).slice(-250));
       }
       applyEvent(qc, e);
-      toastForEvent(e);
+      toastForEvent(e, tRef.current);
     },
     [qc],
   );

@@ -293,9 +293,10 @@ function RootComponent() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <LiveUpdatesProvider>
-        <EditionCompositionProvider extensions={editionExtensions}>
-          <LanguageProvider>
+      {/* Around the live updates: their toasts speak the reader's language. */}
+      <LanguageProvider>
+        <LiveUpdatesProvider>
+          <EditionCompositionProvider extensions={editionExtensions}>
             <AuthGate>
               <ChatSlotProviders>{gatedContent}</ChatSlotProviders>
             </AuthGate>
@@ -316,9 +317,9 @@ function RootComponent() {
             <div className={toasterTheme === "dark" ? "dark" : undefined}>
               <Toaster theme={toasterTheme} position="bottom-right" richColors closeButton />
             </div>
-          </LanguageProvider>
-        </EditionCompositionProvider>
-      </LiveUpdatesProvider>
+          </EditionCompositionProvider>
+        </LiveUpdatesProvider>
+      </LanguageProvider>
     </QueryClientProvider>
   );
 }

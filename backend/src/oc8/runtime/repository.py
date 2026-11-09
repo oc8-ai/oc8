@@ -228,6 +228,9 @@ class RunRepository:
                 "agent_id": str(run.agent_id),
                 "state": run.state,
                 "phase": run.phase,
+                # A chat's run ends in that chat: the client toasts only
+                # background runs.
+                "source": run.source,
             },
             source=f"oc8/run/{run.id}",
         )
