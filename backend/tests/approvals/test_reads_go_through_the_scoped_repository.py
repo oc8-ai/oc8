@@ -52,6 +52,14 @@ ALLOWED: dict[str, str] = {
     # demonstrated on.
     "runtime/executor.py": "the agent runtime reading its own held call; no human here",
     "metering/budget.py": "raises the tenant-scope incident and checks it is not already open",
+    # The chat answer doors read a run's OWN open question, reached through a
+    # run or session the caller already owns (`_owned_session`, the run's tenant
+    # check, or the channel's own sessions) -- they lock the row to serialise two
+    # tabs answering at once, which the scoped listing cannot do.
+    "api/v1/chat.py": "locks the open question of the caller's own chat session to answer it",
+    "api/v1/run.py": "locks the open question of a tenant-checked run to answer it",
+    "chat/service.py": "finds the open question of the runs of a session the caller owns",
+    "channels/dispatch.py": "finds the open question of a run in the channel member's own sessions",
 }
 
 
