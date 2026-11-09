@@ -2294,35 +2294,42 @@ async def test_step_withholds_run_shell_from_a_real_runtime_plugin(
     assert "run_shell" not in offered
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(("chat_mode", "expected"), [(None, ["run_shell"]), ("plan", [])])
-async def test_step_tells_the_shell_which_local_tools_it_may_run(
+async def _step_with_scripted_turns(
     app_session: object,
     monkeypatch: pytest.MonkeyPatch,
-    chat_mode: str | None,
-    expected: list[str],
-) -> None:
-    """The isolated shell runs run_shell BEFORE /tools can deny it, so /step
-    gives the verdict up front: offered this leg and not withheld by the mode.
-    Under /plan the shell must not execute anything."""
+    turns: list[list[ToolCall]],
+    *,
+    context: dict[str, Any] | None = None,
+    definition: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], int, dict[str, Any]]:
+    """POST /step once over scripted model turns. Returns the body, how many
+    completions ran, and the run's context afterwards."""
     from asgi_lifespan import LifespanManager
     from httpx import ASGITransport, AsyncClient
 
+    from oc8 import models as m
     from oc8.main import create_app
     from oc8.modelrouter.types import CompletionResult, Usage
 
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:  # type: ignore[operator]
         lead, _mate, run = await _seed_lead_with_mate_and_skill(db, tenant)
-        if chat_mode is not None:
-            run.context = {**run.context, "chat_mode": chat_mode}
+        if context:
+            run.context = {**run.context, **context}
+        if definition is not None:
+            lead.definition = definition
         lead_id, run_id = lead.id, run.id
 
+    script = list(turns)
+    completions = {"n": 0}
+
     async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        completions["n"] += 1
+        calls = script.pop(0) if script else []
         return CompletionResult(
-            text="", tool_calls=[ToolCall(id="c1", name="run_shell", arguments={"command": "ls"})],
+            text="" if calls else "Here is the plan.", tool_calls=calls,
             usage=Usage(tokens_in=1, tokens_out=1),
-            stop_reason="tool_use", provider="ollama", model="m",
+            stop_reason="tool_use" if calls else "stop", provider="ollama", model="m",
         )
 
     monkeypatch.setattr(
@@ -2337,8 +2344,87 @@ async def test_step_tells_the_shell_which_local_tools_it_may_run(
                 headers={"Authorization": f"Bearer {token}"},
             )
             assert r.status_code == 200, r.text
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        row = await db.get(m.AgentRun, run_id)
+        assert row is not None
+        ctx = dict(row.context)
+    return r.json(), completions["n"], ctx
 
-    assert r.json()["local_allowed"] == expected
+
+_LS = ToolCall(id="c1", name="run_shell", arguments={"command": "ls"})
+
+
+@pytest.mark.asyncio
+async def test_step_lets_the_shell_run_an_offered_local_tool(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body, _n, _ctx = await _step_with_scripted_turns(app_session, monkeypatch, [[_LS]])
+    assert body["local_allowed"] == ["run_shell"]
+    assert [c["name"] for c in body["tool_calls"]] == ["run_shell"]
+
+
+@pytest.mark.asyncio
+async def test_step_never_hands_the_shell_a_local_call_the_mode_withholds(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An older shell runs every run_shell it is handed, before /tools can say
+    no. So under /plan /step answers the call itself -- the refusal goes into
+    the transcript as the call's result, and the model is asked again."""
+    body, completions, ctx = await _step_with_scripted_turns(
+        app_session, monkeypatch, [[_LS]], context={"chat_mode": "plan"}
+    )
+    assert body["tool_calls"] == []
+    assert body["local_allowed"] == []
+    assert completions == 2, "the model must hear the refusal and get another turn"
+    answers = [
+        e for e in ctx["transcript"] if e.get("role") == "tool" and e.get("tool_call_id") == "c1"
+    ]
+    assert len(answers) == 1
+    assert "/plan" in answers[0]["content"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("autonomy", "pre_decided", "expected"),
+    [
+        ("default", None, ["run_shell"]),
+        ("conservative", None, []),
+        ("conservative", "approve", ["run_shell"]),
+        ("conservative", "reject", []),
+    ],
+)
+async def test_local_execution_waits_for_an_approval_the_b_gate_would_ask_for(
+    app_session: object,
+    monkeypatch: pytest.MonkeyPatch,
+    autonomy: str,
+    pre_decided: str | None,
+    expected: list[str],
+) -> None:
+    """Under conservative autonomy the B gate asks before a write -- and the
+    shell would run the command before /tools could ask. So it stays out of
+    local_allowed until an operator has approved this exact call; the shell
+    then posts it unexecuted, and /tools raises the approval first."""
+    from oc8.runtime.approval_resume import call_signature
+
+    context: dict[str, Any] = {}
+    if pre_decided is not None:
+        context["resolved_tool_approvals"] = [
+            {
+                "sig": call_signature("run_shell", {"command": "ls"}),
+                "tool": "run_shell",
+                "arguments": {"command": "ls"},
+                "decision": pre_decided,
+            }
+        ]
+    body, _n, _ctx = await _step_with_scripted_turns(
+        app_session,
+        monkeypatch,
+        [[_LS]],
+        context=context,
+        definition={"autonomy": autonomy},
+    )
+    assert body["local_allowed"] == expected
+    assert [c["name"] for c in body["tool_calls"]] == ["run_shell"]
 
 
 # --------------------------------------------------- parallel reads under caps

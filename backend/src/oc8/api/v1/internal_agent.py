@@ -57,7 +57,7 @@ from oc8.agent.harness.stages.a_compaction import (
     should_compact,
 )
 from oc8.agent.harness.stages.a_masking import mask_observations
-from oc8.agent.harness.stages.b_approval import autonomy_of, strip_justification
+from oc8.agent.harness.stages.b_approval import autonomy_of, posture, strip_justification
 from oc8.agent.harness.stages.b_authorize import authorize as _authorize
 from oc8.agent.harness.stages.b_authorize import is_core_call
 from oc8.agent.harness.stages.b_blast_radius import check_blast_radius
@@ -332,18 +332,110 @@ def _mcp_params(conn: m.McpConnection) -> dict[str, Any]:
 _LOCAL_TOOLS = ("run_shell", "run_program")
 
 
-def _local_allowed(tools: Sequence[NeutralTool], mode: ChatMode | None) -> list[str]:
+def _local_refusal(tools: Sequence[NeutralTool], mode: ChatMode | None, name: str) -> str | None:
+    """Why the shell may not run this local tool at all this leg, or None.
+
+    The mode first: a read-only mode also withholds the tool from the offer,
+    and "/plan changes nothing" tells the model more than "not available"."""
+    refused = mode_refusal(mode, name, tool_scopes=None)
+    if refused is not None:
+        return refused
+    if name not in {t.name for t in tools}:
+        return f"{name} is not available on this runtime"
+    return None
+
+
+def _local_allowed(
+    tools: Sequence[NeutralTool],
+    mode: ChatMode | None,
+    *,
+    calls: Sequence[ToolCall],
+    definition: Mapping[str, Any],
+    resolved: Any,
+) -> list[str]:
     """Which local-execution tools the shell may run for this step.
 
-    Offered this leg, and not withheld by the run's mode. The frame has no say:
-    neither tool belongs to a connection (see `authorize`'s early ALLOWs).
+    The shell runs them BEFORE /tools decides, so this is the PEP's verdict
+    given up front:
+
+    * offered this leg, and not withheld by the run's mode -- the frame has no
+      say, neither tool belongs to a connection (see `authorize`);
+    * and, where the B gate would ASK (conservative autonomy, a write), only
+      once an operator has approved every such call in this step. Otherwise
+      the shell posts the call unexecuted and /tools raises the approval
+      first; the approved call runs on a later leg.
     """
-    offered = {t.name for t in tools}
-    return [
-        name
-        for name in _LOCAL_TOOLS
-        if name in offered and mode_refusal(mode, name, tool_scopes=None) is None
-    ]
+    autonomy = autonomy_of(dict(definition))
+    raw_grants = definition.get("b5_grants")
+    grants = raw_grants if isinstance(raw_grants, list) else []
+    decided = pre_decided_map(resolved if isinstance(resolved, list) else [])
+    allowed: list[str] = []
+    for name in _LOCAL_TOOLS:
+        if _local_refusal(tools, mode, name) is not None:
+            continue
+        tier = classify_tier(name, scopes=None, config=None, annotations=None)
+        if posture(tier, autonomy, granted=tier in grants) == "ask":
+            sigs = [
+                _call_sig(
+                    ToolCall(id=c.id, name=c.name, arguments=strip_justification(c.arguments)[0])
+                )
+                for c in calls
+                if c.name == name
+            ]
+            if not sigs or any(decided.get(sig) != "approve" for sig in sigs):
+                continue
+        allowed.append(name)
+    return allowed
+
+
+async def _answer_withheld_local_calls(
+    db: DbSession,
+    *,
+    run: m.AgentRun,
+    agent: m.Agent,
+    calls: Sequence[ToolCall],
+    tools: Sequence[NeutralTool],
+    mode: ChatMode | None,
+    transcript: list[dict[str, Any]],
+) -> set[str]:
+    """Refuse, here, every local call the shell may not run at all this leg.
+
+    A shell runs run_shell/run_program before /tools can decide, and an older
+    shell does not read `local_allowed`. So such a call is never handed to it:
+    its refusal goes into the transcript as the call's result -- directly
+    after the assistant message that asked for it -- and is audited as a
+    denial, exactly as /tools would have. Returns the ids answered.
+    """
+    answered: set[str] = set()
+    for call in calls:
+        if call.name not in _LOCAL_TOOLS:
+            continue
+        reason = _local_refusal(tools, mode, call.name)
+        if reason is None:
+            continue
+        transcript.append(
+            _from_message(
+                NeutralMessage(
+                    role="tool",
+                    content=f"ERROR: {reason}",
+                    tool_call_id=call.id,
+                    name=call.name,
+                )
+            )
+        )
+        await append_event(
+            db,
+            tenant_id=run.tenant_id,
+            actor_type="agent",
+            actor_id=agent.id,
+            category="tool_action",
+            action=f"tool.call:{call.name}",
+            resource={"tool": call.name, "arguments": call.arguments},
+            decision="deny",
+            reason=reason,
+        )
+        answered.add(call.id)
+    return answered
 
 
 def _routed_connection(
@@ -1068,6 +1160,8 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
     # (`run.context = ctx; await db.commit()`), so publishing has to wait
     # until that commit actually lands, not at the moment finish_step runs.
     finished_step_timings: list[dict[str, Any]] = []
+    #: Ids of the calls /step answered itself (`_answer_withheld_local_calls`).
+    handed: set[str] = set()
 
     while True:
         ledger_hash = ledger_fingerprint(harness.state.ledger)
@@ -1276,6 +1370,24 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         if not result.tool_calls:
             note_tools(step_rec, 0)
             finished_step_timings.append(finish_step(step_rec))
+        else:
+            answered = await _answer_withheld_local_calls(
+                db,
+                run=run,
+                agent=agent,
+                calls=result.tool_calls,
+                tools=tools,
+                mode=mode_from_context(ctx),
+                transcript=transcript,
+            )
+            handed |= answered
+            if answered and len(answered) == len(result.tool_calls):
+                # Nothing left for the shell this turn: the model hears the
+                # refusal and decides again, within the step budget.
+                note_tools(step_rec, 0)
+                finished_step_timings.append(finish_step(step_rec))
+                if int(ctx["steps"]) < max_steps:
+                    continue
         break
 
     harness.store(ctx)
@@ -1386,13 +1498,20 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
                 "tier": tool_tiers.get(t.id, "modify"),
             }
             for t in result.tool_calls
+            if t.id not in handed
         ],
         # Truncated even after the retry above -- never let the shell read
         # this as "done" (see engine.py's identical check for why).
         status_override="failed" if truncated_empty else None,
         parallel_tool_calls=caps.parallel_tool_calls,
         sdk_py=str(ctx.get("oc8_tools_py") or ""),
-        local_allowed=_local_allowed(tools, mode_from_context(ctx)),
+        local_allowed=_local_allowed(
+            tools,
+            mode_from_context(ctx),
+            calls=[t for t in result.tool_calls if t.id not in handed],
+            definition=pinned["definition"] if isinstance(pinned["definition"], dict) else {},
+            resolved=ctx.get("resolved_tool_approvals", []),
+        ),
     )
 
 
