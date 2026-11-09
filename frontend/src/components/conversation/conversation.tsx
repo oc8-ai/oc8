@@ -1012,6 +1012,7 @@ function ConversationBody(props: ConversationProps) {
           }
           modelValue={heldModel !== undefined ? heldModel : (conv.session?.modelOverrideId ?? null)}
           showModelPicker
+          agentId={props.agentId}
           onModelPick={firstMessage ? setHeldModel : undefined}
           sendWhileBusy={steerReply || !!props.sendWhileBusy}
           agentItems={props.agentItems}

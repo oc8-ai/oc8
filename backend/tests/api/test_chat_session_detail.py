@@ -146,6 +146,36 @@ async def test_send_records_author_and_session_detail_lists_the_active_run(
         assert str(reply.reply_to_id) == body["id"]
 
 
+async def test_a_new_chat_lists_its_agents_models_without_a_session(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    agent_id, base, _ = await _seed(app_session, tenant)
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.get(f"/api/v1/chat/agents/{agent_id}/models", headers=_headers(tenant))
+            assert r.status_code == 200, r.text
+            models = r.json()
+            assert models[0]["id"] is None and models[0]["label"] == "Auto"
+            assert [o["id"] for o in models[1:]] == [str(base)]
+            assert models[1]["isDefault"] is True
+            # Listing creates no chat.
+            sessions = await c.get("/api/v1/chat/sessions", headers=_headers(tenant))
+            assert sessions.json() == []
+
+
+async def test_models_of_an_unreachable_agent_are_404(app_session: AppSessionFactory) -> None:
+    tenant, other = uuid.uuid4(), uuid.uuid4()
+    foreign_agent, _, _ = await _seed(app_session, other)
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            for agent_id in (foreign_agent, uuid.uuid4()):
+                r = await c.get(f"/api/v1/chat/agents/{agent_id}/models", headers=_headers(tenant))
+                assert r.status_code == 404, r.text
+
+
 async def test_another_members_session_detail_is_404(app_session: AppSessionFactory) -> None:
     tenant = uuid.uuid4()
     agent_id, _, _ = await _seed(app_session, tenant)

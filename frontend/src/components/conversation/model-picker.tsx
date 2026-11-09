@@ -16,15 +16,14 @@ export function ModelPicker({
   sessionId,
   value,
   disabled = false,
-  ensureSession,
+  agentId,
   onPick,
 }: {
   sessionId: string | null;
   value: string | null;
   disabled?: boolean;
-  /** A new chat lists its options once it exists: opening the picker
-   *  creates it (as a file drop does). */
-  ensureSession?: () => Promise<string>;
+  /** A chat that does not exist yet lists its agent's options. */
+  agentId?: string;
   /** Given, a pick is the caller's to hold (Ruling 51: a new chat writes it
    *  before its first message); left out, the pick is written at once. */
   onPick?: (modelConfigId: string | null) => void;
@@ -45,16 +44,11 @@ export function ModelPicker({
     setError(null);
   }
   const root = useRef<HTMLDivElement>(null);
-  // The chat this picker created to list its options, until the caller
-  // passes it back as `sessionId`.
-  const [created, setCreated] = useState<string | null>(null);
-  const [createdFor, setCreatedFor] = useState(sessionId);
-  if (createdFor !== sessionId) {
-    setCreatedFor(sessionId);
-    setCreated(null);
-  }
-  const listFrom = sessionId ?? created;
-  const { data: options = [], isLoading: loadingOptions } = useSessionModels(listFrom, true);
+  const { data: options = [], isLoading: loadingOptions } = useSessionModels(
+    sessionId,
+    true,
+    agentId,
+  );
   const setModel = useSetSessionModel(sessionId);
   const trigger = useRef<HTMLButtonElement>(null);
   const items = useRef<Array<HTMLButtonElement | null>>([]);
@@ -98,16 +92,6 @@ export function ModelPicker({
   }
 
   function toggle() {
-    if (!open && !listFrom && ensureSession) {
-      ensureSession().then(setCreated, () =>
-        setError(
-          t(
-            "The models couldn't be loaded. Try again.",
-            "Die Modelle konnten nicht geladen werden. Versuch es noch einmal.",
-          ),
-        ),
-      );
-    }
     setOpen((v) => !v);
   }
 
@@ -172,7 +156,7 @@ export function ModelPicker({
       <button
         ref={trigger}
         type="button"
-        disabled={disabled || (!sessionId && !ensureSession)}
+        disabled={disabled || (!sessionId && !agentId)}
         onClick={toggle}
         aria-haspopup="true"
         aria-expanded={open}
@@ -193,7 +177,7 @@ export function ModelPicker({
           }}
           className="absolute bottom-full left-0 z-50 mb-1 w-64 rounded-lg border border-border bg-popover p-1 shadow-lg"
         >
-          {options.length === 0 && (loadingOptions || !listFrom) && (
+          {options.length === 0 && loadingOptions && (
             <div className="space-y-1 p-1" aria-busy="true">
               <Skeleton className="h-9 w-full rounded-md" />
               <Skeleton className="h-9 w-full rounded-md" />

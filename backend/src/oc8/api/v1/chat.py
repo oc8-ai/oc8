@@ -456,6 +456,33 @@ async def get_chat_models(
     ]
 
 
+@router.get("/chat/agents/{agent_id}/models", response_model=list[ChatModelOptionDTO])
+async def get_agent_chat_models(
+    request: Request, agent_id: uuid.UUID, db: DbSession, actor: _ChatActor
+) -> list[ChatModelOptionDTO]:
+    """The model picker of a chat that does not exist yet (Ruling 57): the
+    same options as the session route, for an agent the caller could start a
+    chat with. Listing them must not create a chat. Unreachable: 404."""
+    authority = await authority_for_principal(request, db, actor.principal)
+    agent = await reachable_chat_agent(
+        db, authority=authority, scope=actor.scope, agent_id=agent_id
+    )
+    if agent is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
+    pinned = await resolve_version(db, None, agent)
+    options = await model_options(db, agent=agent, default_model_id=pinned_model_config_id(pinned))
+    return [
+        ChatModelOptionDTO(
+            id=o.id,
+            label=o.label,
+            provider=o.provider,
+            locality=o.locality,
+            is_default=o.is_default,
+        )
+        for o in options
+    ]
+
+
 @router.put("/chat/sessions/{session_id}/model", response_model=ChatSessionDTO)
 async def set_chat_model(
     request: Request,

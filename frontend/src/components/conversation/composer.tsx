@@ -74,6 +74,8 @@ export interface ComposerProps {
   placeholder?: string;
   modelValue: string | null;
   showModelPicker: boolean;
+  /** Whose models a chat that does not exist yet lists. */
+  agentId?: string;
   /** A new chat: the model pick is held by the caller, not written yet. */
   onModelPick?: (modelConfigId: string | null) => void;
   /** While busy, a send goes to the running run (steering): Send stays
@@ -580,7 +582,7 @@ export function Composer(props: ComposerProps) {
               sessionId={props.sessionId}
               value={props.modelValue}
               disabled={props.disabled}
-              ensureSession={props.ensureSession}
+              agentId={props.agentId}
               onPick={props.onModelPick}
             />
           )}

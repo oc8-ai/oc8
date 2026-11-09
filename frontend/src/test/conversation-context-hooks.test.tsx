@@ -18,6 +18,7 @@ import {
   useBrowseSource,
   useContextSearchResults,
   useRunSteering,
+  useSessionModels,
   useSetPins,
   type ChatSessionDetailDTO,
 } from "@/lib/conversation-api";
@@ -276,5 +277,24 @@ describe("useRunSteering", () => {
     const { result } = renderHook(() => useRunSteering(null, "r1"), { wrapper: wrapper(qc) });
     expect(result.current.data).toEqual(cached);
     expect(get).not.toHaveBeenCalled();
+  });
+});
+
+describe("useSessionModels", () => {
+  it("lists a new chat's options from its agent, creating nothing", async () => {
+    get.mockReset();
+    get.mockResolvedValue([]);
+    const { result } = renderHook(() => useSessionModels(null, true, "agent/1"), {
+      wrapper: wrapper(fresh()),
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(get).toHaveBeenCalledWith("/chat/agents/agent%2F1/models");
+  });
+
+  it("lists an existing chat's options from the chat", async () => {
+    get.mockReset();
+    get.mockResolvedValue([]);
+    renderHook(() => useSessionModels("s1", true, "a"), { wrapper: wrapper(fresh()) });
+    await waitFor(() => expect(get).toHaveBeenCalledWith("/chat/sessions/s1/models"));
   });
 });

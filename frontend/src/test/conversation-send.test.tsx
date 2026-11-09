@@ -55,13 +55,15 @@ vi.mock("@/lib/conversation-api", async (orig) => ({
     steering.asked.push(runId);
     return { data: runId ? steering.value : undefined };
   },
-  useSessionModels: (sessionId: string | null) => ({
-    data: sessionId
-      ? [
-          { id: null, label: "Auto", provider: "", locality: "", isDefault: false },
-          { id: "m2", label: "Llama", provider: "ollama", locality: "local", isDefault: false },
-        ]
-      : [],
+  useSessionModels: (sessionId: string | null, _enabled: boolean, agentId?: string) => ({
+    // A chat that does not exist yet lists its agent's options (Ruling 57).
+    data:
+      sessionId || agentId
+        ? [
+            { id: null, label: "Auto", provider: "", locality: "", isDefault: false },
+            { id: "m2", label: "Llama", provider: "ollama", locality: "local", isDefault: false },
+          ]
+        : [],
     isLoading: false,
   }),
 }));
@@ -144,89 +146,47 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
-describe("a new chat's model (Ruling 51)", () => {
-  it("is picked before the first message and written before it is sent", async () => {
+describe("a new chat's model (Rulings 51 and 57)", () => {
+  it("is picked without creating a chat, and written before the first message", async () => {
     create.mockResolvedValue({ id: "new", agentId: "a", title: "", createdAt: "" });
     const calls: string[] = [];
     const put = vi.spyOn(api, "put").mockImplementation(async (path: string) => {
       calls.push(`PUT ${path}`);
       return detail({ id: "new", modelOverrideId: "m2" });
     });
-    const post = vi.spyOn(api, "post").mockImplementation(async (path: string) => {
+    vi.spyOn(api, "post").mockImplementation(async (path: string) => {
       calls.push(`POST ${path}`);
       return message("u1", "user", { sessionId: "new" });
     });
-    const onSessionChange = vi.fn();
-    const qc = new QueryClient();
-    const { rerender } = render(
-      <QueryClientProvider client={qc}>
-        <Conversation
-          agentId="a"
-          sessionId={null}
-          onSessionChange={onSessionChange}
-          variant="full"
-        />
-      </QueryClientProvider>,
-    );
-    // The picker is there in a new chat; opening it creates the chat so its
-    // options can be listed.
-    fireEvent.click(screen.getByRole("button", { name: /Model: Auto/ }));
-    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(onSessionChange).toHaveBeenCalledWith("new"));
-    rerender(
-      <QueryClientProvider client={qc}>
-        <Conversation
-          agentId="a"
-          sessionId="new"
-          onSessionChange={onSessionChange}
-          variant="full"
-        />
-      </QueryClientProvider>,
-    );
-    fireEvent.click(await screen.findByRole("radio", { name: /Llama/ }));
-    // Held, not written yet: shown on the trigger.
-    expect(screen.getByRole("button", { name: /Model: Llama/ })).toBeInTheDocument();
-    expect(put).not.toHaveBeenCalled();
-
-    send.mockImplementation(async () => {
-      calls.push("POST /chat/sessions/new/messages");
-      return message("u1", "user", { sessionId: "new" });
+    create.mockImplementation(async () => {
+      calls.push("POST /chat/sessions");
+      return { id: "new", agentId: "a", title: "", createdAt: "" };
     });
+    mount(null);
+    // The picker is there in a new chat and lists the agent's models.
+    fireEvent.click(screen.getByRole("button", { name: /Model: Auto/ }));
+    fireEvent.click(await screen.findByRole("radio", { name: /Llama/ }));
+    // Nothing was created or written: the pick is held and shown.
+    expect(create).not.toHaveBeenCalled();
+    expect(put).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: /Model: Llama/ })).toBeInTheDocument();
+
     type("hello");
-    await waitFor(() => expect(calls).toHaveLength(2));
-    expect(calls).toEqual(["PUT /chat/sessions/new/model", "POST /chat/sessions/new/messages"]);
+    await waitFor(() => expect(calls).toHaveLength(3));
+    expect(calls).toEqual([
+      "POST /chat/sessions",
+      "PUT /chat/sessions/new/model",
+      "POST /chat/sessions/new/messages",
+    ]);
     expect(put).toHaveBeenCalledWith("/chat/sessions/new/model", { modelConfigId: "m2" });
-    expect(post).not.toHaveBeenCalled();
   });
 
   it("does not send when the held model is refused, and says so", async () => {
     create.mockResolvedValue({ id: "new", agentId: "a", title: "", createdAt: "" });
     vi.spyOn(api, "put").mockRejectedValue(new ApiError("model not allowed", 422));
     const post = vi.spyOn(api, "post");
-    const qc = new QueryClient();
-    const onSessionChange = vi.fn();
-    const { rerender } = render(
-      <QueryClientProvider client={qc}>
-        <Conversation
-          agentId="a"
-          sessionId={null}
-          onSessionChange={onSessionChange}
-          variant="full"
-        />
-      </QueryClientProvider>,
-    );
+    mount(null);
     fireEvent.click(screen.getByRole("button", { name: /Model: Auto/ }));
-    await waitFor(() => expect(onSessionChange).toHaveBeenCalledWith("new"));
-    rerender(
-      <QueryClientProvider client={qc}>
-        <Conversation
-          agentId="a"
-          sessionId="new"
-          onSessionChange={onSessionChange}
-          variant="full"
-        />
-      </QueryClientProvider>,
-    );
     fireEvent.click(await screen.findByRole("radio", { name: /Llama/ }));
     type("hello");
     expect(await screen.findByRole("alert")).toHaveTextContent(/isn't available for this chat/);

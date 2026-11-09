@@ -74,12 +74,21 @@ export function useChatSession(sessionId: string | null) {
   });
 }
 
-export function useSessionModels(sessionId: string | null, enabled: boolean) {
+/** The model picker's options: the chat's own, or, for a chat that does not
+ *  exist yet, its agent's (Ruling 57). The same list either way; listing a
+ *  new chat's options never creates it. */
+export function useSessionModels(sessionId: string | null, enabled: boolean, agentId?: string) {
+  const path = sessionId
+    ? `/chat/sessions/${encodeURIComponent(sessionId)}/models`
+    : agentId
+      ? `/chat/agents/${encodeURIComponent(agentId)}/models`
+      : null;
   return useQuery({
-    queryKey: conversationKeys.models(sessionId ?? ""),
-    queryFn: () =>
-      api.get<ChatModelOptionDTO[]>(`/chat/sessions/${encodeURIComponent(sessionId ?? "")}/models`),
-    enabled: !!sessionId && enabled,
+    queryKey: sessionId
+      ? conversationKeys.models(sessionId)
+      : ["chat", "agent-models", agentId ?? ""],
+    queryFn: () => api.get<ChatModelOptionDTO[]>(path ?? ""),
+    enabled: !!path && enabled,
     staleTime: 60_000,
   });
 }
