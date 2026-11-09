@@ -11,20 +11,37 @@ from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.agent.control_tools import REQUEST_DECISION, execute_control_tool
+from oc8.agent.mcp_env import resolve_mcp_env
 from oc8.approvals.service import decide_approval
 from oc8.auth.principal import Principal
 from oc8.authz.pdp import Decision, Effect
 from oc8.authz.scope import HumanActor, scope_for_principal
-from oc8.connections.access import ConnectionRequired, resolve_tool_access
-from oc8.connections.acting import NO_ACTING_PERSON, ActingPerson, resolve_acting_person
+from oc8.connections import runtime_env
+from oc8.connections.access import ConnectionRequired, binding_fingerprint, resolve_tool_access
+from oc8.connections.acting import (
+    ACTING_PERSON_WITHHELD,
+    NO_ACTING_PERSON,
+    ActingPerson,
+    resolve_acting_person,
+)
+from oc8.connections.runtime_env import run_mcp_env
 from oc8.modelrouter import ToolCall
 from oc8.runtime.executor import _acting_person, _maybe_wake_parent
 from oc8.runtime.queue import RunQueue
 from oc8.runtime.repository import RunRepository
 from oc8.workspace.tasks import create_task
 from tests.conftest import AppSessionFactory
-from tests.connections.helpers import api, headers, member
+from tests.connections.helpers import (
+    api,
+    credential_row,
+    enable_plugin_row,
+    headers,
+    member,
+    oauth_row,
+)
+from tests.connections.test_access import MS_CFG, ODOO_CFG
 from tests.connections.test_acting_person import _delegate_from
+from tests.connections.test_runtime_env import _token
 from tests.connections.test_schedule_confirmation import _world
 from tests.factories import _make_agent
 
@@ -419,3 +436,190 @@ async def test_a_lead_woken_by_a_withheld_sub_run_acts_for_nobody(
         assert wake.context["trigger_id"] == trigger_id
         assert "on_behalf_of" not in wake.context
         assert (await resolve_acting_person(db, wake)).member_id is None
+
+
+async def _fixed_world(
+    app_session: AppSessionFactory, *, personal: bool
+) -> tuple[m.Agent, uuid.UUID, uuid.UUID, uuid.UUID]:
+    """An agent whose Microsoft 365 access an administrator fixed to one
+    account: Anna's own (`personal`) or the organisation's shared one. Both
+    exist and hold a token."""
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    anna = await member(app_session, tenant, "anna@acme.test")
+    root = await member(app_session, tenant, "root@acme.test")
+    await enable_plugin_row(app_session, tenant, "microsoft365")
+    annas = await oauth_row(app_session, tenant, owner=anna, label="anna@contoso.com")
+    shared = await oauth_row(app_session, tenant, owner=None, label="team@contoso.com")
+    await _token(app_session, tenant, annas, "annas-token")
+    await _token(app_session, tenant, shared, "team-token")
+    async with app_session(tenant) as db:
+        conn = m.McpConnection(
+            tenant_id=tenant,
+            name="microsoft365",
+            server_url="",
+            transport="stdio",
+            config=dict(MS_CFG),
+        )
+        live = await db.get(m.Agent, agent.id)
+        assert live is not None
+        db.add(conn)
+        db.add(
+            m.AgentToolAccess(
+                tenant_id=tenant,
+                agent_id=agent.id,
+                tool_key="microsoft365",
+                mode="fixed",
+                oauth_connection_id=annas if personal else shared,
+                set_by_member_id=root,
+                set_with_manage=True,
+                binding_fingerprint=await binding_fingerprint(
+                    db, live, "microsoft365", version_id=live.current_version_id
+                ),
+            )
+        )
+        await db.flush()
+        return agent, anna, conn.id, annas if personal else shared
+
+
+def _watch_launches(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Every bridge environment built (where a token is minted)."""
+    launched: list[dict[str, Any]] = []
+
+    async def watched(db: Any, **kw: Any) -> dict[str, str]:
+        launched.append(kw["cfg"])
+        return await resolve_mcp_env(db, **kw)
+
+    monkeypatch.setattr(runtime_env, "resolve_mcp_env", watched)
+    return launched
+
+
+async def _launch(
+    app_session: AppSessionFactory, agent: m.Agent, conn_id: uuid.UUID, run_id: uuid.UUID
+) -> runtime_env.McpLaunchEnv:
+    async with app_session(agent.tenant_id) as db:
+        run = await db.get(m.AgentRun, run_id)
+        conn = await db.get(m.McpConnection, conn_id)
+        assert run is not None and conn is not None
+        return await run_mcp_env(db, run=run, conn=conn, tool="mail_send")
+
+
+async def _used(app_session: AppSessionFactory, agent: m.Agent) -> list[Any]:
+    async with app_session(agent.tenant_id) as db:
+        rows = (
+            await db.execute(select(m.AuditEvent).where(m.AuditEvent.action == "connection.used"))
+        ).scalars()
+        return [e.resource["connection_id"] for e in rows]
+
+
+async def test_an_approvers_words_never_run_through_a_fixed_personal_account(
+    app_session: AppSessionFactory, queue: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anna's run asks; Bob approves with his own instruction. The follow-up
+    acts for nobody -- and an administrator's fixed binding to Anna's own
+    account must not hand it her token after all."""
+    agent, _anna, conn_id, _annas = await _fixed_world(app_session, personal=True)
+    followup = await _followup_of_decision(
+        app_session,
+        agent,
+        {"originating_operator": "anna@acme.test"},
+        approver="bob",
+        reason="Also forward it to bob@ext.test",
+    )
+    launched = _watch_launches(monkeypatch)
+    async with app_session(agent.tenant_id) as db:
+        run = await db.get(m.AgentRun, followup.id)
+        conn = await db.get(m.McpConnection, conn_id)
+        assert run is not None and conn is not None
+        with pytest.raises(ConnectionRequired) as exc:
+            await run_mcp_env(db, run=run, conn=conn, tool="mail_send")
+        # The run says why, for the notice in its detail view.
+        assert run.context["connection_required"]["reason"] == "personal_account_withheld"
+    assert exc.value.reason == "personal_account_withheld"
+    assert launched == []  # no bridge built, no token minted
+    assert await _used(app_session, agent) == []
+
+
+async def test_an_approvers_words_may_use_a_fixed_organisation_account(
+    app_session: AppSessionFactory, queue: Any
+) -> None:
+    """The same follow-up with the access fixed to the organisation's shared
+    account: nobody's own account is at stake, so it runs."""
+    agent, _anna, conn_id, shared = await _fixed_world(app_session, personal=False)
+    followup = await _followup_of_decision(
+        app_session,
+        agent,
+        {"originating_operator": "anna@acme.test"},
+        approver="bob",
+        reason="Also forward it to bob@ext.test",
+    )
+    launch = await _launch(app_session, agent, conn_id, followup.id)
+    assert launch.env["GRAPH_ACCESS_TOKEN"] == "team-token"
+    assert await _used(app_session, agent) == [str(shared)]
+
+
+async def test_a_normal_run_still_uses_the_fixed_personal_account(
+    app_session: AppSessionFactory,
+) -> None:
+    """Anna's own run, and a schedule-like run nobody works with, keep using
+    the administrator's binding to Anna's account."""
+    agent, _anna, conn_id, annas = await _fixed_world(app_session, personal=True)
+    for context in ({"originating_operator": "anna@acme.test"}, {"task": "x"}):
+        async with app_session(agent.tenant_id) as db:
+            run = m.AgentRun(
+                tenant_id=agent.tenant_id, agent_id=agent.id, source="manual", context=context
+            )
+            db.add(run)
+            await db.flush()
+            run_id = run.id
+        launch = await _launch(app_session, agent, conn_id, run_id)
+        assert launch.env["GRAPH_ACCESS_TOKEN"] == "annas-token"
+    assert await _used(app_session, agent) == [str(annas), str(annas)]
+
+
+async def test_a_withheld_run_refuses_a_fixed_personal_login_too(
+    app_session: AppSessionFactory,
+) -> None:
+    """A login (credential) fixed to a member's own row: same rule."""
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    anna = await member(app_session, tenant, "anna@acme.test")
+    root = await member(app_session, tenant, "root@acme.test")
+    await enable_plugin_row(app_session, tenant, "odoo_mcp")
+    personal = await credential_row(app_session, tenant, owner=anna)
+    async with app_session(tenant) as db:
+        conn = m.McpConnection(
+            tenant_id=tenant, name="odoo", server_url="", transport="stdio", config=dict(ODOO_CFG)
+        )
+        live = await db.get(m.Agent, agent.id)
+        assert live is not None
+        db.add(conn)
+        db.add(
+            m.AgentToolAccess(
+                tenant_id=tenant,
+                agent_id=agent.id,
+                tool_key="odoo",
+                mode="fixed",
+                credential_id=personal,
+                set_by_member_id=root,
+                set_with_manage=True,
+                binding_fingerprint=await binding_fingerprint(
+                    db, live, "odoo", version_id=live.current_version_id
+                ),
+            )
+        )
+        await db.flush()
+        for context, works in (
+            ({"originating_operator": "anna@acme.test"}, True),
+            ({ACTING_PERSON_WITHHELD: NO_ACTING_PERSON}, False),
+        ):
+            run = m.AgentRun(tenant_id=tenant, agent_id=agent.id, source="manual", context=context)
+            db.add(run)
+            await db.flush()
+            if works:
+                access = await resolve_tool_access(db, run=run, agent=live, conn=conn)
+                assert access.credential is not None and access.credential.id == personal
+            else:
+                with pytest.raises(ConnectionRequired) as exc:
+                    await resolve_tool_access(db, run=run, agent=live, conn=conn)
+                assert exc.value.reason == "personal_account_withheld"
