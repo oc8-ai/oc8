@@ -15,10 +15,10 @@ from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select
 
 from oc8 import models as m
-from oc8.agents.repo import visible_agents
+from oc8.agents.repo import resolve_run_reach, restrict_to_run_reach, visible_agents
 from oc8.api.deps import DbSession, require_departmental
 from oc8.authz.authority import authority_for_principal, tenant_wide_read
-from oc8.authz.permissions import AGENT, VIEW, perm
+from oc8.authz.permissions import AGENT, RUN, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.schemas.dto import ReportDTO
 
@@ -50,7 +50,11 @@ async def list_reports(
     # rendered_components key at all) are excluded without a separate
     # "key exists" check.
     has_components = func.jsonb_array_length(m.AgentRun.context["rendered_components"]) > 0
-    stmt = (
+    # And the run rule on top: a report IS run output, so it follows
+    # `GET /runs` -- a seat that may see the agent but holds no `run:view`
+    # gets none. Intersected in the statement, before the limit.
+    reach = await resolve_run_reach(request, db, actor, perm(RUN, VIEW))
+    stmt = restrict_to_run_reach(
         select(m.AgentRun)
         .where(
             m.AgentRun.tenant_id == actor.principal.tenant_id,
@@ -59,7 +63,9 @@ async def list_reports(
             has_components,
         )
         .order_by(m.AgentRun.updated_at.desc())
-        .limit(limit)
+        .limit(limit),
+        m.AgentRun.agent_id,
+        reach,
     )
     rows = (await db.execute(stmt)).scalars().all()
     return [

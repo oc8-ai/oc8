@@ -112,7 +112,10 @@ async def _owned_attachment(
     `agent_run` (a file an agent produced during a run -- see
     `oc8.runtime.workspace`/`write_output_file`) shares the `agent_instructions`
     visibility check: `owner_id` is the `AgentRun.id`, resolved to its
-    `agent_id` first, then gated the same way.
+    `agent_id` first, then gated the same way -- AND by the run rule
+    (`resolve_run_reach` with `run:view`), because a run's output file is run
+    output: a seat that may see the agent but holds no `run:view` must not
+    download what `GET /runs/{id}` would refuse it.
     """
     row = await db.get(m.FileAttachment, attachment_id)
     if row is None or row.tenant_id != actor.principal.tenant_id:

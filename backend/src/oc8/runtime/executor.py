@@ -739,6 +739,28 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             if run is None or run.state != RunState.QUEUED.value:
                 return
 
+            # Claim the run before ANY path below may end it. Agent row first,
+            # then the run row -- the order every writer here takes them (see
+            # the one-run-per-agent check further down for why the agent lock
+            # exists at all). Then the run is read again, under its own lock:
+            # two deliveries of ONE run (a republished stranded run whose first
+            # entry turned up after all, a reclaim racing the original) both
+            # read `queued` above, and the second waits on these locks for the
+            # first's commit. Unchecked, it went on to start the run a second
+            # time -- the busy check skips this run's own id -- or, on the early
+            # exits below (agent missing, hire gate, cancel drain, organisation
+            # inactive), recorded the same ending and activity event twice.
+            await db.execute(select(m.Agent.id).where(m.Agent.id == run.agent_id).with_for_update())
+            claimed = await db.get(m.AgentRun, run_id, with_for_update=True, populate_existing=True)
+            if claimed is None or claimed.state != RunState.QUEUED.value:
+                logger.info(
+                    "run %s is %s, taken by another delivery; leaving it",
+                    run_id,
+                    claimed.state if claimed is not None else "gone",
+                )
+                return
+            run = claimed
+
             span.set_attribute("agent_id", str(run.agent_id))
             agent = await db.get(m.Agent, run.agent_id)
             if agent is None:
@@ -842,7 +864,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             # reintroduced by the fix for it. The lock is released by the commit
             # that happens before the container runs, so it never spans the run
             # itself; after the transition, RUNNING is its own guard.
-            await db.execute(select(m.Agent.id).where(m.Agent.id == run.agent_id).with_for_update())
+            # (The agent row is already locked: see "Claim the run" above.)
             busy = (
                 await db.execute(
                     select(m.AgentRun.id)

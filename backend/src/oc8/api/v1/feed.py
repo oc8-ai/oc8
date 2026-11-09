@@ -11,11 +11,12 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import Select, and_, func, or_, select
 
 from oc8 import models as m
+from oc8.agents.repo import resolve_run_reach, restrict_to_run_reach
 from oc8.api.deps import DbSession, require_departmental, require_permission
 from oc8.api.v1._export_utils import csv_safe as _csv_safe
 from oc8.api.v1._export_utils import parse_date_bound as _parse_bound
@@ -32,13 +33,13 @@ from oc8.schemas.dto import ActivityDTO, ApprovalDTO, PrincipalUsageDTO, TokenUs
 router = APIRouter()
 
 
-@router.get(
-    "/activity",
-    response_model=list[ActivityDTO],
-    dependencies=[Depends(require_permission(perm(RUN, VIEW)))],
-)
+@router.get("/activity", response_model=list[ActivityDTO])
 async def list_activity(
+    request: Request,
     db: DbSession,
+    # A route parameter, not `dependencies=[...]`: the body needs the actor's
+    # scope to narrow the feed to the agents the caller may see.
+    actor: Annotated[HumanActor, Depends(require_departmental(perm(RUN, VIEW)))],
     limit: int = 50,
     agent_id: uuid.UUID | None = Query(default=None, alias="agentId"),
     before: uuid.UUID | None = None,
@@ -53,9 +54,15 @@ async def list_activity(
     time-ordered (uuid7) and rows only ever arrive at the newest end, so paging
     by id cannot skip or repeat a row the way OFFSET does when the feed grows
     between two requests.
+
+    Narrowed to the agents whose runs the caller may see (`resolve_run_reach`,
+    the rule every run route applies), in the statement and before the limit.
+    An event naming no agent is kept only for a tenant-wide reader: there is
+    no agent whose department could say a departmental caller may see it.
     """
     limit = max(1, min(limit, 200))
-    query = select(m.ActivityEvent)
+    reach = await resolve_run_reach(request, db, actor, perm(RUN, VIEW))
+    query = restrict_to_run_reach(select(m.ActivityEvent), m.ActivityEvent.agent_id, reach)
     if agent_id is not None:
         query = query.where(m.ActivityEvent.agent_id == agent_id)
     if before is not None:

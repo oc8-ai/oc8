@@ -146,9 +146,10 @@ async def add_run_input(
     # real bound, and a lower `seq` is always committed before a higher one, so
     # consumers never see a later input before an earlier one. Not a row lock
     # on agent_run: the executor holds that one for the whole run. The
-    # tenant's audit lock first -- the audit append below takes it anyway, and
-    # one order for both locks everywhere (Ruling 60) is what keeps this from
-    # deadlocking with the executor ending the run.
+    # tenant's audit lock first -- this transaction's commit takes it anyway
+    # (the chain is written at commit), and one order for both locks
+    # everywhere (Ruling 60) is what keeps this from deadlocking with the
+    # executor ending the run.
     await lock_run_inputs(db, tenant_id=run.tenant_id, run_id=run.id)
     # Asked again under the lock, from the database: the executor takes the
     # same lock before a run's terminal transition and holds it until that
@@ -241,7 +242,8 @@ async def lock_run_inputs(db: AsyncSession, *, tenant_id: uuid.UUID, run_id: uui
     """The per-run writer lock, until commit, taken by every writer and by the
     executor before a run's end. Always AFTER the tenant's audit lock, which
     this takes first (Ruling 60: one order, so writers and the executor can
-    never wait on each other in a circle)."""
+    never wait on each other in a circle). The audit chain is written at
+    commit and takes that lock again there -- reentrant, so the order holds."""
     from oc8.audit.chain import lock_tenant_audit
 
     await lock_tenant_audit(db, tenant_id)

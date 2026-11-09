@@ -71,6 +71,8 @@ async def test_agent_create_proposal_applies_into_an_existing_department(
         result = await apply_proposal(db, proposal.id, actor)
         assert result.status == "applied"
 
+        # Scoped to this test's department: ACME is shared across the suite and
+        # other tests commit agents named "Nora" into it.
         agent = (
             await db.execute(
                 select(m.Agent).where(

@@ -127,7 +127,7 @@ async def test_to_date_filter_includes_the_whole_selected_day(
             category="tool",
             action="midday",
         )
-        seq = ev.seq
+    seq = ev.seq  # assigned when the session commits
 
     # ts is not part of the hashed payload, so backdating it leaves the chain
     # intact. UPDATE needs the owning role -- oc8_app is REVOKEd (migration 0001).
@@ -166,7 +166,7 @@ async def test_export_agrees_with_list_on_the_to_date_bound(
             category="tool",
             action="midday",
         )
-        seq = ev.seq
+    seq = ev.seq  # assigned when the session commits
 
     engine = sa.create_engine(pg_url)
     with engine.begin() as conn:
@@ -208,7 +208,7 @@ async def test_explicit_to_timestamp_is_still_respected_exactly(
             category="tool",
             action="late",
         )
-        seq = ev.seq
+    seq = ev.seq  # assigned when the session commits
 
     engine = sa.create_engine(pg_url)
     with engine.begin() as conn:
