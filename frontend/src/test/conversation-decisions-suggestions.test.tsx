@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const budget = vi.hoisted(() => ({ current: undefined as unknown }));
 const decide = vi.hoisted(() => vi.fn());
 const approvals = vi.hoisted(() => ({ current: [] as unknown[] }));
 const me = vi.hoisted(() => ({ current: { memberId: "me" } as Record<string, unknown> }));
@@ -19,7 +20,7 @@ vi.mock("@/lib/hooks", async (orig) => ({
   useDecideApproval: () => ({ mutate: decide, isPending: false }),
   useApprovals: () => ({ data: approvals.current }),
   useAuth: () => ({ data: me.current }),
-  useBudgetStatus: () => ({ data: undefined }),
+  useBudgetStatus: () => ({ data: budget.current }),
 }));
 vi.mock("@/components/conversation/use-conversation", () => ({
   useConversation: () => ({ ...conv.current, isLoading: false, addPendingRun: vi.fn() }),
@@ -149,6 +150,7 @@ const decision = {
 describe("DecisionCard states", () => {
   beforeEach(() => {
     decide.mockReset();
+    budget.current = undefined;
   });
 
   it("shows the picked option once decided", () => {
@@ -273,6 +275,13 @@ describe("Conversation suggestions and decisions", () => {
       ),
     );
     post.mockRestore();
+  });
+
+  it("offers the budget chip when the soft limit is exceeded", () => {
+    chat([]);
+    budget.current = { softExceeded: true, currentTokens: 1, hardLimitTokens: null };
+    mount();
+    expect(screen.getByRole("button", { name: "Budget is running low" })).toBeInTheDocument();
   });
 
   it("puts a chip into the draft with the pencil, keeping what was typed", () => {

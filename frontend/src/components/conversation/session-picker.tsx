@@ -25,7 +25,6 @@ export function SessionPicker({
   sessionId,
   onSelect,
 }: {
-  agentId: string;
   sessions: ChatSessionDTO[];
   sessionId: string | null;
   onSelect: (sessionId: string | null) => void;

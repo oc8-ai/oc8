@@ -79,12 +79,7 @@ function ChatWidgetPanel({
           </button>
         )}
         {assistantAgentId && sessions && sessions.length > 0 && (
-          <SessionPicker
-            agentId={assistantAgentId}
-            sessions={sessions}
-            sessionId={sessionId}
-            onSelect={setSessionId}
-          />
+          <SessionPicker sessions={sessions} sessionId={sessionId} onSelect={setSessionId} />
         )}
       </div>
       {liveConnectionStatus === "disconnected" && (

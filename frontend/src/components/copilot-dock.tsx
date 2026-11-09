@@ -466,7 +466,6 @@ function CopilotDockPanel() {
             </button>
             {assistantAgentId && sessions && sessions.length > 0 && (
               <SessionPicker
-                agentId={assistantAgentId}
                 sessions={sessions}
                 sessionId={activeTab?.sessionId ?? null}
                 onSelect={(sid) => {

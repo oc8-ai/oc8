@@ -20,6 +20,7 @@ import {
   type LiveRunDTO,
 } from "@/lib/conversation-api";
 import { nextStepChips } from "@/lib/chat-suggestions";
+import { useCan } from "@/lib/governance-hooks";
 import { mayActOn, useApprovals, useAuth, useBudgetStatus, type Approval } from "@/lib/hooks";
 import {
   chatKeys,
@@ -186,7 +187,12 @@ function ConversationBody(props: ConversationProps) {
   const setDraft = props.onDraftChange ?? setOwnDraft;
   const [sendError, setSendError] = useState<string | null>(null);
   const [showBudget, setShowBudget] = useState(false);
-  const { data: budget } = useBudgetStatus(null, { enabled: showBudget });
+  const mayViewBudget = useCan()("budget:view");
+  // Also fetched once a conversation is under way, so the "budget is nearly
+  // used" reply chip can appear before anyone types /budget.
+  const { data: budget } = useBudgetStatus(null, {
+    enabled: showBudget || (mayViewBudget && conv.turns.length > 0),
+  });
   const createSession = useCreateChatSession();
   const sendMessage = useSendChatMessage(props.sessionId ?? "");
   const regenerate = useRegenerate(props.sessionId);
@@ -292,8 +298,8 @@ function ConversationBody(props: ConversationProps) {
             lastTurnRole: lastMessage?.role ?? null,
             lastUserMode: [...conv.messages].reverse().find((m) => m.role === "user")?.mode ?? null,
             pendingApprovals: pendingApprovals.length,
-            budgetSoftExceeded: false,
-            mayViewBudget: false,
+            budgetSoftExceeded: !!budget?.softExceeded,
+            mayViewBudget,
             promptStarters: [],
           },
           t,

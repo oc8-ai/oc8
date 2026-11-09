@@ -10,8 +10,6 @@ const {
   createSessionMock,
   messagesMock,
   sendMessageMock,
-  renameSessionMock,
-  deleteSessionMock,
   proposalsMock,
   applyProposalMock,
   rejectProposalMock,
@@ -30,8 +28,6 @@ const {
   createSessionMock: vi.fn(),
   messagesMock: vi.fn(),
   sendMessageMock: vi.fn(),
-  renameSessionMock: vi.fn(),
-  deleteSessionMock: vi.fn(),
   proposalsMock: vi.fn(),
   applyProposalMock: vi.fn(),
   rejectProposalMock: vi.fn(),
@@ -78,8 +74,8 @@ vi.mock("@/lib/hooks-chat", () => ({
   useCreateChatSession: () => ({ mutate: createSessionMock, isPending: false }),
   useChatMessages: (sessionId: string | null) => messagesMock(sessionId),
   useSendChatMessage: () => ({ mutate: sendMessageMock, isPending: false }),
-  useRenameChatSession: () => ({ mutate: renameSessionMock, isPending: false }),
-  useDeleteChatSession: () => ({ mutate: deleteSessionMock, isPending: false }),
+  useRenameChatSession: () => ({ mutate: vi.fn(), isPending: false }),
+  useDeleteChatSession: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 vi.mock("@/lib/live/provider", async (importOriginal) => {
@@ -201,8 +197,6 @@ describe("CopilotDock", () => {
     messagesMock.mockReset();
     messagesMock.mockReturnValue({ data: undefined });
     sendMessageMock.mockReset();
-    renameSessionMock.mockReset();
-    deleteSessionMock.mockReset();
     proposalsMock.mockReset();
     proposalsMock.mockReturnValue({ data: [] });
     applyProposalMock.mockReset();
