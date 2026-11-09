@@ -52,6 +52,8 @@ import { RunInputs, runInputError } from "./run-steering";
 import { SuggestionChips, type ReplyChip } from "./suggestion-chips";
 import type { AssistantTurnModel, ConversationVariant, TurnModel } from "./types";
 import { useTimelineRuns } from "./timeline-runs";
+import { TurnApprovalCards } from "./turn-approval-cards";
+import { TURN_APPROVAL_CARDS } from "./turn-approval-registry";
 import { useConversation } from "./use-conversation";
 import { useScrollAnchor } from "./use-scroll-anchor";
 import { UserTurn } from "./user-turn";
@@ -781,6 +783,12 @@ function ConversationBody(props: ConversationProps) {
       />
     ) : null;
     const decisions = turn === lastAssistant ? decisionCards() : null;
+    // Other approvals this turn's run is held on, each through its registered
+    // card (TURN_APPROVAL_CARDS); a turn of nobody's registry renders nothing.
+    const approvals =
+      turnRunId && Object.keys(TURN_APPROVAL_CARDS).length > 0 ? (
+        <TurnApprovalCards runId={turnRunId} live={!!turn.liveRunId} />
+      ) : null;
     const chips =
       turn === lastTurn && suggestions.length > 0 ? (
         <SuggestionChips
@@ -791,8 +799,9 @@ function ConversationBody(props: ConversationProps) {
       ) : null;
     return {
       cards:
-        own.cards || decisions ? (
+        approvals || own.cards || decisions ? (
           <>
+            {approvals}
             {own.cards}
             {decisions}
           </>
