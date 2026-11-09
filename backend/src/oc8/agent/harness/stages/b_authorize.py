@@ -75,9 +75,7 @@ def authorize(
     `routed` says the model named this tool through a connection
     (`<connection>.<tool>`), so `tc.name` is the CONNECTION's tool name. It may
     match a core tool's name, and must not inherit that core tool's early
-    ALLOW: the call runs on the connection's server, so the frame decides it.
-    The same holds when the connection's own `tool_scopes` declare the name --
-    then the name is the connection's, whatever the core calls itself."""
+    ALLOW: the call runs on the connection's server, so the frame decides it."""
     if narrowing is None:
         narrowing = agent.narrowing or {}
     if is_team_lead is None:
@@ -86,7 +84,7 @@ def authorize(
     # just the connection tools. Denying here also means the existing
     # append_event at all three call sites records it -- "denied because /plan"
     # is in the audit trail without a fourth writer.
-    core_call = is_core_call(tc.name, routed=routed, tool_scopes=tool_scopes)
+    core_call = is_core_call(tc.name, routed=routed)
     skill_call = tc.name in skill_tool_names and not routed
     refused = mode_refusal(
         chat_mode,
@@ -226,24 +224,17 @@ def authorize(
     )
 
 
-def is_core_call(name: str, *, routed: bool, tool_scopes: Mapping[str, Any] | None) -> bool:
+def is_core_call(name: str, *, routed: bool) -> bool:
     """Whether a call is the CORE tool of that name, and may be decided as one.
 
     Not when the route rewrote the name (the model named a connection's tool),
-    not when the connection's own scopes declare it, and never for a name that
-    is no core tool at all -- a qualified `<connection>.ask_user` included. The B risk
-    gate asks the same question, so it tiers the tool the PEP decided on.
+    and never for a name that is no core tool at all -- a qualified
+    `<connection>.ask_user` included. Routes always qualify a connection tool
+    named like a core one (`build_routes`' `reserved`), so a bare core name
+    only ever reaches the core tool. The B risk gate asks the same question,
+    so it tiers the tool the PEP decided on.
     """
-    return (
-        name in CONTROL_TOOL_NAMES and not routed and not _declared_by_connection(name, tool_scopes)
-    )
-
-
-def _declared_by_connection(tool: str, tool_scopes: Mapping[str, Any] | None) -> bool:
-    """Whether the connection's own scopes name this tool, under any right."""
-    if not tool_scopes:
-        return False
-    return any(isinstance(names, (list, tuple)) and tool in names for names in tool_scopes.values())
+    return name in CONTROL_TOOL_NAMES and not routed
 
 
 def _frame_decision(

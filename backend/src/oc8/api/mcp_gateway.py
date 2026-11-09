@@ -410,7 +410,10 @@ async def _list_tools(
     # Built from what the agent may ACTUALLY use: a tool the frame withholds on
     # one system must not force the other system's identical tool to be
     # advertised qualified, when from the model's side there is no ambiguity.
-    routes = build_routes({name: [t.name for t in tools] for name, tools in allowed.items()})
+    routes = build_routes(
+        {name: [t.name for t in tools] for name, tools in allowed.items()},
+        reserved=CONTROL_TOOL_NAMES,
+    )
     await _remember_routes(db, run, routes)
     by_route = {(r.connection, r.tool): advertised for advertised, r in routes.items()}
 

@@ -380,7 +380,10 @@ def test_a_routed_connection_tool_does_not_borrow_a_core_tools_allowance() -> No
     assert decision.effect is Effect.DENY
 
 
-def test_a_connection_that_declares_a_core_name_is_decided_by_the_frame() -> None:
+def test_a_bare_core_name_is_the_core_tool_whatever_a_connection_declares() -> None:
+    """Routes always qualify a connection tool named like a core tool, so a
+    bare core name can only ever reach the core tool -- and is decided as one,
+    even when the bound connection's scopes happen to list the same name."""
     decision = _authorize(
         _agent(),
         ToolCall(id="c1", name="run_shell", arguments={"command": "ls"}),
@@ -389,7 +392,7 @@ def test_a_connection_that_declares_a_core_name_is_decided_by_the_frame() -> Non
         connection_key="odoo",
         tool_scopes={"modify": ["run_shell"]},
     )
-    assert decision.effect is Effect.DENY
+    assert decision.effect is Effect.ALLOW
 
 
 def test_the_core_tool_itself_keeps_its_allowance() -> None:
@@ -456,9 +459,6 @@ def test_a_qualified_core_name_never_gets_the_core_allowance(tool: str) -> None:
 def test_is_core_call_matches_what_authorize_decides() -> None:
     from oc8.agent.harness.stages.b_authorize import is_core_call
 
-    assert is_core_call("write_output_file", routed=False, tool_scopes=None)
-    assert not is_core_call("write_output_file", routed=True, tool_scopes=None)
-    assert not is_core_call(
-        "write_output_file", routed=False, tool_scopes={"modify": ["write_output_file"]}
-    )
-    assert not is_core_call("odoo.write_output_file", routed=False, tool_scopes=None)
+    assert is_core_call("write_output_file", routed=False)
+    assert not is_core_call("write_output_file", routed=True)
+    assert not is_core_call("odoo.write_output_file", routed=False)

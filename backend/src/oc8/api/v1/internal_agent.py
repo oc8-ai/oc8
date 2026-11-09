@@ -552,7 +552,10 @@ async def _discover_connection_tools(
             resources.append({**item, "connection": name})
         for prompt_name in listed_prompts:
             prompts.append({"connection": name, "name": prompt_name})
-    routes = build_routes({name: [t.name for t in tools] for name, tools in discovered.items()})
+    routes = build_routes(
+        {name: [t.name for t in tools] for name, tools in discovered.items()},
+        reserved=CONTROL_TOOL_NAMES,
+    )
     by_real = {(route.connection, route.tool): advertised for advertised, route in routes.items()}
     schemas: list[dict[str, Any]] = []
     for conn_name, tools in discovered.items():
@@ -1905,7 +1908,7 @@ async def _dispatch_one_tool(
             arguments=tc.arguments,
             # The tool that runs: a renamed call is the connection's, so it is
             # tiered by the connection's scopes, never by a core tool's tier.
-            core=is_core_call(tc.name, routed=renamed, tool_scopes=scopes),
+            core=is_core_call(tc.name, routed=renamed),
         )
         definition = pinned["definition"] if isinstance(pinned["definition"], dict) else {}
         raw_b5_grants = definition.get("b5_grants")

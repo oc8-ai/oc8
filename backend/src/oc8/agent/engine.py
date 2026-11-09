@@ -859,7 +859,7 @@ async def run_agent(
                     config=config,
                     annotations=offered.annotations if offered is not None else None,
                     arguments=tc.arguments,
-                    core=is_core_call(tc.name, routed=shown != tc.name, tool_scopes=scopes),
+                    core=is_core_call(tc.name, routed=shown != tc.name),
                 )
                 identity = record_identity(tc.name, tc.arguments, spec)
                 return harness.gate(
@@ -2635,7 +2635,20 @@ async def run_agent(
                             db, tenant_id=tenant_id, mcp_conn=only
                         )
                         async with tool_session as server:
-                            return await loop(apply_tool_notes(server.tools, cfg), server)
+                            noted = apply_tool_notes(server.tools, cfg)
+                            if any(t.name in CONTROL_TOOL_NAMES for t in noted):
+                                # A tool named like a core one is offered
+                                # qualified, as with several connections (see
+                                # build_routes' `reserved`): a bare core name
+                                # must only ever reach the core tool.
+                                single = RoutedToolset(
+                                    {only.name: server},
+                                    {only.name: noted},
+                                    auth_by_connection={only.name: _mcp_auth(only)},
+                                    reserved=CONTROL_TOOL_NAMES,
+                                )
+                                return await loop(single.tools, single)
+                            return await loop(noted, server)
                     except Exception as exc:
                         _note_unavailable(only, exc)
                         return await loop([], None)
@@ -2660,6 +2673,7 @@ async def run_agent(
                         sessions,
                         tools_by_connection,
                         auth_by_connection=auth_by_connection,
+                        reserved=CONTROL_TOOL_NAMES,
                     )
                     return await loop(routed.tools, routed)
             finally:
