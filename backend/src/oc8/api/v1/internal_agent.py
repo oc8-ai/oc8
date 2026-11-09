@@ -1684,7 +1684,9 @@ async def _dispatch_one_tool(
         from oc8.agent.record_link import record_url_from_env
 
         try:
-            env = (await _mcp_env(conn, db, run)).env
+            # `ctx` is written back whole after this call: a cleared call to
+            # action must be cleared in it too.
+            env = (await _mcp_env(conn, db, run, ctx=ctx)).env
         except ConnectionRequired:
             return None
         return record_url_from_env(conn.name, env, ident)

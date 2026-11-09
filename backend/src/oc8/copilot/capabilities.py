@@ -514,7 +514,7 @@ async def apply_operation(
                 event_source=operation.eventSource,
                 event_type=operation.eventType,
                 declared_events={(event.source, event.type) for event in events},
-            created_by_member_id=actor_member_id,
+                created_by_member_id=actor_member_id,
             )
         except SubscriptionModelNotManualOnly as exc:
             # A ChatGPT-subscription-backed agent may not be given an
