@@ -15,7 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agent.assistant import get_or_create_assistant
-from oc8.authz.permissions import SEAT_APPROVER, SEAT_VIEWER
+from oc8.authz.authority import authority_for_member, tenant_wide_read
+from oc8.authz.permissions import DEPARTMENT, SEAT_APPROVER, SEAT_VIEWER, VIEW, perm
 from oc8.authz.scope import scope_for_member
 from oc8.copilot.builder import create_builder_proposal
 from oc8.copilot.models import CopilotProposal
@@ -168,11 +169,13 @@ async def propose_as_admin(
     member = await db.get(m.OrgMember, office.admin.member_id)
     assert member is not None
     scope = await scope_for_member(db, member, token_role="org_admin")
+    authority = await authority_for_member(db, member, token_role="org_admin")
     return await create_builder_proposal(
         db,
         tenant_id=office.tenant,
         member=member,
         scope=scope,
+        tenant_wide=tenant_wide_read(authority, perm(DEPARTMENT, VIEW)),
         session_id=office.admin.session_id,
         operations=invoice_checker_ops(office) if ops is None else ops,
         now=now or dt.datetime.now(tz=dt.UTC),

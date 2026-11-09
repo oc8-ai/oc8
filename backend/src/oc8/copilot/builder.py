@@ -50,6 +50,7 @@ from oc8.copilot.capabilities import (
 )
 from oc8.copilot.models import CopilotOperation, CopilotProposal
 from oc8.copilot.redaction import carries_secret_value
+from oc8.departments.repo import visible_department
 
 logger = logging.getLogger(__name__)
 
@@ -262,6 +263,7 @@ async def create_builder_proposal(
     tenant_id: uuid.UUID,
     member: m.OrgMember,
     scope: DepartmentScope,
+    tenant_wide: bool,
     session_id: uuid.UUID,
     operations: object,
     now: dt.datetime,
@@ -271,7 +273,11 @@ async def create_builder_proposal(
     replaced: the member waits for the decision (or it expires)."""
     steps = parse_builder_operations(operations)
     create = _create_step(steps)
-    department = await _live_department(db, create.departmentId)
+    # Through the scoped repository, like builder_options lists them (A24):
+    # a department outside the member's reach reads as unknown.
+    department = await visible_department(
+        db, scope=scope, tenant_wide=tenant_wide, department_id=create.departmentId
+    )
     if department is None or not scope.may_view(department.id):
         raise BuilderInvalid("department_unknown", 0)
     await check_selections(db, tenant_id=tenant_id, department=department, steps=steps)

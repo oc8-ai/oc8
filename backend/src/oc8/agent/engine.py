@@ -1820,6 +1820,7 @@ async def run_agent(
                         ),
                         chat_mode=chat_mode,
                         edition_offer=edition,
+                        routed=auth_tc is not tc,
                     )
                     if tc.id in call_justifications:
                         justification = call_justifications[tc.id]

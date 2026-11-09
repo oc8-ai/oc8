@@ -53,6 +53,7 @@ def authorize(
     is_team_lead: bool | None = None,
     chat_mode: ChatMode | None = None,
     edition_offer: EditionOffer = NO_EDITION_OFFER,
+    routed: bool = False,
 ) -> Decision:
     """PEP for a tool call. Every connection tool is decided against the
     department frame (§5.3): which entry governs it is the connection key, and
@@ -86,7 +87,13 @@ def authorize(
     run (`oc8.edition.tools.edition_offer`). A call it claims is an edition
     call: ALLOW only if it was offered, otherwise DENY as an unknown tool --
     a registered name is not a grant. Every runtime passes its offer; the
-    default claims every registered name and allows none."""
+    default claims every registered name and allows none.
+
+    `routed` is True when the call reached this name through a connection's
+    route (`conn__propose_agent` resolved to that connection's own
+    `propose_agent`): it is the connection's tool then, never the core tool of
+    that name, and gets neither a builder tool's early ALLOW nor a mode's
+    core-only exemption."""
     if narrowing is None:
         narrowing = agent.narrowing or {}
     if is_team_lead is None:
@@ -97,10 +104,10 @@ def authorize(
     # is in the audit trail without a fourth writer.
     edition_call = edition_offer.claims(tc.name)
     # A call by a core tool's name is the core tool -- every runtime dispatches
-    # those by name before any connection -- unless the connection's own scopes
-    # list that name: then it is the connection's tool and never inherits a
-    # mode's core-only exemption (Ruling A8).
-    core_call = tc.name in CONTROL_TOOL_NAMES and not _scoped(tc.name, tool_scopes)
+    # those by name before any connection -- unless it was routed to a
+    # connection or the connection's own scopes list that name: then it is the
+    # connection's tool and never inherits a mode's core-only exemption (A8).
+    core_call = tc.name in CONTROL_TOOL_NAMES and not routed and not _scoped(tc.name, tool_scopes)
     refused = mode_refusal(
         chat_mode,
         tc.name,
@@ -194,11 +201,12 @@ def authorize(
         # member behind the task. Without this ALLOW every call would be
         # audited as a denial by the frame check below.
         return Decision(Effect.ALLOW)
-    if tc.name in BUILDER_TOOL_NAMES:
+    if tc.name in BUILDER_TOOL_NAMES and core_call:
         # Belongs to no connection, like propose_change: the dispatch
         # (oc8.copilot.builder_tools) is the gate -- Copilot only, web door,
         # the session's own member. The mode check above already denied
-        # propose_agent outside Agent mode's exemption.
+        # propose_agent outside Agent mode's exemption. A routed or scoped
+        # call of that name is a connection's tool and goes to the frame below.
         return Decision(Effect.ALLOW)
     if tc.name == "delegate_task":
         if not is_team_lead:

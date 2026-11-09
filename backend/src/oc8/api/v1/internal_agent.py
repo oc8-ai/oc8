@@ -1776,6 +1776,7 @@ async def _dispatch_one_tool(
         guardrail_attribute_specs=guardrail_attribute_specs,
         chat_mode=mode_from_context(run.context),
         edition_offer=edition,
+        routed=routed is not None,
     )
     stripped, justification = strip_justification(tc.arguments)
     tc.arguments = stripped

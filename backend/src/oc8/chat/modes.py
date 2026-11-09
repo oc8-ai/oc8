@@ -155,6 +155,11 @@ MODES: dict[str, ChatMode] = {m.key: m for m in (ASK, PLAN, DO, SUMMARISE, AGENT
 #: read_* family are absent -- they show, list or read and change nothing
 #: outside the run.
 #:
+#: `enter_agent_mode` is in the list too, although it touches no system: it
+#: switches the chat into Agent mode, which may propose an agent. A mode may
+#: only narrow, so a read-only turn (/plan) never enters another mode that
+#: could do more than it (Ruling A22).
+#:
 #: Every OTHER core tool counts as a read in a read-only mode (see
 #: `mode_refusal`): core tools carry no connection scopes, so `required_right`
 #: would otherwise fail them closed to "modify" and /plan could not look
@@ -166,6 +171,7 @@ WRITING_CONTROL_TOOLS: frozenset[str] = frozenset(
         "write_output_file",
         "propose_change",
         "propose_agent",
+        "enter_agent_mode",
         "decide_approval",
         "request_decision",
         "ask_user",

@@ -59,9 +59,13 @@ def test_agent_mode_offers_the_builder_and_no_writes() -> None:
     assert not names & {"enter_agent_mode", "propose_change", "decide_approval", "memory_write"}
 
 
-def test_plan_withholds_propose_agent_but_keeps_the_door() -> None:
-    names = _names(offered_tools(_copilot(), copilot_door="web", chat_mode=MODES["plan"], **COMMON))
-    assert "enter_agent_mode" in names and "propose_agent" not in names
+@pytest.mark.parametrize("mode_key", ["plan", "ask", "summarise"])
+def test_a_read_only_mode_offers_neither_the_door_nor_the_proposal(mode_key: str) -> None:
+    """Ruling A22: a mode may only narrow -- /plan cannot step into Agent mode."""
+    names = _names(
+        offered_tools(_copilot(), copilot_door="web", chat_mode=MODES[mode_key], **COMMON)
+    )
+    assert not names & {"enter_agent_mode", "propose_agent", "builder_options"}
 
 
 @pytest.mark.parametrize("door", ["telegram", "followup", None])
@@ -69,13 +73,9 @@ def test_builder_tools_stay_off_every_other_door(door: str | None) -> None:
     for mode in (None, MODES["agent"]):
         names = _names(offered_tools(_copilot(), copilot_door=door, chat_mode=mode, **COMMON))
         assert not names & {"propose_agent", "builder_options", "enter_agent_mode"}, (door, mode)
-
-
-def test_builder_tools_stay_off_the_messenger_door() -> None:
-    names = _names(
-        offered_tools(_copilot(), copilot_door="telegram", chat_mode=MODES["agent"], **COMMON)
-    )
-    assert not names & {"propose_agent", "builder_options", "enter_agent_mode", "ask_user"}
+        if door != "followup":
+            # A messenger (or unknown) door cannot answer a park either.
+            assert "ask_user" not in names, (door, mode)
 
 
 def test_an_ordinary_agent_gets_no_builder_tools() -> None:
@@ -95,7 +95,14 @@ def test_an_ordinary_agent_gets_no_builder_tools() -> None:
         ("propose_change", "agent", Effect.DENY),
         ("propose_agent", "plan", Effect.DENY),
         ("enter_agent_mode", None, Effect.ALLOW),
-        ("enter_agent_mode", "plan", Effect.ALLOW),
+        ("enter_agent_mode", "do", Effect.ALLOW),
+        ("enter_agent_mode", "plan", Effect.DENY),
+        ("enter_agent_mode", "ask", Effect.DENY),
+        ("enter_agent_mode", "summarise", Effect.DENY),
+        ("enter_agent_mode", "agent", Effect.DENY),
+        ("propose_agent", "ask", Effect.DENY),
+        ("propose_agent", "summarise", Effect.DENY),
+        ("builder_options", "plan", Effect.ALLOW),
     ],
 )
 def test_the_pep_agrees_with_the_offer(tool: str, mode_key: str | None, effect: Effect) -> None:
@@ -190,6 +197,21 @@ async def test_builder_options_lists_only_connected_systems(
         outcome = await _call(db, office, run, task, "builder_options")
         assert outcome is not None and not outcome.output.startswith("ERROR")
         assert "odoo" not in outcome.output
+
+
+@pytest.mark.asyncio
+async def test_enter_agent_mode_is_refused_under_plan(app_session: AppSessionFactory) -> None:
+    """The dispatch refuses it too, not only the PEP (Ruling A22)."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await builder_office(db, tenant)
+        run, task = await _run(db, office, chat_mode="plan")
+        outcome = await _call(db, office, run, task, "enter_agent_mode")
+        assert outcome is not None and outcome.output.startswith("ERROR")
+        session = await db.get(m.ChatSession, office.admin.session_id)
+        assert session is not None and session.mode is None
+        await db.refresh(run)
+        assert run.context["chat_mode"] == "plan"
 
 
 @pytest.mark.asyncio
@@ -290,19 +312,36 @@ async def test_a_concurrent_proposal_asks_the_model_to_retry(
     from oc8.copilot import builder_tools
     from oc8.copilot.builder_ops import BuilderInvalid
 
-    async def _lost(*_a: Any, **_k: Any) -> Any:
+    real = builder_tools.create_builder_proposal
+
+    async def _lost(*a: Any, **k: Any) -> Any:
+        # Everything the real call does -- the prior draft superseded, the new
+        # one stored -- and then the race lost at the unique index.
+        await real(*a, **k)
         raise BuilderInvalid("superseded_concurrently")
 
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         office = await builder_office(db, tenant)
+        prior = await propose_as_admin(db, office)
         run, task = await _run(db, office, chat_mode="agent")
         monkeypatch.setattr(builder_tools, "create_builder_proposal", _lost)
         outcome = await _call(
-            db, office, run, task, "propose_agent", operations=invoice_checker_ops(office)
+            db,
+            office,
+            run,
+            task,
+            "propose_agent",
+            operations=invoice_checker_ops(office, name="Mahnwesen"),
         )
         assert outcome is not None and outcome.output.startswith("ERROR")
         assert "again" in outcome.output and "superseded_concurrently" not in outcome.output
+        rows = (await db.execute(select(CopilotProposal))).scalars().all()
+        assert [r.id for r in rows] == [prior.id], "the lost attempt left nothing"
+        await db.refresh(prior)
+        assert prior.status == "draft" and prior.revision == 1, "the prior draft is restored"
+        await db.refresh(run)
+        assert "builder_proposal_id" not in run.context
 
 
 @pytest.mark.asyncio
@@ -449,8 +488,9 @@ async def test_writes_are_withheld_for_the_rest_of_the_leg_that_entered_agent_mo
     assert decisions["tool.call:propose_change"] == "deny"
     by_tool = {c["tool"]: c for c in result.tool_calls}
     assert by_tool["enter_agent_mode"]["state"] == "done"
-    # Refused by the dispatch on the PEP's DENY (a control tool's ERROR).
-    assert by_tool["propose_change"]["state"] in ("denied", "failed")
+    # Refused by the dispatch on the PEP's DENY: the engine records a
+    # dispatched control tool's ERROR as "failed" (the audit above says deny).
+    assert by_tool["propose_change"]["state"] == "failed"
     assert proposals == []
     assert len(router.offered) >= 2
     assert "propose_change" in router.offered[0] and "enter_agent_mode" in router.offered[0]
@@ -458,16 +498,31 @@ async def test_writes_are_withheld_for_the_rest_of_the_leg_that_entered_agent_mo
     assert not router.offered[1] & {"propose_change", "enter_agent_mode"}
 
 
-def test_a_connection_tool_named_like_a_core_one_gets_no_exemption_at_the_pep() -> None:
-    """Ruling A8 at the PEP: the core propose_agent is exempt in Agent mode, a
-    connection's own tool of that name (listed in its scopes) is not."""
+@pytest.mark.parametrize(
+    ("routed", "scopes", "mode_key"),
+    [
+        (False, {"modify": ["propose_agent"]}, "agent"),
+        (True, {"modify": ["propose_agent"]}, "agent"),
+        (True, {"modify": ["propose_agent"]}, None),
+        (True, None, "agent"),
+        (True, None, None),
+    ],
+)
+def test_a_connection_tool_named_like_a_builder_tool_gets_no_core_pass(
+    routed: bool, scopes: dict[str, Any] | None, mode_key: str | None
+) -> None:
+    """Ruling A8 at the PEP: the core propose_agent is exempt in Agent mode and
+    allowed early; a connection's own tool of that name -- routed to it
+    (`odoo__propose_agent`) or listed in its scopes -- gets neither and is
+    decided by the frame, which grants nothing here."""
     decision = _authorize(
         _copilot(),
         ToolCall(id="c", name="propose_agent", arguments={}),
         frame={"tools": {}},
         tool_policies={},
         connection_key="odoo",
-        tool_scopes={"modify": ["propose_agent"]},
-        chat_mode=MODES["agent"],
+        tool_scopes=scopes,
+        chat_mode=MODES[mode_key] if mode_key else None,
+        routed=routed,
     )
     assert decision.effect is Effect.DENY

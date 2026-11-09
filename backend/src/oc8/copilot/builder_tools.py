@@ -24,11 +24,11 @@ from oc8.agent.control_tools import (
     _acting_token_role,
     _resolve_agent_actor,
 )
-from oc8.authz.authority import authority_for_member, tenant_wide_read
+from oc8.authz.authority import Authority, authority_for_member, tenant_wide_read
 from oc8.authz.permissions import DEPARTMENT, VIEW, perm
 from oc8.authz.scope import AgentActor
 from oc8.chat.model_choice import chat_enabled_model_ids
-from oc8.chat.modes import AGENT, mode_directive
+from oc8.chat.modes import AGENT, mode_directive, mode_from_context, mode_refusal
 from oc8.copilot.builder import create_builder_proposal, may_create_agent, usable_systems
 from oc8.copilot.builder_ops import BuilderInvalid
 from oc8.copilot.door import door_of
@@ -74,6 +74,12 @@ def _refusal(exc: BuilderInvalid) -> str:
     return f"ERROR: proposal refused ({exc.code}{where}): {hint}"
 
 
+def _reads_every_department(authority: Authority) -> bool:
+    """`tenant_wide` for the scoped department repository, as the Copilot's
+    department_status tool derives it."""
+    return tenant_wide_read(authority, perm(DEPARTMENT, VIEW))
+
+
 async def builder_options_text(
     db: AsyncSession, *, tenant_id: uuid.UUID, actor: AgentActor, token_role: str | None
 ) -> str:
@@ -82,9 +88,7 @@ async def builder_options_text(
     usable ones only (Ruling A12) -- exactly what a proposal may select."""
     authority = await authority_for_member(db, actor.member, token_role=token_role)
     departments, _total = await visible_departments(
-        db,
-        scope=actor.scope,
-        tenant_wide=tenant_wide_read(authority, perm(DEPARTMENT, VIEW)),
+        db, scope=actor.scope, tenant_wide=_reads_every_department(authority)
     )
     lines = ["Departments (id | name | how | connected systems):"]
     own = actor.scope.viewable
@@ -167,21 +171,25 @@ async def execute_builder_tool(
     if session is None or session.tenant_id != tenant_id or session.member_id != actor.member.id:
         return ControlOutcome(output="ERROR: agents are set up in the person's own conversation")
     token_role = await _acting_token_role(db, tenant_id=tenant_id, run_id=run_id)
+    refused = mode_refusal(mode_from_context(context), tc.name, tool_scopes=None)
+    if refused is not None:
+        # The PEP decided the same already; the dispatch does not rely on it
+        # (Ruling A22: a mode may only narrow, so /plan cannot enter Agent mode).
+        return ControlOutcome(output=f"ERROR: {refused}")
 
     if tc.name == ENTER_AGENT_MODE.name:
         session.mode = AGENT.key
         # This run's next leg (after an ask_user park) reads the mode back
         # through mode_from_context, and its task carries the directive. The
         # engine switches the rest of THIS leg itself (Ruling A6).
-        if context.get("chat_mode") != AGENT.key:
-            await merge_context(
-                db,
-                run,
-                {
-                    "chat_mode": AGENT.key,
-                    "task": str(context.get("task", "")) + "\n\n" + mode_directive(AGENT),
-                },
-            )
+        await merge_context(
+            db,
+            run,
+            {
+                "chat_mode": AGENT.key,
+                "task": str(context.get("task", "")) + "\n\n" + mode_directive(AGENT),
+            },
+        )
         await db.flush()
         options = await builder_options_text(
             db, tenant_id=tenant_id, actor=actor, token_role=token_role
@@ -203,6 +211,7 @@ async def execute_builder_tool(
             output="ERROR: propose_agent works in Agent mode only; call enter_agent_mode first"
         )
     operations = tc.arguments.get("operations") if isinstance(tc.arguments, dict) else None
+    authority = await authority_for_member(db, actor.member, token_role=token_role)
     try:
         # A savepoint: a refused proposal leaves nothing behind -- neither the
         # draft it would have superseded nor a lost race's half (Task 4).
@@ -212,6 +221,7 @@ async def execute_builder_tool(
                 tenant_id=tenant_id,
                 member=actor.member,
                 scope=actor.scope,
+                tenant_wide=_reads_every_department(authority),
                 session_id=session.id,
                 operations=operations,
                 now=dt.datetime.now(tz=dt.UTC),
