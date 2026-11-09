@@ -139,4 +139,32 @@ describe("CopilotRunActivity", () => {
     // did yesterday is the core interaction this surface exists for.
     expect(await screen.findByText(/2 steps/)).toBeInTheDocument();
   });
+  it("offers to connect the account a tool call needed", async () => {
+    vi.mocked(api.get).mockResolvedValue({
+      id: "r1",
+      agentId: "a1",
+      state: "succeeded",
+      phase: null,
+      output: "done",
+      steps: 1,
+      toolCalls: [],
+      taskId: null,
+      question: null,
+      renderedComponents: [],
+      connectionRequired: {
+        integration: "microsoft365",
+        provider: "microsoft",
+        label: "Microsoft 365",
+        reason: "not_connected",
+      },
+    });
+    render(<CopilotRunActivity sessionId="s1" runId="r1" />, { wrapper });
+    expect(
+      await screen.findByText("For this task the agent needs your Microsoft account."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Connect now →" })).toHaveAttribute(
+      "href",
+      "/connections?connect=microsoft365",
+    );
+  });
 });

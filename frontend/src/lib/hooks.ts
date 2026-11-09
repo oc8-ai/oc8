@@ -2295,6 +2295,7 @@ export interface TriggerDTO {
   //: The member who saved the schedule, and whether its runs act as that
   //: person (their personal accounts) rather than as nobody.
   createdByMemberId: string | null;
+  createdByName: string | null;
   actsForCreator: boolean;
 }
 
@@ -2335,11 +2336,14 @@ export function useUpdateAgentTrigger() {
       agentId,
       triggerId,
       cronExpression,
+      actsForCreator,
     }: {
       agentId: string;
       triggerId: string;
-      cronExpression: string;
-    }) => api.patch<TriggerDTO>(`/triggers/${triggerId}`, { cronExpression }),
+      cronExpression?: string;
+      //: Only the trigger's creator may switch this on (webhook/event).
+      actsForCreator?: boolean;
+    }) => api.patch<TriggerDTO>(`/triggers/${triggerId}`, { cronExpression, actsForCreator }),
     onSuccess: (_d, v) => qc.invalidateQueries({ queryKey: ["agent-triggers", v.agentId] }),
   });
 }

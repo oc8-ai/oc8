@@ -87,6 +87,10 @@ export interface AgentToolAccess {
   targetLabel: string | null;
   targetOwnerName: string | null;
   targetMissing: boolean;
+  /** A fixed binding runs refuse (`binding_needs_confirmation`) until its
+   *  owner or an administrator saves it again. */
+  needsConfirmation: boolean;
+  confirmationReason: "not_confirmed" | "agent_changed" | null;
 }
 
 export interface AccessOption {
