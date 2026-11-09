@@ -50,6 +50,15 @@ from oc8.chat.modes import WRITING_CONTROL_TOOLS, ChatMode
 from oc8.config import get_settings
 from oc8.copilot.notes import member_behind_run_task
 from oc8.departments.repo import visible_department, visible_departments
+from oc8.edition.tools import (
+    NO_EDITION_OFFER,
+    EditionOffer,
+    EditionToolContext,
+    clean_parts,
+    edition_tool_entitled,
+    edition_tool_writes,
+    registered_edition_tool,
+)
 from oc8.knowledge.retrieval import retrieve_kb_context
 from oc8.kpis.aggregate import compute_kpis
 from oc8.memory.router import MemoryWriteError, retrieve_context, write_memory
@@ -1072,6 +1081,7 @@ def offered_tools(
     chat_mode: ChatMode | None = None,
     copilot_door: str | None = None,
     has_context: bool = False,
+    edition_tools: Sequence[NeutralTool] = (),
 ) -> list[NeutralTool]:
     """The full tool list to offer the model this step.
 
@@ -1098,6 +1108,10 @@ def offered_tools(
 
     `has_context` is `has_readable_context(run.context)`: read_context is
     offered only to a chat turn with something readable pinned to it.
+
+    `edition_tools` are the edition tools offered on this run
+    (`oc8.edition.tools.edition_offer`); a writing one is dropped in a
+    read-only mode like a writing core tool.
 
     `chat_mode` withholds what the mode would deny anyway (`oc8.chat.modes`):
     nothing at all for /ask and /summarise, and the writing core tools for
@@ -1205,8 +1219,15 @@ def offered_tools(
     # Dropping them here would make the other system unreachable for the
     # rest of the run. _authorize still checks the frame on every call.
     offered.extend(mcp_tools)
+    # The edition tools this run was offered (`EditionOffer.neutral_tools`):
+    # already narrowed by entitlement, door, mode and the agent's own names.
+    offered.extend(edition_tools)
     if chat_mode is not None and not chat_mode.allows_writes:
-        offered = [t for t in offered if t.name not in WRITING_CONTROL_TOOLS]
+        offered = [
+            t
+            for t in offered
+            if t.name not in WRITING_CONTROL_TOOLS and edition_tool_writes(t.name) is not True
+        ]
     return offered
 
 
@@ -1267,8 +1288,8 @@ class ControlOutcome:
     questions: list[dict[str, Any]] | None = None
     #: Typed JSON an edition tool returns for the chat to show
     #: (`{"type": "sources", "items": [...]}`, `{"type": "document_ref", "id": ...}`).
-    #: Untrusted, extension-produced data: the CALLER appends them to the run's
-    #: `context["parts"]`; `record_assistant_reply` cleans them
+    #: Untrusted, extension-produced data: `execute_control_tool` appends them
+    #: to the run's `context["parts"]`; `record_assistant_reply` cleans them
     #: (`oc8.edition.tools.clean_parts`) and stores them on `ChatMessage.parts`.
     #: Core never renders or interprets them.
     parts: list[dict[str, Any]] | None = None
@@ -2052,6 +2073,119 @@ async def _execute_read_resource(
     return ControlOutcome(output=text)
 
 
+#: What the model is told when an edition tool's executor raised. Generic on
+#: purpose: the exception's message may carry secrets.
+EDITION_TOOL_FAILED = "ERROR: The tool failed."
+
+
+async def _execute_edition_tool(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    agent: m.Agent,
+    task: m.Task,
+    tc: ToolCall,
+    decision: Decision,
+    edition_offer: EditionOffer,
+    originating_operator: str | None,
+    run_id: uuid.UUID | None,
+    pinned: Mapping[str, Any] | None,
+) -> ControlOutcome:
+    """One call the edition offer claims (`EditionOffer.claims`).
+
+    Runs the executor only if the PEP allowed it, it was offered on this run,
+    the tenant is still entitled to it at call time and the agent, task and
+    tenant agree. Anything else is refused as an unknown tool. Every call --
+    allowed, refused or failed -- is audited as `edition_tool.called`, without
+    its arguments or output; a failure records the exception's type, never its
+    message. The executor works in a savepoint on the run's own session, so a
+    failure it leaves behind does not take the run with it.
+    """
+    edition = registered_edition_tool(tc.name)
+    unknown = f"unknown tool {tc.name!r}"
+    refusal: str | None = None
+    if edition is None or edition_offer.offered(tc.name) is None:
+        refusal = decision.reason if decision.effect is not Effect.ALLOW else None
+        refusal = refusal or unknown
+    elif decision.effect is not Effect.ALLOW:
+        refusal = decision.reason or "denied"
+    elif not await edition_tool_entitled(tenant_id, edition):
+        refusal = unknown
+    elif not (agent.tenant_id == task.tenant_id == tenant_id):
+        logger.warning("edition tool %r refused: agent, task and run tenant differ", tc.name)
+        refusal = unknown
+
+    error: str | None = None
+    outcome: ControlOutcome | None = None
+    if refusal is None and edition is not None:
+        try:
+            async with db.begin_nested():
+                result = await edition.execute(
+                    EditionToolContext(
+                        db=db,
+                        tenant_id=tenant_id,
+                        agent=agent,
+                        task=task,
+                        run_id=run_id,
+                        arguments=dict(tc.arguments),
+                        originating_operator=originating_operator,
+                        pinned=pinned,
+                    )
+                )
+            if not isinstance(result, ControlOutcome) or not isinstance(result.output, str):
+                raise TypeError("an edition tool must return a ControlOutcome")
+            outcome = result
+        except Exception as exc:
+            error = type(exc).__name__
+            logger.warning("edition tool %r failed: %s", tc.name, error)
+
+    stored_parts = False
+    if outcome is not None and outcome.parts and run_id is not None:
+        # Appended, then bounded as a whole: clean_parts' count and size caps
+        # hold across every call of the run, not per call.
+        run_row = await db.get(m.AgentRun, run_id)
+        if run_row is not None and run_row.tenant_id == tenant_id:
+            from oc8.runtime.run_context import merge_context
+
+            existing = (run_row.context or {}).get("parts")
+            merged = clean_parts(
+                [*(existing if isinstance(existing, list) else []), *clean_parts(outcome.parts)]
+            )
+            await merge_context(db, run_row, {"parts": merged})
+            stored_parts = True
+
+    allowed = refusal is None
+    resource: dict[str, Any] = {
+        "tool": tc.name,
+        "capability": edition.capability if edition is not None else None,
+        "run_id": str(run_id) if run_id is not None else None,
+        "allowed": allowed,
+    }
+    if error is not None:
+        resource["error"] = error
+    await append_event(
+        db,
+        tenant_id=tenant_id,
+        actor_type="agent",
+        actor_id=agent.id,
+        category="tool_action",
+        action="edition_tool.called",
+        resource=resource,
+        decision="allow" if allowed else "deny",
+        reason=refusal,
+        originating_operator=originating_operator,
+    )
+    if refusal is not None:
+        return ControlOutcome(output=f"ERROR: {refusal}")
+    if outcome is None:
+        return ControlOutcome(output=EDITION_TOOL_FAILED)
+    if outcome.parts and not stored_parts:
+        logger.warning("edition tool %r returned parts with no run to keep them", tc.name)
+    # Only the output and the restriction flag travel on: an edition tool does
+    # not park the run, start sub-runs, activate skills or render components.
+    return ControlOutcome(output=outcome.output, contains_restricted=outcome.contains_restricted)
+
+
 async def execute_control_tool(
     db: AsyncSession,
     *,
@@ -2069,6 +2203,7 @@ async def execute_control_tool(
     local_result: dict[str, Any] | None = None,
     harness_state: HarnessState | None = None,
     active_procedure_skills: Sequence[LoadedSkill] | None = None,
+    edition_offer: EditionOffer = NO_EDITION_OFFER,
 ) -> ControlOutcome | None:
     """Run one core-owned tool call, or return None if it isn't one.
 
@@ -2095,7 +2230,25 @@ async def execute_control_tool(
     `active_procedure_skills` is the caller's active skills that carry
     procedure steps (Package 9). Task 5 threads the real list; until then
     callers (and unit tests) may pass fakes or leave it None.
+
+    `edition_offer` is the run's edition offer, the same one its tool list
+    and its PEP decision were built from. A call it claims is an edition call
+    (`_execute_edition_tool`) and never reaches an MCP server; the default
+    offers nothing, so a caller that passes none refuses every edition tool.
     """
+    if edition_offer.claims(tc.name):
+        return await _execute_edition_tool(
+            db,
+            tenant_id=tenant_id,
+            agent=agent,
+            task=task,
+            tc=tc,
+            decision=decision,
+            edition_offer=edition_offer,
+            originating_operator=originating_operator,
+            run_id=run_id,
+            pinned=pinned,
+        )
     skill_by_tool = {s.tool_name: s for s in assigned_skills}
 
     from oc8.copilot.tools import execute_copilot_tool

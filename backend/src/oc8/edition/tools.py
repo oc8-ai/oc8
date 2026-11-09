@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 
     from oc8 import models as m
     from oc8.agent.control_tools import ControlOutcome
+    from oc8.chat.modes import ChatMode
     from oc8.licensing.capabilities import Capability
     from oc8.modelrouter import NeutralTool
 
@@ -179,6 +180,60 @@ async def offered_edition_tools(
             continue
         offered.append(tool)
     return offered
+
+
+@dataclass(frozen=True)
+class EditionOffer:
+    """The edition tools offered on one run, leg or door, computed once by the
+    runtime that assembles the tool list and handed to the PEP and the
+    dispatcher, so a call is checked against what was actually offered.
+
+    `taken` holds the names the agent's own tools already use (MCP tools,
+    advertised and real, and skill tools). A name in it is never the edition
+    tool's, whatever the registry says: the agent's tool wins.
+    """
+
+    tools: tuple[EditionTool, ...] = ()
+    taken: frozenset[str] = frozenset()
+
+    @property
+    def names(self) -> frozenset[str]:
+        return frozenset(t.tool.name for t in self.tools)
+
+    def neutral_tools(self) -> list[NeutralTool]:
+        return [t.tool for t in self.tools]
+
+    def claims(self, name: str) -> bool:
+        """Whether a call of this name is an edition-tool call -- offered or
+        not. Such a call is decided by the edition gates and nowhere else."""
+        return name not in self.taken and registered_edition_tool(name) is not None
+
+    def offered(self, name: str) -> EditionTool | None:
+        return next((t for t in self.tools if t.tool.name == name), None)
+
+
+#: No edition tool offered, nothing taken: every registered name is claimed
+#: and refused. The fail-closed default for a caller that passes no offer.
+NO_EDITION_OFFER = EditionOffer()
+
+
+async def edition_offer(
+    tenant_id: uuid.UUID,
+    *,
+    door: str | None,
+    taken: Collection[str] = (),
+    chat_mode: ChatMode | None = None,
+) -> EditionOffer:
+    """What `offered_edition_tools` offers this tenant on `door`, narrowed by
+    the chat mode: nothing in a tool-less mode, no writing tool in a read-only
+    one."""
+    taken_names = frozenset(taken)
+    if chat_mode is not None and not chat_mode.allows_tools:
+        return EditionOffer((), taken_names)
+    tools = await offered_edition_tools(tenant_id, door=door, taken=taken_names)
+    if chat_mode is not None and not chat_mode.allows_writes:
+        tools = [t for t in tools if not t.writes]
+    return EditionOffer(tuple(tools), taken_names)
 
 
 class _Refused(Exception):

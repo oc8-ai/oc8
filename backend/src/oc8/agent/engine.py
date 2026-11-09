@@ -123,6 +123,7 @@ from oc8.coding.tools import CODING_FRAME_KEY, CODING_TOOL_RIGHTS, Toolset
 from oc8.config import get_settings
 from oc8.copilot.door import door_of
 from oc8.copilot.notes import member_behind_run_task
+from oc8.edition.tools import edition_offer
 from oc8.hooks.bus import dispatch_filter
 from oc8.hooks.executor import InProcessExecutor
 from oc8.hooks.types import HookCtx
@@ -810,6 +811,21 @@ async def run_agent(
         async def loop(tools: list[NeutralTool], server: Toolset | None) -> RunResult:
             nonlocal model_config, provider, model, model_locality
             active_skills: list[LoadedSkill] = []
+            # The edition tools this leg offers, computed once: the same offer
+            # builds the tool list, feeds the PEP and gates the dispatch. The
+            # agent's own names (MCP tools, advertised and real; skill tools)
+            # are taken -- an edition tool never shadows one.
+            taken = {t.name for t in tools} | set(skill_tool_names)
+            if isinstance(server, RoutedToolset):
+                taken |= {
+                    found.tool for t in tools if (found := server.route(t.name)) is not None
+                }
+            edition = await edition_offer(
+                tenant_id,
+                door=door_of(run_row.context) if run_row is not None else None,
+                taken=taken,
+                chat_mode=chat_mode,
+            )
 
             def _mark_restricted() -> None:
                 # One-way: restricted text is in the transcript from here on, so
@@ -844,6 +860,7 @@ async def run_agent(
                         if agent.is_tenant_assistant and run_row is not None
                         else None
                     ),
+                    edition_tools=edition.neutral_tools(),
                 )
 
             # Per-run harness state (spec §3.3): the repeat-call tracker and the
@@ -1081,7 +1098,9 @@ async def run_agent(
                 ]
                 resolved_tools, catalog = select_completion_tools(
                     resolved_tools,
-                    control_names=CONTROL_TOOL_NAMES,
+                    # Edition tools are core-owned too: kept inline, never
+                    # deferred to the find_tools catalog.
+                    control_names=CONTROL_TOOL_NAMES | edition.names,
                     skill_names=skill_tool_names,
                     mission=task_text,
                     skill_texts=[s.definition.instruction for s in active_skills],
@@ -1642,7 +1661,7 @@ async def run_agent(
                 ):
                     read_batch: list[ToolCall] = []
                     for _pre_tc in result.tool_calls:
-                        if _pre_tc.name in CONTROL_TOOL_NAMES:
+                        if _pre_tc.name in CONTROL_TOOL_NAMES or edition.claims(_pre_tc.name):
                             break
                         pre_decision = _authorize(
                             agent,
@@ -1799,6 +1818,7 @@ async def run_agent(
                             if g.type == "value_threshold" and g.then == "require_approval"
                         ),
                         chat_mode=chat_mode,
+                        edition_offer=edition,
                     )
                     if tc.id in call_justifications:
                         justification = call_justifications[tc.id]
@@ -1826,7 +1846,13 @@ async def run_agent(
                             actor_id=agent.id,
                             category="tool_action",
                             action=f"tool.call:{tc.name}",
-                            resource={"tool": tc.name, "arguments": tc.arguments},
+                            # An edition call keeps its arguments out of the audit; its own
+                            # `edition_tool.called` event is the record of it.
+                            resource=(
+                                {"tool": tc.name}
+                                if edition.claims(tc.name)
+                                else {"tool": tc.name, "arguments": tc.arguments}
+                            ),
                             decision=decision.effect.value,
                             reason=decision.reason or None,
                             originating_operator=originating_operator,
@@ -2188,6 +2214,7 @@ async def run_agent(
                             active_procedure_skills=[
                                 s for s in active_skills if s.definition.steps
                             ],
+                            edition_offer=edition,
                         )
                         if control is not None:
                             # A core-owned tool (memory/ask/delegate/skill). The

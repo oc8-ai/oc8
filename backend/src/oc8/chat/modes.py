@@ -195,13 +195,22 @@ def mode_directive(mode: ChatMode) -> str:
 
 
 def mode_refusal(
-    mode: ChatMode | None, tool_name: str, *, tool_scopes: Mapping[str, Any] | None
+    mode: ChatMode | None,
+    tool_name: str,
+    *,
+    tool_scopes: Mapping[str, Any] | None,
+    connection_tool: bool = False,
 ) -> str | None:
     """Why this mode will not let this tool be called, or None.
 
     None means "no opinion here" -- never "allowed". The frame, the narrowing
     and the value threshold all still have their say afterwards; this only ever
     subtracts.
+
+    A registered edition tool is classified by its own `writes` flag, unless
+    the caller knows the name is the agent's own connection tool
+    (`connection_tool=True`): then an edition tool of the same name must not
+    lend it a read classification it does not have.
     """
     if mode is None:
         return None
@@ -214,8 +223,12 @@ def mode_refusal(
         return None
     # Deferred: control_tools imports this module at load time.
     from oc8.agent.control_tools import CONTROL_TOOL_NAMES
+    from oc8.edition.tools import edition_tool_writes
 
-    if tool_name in WRITING_CONTROL_TOOLS:
+    edition_writes = None if connection_tool else edition_tool_writes(tool_name)
+    if edition_writes is not None:
+        writes = edition_writes
+    elif tool_name in WRITING_CONTROL_TOOLS:
         writes = True
     elif tool_name in CONTROL_TOOL_NAMES:
         # A core tool is classified by name, not by scopes -- it sits on no

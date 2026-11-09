@@ -20,6 +20,7 @@ from oc8.agent.control_tools import (
 from oc8.agent.tool_semantics import extract_attributes, extract_value
 from oc8.authz.pdp import Decision, Effect, ToolPolicy, authorize_tool_call, required_right
 from oc8.chat.modes import ChatMode, mode_refusal
+from oc8.edition.tools import NO_EDITION_OFFER, EditionOffer
 from oc8.memory.policy import authorize_memory_write
 from oc8.memory.router import MAX_MEMORY_CONTENT_LENGTH
 from oc8.modelrouter import ToolCall
@@ -41,6 +42,7 @@ def authorize(
     narrowing: dict[str, Any] | None = None,
     is_team_lead: bool | None = None,
     chat_mode: ChatMode | None = None,
+    edition_offer: EditionOffer = NO_EDITION_OFFER,
 ) -> Decision:
     """PEP for a tool call. Every connection tool is decided against the
     department frame (§5.3): which entry governs it is the connection key, and
@@ -68,7 +70,13 @@ def authorize(
     delegate_task and memory_write too -- not just the connection's own tools.
     It can only ever DENY: there is no branch where a mode turns a refusal into
     an allow, which is what makes "a mode is a narrowing" true rather than
-    aspirational."""
+    aspirational.
+
+    `edition_offer` is what the runtime offered of the edition tools on this
+    run (`oc8.edition.tools.edition_offer`). A call it claims is an edition
+    call: ALLOW only if it was offered, otherwise DENY as an unknown tool --
+    a registered name is not a grant. Every runtime passes its offer; the
+    default claims every registered name and allows none."""
     if narrowing is None:
         narrowing = agent.narrowing or {}
     if is_team_lead is None:
@@ -77,9 +85,20 @@ def authorize(
     # just the connection tools. Denying here also means the existing
     # append_event at all three call sites records it -- "denied because /plan"
     # is in the audit trail without a fourth writer.
-    refused = mode_refusal(chat_mode, tc.name, tool_scopes=tool_scopes)
+    edition_call = edition_offer.claims(tc.name)
+    refused = mode_refusal(
+        chat_mode, tc.name, tool_scopes=tool_scopes, connection_tool=not edition_call
+    )
     if refused is not None:
         return Decision(Effect.DENY, refused)
+    if edition_call:
+        # An edition tool belongs to no connection, like propose_change: the
+        # frame has nothing to decide it against. Its gates are the offer
+        # (entitlement, door, mode -- computed by the runtime), the mode check
+        # above, and the entitlement checked again at dispatch.
+        if edition_offer.offered(tc.name) is None:
+            return Decision(Effect.DENY, f"unknown tool {tc.name!r}")
+        return Decision(Effect.ALLOW)
     if tc.name in skill_tool_names:
         return Decision(Effect.ALLOW)
     if tc.name == "ask_user":

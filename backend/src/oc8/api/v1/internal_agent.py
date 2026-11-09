@@ -21,7 +21,7 @@ import datetime as dt
 import json
 import logging
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -35,6 +35,7 @@ from oc8.agent import cache_flow, mcp_pool
 from oc8.agent.control_tools import (
     CONTROL_TOOL_NAMES,
     FIND_TOOLS,
+    ControlOutcome,
     execute_control_tool,
     has_readable_context,
     has_released_knowledge,
@@ -114,6 +115,7 @@ from oc8.capas.discovery import resolve_tool_pack_connection
 from oc8.chat.modes import mode_from_context
 from oc8.config import get_settings
 from oc8.copilot.door import door_of
+from oc8.edition.tools import edition_offer, registered_edition_tool
 from oc8.metering import record_usage
 from oc8.modelrouter import (
     NeutralMessage,
@@ -327,6 +329,25 @@ async def _load(
 def _mcp_params(conn: m.McpConnection) -> dict[str, Any]:
     cfg = conn.config if isinstance(conn.config, dict) else {}
     return cfg
+
+
+def _taken_tool_names(ctx: Mapping[str, Any], skills: Sequence[LoadedSkill]) -> set[str]:
+    """The names the agent's own tools hold on this run -- its MCP tools as
+    advertised and as really named, and its skill tools. An edition tool of
+    one of these names is never offered or dispatched."""
+    taken = {
+        str(raw["name"])
+        for raw in ctx.get("tool_schemas", [])
+        if isinstance(raw, dict) and raw.get("name")
+    }
+    routes = ctx.get("tool_routes")
+    if isinstance(routes, dict):
+        taken |= {str(name) for name in routes}
+        taken |= {
+            str(pair[1]) for pair in routes.values() if isinstance(pair, list) and len(pair) == 2
+        }
+    taken |= {s.tool_name for s in skills}
+    return taken
 
 
 def _routed_connection(
@@ -899,6 +920,12 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         resolve_caps(model_config.params if model_config is not None else None),
         active_skills,
     )
+    edition = await edition_offer(
+        run.tenant_id,
+        door=door_of(ctx),
+        taken=_taken_tool_names(ctx, assigned_skills),
+        chat_mode=mode_from_context(ctx),
+    )
     tools = offered_tools(
         agent,
         is_team_lead=bool(pinned["is_team_lead"]),
@@ -914,6 +941,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         offer_run_program=caps.code_mode,
         chat_mode=mode_from_context(ctx),
         copilot_door=door_of(ctx) if agent.is_tenant_assistant else None,
+        edition_tools=edition.neutral_tools(),
     )
     # Code mode (ruling 6): seed the generated SDK once tools are known so
     # every later /step can return it as sdk_py for the shell to write.
@@ -943,7 +971,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
     required = [req.tool for skill in active_skills for req in skill.definition.requires_tools]
     resolved_tools, catalog = select_completion_tools(
         tools,
-        control_names=CONTROL_TOOL_NAMES,
+        control_names=CONTROL_TOOL_NAMES | edition.names,
         skill_names=skill_tool_names,
         mission=str(ctx.get("task", "")),
         skill_texts=[s.definition.instruction for s in active_skills],
@@ -1322,7 +1350,11 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
     tool_tiers: dict[str, str] = {}
     if caps.parallel_tool_calls:
         for t in result.tool_calls:
-            if t.name in CONTROL_TOOL_NAMES or t.name in skill_tool_names:
+            if (
+                t.name in CONTROL_TOOL_NAMES
+                or t.name in skill_tool_names
+                or registered_edition_tool(t.name) is not None
+            ):
                 break
             pre_decision = _authorize(
                 agent,
@@ -1463,7 +1495,11 @@ async def _precompute_leading_reads(
     for call in calls:
         if call.local_result is not None:
             break
-        if call.name in CONTROL_TOOL_NAMES or call.name in skill_tool_names:
+        if (
+            call.name in CONTROL_TOOL_NAMES
+            or call.name in skill_tool_names
+            or registered_edition_tool(call.name) is not None
+        ):
             break
         # A read that belongs to another system must not be prefetched on this
         # connection. Sequential dispatch routes it.
@@ -1663,7 +1699,18 @@ async def _dispatch_one_tool(
 
     assigned_skills = await load_assigned_skills(db, agent=agent, tenant_id=run.tenant_id)
     skill_tool_names = frozenset(s.tool_name for s in assigned_skills)
-    is_control_call = tc.name in CONTROL_TOOL_NAMES or tc.name in skill_tool_names
+    # Recomputed per call from the run, exactly as the /step that offered the
+    # tools computed it: a call is checked against what this leg offered.
+    edition = await edition_offer(
+        run.tenant_id,
+        door=door_of(run.context),
+        taken=_taken_tool_names(dict(run.context), assigned_skills),
+        chat_mode=mode_from_context(run.context),
+    )
+    is_edition_call = routed is None and edition.claims(tc.name)
+    is_control_call = (
+        tc.name in CONTROL_TOOL_NAMES or tc.name in skill_tool_names or is_edition_call
+    )
     # A core-owned tool (remember/ask/delegate/invoke a skill) is executed by the
     # control plane itself and needs no MCP connection. Requiring one here made
     # every one of them unusable on a run without a connection.
@@ -1723,6 +1770,7 @@ async def _dispatch_one_tool(
         is_team_lead=bool(pinned["is_team_lead"]),
         guardrail_attribute_specs=guardrail_attribute_specs,
         chat_mode=mode_from_context(run.context),
+        edition_offer=edition,
     )
     stripped, justification = strip_justification(tc.arguments)
     tc.arguments = stripped
@@ -1798,7 +1846,13 @@ async def _dispatch_one_tool(
         actor_id=agent.id,
         category="tool_action",
         action=f"tool.call:{tc.name}",
-        resource={"tool": tc.name, "arguments": tc.arguments},
+        # An edition call keeps its arguments out of the audit; its own
+        # `edition_tool.called` event is the record of it.
+        resource=(
+            {"tool": tc.name}
+            if edition.claims(tc.name)
+            else {"tool": tc.name, "arguments": tc.arguments}
+        ),
         decision=decision.effect.value,
         reason=decision.reason or None,
         originating_operator=run.context.get("originating_operator"),
@@ -2040,9 +2094,16 @@ async def _dispatch_one_tool(
             local_result=body.local_result,
             harness_state=harness.state,
             active_procedure_skills=[s for s in active_skills if s.definition.steps],
+            edition_offer=edition,
         )
         if task is not None
-        else None
+        else (
+            # Never on to the MCP server: an edition call with no task to run
+            # it against is refused here.
+            ControlOutcome(output=f"ERROR: unknown tool {tc.name!r}")
+            if is_edition_call
+            else None
+        )
     )
 
     if control is not None:
@@ -2093,6 +2154,10 @@ async def _dispatch_one_tool(
                 {"run_id": str(run.id), **control.rendered_component},
                 source=f"oc8/run/{run.id}",
             )
+        if "parts" in (run.context or {}):
+            # An edition tool's parts were merged onto the row in SQL; carry
+            # them into this request's snapshot, which is written back whole.
+            ctx["parts"] = run.context["parts"]
         if control.todos is not None:
             # Whole-list replace, unlike rendered_components above -- this IS
             # the current state, not a log of every call. See RunResult.todos.
