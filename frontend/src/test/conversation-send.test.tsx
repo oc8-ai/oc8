@@ -48,6 +48,7 @@ vi.mock("@/lib/governance-hooks", () => ({
   useCallerCapabilities: () => null,
   useCan: () => () => true,
   useMay: () => () => false,
+  useMayManageAgent: () => () => false,
 }));
 vi.mock("@/lib/conversation-api", async (orig) => ({
   ...(await orig<typeof import("@/lib/conversation-api")>()),
@@ -55,6 +56,15 @@ vi.mock("@/lib/conversation-api", async (orig) => ({
     steering.asked.push(runId);
     return { data: runId ? steering.value : undefined };
   },
+  // The Live tab's timeline: the member's own chat runs are never on it
+  // (they are the session's turns), so it names no running run.
+  useLiveTimeline: () => ({
+    data: { sessionId: "s", mayViewAllRuns: false, nextBefore: null, items: [] },
+    error: null,
+    hasOlder: false,
+    loadingOlder: false,
+    fetchOlder: vi.fn(),
+  }),
   useSessionModels: (sessionId: string | null, _enabled: boolean, agentId?: string) => ({
     // A chat that does not exist yet lists its agent's options (Ruling 57).
     data:
@@ -69,6 +79,7 @@ vi.mock("@/lib/conversation-api", async (orig) => ({
 }));
 
 import { Conversation } from "@/components/conversation";
+import { LiveTimeline } from "@/components/conversation/live-timeline";
 import { api, ApiError } from "@/lib/api";
 import { appendMessage, chatKeys, type ChatMessageDTO } from "@/lib/hooks-chat";
 
@@ -228,6 +239,34 @@ describe("writing to the own running answer (Ruling 52)", () => {
     expect(send).not.toHaveBeenCalled();
     // Only the run being steered is asked for its steering state.
     expect(new Set(steering.asked.filter(Boolean))).toEqual(new Set(["r1"]));
+  });
+
+  it("in the Live tab, sends to the member's own running run (E2E A)", async () => {
+    conv.session = detail({
+      kind: "live",
+      activeRuns: [{ runId: "r1", replyToId: "u1", state: "running" }],
+    });
+    steering.value = { mayWrite: true, acceptsInputs: true, inputs: [] };
+    const post = vi.spyOn(api, "post").mockResolvedValue({
+      id: "i1",
+      text: "only March",
+      authorName: "Me",
+      createdAt: "",
+      consumedAt: null,
+      consumedStep: null,
+    });
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <LiveTimeline agentId="a" departmentId="d" promptStarters={[]} />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByText("Goes to the running answer")).toBeInTheDocument();
+    const box = type("only March");
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith("/runs/r1/inputs", { text: "only March" }),
+    );
+    expect(send).not.toHaveBeenCalled();
+    expect(box).toHaveValue("");
   });
 
   it("keeps Send away while the run takes no messages", () => {

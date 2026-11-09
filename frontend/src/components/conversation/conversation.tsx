@@ -315,11 +315,11 @@ function ConversationBody(props: ConversationProps) {
   const busy = conv.liveRunIds.some((id) => id !== pending?.runId);
   // Ruling 52: while the reader's own answer is being written, what they
   // type goes to that run (POST /runs/{id}/inputs). A surface that routes
-  // the composer itself (the Live tab) owns steering there.
-  const replyRunId =
-    !readOnly && !props.onSendOverride
-      ? ([...conv.liveRunIds].reverse().find((id) => id !== pending?.runId) ?? null)
-      : null;
+  // the composer itself (the Live tab, to a timeline run) goes first; its
+  // own chat answers are never on that timeline, so they are steered here.
+  const replyRunId = !readOnly
+    ? ([...conv.liveRunIds].reverse().find((id) => id !== pending?.runId) ?? null)
+    : null;
   const { data: replySteering } = useRunSteering(replyRunId);
   const sendReplyInput = useSendRunInput(replyRunId);
   const steerReply =
@@ -767,7 +767,7 @@ function ConversationBody(props: ConversationProps) {
     // What the reader wrote to this answer's run while it ran. Only the run
     // being steered is fetched; an earlier one keeps what was loaded.
     const turnRunId = turn.liveRunId ?? turn.variants[turn.variants.length - 1]?.runId ?? null;
-    const steered = props.onSendOverride ? (props.steeringRunId ?? null) : replyRunId;
+    const steered = props.steeringRunId ?? replyRunId;
     const inputs = turnRunId ? (
       <RunInputs
         runId={turnRunId}
