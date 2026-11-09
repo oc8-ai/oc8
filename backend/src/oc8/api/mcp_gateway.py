@@ -436,7 +436,10 @@ async def _list_tools(
     # Built from what the agent may ACTUALLY use: a tool the frame withholds on
     # one system must not force the other system's identical tool to be
     # advertised qualified, when from the model's side there is no ambiguity.
-    routes = build_routes({name: [t.name for t in tools] for name, tools in allowed.items()})
+    routes = build_routes(
+        {name: [t.name for t in tools] for name, tools in allowed.items()},
+        reserved=CONTROL_TOOL_NAMES,
+    )
     await _remember_routes(db, run, routes)
     by_route = {(r.connection, r.tool): advertised for advertised, r in routes.items()}
 
@@ -614,10 +617,16 @@ async def _call_tool(
     # reaches a person -- belongs to that connection and to no other, which is
     # exactly what a single per-run connection could not express.
     conn: m.McpConnection | None = None
+    #: The route rewrote the name (`<connection>.ask_user` -> `ask_user`): the model
+    #: named a CONNECTION's tool, whatever core tool shares its real name. It
+    #: skips every core branch below and is decided by the frame like any
+    #: other tool of that connection -- never by the core tool's allowance.
+    routed = False
     if conns:
         route = resolve(name, await _routes(db, run, agent, dept, conns))
         if route is not None:
             conn = next((c for c in conns if c.name == route.connection), None)
+            routed = route.tool != name
             name = route.tool
         else:
             conn = None if len(conns) > 1 else conns[0]
@@ -634,7 +643,21 @@ async def _call_tool(
     active_ids = {str(s) for s in run.context.get("active_skill_ids", [])}
     active = [s for s in assigned if str(s.skill_version_id) in active_ids]
 
-    if name in skill_tool_names:
+    core_call = not routed and (name in CONTROL_TOOL_NAMES or name in skill_tool_names)
+    if core_call:
+        # Before ask_user's and memory_write's own branches, which never asked:
+        # a mode is not enforced by hiding a tool from tools/list, since a
+        # harness may hold an older list.
+        mode_denial = mode_refusal(
+            mode_from_context(run.context),
+            name,
+            # A skill only loads a procedure -- a read, as in `authorize`.
+            tool_scopes={"read": [name]} if name in skill_tool_names else None,
+        )
+        if mode_denial is not None:
+            return _tool_result(f"ERROR: {mode_denial}", is_error=True)
+
+    if core_call and name in skill_tool_names:
         skill = next(s for s in assigned if s.tool_name == name)
         if skill in active:
             return _tool_result(f"Skill '{skill.name}' is already active.")
@@ -670,7 +693,7 @@ async def _call_tool(
             f"Skill '{skill.name}' activated. Follow this procedure:\n\n{instruction_block(skill)}"
         )
 
-    if name == ASK_USER.name:
+    if core_call and name == ASK_USER.name:
         question = str(arguments.get("question", "")).strip()
         if not question:
             return _tool_result("ERROR: ask_user requires a non-empty question", is_error=True)
@@ -715,7 +738,7 @@ async def _call_tool(
             is_error=True,
         )
 
-    if name in (
+    if core_call and name in (
         REQUEST_DECISION.name,
         SEARCH_KNOWLEDGE.name,
         SEARCH_MEMORY.name,
@@ -828,7 +851,7 @@ async def _call_tool(
             )
         return _tool_result(outcome.output, is_error=outcome.output.startswith("ERROR"))
 
-    if name in CONTROL_TOOL_NAMES:
+    if core_call and name in CONTROL_TOOL_NAMES:
         # Every member of CONTROL_TOOL_NAMES is intercepted by name above --
         # REQUEST_DECISION/SEARCH_KNOWLEDGE/SEARCH_MEMORY/MEMORY_WRITE/
         # DELEGATE_TASK by the block just before this one, ASK_USER by its own
@@ -866,6 +889,7 @@ async def _call_tool(
         value_spec=value_spec,
         guardrail_attribute_specs=_manifest_guardrail_attributes(conn),
         chat_mode=mode_from_context(run.context),
+        routed=routed,
     )
     # Honour an operator's earlier decision on this exact call (resume).
     if decision.effect is Effect.REQUIRE_APPROVAL:
