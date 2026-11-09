@@ -94,7 +94,7 @@ from oc8.agent.harness.step_timing import (
     start_step,
 )
 from oc8.agent.mcp_client import resolve_auth_header
-from oc8.agent.mcp_env import has_oauth_ref, resolve_mcp_env
+from oc8.agent.mcp_env import has_oauth_ref
 from oc8.agent.mcp_requirements import wrap_with_requirements
 from oc8.agent.outward import outward_target
 from oc8.agent.preamble import build_run_preamble
@@ -115,6 +115,8 @@ from oc8.authz.pdp import (
 from oc8.capas.discovery import resolve_tool_pack_connection
 from oc8.chat.modes import mode_from_context
 from oc8.config import get_settings
+from oc8.connections.access import ConnectionRequired
+from oc8.connections.runtime_env import McpLaunchEnv, run_mcp_env
 from oc8.copilot.door import chat_door, door_of
 from oc8.edition.tools import edition_offer, registered_edition_tool
 from oc8.metering import record_usage
@@ -408,9 +410,10 @@ async def _discover_connection_tools(
         if len(conns) > 1 and policy is not None and not policy.enabled:
             return conn.name, [], None, [], []
         cfg = _mcp_params(conn)
-        reusable = not has_oauth_ref(cfg)
         try:
-            env = await _mcp_env(conn, db, run.tenant_id)
+            launch = await _mcp_env(conn, db, run, listing=True)
+            env = launch.env
+            reusable = launch.reusable
             headers = resolve_auth_header(cfg, env)
             command, args = wrap_with_requirements(cfg.get("command", ""), cfg.get("args", []), cfg)
             listed = await mcp_pool.tools(
@@ -523,10 +526,17 @@ def _manifest_guardrail_attributes(
     ]
 
 
-async def _mcp_env(conn: m.McpConnection, db: DbSession, tenant_id: uuid.UUID) -> dict[str, str]:
-    return await resolve_mcp_env(
-        db, tenant_id=tenant_id, cfg=_mcp_params(conn), connection_name=conn.name
-    )
+async def _mcp_env(
+    conn: m.McpConnection,
+    db: DbSession,
+    run: m.AgentRun,
+    *,
+    tool: str | None = None,
+    listing: bool = False,
+    ctx: dict[str, Any] | None = None,
+) -> McpLaunchEnv:
+    # The run decides whose account the bridge gets (connections/access.py).
+    return await run_mcp_env(db, run=run, conn=conn, tool=tool, listing=listing, ctx=ctx)
 
 
 # --------------------------------------------------------------------- step
@@ -565,7 +575,9 @@ async def _finish_elicitation(
         output = "ERROR: the connection that asked for this answer is no longer available"
     else:
         try:
-            env = await _mcp_env(conn, db, run.tenant_id)
+            # `ctx` is written back whole below: the call to action goes in too.
+            launch = await _mcp_env(conn, db, run, tool=tool, ctx=ctx)
+            env = launch.env
             cfg = _mcp_params(conn)
             headers = resolve_auth_header(cfg, env)
             command, args = wrap_with_requirements(cfg.get("command", ""), cfg.get("args", []), cfg)
@@ -580,7 +592,7 @@ async def _finish_elicitation(
                 server_url=conn.server_url or "",
                 headers=headers,
                 http_tools=list(cfg.get("http_tools", [])),
-                reusable=not has_oauth_ref(cfg),
+                reusable=launch.reusable,
             )
         except ElicitationNeeded as exc:
             output = exc.message
@@ -1558,7 +1570,14 @@ async def _precompute_leading_reads(
     if len(batch) < 2:
         return {}
 
-    env = await _mcp_env(conn, db, run.tenant_id)
+    try:
+        tools = ",".join(sorted({call.name for call, _ in batch}))
+        # The live context: a call to action this clears stays cleared.
+        launch = await _mcp_env(conn, db, run, tool=tools, ctx=ctx)
+    except ConnectionRequired:
+        # A missing account: per-call dispatch fails each call with the reason.
+        return {}
+    env = launch.env
     headers = resolve_auth_header(cfg, env)
     command, args = wrap_with_requirements(cfg.get("command", ""), cfg.get("args", []), cfg)
     sem = asyncio.Semaphore(_READ_PARALLEL_LIMIT)
@@ -1580,7 +1599,7 @@ async def _precompute_leading_reads(
                     server_url=conn.server_url or "",
                     headers=headers,
                     http_tools=list(cfg.get("http_tools", [])),
-                    reusable=True,
+                    reusable=launch.reusable,
                 )
                 error = None
             except ElicitationNeeded:
@@ -1736,7 +1755,12 @@ async def _dispatch_one_tool(
             return None
         from oc8.agent.record_link import record_url_from_env
 
-        env = await _mcp_env(conn, db, run.tenant_id)
+        try:
+            # `ctx` is written back whole after this call: a cleared call to
+            # action must be cleared in it too.
+            env = (await _mcp_env(conn, db, run, ctx=ctx)).env
+        except ConnectionRequired:
+            return None
         return record_url_from_env(conn.name, env, ident)
 
     scopes = _manifest_scopes(conn)
@@ -2280,7 +2304,8 @@ async def _dispatch_one_tool(
                     # can fail on its own -- and that failure belongs to the model
                     # as a tool error, exactly like an unreachable bridge. A
                     # replayed write needs no bridge and now mints nothing.
-                    env = await _mcp_env(conn, db, run.tenant_id)
+                    launch = await _mcp_env(conn, db, run, tool=tc.name, ctx=ctx)
+                    env = launch.env
                     headers = resolve_auth_header(cfg, env)
                     command, args = wrap_with_requirements(
                         cfg.get("command", ""), cfg.get("args", []), cfg
@@ -2296,7 +2321,7 @@ async def _dispatch_one_tool(
                         server_url=conn.server_url or "",
                         headers=headers,
                         http_tools=list(cfg.get("http_tools", [])),
-                        reusable=not has_oauth_ref(cfg),
+                        reusable=launch.reusable,
                     )
                 except ElicitationNeeded as exc:
                     output = exc.message

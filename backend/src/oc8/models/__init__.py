@@ -9,6 +9,7 @@ from oc8.models.channels import ApprovalChannelBinding, ChannelPollCursor
 from oc8.models.chat import ChatMessage, ChatProject, ChatSession
 from oc8.models.collab import ContractBinding, Handoff, HandoffType
 from oc8.models.components import ComponentGrant
+from oc8.models.connections import AgentToolAccess
 from oc8.models.copilot import CopilotProfile, Responsibility
 from oc8.models.core import (
     Agent,
@@ -72,6 +73,7 @@ __all__ = [
     "ActivityEvent",
     "Agent",
     "AgentRun",
+    "AgentToolAccess",
     "AgentVersion",
     "ApiKey",
     "ApprovalChannelBinding",

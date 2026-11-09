@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/lib/api";
 
 const credentialsMock = vi.fn();
 const credentialTypesMock = vi.fn();
@@ -8,6 +9,12 @@ const deleteCredentialMock = vi.fn();
 const testCredentialMock = vi.fn();
 const updateCredentialMock = vi.fn();
 const mayMock = vi.fn();
+const { toastError, toastSuccess } = vi.hoisted(() => ({
+  toastError: vi.fn(),
+  toastSuccess: vi.fn(),
+}));
+
+vi.mock("sonner", () => ({ toast: { error: toastError, success: toastSuccess } }));
 
 vi.mock("@/lib/hooks", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/hooks")>();
@@ -26,18 +33,18 @@ vi.mock("@/lib/governance-hooks", async (importOriginal) => {
   return { ...actual, useMay: () => mayMock };
 });
 
-import { CredentialsPage } from "@/routes/credentials";
+import { OrganisationCredentials as CredentialsPage } from "@/components/connections/organisation-credentials";
 
-function renderPage() {
+function renderPage(excludeTypes?: string[]) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <CredentialsPage />
+      <CredentialsPage excludeTypes={excludeTypes} />
     </QueryClientProvider>,
   );
 }
 
-describe("Credentials settings page", () => {
+describe("Further credentials (organisation)", () => {
   beforeEach(() => {
     credentialsMock.mockReset();
     credentialTypesMock.mockReset();
@@ -46,6 +53,8 @@ describe("Credentials settings page", () => {
     updateCredentialMock.mockReset();
     mayMock.mockReset();
     mayMock.mockReturnValue(true);
+    toastError.mockReset();
+    toastSuccess.mockReset();
     credentialsMock.mockReturnValue({
       data: [
         {
@@ -147,5 +156,90 @@ describe("Credentials settings page", () => {
     expect(screen.queryByRole("button", { name: /test/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /edit/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /delete/i })).not.toBeInTheDocument();
+  });
+
+  it("is titled further credentials", () => {
+    renderPage();
+    expect(screen.getByRole("heading", { name: "Further credentials" })).toBeInTheDocument();
+  });
+
+  it("leaves out the types an integration already lists", () => {
+    credentialsMock.mockReturnValue({
+      data: [
+        {
+          id: "c1",
+          name: "Prod S3",
+          credentialType: "s3_api",
+          fieldValues: {},
+          lastTestedAt: null,
+          lastTestOk: null,
+        },
+        {
+          id: "c2",
+          name: "Odoo system",
+          credentialType: "odoo_login",
+          fieldValues: {},
+          lastTestedAt: null,
+          lastTestOk: null,
+        },
+      ],
+    });
+    renderPage(["odoo_login"]);
+    expect(screen.getByText("Prod S3")).toBeInTheDocument();
+    expect(screen.queryByText("Odoo system")).not.toBeInTheDocument();
+  });
+
+  it("renders nothing without secret:view", () => {
+    mayMock.mockReturnValue(false);
+    const { container } = renderPage();
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  describe("never shows the server's own error text", () => {
+    const raw = new ApiError("psycopg.errors.UniqueViolation: duplicate key", 500);
+
+    it("when a test fails", () => {
+      testCredentialMock.mockImplementation(
+        (_id: string, opts: { onError: (e: unknown) => void }) => opts.onError(raw),
+      );
+      renderPage();
+      fireEvent.click(screen.getByRole("button", { name: /test/i }));
+      expect(toastError).toHaveBeenCalledWith("The check failed. Please try again.");
+    });
+
+    it("when a test reports the credential does not work", () => {
+      testCredentialMock.mockImplementation(
+        (_id: string, opts: { onSuccess: (r: { ok: boolean }) => void }) =>
+          opts.onSuccess({ ok: false }),
+      );
+      renderPage();
+      fireEvent.click(screen.getByRole("button", { name: /test/i }));
+      expect(toastSuccess).not.toHaveBeenCalled();
+      expect(toastError).toHaveBeenCalledWith(
+        "The connection did not work. Please check your entries and try again.",
+      );
+    });
+
+    it("when deleting fails", async () => {
+      deleteCredentialMock.mockImplementation(
+        (_id: string, opts: { onError: (e: unknown) => void }) => opts.onError(raw),
+      );
+      renderPage();
+      fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
+      const buttons = screen.getAllByRole("button", { name: /^delete$/i });
+      fireEvent.click(buttons[buttons.length - 1]);
+      await vi.waitFor(() => expect(toastError).toHaveBeenCalledWith("Could not delete."));
+    });
+
+    it("when saving is not allowed", () => {
+      updateCredentialMock.mockImplementation(
+        (_body: unknown, opts: { onError: (e: unknown) => void }) =>
+          opts.onError(new ApiError("Forbidden: missing secret:manage on tenant 42", 403)),
+      );
+      renderPage();
+      fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+      fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+      expect(toastError).toHaveBeenCalledWith("You are not allowed to do this.");
+    });
   });
 });

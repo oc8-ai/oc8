@@ -14,6 +14,7 @@ import {
 import { useChatSlot } from "@/edition/composition";
 import { MessageActions, MessageParts } from "@/edition/slots";
 import { RunComponents } from "@/components/run-record-card";
+import { ConnectionRequiredNotice } from "@/components/connections/connection-required-notice";
 import { useMessageFeedback, useTurnRun } from "@/lib/conversation-api";
 import { sourcesOf, type RunActivityDTO } from "@/lib/hooks-chat";
 import { useT } from "@/lib/i18n";
@@ -170,6 +171,9 @@ export function AssistantTurn({
           {t("Waiting for answers…", "Wartet auf Antworten …")}
         </p>
       )}
+      {/* A tool call needed an account that is not there: say which, and
+          link to where it gets connected. */}
+      <ConnectionRequiredNotice value={run?.connectionRequired} agentId={run?.agentId} />
       <RunComponents components={components} />
       {cards}
       {message && <MessageParts message={message} renderers={partRenderers} />}

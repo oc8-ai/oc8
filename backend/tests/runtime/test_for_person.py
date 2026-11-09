@@ -1,5 +1,5 @@
 """Ruling 18: a run that continues a PERSON's work -- a lead's wake-up after a
-delegation, a decision follow-up -- carries `on_behalf_of`, so it is that
+delegation, a decision follow-up -- carries `for_person`, so it is that
 person's run on everybody's Live timeline (redacted, "All runs" only), never
 the agent's own autonomous run. `originating_operator` is unchanged."""
 
@@ -92,7 +92,7 @@ async def _delegate_and_wake(
         output="done", succeeded=True, mcp_conn=None,
         chat_session_id=ctx.get("chat_session_id"), door=ctx.get("door"),
         followup=ctx.get("followup"), originating_operator=ctx.get("originating_operator"),
-        on_behalf_of=ctx.get("on_behalf_of"),
+        for_person=ctx.get("for_person"),
     )  # fmt: skip
     assert wake_id is not None
     wake = await db.get(m.AgentRun, wake_id)
@@ -124,7 +124,7 @@ async def test_a_manual_runs_delegated_chain_stays_that_persons(
             db, tenant, lead=lead, worker=worker, task=task, run_id=run.id
         )
         assert wake.source == "delegation"
-        assert wake.context["on_behalf_of"] == "bob"
+        assert wake.context["for_person"] == "bob"
         # Authority is untouched: the wake-up does not act AS bob.
         assert "originating_operator" not in wake.context
         assert not is_autonomous_run(wake)
@@ -132,7 +132,7 @@ async def test_a_manual_runs_delegated_chain_stays_that_persons(
         again = await _delegate_and_wake(
             db, tenant, lead=lead, worker=worker, task=task, run_id=wake.id
         )
-        assert again.context["on_behalf_of"] == "bob"
+        assert again.context["for_person"] == "bob"
         assert not is_autonomous_run(again)
         assert await _on_alices_timeline(db, tenant, alice, lead) == set()
 
@@ -152,7 +152,7 @@ async def test_the_parent_run_names_the_person_when_the_child_does_not(
         )  # fmt: skip
         assert wake_id is not None
         wake = await db.get(m.AgentRun, wake_id)
-        assert wake is not None and wake.context["on_behalf_of"] == "bob"
+        assert wake is not None and wake.context["for_person"] == "bob"
 
 
 async def test_a_scheduled_chain_stays_autonomous(app_session: AppSessionFactory) -> None:
@@ -162,7 +162,7 @@ async def test_a_scheduled_chain_stays_autonomous(app_session: AppSessionFactory
         wake = await _delegate_and_wake(
             db, tenant, lead=lead, worker=worker, task=task, run_id=run.id
         )
-        assert "on_behalf_of" not in wake.context
+        assert "for_person" not in wake.context
         assert is_autonomous_run(wake)
         assert wake.id in await _on_alices_timeline(db, tenant, alice, lead)
 
@@ -217,7 +217,7 @@ async def test_a_decision_follow_up_from_a_members_run_is_that_members(
         app_session, tenant, monkeypatch, {"originating_operator": "bob"}, "manual"
     )
     assert follow.source == "decision"
-    assert follow.context["on_behalf_of"] == "bob"
+    assert follow.context["for_person"] == "bob"
     assert "originating_operator" not in follow.context
     assert not is_autonomous_run(follow)
     async with app_session(tenant) as db:
@@ -229,7 +229,7 @@ async def test_a_decision_follow_up_from_an_autonomous_run_stays_autonomous(
 ) -> None:
     tenant = uuid.uuid4()
     follow, _alice, _lead = await _decide(app_session, tenant, monkeypatch, {}, "cron")
-    assert "on_behalf_of" not in follow.context
+    assert "for_person" not in follow.context
     assert is_autonomous_run(follow)
 
 
@@ -278,7 +278,7 @@ async def test_a_task_board_request_is_the_requesting_members_chain(
         root = (
             await db.execute(select(m.AgentRun).where(m.AgentRun.agent_id == lead.id))
         ).scalar_one()
-        assert root.context["on_behalf_of"] == "boss"
+        assert root.context["for_person"] == "boss"
         assert "originating_operator" not in root.context
         task = await db.get(m.Task, root.task_id)
         lead_row = await db.get(m.Agent, lead.id)
@@ -289,7 +289,7 @@ async def test_a_task_board_request_is_the_requesting_members_chain(
         wake = await _delegate_and_wake(
             db, tenant, lead=lead_row, worker=worker_row, task=task, run_id=root.id
         )
-        assert wake.context["on_behalf_of"] == "boss"
+        assert wake.context["for_person"] == "boss"
         assert not is_autonomous_run(wake)
         assert await _on_alices_timeline(db, tenant, alice_row, lead_row) == set()
         for run_id in (root.id, wake.id):
@@ -314,7 +314,7 @@ async def test_an_older_task_names_its_requester(app_session: AppSessionFactory)
         )  # fmt: skip
         assert wake_id is not None
         wake = await db.get(m.AgentRun, wake_id)
-        assert wake is not None and wake.context["on_behalf_of"] == "bob"
+        assert wake is not None and wake.context["for_person"] == "bob"
         assert lead.id == wake.agent_id
 
 
@@ -331,7 +331,7 @@ async def test_a_task_whose_runs_name_different_people_belongs_to_no_one(
         db.add(
             m.AgentRun(
                 tenant_id=tenant, agent_id=lead.id, task_id=task.id, source="manual",
-                context={"on_behalf_of": "carol"},
+                context={"for_person": "carol"},
             )
         )  # fmt: skip
         await db.flush()
@@ -343,7 +343,7 @@ async def test_a_task_whose_runs_name_different_people_belongs_to_no_one(
         assert wake_id is not None
         wake = await db.get(m.AgentRun, wake_id)
         assert wake is not None
-        assert wake.context["on_behalf_of"] not in ("bob", "carol")
+        assert wake.context["for_person"] not in ("bob", "carol")
         assert not is_autonomous_run(wake)
         for subject in ("bob", "carol", "alice"):
             member = m.OrgMember(tenant_id=tenant, subject=subject)

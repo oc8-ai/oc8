@@ -94,7 +94,7 @@ async def test_a_messenger_turn_is_its_owners_run_without_acting_for_her(
     [run] = await _runs(app_session, tenant)
     # Whose run (steer, stop, watch) -- and still nobody's authority: the
     # secret gate, the audit trail and the PDP see no operator, as before.
-    assert run.context["on_behalf_of"] == "pat"
+    assert run.context["for_person"] == "pat"
     assert "originating_operator" not in run.context
     assert "operator_role" not in run.context
 
@@ -186,7 +186,7 @@ async def test_somebody_elses_running_run_is_not_steered(
     async with app_session(tenant) as db:
         run = await db.get(m.AgentRun, run_id)
         assert run is not None
-        run.context = {k: v for k, v in run.context.items() if k != "on_behalf_of"}
+        run.context = {k: v for k, v in run.context.items() if k != "for_person"}
         await db.commit()
 
     await _say(app_session, tenant, FakeChannel(), "Noch eine Frage")
@@ -202,7 +202,7 @@ async def test_a_parked_question_still_takes_the_answer(
     async with app_session(tenant) as db:
         run = await db.get(m.AgentRun, run_id)
         assert run is not None
-        run.context = {**run.context, "on_behalf_of": "pat"}
+        run.context = {**run.context, "for_person": "pat"}
         await db.commit()
     impl = FakeChannel()
 

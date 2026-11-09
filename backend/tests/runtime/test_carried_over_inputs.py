@@ -76,7 +76,7 @@ async def _world(app_session: AppSessionFactory, *, messenger: bool) -> _World:
             )
             code = str(row.code)
             context.update(
-                chat_channel="telegram", chat_channel_external_id="stale", on_behalf_of="pat"
+                chat_channel="telegram", chat_channel_external_id="stale", for_person="pat"
             )
         else:
             context.update(
@@ -222,7 +222,7 @@ async def test_a_messenger_runs_unread_input_becomes_a_messenger_turn(
     assert follow.context["chat_channel"] == "telegram"
     assert follow.context["chat_channel_external_id"] == "777", "from the live binding"
     assert follow.context["door"] == "telegram"
-    assert follow.context["on_behalf_of"] == "pat"
+    assert follow.context["for_person"] == "pat"
     assert "originating_operator" not in follow.context
     assert fake.said == [("stale", "Es sind 3 offen.")], "the finished run's own answer"
 

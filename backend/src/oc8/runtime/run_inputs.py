@@ -1,7 +1,7 @@
 """Writing to a running run (spec §3.2).
 
 The input runs under the RUN's authority, so the only people who may write are
-the run's person (`originating_operator`, or `on_behalf_of` -- `person_behind`)
+the run's person (`originating_operator`, or `for_person` -- `person_behind`)
 or, for the agent's own autonomous run (`is_autonomous_run`: schedule, webhook,
 delegation with nobody behind it), the agent's managers. The same "whose run"
 rule as the Live timeline and live watching. Nobody steers somebody else's
@@ -95,7 +95,7 @@ async def may_steer_run(
         return False
     # One rule with Live and watch (Ruling 54): somebody's run is steered by
     # that person alone; only the agent's own autonomous run by its managers.
-    # A messenger chat turn names its chat owner as `on_behalf_of` (Ruling
+    # A messenger chat turn names its chat owner as `for_person` (Ruling
     # 58), so it is hers like any other. A run that is somebody's without
     # naming anyone (a messenger turn from before that) is steered by nobody.
     if is_own(person_behind(run.context), member.subject):

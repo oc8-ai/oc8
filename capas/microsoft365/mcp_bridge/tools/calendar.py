@@ -1,7 +1,7 @@
 """Outlook Calendar tools (design doc §4.2).
 
-Every path is `/users/{id}/...`, never `/me/...`: this connection's token is
-app-only and Graph rejects `/me` outright under it -- see `_user.py`.
+Every path is built by `_user.user_base`: `/users/{id}/...` for an app-only
+token, `/me/...` for a person's own -- see `_user.py`.
 """
 
 from __future__ import annotations
@@ -12,15 +12,15 @@ from typing import Any
 from mcp.types import Tool
 
 from .. import graph
-from .._user import USER_ID_PROPERTY, resolve_user
+from .._user import USER_ID_PROPERTY, user_base
 
 _TIMEZONE = "UTC"
 
 
 async def calendar_list_events(args: dict[str, Any]) -> Any:
-    user = resolve_user(args)
+    base = user_base(args)
     result = await graph.get(
-        f"/users/{user}/events",
+        f"{base}/events",
         params={
             "$orderby": "start/dateTime",
             "startDateTime": args.get("start", ""),
@@ -31,8 +31,8 @@ async def calendar_list_events(args: dict[str, Any]) -> Any:
 
 
 async def calendar_get_event(args: dict[str, Any]) -> Any:
-    user = resolve_user(args)
-    return await graph.get(f"/users/{user}/events/{args['eventId']}")
+    base = user_base(args)
+    return await graph.get(f"{base}/events/{args['eventId']}")
 
 
 def _time_block(iso: str) -> dict[str, str]:
@@ -40,9 +40,9 @@ def _time_block(iso: str) -> dict[str, str]:
 
 
 async def calendar_create_event(args: dict[str, Any]) -> Any:
-    user = resolve_user(args)
+    base = user_base(args)
     return await graph.post(
-        f"/users/{user}/events",
+        f"{base}/events",
         {
             "subject": args["subject"],
             "start": _time_block(args["start"]),
@@ -55,7 +55,7 @@ async def calendar_create_event(args: dict[str, Any]) -> Any:
 
 
 async def calendar_update_event(args: dict[str, Any]) -> Any:
-    user = resolve_user(args)
+    base = user_base(args)
     body: dict[str, Any] = {}
     if "subject" in args:
         body["subject"] = args["subject"]
@@ -63,30 +63,30 @@ async def calendar_update_event(args: dict[str, Any]) -> Any:
         body["start"] = _time_block(args["start"])
     if "end" in args:
         body["end"] = _time_block(args["end"])
-    return await graph.patch(f"/users/{user}/events/{args['eventId']}", body)
+    return await graph.patch(f"{base}/events/{args['eventId']}", body)
 
 
 async def calendar_cancel_event(args: dict[str, Any]) -> Any:
-    user = resolve_user(args)
+    base = user_base(args)
     await graph.post(
-        f"/users/{user}/events/{args['eventId']}/cancel", {"comment": args.get("comment", "")}
+        f"{base}/events/{args['eventId']}/cancel", {"comment": args.get("comment", "")}
     )
     return {"status": "cancelled"}
 
 
 async def calendar_respond_to_invite(args: dict[str, Any]) -> Any:
-    user = resolve_user(args)
+    base = user_base(args)
     verb = {"accept": "accept", "decline": "decline", "tentative": "tentativelyAccept"}[
         args["response"]
     ]
-    await graph.post(f"/users/{user}/events/{args['eventId']}/{verb}", {})
+    await graph.post(f"{base}/events/{args['eventId']}/{verb}", {})
     return {"status": args["response"]}
 
 
 async def calendar_check_free_busy(args: dict[str, Any]) -> Any:
-    user = resolve_user(args)
+    base = user_base(args)
     return await graph.post(
-        f"/users/{user}/calendar/getSchedule",
+        f"{base}/calendar/getSchedule",
         {
             "schedules": args["attendees"],
             "startTime": _time_block(args["start"]),

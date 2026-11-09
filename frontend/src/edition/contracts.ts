@@ -23,6 +23,8 @@ export interface FrontendEditionExtension {
   readonly sidebarFooter?: ComponentType<EditionSidebarSlotProps>;
   /** Extra panels appended to the profile page, in extension order. */
   readonly profileSections?: readonly EditionProfileSection[];
+  /** Cards an edition shows at the top of the home page, in extension order. */
+  readonly homeSections?: readonly EditionHomeSection[];
   /** Chat slots (spec §6.2). Each entry may name the capabilities it needs. */
   readonly chat?: EditionChatContributions;
 }
@@ -112,6 +114,12 @@ export interface EditionSidebarSlotProps {
 }
 
 export interface EditionProfileSection {
+  readonly id: string;
+  readonly component: ComponentType;
+}
+
+/** A card an edition shows at the top of the home page. */
+export interface EditionHomeSection {
   readonly id: string;
   readonly component: ComponentType;
 }

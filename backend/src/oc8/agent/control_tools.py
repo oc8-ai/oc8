@@ -65,6 +65,7 @@ from oc8.memory.router import MemoryWriteError, retrieve_context, write_memory
 from oc8.metering.budget import current_month_tokens, get_budget
 from oc8.modelrouter import NeutralTool, ToolCall, locality_for_provider
 from oc8.realtime.emit import record_activity
+from oc8.runtime.person import FOR_PERSON, person_behind
 from oc8.runtime.repository import RunRepository
 from oc8.runtime.run_context import clean_suggestions
 from oc8.skills.runtime import LoadedSkill, instruction_block, skill_tool_schemas
@@ -1820,11 +1821,20 @@ async def _delegate(
             # run context; a delegated chain must keep them
             # (executor._maybe_wake_parent). Never operator_role: a token claim
             # belongs to the run it was recorded on (_acting_token_role).
-            # `on_behalf_of` (Ruling 18): whose work a wake-up continues, so a
+            # `for_person` (Ruling 18): whose work a wake-up continues, so a
             # further hop from it stays that person's run, never autonomous.
-            for carried in ("door", "followup", "originating_operator", "on_behalf_of"):
+            for carried in ("door", "followup", "originating_operator", FOR_PERSON):
                 if executing_run.context.get(carried) is not None:
                     context[carried] = executing_run.context[carried]
+            # The sub-run acts for the same person (connections design): a
+            # tool "in the user's context" must not lose them one hop down.
+            from oc8.connections.acting import resolve_acting_person
+
+            acting = await resolve_acting_person(db, executing_run)
+            if acting.member_id is not None:
+                context["on_behalf_of"] = str(acting.member_id)
+            if executing_run.context.get("trigger_id"):
+                context["trigger_id"] = executing_run.context["trigger_id"]
     # Deferred import: oc8.runtime.executor reaches oc8.runtime.adapter, which
     # imports this module's own importer (oc8.agent.engine) at module level, so
     # importing it at the top would be a cycle. Resolved once, at first call.
@@ -2076,6 +2086,7 @@ async def _execute_read_resource(
     tenant_id: uuid.UUID,
     agent: m.Agent,
     tc: ToolCall,
+    run_id: uuid.UUID | None = None,
 ) -> ControlOutcome:
     """One resource body, through the same pool as a tool call."""
     from sqlalchemy import select
@@ -2083,6 +2094,8 @@ async def _execute_read_resource(
     from oc8.agent import mcp_pool
     from oc8.agent.mcp_env import has_oauth_ref, resolve_mcp_env
     from oc8.agent.mcp_requirements import wrap_with_requirements
+    from oc8.connections.access import ConnectionRequired
+    from oc8.connections.runtime_env import require_enabled, run_mcp_env
 
     connection = str(tc.arguments.get("connection", "")).strip()
     uri = str(tc.arguments.get("uri", "")).strip()
@@ -2096,9 +2109,23 @@ async def _execute_read_resource(
     if row is None:
         return ControlOutcome(output=f"ERROR: no connected system named {connection}")
     cfg = row.config if isinstance(row.config, dict) else {}
-    env = await resolve_mcp_env(
-        db, tenant_id=tenant_id, cfg=cfg, connection_name=row.name
-    )
+    run = await db.get(m.AgentRun, run_id) if run_id is not None else None
+    if run is not None:
+        # The run decides whose account the bridge gets (connections/access.py).
+        try:
+            launch = await run_mcp_env(db, run=run, conn=row, tool=READ_RESOURCE.name)
+        except ConnectionRequired as exc:
+            return ControlOutcome(output=str(exc))
+        env, reusable = launch.env, launch.reusable
+    else:
+        try:
+            await require_enabled(db, row)
+        except ConnectionRequired as exc:
+            return ControlOutcome(output=str(exc))
+        env = await resolve_mcp_env(
+            db, tenant_id=tenant_id, cfg=cfg, connection_name=row.name
+        )
+        reusable = not has_oauth_ref(cfg)
     command, args = wrap_with_requirements(cfg.get("command", ""), cfg.get("args", []), cfg)
     try:
         text = await mcp_pool.read_resource(
@@ -2107,7 +2134,7 @@ async def _execute_read_resource(
             args=args,
             env=env,
             uri=uri,
-            reusable=not has_oauth_ref(cfg),
+            reusable=reusable,
         )
     except Exception as exc:
         return ControlOutcome(output=f"ERROR: {exc}")
@@ -2355,7 +2382,7 @@ async def execute_control_tool(
         if decision.effect is not Effect.ALLOW:
             return ControlOutcome(output=f"ERROR: {decision.reason or 'denied'}")
         return await _execute_read_resource(
-            db, tenant_id=tenant_id, agent=agent, tc=tc
+            db, tenant_id=tenant_id, agent=agent, tc=tc, run_id=run_id
         )
 
     if tc.name == PROCEDURE_STEP_DONE.name:
@@ -2870,8 +2897,6 @@ async def execute_control_tool(
         ]
         recommendation = tc.arguments.get("recommendation")
         # Whose work the decision's follow-up run continues (Ruling 18).
-        from oc8.runtime.person import person_behind
-
         requesting = await db.get(m.AgentRun, run_id) if run_id is not None else None
         person = (originating_operator or None) or person_behind(
             requesting.context if requesting is not None else None
@@ -2888,7 +2913,10 @@ async def execute_control_tool(
                 "options": options,
                 "recommendation": str(recommendation) if recommendation else None,
                 "task_title": task.title,
-                **({"on_behalf_of": person} if person else {}),
+                **({FOR_PERSON: person} if person else {}),
+                # The run that asked: its follow-up acts for the same person
+                # (decision_followup.carry_out_decision).
+                "run_id": str(run_id) if run_id is not None else None,
             },
         )
         await append_event(

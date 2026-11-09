@@ -585,6 +585,18 @@ async def create_source(
     # Shared with the plugin setup form's own source creation
     # (api/v1/capas.py), which was building the row by hand and running
     # neither check. See oc8/knowledge/sources.py.
+    if body.oauth_connection_id is not None:
+        conn = await db.get(m.OAuthConnection, body.oauth_connection_id)
+        if conn is None or conn.tenant_id != principal.tenant_id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "oauth connection not found")
+        if conn.owner_member_id is not None:
+            # A knowledge base is the organisation's; indexing somebody's own
+            # mailbox or drive into it would publish it to every reader.
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "a personal connection cannot feed a knowledge base; "
+                "use an organisation connection",
+            )
     try:
         await validate_source_config(
             db,
@@ -597,10 +609,6 @@ async def create_source(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     except SourceRejected as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
-    if body.oauth_connection_id is not None:
-        conn = await db.get(m.OAuthConnection, body.oauth_connection_id)
-        if conn is None or conn.tenant_id != principal.tenant_id:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "oauth connection not found")
     ds = m.DataSource(
         tenant_id=principal.tenant_id,
         connector_type=body.connector_type,

@@ -127,6 +127,9 @@ import { KnowledgeAssignment } from "@/components/knowledge-assignment";
 import { MemoryPanel } from "@/components/memory-panel";
 import { RunComponents } from "@/components/run-record-card";
 import { RunFailureReason, RunModelSteps } from "@/components/run-reasoning";
+import { AgentToolAccessPanel } from "@/components/connections/agent-tool-access";
+import { ConnectionRequiredNotice } from "@/components/connections/connection-required-notice";
+import { TriggerOwner } from "@/components/connections/trigger-owner";
 import { RunStateBadge } from "@/components/run-state-badge";
 import { StatCard } from "@/components/stat-card";
 import { formatMs } from "@/lib/format";
@@ -564,7 +567,16 @@ function AgentDetail() {
       )}
 
       {tab === "guardrails" && agent.departmentId && (
-        <AgentGuardrailsPanel agent={agent} mayManage={mayManage} />
+        <>
+          <AgentGuardrailsPanel agent={agent} mayManage={mayManage} />
+          <AgentToolAccessPanel
+            agentId={agent.id}
+            toolKeys={Object.entries(agent.effectiveTools)
+              .filter(([, policy]) => policy?.enabled)
+              .map(([key]) => key)}
+            mayManage={mayManage}
+          />
+        </>
       )}
       {tab === "guardrails" && !agent.departmentId && (
         <Panel className="p-5 text-sm text-muted-foreground">
@@ -2076,6 +2088,7 @@ function WebhookTriggerPanel({
         <Trash2 className="h-3 w-3" />
         {t("Remove webhook", "Webhook entfernen")}
       </button>
+      <TriggerOwner agentId={agentId} trigger={trigger} />
     </div>
   );
 }
@@ -2247,6 +2260,7 @@ function ScheduleEditor({
           "Wähle einen Preset oder definiere einen exakten Zeitplan / Cron-Ausdruck.",
         )}
       </p>
+      {cronTrigger && <TriggerOwner agentId={agentId} trigger={cronTrigger} />}
     </div>
   );
 }
@@ -2677,6 +2691,7 @@ function RunTranscript({ run, pending }: { run: RunDTO | undefined; pending: boo
       </div>
       {run.state === "waiting_for_input" && <WaitingForInputCallout run={run} />}
       {run.state === "failed" && <RunFailureReason reason={run.failureReason ?? run.output} />}
+      <ConnectionRequiredNotice value={run.connectionRequired} agentId={run.agentId} />
       <RunModelSteps
         stepTimings={run.stepTimings}
         liveReasoning={run.liveReasoning}

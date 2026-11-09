@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class _Door:
     originating_operator: str | None
-    on_behalf_of: str | None
+    for_person: str | None
     chat_channel: str | None
     chat_channel_external_id: str | None
 
@@ -163,7 +163,7 @@ async def _refusal(
             member.id,
             _Door(
                 originating_operator=None,
-                on_behalf_of=member.subject,
+                for_person=member.subject,
                 chat_channel=str(channel),
                 chat_channel_external_id=external_id,
             ),
@@ -186,7 +186,7 @@ async def _refusal(
         member.id,
         _Door(
             originating_operator=member.subject,
-            on_behalf_of=None,
+            for_person=None,
             chat_channel=None,
             chat_channel_external_id=None,
         ),
@@ -240,7 +240,7 @@ async def _stage_turn(
         chat_channel_external_id=door.chat_channel_external_id,
         role="user",
         mode=mode,
-        on_behalf_of=door.on_behalf_of,
+        for_person=door.for_person,
         resolved_refs=[],
         extra_context=None,
     )

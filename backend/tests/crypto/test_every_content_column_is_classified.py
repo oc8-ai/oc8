@@ -220,6 +220,8 @@ EXEMPT: dict[str, str] = {
     "oauth_connection.client_source": "not individually named in spec section 6; structural/config/identifier column, not customer free text -- see design spec §6",
     "oauth_connection.grant_type": "structural enum-like column (status/state/kind/classification/...), CHECK-constrained, not content, design spec §6c",
     "oauth_connection.azure_tenant_id": "not individually named in spec section 6; structural/config/identifier column (an Azure AD tenant GUID), not customer free text -- see design spec §6",
+    "agent_tool_access.binding_fingerprint": "a SHA-256 digest (connections.access.binding_fingerprint), not content -- see design spec §6",
+    "trigger.access_fingerprint": "a SHA-256 digest (connections.access.trigger_fingerprint), not content -- see design spec §6",
     "oauth_connection.provider_metadata": "content column to encrypt as-is, not yet migrated -- generic non-secret per-connection facts a provider's own flow needs (e.g. chatgpt_account_id), same shape/rationale as credential.field_values above, design spec §6a",
     "org_member.subject": "encryptable with a defined workaround, not yet migrated (unique IdP identifier; explicitly deferred, left plaintext in v1 per spec section 6b), design spec §6b",
     "org_member.display_name": "encryptable with a defined workaround, not yet migrated (one ORDER BY display_name query -- sort in application code, then treat as (a)), design spec §6b",
@@ -291,6 +293,8 @@ EXEMPT: dict[str, str] = {
     "trigger.event_source": "dispatch-matched identifier, not customer content, design spec §6c",
     "trigger.event_type": "dispatch-matched identifier, not customer content, design spec §6c",
     "trigger.webhook_token": "encryptable with a defined workaround, not yet migrated (equality-queried, server-generated bearer token that is this trigger's entire auth boundary, unlike its dispatch-identifier siblings above -- becomes DeterministicText), design spec §6b",
+    "agent_tool_access.tool_key": "the tool key (an McpConnection name such as 'microsoft365'), structural/identifier column, not customer free text -- see design spec §6",
+    "agent_tool_access.mode": "structural enum-like column (status/state/kind/classification/...), CHECK-constrained, not content, design spec §6c",
 }
 
 _ENCRYPTED_TYPES = (EncryptedText, EncryptedJSON, DeterministicText)

@@ -472,10 +472,10 @@ async def bind_from_free_text(
             message=text.text,
             # Nobody acts for a messenger turn (its authority is the binding
             # row), but it is the chat owner's turn (Ruling 58): stamped as
-            # `on_behalf_of`, which grants nothing, so the owner alone may
+            # `for_person`, which grants nothing, so the owner alone may
             # steer and stop it -- here and in the web chat.
             originating_operator=None,
-            on_behalf_of=member.subject,
+            for_person=member.subject,
             chat_channel=channel,
             chat_channel_external_id=text.external_id,
         )

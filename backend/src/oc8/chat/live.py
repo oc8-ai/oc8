@@ -194,7 +194,7 @@ AUTONOMOUS_SOURCES: Final = frozenset(
 
 def is_autonomous_run(run: m.AgentRun) -> bool:
     """The agent's own run: an autonomous source, and nobody behind it -- no
-    `originating_operator`, no `on_behalf_of` (a wake-up or decision follow-up
+    `originating_operator`, no `for_person` (a wake-up or decision follow-up
     continuing a person's work, Ruling 18) and no `chat_session_id` (a
     sub-run delegated from a chat). "Present" is `oc8.runtime.person.present`
     here and in the SQL twin `_autonomous`; both the timeline and live

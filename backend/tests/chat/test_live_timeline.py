@@ -444,7 +444,7 @@ async def test_python_and_sql_agree_on_who_is_behind_a_run(
         values: tuple[Any, ...] = (None, "", False, 0, "bob", {})
         runs = [
             _run(tenant, agent, "cron", {key: value})
-            for key in ("originating_operator", "on_behalf_of", "chat_session_id")
+            for key in ("originating_operator", "for_person", "chat_session_id")
             for value in values
         ]
         db.add_all(runs)
@@ -471,8 +471,8 @@ async def test_a_run_on_her_behalf_is_hers(app_session: AppSessionFactory) -> No
         live = await get_or_create_live_session(
             db, tenant_id=tenant, member_id=alice.id, agent_id=agent.id
         )
-        hers = _run(tenant, agent, "delegation", {"on_behalf_of": "alice"})
-        bobs = _run(tenant, agent, "delegation", {"on_behalf_of": "bob"})
+        hers = _run(tenant, agent, "delegation", {"for_person": "alice"})
+        bobs = _run(tenant, agent, "delegation", {"for_person": "bob"})
         db.add_all([hers, bobs])
         await db.flush()
         plain = await live_timeline(
@@ -499,7 +499,7 @@ async def test_started_by_names_the_person_not_the_delegating_agent(
         db.add(task)
         await db.flush()
         wake = _run(
-            tenant, agent, "delegation", {"on_behalf_of": "bob", "parent_task_id": str(task.id)}
+            tenant, agent, "delegation", {"for_person": "bob", "parent_task_id": str(task.id)}
         )
         db.add(wake)
         await db.flush()
@@ -530,7 +530,7 @@ async def test_the_several_people_marker_is_never_a_member(
                 seat_role="dept_viewer",
             )
         )
-        mixed = _run(tenant, agent, "delegation", {"on_behalf_of": SEVERAL_PEOPLE})
+        mixed = _run(tenant, agent, "delegation", {"for_person": SEVERAL_PEOPLE})
         db.add(mixed)
         await db.flush()
         live = await get_or_create_live_session(

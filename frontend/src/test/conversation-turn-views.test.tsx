@@ -2,6 +2,29 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
+// The connection notice links through the router (no full page reload). Stub
+// its Link as an anchor that renders the href it would navigate to.
+vi.mock("@tanstack/react-router", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@tanstack/react-router")>();
+  return {
+    ...actual,
+    Link: ({
+      children,
+      to,
+      params,
+      search,
+    }: {
+      children?: React.ReactNode;
+      to: string;
+      params?: Record<string, string>;
+      search?: Record<string, string>;
+    }) => {
+      const path = to.replace(/\$(\w+)/g, (_, key: string) => params?.[key] ?? "");
+      const query = search ? `?${new URLSearchParams(search).toString()}` : "";
+      return <a href={`${path}${query}`}>{children}</a>;
+    },
+  };
+});
 vi.mock("@/lib/conversation-api", async (orig) => ({
   ...(await orig<typeof import("@/lib/conversation-api")>()),
   useTurnRun: () => ({ data: undefined }),
@@ -123,6 +146,40 @@ describe("AssistantTurn", () => {
     expect(screen.getByText("Partial")).toBeInTheDocument();
     expect(screen.getByTestId("stream-caret")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Copy answer/ })).toBeNull();
+  });
+
+  it("offers to connect the account a tool call needed", () => {
+    wrap(
+      <AssistantTurn
+        sessionId="s"
+        turn={{ kind: "assistant", key: "k", replyToId: "u1", variants: [], liveRunId: "r1" }}
+        run={{
+          id: "r1",
+          agentId: "a1",
+          state: "done",
+          phase: null,
+          output: "done",
+          steps: 1,
+          toolCalls: [],
+          taskId: null,
+          question: null,
+          renderedComponents: [],
+          connectionRequired: {
+            integration: "microsoft365",
+            provider: "microsoft",
+            label: "Microsoft 365",
+            reason: "not_connected",
+          },
+        }}
+      />,
+    );
+    expect(
+      screen.getByText("For this task the agent needs your Microsoft account."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Connect now →" })).toHaveAttribute(
+      "href",
+      "/connections?connect=microsoft365",
+    );
   });
 
   it("renders sources and the cards slot", () => {

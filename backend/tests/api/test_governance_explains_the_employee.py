@@ -34,6 +34,7 @@ from oc8 import models as m
 from oc8.auth import get_identity_provider
 from oc8.authz.permissions import (
     BUILTIN_ROLE_PERMISSIONS,
+    CONNECTION_OWN,
     COPILOT_USE,
     MEMBER_ROLE,
     SEAT_APPROVER,
@@ -81,7 +82,7 @@ def test_defining_it_granted_nothing_beyond_the_universal_copilot_use_default() 
     """
     from oc8.authz.permissions import tool_rights_for_role
 
-    assert permissions_for(MEMBER_ROLE) == frozenset({COPILOT_USE})
+    assert permissions_for(MEMBER_ROLE) == frozenset({CONNECTION_OWN, COPILOT_USE})
     assert permissions_for("menber") == frozenset()
     assert tool_rights_for_role(MEMBER_ROLE) == frozenset()
     for permission in ("approval:decide", "run:view", "agent:manage", "member:manage"):
@@ -123,8 +124,9 @@ async def test_an_employee_is_told_where_he_stands_and_not_that_he_is_a_typo(
         "the screen leads with this flag and its false branch tells the caller to "
         "have his identity provider remapped onto a company-wide role"
     )
-    assert body["callerPermissions"] == ["copilot:use"], (
-        "defining the role must not grant anything beyond the universal copilot:use default"
+    assert body["callerPermissions"] == ["connection:own", "copilot:use"], (
+        "defining the role must not grant anything beyond the universal "
+        "copilot:use and connection:own defaults"
     )
     # The sentence the design promised the screen could say, with the data to
     # say it: which department, at which seat role, carrying which permissions.
@@ -152,7 +154,7 @@ async def test_an_employee_is_told_where_he_stands_and_not_that_he_is_a_typo(
     listed = [r for r in body["roles"] if r["name"] == MEMBER_ROLE]
     assert len(listed) == 1
     assert listed[0]["builtin"] is True
-    assert listed[0]["permissions"] == ["copilot:use"]
+    assert listed[0]["permissions"] == ["connection:own", "copilot:use"]
     # It is in the HUMAN list, and that is the half of this worth pinning: the
     # employee's own role must not have been sorted into the agents' table.
     assert listed[0]["kind"] == "human"
@@ -188,5 +190,5 @@ async def test_a_seatless_employee_is_told_he_holds_no_seat(
             await http.get("/api/v1/governance", headers=_headers(tenant, "nobody", MEMBER_ROLE))
         ).json()
     assert body["callerRoleIsKnown"] is True
-    assert body["callerPermissions"] == ["copilot:use"]
+    assert body["callerPermissions"] == ["connection:own", "copilot:use"]
     assert body["seats"] == []

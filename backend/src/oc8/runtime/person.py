@@ -2,9 +2,15 @@
 
 `originating_operator` is the person a run ACTS for -- its authority. Some runs
 continue a person's work without acting as them: a lead's wake-up after a
-delegation, a decision follow-up. Those carry `on_behalf_of` (the person's
+delegation, a decision follow-up. Those carry `for_person` (the person's
 subject) instead, which grants nothing; it only says whose run it is, so the
 Live timeline never shows it as the agent's own autonomous run.
+
+Not `on_behalf_of` (`oc8.connections.acting`): that one is a member id and DOES
+grant something -- the account a tool "in the user's context" acts through --
+so it is withheld where this one is kept (an approver's own instruction), and
+set where this one is not (a schedule's chain acts for its creator). Each key
+answers its own question.
 """
 
 from __future__ import annotations
@@ -12,14 +18,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Final
 
-ON_BEHALF_OF: Final = "on_behalf_of"
-#: `on_behalf_of` for work that continues SEVERAL people's runs (a task whose
+FOR_PERSON: Final = "for_person"
+#: `for_person` for work that continues SEVERAL people's runs (a task whose
 #: runs name different people): somebody's, so never autonomous, but nobody's
 #: own -- a colleague's run for everyone. Not a subject anyone can hold: the
 #: `oc8:` prefix is never issued as an identity subject.
 SEVERAL_PEOPLE: Final = "oc8:several-people"
 #: The context keys that name a person behind a run, strongest first.
-PERSON_KEYS: Final = ("originating_operator", ON_BEHALF_OF)
+PERSON_KEYS: Final = ("originating_operator", FOR_PERSON)
 
 
 def present(value: object) -> bool:

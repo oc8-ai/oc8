@@ -11,8 +11,20 @@ from oc8.knowledge.connectors.fetcher import _is_blocked_ip, safe_fetch
 pytestmark = pytest.mark.asyncio
 
 
-@pytest.mark.parametrize("ip", ["127.0.0.1", "10.0.0.5", "172.16.0.1", "192.168.1.1",
-                                 "169.254.169.254", "::1", "fe80::1", "fc00::1", "0.0.0.0"])
+@pytest.mark.parametrize(
+    "ip",
+    [
+        "127.0.0.1",
+        "10.0.0.5",
+        "172.16.0.1",
+        "192.168.1.1",
+        "169.254.169.254",
+        "::1",
+        "fe80::1",
+        "fc00::1",
+        "0.0.0.0",
+    ],
+)
 def test_blocked_ips(ip: str) -> None:
     assert _is_blocked_ip(ip) is True
 
@@ -39,6 +51,7 @@ async def test_non_http_scheme_rejected() -> None:
 async def test_blocked_host_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     # Resolve any host to a loopback IP -> must be blocked before any HTTP call.
     import oc8.knowledge.connectors.fetcher as f
+
     monkeypatch.setattr(f, "_resolve_ips", lambda host: ["127.0.0.1"])
     with pytest.raises(ConnectorError):
         await safe_fetch("http://evil.example.com/")
@@ -110,3 +123,27 @@ async def test_streaming_redirect_reguards_each_hop(monkeypatch: pytest.MonkeyPa
     assert text == "ok"
     assert ctype == "text/plain"
     assert guarded_urls == ["http://example.com/start", "http://final.example.com/end"]
+
+
+async def test_each_hop_connects_to_the_address_its_guard_checked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DNS answers public for the guard and private for a second lookup: the
+    request must go to the public address the guard saw."""
+    import oc8.knowledge.connectors.fetcher as f
+    from oc8.net.outbound import PinnedTransport
+
+    answers = iter([["93.184.216.34"], ["10.0.0.5"], ["10.0.0.5"]])
+    monkeypatch.setattr("oc8.net.outbound.resolve_ips", lambda host: next(answers))
+    pinned: list[object] = []
+    real = httpx.AsyncClient
+
+    def factory(*args: object, **kwargs: object) -> httpx.AsyncClient:
+        pinned.append(kwargs["transport"])
+        kwargs["transport"] = httpx.MockTransport(lambda r: httpx.Response(200, text="ok"))
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(httpx, "AsyncClient", factory)
+    await f.safe_fetch("http://example.test/")
+    assert isinstance(pinned[0], PinnedTransport)
+    assert pinned[0]._ip == "93.184.216.34"
