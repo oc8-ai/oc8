@@ -107,3 +107,9 @@ jira_add_comment = "Comments on"
 jira_edit_comment = "Edits comment on"
 jira_transition_issue = "Changes status of"
 jira_assign_issue = "Assigns"
+
+# env var -> jira_login field (connections).
+[connections.credential_env_fields]
+JIRA_URL = "url"
+JIRA_USERNAME = "username"
+JIRA_API_TOKEN = "api_token"

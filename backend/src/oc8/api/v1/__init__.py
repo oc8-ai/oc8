@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from oc8.api.v1 import (
+    agent_tool_access,
     agents,
     agents_write,
     api_keys,
@@ -21,6 +22,7 @@ from oc8.api.v1 import (
     chat_live,
     clarifications,
     components,
+    connections,
     contracts,
     copilot,
     copilot_builder,
@@ -68,6 +70,7 @@ api_router.include_router(departments.router, tags=["departments"])
 api_router.include_router(onboarding.router, tags=["onboarding"])
 api_router.include_router(agents.router, tags=["agents"])
 api_router.include_router(agents_write.router, tags=["agents"])
+api_router.include_router(agent_tool_access.router, tags=["agents"])
 api_router.include_router(catalog.router, tags=["catalog"])
 api_router.include_router(model_prices.router, tags=["catalog"])
 api_router.include_router(reconciliation.router, tags=["catalog"])
@@ -89,6 +92,7 @@ api_router.include_router(mcp_logins.router, tags=["mcp"])
 api_router.include_router(notifications.router, tags=["notifications"])
 api_router.include_router(dashboard.router, tags=["dashboard"])
 api_router.include_router(oauth.router, tags=["oauth"])
+api_router.include_router(connections.router, tags=["connections"])
 api_router.include_router(capas.router, tags=["capas"])
 api_router.include_router(roles.router, tags=["roles"])
 api_router.include_router(run.router, tags=["run"])

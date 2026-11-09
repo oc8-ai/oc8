@@ -4,6 +4,7 @@ import type {
   Capability,
   EditionBanner,
   EditionChatContributions,
+  EditionHomeSection,
   EditionNavigationItem,
   EditionOnboarding,
   EditionProfileSection,
@@ -37,6 +38,7 @@ export interface FrontendEditionComposition {
   readonly sidebarFooter: ComponentType<EditionSidebarSlotProps> | null;
   readonly profileSections: readonly EditionProfileSection[];
   readonly chat: ComposedChat;
+  readonly homeSections: readonly EditionHomeSection[];
 }
 
 export interface EditionCapabilityGateRule {
@@ -94,6 +96,7 @@ const emptyComposition: FrontendEditionComposition = {
   sidebarFooter: null,
   profileSections: [],
   chat: EMPTY_CHAT,
+  homeSections: [],
 };
 
 const EditionCompositionContext = createContext<FrontendEditionComposition>(emptyComposition);
@@ -125,6 +128,8 @@ export function composeFrontendEdition(
     globalProviders: [],
   };
   const chatIds = new Set<string>();
+  const homeSectionIds = new Set<string>();
+  const homeSections: EditionHomeSection[] = [];
 
   for (const extension of extensions) {
     if (extensionIds.has(extension.id))
@@ -170,6 +175,12 @@ export function composeFrontendEdition(
         (chat[slot] as unknown[]).push(entry);
       }
     }
+    for (const section of extension.homeSections ?? []) {
+      if (homeSectionIds.has(section.id))
+        throw new Error(`Duplicate edition home section: ${section.id}`);
+      homeSectionIds.add(section.id);
+      homeSections.push(section);
+    }
   }
 
   return {
@@ -182,6 +193,7 @@ export function composeFrontendEdition(
     sidebarFooter,
     profileSections,
     chat,
+    homeSections,
   };
 }
 

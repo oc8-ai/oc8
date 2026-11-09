@@ -9,8 +9,8 @@ the app behind a long-running run's transaction, the kind CHECK is added NOT
 VALID and validated without blocking writes, and the `agent_run` index is
 built CONCURRENTLY outside the transaction (see the PR's migration notes).
 
-Revision ID: 0108
-Revises: 0107
+Revision ID: 0112
+Revises: 0111
 """
 
 from __future__ import annotations
@@ -21,8 +21,8 @@ from typing import Final
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0108"
-down_revision: str | None = "0107"
+revision: str = "0112"
+down_revision: str | None = "0111"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

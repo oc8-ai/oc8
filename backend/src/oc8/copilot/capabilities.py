@@ -484,7 +484,11 @@ async def _publish_copilot_change(
 
 
 async def apply_operation(
-    db: AsyncSession, *, tenant_id: uuid.UUID, data: dict[str, Any]
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    data: dict[str, Any],
+    actor_member_id: uuid.UUID | None = None,
 ) -> uuid.UUID | None:
     """Apply exactly one validated operation through existing service boundaries.
 
@@ -513,6 +517,7 @@ async def apply_operation(
                 event_source=operation.eventSource,
                 event_type=operation.eventType,
                 declared_events={(event.source, event.type) for event in events},
+                created_by_member_id=actor_member_id,
             )
         except SubscriptionModelNotManualOnly as exc:
             # A ChatGPT-subscription-backed agent may not be given an

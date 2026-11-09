@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy import text as sql_text
 
 from oc8 import models as m
 from oc8.channels.binding import issue_code, redeem_code
@@ -22,8 +23,14 @@ from oc8.channels.dispatch import (
     REFUSED,
     process_inbound,
 )
+from oc8.chat import service as chat_service
 from oc8.runtime.clarification import SECRET_REFUSAL
-from oc8.runtime.run_inputs import MAX_INPUT_CHARS, MAX_PENDING_INPUTS, InputRefused
+from oc8.runtime.run_inputs import (
+    MAX_INPUT_CHARS,
+    MAX_PENDING_INPUTS,
+    InputRefused,
+    lock_run_inputs,
+)
 from tests.channels.test_free_text_end_to_end import CHANNEL, FakeChannel, _grant_copilot_manage
 from tests.channels.test_messenger_answers import _bound_member_with_parked_run
 from tests.conftest import AppSessionFactory
@@ -87,7 +94,7 @@ async def test_a_messenger_turn_is_its_owners_run_without_acting_for_her(
     [run] = await _runs(app_session, tenant)
     # Whose run (steer, stop, watch) -- and still nobody's authority: the
     # secret gate, the audit trail and the PDP see no operator, as before.
-    assert run.context["on_behalf_of"] == "pat"
+    assert run.context["for_person"] == "pat"
     assert "originating_operator" not in run.context
     assert "operator_role" not in run.context
 
@@ -179,7 +186,7 @@ async def test_somebody_elses_running_run_is_not_steered(
     async with app_session(tenant) as db:
         run = await db.get(m.AgentRun, run_id)
         assert run is not None
-        run.context = {k: v for k, v in run.context.items() if k != "on_behalf_of"}
+        run.context = {k: v for k, v in run.context.items() if k != "for_person"}
         await db.commit()
 
     await _say(app_session, tenant, FakeChannel(), "Noch eine Frage")
@@ -195,7 +202,7 @@ async def test_a_parked_question_still_takes_the_answer(
     async with app_session(tenant) as db:
         run = await db.get(m.AgentRun, run_id)
         assert run is not None
-        run.context = {**run.context, "on_behalf_of": "pat"}
+        run.context = {**run.context, "for_person": "pat"}
         await db.commit()
     impl = FakeChannel()
 
@@ -236,14 +243,38 @@ async def test_a_run_that_ended_before_the_write_gets_a_new_turn(
     tenant = uuid.uuid4()
     run_id = await messenger_turn(app_session, tenant)
 
-    async def ended(*_a: Any, **_kw: Any) -> None:
-        raise InputRefused(409, "run has already finished")
+    async def ended(db: Any, *, run: m.AgentRun, **_kw: Any) -> None:
+        # As the real one: locks taken, then the state re-read says "ended".
+        await lock_run_inputs(db, tenant_id=run.tenant_id, run_id=run.id)
+        raise InputRefused(409, "run has already finished", "finished")
 
     monkeypatch.setattr("oc8.runtime.run_inputs.add_run_input", ended)
+    real_send = chat_service.send_message
+    locks_free: list[bool] = []
+
+    async def send(*args: Any, **kwargs: Any) -> Any:
+        # The new turn starts in a fresh transaction: the refused attempt's
+        # locks are already released, so another session gets them at once.
+        async with app_session(tenant) as other:
+            got = (
+                await other.execute(
+                    sql_text(
+                        "SELECT pg_try_advisory_xact_lock(hashtextextended(:t, 0))"
+                        " AND pg_try_advisory_xact_lock(hashtextextended(:r, 0))"
+                    ),
+                    {"t": str(tenant), "r": f"run_input:{run_id}"},
+                )
+            ).scalar_one()
+            locks_free.append(bool(got))
+            await other.rollback()
+        return await real_send(*args, **kwargs)
+
+    monkeypatch.setattr("oc8.chat.service.send_message", send)
     impl = FakeChannel()
 
     await _say(app_session, tenant, impl, "Noch eine Frage")
 
+    assert locks_free == [True], "no new turn while holding the audit/input locks"
     runs = await _runs(app_session, tenant)
     assert len(runs) == 2 and run_id in [r.id for r in runs]
     sent = impl.say.await_args

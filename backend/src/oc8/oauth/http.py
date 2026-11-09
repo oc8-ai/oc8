@@ -19,7 +19,14 @@ def set_transport_override(transport: httpx.AsyncBaseTransport | None) -> None:
     _override = transport
 
 
-def get_client(*, follow_redirects: bool = False) -> httpx.AsyncClient:
+def current_override() -> httpx.AsyncBaseTransport | None:
+    """The test transport, if one is installed (so a pinned transport can wrap it)."""
+    return _override
+
+
+def get_client(
+    *, follow_redirects: bool = False, transport: httpx.AsyncBaseTransport | None = None
+) -> httpx.AsyncClient:
     """A client for one provider call.
 
     Redirects are refused by default -- a provider API answering 3xx where a
@@ -33,5 +40,5 @@ def get_client(*, follow_redirects: bool = False) -> httpx.AsyncClient:
     never see the provider bearer token.
     """
     return httpx.AsyncClient(
-        transport=_override, timeout=_TIMEOUT, follow_redirects=follow_redirects
+        transport=transport or _override, timeout=_TIMEOUT, follow_redirects=follow_redirects
     )

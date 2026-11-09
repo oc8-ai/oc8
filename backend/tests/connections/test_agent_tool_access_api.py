@@ -1,0 +1,487 @@
+from __future__ import annotations
+
+import uuid
+
+import pytest
+from sqlalchemy import select
+
+from oc8 import models as m
+from oc8.connections.access import (
+    ConnectionRequired,
+    ToolAccess,
+    binding_fingerprint,
+    resolve_tool_access,
+)
+from tests.conftest import AppSessionFactory
+from tests.connections.helpers import api, credential_row, headers, install, member, oauth_row
+from tests.factories import _make_agent
+
+pytestmark = pytest.mark.asyncio
+
+
+async def test_binding_another_persons_account_needs_its_owner_or_an_admin(
+    app_session: AppSessionFactory,
+) -> None:
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    anna = await member(app_session, tenant, "anna@acme.test", name="Anna")
+    await member(app_session, tenant, "ben@acme.test", name="Ben")
+    annas = await oauth_row(app_session, tenant, owner=anna)
+    org_odoo = await credential_row(app_session, tenant, owner=None, name="Odoo system")
+    async with api() as c:
+        await install(c, headers(tenant, "root@acme.test", "org_admin"), "microsoft365")
+        await install(c, headers(tenant, "root@acme.test", "org_admin"), "odoo_mcp")
+        url = f"/api/v1/agents/{agent.id}/tool-access/microsoft365"
+        ben = headers(tenant, "ben@acme.test", "dept_manager")
+        refused = await c.put(
+            url, json={"mode": "fixed", "oauthConnectionId": str(annas)}, headers=ben
+        )
+        assert refused.status_code == 403, refused.text
+        own = await c.put(
+            url,
+            json={"mode": "fixed", "oauthConnectionId": str(annas), "confirmShare": True},
+            headers=headers(tenant, "anna@acme.test", "dept_manager"),
+        )
+        assert own.status_code == 200, own.text
+        assert (own.json()["mode"], own.json()["targetOwnerName"]) == ("fixed", "Anna")
+        wrong = await c.put(
+            f"/api/v1/agents/{agent.id}/tool-access/microsoft365",
+            json={"mode": "fixed", "credentialId": str(org_odoo)},
+            headers=headers(tenant, "root@acme.test", "org_admin"),
+        )
+        assert wrong.status_code == 422
+        reset = await c.delete(url, headers=headers(tenant, "root@acme.test", "org_admin"))
+        assert reset.status_code == 204
+        rows = (await c.get(f"/api/v1/agents/{agent.id}/tool-access", headers=ben)).json()
+    by_key = {row["toolKey"]: row for row in rows}
+    assert (by_key["microsoft365"]["mode"], by_key["microsoft365"]["defaultMode"]) == (
+        "default",
+        "user",
+    )
+    assert by_key["odoo"]["defaultMode"] == "organisation"
+
+
+async def test_options_show_other_peoples_accounts_to_admins_only(
+    app_session: AppSessionFactory,
+) -> None:
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    anna = await member(app_session, tenant, "anna@acme.test", name="Anna")
+    ben = await member(app_session, tenant, "ben@acme.test", name="Ben")
+    await oauth_row(app_session, tenant, owner=anna)
+    await oauth_row(app_session, tenant, owner=ben, label="ben@acme.test")
+    await oauth_row(app_session, tenant, owner=None, label="shared@acme.test")
+    async with api() as c:
+        await install(c, headers(tenant, "root@acme.test", "org_admin"), "microsoft365")
+        url = f"/api/v1/agents/{agent.id}/tool-access/microsoft365/options"
+        for_ben = (
+            await c.get(url, headers=headers(tenant, "ben@acme.test", "dept_manager"))
+        ).json()
+        for_admin = (
+            await c.get(url, headers=headers(tenant, "root@acme.test", "org_admin"))
+        ).json()
+    assert [(o["kind"], o["owner"], o["label"]) for o in for_ben] == [
+        ("user", None, "user"),
+        ("oauth", "me", "ben@acme.test"),
+    ]
+    assert ("oauth", "member", "anna@acme.test") in [
+        (o["kind"], o["owner"], o["label"]) for o in for_admin
+    ]
+
+
+ADMIN = "org_admin"
+MANAGER = "dept_manager"
+
+
+async def _events(app_session: AppSessionFactory, tenant, action: str) -> list[dict]:  # type: ignore[type-arg]
+    async with app_session(tenant) as db:
+        rows = (
+            await db.execute(select(m.AuditEvent).where(m.AuditEvent.action == action))
+        ).scalars()
+        return [dict(r.resource) for r in rows]
+
+
+async def _row(app_session: AppSessionFactory, agent: m.Agent) -> m.AgentToolAccess:
+    async with app_session(agent.tenant_id) as db:
+        row = await db.scalar(
+            select(m.AgentToolAccess).where(m.AgentToolAccess.agent_id == agent.id)
+        )
+        assert row is not None
+        return row
+
+
+async def test_binding_your_own_account_needs_confirm_share_and_is_audited(
+    app_session: AppSessionFactory,
+) -> None:
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    anna = await member(app_session, tenant, "anna@acme.test", name="Anna")
+    annas = await oauth_row(app_session, tenant, owner=anna)
+    async with api() as c:
+        await install(c, headers(tenant, "root@acme.test", ADMIN), "microsoft365")
+        url = f"/api/v1/agents/{agent.id}/tool-access/microsoft365"
+        me = headers(tenant, "anna@acme.test", MANAGER)
+        body = {"mode": "fixed", "oauthConnectionId": str(annas)}
+        assert (await c.put(url, json=body, headers=me)).status_code == 422
+        ok = await c.put(url, json={**body, "confirmShare": True}, headers=me)
+        assert ok.status_code == 200, ok.text
+    row = await _row(app_session, agent)
+    assert (row.set_by_member_id, row.set_with_manage) == (anna, False)
+    assert row.binding_fingerprint
+    event = (await _events(app_session, tenant, "agent.tool_access.updated"))[-1]
+    assert event["target_owner_member_id"] == str(anna)
+    assert event["consent"] == "owner" and event["confirm_share"] is True
+    assert event["target_label"] == "anna@acme.test"
+    assert event["previous"] == {
+        "mode": None,
+        "oauth_connection_id": None,
+        "credential_id": None,
+        "set_by_member_id": None,
+        "set_with_manage": None,
+    }
+
+
+async def test_an_administrator_may_bind_another_persons_account(
+    app_session: AppSessionFactory,
+) -> None:
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    anna = await member(app_session, tenant, "anna@acme.test", name="Anna")
+    root = await member(app_session, tenant, "root@acme.test", name="Root")
+    annas = await oauth_row(app_session, tenant, owner=anna)
+    async with api() as c:
+        await install(c, headers(tenant, "root@acme.test", ADMIN), "microsoft365")
+        r = await c.put(
+            f"/api/v1/agents/{agent.id}/tool-access/microsoft365",
+            json={"mode": "fixed", "oauthConnectionId": str(annas)},
+            headers=headers(tenant, "root@acme.test", ADMIN),
+        )
+        assert r.status_code == 200, r.text
+    row = await _row(app_session, agent)
+    assert (row.set_by_member_id, row.set_with_manage) == (root, True)
+    event = (await _events(app_session, tenant, "agent.tool_access.updated"))[-1]
+    assert (event["consent"], event["target_owner_member_id"]) == ("manage", str(anna))
+
+
+async def test_organisation_targets_need_the_manage_right_except_the_departments_own(
+    app_session: AppSessionFactory,
+) -> None:
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    await member(app_session, tenant, "ben@acme.test", name="Ben")
+    shared = await oauth_row(app_session, tenant, owner=None, label="shared@acme.test")
+    dept_owned = await oauth_row(app_session, tenant, owner=None, label="dept@acme.test")
+    async with api() as c:
+        await install(c, headers(tenant, "root@acme.test", ADMIN), "microsoft365")
+        url = f"/api/v1/agents/{agent.id}/tool-access/microsoft365"
+        ben = headers(tenant, "ben@acme.test", MANAGER)
+        refused = await c.put(
+            url, json={"mode": "fixed", "oauthConnectionId": str(shared)}, headers=ben
+        )
+        assert refused.status_code == 403, refused.text
+        admin = await c.put(
+            url,
+            json={"mode": "fixed", "oauthConnectionId": str(shared)},
+            headers=headers(tenant, "root@acme.test", ADMIN),
+        )
+        assert admin.status_code == 200, admin.text
+        async with app_session(tenant) as db:
+            conn = (
+                (
+                    await db.execute(
+                        select(m.McpConnection).where(m.McpConnection.name == "microsoft365")
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if conn is None:
+                conn = m.McpConnection(
+                    tenant_id=tenant, name="microsoft365", server_url="", transport="stdio"
+                )
+                db.add(conn)
+            conn.department_id = agent.department_id
+            conn.config = {**dict(conn.config or {}), "oauth_connection_id": str(dept_owned)}
+        options = (await c.get(url + "/options", headers=ben)).json()
+        assert [(o["owner"], o["label"]) for o in options if o["owner"] == "organisation"] == [
+            ("organisation", "dept@acme.test")
+        ]
+        exception = await c.put(
+            url, json={"mode": "fixed", "oauthConnectionId": str(dept_owned)}, headers=ben
+        )
+        assert exception.status_code == 200, exception.text
+        # Non-admins may still go back to the default or choose user mode.
+        assert (await c.put(url, json={"mode": "user"}, headers=ben)).status_code == 200
+        assert (await c.delete(url, headers=ben)).status_code == 204
+
+
+async def test_a_fixed_login_binding_and_input_rules(app_session: AppSessionFactory) -> None:
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    org_odoo = await credential_row(app_session, tenant, owner=None, name="Odoo system")
+    async with api() as c:
+        admin = headers(tenant, "root@acme.test", ADMIN)
+        await install(c, admin, "odoo_mcp")
+        url = f"/api/v1/agents/{agent.id}/tool-access/odoo"
+        ok = await c.put(url, json={"mode": "fixed", "credentialId": str(org_odoo)}, headers=admin)
+        assert ok.status_code == 200, ok.text
+        assert (ok.json()["credentialId"], ok.json()["targetLabel"]) == (
+            str(org_odoo),
+            "Odoo system",
+        )
+        extra = await c.put(
+            url, json={"mode": "user", "credentialId": str(org_odoo)}, headers=admin
+        )
+        assert extra.status_code == 422
+        unknown = await c.delete(f"/api/v1/agents/{agent.id}/tool-access/nothing", headers=admin)
+        assert unknown.status_code == 404
+
+
+async def test_other_tenants_ids_are_not_found_and_nothing_secret_is_returned(
+    app_session: AppSessionFactory,
+) -> None:
+    agent = await _make_agent(app_session)
+    other = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    theirs = await oauth_row(app_session, other.tenant_id, owner=None)
+    mine = await oauth_row(app_session, tenant, owner=None, label="shared@acme.test")
+    async with api() as c:
+        admin = headers(tenant, "root@acme.test", ADMIN)
+        await install(c, admin, "microsoft365")
+        cross_agent = await c.get(f"/api/v1/agents/{other.id}/tool-access", headers=admin)
+        assert cross_agent.status_code == 404
+        cross_target = await c.put(
+            f"/api/v1/agents/{agent.id}/tool-access/microsoft365",
+            json={"mode": "fixed", "oauthConnectionId": str(theirs)},
+            headers=admin,
+        )
+        assert cross_target.status_code == 422
+        await c.put(
+            f"/api/v1/agents/{agent.id}/tool-access/microsoft365",
+            json={"mode": "fixed", "oauthConnectionId": str(mine)},
+            headers=admin,
+        )
+        listing = await c.get(f"/api/v1/agents/{agent.id}/tool-access", headers=admin)
+        options = await c.get(
+            f"/api/v1/agents/{agent.id}/tool-access/microsoft365/options", headers=admin
+        )
+    for text in (listing.text.lower(), options.text.lower()):
+        assert "secret" not in text and "token" not in text
+
+
+async def test_a_leftover_row_of_a_removed_integration_can_still_be_reset(
+    app_session: AppSessionFactory,
+) -> None:
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    async with app_session(tenant) as db:
+        db.add(m.AgentToolAccess(tenant_id=tenant, agent_id=agent.id, tool_key="gone", mode="user"))
+    async with api() as c:
+        admin = headers(tenant, "root@acme.test", ADMIN)
+        assert (
+            await c.delete(f"/api/v1/agents/{agent.id}/tool-access/gone", headers=admin)
+        ).status_code == 204
+        assert (
+            await c.delete(f"/api/v1/agents/{agent.id}/tool-access/gone", headers=admin)
+        ).status_code == 404
+
+
+async def _resolve(app_session: AppSessionFactory, agent: m.Agent, operator: str) -> ToolAccess:
+    async with app_session(agent.tenant_id) as db:
+        conn = (
+            (
+                await db.execute(
+                    select(m.McpConnection).where(m.McpConnection.name == "microsoft365")
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if conn is None:
+            conn = m.McpConnection(
+                tenant_id=agent.tenant_id,
+                name="microsoft365",
+                server_url="",
+                transport="stdio",
+                config={"_plugin_name": "microsoft365", "_connection_key": "primary"},
+            )
+            db.add(conn)
+        run = m.AgentRun(
+            tenant_id=agent.tenant_id,
+            agent_id=agent.id,
+            source="manual",
+            context={"originating_operator": operator},
+        )
+        db.add(run)
+        await db.flush()
+        live = await db.get(m.Agent, agent.id)
+        assert live is not None
+        return await resolve_tool_access(db, run=run, agent=live, conn=conn)
+
+
+async def test_an_organisation_account_an_administrator_chose_is_used_at_runtime(
+    app_session: AppSessionFactory,
+) -> None:
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    await member(app_session, tenant, "ben@acme.test", name="Ben")
+    shared = await oauth_row(app_session, tenant, owner=None, label="shared@acme.test")
+    async with api() as c:
+        await install(c, headers(tenant, "root@acme.test", ADMIN), "microsoft365")
+        r = await c.put(
+            f"/api/v1/agents/{agent.id}/tool-access/microsoft365",
+            json={"mode": "fixed", "oauthConnectionId": str(shared)},
+            headers=headers(tenant, "root@acme.test", ADMIN),
+        )
+        assert r.status_code == 200, r.text
+    assert (await _row(app_session, agent)).set_with_manage is True
+    access = await _resolve(app_session, agent, "ben@acme.test")
+    assert (access.kind, access.oauth_connection.id) == ("oauth", shared)  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("versioned", [True, False])
+async def test_an_owners_binding_saved_through_the_api_is_used_at_runtime(
+    app_session: AppSessionFactory, versioned: bool
+) -> None:
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    if not versioned:
+        async with app_session(tenant) as db:
+            live = await db.get(m.Agent, agent.id)
+            assert live is not None
+            live.current_version_id = None
+    anna = await member(app_session, tenant, "anna@acme.test", name="Anna")
+    await member(app_session, tenant, "ben@acme.test", name="Ben")
+    annas = await oauth_row(app_session, tenant, owner=anna)
+    async with api() as c:
+        await install(c, headers(tenant, "root@acme.test", ADMIN), "microsoft365")
+        r = await c.put(
+            f"/api/v1/agents/{agent.id}/tool-access/microsoft365",
+            json={"mode": "fixed", "oauthConnectionId": str(annas), "confirmShare": True},
+            headers=headers(tenant, "anna@acme.test", MANAGER),
+        )
+        assert r.status_code == 200, r.text
+    access = await _resolve(app_session, agent, "ben@acme.test")
+    assert access.oauth_connection.id == annas  # type: ignore[union-attr]
+
+
+async def _listed(c, agent: m.Agent, hdrs, tool_key: str = "microsoft365") -> dict:  # type: ignore[no-untyped-def,type-arg]
+    rows = (await c.get(f"/api/v1/agents/{agent.id}/tool-access", headers=hdrs)).json()
+    return next(row for row in rows if row["toolKey"] == tool_key)
+
+
+async def test_the_listing_flags_an_owners_binding_after_the_agent_changed(
+    app_session: AppSessionFactory,
+) -> None:
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    anna = await member(app_session, tenant, "anna@acme.test", name="Anna")
+    annas = await oauth_row(app_session, tenant, owner=anna)
+    async with api() as c:
+        await install(c, headers(tenant, "root@acme.test", ADMIN), "microsoft365")
+        me = headers(tenant, "anna@acme.test", MANAGER)
+        url = f"/api/v1/agents/{agent.id}/tool-access/microsoft365"
+        body = {"mode": "fixed", "oauthConnectionId": str(annas), "confirmShare": True}
+        saved = await c.put(url, json=body, headers=me)
+        assert (saved.json()["needsConfirmation"], saved.json()["confirmationReason"]) == (
+            False,
+            None,
+        )
+        assert (await _listed(c, agent, me))["needsConfirmation"] is False
+        async with app_session(tenant) as db:
+            live = await db.get(m.Agent, agent.id)
+            assert live is not None
+            live.current_version_id = uuid.uuid4()
+        row = await _listed(c, agent, me)
+        assert (row["needsConfirmation"], row["confirmationReason"]) == (True, "agent_changed")
+        # The runtime refuses the same binding.
+        with pytest.raises(ConnectionRequired) as exc:
+            await _resolve(app_session, agent, "ben@acme.test")
+        assert exc.value.reason == "binding_needs_confirmation"
+        # Saving it again confirms it.
+        assert (await c.put(url, json=body, headers=me)).status_code == 200
+        assert (await _listed(c, agent, me))["needsConfirmation"] is False
+
+
+async def test_the_listing_flags_a_personal_binding_its_owner_never_confirmed(
+    app_session: AppSessionFactory,
+) -> None:
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    anna = await member(app_session, tenant, "anna@acme.test", name="Anna")
+    ben = await member(app_session, tenant, "ben@acme.test", name="Ben")
+    annas = await oauth_row(app_session, tenant, owner=anna)
+    async with api() as c:
+        await install(c, headers(tenant, "root@acme.test", ADMIN), "microsoft365")
+        async with app_session(tenant) as db:
+            live = await db.get(m.Agent, agent.id)
+            assert live is not None
+            fp = await binding_fingerprint(
+                db, live, "microsoft365", version_id=live.current_version_id
+            )
+            db.add(
+                m.AgentToolAccess(
+                    tenant_id=tenant,
+                    agent_id=agent.id,
+                    tool_key="microsoft365",
+                    mode="fixed",
+                    oauth_connection_id=annas,
+                    set_by_member_id=ben,
+                    set_with_manage=False,
+                    binding_fingerprint=fp,
+                )
+            )
+        row = await _listed(c, agent, headers(tenant, "root@acme.test", ADMIN))
+    assert (row["needsConfirmation"], row["confirmationReason"]) == (True, "not_confirmed")
+
+
+async def test_the_listing_does_not_flag_defaults_user_mode_or_an_administrators_choice(
+    app_session: AppSessionFactory,
+) -> None:
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    anna = await member(app_session, tenant, "anna@acme.test", name="Anna")
+    annas = await oauth_row(app_session, tenant, owner=anna)
+    async with api() as c:
+        admin = headers(tenant, "root@acme.test", ADMIN)
+        await install(c, admin, "microsoft365")
+        url = f"/api/v1/agents/{agent.id}/tool-access/microsoft365"
+        assert (await _listed(c, agent, admin))["needsConfirmation"] is False
+        await c.put(url, json={"mode": "user"}, headers=admin)
+        assert (await _listed(c, agent, admin))["needsConfirmation"] is False
+        await c.put(url, json={"mode": "fixed", "oauthConnectionId": str(annas)}, headers=admin)
+        assert (await _listed(c, agent, admin))["needsConfirmation"] is False
+
+
+async def test_the_default_shown_is_the_departments_app_only_setup_when_it_has_one(
+    app_session: AppSessionFactory,
+) -> None:
+    """The runtime keeps a department's app-only setup as the default (it can
+    reach every mailbox the app may): the screen must not say "the user's
+    context" then."""
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    app_only = await oauth_row(
+        app_session, tenant, owner=None, label="Acme app", grant_type="client_credentials"
+    )
+    async with api() as c:
+        await install(c, headers(tenant, "root@acme.test", "org_admin"), "microsoft365")
+        async with app_session(tenant) as db:
+            conn = (
+                await db.execute(
+                    select(m.McpConnection).where(m.McpConnection.name == "microsoft365")
+                )
+            ).scalar_one()
+            conn.department_id = agent.department_id
+            conn.config = {**conn.config, "oauth_connection_id": str(app_only)}
+        rows = (
+            await c.get(
+                f"/api/v1/agents/{agent.id}/tool-access",
+                headers=headers(tenant, "root@acme.test", "org_admin"),
+            )
+        ).json()
+    by_key = {row["toolKey"]: row for row in rows}
+    assert (by_key["microsoft365"]["mode"], by_key["microsoft365"]["defaultMode"]) == (
+        "default",
+        "organisation",
+    )

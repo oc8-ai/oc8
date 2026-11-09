@@ -240,3 +240,15 @@ export function SidePanelHost({ sessionId }: { sessionId: string | null }) {
     </aside>
   );
 }
+
+/** Cards editions show at the top of the home page, in extension order. */
+export function EditionHomeSections() {
+  const { homeSections } = useFrontendEdition();
+  return (
+    <>
+      {homeSections.map(({ id, component: Section }) => (
+        <Section key={id} />
+      ))}
+    </>
+  );
+}

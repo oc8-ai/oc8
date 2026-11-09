@@ -262,7 +262,7 @@ async def test_a_manager_cannot_steer_a_run_on_somebody_elses_behalf(
 ) -> None:
     tenant = uuid.uuid4()
     run_id = await _run(
-        app_session, tenant, operator=None, source="decision", context={"on_behalf_of": "alice"}
+        app_session, tenant, operator=None, source="decision", context={"for_person": "alice"}
     )
     app = create_app()
     async with LifespanManager(app), _client(app) as c:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncpg
 
+from oc8.credentials.errors import CredentialCheckFailed
+
 
 async def validate_pgvector(values: dict[str, str]) -> None:
     host = values.get("host") or ""
@@ -11,7 +13,7 @@ async def validate_pgvector(values: dict[str, str]) -> None:
     user = values.get("user") or ""
     password = values.get("password") or ""
     if not host or not database or not user:
-        raise ValueError("host, database, and user are required")
+        raise CredentialCheckFailed("host, database, and user are required", reason="invalid")
     port = int(values.get("port") or "5432")
     sslmode = values.get("sslmode") or "prefer"
     # asyncpg uses ssl=True/False; map common libpq modes coarsely.

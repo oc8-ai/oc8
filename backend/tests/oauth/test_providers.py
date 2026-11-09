@@ -15,13 +15,14 @@ def test_google_provider_is_registered() -> None:
     assert p.userinfo_url == "https://www.googleapis.com/oauth2/v3/userinfo"
 
 
-def test_google_requests_offline_access_and_forces_consent() -> None:
-    # Without access_type=offline AND prompt=consent, Google issues no refresh
-    # token on re-authorization and the connection silently becomes
-    # unrefreshable after the first hour.
+def test_google_requests_offline_access_and_granted_scopes() -> None:
+    # access_type=offline is load-bearing (no refresh token without it); the
+    # consent prompt is now decided per start (first connect only), and
+    # include_granted_scopes makes connecting extend the sign-in grant.
     p = get_provider("google")
     assert p.extra_authorize_params["access_type"] == "offline"
-    assert p.extra_authorize_params["prompt"] == "consent"
+    assert p.extra_authorize_params["include_granted_scopes"] == "true"
+    assert p.prompt_first == "consent"
 
 
 def test_google_default_scopes_include_drive_readonly_and_email() -> None:

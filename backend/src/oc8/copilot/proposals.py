@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8.audit import append_event
 from oc8.auth import Principal
+from oc8.authz.scope import scope_for_principal
 from oc8.copilot.capabilities import (
     InvalidOperation,
     apply_operation,
@@ -111,8 +112,18 @@ async def apply_proposal(db: AsyncSession, proposal_id: uuid.UUID, actor: Princi
         await db.flush()
         raise ProposalRejected()
     try:
+        actor_member, _scope = await scope_for_principal(db, actor, upsert=True)
+    except PermissionError:
+        actor_member = None
+    actor_member_id = actor_member.id if actor_member is not None else None
+    try:
         for operation in operations:
-            await apply_operation(db, tenant_id=actor.tenant_id, data=operation.configuration)
+            await apply_operation(
+                db,
+                tenant_id=actor.tenant_id,
+                data=operation.configuration,
+                actor_member_id=actor_member_id,
+            )
     except InvalidOperation as exc:
         proposal.status = "rejected"
         await db.flush()

@@ -910,3 +910,23 @@ async def test_catch_up_of_an_inactive_organisation_skips_and_catches_nothing_up
     async with app_session(tenant) as db:
         assert await catch_up(db, tenant_id=tenant, member_id=member_id) == 0
         assert (await db.execute(select(m.AgentRun))).scalars().all() == []
+
+
+async def test_a_followup_remembers_the_copilot_its_member_scheduled_it_for(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """Its runs act through the member's own accounts only while the Copilot
+    is unchanged (connections.access.schedule_confirmed)."""
+    from oc8.connections.access import schedule_confirmed, trigger_fingerprint
+
+    tenant, _member_id, _session_id, _r_id, t_id = await _world(app_session)
+    async with app_session(tenant) as db:
+        trigger = await db.get(m.Trigger, t_id)
+        assert trigger is not None
+        assert trigger.access_fingerprint is not None
+        assert trigger.access_fingerprint == await trigger_fingerprint(db, trigger)
+        assert await fire_followup(db, trigger, tenant_id=tenant) == "fired"
+    async with app_session(tenant) as db:
+        run = (await db.execute(select(m.AgentRun).where(m.AgentRun.source == "chat"))).scalar_one()
+        assert run.context["followup"]["trigger_id"] == str(t_id)
+        assert await schedule_confirmed(db, run)

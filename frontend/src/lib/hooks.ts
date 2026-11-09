@@ -1,6 +1,7 @@
 // TanStack Query hooks over the oc8 control-plane API. Return shapes match the
 // existing TypeScript interfaces so screens swap mock imports for these hooks.
 
+import type { ConnectionRequiredInfo } from "@/lib/connections";
 import {
   useInfiniteQuery,
   useMutation,
@@ -365,6 +366,9 @@ export interface RunDTO {
   // Why a failed run failed, in words an operator can act on (the runtime's
   // own sentence, or the error that stopped it). Null for every other state.
   failureReason?: string | null;
+  // A tool call needed an account that is not connected (connections): the
+  // chat and the run detail show a "connect" call to action for it.
+  connectionRequired?: ConnectionRequiredInfo | null;
   steps: number;
   toolCalls: Array<Record<string, unknown>>;
   taskId?: string | null;
@@ -2349,6 +2353,15 @@ export interface TriggerDTO {
   //: one-time-reveal: fetched fresh on every GET /agents/{id}/triggers, so
   //: an operator can always come back and re-copy it.
   webhookUrl: string | null;
+  //: The member who saved the schedule, and whether its runs act as that
+  //: person (their personal accounts) rather than as nobody.
+  createdByMemberId: string | null;
+  createdByName: string | null;
+  actsForCreator: boolean;
+  //: Set for its creator only: the agent changed since they last saved the
+  //: trigger, so its runs no longer use their own accounts until they save
+  //: it again.
+  needsConfirmation: boolean;
 }
 
 export function useAgentTriggers(agentId: string) {
@@ -2388,11 +2401,14 @@ export function useUpdateAgentTrigger() {
       agentId,
       triggerId,
       cronExpression,
+      actsForCreator,
     }: {
       agentId: string;
       triggerId: string;
-      cronExpression: string;
-    }) => api.patch<TriggerDTO>(`/triggers/${triggerId}`, { cronExpression }),
+      cronExpression?: string;
+      //: Only the trigger's creator may switch this on (webhook/event).
+      actsForCreator?: boolean;
+    }) => api.patch<TriggerDTO>(`/triggers/${triggerId}`, { cronExpression, actsForCreator }),
     onSuccess: (_d, v) => qc.invalidateQueries({ queryKey: ["agent-triggers", v.agentId] }),
   });
 }
@@ -2535,6 +2551,8 @@ export function useInstallPluginFromDisk() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["plugins", "available"] });
       qc.invalidateQueries({ queryKey: ["plugins"] });
+      // Installing makes an integration available on the Connections page.
+      qc.invalidateQueries({ queryKey: ["connections"] });
     },
   });
 }
@@ -2587,6 +2605,7 @@ export function useEnablePlugin() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["plugins", "available"] });
       qc.invalidateQueries({ queryKey: ["knowledge", "connectors"] });
+      qc.invalidateQueries({ queryKey: ["connections"] });
     },
   });
 }

@@ -50,7 +50,7 @@ def test_exported_tables_excludes_the_denylist() -> None:
     # random secret the member already holds, so it still validates
     # correctly after a restore into another instance; chat_project (a
     # member's named group of chat sessions) and run_input (a message queued
-    # for a running agent), added by this branch's migrations (0107-0109), stay INCLUDED --
+    # for a running agent), added by this branch's migrations (0111-0113), stay INCLUDED --
     # both are portable company data with no instance-bound key material.
     # The count is a tripwire for a new table, not a statement about this list:
     # it also covers the tables earlier migrations added since the last update.

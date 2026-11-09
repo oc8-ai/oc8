@@ -127,14 +127,14 @@ async def test_an_admin_cannot_steer_a_colleagues_messenger_chat_turn(
         assert await _may(db, run, bob, "org_admin") is False
 
 
-async def test_an_on_behalf_of_run_is_steered_by_its_person_not_a_manager(
+async def test_a_for_person_run_is_steered_by_its_person_not_a_manager(
     app_session: AppSessionFactory,
 ) -> None:
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent, alice, bob = await _world(db, tenant)
         run = await _person_run(
-            db, tenant, agent, source="decision", context={"on_behalf_of": "alice"}
+            db, tenant, agent, source="decision", context={"for_person": "alice"}
         )
         assert await _may(db, run, bob, "org_admin") is False
         assert await _may(db, run, alice, "org_admin") is True

@@ -16,6 +16,7 @@ import logging
 import uuid
 from typing import Any
 
+from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -471,10 +472,10 @@ async def bind_from_free_text(
             message=text.text,
             # Nobody acts for a messenger turn (its authority is the binding
             # row), but it is the chat owner's turn (Ruling 58): stamped as
-            # `on_behalf_of`, which grants nothing, so the owner alone may
+            # `for_person`, which grants nothing, so the owner alone may
             # steer and stop it -- here and in the web chat.
             originating_operator=None,
-            on_behalf_of=member.subject,
+            for_person=member.subject,
             chat_channel=channel,
             chat_channel_external_id=text.external_id,
         )
@@ -521,17 +522,16 @@ _NOT_TAKEN = "Das konnte ich nicht an die laufende Antwort geben. Versuch es noc
 
 
 def _input_refusal(exc: Any) -> str:
-    """What the sender is told when `add_run_input` refuses: in German, like
-    the rest of this door, and the secret gate's own sentence unchanged."""
+    """What the sender is told when `add_run_input` refuses (`InputRefused.code`):
+    in German, like the rest of this door -- except the secret gate's own
+    sentence, which is the same at every door."""
     from oc8.runtime.clarification import SECRET_REFUSAL
 
-    if exc.status_code == 429:
-        return _TOO_MANY_WAITING
-    if exc.message == SECRET_REFUSAL:
-        return SECRET_REFUSAL
-    if exc.status_code == 422 and "longer than" in exc.message:
-        return _TOO_LONG
-    return _NOT_TAKEN
+    return {
+        "too_many": _TOO_MANY_WAITING,
+        "too_long": _TOO_LONG,
+        "secret": SECRET_REFUSAL,
+    }.get(exc.code, _NOT_TAKEN)
 
 
 #: States a run is still writing its answer in. A run parked on a question
@@ -592,10 +592,19 @@ async def _steer_running_turn(
     try:
         await add_run_input(db, run=run, member=member, text=text.text)
     except InputRefused as exc:
-        if exc.status_code == 409:
+        if exc.code == "finished":
             # The run ended before the text got to it: it is a new turn after
-            # all. Nothing was written, and the transaction (and its tenant
-            # binding) is still open for `send_message`.
+            # all. Nothing was written, but this transaction holds the
+            # tenant's audit and the run's input locks (`lock_run_inputs`):
+            # end it before the new turn, so `send_message` starts from a
+            # fresh one, and bind the tenant again for it. Commit, not
+            # rollback: whatever came before (nothing but reads today) stays,
+            # and loaded rows stay usable.
+            await db.commit()
+            await db.execute(
+                sql_text("SELECT set_config('app.tenant_id', :tid, true)"),
+                {"tid": str(session.tenant_id)},
+            )
             return False
         # Refused before anything was written; said in German, and the
         # secret gate's own sentence as is, ungated, like the secret refusal

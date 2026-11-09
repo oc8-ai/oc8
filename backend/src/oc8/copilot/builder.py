@@ -533,6 +533,9 @@ async def apply_builder_proposal(
         await check_selections(db, tenant_id=proposal.tenant_id, department=department, steps=steps)
     except BuilderInvalid as refused:
         raise await _remember(db, proposal, refused) from None
+    # The applier owns any trigger a step creates, as on a plain Copilot
+    # proposal (`apply_proposal` passes its actor the same way).
+    applied_by_member = await _member_id(db, tenant_id=proposal.tenant_id, subject=applied_by)
     refs: dict[str, uuid.UUID] = {}
     failed_at = 0
     try:
@@ -540,7 +543,12 @@ async def apply_builder_proposal(
             for index, step in enumerate(steps):
                 failed_at = index
                 data, ref = resolve_step(builder_operation_data(step), refs)
-                created = await apply_operation(db, tenant_id=proposal.tenant_id, data=data)
+                created = await apply_operation(
+                    db,
+                    tenant_id=proposal.tenant_id,
+                    data=data,
+                    actor_member_id=applied_by_member,
+                )
                 if ref is not None:
                     if created is None:
                         raise InvalidOperation()
@@ -568,7 +576,6 @@ async def apply_builder_proposal(
     requested_by_member = await _member_id(
         db, tenant_id=proposal.tenant_id, subject=proposal.created_by
     )
-    applied_by_member = await _member_id(db, tenant_id=proposal.tenant_id, subject=applied_by)
     await append_event(
         db,
         tenant_id=proposal.tenant_id,

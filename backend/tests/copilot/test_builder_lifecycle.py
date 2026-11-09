@@ -565,10 +565,10 @@ async def test_a_database_refusal_in_a_step_is_a_failed_step(
 ) -> None:
     real = apply_operation
 
-    async def refusing(db: Any, *, tenant_id: uuid.UUID, data: dict[str, Any]) -> Any:
+    async def refusing(db: Any, *, tenant_id: uuid.UUID, data: dict[str, Any], **kw: Any) -> Any:
         if data["type"] == "agent.skill.assign":
             await db.execute(text("SELECT 1 / 0"))
-        return await real(db, tenant_id=tenant_id, data=data)
+        return await real(db, tenant_id=tenant_id, data=data, **kw)
 
     monkeypatch.setattr("oc8.copilot.builder.apply_operation", refusing)
     tenant = uuid.uuid4()

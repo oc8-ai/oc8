@@ -1,47 +1,24 @@
 from __future__ import annotations
 
-import ipaddress
-import socket
-from urllib.parse import urlparse
-
 import httpx
 
 from oc8.knowledge.connectors.base import ConnectorError
+from oc8.net import outbound
+from oc8.net.outbound import OutboundBlocked, PinnedTransport, guard_outbound_url, is_blocked_ip
 
-_ALLOWED_SCHEMES = {"http", "https"}
-
-
-def _is_blocked_ip(ip: str) -> bool:
-    try:
-        addr = ipaddress.ip_address(ip)
-    except ValueError:
-        return True
-    return (
-        addr.is_loopback or addr.is_private or addr.is_link_local
-        or addr.is_reserved or addr.is_multicast or addr.is_unspecified
-        or not addr.is_global
-    )
+_is_blocked_ip = is_blocked_ip
 
 
 def _resolve_ips(host: str) -> list[str]:
-    infos = socket.getaddrinfo(host, None)
-    return [str(info[4][0]) for info in infos]
+    return outbound.resolve_ips(host)
 
 
-def _guard(url: str) -> None:
-    parsed = urlparse(url)
-    if parsed.scheme not in _ALLOWED_SCHEMES:
-        raise ConnectorError(f"scheme not allowed: {parsed.scheme!r}")
-    host = parsed.hostname
-    if not host:
-        raise ConnectorError("missing host")
+def _guard(url: str) -> str | None:
+    """Refuse a blocked target; return the address that was checked."""
     try:
-        ips = _resolve_ips(host)
-    except OSError as exc:
-        raise ConnectorError(f"cannot resolve {host!r}: {exc}") from exc
-    for ip in ips:
-        if _is_blocked_ip(ip):
-            raise ConnectorError(f"blocked host {host!r} -> {ip}")
+        return guard_outbound_url(url, resolver=_resolve_ips)
+    except OutboundBlocked as exc:
+        raise ConnectorError(str(exc)) from exc
 
 
 async def safe_fetch_bytes(
@@ -60,8 +37,12 @@ async def safe_fetch_bytes(
     """
     current = url
     for _ in range(max_redirects + 1):
-        _guard(current)
-        async with httpx.AsyncClient(follow_redirects=False, timeout=timeout) as client:
+        ip = _guard(current)
+        async with httpx.AsyncClient(
+            follow_redirects=False,
+            timeout=timeout,
+            transport=PinnedTransport(ip) if ip else None,
+        ) as client:
             async with client.stream("GET", current) as resp:
                 if resp.is_redirect and resp.has_redirect_location:
                     current = (
@@ -92,8 +73,12 @@ async def safe_fetch(
 ) -> tuple[str, str]:
     current = url
     for _ in range(max_redirects + 1):
-        _guard(current)
-        async with httpx.AsyncClient(follow_redirects=False, timeout=timeout) as client:
+        ip = _guard(current)
+        async with httpx.AsyncClient(
+            follow_redirects=False,
+            timeout=timeout,
+            transport=PinnedTransport(ip) if ip else None,
+        ) as client:
             async with client.stream("GET", current) as resp:
                 if resp.is_redirect and resp.has_redirect_location:
                     current = (

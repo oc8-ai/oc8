@@ -48,7 +48,6 @@ from oc8.agent.control_tools import (
 )
 from oc8.agent.engine import _authorize, _call_sig
 from oc8.agent.mcp_client import resolve_auth_header
-from oc8.agent.mcp_env import has_oauth_ref, resolve_mcp_env
 from oc8.agent.mcp_requirements import wrap_with_requirements
 from oc8.agent.outward import (
     REFUSAL,
@@ -84,6 +83,8 @@ from oc8.authz.pdp import (
 )
 from oc8.capas.discovery import resolve_tool_pack_connection
 from oc8.chat.modes import mode_from_context, mode_refusal
+from oc8.connections.access import ConnectionRequired
+from oc8.connections.runtime_env import McpLaunchEnv, integration_connections, run_mcp_env
 from oc8.copilot.door import chat_door
 from oc8.edition.tools import EditionOffer, edition_offer
 from oc8.memory.policy import authorize_memory_write
@@ -189,7 +190,7 @@ async def _connections(
                 continue
             pinned_found.append(pinned)
             pinned_seen.add(conn_id)
-        return pinned_found
+        return await _with_integrations(db, run, dept, pinned_found)
     mcp_id = run.context.get("mcp_connection_id")
     if mcp_id:
         pinned = await db.get(m.McpConnection, uuid.UUID(str(mcp_id)))
@@ -224,7 +225,23 @@ async def _connections(
             )
             continue
         seen[conn.name] = conn
-    return list(seen.values())
+    return await _with_integrations(db, run, dept, list(seen.values()))
+
+
+async def _with_integrations(
+    db: DbSession, run: m.AgentRun, dept: m.Department | None, found: list[m.McpConnection]
+) -> list[m.McpConnection]:
+    """`found` plus the unbound connection of each enabled tool that needs no
+    department setup (an OAuth integration in the user's context, a tool with
+    an access row, a single organisation login) -- connections design."""
+    agent = await db.get(m.Agent, run.agent_id)
+    if agent is None or dept is None:
+        return found
+    pinned = await resolve_version(db, run, agent)
+    policies = effective_tool_policies(dept.frame or {}, pinned["narrowing"] or {})
+    return found + await integration_connections(
+        db, agent=agent, policies=policies, have={c.name for c in found}
+    )
 
 
 async def _remember_routes(db: DbSession, run: m.AgentRun, routes: dict[str, Route]) -> None:
@@ -317,8 +334,16 @@ def _manifest_guardrail_attributes(conn: m.McpConnection | None) -> list[dict[st
     ]
 
 
-async def _env(conn: m.McpConnection, db: DbSession, tenant_id: uuid.UUID) -> dict[str, str]:
-    return await resolve_mcp_env(db, tenant_id=tenant_id, cfg=_cfg(conn), connection_name=conn.name)
+async def _env(
+    conn: m.McpConnection,
+    db: DbSession,
+    run: m.AgentRun,
+    *,
+    tool: str | None = None,
+    listing: bool = False,
+) -> McpLaunchEnv:
+    # The run decides whose account the bridge gets (connections/access.py).
+    return await run_mcp_env(db, run=run, conn=conn, tool=tool, listing=listing)
 
 
 # ------------------------------------------------------------------ tools/list
@@ -381,7 +406,8 @@ async def _list_tools(
             # an Azure blip or a revoked consent raises), and outside the try
             # that failure would take the whole list down -- which is exactly the
             # incident the except below was written for.
-            env = await _env(conn, db, run.tenant_id)
+            launch = await _env(conn, db, run, listing=True)
+            env = launch.env
             headers = resolve_auth_header(cfg, env)
             # Wrapped HERE, not in mcp_pool: the pool has no cfg, and this is
             # the launch path every packaged/containerized runtime uses. Without
@@ -400,7 +426,7 @@ async def _list_tools(
                 server_url=conn.server_url,
                 headers=headers,
                 http_tools=list(cfg.get("http_tools", [])),
-                reusable=not has_oauth_ref(cfg),
+                reusable=launch.reusable,
             )
         except Exception:
             # One unreachable system must not take the whole list with it. It did:
@@ -1159,7 +1185,12 @@ async def _call_tool(
         # of this, and a failure there belongs to the model as a tool error --
         # not as a 500 out of the whole tools/call. Done before the live-log
         # line so that line can carry the record's own address.
-        env = await _env(conn, db, run.tenant_id)
+        launch = await _env(conn, db, run, tool=tc.name)
+        env = launch.env
+    except ConnectionRequired as exc:
+        # Already recorded on the run for the "connect" call to action; the
+        # model gets the reason verbatim (it starts `connection_required:`).
+        return _tool_result(str(exc), is_error=True)
     except Exception as exc:  # surface to the model, not as a broken server
         return _tool_result(f"ERROR: {exc}", is_error=True)
     record_url = record_url_from_env(
@@ -1193,7 +1224,7 @@ async def _call_tool(
             server_url=conn.server_url,
             headers=headers,
             http_tools=list(cfg.get("http_tools", [])),
-            reusable=not has_oauth_ref(cfg),
+            reusable=launch.reusable,
         )
     except Exception as exc:  # surface to the model, not as a broken server
         return _tool_result(f"ERROR: {exc}", is_error=True)

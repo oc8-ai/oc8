@@ -307,7 +307,7 @@ async def test_a_messenger_turn_neither_inherits_nor_sets_the_sticky_mode(
             tenant_id=tenant,
             message="mornings, please",
             originating_operator=None,
-            on_behalf_of="op",
+            for_person="op",
             chat_channel="telegram",
             chat_channel_external_id="42",
         )
@@ -322,7 +322,7 @@ async def test_a_messenger_turn_neither_inherits_nor_sets_the_sticky_mode(
             tenant_id=tenant,
             message="/agent build me an invoice checker",
             originating_operator=None,
-            on_behalf_of="op",
+            for_person="op",
             chat_channel="telegram",
             chat_channel_external_id="42",
         )
