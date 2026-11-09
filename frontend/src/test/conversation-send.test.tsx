@@ -362,6 +362,25 @@ describe("chips and answer actions", () => {
     expect(post).not.toHaveBeenCalled();
   });
 
+  it("offers no chips under a failed answer (E2E F)", () => {
+    budget.softExceeded = true;
+    const render_ = (state: string) => {
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      // The answer's run, as the turn has already loaded it.
+      qc.setQueryData(["run", "run-a1"], { id: "run-a1", state, toolCalls: [], steps: 0 });
+      return render(
+        <QueryClientProvider client={qc}>
+          <Conversation agentId="a" sessionId="s" onSessionChange={vi.fn()} variant="full" />
+        </QueryClientProvider>,
+      );
+    };
+    const done = render_("done");
+    expect(screen.getByRole("button", { name: "Budget is running low" })).toBeInTheDocument();
+    done.unmount();
+    render_("failed");
+    expect(screen.queryByRole("button", { name: "Budget is running low" })).toBeNull();
+  });
+
   it("shows a refused regenerate inline", async () => {
     vi.spyOn(api, "post").mockRejectedValue(new ApiError("busy", 409));
     vi.spyOn(api, "get").mockResolvedValue(undefined);

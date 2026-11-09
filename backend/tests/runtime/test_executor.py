@@ -1093,6 +1093,10 @@ async def test_a_crashed_chat_run_still_records_a_reply_and_tells_telegram(
         )
         assert len(messages) == 1, "a crashed chat run left the transcript empty"
         assert "the model provider hung up" not in messages[0].content
+        # The web answer links its run (E2E F); a channel gets plain text.
+        assert f"(oc8://run/{run_id})" in messages[0].content
+        assert "--" not in messages[0].content
+        assert "oc8://" not in fake.said[0][1] and "--" not in fake.said[0][1]
         run = await s.get(m.AgentRun, run_id)
         assert run is not None
         assert "the model provider hung up" in run.context["error"]

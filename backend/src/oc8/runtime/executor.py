@@ -91,7 +91,14 @@ _CHAT_WAITING_FOR_APPROVAL = "This needs an approval before I can continue -- se
 #: `repr(exc)`: the exception text is already on the run (`context["error"]`)
 #: where an operator can read it, and a chat transcript is the one place it
 #: would be shown to whoever happens to be in the conversation.
-_CHAT_RUN_FAILED = "That didn't work out -- see the run in oc8 for what happened."
+_CHAT_RUN_FAILED = "That didn't work out \u2013 see the run in oc8 for what happened."
+
+
+def _chat_run_failed_answer(run_id: uuid.UUID) -> str:
+    """The same sentence for the chat transcript, with the run as an object
+    link (`oc8://run/<id>`) the web chat opens in place. Channels get the
+    plain `_CHAT_RUN_FAILED`: they cannot open an oc8 link."""
+    return f"That didn't work out \u2013 [see the run](oc8://run/{run_id}) for what happened."
 
 
 async def _current_chat_sender(db: AsyncSession, run: m.AgentRun) -> tuple[str, str] | None:
@@ -1068,7 +1075,9 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 if run.source == "chat":
                     from oc8.chat.service import record_assistant_reply
 
-                    await record_assistant_reply(db, run=run, output=_CHAT_RUN_FAILED)
+                    await record_assistant_reply(
+                        db, run=run, output=_chat_run_failed_answer(run.id)
+                    )
                     failed_sender = await _current_chat_sender(db, run)
                     if failed_sender is not None:
                         failed_channel, failed_external_id = failed_sender

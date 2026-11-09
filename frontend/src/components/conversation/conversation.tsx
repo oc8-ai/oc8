@@ -18,6 +18,7 @@ import {
   useSendRunInput,
   useSetPins,
   useStopRun,
+  useTurnRun,
   type ChatSessionDetailDTO,
   type ContextItem,
   type LiveRunDTO,
@@ -374,7 +375,10 @@ function ConversationBody(props: ConversationProps) {
     lastTurn?.kind === "assistant" && !lastTurn.liveRunId
       ? (lastTurn.variants[lastTurn.variants.length - 1] ?? null)
       : null;
-  const offerChips = !!latestAnswer && !busy && !pending && !readOnly;
+  // A failed answer offers no next steps: there is nothing to build on.
+  const { data: latestRun } = useTurnRun(props.sessionId, latestAnswer?.runId ?? null);
+  const offerChips =
+    !!latestAnswer && !busy && !pending && !readOnly && latestRun?.state !== "failed";
   const lastMessage = conv.messages[conv.messages.length - 1];
   const suggestions: ReplyChip[] = !offerChips
     ? []
