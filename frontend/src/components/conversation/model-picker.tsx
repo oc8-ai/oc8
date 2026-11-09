@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Check, ChevronDown } from "lucide-react";
 
+import { Skeleton } from "@/components/ui/skeleton";
 import { ApiError } from "@/lib/api";
 import { useSessionModels, useSetSessionModel } from "@/lib/conversation-api";
 import { useT } from "@/lib/i18n";
@@ -15,10 +16,18 @@ export function ModelPicker({
   sessionId,
   value,
   disabled = false,
+  ensureSession,
+  onPick,
 }: {
   sessionId: string | null;
   value: string | null;
   disabled?: boolean;
+  /** A new chat lists its options once it exists: opening the picker
+   *  creates it (as a file drop does). */
+  ensureSession?: () => Promise<string>;
+  /** Given, a pick is the caller's to hold (Ruling 51: a new chat writes it
+   *  before its first message); left out, the pick is written at once. */
+  onPick?: (modelConfigId: string | null) => void;
 }) {
   const t = useT();
   const [open, setOpen] = useState(false);
@@ -36,7 +45,16 @@ export function ModelPicker({
     setError(null);
   }
   const root = useRef<HTMLDivElement>(null);
-  const { data: options = [] } = useSessionModels(sessionId, true);
+  // The chat this picker created to list its options, until the caller
+  // passes it back as `sessionId`.
+  const [created, setCreated] = useState<string | null>(null);
+  const [createdFor, setCreatedFor] = useState(sessionId);
+  if (createdFor !== sessionId) {
+    setCreatedFor(sessionId);
+    setCreated(null);
+  }
+  const listFrom = sessionId ?? created;
+  const { data: options = [], isLoading: loadingOptions } = useSessionModels(listFrom, true);
   const setModel = useSetSessionModel(sessionId);
   const trigger = useRef<HTMLButtonElement>(null);
   const items = useRef<Array<HTMLButtonElement | null>>([]);
@@ -50,14 +68,16 @@ export function ModelPicker({
   // "Auto" names the model it resolves to, so the effective model is visible.
   const fallback = options.find((o) => o.isDefault);
 
+  const hasOptions = options.length > 0;
   useEffect(() => {
-    if (open) {
+    if (open && hasOptions) {
       setActive(selectedIndex);
       items.current[selectedIndex]?.focus();
     }
-    // Only on opening: moving with the arrows must not snap back.
+    // Only on opening (or once a new chat's options arrive): moving with the
+    // arrows must not snap back.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, hasOptions]);
 
   useEffect(() => {
     request.current += 1;
@@ -77,12 +97,30 @@ export function ModelPicker({
     trigger.current?.focus();
   }
 
+  function toggle() {
+    if (!open && !listFrom && ensureSession) {
+      ensureSession().then(setCreated, () =>
+        setError(
+          t(
+            "The models couldn't be loaded. Try again.",
+            "Die Modelle konnten nicht geladen werden. Versuch es noch einmal.",
+          ),
+        ),
+      );
+    }
+    setOpen((v) => !v);
+  }
+
   function pick(index: number) {
     const option = options[index];
     if (!option) return;
     close();
     if (option.id === shown) return;
     setError(null);
+    if (onPick) {
+      onPick(option.id);
+      return;
+    }
     setPending(option.id);
     const mine = ++request.current;
     setModel.mutate(option.id, {
@@ -134,8 +172,8 @@ export function ModelPicker({
       <button
         ref={trigger}
         type="button"
-        disabled={disabled || !sessionId}
-        onClick={() => setOpen((v) => !v)}
+        disabled={disabled || (!sessionId && !ensureSession)}
+        onClick={toggle}
         aria-haspopup="true"
         aria-expanded={open}
         aria-label={t(`Model: ${effective}`, `Modell: ${effective}`)}
@@ -155,6 +193,12 @@ export function ModelPicker({
           }}
           className="absolute bottom-full left-0 z-50 mb-1 w-64 rounded-lg border border-border bg-popover p-1 shadow-lg"
         >
+          {options.length === 0 && (loadingOptions || !listFrom) && (
+            <div className="space-y-1 p-1" aria-busy="true">
+              <Skeleton className="h-9 w-full rounded-md" />
+              <Skeleton className="h-9 w-full rounded-md" />
+            </div>
+          )}
           {options.map((o, i) => (
             <button
               key={o.id ?? "auto"}

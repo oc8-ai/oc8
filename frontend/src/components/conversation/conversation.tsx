@@ -3,7 +3,7 @@
 // between "full" (Copilot page, Live tab) and "compact" (dock, My Work).
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, BookOpen, Bot, Database, X } from "lucide-react";
+import { ArrowDown, BookOpen, Bot, CornerDownRight, Database, X } from "lucide-react";
 
 import type { SigilItem } from "@/components/composer-sigils";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -14,15 +14,20 @@ import {
   pinErrorText,
   useAnswerQuestion,
   useRegenerate,
+  useRunSteering,
+  useSendRunInput,
   useSetPins,
+  useStopRun,
   type ChatSessionDetailDTO,
   type ContextItem,
   type LiveRunDTO,
 } from "@/lib/conversation-api";
+import { detectCommand, LOCAL_COMMANDS } from "@/lib/chat-commands";
 import { nextStepChips } from "@/lib/chat-suggestions";
 import { useCan } from "@/lib/governance-hooks";
 import { mayActOn, useApprovals, useAuth, useBudgetStatus, type Approval } from "@/lib/hooks";
 import {
+  appendMessage,
   chatKeys,
   useCreateChatSession,
   useSendChatMessage,
@@ -42,6 +47,7 @@ import { DecisionCard } from "./decision-card";
 import { PinnedBar } from "./pinned-bar";
 import { PromptStarters } from "./prompt-starters";
 import { QuestionCard } from "./question-card";
+import { RunInputs, runInputError } from "./run-steering";
 import { SuggestionChips, type ReplyChip } from "./suggestion-chips";
 import type { AssistantTurnModel, ConversationVariant, TurnModel } from "./types";
 import { useTimelineRuns } from "./timeline-runs";
@@ -91,6 +97,48 @@ function timeOf(at: string): number {
   return Number.isNaN(ms) ? Number.POSITIVE_INFINITY : ms;
 }
 
+type Translate = (en: string, de?: string) => string;
+
+/** A message that did not go out: what to say, and what "Send again" resends
+ *  (none when resending cannot help). */
+interface SendFailure {
+  text: string;
+  retry?: { submit: ComposerSubmit; fromComposer: boolean };
+}
+
+/** Why a message did not go out, by the server's answer (Ruling 53). */
+function sendErrorText(error: unknown, t: Translate): string {
+  const status = error instanceof ApiError ? error.status : null;
+  if (status === 403) {
+    return t("You may not write to this agent.", "Du darfst diesem Agenten nicht schreiben.");
+  }
+  if (status === 404) {
+    return t(
+      "This chat no longer exists. Start a new one.",
+      "Diesen Chat gibt es nicht mehr. Starte einen neuen.",
+    );
+  }
+  // The server's own sentence; a validation list is no sentence.
+  if (
+    status === 422 &&
+    error instanceof ApiError &&
+    error.message &&
+    !/^[[{]/.test(error.message)
+  ) {
+    return error.message;
+  }
+  if (status === null || status >= 500) {
+    return t(
+      "The agent isn't reachable right now. Your message wasn't sent – try again in a moment.",
+      "Der Agent ist gerade nicht erreichbar. Deine Nachricht wurde nicht gesendet – versuch es gleich noch einmal.",
+    );
+  }
+  return t(
+    "Your message was not sent. Try again.",
+    "Deine Nachricht wurde nicht gesendet. Versuch es noch einmal.",
+  );
+}
+
 function localDay(at: string): string {
   const d = new Date(at);
   return Number.isNaN(d.getTime()) ? "" : d.toDateString();
@@ -99,7 +147,9 @@ function localDay(at: string): string {
 export interface ConversationProps {
   agentId: string;
   sessionId: string | null;
-  onSessionChange: (sessionId: string) => void;
+  /** A new chat was created (its id), or the open one is gone (null: start
+   *  a new one). */
+  onSessionChange: (sessionId: string | null) => void;
   variant: ConversationVariant;
   /** Shown while the chat has no turns. A function receives `send`, so
    *  anything in it can go out as the first message. */
@@ -116,6 +166,11 @@ export interface ConversationProps {
   composerTarget?: ReactNode;
   /** Beside Send (the Live tab's Stop for a timeline run). */
   composerTrailing?: ReactNode;
+  /** The composer sends to a running run while the chat is busy (the Live
+   *  tab's target): Send stays next to Stop. */
+  sendWhileBusy?: boolean;
+  /** The run `onSendOverride` writes to; its inputs show under its turn. */
+  steeringRunId?: string | null;
   onSendOverride?: (submit: ComposerSubmit) => boolean;
   onStopOverride?: () => void;
   /** Focus the composer on mount (the dock, when it opens). */
@@ -185,7 +240,14 @@ function ConversationBody(props: ConversationProps) {
   const [ownDraft, setOwnDraft] = useState("");
   const draft = props.draft ?? ownDraft;
   const setDraft = props.onDraftChange ?? setOwnDraft;
-  const [sendError, setSendError] = useState<string | null>(null);
+  const [sendError, setSendError] = useState<SendFailure | null>(null);
+  // An error belongs to the chat it happened in; a chat that vanished keeps
+  // its notice on the new chat that replaces it.
+  const keepError = useRef(false);
+  useEffect(() => {
+    if (keepError.current) keepError.current = false;
+    else setSendError(null);
+  }, [props.sessionId]);
   const [showBudget, setShowBudget] = useState(false);
   const mayViewBudget = useCan()("budget:view");
   // Also fetched once a conversation is under way, so the "budget is nearly
@@ -196,12 +258,13 @@ function ConversationBody(props: ConversationProps) {
   const createSession = useCreateChatSession();
   const sendMessage = useSendChatMessage(props.sessionId ?? "");
   const regenerate = useRegenerate(props.sessionId);
+  const stopRun = useStopRun();
   // Any new row re-checks the bottom; an older page landing on top moves
   // only a reader already there (the anchoring below keeps everyone else).
   const newest = rows[rows.length - 1];
   const newestKey = newest ? (newest.kind === "turn" ? newest.turn.key : newest.extra.run.id) : "";
   const { ref, contentRef, atBottom, scrollToBottom } = useScrollAnchor(
-    `${newestKey}:${rows.length}:${conv.liveRunIds.join()}:${sendError ?? ""}`,
+    `${newestKey}:${rows.length}:${conv.liveRunIds.join()}:${sendError?.text ?? ""}`,
     props.sessionId,
   );
   // Older items land above the reader: keep what they were looking at where
@@ -250,6 +313,31 @@ function ConversationBody(props: ConversationProps) {
     if (pending) setQuestionNotice(null);
   }, [pending]);
   const busy = conv.liveRunIds.some((id) => id !== pending?.runId);
+  // Ruling 52: while the reader's own answer is being written, what they
+  // type goes to that run (POST /runs/{id}/inputs). A surface that routes
+  // the composer itself (the Live tab) owns steering there.
+  const replyRunId =
+    !readOnly && !props.onSendOverride
+      ? ([...conv.liveRunIds].reverse().find((id) => id !== pending?.runId) ?? null)
+      : null;
+  const { data: replySteering } = useRunSteering(replyRunId);
+  const sendReplyInput = useSendRunInput(replyRunId);
+  const steerReply =
+    !!replyRunId && !!replySteering?.mayWrite && replySteering.acceptsInputs && busy;
+  // Ruling 51: a new chat's model is chosen before its first message. The
+  // pick is held here and written right after the chat exists, before the
+  // first message goes out (one after the other, never racing).
+  const [heldModel, setHeldModel] = useState<string | null | undefined>(undefined);
+  const heldModelRef = useRef(heldModel);
+  heldModelRef.current = heldModel;
+  const [modelScope, setModelScope] = useState(props.sessionId);
+  if (modelScope !== props.sessionId) {
+    setModelScope(props.sessionId);
+    // The new chat being created under the pick keeps it.
+    if (modelScope !== null) setHeldModel(undefined);
+  }
+  const firstMessage =
+    !readOnly && (!props.sessionId || (!conv.isLoading && conv.turns.length === 0 && !busy));
   const lastUser = [...conv.turns].reverse().find((turn) => turn.kind === "user");
 
   // request_decision approvals this chat's run raised (spec §4.2). Pending
@@ -432,6 +520,22 @@ function ConversationBody(props: ConversationProps) {
     return creating.current;
   }
 
+  /** Ruling 51: write the model held for a new chat, before its first
+   *  message. A refused model is dropped, so the next send goes with Auto. */
+  async function applyHeldModel(sessionId: string) {
+    const held = heldModelRef.current;
+    if (held === undefined) return;
+    heldModelRef.current = undefined;
+    setHeldModel(undefined);
+    const session = await api.put<ChatSessionDetailDTO>(
+      `/chat/sessions/${encodeURIComponent(sessionId)}/model`,
+      { modelConfigId: held },
+    );
+    qc.setQueryData<ChatSessionDetailDTO>(conversationKeys.session(sessionId), (prev) =>
+      prev ? { ...prev, modelOverrideId: session.modelOverrideId } : prev,
+    );
+  }
+
   /** `fromComposer` false: a prompt starter, which leaves the draft alone. */
   async function onSend(submit: ComposerSubmit, fromComposer = true) {
     if (props.onSendOverride?.(submit)) {
@@ -444,23 +548,39 @@ function ConversationBody(props: ConversationProps) {
       await answerFreely(pending.clarificationId, submit.text, fromComposer);
       return;
     }
+    if (steerReply && replyRunId) {
+      try {
+        await sendReplyInput.mutateAsync(submit.text);
+      } catch (error) {
+        if (fromComposer) setDraft(submit.text);
+        setSendError({ text: runInputError(error, t) });
+      }
+      return;
+    }
     const body = {
       message: submit.text,
       attachmentIds: submit.attachmentIds,
       contextRefs: submit.contextRefs.map(({ kind, id }) => ({ kind, id })),
     };
+    let modelRefused = false;
     try {
       const sessionId = await ensureSession();
+      await applyHeldModel(sessionId).catch((error: unknown) => {
+        modelRefused = true;
+        throw error;
+      });
       let message: ChatMessageDTO;
       if (sessionId === props.sessionId) {
         message = await sendMessage.mutateAsync(body);
       } else {
         // `sendMessage` is bound to the id this render had (none yet).
-        message = await api.post<ChatMessageDTO>(`/chat/sessions/${sessionId}/messages`, body);
-        qc.setQueryData<ChatMessageDTO[]>(chatKeys.messages(sessionId), (prev) => [
-          ...(prev ?? []),
-          message,
-        ]);
+        message = await api.post<ChatMessageDTO>(
+          `/chat/sessions/${encodeURIComponent(sessionId)}/messages`,
+          body,
+        );
+        qc.setQueryData<ChatMessageDTO[]>(chatKeys.messages(sessionId), (prev) =>
+          appendMessage(prev, message),
+        );
       }
       if (message.runId) {
         const run = { runId: message.runId, replyToId: message.id, state: "queued" };
@@ -470,15 +590,50 @@ function ConversationBody(props: ConversationProps) {
             : prev,
         );
       }
-    } catch {
+    } catch (error) {
       if (fromComposer) setDraft(submit.text);
-      setSendError(
-        t(
-          "Your message was not sent. Try again.",
-          "Deine Nachricht wurde nicht gesendet. Versuch es noch einmal.",
-        ),
-      );
+      // What was picked for this message stays picked for the next try.
+      if (fromComposer) setRefs(submit.contextRefs);
+      const status = error instanceof ApiError ? error.status : null;
+      if (modelRefused) {
+        setSendError({
+          text: t(
+            "The model you picked isn't available for this chat. Your message wasn't sent – pick another model or send with Auto.",
+            "Das gewählte Modell ist für diesen Chat nicht freigegeben. Deine Nachricht wurde nicht gesendet – wähl ein anderes Modell oder sende mit Auto.",
+          ),
+          retry: { submit, fromComposer },
+        });
+        return;
+      }
+      const gone = status === 404 && !!props.sessionId;
+      setSendError({
+        text: sendErrorText(error, t),
+        // Resending cannot help a refusal or a rejected message. A chat that
+        // is gone loses its uploads with it.
+        retry:
+          status === 403 || status === 422
+            ? undefined
+            : { submit: gone ? { ...submit, attachmentIds: [] } : submit, fromComposer },
+      });
+      if (gone) {
+        keepError.current = true;
+        props.onSessionChange(null);
+      }
     }
+  }
+
+  /** "Send again": the restored draft (or the starter that failed) once more. */
+  function resend(failure: SendFailure) {
+    if (!failure.retry) return;
+    const { submit, fromComposer } = failure.retry;
+    if (!fromComposer) {
+      void onSend(submit, false);
+      return;
+    }
+    const text = draft.trim();
+    if (!text) return;
+    setRefs([]);
+    void onSend({ text, attachmentIds: submit.attachmentIds, contextRefs: refs });
   }
 
   /** While a question is open, what the composer sends is its answer. */
@@ -495,14 +650,15 @@ function ConversationBody(props: ConversationProps) {
       }
       if (status === 404) return;
       if (fromComposer) setDraft(text);
-      setSendError(
-        status === 422 && error instanceof ApiError && error.message
-          ? error.message
-          : t(
-              "Your answer was not sent. Try again.",
-              "Deine Antwort wurde nicht gesendet. Versuch es noch einmal.",
-            ),
-      );
+      setSendError({
+        text:
+          status === 422 && error instanceof ApiError && error.message
+            ? error.message
+            : t(
+                "Your answer was not sent. Try again.",
+                "Deine Antwort wurde nicht gesendet. Versuch es noch einmal.",
+              ),
+      });
     }
   }
 
@@ -512,8 +668,43 @@ function ConversationBody(props: ConversationProps) {
       return;
     }
     for (const runId of conv.liveRunIds) {
-      await api.post(`/runs/${runId}/stop`).catch(() => undefined);
+      try {
+        await stopRun.mutateAsync(runId);
+      } catch (error) {
+        // 409: it had already finished, which is what Stop wanted.
+        if (error instanceof ApiError && error.status === 409) continue;
+        setSendError({
+          text: t(
+            "The answer was not stopped. Try again.",
+            "Die Antwort wurde nicht gestoppt. Versuch es noch einmal.",
+          ),
+        });
+      }
     }
+  }
+
+  function onRegenerate(replyToId: string) {
+    setSendError(null);
+    regenerate.mutate(replyToId, {
+      onError: (error) =>
+        setSendError({
+          text:
+            error instanceof ApiError && error.status === 409
+              ? t(
+                  "An answer is still being written. Try again once it's done.",
+                  "Es wird noch eine Antwort geschrieben. Versuch es noch einmal, wenn sie fertig ist.",
+                )
+              : t(
+                  "No new answer was started. Try again.",
+                  "Es wurde keine neue Antwort gestartet. Versuch es noch einmal.",
+                ),
+        }),
+    });
+  }
+
+  /** A local command (/budget) is answered here, never sent as a message. */
+  function onLocalCommand(key: string) {
+    if (key === "budget") setShowBudget(true);
   }
 
   function renderTurn(turn: TurnModel) {
@@ -529,7 +720,7 @@ function ConversationBody(props: ConversationProps) {
         sessionId={props.sessionId}
         turn={turn}
         readOnly={readOnly}
-        onRegenerate={(replyToId) => regenerate.mutate(replyToId)}
+        onRegenerate={busy ? undefined : onRegenerate}
         {...assistantExtras(turn)}
       />
     );
@@ -558,6 +749,17 @@ function ConversationBody(props: ConversationProps) {
    *  on the newest answer. */
   function assistantExtras(turn: AssistantTurnModel): { cards?: ReactNode; footer?: ReactNode } {
     const own = props.renderAssistantExtras?.(turn) ?? {};
+    // What the reader wrote to this answer's run while it ran. Only the run
+    // being steered is fetched; an earlier one keeps what was loaded.
+    const turnRunId = turn.liveRunId ?? turn.variants[turn.variants.length - 1]?.runId ?? null;
+    const steered = props.onSendOverride ? (props.steeringRunId ?? null) : replyRunId;
+    const inputs = turnRunId ? (
+      <RunInputs
+        runId={turnRunId}
+        runState={turn.liveRunId ? "running" : "done"}
+        enabled={turnRunId === steered}
+      />
+    ) : null;
     const decisions = turn === lastAssistant ? decisionCards() : null;
     const chips =
       turn === lastTurn && suggestions.length > 0 ? (
@@ -576,8 +778,9 @@ function ConversationBody(props: ConversationProps) {
           </>
         ) : undefined,
       footer:
-        own.footer || chips ? (
+        own.footer || chips || inputs ? (
           <>
+            {inputs}
             {own.footer}
             {chips}
           </>
@@ -586,7 +789,15 @@ function ConversationBody(props: ConversationProps) {
   }
 
   const sendText = (text: string) => {
-    if (busy || readOnly) return;
+    if (readOnly) return;
+    // A chip's command can be a local one ("Budget is running low" opens
+    // the budget card): it never becomes a message or a run.
+    const local = detectCommand(text.trim(), LOCAL_COMMANDS);
+    if (local?.command.local) {
+      onLocalCommand(local.command.key);
+      return;
+    }
+    if (busy) return;
     void onSend({ text, attachmentIds: [], contextRefs: [] }, false);
   };
   const empty =
@@ -699,9 +910,18 @@ function ConversationBody(props: ConversationProps) {
           )}
 
           {sendError && (
-            <p role="alert" className="text-xs text-status-error">
-              {sendError}
-            </p>
+            <div role="alert" className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="text-status-error">{sendError.text}</span>
+              {sendError.retry && (
+                <button
+                  type="button"
+                  onClick={() => resend(sendError)}
+                  className="inline-flex min-h-9 items-center rounded-md border border-border px-2 font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  {t("Send again", "Erneut senden")}
+                </button>
+              )}
+            </div>
           )}
         </div>
       </div>
@@ -769,17 +989,25 @@ function ConversationBody(props: ConversationProps) {
               ? () => setDraft(lastUser.message.content)
               : undefined
           }
-          onLocalCommand={(key) => {
-            if (key === "budget") setShowBudget(true);
-          }}
+          onLocalCommand={onLocalCommand}
           placeholder={
             pending ? t("Or answer freely …", "Oder frei antworten …") : props.placeholder
           }
-          modelValue={conv.session?.modelOverrideId ?? null}
-          showModelPicker={!!props.sessionId}
+          modelValue={heldModel !== undefined ? heldModel : (conv.session?.modelOverrideId ?? null)}
+          showModelPicker
+          onModelPick={firstMessage ? setHeldModel : undefined}
+          sendWhileBusy={steerReply || !!props.sendWhileBusy}
           agentItems={props.agentItems}
           onAddressAgent={props.onAddressAgent}
-          target={props.composerTarget}
+          target={
+            props.composerTarget ??
+            (steerReply ? (
+              <span className="inline-flex items-center gap-1">
+                <CornerDownRight className="size-3.5" aria-hidden />
+                {t("Goes to the running answer", "Geht an die laufende Antwort")}
+              </span>
+            ) : undefined)
+          }
           trailing={props.composerTrailing}
           textOnlyHint={
             pending

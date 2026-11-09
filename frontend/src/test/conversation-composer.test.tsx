@@ -63,7 +63,7 @@ describe("Composer", () => {
   it("turns Send into Stop while busy and stops on Escape", () => {
     const onStop = vi.fn();
     render(<Harness busy onStop={onStop} />);
-    expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stop the answer" })).toBeInTheDocument();
     fireEvent.keyDown(screen.getByRole("textbox", { name: /Message/ }), { key: "Escape" });
     expect(onStop).toHaveBeenCalledTimes(1);
   });
@@ -71,7 +71,7 @@ describe("Composer", () => {
   it("offers no Stop and ignores Escape in a read-only chat", () => {
     const onStop = vi.fn();
     render(<Harness busy disabled onStop={onStop} />);
-    expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Stop the answer" })).not.toBeInTheDocument();
     fireEvent.keyDown(screen.getByRole("textbox", { name: /Message/ }), { key: "Escape" });
     expect(onStop).not.toHaveBeenCalled();
   });
@@ -205,8 +205,44 @@ describe("Composer", () => {
     fireEvent.change(box, { target: { value: "more" } });
     fireEvent.keyDown(box, { key: "Enter" });
     expect(onSend).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    fireEvent.click(screen.getByRole("button", { name: "Stop the answer" }));
     expect(onStop).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends to the running run while busy, keeps Stop, and Enter never stops (Ruling 52)", () => {
+    const onSend = vi.fn();
+    const onStop = vi.fn();
+    render(<Harness busy sendWhileBusy onSend={onSend} onStop={onStop} />);
+    const box = screen.getByRole("textbox", { name: /Message/ });
+    fireEvent.change(box, { target: { value: "also check March" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(onSend).toHaveBeenCalledWith({
+      text: "also check March",
+      attachmentIds: [],
+      contextRefs: [],
+    });
+    expect(onStop).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Stop the answer" }));
+    expect(onStop).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses context on a message to the running run instead of dropping it", () => {
+    const onSend = vi.fn();
+    render(
+      <Harness
+        busy
+        sendWhileBusy
+        onSend={onSend}
+        contextRefs={[{ kind: "knowledge_base", id: "kb1", label: "Handbook" }]}
+        onContextRefsChange={vi.fn()}
+      />,
+    );
+    const box = screen.getByRole("textbox", { name: /Message/ });
+    fireEvent.change(box, { target: { value: "more" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent(/text only/);
   });
 
   it("renders the above, target and trailing slots and extra + items", () => {

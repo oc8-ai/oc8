@@ -117,7 +117,8 @@ export function useCreateChatSession() {
 export function useChatMessages(sessionId: string | null) {
   return useQuery({
     queryKey: chatKeys.messages(sessionId ?? ""),
-    queryFn: () => api.get<ChatMessageDTO[]>(`/chat/sessions/${sessionId}/messages`),
+    queryFn: () =>
+      api.get<ChatMessageDTO[]>(`/chat/sessions/${encodeURIComponent(sessionId ?? "")}/messages`),
     enabled: !!sessionId,
   });
 }
@@ -152,7 +153,7 @@ export function useRenameChatSession() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ sessionId, title }: { sessionId: string; title: string }) =>
-      api.patch<ChatSessionDTO>(`/chat/sessions/${sessionId}`, { title }),
+      api.patch<ChatSessionDTO>(`/chat/sessions/${encodeURIComponent(sessionId)}`, { title }),
     onSuccess: (session) => writeSessionToCache(qc, session),
   });
 }
@@ -160,7 +161,8 @@ export function useRenameChatSession() {
 export function useDeleteChatSession() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (sessionId: string) => api.delete<void>(`/chat/sessions/${sessionId}`),
+    mutationFn: (sessionId: string) =>
+      api.delete<void>(`/chat/sessions/${encodeURIComponent(sessionId)}`),
     onSuccess: (_void, sessionId) => {
       qc.setQueriesData<ChatSessionDTO[]>({ queryKey: ["chat", "sessions"] }, (prev) =>
         prev?.filter((s) => s.id !== sessionId),
@@ -169,6 +171,16 @@ export function useDeleteChatSession() {
       qc.removeQueries({ queryKey: chatKeys.messages(sessionId) });
     },
   });
+}
+
+/** `prev` with `message` at the end, never twice: the POST reply and the
+ *  refetch a live "chat.message_created" starts race to the same cache. */
+export function appendMessage(
+  prev: ChatMessageDTO[] | undefined,
+  message: ChatMessageDTO,
+): ChatMessageDTO[] {
+  if (prev?.some((m) => m.id === message.id)) return prev;
+  return [...(prev ?? []), message];
 }
 
 export function useSendChatMessage(sessionId: string) {
@@ -183,17 +195,17 @@ export function useSendChatMessage(sessionId: string) {
       attachmentIds?: string[];
       contextRefs?: { kind: string; id: string }[];
     }) =>
-      api.post<ChatMessageDTO>(`/chat/sessions/${sessionId}/messages`, {
+      api.post<ChatMessageDTO>(`/chat/sessions/${encodeURIComponent(sessionId)}/messages`, {
         message,
         attachmentIds,
         contextRefs,
       }),
     onSuccess: (message) => {
-      qc.setQueryData<ChatMessageDTO[]>(chatKeys.messages(sessionId), (prev) => [
-        ...(prev ?? []),
-        message,
-      ]);
-      qc.invalidateQueries({ queryKey: chatKeys.sessions(message.sessionId) });
+      qc.setQueryData<ChatMessageDTO[]>(chatKeys.messages(sessionId), (prev) =>
+        appendMessage(prev, message),
+      );
+      // Every cached session list (its order follows the newest message).
+      qc.invalidateQueries({ queryKey: ["chat", "sessions"] });
     },
   });
 }

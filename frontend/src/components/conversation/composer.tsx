@@ -74,6 +74,11 @@ export interface ComposerProps {
   placeholder?: string;
   modelValue: string | null;
   showModelPicker: boolean;
+  /** A new chat: the model pick is held by the caller, not written yet. */
+  onModelPick?: (modelConfigId: string | null) => void;
+  /** While busy, a send goes to the running run (steering): Send stays
+   *  beside Stop, and Enter sends. */
+  sendWhileBusy?: boolean;
   agentItems?: SigilItem[];
   onAddressAgent?: (agentId: string) => void;
   /** C4: "To the running run …" */
@@ -327,7 +332,17 @@ export function Composer(props: ComposerProps) {
 
   function submit() {
     const text = props.draft.trim();
-    if (!text || props.disabled || props.busy || uploading > 0) return;
+    const steering = props.busy && !!props.sendWhileBusy;
+    if (!text || props.disabled || (props.busy && !steering) || uploading > 0) return;
+    if (steering && (attachments.length > 0 || refs.length > 0)) {
+      setError(
+        t(
+          "A message to the running answer is text only. Remove the attachments, or send them once it's done.",
+          "Eine Nachricht an die laufende Antwort geht nur als Text. Entfern die Anhänge oder schick sie, wenn sie fertig ist.",
+        ),
+      );
+      return;
+    }
     if (textOnly && (attachments.length > 0 || refs.length > 0)) {
       // Never dropped silently: the draft and the chips stay as they are.
       setError(
@@ -560,6 +575,8 @@ export function Composer(props: ComposerProps) {
               sessionId={props.sessionId}
               value={props.modelValue}
               disabled={props.disabled}
+              ensureSession={props.ensureSession}
+              onPick={props.onModelPick}
             />
           )}
           <div className="flex-1" />
@@ -570,16 +587,19 @@ export function Composer(props: ComposerProps) {
                 <Action {...slotProps} />
               </SlotBoundary>
             ))}
-          {props.busy && props.disabled ? null : props.busy ? (
+          {props.busy && !props.disabled && (
+            // Never the default action: Enter sends (or does nothing), and
+            // only a click or Esc stops.
             <button
               type="button"
               onClick={props.onStop}
-              aria-label={t("Stop", "Stopp")}
+              aria-label={t("Stop the answer", "Antwort stoppen")}
               className={cn(ICON_BUTTON, "bg-foreground text-background")}
             >
               <Square className="size-3.5" aria-hidden />
             </button>
-          ) : (
+          )}
+          {props.busy && !props.sendWhileBusy ? null : (
             <button
               type="button"
               onClick={submit}
