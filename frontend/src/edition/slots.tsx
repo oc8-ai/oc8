@@ -6,7 +6,7 @@ import { useChatSlot, useFrontendEdition, type ComposedChat } from "./compositio
 import type { EditionSidebarSlotProps } from "./contracts";
 
 /** Part types core renders itself; an extension never gets them. */
-const CORE_PART_TYPES = new Set(["answers", "suggestions"]);
+const CORE_PART_TYPES = new Set(["answers", "suggestions", "agent_builder"]);
 
 /** A contributed component that throws renders nothing (or `fallback`) and must not
  *  take the chat down with it. */

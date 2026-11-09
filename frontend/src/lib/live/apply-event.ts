@@ -303,6 +303,13 @@ const patchers: Record<string, Patcher> = {
     qc.invalidateQueries({ queryKey: ["copilot", "profile"] });
   },
   "copilot.followup": (qc) => qc.invalidateQueries({ queryKey: ["copilot", "followups"] }),
+  // A builder proposal's status changed (published after the commit). Ids
+  // only, to the requester: refetch the card.
+  "copilot.agent_builder": (qc, d) => {
+    const proposalId = d.proposal_id as string | undefined;
+    if (!proposalId) return;
+    qc.invalidateQueries({ queryKey: ["copilot", "builder", proposalId] });
+  },
   // A new turn in a chat this browser's member may open (backend
   // realtime/emit.py publish_chat_message_created). Ids only, delivered per
   // member: refetch rather than patch, so the message arrives with its

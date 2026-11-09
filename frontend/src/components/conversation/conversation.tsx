@@ -54,6 +54,7 @@ import { RunInputs, runInputError } from "./run-steering";
 import { SuggestionChips, type ReplyChip } from "./suggestion-chips";
 import type { AssistantTurnModel, ConversationVariant, TurnModel } from "./types";
 import { useTimelineRuns } from "./timeline-runs";
+import { AgentBuilderCard } from "./agent-builder-card";
 import { TurnApprovalCards } from "./turn-approval-cards";
 import { TURN_APPROVAL_CARDS } from "./turn-approval-registry";
 import { useConversation } from "./use-conversation";
@@ -848,6 +849,18 @@ function ConversationBody(props: ConversationProps) {
       turnRunId && Object.keys(TURN_APPROVAL_CARDS).length > 0 ? (
         <TurnApprovalCards runId={turnRunId} live={!!turn.liveRunId} />
       ) : null;
+    // The builder card (Copilot Agent Builder §3.3) rides on the answer that
+    // proposed it, as a core part; editions never render it (CORE_PART_TYPES).
+    const shown = turn.variants[turn.variants.length - 1];
+    const builderPart = shown?.parts?.find((p) => p.type === "agent_builder");
+    const builder =
+      typeof builderPart?.proposalId === "string" ? (
+        <AgentBuilderCard
+          proposalId={builderPart.proposalId}
+          readOnly={readOnly}
+          onPropose={sendText}
+        />
+      ) : null;
     const chips =
       turn === lastTurn && suggestions.length > 0 ? (
         <SuggestionChips
@@ -858,8 +871,9 @@ function ConversationBody(props: ConversationProps) {
       ) : null;
     return {
       cards:
-        approvals || own.cards || decisions ? (
+        builder || approvals || own.cards || decisions ? (
           <>
+            {builder}
             {approvals}
             {own.cards}
             {decisions}
