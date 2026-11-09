@@ -15,7 +15,9 @@ import type { Approval } from "@/lib/hooks";
 
 export interface TurnApprovalCardEntry {
   /** The approvals this card answers, pending ones. Called as a hook, once
-   *  per turn that has a run; `poll` is set while that run is live. */
+   *  per turn that has a run; `poll` is set while that run is live. It must
+   *  return only approvals the viewer may see -- the slot shows whatever
+   *  comes back that holds the turn's run, and checks nothing itself. */
   useApprovals: (options: { poll: number | false }) => { data?: Approval[] | undefined };
   Card: ComponentType<{ approval: Approval }>;
 }

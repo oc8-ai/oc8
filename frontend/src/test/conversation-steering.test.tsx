@@ -137,6 +137,26 @@ describe("run steering", () => {
     expect(screen.getByText("The run finished before it read this")).toBeInTheDocument();
   });
 
+  it("says an input the run ended without reading is answered as a new message", () => {
+    steering.value = {
+      mayWrite: false,
+      acceptsInputs: true,
+      inputs: [
+        {
+          id: "1",
+          text: "only Berlin",
+          authorName: "Alice",
+          createdAt: "",
+          consumedAt: "x",
+          consumedStep: -1,
+        },
+      ],
+    };
+    render(<RunInputs runId="r1" runState="done" />);
+    expect(screen.getByText("Answered as a new message")).toBeInTheDocument();
+    expect(screen.queryByText(/step -1/)).toBeNull();
+  });
+
   it("says an unread input of a running run waits for the next step", () => {
     steering.value = {
       mayWrite: true,

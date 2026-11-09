@@ -435,8 +435,10 @@ async def bind_from_free_text(
         await tell_sender(impl, text.external_id, REFUSED)
         return
     member = await db.get(m.OrgMember, bound.member_id)
-    if member is None or not await _member_has_permission(
-        db, member=member, permission=perm(COPILOT, MANAGE)
+    if (
+        member is None
+        or member.deleted_at is not None
+        or not await _member_has_permission(db, member=member, permission=perm(COPILOT, MANAGE))
     ):
         await tell_sender(impl, text.external_id, REFUSED)
         return
@@ -512,6 +514,26 @@ _TOO_MANY_WAITING = (
     "Es warten schon zu viele Nachrichten auf die laufende Antwort. Warte kurz oder schreib „stop“."
 )
 
+#: Sent when the text is longer than a running answer takes.
+_TOO_LONG = "Deine Nachricht ist zu lang für die laufende Antwort (höchstens 4.000 Zeichen)."
+#: Any other refusal of a message to the running answer.
+_NOT_TAKEN = "Das konnte ich nicht an die laufende Antwort geben. Versuch es noch einmal."
+
+
+def _input_refusal(exc: Any) -> str:
+    """What the sender is told when `add_run_input` refuses: in German, like
+    the rest of this door, and the secret gate's own sentence unchanged."""
+    from oc8.runtime.clarification import SECRET_REFUSAL
+
+    if exc.status_code == 429:
+        return _TOO_MANY_WAITING
+    if exc.message == SECRET_REFUSAL:
+        return SECRET_REFUSAL
+    if exc.status_code == 422 and "longer than" in exc.message:
+        return _TOO_LONG
+    return _NOT_TAKEN
+
+
 #: States a run is still writing its answer in. A run parked on a question
 #: (`waiting_for_input`) is not: the question door answers it, and anything
 #: else the sender writes starts a new turn as before.
@@ -570,10 +592,15 @@ async def _steer_running_turn(
     try:
         await add_run_input(db, run=run, member=member, text=text.text)
     except InputRefused as exc:
-        # Refused before anything was written. The secret gate's sentence is
-        # said as is, ungated, like the secret refusal of a new turn.
-        refusal = _TOO_MANY_WAITING if exc.status_code == 429 else exc.message
-        await tell_sender(impl, text.external_id, refusal)
+        if exc.status_code == 409:
+            # The run ended before the text got to it: it is a new turn after
+            # all. Nothing was written, and the transaction (and its tenant
+            # binding) is still open for `send_message`.
+            return False
+        # Refused before anything was written; said in German, and the
+        # secret gate's own sentence as is, ungated, like the secret refusal
+        # of a new turn.
+        await tell_sender(impl, text.external_id, _input_refusal(exc))
         return True
     await db.commit()
     await tell_sender_gated(impl, text.external_id, _STEERED)

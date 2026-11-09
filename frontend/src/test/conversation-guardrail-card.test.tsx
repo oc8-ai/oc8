@@ -35,6 +35,7 @@ vi.mock("@/lib/governance-hooks", () => ({
 
 import { Conversation } from "@/components/conversation";
 import { AssistantTurn } from "@/components/conversation/assistant-turn";
+import { TurnApprovalCards } from "@/components/conversation/turn-approval-cards";
 import { TURN_APPROVAL_CARDS } from "@/components/conversation/turn-approval-registry";
 import { RUN_COMPONENT_REGISTRY } from "@/components/run-record-card";
 import type { Approval } from "@/lib/hooks";
@@ -208,6 +209,27 @@ describe("PR #71's ChatApprovalCard in a turn", () => {
       </QueryClientProvider>,
     );
     expect(screen.getByText("Delete order 4711")).toBeInTheDocument();
+  });
+
+  it("shows a card seen for another run only in that run's turn", () => {
+    TURN_APPROVAL_CARDS.member_guardrail = {
+      useApprovals: useStandInMyApprovals,
+      Card: StandInChatApprovalCard,
+    };
+    mine.current = [approval({ id: "ap1", runId: "r1", title: "Send mail to kunde@x.de" })];
+    const view = render(
+      <QueryClientProvider client={new QueryClient()}>
+        <TurnApprovalCards runId="r1" live={false} />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByText("Send mail to kunde@x.de")).toBeInTheDocument();
+    // The same slot now answers for another run (a regenerated answer).
+    view.rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <TurnApprovalCards runId="r2" live={false} />
+      </QueryClientProvider>,
+    );
+    expect(screen.queryByText("Send mail to kunde@x.de")).toBeNull();
   });
 
   it("renders nothing extra while nobody registered a card", () => {

@@ -89,6 +89,11 @@ export function runInputError(error: unknown, t: Translate): string {
   );
 }
 
+/** `consumedStep` of a message the run ended without reading: it became the
+ *  chat's next turn instead (Ruling 59). Mirrors the backend's
+ *  `CARRIED_OVER_STEP`. */
+const CARRIED_OVER_STEP = -1;
+
 /** The messages written to a run, each with its fate. Only the run being
  *  steered asks the server (`enabled`); any other shows what is cached. */
 export function RunInputs({
@@ -110,17 +115,19 @@ export function RunInputs({
         <li key={input.id} className="ml-auto max-w-[85%] rounded-lg bg-muted px-3 py-2 text-sm">
           <p className="whitespace-pre-wrap break-words">{input.text}</p>
           <p className="text-xs text-muted-foreground" aria-live="polite">
-            {input.consumedStep !== null
-              ? t(
-                  `Taken into account in step ${input.consumedStep}`,
-                  `Berücksichtigt in Schritt ${input.consumedStep}`,
-                )
-              : TERMINAL.has(runState)
+            {input.consumedStep === CARRIED_OVER_STEP
+              ? t("Answered as a new message", "Wird als neue Nachricht beantwortet")
+              : input.consumedStep !== null
                 ? t(
-                    "The run finished before it read this",
-                    "Der Lauf war fertig, bevor er das gelesen hat",
+                    `Taken into account in step ${input.consumedStep}`,
+                    `Berücksichtigt in Schritt ${input.consumedStep}`,
                   )
-                : t("Waiting for the next step", "Wartet auf den nächsten Schritt")}
+                : TERMINAL.has(runState)
+                  ? t(
+                      "The run finished before it read this",
+                      "Der Lauf war fertig, bevor er das gelesen hat",
+                    )
+                  : t("Waiting for the next step", "Wartet auf den nächsten Schritt")}
           </p>
         </li>
       ))}

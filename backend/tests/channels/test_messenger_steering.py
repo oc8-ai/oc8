@@ -4,15 +4,26 @@ parked question still takes its answer first."""
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.channels.binding import issue_code, redeem_code
-from oc8.channels.dispatch import _STEERED, process_inbound
+from oc8.channels.dispatch import (
+    _NOT_STEERABLE,
+    _STEERED,
+    _TOO_LONG,
+    _TOO_MANY_WAITING,
+    REFUSED,
+    process_inbound,
+)
+from oc8.runtime.clarification import SECRET_REFUSAL
+from oc8.runtime.run_inputs import MAX_INPUT_CHARS, MAX_PENDING_INPUTS, InputRefused
 from tests.channels.test_free_text_end_to_end import CHANNEL, FakeChannel, _grant_copilot_manage
 from tests.channels.test_messenger_answers import _bound_member_with_parked_run
 from tests.conftest import AppSessionFactory
@@ -201,3 +212,153 @@ async def test_a_parked_question_still_takes_the_answer(
     assert inputs == []
     sent = impl.say.await_args
     assert sent is not None and sent.args[1] == "Danke, ich mache weiter."
+
+
+async def _inputs(
+    app_session: AppSessionFactory, tenant: uuid.UUID, run_id: uuid.UUID
+) -> list[str]:
+    async with app_session(tenant) as db:
+        return [
+            row.text
+            for row in (
+                await db.execute(
+                    select(m.RunInput).where(m.RunInput.run_id == run_id).order_by(m.RunInput.seq)
+                )
+            ).scalars()
+        ]
+
+
+async def test_a_run_that_ended_before_the_write_gets_a_new_turn(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The 409 race (Ruling 59): the run was found running, then ended before
+    the input was written. The message is a new turn, not a refusal."""
+    tenant = uuid.uuid4()
+    run_id = await messenger_turn(app_session, tenant)
+
+    async def ended(*_a: Any, **_kw: Any) -> None:
+        raise InputRefused(409, "run has already finished")
+
+    monkeypatch.setattr("oc8.runtime.run_inputs.add_run_input", ended)
+    impl = FakeChannel()
+
+    await _say(app_session, tenant, impl, "Noch eine Frage")
+
+    runs = await _runs(app_session, tenant)
+    assert len(runs) == 2 and run_id in [r.id for r in runs]
+    sent = impl.say.await_args
+    assert sent is not None and sent.args[1] == "Bin dran, melde mich gleich."
+
+
+async def test_a_runtime_that_takes_no_messages_says_so_and_starts_nothing(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant = uuid.uuid4()
+    run_id = await messenger_turn(app_session, tenant)
+
+    async def no(*_a: Any, **_kw: Any) -> bool:
+        return False
+
+    monkeypatch.setattr("oc8.runtime.run_inputs.run_accepts_inputs", no)
+    impl = FakeChannel()
+
+    await _say(app_session, tenant, impl, "Nur Berlin")
+
+    assert [r.id for r in await _runs(app_session, tenant)] == [run_id]
+    assert await _inputs(app_session, tenant, run_id) == []
+    sent = impl.say.await_args
+    assert sent is not None and sent.args[1] == _NOT_STEERABLE
+
+
+async def test_a_stop_word_stops_a_run_that_takes_no_messages(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant = uuid.uuid4()
+    run_id = await messenger_turn(app_session, tenant)
+
+    async def no(*_a: Any, **_kw: Any) -> bool:
+        return False
+
+    monkeypatch.setattr("oc8.runtime.run_inputs.run_accepts_inputs", no)
+    impl = FakeChannel()
+
+    await _say(app_session, tenant, impl, "stop")
+
+    async with app_session(tenant) as db:
+        cancel = (
+            await db.execute(select(m.RunCancellation).where(m.RunCancellation.run_id == run_id))
+        ).scalar_one_or_none()
+    assert cancel is not None
+    sent = impl.say.await_args
+    assert sent is not None and sent.args[1] == "Gestoppt."
+
+
+async def test_a_full_queue_is_refused_in_german(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    run_id = await messenger_turn(app_session, tenant)
+    async with app_session(tenant) as db:
+        member = (
+            await db.execute(select(m.OrgMember).where(m.OrgMember.tenant_id == tenant))
+        ).scalar_one()
+        for i in range(MAX_PENDING_INPUTS):
+            db.add(
+                m.RunInput(tenant_id=tenant, run_id=run_id, author_member_id=member.id, text=f"{i}")
+            )
+        await db.commit()
+    impl = FakeChannel()
+
+    await _say(app_session, tenant, impl, "Noch was")
+
+    assert len(await _inputs(app_session, tenant, run_id)) == MAX_PENDING_INPUTS
+    assert len(await _runs(app_session, tenant)) == 1
+    sent = impl.say.await_args
+    assert sent is not None and sent.args[1] == _TOO_MANY_WAITING
+
+
+async def test_an_overlong_message_is_refused_in_german(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    run_id = await messenger_turn(app_session, tenant)
+    impl = FakeChannel()
+
+    await _say(app_session, tenant, impl, "x" * (MAX_INPUT_CHARS + 1))
+
+    assert await _inputs(app_session, tenant, run_id) == []
+    assert len(await _runs(app_session, tenant)) == 1
+    sent = impl.say.await_args
+    assert sent is not None and sent.args[1] == _TOO_LONG
+
+
+async def test_a_secret_to_the_running_answer_is_refused(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    run_id = await messenger_turn(app_session, tenant)
+    impl = FakeChannel()
+
+    await _say(app_session, tenant, impl, "password=hunter2")
+
+    assert await _inputs(app_session, tenant, run_id) == []
+    assert len(await _runs(app_session, tenant)) == 1
+    sent = impl.say.await_args
+    assert sent is not None and sent.args[1] == SECRET_REFUSAL
+
+
+async def test_a_deleted_member_is_refused(app_session: AppSessionFactory, redis_url: str) -> None:
+    tenant = uuid.uuid4()
+    member_id = await _bound_owner(app_session, tenant)
+    async with app_session(tenant) as db:
+        member = await db.get(m.OrgMember, member_id)
+        assert member is not None
+        member.deleted_at = dt.datetime.now(tz=dt.UTC)
+        await db.commit()
+    impl = FakeChannel()
+
+    await _say(app_session, tenant, impl, "Hallo")
+
+    assert await _runs(app_session, tenant) == []
+    sent = impl.say.await_args
+    assert sent is not None and sent.args[1] == REFUSED

@@ -36,7 +36,7 @@ from oc8.chat.reach import reachable_chat_agent
 from oc8.copilot.redaction import is_secret_request
 from oc8.db.session import tenant_session
 from oc8.runtime.fencing import fence, one_line
-from oc8.runtime.person import is_own, person_behind
+from oc8.runtime.person import ON_BEHALF_OF, is_own, person_behind, present
 from oc8.runtime.states import TERMINAL, RunState
 
 if TYPE_CHECKING:
@@ -123,10 +123,17 @@ async def add_run_input(
     # real bound, and a lower `seq` is always committed before a higher one, so
     # consumers never see a later input before an earlier one. Not a row lock
     # on agent_run: the executor holds that one for the whole run.
-    await db.execute(
-        sql_text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-        {"key": f"run_input:{run.id}"},
-    )
+    await lock_run_inputs(db, run_id=run.id)
+    # Asked again under the lock, from the database: the executor takes the
+    # same lock before a run's terminal transition and holds it until that
+    # commits, so an input is either accepted before the run ends (and then
+    # carried over, Ruling 59) or refused here -- never written to a run that
+    # already ended without it.
+    state = (
+        await db.execute(select(m.AgentRun.state).where(m.AgentRun.id == run.id))
+    ).scalar_one_or_none()
+    if state is None or RunState(state) in TERMINAL:
+        raise InputRefused(409, "run has already finished")
     pending = (
         await db.execute(
             select(func.count())
@@ -157,6 +164,84 @@ async def add_run_input(
         originating_operator=member.subject,
     )
     return row
+
+
+async def lock_run_inputs(db: AsyncSession, *, run_id: uuid.UUID) -> None:
+    """The per-run writer lock, until commit. Taken by every writer and by the
+    executor before a run's terminal transition."""
+    await db.execute(
+        sql_text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"run_input:{run_id}"},
+    )
+
+
+#: `consumed_step` of an input the run never read because it ended first: it
+#: was carried over into a new turn of the same chat (Ruling 59). Not a step.
+CARRIED_OVER_STEP: Final = -1
+
+
+@dataclass(frozen=True)
+class CarriedOver:
+    """What a finished chat run had not read yet, as the next turn of its chat."""
+
+    tenant_id: uuid.UUID
+    session_id: uuid.UUID
+    text: str
+    author_member_id: uuid.UUID
+    originating_operator: str | None
+    on_behalf_of: str | None
+    chat_channel: str | None
+    chat_channel_external_id: str | None
+
+
+async def carry_over_run_inputs(db: AsyncSession, *, run: m.AgentRun) -> CarriedOver | None:
+    """Take every input `run` had not read when it ended (Ruling 59): stamped
+    `CARRIED_OVER_STEP` and returned as ONE turn for the run's chat, which the
+    caller starts once the run's end is committed. None when nothing waits, or
+    the run is no chat turn.
+
+    The caller holds `lock_run_inputs` and has not yet committed the terminal
+    state: no writer can add to the run between this and that commit."""
+    ctx = run.context or {}
+    session_raw = ctx.get("chat_session_id")
+    if run.source != "chat" or not session_raw:
+        return None
+    try:
+        session_id = uuid.UUID(str(session_raw))
+    except ValueError:
+        return None
+    rows = list(
+        (
+            await db.execute(
+                select(m.RunInput)
+                .where(m.RunInput.run_id == run.id, m.RunInput.consumed_at.is_(None))
+                .order_by(m.RunInput.seq)
+                .with_for_update()
+            )
+        ).scalars()
+    )
+    if not rows:
+        return None
+    now = dt.datetime.now(tz=dt.UTC)
+    for row in rows:
+        row.consumed_at = now
+        row.consumed_step = CARRIED_OVER_STEP
+    await db.flush()
+    channel = ctx.get("chat_channel")
+    external_id = ctx.get("chat_channel_external_id")
+    operator = ctx.get("originating_operator")
+    behalf = ctx.get(ON_BEHALF_OF)
+    return CarriedOver(
+        tenant_id=run.tenant_id,
+        session_id=session_id,
+        text="\n\n".join(row.text for row in rows),
+        # Every writer to a chat run is its one person (`may_steer_run`).
+        author_member_id=rows[0].author_member_id,
+        originating_operator=str(operator) if present(operator) else None,
+        on_behalf_of=str(behalf) if present(behalf) else None,
+        chat_channel=str(channel) if channel and external_id else None,
+        chat_channel_external_id=str(external_id) if channel and external_id else None,
+    )
 
 
 async def consume_run_inputs(
@@ -251,7 +336,12 @@ async def delivered_run_inputs(db: AsyncSession, *, run_id: uuid.UUID) -> list[C
         (
             await db.execute(
                 select(m.RunInput)
-                .where(m.RunInput.run_id == run_id, m.RunInput.consumed_at.is_not(None))
+                .where(
+                    m.RunInput.run_id == run_id,
+                    m.RunInput.consumed_at.is_not(None),
+                    # Never delivered to this run: carried over to a new turn.
+                    m.RunInput.consumed_step.is_distinct_from(CARRIED_OVER_STEP),
+                )
                 .order_by(m.RunInput.seq)
             )
         ).scalars()

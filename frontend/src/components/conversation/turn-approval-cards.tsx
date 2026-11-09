@@ -45,9 +45,11 @@ function EntryCards({
   const { Card } = entry;
   return (
     <>
-      {shown.map((approval) => (
-        <Card key={approval.id} approval={approval} />
-      ))}
+      {shown
+        .filter((approval) => approval.runId === runId)
+        .map((approval) => (
+          <Card key={approval.id} approval={approval} />
+        ))}
     </>
   );
 }
