@@ -5,8 +5,7 @@ exactly as they do to an autonomous run."""
 from __future__ import annotations
 
 import uuid
-from collections.abc import Mapping, Sequence
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
@@ -15,16 +14,19 @@ from oc8 import models as m
 from oc8.agent.assistant import get_or_create_assistant
 from oc8.agents.versioning import pinned_model_config_id, pinned_version_no, resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession, require_departmental, require_permission
-from oc8.api.v1._serializers import question_dtos
+from oc8.api.v1._chat_common import (
+    actor_viewer,
+    session_detail,
+    session_dto,
+    session_owned_by_caller,
+)
 from oc8.api.v1.run import run_to_dto
 from oc8.audit import append_event
 from oc8.authz.authority import Authority, authority_for_principal
 from oc8.authz.permissions import AGENT, COPILOT, COPILOT_USE, MANAGE, RUN_START, VIEW, perm
 from oc8.authz.scope import HumanActor
-from oc8.chat.context.base import Viewer, viewer_for_member
 from oc8.chat.model_choice import is_allowed_override, model_options
 from oc8.chat.modes import MODES
-from oc8.chat.projects import pinned_refs_for_viewer
 from oc8.chat.questions import QuestionError
 from oc8.chat.reach import reachable_chat_agent
 from oc8.chat.service import (
@@ -36,7 +38,6 @@ from oc8.chat.service import (
     get_session,
     list_messages,
     list_sessions,
-    parked_session_question,
     regenerate_reply,
     rename_session,
     send_message,
@@ -51,9 +52,7 @@ from oc8.schemas.dto import (
     ChatModeDTO,
     ChatModelOptionDTO,
     ChatSessionDTO,
-    ContextRefViewDTO,
     FileAttachmentDTO,
-    PendingQuestionDTO,
     RunDTO,
 )
 from oc8.schemas.requests import (
@@ -71,73 +70,6 @@ router = APIRouter()
 _ChatActor = Annotated[
     HumanActor, Depends(require_departmental(perm(AGENT, VIEW), or_tenant_wide=COPILOT_USE))
 ]
-
-
-def _session_dto(
-    session: m.ChatSession,
-    *,
-    active_runs: Sequence[m.AgentRun] = (),
-    read_only: bool = False,
-    pending_question: PendingQuestionDTO | None = None,
-) -> ChatSessionDTO:
-    return ChatSessionDTO(
-        id=str(session.id),
-        agent_id=str(session.agent_id),
-        title=session.title,
-        created_at=session.created_at.isoformat(),
-        last_message_at=session.last_message_at.isoformat() if session.last_message_at else None,
-        model_override_id=str(session.model_override_id) if session.model_override_id else None,
-        kind=getattr(session, "kind", "chat") or "chat",
-        active_runs=[
-            ActiveRunDTO(
-                run_id=str(run.id),
-                reply_to_id=(run.context or {}).get("reply_to_message_id"),
-                state=run.state,
-            )
-            for run in active_runs
-        ],
-        read_only=read_only,
-        pending_question=pending_question,
-        task_id=str(session.task_id) if session.task_id else None,
-        project_id=str(session.project_id) if session.project_id else None,
-        pinned=bool(session.pinned),
-    )
-
-
-async def _viewer(db: DbSession, actor: HumanActor) -> Viewer:
-    """The caller, with the role on THIS request's token (never a stored one)."""
-    return await viewer_for_member(db, actor.member, token_role=actor.principal.role)
-
-
-async def _ref_views(
-    db: DbSession, actor: HumanActor, refs: Sequence[Mapping[str, Any]]
-) -> list[ContextRefViewDTO]:
-    views = await pinned_refs_for_viewer(db, viewer=await _viewer(db, actor), refs=refs)
-    return [
-        ContextRefViewDTO(kind=v.kind, id=v.id, label=v.label, available=v.available) for v in views
-    ]
-
-
-async def _with_pins(
-    db: DbSession, actor: HumanActor, dto: ChatSessionDTO, session: m.ChatSession
-) -> ChatSessionDTO:
-    """`dto` with the chat's pinned context, re-checked for the caller."""
-    refs = [r for r in (session.pinned_refs or []) if isinstance(r, dict)]
-    return dto.model_copy(update={"pinned_refs": await _ref_views(db, actor, refs)})
-
-
-async def _pending_question(db: DbSession, runs: Sequence[m.AgentRun]) -> PendingQuestionDTO | None:
-    """What the session's active run is parked on, for the question card."""
-    parked = await parked_session_question(db, runs=runs)
-    if parked is None:
-        return None
-    run, clarification = parked
-    return PendingQuestionDTO(
-        clarification_id=str(clarification.id),
-        run_id=str(run.id),
-        text=clarification.question,
-        questions=question_dtos((run.context or {}).get("pending_questions")),
-    )
 
 
 async def _message_dto(msg: m.ChatMessage, db: DbSession, tenant_id: uuid.UUID) -> ChatMessageDTO:
@@ -272,8 +204,9 @@ async def get_sessions(
         tenant_id=actor.principal.tenant_id,
         member_id=actor.member.id,
         agent_id=agent_id,
+        pinned_first=True,
     )
-    return [_session_dto(s) for s in sessions]
+    return [session_dto(s) for s in sessions]
 
 
 @router.post("/chat/sessions", response_model=ChatSessionDTO, status_code=status.HTTP_201_CREATED)
@@ -302,7 +235,7 @@ async def create_chat_session(
         member_id=actor.member.id,
     )
     await db.commit()
-    return _session_dto(session)
+    return session_dto(session)
 
 
 async def _owned_session(
@@ -349,13 +282,7 @@ async def get_chat_session(
     """One chat, with the runs still answering it -- so a page loaded mid-answer
     knows which run to watch. Same ownership gate as every session sub-route."""
     session = await _owned_session(request, session_id, db, actor)
-    runs = await active_runs_for_session(
-        db, tenant_id=actor.principal.tenant_id, session_id=session.id
-    )
-    dto = _session_dto(
-        session, active_runs=runs, pending_question=await _pending_question(db, runs)
-    )
-    return await _with_pins(db, actor, dto, session)
+    return await session_detail(db, viewer=await actor_viewer(db, actor), session=session)
 
 
 @router.post("/chat/sessions/{session_id}/questions/{clarification_id}/answer")
@@ -496,7 +423,7 @@ async def set_chat_model(
             )
     session.model_override_id = body.model_config_id
     await db.flush()
-    dto = _session_dto(session)
+    dto = session_dto(session)
     await db.commit()
     return dto
 
@@ -515,7 +442,7 @@ async def rename_chat_session(
     session = await _owned_session(request, session_id, db, actor)
     await rename_session(db, session=session, title=body.title)
     await db.commit()
-    return _session_dto(session)
+    return session_dto(session)
 
 
 @router.delete("/chat/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -599,18 +526,6 @@ async def post_message(
     return dto
 
 
-async def _session_owned_by_caller(
-    session_id: uuid.UUID, db: DbSession, actor: HumanActor
-) -> m.ChatSession:
-    """Owner-only: no `copilot:manage` oversight carve-out. Acting on a turn
-    (regenerating it, rating it) replays or speaks for the member's own
-    conversation, which an overseer reading it must not be able to do."""
-    session = await get_session(db, tenant_id=actor.principal.tenant_id, session_id=session_id)
-    if session is None or session.member_id != actor.member.id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "chat session not found")
-    return session
-
-
 async def _session_message(
     db: DbSession, *, session: m.ChatSession, message_id: uuid.UUID
 ) -> m.ChatMessage:
@@ -633,7 +548,7 @@ async def regenerate_message(
     actor: _ChatActor,
 ) -> ActiveRunDTO:
     """Answer a user turn again; both answers stay (spec §2.1)."""
-    session = await _session_owned_by_caller(session_id, db, actor)
+    session = await session_owned_by_caller(session_id, db, actor)
     msg = await _session_message(db, session=session, message_id=message_id)
     if msg.role != "user":
         raise HTTPException(status.HTTP_409_CONFLICT, "only a member's turn can be answered again")
@@ -677,7 +592,7 @@ async def message_feedback(
     db: DbSession,
     actor: _ChatActor,
 ) -> None:
-    session = await _session_owned_by_caller(session_id, db, actor)
+    session = await session_owned_by_caller(session_id, db, actor)
     msg = await _session_message(db, session=session, message_id=message_id)
     if msg.role != "assistant":
         raise HTTPException(status.HTTP_409_CONFLICT, "only an answer can be rated")

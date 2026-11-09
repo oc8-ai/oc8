@@ -3,7 +3,7 @@
 Every route admits through the chat door. What the caller may then see is the
 context registry's answer for THIS member (`chat.context`), never a second rule
 written here. Pins, a chat's project and its pinned state are written only by
-the chat's owner (`_session_owned_by_caller`, no oversight carve-out), and a
+the chat's owner (`session_owned_by_caller`, no oversight carve-out), and a
 project is visible to its owner alone."""
 
 from __future__ import annotations
@@ -15,9 +15,16 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from oc8 import models as m
 from oc8.api.deps import DbSession, require_departmental, require_permission
-from oc8.api.v1.chat import _ref_views, _session_dto, _session_owned_by_caller, _viewer, _with_pins
+from oc8.api.v1._chat_common import (
+    actor_viewer,
+    ref_views,
+    session_detail,
+    session_owned_by_caller,
+)
+from oc8.audit import append_event
 from oc8.authz.permissions import AGENT, COPILOT_USE, KNOWLEDGE, VIEW, perm
 from oc8.authz.scope import HumanActor
+from oc8.chat.context.base import Viewer
 from oc8.chat.context.registry import RESOLVERS, resolve_ref
 from oc8.chat.projects import (
     PinRefused,
@@ -60,14 +67,14 @@ _NOT_BROWSABLE = "This source can't be browsed — pin it as a whole."
 
 
 async def _authorised(
-    db: DbSession, actor: HumanActor, refs: list[ChatContextRefRequest]
+    db: DbSession, viewer: Viewer, refs: list[ChatContextRefRequest]
 ) -> list[dict[str, str]]:
     """The refs to store, or a 422 naming each refused one by the id the
     client sent. A ref that does not exist is refused exactly like one the
     caller may not see, so the answer confirms nothing across tenants."""
     try:
         return await authorise_pins(
-            db, viewer=await _viewer(db, actor), refs=[{"kind": r.kind, "id": r.id} for r in refs]
+            db, viewer=viewer, refs=[{"kind": r.kind, "id": r.id} for r in refs]
         )
     except PinRefused as exc:
         raise HTTPException(
@@ -76,11 +83,11 @@ async def _authorised(
         ) from exc
 
 
-async def _session_reply(
-    db: DbSession, actor: HumanActor, session: m.ChatSession
-) -> ChatSessionDTO:
+async def _session_reply(db: DbSession, viewer: Viewer, session: m.ChatSession) -> ChatSessionDTO:
+    """The chat as `GET /chat/sessions/{id}` returns it, so a client writing
+    this reply into its cache keeps the active runs and parked question."""
     await db.flush()
-    dto = await _with_pins(db, actor, _session_dto(session), session)
+    dto = await session_detail(db, viewer=viewer, session=session)
     await db.commit()
     return dto
 
@@ -89,46 +96,38 @@ async def _session_reply(
 async def put_pins(
     session_id: uuid.UUID, body: PinRefsRequest, db: DbSession, actor: _Actor
 ) -> ChatSessionDTO:
-    session = await _session_owned_by_caller(session_id, db, actor)
-    session.pinned_refs = await _authorised(db, actor, body.refs)
-    return await _session_reply(db, actor, session)
+    session = await session_owned_by_caller(session_id, db, actor)
+    viewer = await actor_viewer(db, actor)
+    session.pinned_refs = await _authorised(db, viewer, body.refs)
+    return await _session_reply(db, viewer, session)
 
 
 @router.put("/chat/sessions/{session_id}/project", response_model=ChatSessionDTO)
 async def put_project(
     session_id: uuid.UUID, body: SetProjectRequest, db: DbSession, actor: _Actor
 ) -> ChatSessionDTO:
-    session = await _session_owned_by_caller(session_id, db, actor)
-    if body.project_id is not None and (
-        await owned_project(
-            db,
-            tenant_id=actor.principal.tenant_id,
-            member_id=actor.member.id,
-            project_id=body.project_id,
-        )
-        is None
-    ):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+    session = await session_owned_by_caller(session_id, db, actor)
+    if body.project_id is not None:
+        await _own_project_or_404(db, actor, body.project_id)
     session.project_id = body.project_id
-    return await _session_reply(db, actor, session)
+    return await _session_reply(db, await actor_viewer(db, actor), session)
 
 
 @router.put("/chat/sessions/{session_id}/pinned", response_model=ChatSessionDTO)
 async def put_pinned(
     session_id: uuid.UUID, body: SetPinnedRequest, db: DbSession, actor: _Actor
 ) -> ChatSessionDTO:
-    session = await _session_owned_by_caller(session_id, db, actor)
+    session = await session_owned_by_caller(session_id, db, actor)
     session.pinned = body.pinned
-    return await _session_reply(db, actor, session)
+    return await _session_reply(db, await actor_viewer(db, actor), session)
 
 
-async def _project_dto(db: DbSession, actor: HumanActor, project: m.ChatProject) -> ChatProjectDTO:
-    refs = [r for r in (project.pinned_refs or []) if isinstance(r, dict)]
+async def _project_dto(db: DbSession, viewer: Viewer, project: m.ChatProject) -> ChatProjectDTO:
     return ChatProjectDTO(
         id=str(project.id),
         name=project.name,
         instructions=project.instructions,
-        pinned_refs=await _ref_views(db, actor, refs),
+        pinned_refs=await ref_views(db, viewer, list(project.pinned_refs or [])),
         created_at=project.created_at.isoformat(),
     )
 
@@ -144,24 +143,44 @@ async def _own_project_or_404(
     return project
 
 
+async def _audit_project(
+    db: DbSession, actor: HumanActor, project: m.ChatProject, action: str
+) -> None:
+    """`chat.project.<action>`, naming the project by id and name. Never its
+    instructions, which are the member's own words."""
+    await append_event(
+        db,
+        tenant_id=actor.principal.tenant_id,
+        actor_type="operator",
+        actor_id=actor.member.id,
+        category="chat",
+        action=f"chat.project.{action}",
+        resource={"project_id": str(project.id), "name": project.name},
+        principal=actor.principal,
+    )
+
+
 @router.get("/chat/projects", response_model=list[ChatProjectDTO])
 async def get_projects(db: DbSession, actor: _Actor) -> list[ChatProjectDTO]:
     rows = await list_projects(db, tenant_id=actor.principal.tenant_id, member_id=actor.member.id)
-    return [await _project_dto(db, actor, p) for p in rows]
+    viewer = await actor_viewer(db, actor)
+    return [await _project_dto(db, viewer, p) for p in rows]
 
 
 @router.post("/chat/projects", response_model=ChatProjectDTO, status_code=status.HTTP_201_CREATED)
 async def create_project(body: ChatProjectRequest, db: DbSession, actor: _Actor) -> ChatProjectDTO:
+    viewer = await actor_viewer(db, actor)
     project = m.ChatProject(
         tenant_id=actor.principal.tenant_id,
         owner_member_id=actor.member.id,
         name=body.name,
         instructions=body.instructions,
-        pinned_refs=await _authorised(db, actor, body.pinned_refs),
+        pinned_refs=await _authorised(db, viewer, body.pinned_refs),
     )
     db.add(project)
     await db.flush()
-    dto = await _project_dto(db, actor, project)
+    await _audit_project(db, actor, project, "created")
+    dto = await _project_dto(db, viewer, project)
     await db.commit()
     return dto
 
@@ -172,14 +191,16 @@ async def update_project(
 ) -> ChatProjectDTO:
     """`name` is required; `instructions` and `pinnedRefs` change only when sent."""
     project = await _own_project_or_404(db, actor, project_id)
+    viewer = await actor_viewer(db, actor)
     sent = body.model_fields_set
     if "pinned_refs" in sent:
-        project.pinned_refs = await _authorised(db, actor, body.pinned_refs)
+        project.pinned_refs = await _authorised(db, viewer, body.pinned_refs)
     if "instructions" in sent:
         project.instructions = body.instructions
     project.name = body.name
     await db.flush()
-    dto = await _project_dto(db, actor, project)
+    await _audit_project(db, actor, project, "updated")
+    dto = await _project_dto(db, viewer, project)
     await db.commit()
     return dto
 
@@ -188,6 +209,7 @@ async def update_project(
 async def remove_project(project_id: uuid.UUID, db: DbSession, actor: _Actor) -> None:
     """Delete the project; its chats stay, detached, in the same transaction."""
     project = await _own_project_or_404(db, actor, project_id)
+    await _audit_project(db, actor, project, "deleted")
     await delete_project(db, project=project)
     await db.commit()
 
@@ -210,7 +232,7 @@ async def search_context(
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT, f"unknown kinds: {', '.join(unknown)}"
         )
-    viewer = await _viewer(db, actor)
+    viewer = await actor_viewer(db, actor)
     query = q.strip()
     items: list[ContextSearchItemDTO] = []
     for kind in dict.fromkeys(asked):
@@ -244,7 +266,7 @@ async def browse(
     through the `data_source` resolver: one the caller may not see, another
     tenant's, or none at all is a 404."""
     resolved = await resolve_ref(
-        db, viewer=await _viewer(db, actor), kind="data_source", ref_id=str(source_id)
+        db, viewer=await actor_viewer(db, actor), kind="data_source", ref_id=str(source_id)
     )
     if resolved is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "source not found")

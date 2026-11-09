@@ -373,3 +373,85 @@ async def test_browse_is_held_to_knowledge_view_and_the_tenant(
     # `emp` lacks knowledge:view: refused at the door, whatever the id.
     assert as_emp.status_code == 403
     assert cross.status_code == 404
+
+
+async def test_rearranging_a_chat_keeps_its_run_watcher(app_session: AppSessionFactory) -> None:
+    """The PUT replies are the chat as `GET /chat/sessions/{id}` returns it: a
+    client writing one into its cache must not lose the run it watches."""
+    tenant = uuid.uuid4()
+    agent_id, _kb = await _agent_and_kb(app_session, tenant)
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            h = _h(tenant, "admin", "org_admin")
+            sid = (
+                await c.post("/api/v1/chat/sessions", json={"agentId": str(agent_id)}, headers=h)
+            ).json()["id"]
+            async with app_session(tenant) as db:
+                run = m.AgentRun(
+                    tenant_id=tenant,
+                    agent_id=agent_id,
+                    source="chat",
+                    state="running",
+                    context={"chat_session_id": sid, "reply_to_message_id": "m1"},
+                )
+                db.add(run)
+                await db.flush()
+                run_id = str(run.id)
+                await db.commit()
+            replies = [
+                await c.put(
+                    f"/api/v1/chat/sessions/{sid}/pinned", json={"pinned": True}, headers=h
+                ),
+                await c.put(f"/api/v1/chat/sessions/{sid}/pins", json={"refs": []}, headers=h),
+                await c.put(
+                    f"/api/v1/chat/sessions/{sid}/project", json={"projectId": None}, headers=h
+                ),
+            ]
+    for r in replies:
+        assert r.status_code == 200
+        assert [a["runId"] for a in r.json()["activeRuns"]] == [run_id]
+        assert "pendingQuestion" in r.json()
+
+
+async def test_project_changes_are_audited_without_their_instructions(
+    app_session: AppSessionFactory,
+) -> None:
+    from sqlalchemy import select
+
+    tenant = uuid.uuid4()
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            h = _h(tenant, "admin", "org_admin")
+            project = (
+                await c.post(
+                    "/api/v1/chat/projects",
+                    json={"name": "Q4", "instructions": "SECRET PLAN"},
+                    headers=h,
+                )
+            ).json()
+            await c.patch(
+                f"/api/v1/chat/projects/{project['id']}",
+                json={"name": "Q4b", "instructions": "SECRET TOO"},
+                headers=h,
+            )
+            await c.delete(f"/api/v1/chat/projects/{project['id']}", headers=h)
+    async with app_session(tenant) as db:
+        rows = (
+            (
+                await db.execute(
+                    select(m.AuditEvent)
+                    .where(m.AuditEvent.action.like("chat.project.%"))
+                    .order_by(m.AuditEvent.seq)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert [(r.action, r.resource) for r in rows] == [
+        ("chat.project.created", {"project_id": project["id"], "name": "Q4"}),
+        ("chat.project.updated", {"project_id": project["id"], "name": "Q4b"}),
+        ("chat.project.deleted", {"project_id": project["id"], "name": "Q4b"}),
+    ]
+    assert "SECRET" not in repr([r.resource for r in rows])

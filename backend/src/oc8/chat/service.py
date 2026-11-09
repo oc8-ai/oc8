@@ -107,17 +107,21 @@ async def list_sessions(
     tenant_id: uuid.UUID,
     member_id: uuid.UUID,
     agent_id: uuid.UUID | None = None,
+    pinned_first: bool = False,
 ) -> list[m.ChatSession]:
+    """The member's chats, most recently active first. `pinned_first` lifts
+    pinned chats to the top -- the member's own list only; a caller asking
+    "which chat is current" (a messenger's next message) wants recency alone."""
     stmt = select(m.ChatSession).where(
         m.ChatSession.tenant_id == tenant_id, m.ChatSession.member_id == member_id
     )
     if agent_id is not None:
         stmt = stmt.where(m.ChatSession.agent_id == agent_id)
-    # Pinned chats first; within each group, the most recently active first.
-    stmt = stmt.order_by(
-        m.ChatSession.pinned.desc(),
-        m.ChatSession.last_message_at.desc().nulls_last(),
-        m.ChatSession.id.desc(),
+    recency = (m.ChatSession.last_message_at.desc().nulls_last(), m.ChatSession.id.desc())
+    stmt = (
+        stmt.order_by(m.ChatSession.pinned.desc(), *recency)
+        if pinned_first
+        else stmt.order_by(*recency)
     )
     return list((await db.execute(stmt)).scalars())
 

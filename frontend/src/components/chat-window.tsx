@@ -18,6 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
+import { mostRecentSession } from "@/lib/chat-sessions";
 import { Panel } from "@/components/app-shell";
 import { ChatMarkdown } from "@/components/chat-markdown";
 import {
@@ -94,12 +95,14 @@ export function ChatWindow({
   const sessionId = controlledSessionId !== undefined ? controlledSessionId : innerSessionId;
   const setSessionId = onSessionChange ?? setInnerSessionId;
 
-  // Default to the most recent session once sessions load. Never runs again
+  // Default to the most recently active session once sessions load -- not the
+  // list's first entry, which is a pinned chat when there is one. Never runs again
   // once the reader has one selected -- including a brand new one just
   // created below -- so this can't clobber an explicit choice.
   useEffect(() => {
     if (sessionId !== null) return;
-    if (sessions && sessions.length > 0) setSessionId(sessions[0].id);
+    const latest = mostRecentSession(sessions);
+    if (latest) setSessionId(latest.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- setSessionId is a stable choice per render
   }, [sessions, sessionId]);
 

@@ -344,11 +344,7 @@ async def test_a_linked_authorized_sender_gets_an_ack_and_a_session_is_created(
         assert runs[0].context["chat_session_id"] == str(session.id)
 
         messages = (
-            (
-                await db.execute(
-                    select(m.ChatMessage).where(m.ChatMessage.session_id == session.id)
-                )
-            )
+            (await db.execute(select(m.ChatMessage).where(m.ChatMessage.session_id == session.id)))
             .scalars()
             .all()
         )
@@ -517,6 +513,70 @@ async def test_a_second_message_from_the_same_sender_reuses_the_session(
             .all()
         )
         assert len(sessions) == 1, "the second message must reuse the session, not open a new one"
+
+
+async def test_messenger_text_goes_to_the_latest_chat_not_a_pinned_older_one(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """Pinning is how the web UI orders the member's list; it must not move
+    where a messenger message lands, which is the most recent Assistant chat."""
+    from oc8.agent.assistant import get_or_create_assistant
+
+    tenant = uuid.uuid4()
+    impl = FakeChannel()
+    now = dt.datetime.now(dt.UTC)
+    async with app_session(tenant) as db:
+        member = m.OrgMember(
+            tenant_id=tenant, subject="pinner", all_departments=True, subject_uuid=uuid.uuid4()
+        )
+        db.add(member)
+        await db.flush()
+        assistant = await get_or_create_assistant(db, tenant_id=tenant)
+        old = m.ChatSession(
+            tenant_id=tenant,
+            agent_id=assistant.id,
+            member_id=member.id,
+            pinned=True,
+            last_message_at=now - dt.timedelta(days=30),
+        )
+        latest = m.ChatSession(
+            tenant_id=tenant,
+            agent_id=assistant.id,
+            member_id=member.id,
+            last_message_at=now - dt.timedelta(hours=1),
+        )
+        db.add_all([old, latest])
+        await db.flush()
+        old_id, latest_id, member_id = old.id, latest.id, member.id
+        row = await issue_code(
+            db, tenant_id=tenant, user_id=uuid.uuid4(), channel=CHANNEL, member_id=member.id
+        )
+        code = row.code
+        await db.commit()
+    async with app_session(tenant) as db:
+        await redeem_code(db, tenant_id=tenant, channel=CHANNEL, code=str(code), external_id="778")
+        sender = await db.get(m.OrgMember, member_id)
+        assert sender is not None
+        await _grant_copilot_manage(db, tenant_id=tenant, member=sender)
+        await db.commit()
+    async with app_session(tenant) as db:
+        await process_inbound(
+            db,
+            impl,
+            tenant_id=tenant,
+            channel=CHANNEL,
+            update={"message": {"text": "Neue Frage", "from": {"id": 778}}},
+        )
+    async with app_session(tenant) as db:
+        landed = set(
+            (
+                await db.execute(
+                    select(m.ChatMessage.session_id).where(m.ChatMessage.tenant_id == tenant)
+                )
+            ).scalars()
+        )
+    assert landed == {latest_id}
+    assert old_id not in landed
 
 
 async def test_channel_free_text_of_an_inactive_organisation_starts_no_run(

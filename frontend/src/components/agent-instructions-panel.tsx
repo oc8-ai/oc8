@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { Paperclip, RotateCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import { mostRecentSession } from "@/lib/chat-sessions";
 import { Panel } from "@/components/app-shell";
 import { useConfirm } from "@/hooks/use-confirm";
 import { MAX_ATTACHMENT_BYTES } from "@/lib/api";
@@ -119,12 +120,14 @@ function DraftWithCopilot({
   const [sessionId, setSessionId] = useState<string | null>(null);
 
   // Same bootstrap as ChatWindow/copilot-dock.tsx: default to the most
-  // recent existing session once the Assistant's id and its sessions have
+  // recently active session (`mostRecentSession`, not the list's first entry,
+  // which is a pinned chat when there is one) once the Assistant's id and its sessions have
   // both loaded; never runs again once one is selected.
   useEffect(() => {
     if (!assistantAgentId) return;
     if (sessionId !== null) return;
-    if (sessions && sessions.length > 0) setSessionId(sessions[0].id);
+    const latest = mostRecentSession(sessions);
+    if (latest) setSessionId(latest.id);
   }, [assistantAgentId, sessions, sessionId]);
 
   const { data: messages } = useChatMessages(sessionId);

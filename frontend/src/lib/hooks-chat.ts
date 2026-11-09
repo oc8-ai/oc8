@@ -16,6 +16,10 @@ export interface ChatSessionDTO {
   title: string;
   createdAt: string;
   lastMessageAt: string | null;
+  // Pinned chats are listed first by `GET /chat/sessions`; pick a default with
+  // `mostRecentSession` (lib/chat-sessions.ts), not the list's first entry.
+  pinned?: boolean;
+  projectId?: string | null;
 }
 
 export interface ChatContextRefDTO {

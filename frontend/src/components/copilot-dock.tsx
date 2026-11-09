@@ -17,6 +17,7 @@ import {
   useDepartments,
   useRejectCopilotProposal,
 } from "@/lib/hooks";
+import { mostRecentSession } from "@/lib/chat-sessions";
 import { useChatSessions } from "@/lib/hooks-chat";
 import { useLiveConnectionStatus } from "@/lib/live/provider";
 import { ChatSessionPicker } from "@/components/chat-window";
@@ -297,7 +298,7 @@ function CopilotDockPanel() {
     if (tabs.length > 0) return;
     if (!sessions) return;
     const uiId = crypto.randomUUID();
-    setTabs([{ uiId, sessionId: sessions[0]?.id ?? null }]);
+    setTabs([{ uiId, sessionId: mostRecentSession(sessions)?.id ?? null }]);
     setActiveUiId(uiId);
   }, [memberId, loadedMemberId, tabs.length, sessions]);
 
