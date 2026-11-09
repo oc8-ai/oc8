@@ -50,11 +50,10 @@ from oc8.authz.scope import APPROVAL_VIEW, AgentActor
 from oc8.chat.context.base import ContextPage, Viewer
 from oc8.chat.context.registry import register
 from oc8.chat.context.sources import DEFAULT_CLASSIFICATION
-from oc8.chat.live import is_autonomous_run
 from oc8.chat.reach import reachable_chat_agent
 from oc8.copilot.redaction import redact_text
 from oc8.departments.repo import visible_department, visible_departments
-from oc8.runtime.person import is_own, person_behind
+from oc8.runtime.person import whose_run
 from oc8.runtime.run_inputs import may_manage_agent
 
 #: The longest summary a resolver hands back.
@@ -255,9 +254,10 @@ class RunResolver(_Summarized):
         )
         if agent is None:
             return False
+        whose = await whose_run(db, run)
         if (
-            is_own(person_behind(run.context), viewer.member.subject)
-            or is_autonomous_run(run)
+            whose.is_own(viewer.member.subject)
+            or whose.autonomous
             or await self._of_own_chat(db, viewer, run)
         ):
             obj.redacted = False

@@ -9,9 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.chat.audience import session_audience
-from oc8.chat.live import is_autonomous_run
 from oc8.chat.reach import member_can_reach_agent
-from oc8.runtime.person import is_own, person_behind
+from oc8.runtime.person import whose_run
 
 
 async def may_watch_run(
@@ -21,8 +20,8 @@ async def may_watch_run(
     run_id: uuid.UUID,
     token_role: str | None = None,
 ) -> bool:
-    """A run the member started, or that runs on her behalf (`person_behind`),
-    an autonomous run
+    """A run the member started, or that runs on her behalf or through her
+    account (`whose_run`), an autonomous run
     of the agent (it is on their Live timeline), or a chat run of a session
     they own (an edition's readers do NOT stream live) -- never a colleague's run otherwise, not
     even for a manager; in EVERY case only while they can still
@@ -36,9 +35,10 @@ async def may_watch_run(
     ):
         return False
     context = run.context or {}
-    if is_own(person_behind(context), member.subject):
+    whose = await whose_run(db, run)
+    if whose.is_own(member.subject):
         return True
-    if is_autonomous_run(run):
+    if whose.autonomous:
         # The agent's own run: on the Live timeline of everyone who reaches
         # the agent (spec §3.1), so its live events are theirs too.
         return True

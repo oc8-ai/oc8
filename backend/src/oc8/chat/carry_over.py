@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.db.session import tenant_session
-from oc8.runtime.person import is_own, person_behind
+from oc8.runtime.person import whose_run
 from oc8.runtime.run_inputs import CARRIED_OVER_STEP, unread_run_inputs
 from oc8.runtime.states import TERMINAL, RunState
 
@@ -136,7 +136,9 @@ async def _refusal(
     member = await db.get(m.OrgMember, session.member_id)
     if member is None or member.deleted_at is not None or member.tenant_id != run.tenant_id:
         return "the chat's owner is no longer a member"
-    if not is_own(person_behind(ctx), member.subject):
+    # Whose run it is NOW, with the account it acts through (`whose_run`):
+    # never a turn under somebody else's account.
+    if not (await whose_run(db, run)).is_own(member.subject):
         return "the run is not the chat owner's"
     agent = await db.get(m.Agent, run.agent_id)
     if agent is None or agent.id != session.agent_id:

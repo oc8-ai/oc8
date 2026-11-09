@@ -25,11 +25,11 @@ from oc8.authz.scope import HumanActor
 from oc8.chat.live import (
     LiveItem,
     get_or_create_live_session,
-    is_colleague_run,
     live_timeline,
     trigger_names,
 )
 from oc8.chat.reach import reachable_chat_agent
+from oc8.runtime.person import whose_runs
 from oc8.runtime.run_inputs import may_manage_agent
 from oc8.runtime.step_record import step_timing_dto
 from oc8.schemas.dto import LiveItemDTO, LiveRunDTO, LiveTimelineDTO, LiveTriggerDTO
@@ -143,6 +143,7 @@ async def get_live(
     triggers = await trigger_names(
         db, [i.run for i in items if i.run is not None], tenant_id=agent.tenant_id
     )
+    whose = await whose_runs(db, [i.run.id for i in items if i.run is not None])
     out: list[LiveItemDTO] = []
     for item in items:
         out.append(
@@ -158,7 +159,7 @@ async def get_live(
                     _run_dto(
                         item.run,
                         triggers[item.run.id],
-                        colleague=is_colleague_run(item.run, actor.member),
+                        colleague=whose[item.run.id].is_colleagues(actor.member.subject),
                     )
                     if item.run is not None
                     else None

@@ -1,9 +1,10 @@
 """Writing to a running run (spec §3.2).
 
 The input runs under the RUN's authority, so the only people who may write are
-the run's person (`originating_operator`, or `for_person` -- `person_behind`)
-or, for the agent's own autonomous run (`is_autonomous_run`: schedule, webhook,
-delegation with nobody behind it), the agent's managers. The same "whose run"
+the run's person (`originating_operator`, `for_person`, or the member whose
+personal account it acts through -- `oc8.runtime.person.whose_run`) or, for
+the agent's own autonomous run (schedule, webhook, delegation with nobody
+behind it and nobody's account), the agent's managers. The same "whose run"
 rule as the Live timeline and live watching. Nobody steers somebody else's
 run -- a manager neither -- and nobody steers an agent they can no longer reach.
 The text is only text: guardrails and approvals judge whatever the agent does
@@ -17,6 +18,7 @@ Inputs are consumed exactly once, in order, at a step boundary
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -31,17 +33,18 @@ from oc8.audit.chain import append_event
 from oc8.authz.authority import Authority
 from oc8.authz.permissions import AGENT, MANAGE, perm
 from oc8.authz.scope import DepartmentScope
-from oc8.chat.live import is_autonomous_run
 from oc8.chat.reach import reachable_chat_agent
 from oc8.copilot.redaction import is_secret_request
 from oc8.db.session import tenant_session
 from oc8.runtime.fencing import fence, one_line
-from oc8.runtime.person import is_own, person_behind
+from oc8.runtime.person import Whose, whose_run
 from oc8.runtime.states import TERMINAL, RunState
 
 if TYPE_CHECKING:
     from oc8.auth.principal import Principal
     from oc8.realtime.bus import EventBus
+
+logger = logging.getLogger(__name__)
 
 #: Mirrors `ck_run_input_text` (migration 0112).
 MAX_INPUT_CHARS: Final = 4000
@@ -96,13 +99,28 @@ async def may_steer_run(
     # One rule with Live and watch (Ruling 54): somebody's run is steered by
     # that person alone; only the agent's own autonomous run by its managers.
     # A messenger chat turn names its chat owner as `for_person` (Ruling
-    # 58), so it is hers like any other. A run that is somebody's without
-    # naming anyone (a messenger turn from before that) is steered by nobody.
-    if is_own(person_behind(run.context), member.subject):
+    # 58), so it is hers like any other. A run that acts through a member's
+    # personal account (her schedule's chain, a follow-up carrying
+    # `on_behalf_of`) is hers too: a manager's words would run with her
+    # token. A run that is somebody's without naming anyone (a messenger
+    # turn from before that) is steered by nobody.
+    whose = await whose_run(db, run)
+    if whose.is_own(member.subject):
         return True
-    if is_autonomous_run(run):
+    if whose.autonomous:
         return await may_manage_agent(db, agent=agent, authority=authority, scope=scope)
     return False
+
+
+def may_still_take(whose: Whose, author_subject: str | None) -> bool:
+    """`may_steer_run`'s "whose run" half, asked again when an input is
+    consumed or carried over: the run may have become somebody's since the
+    input was accepted (a schedule re-saved by its creator, a follow-up that
+    now acts through a member's account). A manager's input to what WAS the
+    agent's own run is then not delivered -- never run under her account."""
+    if whose.autonomous:
+        return True
+    return author_subject is not None and whose.is_own(author_subject)
 
 
 async def add_run_input(
@@ -192,6 +210,9 @@ async def lock_run_inputs(db: AsyncSession, *, tenant_id: uuid.UUID, run_id: uui
 #: became the next turn of the same chat (Ruling 59). Not a step. Set only
 #: together with that turn, in one transaction (Ruling 61).
 CARRIED_OVER_STEP: Final = -1
+#: `consumed_step` of an input the run never received: by the time it was
+#: consumed, the run was no longer one its author may steer (`may_still_take`).
+REFUSED_STEP: Final = -2
 
 
 async def unread_run_inputs(db: AsyncSession, *, run_id: uuid.UUID) -> list[m.RunInput]:
@@ -237,11 +258,32 @@ async def consume_run_inputs(
     )
     if not rows:
         return []
+    # The door's "whose run" check, made again now (as carry-over does,
+    # Rulings 60/61): the run's columns as the database has them -- never a
+    # copy cached in `db`, and without touching that copy.
+    run = (
+        await db.execute(
+            select(m.AgentRun.source, m.AgentRun.context, m.AgentRun.tenant_id).where(
+                m.AgentRun.id == run_id
+            )
+        )
+    ).one_or_none()
+    whose = await whose_run(db, run) if run is not None else None
     now = dt.datetime.now(tz=dt.UTC)
     authors: dict[uuid.UUID, str] = {}
+    subjects: dict[uuid.UUID, str | None] = {}
     out: list[ConsumedInput] = []
     for row in rows:
         row.consumed_at = now
+        if row.author_member_id not in subjects:
+            author = await db.get(m.OrgMember, row.author_member_id)
+            subjects[row.author_member_id] = (
+                author.subject if author is not None and author.deleted_at is None else None
+            )
+        if whose is None or not may_still_take(whose, subjects[row.author_member_id]):
+            row.consumed_step = REFUSED_STEP
+            logger.info("run %s: input %s not delivered: no longer the author's", run_id, row.id)
+            continue
         row.consumed_step = step
         if row.author_member_id not in authors:
             authors[row.author_member_id] = await _author_name(db, row.author_member_id)
@@ -303,8 +345,10 @@ async def delivered_run_inputs(db: AsyncSession, *, run_id: uuid.UUID) -> list[C
                 .where(
                     m.RunInput.run_id == run_id,
                     m.RunInput.consumed_at.is_not(None),
-                    # Never delivered to this run: carried over to a new turn.
+                    # Never delivered to this run: carried over to a new
+                    # turn, or refused when consumed.
                     m.RunInput.consumed_step.is_distinct_from(CARRIED_OVER_STEP),
+                    m.RunInput.consumed_step.is_distinct_from(REFUSED_STEP),
                 )
                 .order_by(m.RunInput.seq)
             )

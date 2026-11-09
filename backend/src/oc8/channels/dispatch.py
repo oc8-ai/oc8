@@ -553,12 +553,12 @@ async def _steer_running_turn(
     to THAT run (Ruling 52, as in the web composer); a stop word stops it.
 
     Only the sender's own run (Ruling 58: the same "whose run" rule as Live,
-    watch and the web's steer, `person_behind`) in the chat this message would
+    watch and the web's steer, `whose_run`) in the chat this message would
     otherwise go to. Returns True when the message was consumed; False lets it
     start a new turn (nothing is running, or the run is somebody else's)."""
     from sqlalchemy import select
 
-    from oc8.runtime.person import is_own, person_behind
+    from oc8.runtime.person import whose_run
     from oc8.runtime.run_inputs import (
         InputRefused,
         add_run_input,
@@ -579,7 +579,7 @@ async def _steer_running_turn(
             .limit(1)
         )
     ).scalar_one_or_none()
-    if run is None or not is_own(person_behind(run.context), member.subject):
+    if run is None or not (await whose_run(db, run)).is_own(member.subject):
         return False
     if text.text.strip().lower() in _ESCAPE_WORDS:
         await request_stop(db, run=run, actor_member_id=member.id, principal=None, door=channel)
