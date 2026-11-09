@@ -25,10 +25,11 @@ from oc8.audit import append_event
 from oc8.authz.authority import Authority, authority_for_principal
 from oc8.authz.permissions import AGENT, COPILOT, COPILOT_USE, MANAGE, RUN_START, VIEW, perm
 from oc8.authz.scope import HumanActor
+from oc8.chat.audience import is_reader_only
 from oc8.chat.model_choice import is_allowed_override, model_options
 from oc8.chat.modes import MODES
 from oc8.chat.questions import QuestionError
-from oc8.chat.reach import reachable_chat_agent
+from oc8.chat.reach import member_can_reach_agent, reachable_chat_agent
 from oc8.chat.service import (
     QuestionNotAnswerable,
     active_runs_for_session,
@@ -260,6 +261,32 @@ async def _owned_session(
     return session
 
 
+async def _readable_session(
+    request: Request, session_id: uuid.UUID, db: DbSession, actor: HumanActor
+) -> tuple[m.ChatSession, bool]:
+    """`_owned_session`, or -- for the two READ routes only -- the session of
+    which an edition made the caller a reader (and who still reaches its agent).
+    The flag is `read_only`. Every write route keeps `_owned_session`; a reader
+    never gets past it. Anything else is the same 404 as a session that does
+    not exist."""
+    try:
+        return await _owned_session(request, session_id, db, actor), False
+    except HTTPException:
+        session = await get_session(db, tenant_id=actor.principal.tenant_id, session_id=session_id)
+        if (
+            session is not None
+            and await is_reader_only(db, session=session, member_id=actor.member.id)
+            and await member_can_reach_agent(
+                db,
+                member=actor.member,
+                agent_id=session.agent_id,
+                token_role=actor.principal.role,
+            )
+        ):
+            return session, True
+        raise
+
+
 @router.get("/chat/sessions/{session_id}/messages", response_model=list[ChatMessageDTO])
 async def get_messages(
     request: Request,
@@ -270,7 +297,7 @@ async def get_messages(
         Depends(require_departmental(perm(AGENT, VIEW), or_tenant_wide=COPILOT_USE)),
     ],
 ) -> list[ChatMessageDTO]:
-    await _owned_session(request, session_id, db, actor)
+    await _readable_session(request, session_id, db, actor)
     messages = await list_messages(db, tenant_id=actor.principal.tenant_id, session_id=session_id)
     return [await _message_dto(msg, db, actor.principal.tenant_id) for msg in messages]
 
@@ -281,8 +308,9 @@ async def get_chat_session(
 ) -> ChatSessionDTO:
     """One chat, with the runs still answering it -- so a page loaded mid-answer
     knows which run to watch. Same ownership gate as every session sub-route."""
-    session = await _owned_session(request, session_id, db, actor)
-    return await session_detail(db, viewer=await actor_viewer(db, actor), session=session)
+    session, read_only = await _readable_session(request, session_id, db, actor)
+    detail = await session_detail(db, viewer=await actor_viewer(db, actor), session=session)
+    return detail.model_copy(update={"read_only": True}) if read_only else detail
 
 
 @router.post("/chat/sessions/{session_id}/questions/{clarification_id}/answer")
