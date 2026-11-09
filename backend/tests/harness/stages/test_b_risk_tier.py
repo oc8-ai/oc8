@@ -86,3 +86,19 @@ def test_outward_skip_spec_keeps_internal_note_as_write() -> None:
         )
         == "outward"
     )
+
+
+def test_a_connection_tool_sharing_a_core_name_is_tiered_by_its_scopes() -> None:
+    """`odoo.todo_write` is a write on odoo. Its bare name is the core to-do
+    list, a read -- and the B gate let it through unasked."""
+    assert (
+        classify_tier(
+            "todo_write",
+            scopes={"modify": ["todo_write"]},
+            config=None,
+            annotations=None,
+            core=False,
+        )
+        == "write"
+    )
+    assert classify_tier("todo_write", scopes=None, config=None, annotations=None) == "read"
