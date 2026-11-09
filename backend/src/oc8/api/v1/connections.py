@@ -178,6 +178,7 @@ async def list_integrations(
                 credential_fields=fields,
                 available=item.available,
                 capa_id=str(item.capa_id),
+                permissions=list(item.permissions),
             )
         )
     return out

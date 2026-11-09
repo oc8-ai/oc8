@@ -14,7 +14,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Final
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -45,6 +45,8 @@ class InstalledIntegration:
     #: Enabled: its tools exist. A legacy never-enabled install is listed with
     #: False so an admin can make it available with one click.
     available: bool
+    #: What the plugin's current version asks for, granted by that click.
+    permissions: tuple[str, ...] = ()
 
 
 def integration_from_manifest(manifest: Manifest) -> Integration | None:
@@ -78,9 +80,15 @@ async def installed_integrations(db: AsyncSession) -> list[InstalledIntegration]
     rows = (
         await db.execute(
             select(m.Capa, m.CapaInstallation, m.CapaVersion)
-            .join(m.CapaInstallation, m.CapaInstallation.capa_id == m.Capa.id)
+            # A never-enabled install may have no installation row yet.
+            .outerjoin(m.CapaInstallation, m.CapaInstallation.capa_id == m.Capa.id)
             .join(m.CapaVersion, m.CapaVersion.id == m.Capa.current_version_id)
-            .where(m.CapaInstallation.status.in_(("installed", "enabled")))
+            .where(
+                or_(
+                    m.CapaInstallation.id.is_(None),
+                    m.CapaInstallation.status.in_(("installed", "enabled")),
+                )
+            )
         )
     ).all()
     out: list[InstalledIntegration] = []
@@ -91,7 +99,14 @@ async def installed_integrations(db: AsyncSession) -> list[InstalledIntegration]
             continue
         integration = integration_from_manifest(manifest)
         if integration is not None:
-            out.append(InstalledIntegration(integration, capa.id, installation.status == "enabled"))
+            out.append(
+                InstalledIntegration(
+                    integration,
+                    capa.id,
+                    available=installation is not None and installation.status == "enabled",
+                    permissions=tuple(version.permissions or []),
+                )
+            )
     return sorted(out, key=lambda item: item.integration.label.lower())
 
 

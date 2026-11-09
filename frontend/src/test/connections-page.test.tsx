@@ -15,6 +15,7 @@ const complete = vi.fn();
 const consentUrl = vi.fn();
 const may = vi.fn();
 const capaIcon = vi.fn();
+const enable = vi.fn();
 
 vi.mock("@/lib/connections", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/connections")>();
@@ -38,7 +39,11 @@ vi.mock("@/lib/connections", async (importOriginal) => {
 });
 vi.mock("@/lib/hooks", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/hooks")>();
-  return { ...actual, useCapaIcon: (id: string) => capaIcon(id) };
+  return {
+    ...actual,
+    useCapaIcon: (id: string) => capaIcon(id),
+    useEnablePlugin: () => ({ mutateAsync: enable, isPending: false }),
+  };
 });
 vi.mock("@/lib/governance-hooks", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/governance-hooks")>();
@@ -167,6 +172,33 @@ describe("ConnectionsPage", () => {
     membersEnabled.mockReset();
     disconnect.mockReset();
     complete.mockReset();
+    enable.mockReset();
+    enable.mockResolvedValue({});
+  });
+
+  it("lets an admin make a legacy installed integration available", async () => {
+    may.mockReturnValue(true);
+    integrations.mockReturnValue({
+      data: [{ ...ODOO, available: false, permissions: ["mcp:connect"] }],
+      isLoading: false,
+    });
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Odoo bereitstellen" }));
+    await waitFor(() =>
+      expect(enable).toHaveBeenCalledWith({ pluginId: "c2", grantedPermissions: ["mcp:connect"] }),
+    );
+  });
+
+  it("offers making it available only to whoever may enable plugins", async () => {
+    // Manages connections, but enabling a plugin needs plugin:manage.
+    may.mockImplementation((p: string) => p === "integration:manage");
+    integrations.mockReturnValue({
+      data: [{ ...ODOO, available: false, permissions: ["mcp:connect"] }],
+      isLoading: false,
+    });
+    renderPage();
+    await screen.findByRole("region", { name: "Organisation" });
+    expect(screen.queryByRole("button", { name: "Odoo bereitstellen" })).not.toBeInTheDocument();
   });
 
   it("shows a member only their own connections", async () => {

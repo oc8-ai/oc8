@@ -1440,6 +1440,8 @@ class ConnectableIntegrationDTO(CamelModel):
     credential_fields: list[dict[str, Any]] = []
     available: bool
     capa_id: str
+    #: What making it available grants (the plugin's requested permissions).
+    permissions: list[str] = []
 
 
 class ConnectionDTO(CamelModel):

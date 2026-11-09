@@ -2486,6 +2486,8 @@ export function useInstallPluginFromDisk() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["plugins", "available"] });
       qc.invalidateQueries({ queryKey: ["plugins"] });
+      // Installing makes an integration available on the Connections page.
+      qc.invalidateQueries({ queryKey: ["connections"] });
     },
   });
 }
@@ -2538,6 +2540,7 @@ export function useEnablePlugin() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["plugins", "available"] });
       qc.invalidateQueries({ queryKey: ["knowledge", "connectors"] });
+      qc.invalidateQueries({ queryKey: ["connections"] });
     },
   });
 }

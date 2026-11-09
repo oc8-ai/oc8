@@ -226,6 +226,10 @@ def _resolve_setup_translations(
 
 class InstallFromDiskRequest(CamelModel):
     plugin_id: str
+    #: Make it available in the same step (connections design: "installing
+    #: makes it available"). An update that asks for more permissions than
+    #: were granted still needs the explicit enable/consent step.
+    enable: bool = True
 
 
 class EnableRequest(CamelModel):
@@ -496,10 +500,19 @@ async def configure_plugin(
     installation = (
         await db.execute(select(m.CapaInstallation).where(m.CapaInstallation.capa_id == plugin.id))
     ).scalar_one_or_none()
-    if installation is None or installation.status != "enabled":
-        raise HTTPException(status.HTTP_409_CONFLICT, "plugin must be enabled before setup")
     version = await db.get(m.CapaVersion, plugin.current_version_id)
     assert version is not None
+    if installation is None or installation.status == "installed":
+        # Installed before "installing makes it available" and never enabled:
+        # setting it up (plugin:manage, like enable) makes it available now.
+        installation = await enable_plugin(
+            db,
+            tenant_id=principal.tenant_id,
+            capa_id=plugin.id,
+            granted_permissions=list(version.permissions),
+        )
+    if installation.status != "enabled":
+        raise HTTPException(status.HTTP_409_CONFLICT, "plugin must be enabled before setup")
     manifest = parse_manifest(version.manifest)
     setup = manifest.setup
     if setup is None:
@@ -1014,6 +1027,7 @@ async def _configure_without_connection(
     await db.commit()
     return PluginSetupResult(connection_id=None)
 
+
 @router.post(
     "/capas/install-from-disk",
     response_model=PluginVersionDTO,
@@ -1034,25 +1048,33 @@ async def install_from_disk(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "plugin not found on disk")
     if not found.valid or found.manifest is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, found.error or "invalid manifest")
-    # Updating an enabled plugin is a two-step consent flow. Disable the old
-    # version before switching current_version_id; the UI will then require an
-    # explicit Enable for the new manifest and its permissions.
+    # Updating an enabled plugin disables the old version before switching
+    # current_version_id; below it is re-enabled only when the new manifest
+    # asks for no new permission, otherwise the UI requires an explicit Enable.
     existing_plugin = (
         await db.execute(select(m.Capa).where(m.Capa.name == found.name))
     ).scalar_one_or_none()
+    existing_installation: m.CapaInstallation | None = None
     if existing_plugin is not None:
         existing_installation = (
             await db.execute(
                 select(m.CapaInstallation).where(m.CapaInstallation.capa_id == existing_plugin.id)
             )
         ).scalar_one_or_none()
-        if existing_installation is not None and existing_installation.status == "enabled":
-            await disable_plugin(
-                db,
-                tenant_id=principal.tenant_id,
-                capa_id=existing_plugin.id,
-                reason="plugin update pending consent",
-            )
+    # Captured before the update flow below disables the old version.
+    granted_before = (
+        set(existing_installation.granted_permissions)
+        if existing_installation is not None
+        else set()
+    )
+    was_status = existing_installation.status if existing_installation is not None else None
+    if existing_installation is not None and existing_installation.status == "enabled":
+        await disable_plugin(
+            db,
+            tenant_id=principal.tenant_id,
+            capa_id=existing_installation.capa_id,
+            reason="plugin update pending consent",
+        )
     try:
         # origin stays "local": ck_plugin_origin allows only local|store, and a
         # plugin read off this installation's filesystem IS local (as opposed to
@@ -1066,6 +1088,21 @@ async def install_from_disk(
     except PluginError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     assert version is not None  # the requested plugin is never in `_seen` on entry
+    # Installing makes it available: a fresh (or never-enabled) install is
+    # enabled with what its manifest asks for -- the installer holds
+    # plugin:manage, the same permission the explicit enable needs. An update
+    # of an enabled plugin is re-enabled only when it asks for no permission
+    # beyond those already granted; anything new keeps the explicit consent
+    # step. A deliberately disabled or quarantined plugin stays as it is.
+    required = set(version.permissions)
+    fresh = was_status in (None, "installed")
+    if body.enable and (fresh or (was_status == "enabled" and required <= granted_before)):
+        await enable_plugin(
+            db,
+            tenant_id=principal.tenant_id,
+            capa_id=version.capa_id,
+            granted_permissions=sorted(required),
+        )
     plugin = await db.get(m.Capa, version.capa_id)
     assert plugin is not None
     return PluginVersionDTO(

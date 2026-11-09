@@ -20,6 +20,7 @@ import {
   useTestConnection,
 } from "@/lib/connections";
 import { useMay } from "@/lib/governance-hooks";
+import { useEnablePlugin } from "@/lib/hooks";
 import { useLang, useT } from "@/lib/i18n";
 import { ConnectDialog } from "./connect-dialog";
 import { IntegrationIcon } from "./integration-icon";
@@ -89,6 +90,9 @@ export function ConnectionsPage({
   const { lang } = useLang();
   const may = useMay();
   const isAdmin = may("integration:manage");
+  // Making an installed plugin available enables it: the backend's enable
+  // needs plugin:manage, so only offer it to whoever holds that.
+  const mayEnable = may("plugin:manage");
   const { confirm, ConfirmDialog } = useConfirm();
   useNoReferrer();
   // Captured once: the URL is cleaned right away, and a refetch must not
@@ -152,8 +156,10 @@ export function ConnectionsPage({
   const members = useMemberConnections(isAdmin);
   const disconnect = useDisconnect();
   const test = useTestConnection();
+  const enable = useEnablePlugin();
 
   const available = (integrations.data ?? []).filter((i) => i.available);
+  const notYetAvailable = (integrations.data ?? []).filter((i) => !i.available);
   const byName = new Map((integrations.data ?? []).map((i) => [i.name, i] as const));
   const integrationTypes = (integrations.data ?? []).flatMap((i) =>
     i.credentialType ? [i.credentialType] : [],
@@ -206,6 +212,22 @@ export function ConnectionsPage({
           "The test failed. Please try again.",
           "Der Test ist fehlgeschlagen. Bitte versuchen Sie es erneut.",
         ),
+      );
+    }
+  };
+
+  const makeAvailable = async (i: Integration) => {
+    try {
+      await enable.mutateAsync({ pluginId: i.capaId, grantedPermissions: i.permissions ?? [] });
+      toast.success(t(`${i.label} is available.`, `${i.label} ist verfügbar.`));
+    } catch (err: unknown) {
+      toast.error(
+        err instanceof Error
+          ? err.message
+          : t(
+              "That did not work. Please try again.",
+              "Das hat nicht geklappt. Bitte versuchen Sie es erneut.",
+            ),
       );
     }
   };
@@ -309,6 +331,29 @@ export function ConnectionsPage({
                 </select>
               )}
             </div>
+            {mayEnable &&
+              notYetAvailable.map((i) => (
+                <div
+                  key={i.name}
+                  className="mt-3 flex flex-wrap items-center justify-between gap-2 text-sm"
+                >
+                  <span>
+                    {t(
+                      `${i.label} is installed but not available yet.`,
+                      `${i.label} ist installiert, aber noch nicht verfügbar.`,
+                    )}
+                  </span>
+                  <button
+                    type="button"
+                    className={SMALL}
+                    disabled={enable.isPending}
+                    aria-label={t(`Make ${i.label} available`, `${i.label} bereitstellen`)}
+                    onClick={() => makeAvailable(i)}
+                  >
+                    {t("Make available", "Bereitstellen")}
+                  </button>
+                </div>
+              ))}
             {(org.data ?? []).length === 0 ? (
               <p className="mt-4 text-sm text-muted-foreground">
                 {t("No organisation access yet.", "Noch kein Zugang der Organisation.")}
