@@ -5,7 +5,7 @@
 // the socket (lib/live/apply-event.ts); nothing here polls.
 
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { api, uploadChatAttachment, type FileAttachmentDTO } from "@/lib/api";
+import { api, retryUnlessRefused, uploadChatAttachment, type FileAttachmentDTO } from "@/lib/api";
 import type { LiveReasoning, RunComponentDTO } from "@/lib/hooks";
 
 export type { FileAttachmentDTO } from "@/lib/api";
@@ -120,6 +120,7 @@ export function useChatMessages(sessionId: string | null) {
     queryFn: () =>
       api.get<ChatMessageDTO[]>(`/chat/sessions/${encodeURIComponent(sessionId ?? "")}/messages`),
     enabled: !!sessionId,
+    retry: retryUnlessRefused,
   });
 }
 

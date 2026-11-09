@@ -246,6 +246,12 @@ export class ApiError extends Error {
   }
 }
 
+/** A query's `retry`: a refusal (4xx -- gone, not yours, invalid) is final;
+ *  only a server or network failure is tried again, up to three times. */
+export function retryUnlessRefused(failures: number, error: unknown): boolean {
+  return !(error instanceof ApiError && error.status >= 400 && error.status < 500) && failures < 3;
+}
+
 async function toError(res: Response): Promise<Error> {
   let detail: unknown;
   try {

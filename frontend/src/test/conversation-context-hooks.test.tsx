@@ -15,6 +15,7 @@ vi.mock("@/lib/api", async (orig) => ({
 
 import {
   conversationKeys,
+  useChatSession,
   useBrowseSource,
   useContextSearchResults,
   useRunSteering,
@@ -23,6 +24,7 @@ import {
   type ChatSessionDetailDTO,
 } from "@/lib/conversation-api";
 import { ApiError } from "@/lib/api";
+import { useChatMessages } from "@/lib/hooks-chat";
 
 function wrapper(qc: QueryClient) {
   return ({ children }: { children: ReactNode }) => (
@@ -255,6 +257,21 @@ describe("useSetPins", () => {
         .getQueryData<ChatSessionDetailDTO>(conversationKeys.session("s/1"))
         ?.pinnedRefs.map((p) => p.id),
     ).toEqual(["a", "b"]);
+  });
+});
+
+describe("a chat that is gone (E2E K)", () => {
+  it.each([
+    ["session", () => useChatSession("s1")],
+    ["messages", () => useChatMessages("s1")],
+  ])("asks for its %s once and never retries a 404", async (_name, hook) => {
+    get.mockReset();
+    get.mockRejectedValue(new ApiError("not found", 404));
+    // The app's default: three retries.
+    const qc = new QueryClient();
+    const { result } = renderHook(hook, { wrapper: wrapper(qc) });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(get).toHaveBeenCalledTimes(1);
   });
 });
 

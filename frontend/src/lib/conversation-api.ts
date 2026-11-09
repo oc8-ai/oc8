@@ -11,7 +11,7 @@ import {
   type InfiniteData,
 } from "@tanstack/react-query";
 
-import { api, ApiError } from "@/lib/api";
+import { api, ApiError, retryUnlessRefused } from "@/lib/api";
 import { isUuid } from "@/lib/ids";
 import {
   chatKeys,
@@ -71,6 +71,8 @@ export function useChatSession(sessionId: string | null) {
     queryFn: () =>
       api.get<ChatSessionDetailDTO>(`/chat/sessions/${encodeURIComponent(sessionId ?? "")}`),
     enabled: !!sessionId,
+    // A chat that is gone (404) or not the reader's (403) stays so.
+    retry: retryUnlessRefused,
   });
 }
 
@@ -568,8 +570,7 @@ export function useRunSteering(runId: string | null, cachedId: string | null = r
     queryKey: runSteeringKey(runId ?? cachedId),
     queryFn: () => api.get<RunSteeringDTO>(`/runs/${encodeURIComponent(runId ?? "")}/steering`),
     enabled: !!runId,
-    retry: (failures, error) =>
-      !(error instanceof ApiError && error.status >= 400 && error.status < 500) && failures < 3,
+    retry: retryUnlessRefused,
   });
 }
 
