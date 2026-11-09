@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.authz.scope import DepartmentScope
+from oc8.copilot.builder import selectable
 
 MAX_IDEAS: Final = 4
 
@@ -178,32 +178,74 @@ def merge_templates(
 def pick_ideas(
     templates: Sequence[AgentTemplate], connected: frozenset[str], limit: int = MAX_IDEAS
 ) -> list[AgentTemplate]:
-    matching = [t for t in templates if t.requires_any and connected & set(t.requires_any)]
+    matching = [t for t in templates if t.requires_any and not connected.isdisjoint(t.requires_any)]
     generic = [t for t in templates if not t.requires_any]
     return (matching + generic)[:limit]
 
 
 async def connected_kinds(
-    db: AsyncSession, *, tenant_id: uuid.UUID, scope: DepartmentScope
+    db: AsyncSession, *, tenant_id: uuid.UUID, departments: Sequence[m.Department]
 ) -> frozenset[str]:
-    """Plugin names of connected systems this member can see: tenant-wide ones,
-    and department ones only in a department they may view."""
+    """Plugin names of systems the builder would offer in a department this member
+    may view (`selectable`: frame-enabled, connected, tenant-wide or in that department)."""
+    if not departments:
+        return frozenset()
     rows = (
-        (
-            await db.execute(
-                select(m.McpConnection).where(
-                    m.McpConnection.tenant_id == tenant_id, m.McpConnection.connected.is_(True)
-                )
+        await db.execute(
+            select(
+                m.McpConnection.name,
+                m.McpConnection.department_id,
+                m.McpConnection.config["_plugin_name"].as_string(),
+            ).where(
+                m.McpConnection.tenant_id == tenant_id,
+                m.McpConnection.connected.is_(True),
             )
         )
-        .scalars()
-        .all()
+    ).all()
+    return frozenset(
+        plugin
+        for name, dept_id, plugin in rows
+        if plugin and any(selectable(name, dept_id, d) for d in departments)
     )
-    kinds: set[str] = set()
-    for row in rows:
-        if row.department_id is not None and not scope.may_view(row.department_id):
+
+
+def collect_edition_templates(extensions: Iterable[object]) -> tuple[AgentTemplate, ...]:
+    """What editions contribute, refused at boot when malformed (as tool name
+    collisions are). An extension without `agent_templates()` contributes none."""
+    out: list[AgentTemplate] = []
+    for ext in extensions:
+        hook = getattr(ext, "agent_templates", None)
+        if hook is None:
             continue
-        name = (row.config or {}).get("_plugin_name")
-        if isinstance(name, str) and name:
-            kinds.add(name)
-    return frozenset(kinds)
+        who = type(ext).__name__
+        for item in hook():
+            if not isinstance(item, AgentTemplate):
+                raise TypeError(f"edition {who}: agent_templates() returned {type(item).__name__}")
+            if not isinstance(item.key, str) or not item.key:
+                raise ValueError(f"edition {who}: an agent template has an empty key")
+            if not isinstance(item.requires_any, tuple) or not all(
+                isinstance(k, str) and k for k in item.requires_any
+            ):
+                raise ValueError(
+                    f"edition {who}: agent template {item.key!r}: "
+                    "requires_any must be a tuple of str"
+                )
+            for field in (
+                "title_en",
+                "title_de",
+                "subtitle_en",
+                "subtitle_de",
+                "prompt_en",
+                "prompt_de",
+            ):
+                if not isinstance(getattr(item, field), str):
+                    raise ValueError(
+                        f"edition {who}: agent template {item.key!r}: {field} is not text"
+                    )
+            for field in ("title_en", "title_de", "prompt_en", "prompt_de"):
+                if not getattr(item, field).strip():
+                    raise ValueError(
+                        f"edition {who}: agent template {item.key!r}: {field} is empty"
+                    )
+            out.append(item)
+    return tuple(out)

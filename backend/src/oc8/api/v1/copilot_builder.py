@@ -47,6 +47,7 @@ from oc8.copilot.capabilities import (
 )
 from oc8.copilot.models import CopilotProposal
 from oc8.copilot.tools import uuid_or_none
+from oc8.departments.repo import visible_departments
 from oc8.schemas.dto import (
     AgentBuilderDTO,
     AgentIdeaDTO,
@@ -307,8 +308,12 @@ async def request_builder(
     dependencies=[Depends(require_permission(COPILOT_USE))],
 )
 async def get_agent_ideas(request: Request, db: DbSession, actor: _Actor) -> list[AgentIdeaDTO]:
-    templates = merge_templates(CORE_TEMPLATES, getattr(request.app.state, "agent_templates", ()))
-    kinds = await connected_kinds(db, tenant_id=actor.principal.tenant_id, scope=actor.scope)
+    templates = merge_templates(CORE_TEMPLATES, request.app.state.agent_templates)
+    authority = await authority_for_principal(request, db, actor.principal)
+    departments, _total = await visible_departments(
+        db, scope=actor.scope, tenant_wide=tenant_wide_read(authority, perm(DEPARTMENT, VIEW))
+    )
+    kinds = await connected_kinds(db, tenant_id=actor.principal.tenant_id, departments=departments)
     return [
         AgentIdeaDTO(
             key=t.key,

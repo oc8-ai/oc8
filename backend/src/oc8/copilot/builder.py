@@ -131,29 +131,38 @@ def enabled_systems(frame: dict[str, Any] | None) -> frozenset[str]:
     )
 
 
+def selectable(
+    name: str, connection_department_id: uuid.UUID | None, department: m.Department
+) -> bool:
+    """Whether a connected connection is offered in `department`: the department's
+    frame enables its name and it is tenant-wide or sits in that department."""
+    return name in enabled_systems(department.frame) and connection_department_id in (
+        None,
+        department.id,
+    )
+
+
 async def usable_systems(
     db: AsyncSession, *, tenant_id: uuid.UUID, department: m.Department
 ) -> frozenset[str]:
     """What a builder proposal may select (Ruling A12): enabled by the
     department's frame AND backed by a connected connection of that name,
     tenant-wide or in this department. A revoked connection drops out."""
-    enabled = enabled_systems(department.frame)
-    if not enabled:
+    if not enabled_systems(department.frame):
         return frozenset()
-    connected = (
+    rows = (
         await db.execute(
-            select(m.McpConnection.name).where(
+            select(m.McpConnection.name, m.McpConnection.department_id).where(
                 m.McpConnection.tenant_id == tenant_id,
                 m.McpConnection.connected.is_(True),
-                m.McpConnection.name.in_(enabled),
                 or_(
                     m.McpConnection.department_id.is_(None),
                     m.McpConnection.department_id == department.id,
                 ),
             )
         )
-    ).scalars()
-    return frozenset(connected)
+    ).all()
+    return frozenset(name for name, dept_id in rows if selectable(name, dept_id, department))
 
 
 def _texts(operation: Operation) -> list[str]:
