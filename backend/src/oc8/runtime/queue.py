@@ -90,6 +90,27 @@ class RunQueue:
             approximate=True,
         )
 
+    async def undelivered_run_ids(self) -> set[str]:
+        """Run ids whose entries are in the stream but not yet handed to any
+        consumer of this group -- the backlog.
+
+        A queued run in here is waiting for a worker, not stranded, however
+        old it is: under load the backlog can be older than any threshold, and
+        republishing it would double it. Bounded by the stream's MAXLEN.
+        """
+        await self._ensure_group()
+        groups: list[dict[str, Any]] = await self._client.xinfo_groups(self._key)
+        last_delivered = next(
+            (str(g["last-delivered-id"]) for g in groups if g.get("name") == self._group),
+            "0-0",
+        )
+        # "(" makes the range exclusive: everything after the last delivery.
+        entries = cast(
+            list[tuple[str, dict[str, str]]],
+            await self._client.xrange(self._key, min=f"({last_delivered}", max="+"),
+        )
+        return {fields["run_id"] for _id, fields in entries if "run_id" in fields}
+
     async def dequeue(self, *, timeout: float = 5.0) -> RunMessage | None:  # noqa: ASYNC109
         await self._ensure_group()
         try:

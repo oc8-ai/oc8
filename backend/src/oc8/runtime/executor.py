@@ -746,6 +746,21 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             # that happens before the container runs, so it never spans the run
             # itself; after the transition, RUNNING is its own guard.
             await db.execute(select(m.Agent.id).where(m.Agent.id == run.agent_id).with_for_update())
+            # The run may have been started while we waited for that lock: two
+            # deliveries of ONE run (a republished stranded run whose first
+            # entry turned up after all, a reclaim racing the original) both
+            # read `queued` above, and the second then waits here for the
+            # first's commit. The busy check below cannot catch it -- it skips
+            # this run's own id -- so ask the row again, under its own lock,
+            # now. Agent then run, the order this function already takes them.
+            current = (
+                await db.execute(
+                    select(m.AgentRun.state).where(m.AgentRun.id == run_id).with_for_update()
+                )
+            ).scalar_one_or_none()
+            if current != RunState.QUEUED.value:
+                logger.info("run %s is %s, taken by another delivery; leaving it", run_id, current)
+                return
             busy = (
                 await db.execute(
                     select(m.AgentRun.id)

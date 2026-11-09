@@ -60,6 +60,19 @@ class Settings(BaseSettings):
     # deliberately a large finite number, not literal infinity.
     agent_max_steps: int = 200
 
+    # Stranded queued runs (oc8.runtime.reconcile.recover_stranded_runs). A run
+    # is committed as `queued` BEFORE its stream entry is published, so a crash
+    # or a Redis outage in between leaves it queued with nothing to start it.
+    # A queued run untouched for this long, whose entry is not waiting in the
+    # stream, is published again -- at most once per window, since the
+    # republish itself restarts the clock. Short enough that a lost publish
+    # costs minutes, long enough that a worker in the middle of picking a run
+    # up is never second-guessed.
+    stranded_run_after_seconds: int = 120
+    # How many stranded runs one tenant may have republished per sweep, so a
+    # long Redis outage ends in a measured catch-up rather than a burst.
+    stranded_run_batch_size: int = 50
+
     # Answer budget (max_tokens) for each model call of an agent step when
     # neither the agent nor its model connection sets one
     # (oc8.modelrouter.sampling.resolve_params). A reasoning model spends part
