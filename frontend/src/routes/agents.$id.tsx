@@ -128,6 +128,8 @@ import { RunFailureReason, RunModelSteps } from "@/components/run-reasoning";
 import { AgentToolAccessPanel } from "@/components/connections/agent-tool-access";
 import { ConnectionRequiredNotice } from "@/components/connections/connection-required-notice";
 import { ToolDeniedNotice } from "@/components/connections/tool-denied-notice";
+import { RunStartPhase } from "@/components/run-start-phase";
+import { isStartPhase } from "@/lib/run-start-phase";
 import { TriggerOwner } from "@/components/connections/trigger-owner";
 import { RunStateBadge } from "@/components/run-state-badge";
 import { StatCard } from "@/components/stat-card";
@@ -2653,12 +2655,13 @@ function RunTranscript({ run, pending }: { run: RunDTO | undefined; pending: boo
         <span className="rounded-md border border-border bg-background/40 px-2 py-1 font-mono">
           {t("run", "Lauf")} {run.id.slice(0, 8)}
         </span>
-        {run.phase && (
+        {run.phase && !isStartPhase(run.phase) && (
           <span className="rounded-md border border-border bg-background/40 px-2 py-1">
             {t("phase", "Phase")}: {run.phase}
           </span>
         )}
       </div>
+      <RunStartPhase phase={run.phase} state={run.state} />
       {run.state === "waiting_for_input" && <WaitingForInputCallout run={run} />}
       {run.state === "failed" && <RunFailureReason reason={run.failureReason ?? run.output} />}
       <ConnectionRequiredNotice value={run.connectionRequired} agentId={run.agentId} />

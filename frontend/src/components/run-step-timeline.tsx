@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 
 import { RunModelSteps } from "@/components/run-reasoning";
+import { SLOW_START_TEXT, START_TEXT, isStartPhase, useSlowStart } from "@/lib/run-start-phase";
 import { formatMs } from "@/lib/format";
 import type { LiveReasoning } from "@/lib/hooks";
 import { useLang, useT } from "@/lib/i18n";
@@ -228,17 +229,23 @@ export function RunStepTimeline({
     [run.state, run.steps, run.toolCalls, run.stepTimings, catalogue, t, lang],
   );
 
-  const summary = steps.live
-    ? run.phase
-      ? t(
-          `Working · ${run.phase} · step ${steps.stepCount}`,
-          `Arbeitet · ${run.phase} · Schritt ${steps.stepCount}`,
-        )
-      : t(`Working · step ${steps.stepCount}`, `Arbeitet · Schritt ${steps.stepCount}`)
-    : t(
-        `${steps.stepCount} steps${steps.totalDurationMs !== null ? ` · ${formatMs(steps.totalDurationMs)}` : ""}`,
-        `${steps.stepCount} Schritte${steps.totalDurationMs !== null ? ` · ${formatMs(steps.totalDurationMs)}` : ""}`,
-      );
+  // Before the first step of an isolated run: the workspace is starting, not
+  // "working · provisioning · step 0" (components/run-start-phase.tsx).
+  const starting = steps.live && isStartPhase(run.phase);
+  const slowStart = useSlowStart(starting);
+  const summary = starting
+    ? t(START_TEXT.en, START_TEXT.de)
+    : steps.live
+      ? run.phase
+        ? t(
+            `Working · ${run.phase} · step ${steps.stepCount}`,
+            `Arbeitet · ${run.phase} · Schritt ${steps.stepCount}`,
+          )
+        : t(`Working · step ${steps.stepCount}`, `Arbeitet · Schritt ${steps.stepCount}`)
+      : t(
+          `${steps.stepCount} steps${steps.totalDurationMs !== null ? ` · ${formatMs(steps.totalDurationMs)}` : ""}`,
+          `${steps.stepCount} Schritte${steps.totalDurationMs !== null ? ` · ${formatMs(steps.totalDurationMs)}` : ""}`,
+        );
 
   return (
     <div className={cn("text-xs", className)} data-testid="run-step-timeline">
@@ -258,6 +265,11 @@ export function RunStepTimeline({
           {open ? t("hide", "ausblenden") : t("show", "anzeigen")}
         </span>
       </button>
+      {slowStart && (
+        <p className="px-3 pb-1.5 pl-9 text-muted-foreground">
+          {t(SLOW_START_TEXT.en, SLOW_START_TEXT.de)}
+        </p>
+      )}
 
       {open && (
         <>

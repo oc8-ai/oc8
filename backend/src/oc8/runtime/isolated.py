@@ -23,6 +23,13 @@ from oc8.metering import check_budget, trigger_budget_hard_stop
 from oc8.observability import record_budget_exceeded
 from oc8.realtime.emit import record_activity
 from oc8.runtime.run_state import pack_files
+from oc8.runtime.start_phase import (
+    PROVISIONING,
+    START_PHASES,
+    STARTING,
+    clear_start_phase,
+    set_start_phase,
+)
 from oc8.runtime.workspace import run_output_sandbox
 from oc8.runtime.workspace_state import load_workspace, save_workspace
 from oc8.sandbox import get_sandbox_driver
@@ -178,6 +185,10 @@ class DockerIsolatedRuntime:
         # also expires the executor's `run`, so its post-run transition reloads
         # the fresh context the container wrote.
         await db.commit()
+        # From here until the shell's first step the run view says "starting
+        # the workspace" -- on a cold cluster that is minutes (a new node, an
+        # image pull) with nothing else to show (oc8.runtime.start_phase).
+        await set_start_phase(tenant_id, run_id, PROVISIONING, expect=(None, *START_PHASES))
 
         settings = get_settings()
         # A short-lived token scoped to EXACTLY this run. The container can call
@@ -238,6 +249,9 @@ class DockerIsolatedRuntime:
         try:
             handle = await driver.provision(spec)
             logger.info("run %s: isolated container %s started", run_id, handle.container_id[:12])
+            # Only from "provisioning": the shell may already have taken its
+            # first step, which cleared it.
+            await set_start_phase(tenant_id, run_id, STARTING, expect=(PROVISIONING,))
             # The bound on the WORK, and the only thing that ends a wedged
             # container: one that never exits ends here and is torn down by the
             # finally below, whether wait raises (docker-py's ReadTimeout on the
@@ -287,6 +301,9 @@ class DockerIsolatedRuntime:
                 text("SELECT set_config('app.tenant_id', :tid, true)"),
                 {"tid": str(tenant_id)},
             )
+            # A leg that never reached its first step (a failed provision, a
+            # shell that died booting) must not leave the run "starting".
+            await clear_start_phase(tenant_id, run_id)
 
         fresh = await db.get(m.AgentRun, run_id)
         if fresh is not None:

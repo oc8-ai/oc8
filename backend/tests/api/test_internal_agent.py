@@ -2704,6 +2704,40 @@ async def _inactive_run(app_session: Any) -> tuple[uuid.UUID, uuid.UUID, uuid.UU
 
 
 @pytest.mark.asyncio
+async def test_the_first_step_clears_the_start_phase(
+    app_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The shell asking for a step means the workspace is up: the run's start
+    phase ("Starting the workspace ...") ends here, live."""
+    from oc8 import models as m
+
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    class _Bus:
+        async def publish_event(
+            self, tenant_id: uuid.UUID, type_: str, data: dict[str, Any], *, source: str
+        ) -> None:
+            events.append((type_, data))
+
+    monkeypatch.setattr("oc8.runtime.start_phase.get_event_bus", lambda: _Bus())
+    # The cheapest /step: an organisation that may not run ends it before any
+    # model call -- after the phase is cleared.
+    tenant, agent_id, run_id = await _inactive_run(app_session)
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.phase = "starting"
+
+    await _post_step(tenant, agent_id, run_id)
+
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        assert run.phase is None
+    assert [(t, d["phase"]) for t, d in events if t == "run.status"] == [("run.status", None)]
+
+
+@pytest.mark.asyncio
 async def test_tool_refuses_an_organisation_that_may_not_run(app_session: Any) -> None:
     tenant, agent_id, run_id = await _inactive_run(app_session)
     code, body = await _post_tool(

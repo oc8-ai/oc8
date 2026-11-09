@@ -224,4 +224,21 @@ describe("CopilotRunActivity", () => {
       ),
     ).toBeInTheDocument();
   });
+  it("says the workspace is starting before the first step", async () => {
+    vi.mocked(api.get).mockResolvedValue({
+      id: "r1",
+      agentId: "a1",
+      state: "running",
+      phase: "provisioning",
+      output: null,
+      steps: 0,
+      toolCalls: [],
+      taskId: null,
+      question: null,
+      renderedComponents: [],
+    });
+    render(<CopilotRunActivity sessionId="s1" runId="r1" />, { wrapper });
+    expect(await screen.findByText("Starting the workspace …")).toBeInTheDocument();
+    expect(screen.queryByText(/provisioning/)).toBeNull();
+  });
 });

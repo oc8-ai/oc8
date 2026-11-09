@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
@@ -131,5 +131,36 @@ describe("RunStepTimeline", () => {
     render(<RunStepTimeline run={run()} defaultOpen />, { wrapper });
     // Falls all the way to the raw name rather than throwing or blanking.
     expect(await screen.findByText(/search_records/)).toBeInTheDocument();
+  });
+  it("says the workspace is starting, and after 20 s why it takes a while", () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(api.get).mockResolvedValue(catalogue);
+      render(
+        <RunStepTimeline
+          run={run({
+            state: "running",
+            steps: 0,
+            phase: "provisioning",
+            toolCalls: [],
+            stepTimings: [],
+          })}
+        />,
+        { wrapper },
+      );
+      expect(screen.getByText("Starting the workspace …")).toBeInTheDocument();
+      expect(screen.queryByText(/provisioning/)).toBeNull();
+      expect(
+        screen.queryByText("After a quiet spell the first run can take up to three minutes."),
+      ).toBeNull();
+      act(() => {
+        vi.advanceTimersByTime(20_000);
+      });
+      expect(
+        screen.getByText("After a quiet spell the first run can take up to three minutes."),
+      ).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -144,6 +144,7 @@ from oc8.realtime.emit import (
 from oc8.runtime.approval_resume import pre_decided_map
 from oc8.runtime.registry import BUILTIN_ISOLATED_RUNTIME_REF
 from oc8.runtime.run_context import append_tool_call
+from oc8.runtime.start_phase import START_PHASES, clear_start_phase
 from oc8.runtime.step_record import call_state_for, step_timing_dto
 from oc8.skills.runtime import LoadedSkill, instruction_block, load_assigned_skills
 from oc8.storage import s3
@@ -639,6 +640,9 @@ async def step(
     principal: CurrentPrincipal,
 ) -> StepResult:
     run = await _run_for_token(run_id, db, principal)
+    if run.phase in START_PHASES:
+        # The shell is up and asking: the workspace has started.
+        await clear_start_phase(run.tenant_id, run.id)
     try:
         return await _step(run_id, db, run)
     except Exception as exc:
