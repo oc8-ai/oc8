@@ -664,7 +664,7 @@ async def get_session_run(
     run is enqueued (`chat/service.send_message`) -- so a caller who owns
     some OTHER session cannot read a run by guessing its id.
     """
-    await _owned_session(request, session_id, db, actor)
+    await _readable_session(request, session_id, db, actor)
     run_row = await db.get(m.AgentRun, run_id)
     if run_row is None or (run_row.context or {}).get("chat_session_id") != str(session_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")

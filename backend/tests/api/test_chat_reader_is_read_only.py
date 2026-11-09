@@ -32,6 +32,17 @@ async def test_reader_reads_and_cannot_write(
     async with app_session(tenant) as db:
         alice = await copilot_seat(db, tenant, "alice")
         bob = await copilot_seat(db, tenant, "bob")
+        chat = await db.get(m.ChatSession, alice.session_id)
+        assert chat is not None
+        run = m.AgentRun(
+            tenant_id=tenant,
+            agent_id=chat.agent_id,
+            source="chat",
+            context={"chat_session_id": str(alice.session_id)},
+        )
+        db.add(run)
+        await db.flush()
+        run_id = run.id
         db.add(
             m.ChatMessage(
                 tenant_id=tenant, session_id=alice.session_id, role="user", content="hello"
@@ -52,6 +63,8 @@ async def test_reader_reads_and_cannot_write(
                 h = _headers(tenant, "bob")
                 msgs = await c.get(f"/api/v1/chat/sessions/{sid}/messages", headers=h)
                 detail = await c.get(f"/api/v1/chat/sessions/{sid}", headers=h)
+                run_get = await c.get(f"/api/v1/chat/sessions/{sid}/runs/{run_id}", headers=h)
+                assert run_get.status_code == (200 if readable else 404), run_get.text
                 if readable:
                     assert msgs.status_code == 200
                     assert [x["content"] for x in msgs.json()] == ["hello"]
