@@ -16,6 +16,7 @@ from oc8.approvals.service import decide_approval
 from oc8.auth.principal import Principal
 from oc8.authz.pdp import Decision, Effect
 from oc8.authz.scope import HumanActor, scope_for_principal
+from oc8.chat.service import create_session, send_message
 from oc8.connections import runtime_env
 from oc8.connections.access import ConnectionRequired, binding_fingerprint, resolve_tool_access
 from oc8.connections.acting import (
@@ -623,3 +624,53 @@ async def test_a_withheld_run_refuses_a_fixed_personal_login_too(
                 with pytest.raises(ConnectionRequired) as exc:
                     await resolve_tool_access(db, run=run, agent=live, conn=conn)
                 assert exc.value.reason == "personal_account_withheld"
+
+
+async def _chat_turn(
+    app_session: AppSessionFactory, agent: m.Agent, owner: uuid.UUID, operator: str
+) -> uuid.UUID:
+    """`operator` writes into `owner`'s chat with the agent; the run that
+    answers it."""
+    async with app_session(agent.tenant_id) as db:
+        session = await create_session(
+            db, tenant_id=agent.tenant_id, agent_id=agent.id, member_id=owner
+        )
+        _msg, run = await send_message(
+            db,
+            session=session,
+            tenant_id=agent.tenant_id,
+            message="Send the report to bob@ext.test",
+            originating_operator=operator,
+        )
+        assert run is not None
+        return run.id
+
+
+async def test_an_oversight_reply_never_runs_through_the_owners_fixed_personal_account(
+    app_session: AppSessionFactory, queue: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bob replies in Anna's chat (oversight): the run acts for nobody, and an
+    administrator's fixed binding to Anna's own account must not carry Bob's
+    words out with her token."""
+    agent, anna, conn_id, _annas = await _fixed_world(app_session, personal=True)
+    await member(app_session, agent.tenant_id, "bob@acme.test")
+    run_id = await _chat_turn(app_session, agent, anna, "bob@acme.test")
+    launched = _watch_launches(monkeypatch)
+    with pytest.raises(ConnectionRequired) as exc:
+        await _launch(app_session, agent, conn_id, run_id)
+    assert exc.value.reason == "personal_account_withheld"
+    assert launched == []
+    assert await _used(app_session, agent) == []
+
+
+async def test_the_owners_own_chat_turn_still_uses_the_fixed_personal_account(
+    app_session: AppSessionFactory, queue: Any
+) -> None:
+    agent, anna, conn_id, annas = await _fixed_world(app_session, personal=True)
+    run_id = await _chat_turn(app_session, agent, anna, "anna@acme.test")
+    async with app_session(agent.tenant_id) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None and ACTING_PERSON_WITHHELD not in run.context
+    launch = await _launch(app_session, agent, conn_id, run_id)
+    assert launch.env["GRAPH_ACCESS_TOKEN"] == "annas-token"
+    assert await _used(app_session, agent) == [str(annas)]

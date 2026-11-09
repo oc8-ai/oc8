@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.chat.modes import mode_directive, parse_command
+from oc8.connections.acting import ACTING_PERSON_WITHHELD, SOMEONE_ELSES_WORDS
 from oc8.copilot.redaction import is_secret_request, redact_text
 from oc8.copilot.responsibilities import close_responsibility
 from oc8.runtime.intake import enqueue_run
@@ -443,6 +444,12 @@ async def send_message(
         ]
     if originating_operator is not None:
         context["originating_operator"] = originating_operator
+        owner = await db.get(m.OrgMember, session.member_id)
+        if owner is not None and owner.subject != originating_operator:
+            # Someone else writes into this member's chat (an oversight
+            # reply): the run acts for nobody, and says so, so that no fixed
+            # binding to the owner's own account carries these words out.
+            context[ACTING_PERSON_WITHHELD] = SOMEONE_ELSES_WORDS
     if operator_role is not None:
         context["operator_role"] = operator_role
     if chat_channel is not None and chat_channel_external_id is not None:

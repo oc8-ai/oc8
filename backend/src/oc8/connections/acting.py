@@ -31,6 +31,9 @@ TRIGGER_WITHOUT_PERSON: Final = "trigger_without_person"
 _REASONS: Final = frozenset({NO_ACTING_PERSON, SCHEDULE_WITHOUT_OWNER, TRIGGER_WITHOUT_PERSON})
 
 ACTING_PERSON_WITHHELD: Final = "acting_person_withheld"
+#: The marker's value on a chat turn someone other than the session's member
+#: wrote (an oversight reply). Resolves like `no_acting_person`.
+SOMEONE_ELSES_WORDS: Final = "someone_elses_words"
 
 
 @dataclass(frozen=True)
