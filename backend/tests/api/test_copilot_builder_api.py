@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.auth import get_identity_provider
 from oc8.authz.authority import authority_for_member, tenant_wide_read
-from oc8.authz.permissions import DEPARTMENT, SEAT_VIEWER, VIEW, perm
+from oc8.authz.permissions import DEPARTMENT, SEAT_APPROVER, SEAT_VIEWER, VIEW, perm
 from oc8.authz.scope import scope_for_member
 from oc8.copilot.builder import create_builder_proposal
 from oc8.copilot.models import CopilotProposal
@@ -184,6 +184,37 @@ async def test_a_department_viewer_reads_a_request_without_its_mission(
 
         elsewhere = await c.get(url, headers=_headers(office.tenant, "outsider"))
         assert elsewhere.status_code == 404, "no view of the department, no card"
+
+
+async def test_an_approver_through_tenant_wide_agent_manage_reads_the_mission(
+    app_session: AppSessionFactory,
+) -> None:
+    """The approver whose right to create agents comes from tenant-wide
+    agent:manage (a dept_manager), not the seat's toggle, decides the request
+    and so reads what they decide on: the mission and the trigger's task."""
+    office, pid = await _seed(app_session, "employee")
+    async with app_session(office.tenant) as db:
+        boss = await copilot_seat(db, office.tenant, "boss", with_role=False)
+        db.add(
+            m.OrgMemberDepartment(
+                tenant_id=office.tenant,
+                member_id=boss.member_id,
+                department_id=office.department_id,
+                seat_role=SEAT_APPROVER,
+                agent_manage=False,
+            )
+        )
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        url = f"/api/v1/copilot/builder/{pid}"
+        sent = await c.post(f"{url}/request", headers=_headers(office.tenant, "emp"))
+        assert sent.status_code == 200, sent.text
+        read = await c.get(url, headers=_headers(office.tenant, "boss", "dept_manager"))
+        assert read.status_code == 200, read.text
+        body = read.json()
+        assert body["readOnly"] is True
+        assert body["mission"].startswith("Prüft jeden Morgen")
+        assert body["triggers"][0]["taskText"] == "Prüfe die offenen Rechnungen."
 
 
 async def test_a_reader_of_the_shared_chat_cannot_touch_the_card(
