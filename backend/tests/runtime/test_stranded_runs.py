@@ -26,6 +26,7 @@ from sqlalchemy import select, update
 from oc8 import models as m
 from oc8.agent.engine import RunResult
 from oc8.runtime.executor import execute_run
+from oc8.runtime.intake import enqueue_run
 from oc8.runtime.queue import RunMessage, RunQueue
 from oc8.runtime.reconcile import recover_stranded_runs
 from oc8.runtime.states import RunState
@@ -284,19 +285,16 @@ async def test_a_republished_run_is_not_republished_on_the_next_tick(
     assert _mine(await _drain(queue), run_id) == []
 
 
-@pytest.mark.parametrize("status", ["paused", "stopped", "pending_approval"])
-async def test_a_run_of_a_held_agent_is_not_republished(
-    app_session: AppSessionFactory,
-    redis_url: str,
-    monkeypatch: pytest.MonkeyPatch,
-    status: str,
+async def test_a_run_of_an_agent_awaiting_hire_is_not_republished(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Work deliberately on hold stays on hold; it is picked up once the hold
-    ends, because it is then an ordinary stranded run."""
+    """The one hold the worker enforces: it refuses an agent that has not been
+    hired. The run is picked up once the hold ends, as an ordinary stranded
+    run."""
     queue = _isolated_queue(redis_url, monkeypatch)
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
-        agent = await _agent(db, tenant, status=status)
+        agent = await _agent(db, tenant, status="pending_approval")
         agent_id = agent.id
         run_id = await _run(db, tenant, agent.id)
 
@@ -307,6 +305,118 @@ async def test_a_run_of_a_held_agent_is_not_republished(
     async with app_session(tenant) as db:
         await db.execute(update(m.Agent).where(m.Agent.id == agent_id).values(status="idle"))
     assert run_id in await recover_stranded_runs()
+
+
+@pytest.mark.parametrize("status", ["paused", "stopped"])
+async def test_a_run_of_a_paused_or_stopped_agent_is_recovered(
+    app_session: AppSessionFactory,
+    redis_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+) -> None:
+    """The worker runs these agents' queued runs (`stopped` is even the default
+    status of a new agent), so a lost publish for one is a stranded run like
+    any other."""
+    queue = _isolated_queue(redis_url, monkeypatch)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent = await _agent(db, tenant, status=status)
+        run_id = await _run(db, tenant, agent.id)
+
+    assert run_id in await recover_stranded_runs()
+    assert len(_mine(await _drain(queue), run_id)) == 1
+
+
+async def test_a_stranded_run_that_keeps_being_coalesced_onto_is_still_recovered(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cron firing every minute folds each fire onto its still-queued run.
+    If folding moved the marker, the run would look fresh for ever and the
+    very trigger that wants it to run would be what keeps it stranded."""
+    queue = _isolated_queue(redis_url, monkeypatch)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent = await _agent(db, tenant)
+        agent_id = agent.id
+        run = m.AgentRun(
+            tenant_id=tenant,
+            agent_id=agent_id,
+            state="queued",
+            context={"task": "x"},
+            coalesce_key="cron:poll",
+        )
+        db.add(run)
+        await db.flush()
+        run_id = run.id
+        await db.execute(
+            update(m.AgentRun)
+            .where(m.AgentRun.id == run_id)
+            .values(updated_at=dt.datetime.now(tz=dt.UTC) - STRANDED_FOR)
+        )
+
+    for _ in range(2):
+        async with app_session(tenant) as db:
+            folded, published = await enqueue_run(
+                db,
+                tenant_id=tenant,
+                agent_id=agent_id,
+                context={"task": "x"},
+                source="cron",
+                coalesce_key="cron:poll",
+            )
+        assert folded.id == run_id
+        assert published is False
+    assert folded.coalesced_count == 2
+
+    assert run_id in await recover_stranded_runs()
+    assert len(_mine(await _drain(queue), run_id)) == 1
+
+
+async def test_a_malformed_stream_entry_does_not_stop_the_sweep(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queue = _isolated_queue(redis_url, monkeypatch)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent = await _agent(db, tenant)
+        run_id = await _run(db, tenant, agent.id)
+    await queue.enqueue(run_id=uuid.uuid4(), tenant_id=tenant)
+    await queue._client.xadd(queue._key, {"run_id": "not-a-uuid", "tenant_id": "x"})
+    await queue._client.xadd(queue._key, {"garbage": "1"})
+
+    assert run_id in await recover_stranded_runs()
+
+
+async def test_a_duplicate_delivery_of_a_refused_run_records_its_ending_once(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The early exits (here the hire gate) used to run before the duplicate
+    check, so two deliveries both wrote an activity event and both counted an
+    outcome for the one run."""
+    _isolated_queue(redis_url, monkeypatch)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent = await _agent(db, tenant, status="pending_approval")
+        agent_id = agent.id
+        run_id = await _run(db, tenant, agent.id, age=dt.timedelta(0))
+
+    runtime = _CountingRuntime()
+    messages = [
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id=f"{i}-0", redelivered=False)
+        for i in (1, 2)
+    ]
+    await asyncio.gather(*(execute_run(msg, runtime=runtime) for msg in messages))
+
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        assert run.state == RunState.FAILED.value
+        events = (
+            (await db.execute(select(m.ActivityEvent).where(m.ActivityEvent.agent_id == agent_id)))
+            .scalars()
+            .all()
+        )
+        assert len(events) == 1
 
 
 async def test_a_run_waiting_behind_its_agents_running_run_is_not_republished(

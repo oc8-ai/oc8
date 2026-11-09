@@ -60,7 +60,7 @@ import logging
 import uuid
 from collections.abc import AsyncIterator
 
-from sqlalchemy import exists, or_, select, update
+from sqlalchemy import exists, func, or_, select, update
 from sqlalchemy.orm import aliased
 
 from oc8 import models as m
@@ -156,15 +156,16 @@ async def close_abandoned_runs(
     return closed
 
 
-#: Agent statuses under which a queued run is ON HOLD rather than stranded: an
-#: operator paused or stopped the agent, a budget hard-stop froze it, or it has
-#: not been hired yet. Its runs are left queued while the hold lasts and become
-#: ordinary candidates the moment it ends -- so a run whose publish was lost
-#: during a hold is still recovered, just not before anyone wants it to run.
-HELD_AGENT_STATUSES = ("paused", "stopped", "pending_approval")
+#: Agent statuses whose queued runs the worker REFUSES to start: only the hire
+#: gate (`execute_run` fails a run of an agent that has not been hired). A
+#: lost publish for such a run is left queued until the hold ends, when it
+#: becomes an ordinary candidate. `paused` and `stopped` are deliberately NOT
+#: here: the worker runs those agents' queued runs (`stopped` is the default
+#: status of a new agent), so their stranded runs are recovered like any other.
+HELD_AGENT_STATUSES = ("pending_approval",)
 
 
-async def recover_stranded_runs(*, now: dt.datetime | None = None) -> list[uuid.UUID]:
+async def recover_stranded_runs() -> list[uuid.UUID]:
     """Publish again every queued run whose stream entry never landed. Returns
     the ids republished.
 
@@ -176,9 +177,12 @@ async def recover_stranded_runs(*, now: dt.datetime | None = None) -> list[uuid.
 
     Stranded is decided on the run's `updated_at`, the existing column -- no
     new one. A queued run's `updated_at` is when it was created or re-queued
-    (resuming from approval or clarification moves it), and this sweep moves
-    it again when it republishes, so the same run is published at most once
-    per `stranded_run_after_seconds` however often the sweep ticks. Nothing
+    (resuming from approval or clarification moves it); coalescing a repeat
+    fire onto it deliberately does NOT move it (see `intake.enqueue_run`). This
+    sweep moves it on every candidate it looks at, so the same run is
+    considered at most once per `stranded_run_after_seconds` however often the
+    sweep ticks. Both the cutoff and the marker are the DATABASE's clock, so a
+    worker host with a skewed clock cannot make every run look stranded. Nothing
     else reads `updated_at` on a queued run: the heartbeat it doubles as only
     means something on a `running` one.
 
@@ -187,8 +191,9 @@ async def recover_stranded_runs(*, now: dt.datetime | None = None) -> list[uuid.
 
     * a run whose entry is still in the stream's backlog, undelivered -- under
       load that can be older than any threshold, and republishing a backlog
-      doubles it;
-    * a run of an agent that is on hold (`HELD_AGENT_STATUSES`);
+      doubles it. Its marker still moves, so a long backlog cannot pin the
+      batch to the same runs every tick;
+    * a run of an agent awaiting hire (`HELD_AGENT_STATUSES`);
     * a run of an agent that is already running another run. The worker defers
       it (one run per agent), and a deferred entry stays pending and comes back
       by itself; a republished one would defer too, so for as long as the agent
@@ -200,61 +205,66 @@ async def recover_stranded_runs(*, now: dt.datetime | None = None) -> list[uuid.
     row lock. Rows are taken with SKIP LOCKED, so two workers sweeping at once
     split the work instead of both republishing it.
 
-    Never raises: it runs on the worker's own timer.
+    Never raises: it runs on the worker's own timer and once at startup.
     """
     settings = get_settings()
-    now = now or dt.datetime.now(tz=dt.UTC)
-    cutoff = now - dt.timedelta(seconds=settings.stranded_run_after_seconds)
+    window = dt.timedelta(seconds=settings.stranded_run_after_seconds)
     queue = get_run_queue()
-    try:
-        waiting = {uuid.UUID(r) for r in await queue.undelivered_run_ids()}
-    except Exception:
-        # Without the stream there is nothing to publish to either.
-        logger.warning("stranded-run sweep skipped: the run stream is unreachable", exc_info=True)
-        return []
-
     try:
         tenant_ids = await list_runnable_tenant_ids()
     except Exception:
-        # Also runs once at worker startup, where a raise would stop the worker.
         logger.exception("stranded-run sweep skipped: tenants could not be listed")
         return []
+
     recovered: list[uuid.UUID] = []
     for tenant_id in tenant_ids:
         try:
             async with tenant_session(tenant_id) as db:
                 other = aliased(m.AgentRun)
-                stmt = (
-                    select(m.AgentRun)
-                    .outerjoin(m.Agent, m.Agent.id == m.AgentRun.agent_id)
-                    .where(
-                        m.AgentRun.state == RunState.QUEUED.value,
-                        m.AgentRun.updated_at < cutoff,
-                        # A run whose agent is gone is not held: published, the
-                        # worker fails it with a reason instead of it waiting.
-                        or_(
-                            m.Agent.id.is_(None),
-                            m.Agent.status.notin_(HELD_AGENT_STATUSES),
-                        ),
-                        ~exists().where(
-                            other.agent_id == m.AgentRun.agent_id,
-                            other.state == RunState.RUNNING.value,
-                        ),
+                candidates = (
+                    (
+                        await db.execute(
+                            select(m.AgentRun)
+                            .outerjoin(m.Agent, m.Agent.id == m.AgentRun.agent_id)
+                            .where(
+                                m.AgentRun.state == RunState.QUEUED.value,
+                                m.AgentRun.updated_at < func.now() - window,
+                                # A run whose agent is gone is not held:
+                                # published, the worker fails it with a reason
+                                # instead of it waiting for ever.
+                                or_(
+                                    m.Agent.id.is_(None),
+                                    m.Agent.status.notin_(HELD_AGENT_STATUSES),
+                                ),
+                                ~exists().where(
+                                    other.agent_id == m.AgentRun.agent_id,
+                                    other.state == RunState.RUNNING.value,
+                                ),
+                            )
+                            .order_by(m.AgentRun.updated_at)
+                            .limit(settings.stranded_run_batch_size)
+                            # Only the run row: the worker locks agent THEN run,
+                            # so taking the agent here too would invite a
+                            # deadlock.
+                            .with_for_update(of=m.AgentRun, skip_locked=True)
+                        )
                     )
-                    .order_by(m.AgentRun.updated_at)
-                    .limit(settings.stranded_run_batch_size)
-                    # Only the run row: the worker locks agent THEN run, so
-                    # taking the agent here as well would invite a deadlock.
-                    .with_for_update(of=m.AgentRun, skip_locked=True)
+                    .scalars()
+                    .all()
                 )
-                if waiting:
-                    stmt = stmt.where(m.AgentRun.id.notin_(waiting))
-                stranded = (await db.execute(stmt)).scalars().all()
-                for run in stranded:
-                    # The marker. Explicit, so it is this sweep's clock and not
-                    # whatever onupdate would pick.
-                    run.updated_at = now
-                ids = [run.id for run in stranded]
+                if not candidates:
+                    continue
+                # Only now ask the stream, and only about these runs. Raises if
+                # Redis is unreachable, which rolls the markers back -- there
+                # is nothing to publish to either.
+                waiting = await queue.undelivered_among({str(run.id) for run in candidates})
+                await db.execute(
+                    update(m.AgentRun)
+                    .where(m.AgentRun.id.in_([run.id for run in candidates]))
+                    .values(updated_at=func.now())
+                    .execution_options(synchronize_session=False)
+                )
+                ids = [run.id for run in candidates if str(run.id) not in waiting]
             # Committed, THEN published -- the same order as every run source.
             # A publish that fails here leaves the marker moved, so the run is
             # tried again one window later rather than on every tick.
