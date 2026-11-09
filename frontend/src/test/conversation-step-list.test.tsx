@@ -95,6 +95,25 @@ describe("StepList", () => {
     }
   });
 
+  it("shows a question to the reader in the neutral colour, a refused call in red (E2E G)", () => {
+    wrap(
+      <StepList
+        run={{
+          state: "done",
+          steps: 2,
+          toolCalls: [
+            { tool: "ask_user", step: 1, arguments: {}, result: "", state: "denied" },
+            { tool: "list_orders", step: 2, arguments: {}, result: "", state: "denied" },
+          ],
+        }}
+      />,
+    );
+    const asked = screen.getByText("Asked you").closest("span.flex-1");
+    expect(asked?.className).not.toContain("text-status-error");
+    const items = screen.getAllByRole("listitem");
+    expect(items[1].querySelector("span.flex-1")?.className).toContain("text-status-error");
+  });
+
   it("renders nothing for a run without tool calls", () => {
     const { container } = wrap(<StepList run={{ state: "done", steps: 1, toolCalls: [] }} />);
     expect(container).toBeEmptyDOMElement();

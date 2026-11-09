@@ -42,14 +42,17 @@ function Step({
   const [open, setOpen] = useState(false);
   const Preview = TOOL_PREVIEWS[toolKind(row)];
   const tokens = tokensFor(row.step, timings);
+  // A question to the reader is parked, not refused: the runtime records it
+  // like a denied call, but it is no error.
+  const question = row.tool === "ask_user";
   return (
     <li className="text-xs text-muted-foreground">
       <div className="flex items-center gap-2">
         <span
           className={cn(
             "min-w-0 flex-1",
-            row.state === "failed" && "text-status-error",
-            row.state === "denied" && "text-status-error",
+            !question && row.state === "failed" && "text-status-error",
+            !question && row.state === "denied" && "text-status-error",
           )}
         >
           <Preview row={row} />
