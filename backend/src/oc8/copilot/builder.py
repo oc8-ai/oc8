@@ -282,16 +282,38 @@ async def create_builder_proposal(
     if department is None or not scope.may_view(department.id):
         raise BuilderInvalid("department_unknown", 0)
     await check_selections(db, tenant_id=tenant_id, department=department, steps=steps)
-    open_rows = (
+    in_session = (
+        CopilotProposal.tenant_id == tenant_id,
+        CopilotProposal.kind == BUILDER_KIND,
+        CopilotProposal.session_id == session_id,
+    )
+    # A request awaiting approval is READ, not locked: the approval funnel locks
+    # it from the other side (approval row first, after a run may already have
+    # appended audit), and locking it here too would make the two wait on each
+    # other in opposite orders. Only one that is due gets locked, to expire it.
+    waiting = (
+        (
+            await db.execute(
+                select(CopilotProposal).where(
+                    *in_session, CopilotProposal.status == "awaiting_approval"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for row in waiting:
+        if row.expires_at is None or row.expires_at > now:
+            raise BuilderInvalid("awaiting_approval")
+        locked = await lock_builder_proposal(db, row.id)
+        if locked is not None and not expire_if_due(locked, now=now):
+            if locked.status == "awaiting_approval":
+                raise BuilderInvalid("awaiting_approval")
+    drafts = (
         (
             await db.execute(
                 select(CopilotProposal)
-                .where(
-                    CopilotProposal.tenant_id == tenant_id,
-                    CopilotProposal.kind == BUILDER_KIND,
-                    CopilotProposal.session_id == session_id,
-                    CopilotProposal.status.in_(OPEN_STATUSES),
-                )
+                .where(*in_session, CopilotProposal.status == "draft")
                 .with_for_update()
             )
         )
@@ -299,11 +321,9 @@ async def create_builder_proposal(
         .all()
     )
     superseded: list[str] = []
-    for row in open_rows:
+    for row in drafts:
         if expire_if_due(row, now=now):
             continue
-        if row.status == "awaiting_approval":
-            raise BuilderInvalid("awaiting_approval")
         row.status = "superseded"
         row.revision += 1
         superseded.append(str(row.id))
@@ -522,7 +542,13 @@ async def _owned_by(db: AsyncSession, proposal: CopilotProposal, member: m.OrgMe
 
 
 async def request_builder_approval(
-    db: AsyncSession, *, proposal_id: uuid.UUID, requester: m.OrgMember, now: dt.datetime
+    db: AsyncSession,
+    *,
+    proposal_id: uuid.UUID,
+    requester: m.OrgMember,
+    scope: DepartmentScope,
+    tenant_wide: bool,
+    now: dt.datetime,
 ) -> m.ApprovalRequest:
     """Zur Freigabe senden: one ApprovalRequest in the agent's target
     department, raised by the Copilot (an approval needs an agent; the agent
@@ -541,7 +567,12 @@ async def request_builder_approval(
     if proposal.status != "draft":
         raise BuilderInvalid("not_open")
     create = _create_step(await load_steps(db, proposal))
-    if await _live_department(db, create.departmentId) is None:
+    # Still within the requester's reach, through the scoped repository like at
+    # propose time: a seat removed since then cannot file into that queue.
+    department = await visible_department(
+        db, scope=scope, tenant_wide=tenant_wide, department_id=create.departmentId
+    )
+    if department is None or not scope.may_view(department.id):
         raise BuilderInvalid("department_unknown", 0)
     assistant = await get_or_create_assistant(db, tenant_id=proposal.tenant_id)
     name = one_line(create.name, 120)
@@ -595,29 +626,37 @@ async def resolve_builder_approval(
     the proposal as the approver; reject records the reason for the card.
 
     Rejecting succeeds unless the proposal was applied -- an expired request
-    too, or nothing could ever clear it (Ruling A5). Approving an expired one
+    too, or nothing could ever clear it (Ruling A5); a proposal that is gone or
+    waits on another request is left alone and the approval still closes. Approving an expired one
     is refused and, the caller rolling back, leaves the approval pending. The
     proposal row is locked (and the funnel locked the approval), so racing
     decisions end in one outcome."""
     from oc8.approvals.service import EffectRefused
 
+    proposal_id: uuid.UUID | None
     try:
         proposal_id = uuid.UUID(str((approval.payload or {}).get("proposal_id")))
     except (TypeError, ValueError):
-        raise EffectRefused("not_found") from None
+        proposal_id = None
     now = dt.datetime.now(tz=dt.UTC)
-    proposal = await lock_builder_proposal(db, proposal_id)
-    if proposal is None or proposal.tenant_id != approval.tenant_id:
-        raise EffectRefused("not_found")
-    if (proposal.result or {}).get("approvalId") != str(approval.id):
-        # Not the request this proposal is waiting on.
-        raise EffectRefused("not_open")
+    proposal = await lock_builder_proposal(db, proposal_id) if proposal_id else None
+    if (
+        proposal is None
+        or proposal.tenant_id != approval.tenant_id
+        or (proposal.result or {}).get("approvalId") != str(approval.id)
+    ):
+        # Gone, or not the request this proposal is waiting on. A rejection
+        # still clears the approval (there is nothing to undo); only approving
+        # needs the proposal.
+        if decision == "reject":
+            return
+        raise EffectRefused("not_found" if proposal is None else "not_open")
     expire_if_due(proposal, now=now)
     if proposal.status == "applied":
         raise EffectRefused("already_applied")
     if decision == "reject":
         if proposal.status not in ("awaiting_approval", "expired"):
-            raise EffectRefused("not_open")
+            return  # nothing open to close; the approval is still cleared
         proposal.status = "rejected"
         proposal.applied_by = actor.member.subject
         proposal.revision += 1
@@ -633,7 +672,7 @@ async def resolve_builder_approval(
     try:
         await apply_builder_proposal(
             db,
-            proposal_id=proposal_id,
+            proposal_id=proposal.id,
             expect_status="awaiting_approval",
             applied_by=actor.member.subject,
             principal=actor.principal if isinstance(actor, HumanActor) else None,
