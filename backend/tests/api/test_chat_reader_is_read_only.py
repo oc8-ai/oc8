@@ -123,6 +123,12 @@ async def test_reader_gets_one_redacted_channel(
                 "pending_question": "What is the password?",
                 "todos": [{"content": "x", "status": "pending"}],
                 "rendered_components": [{"component_key": "table", "props": {}}],
+                "connection_required": {
+                    "integration": "gmail",
+                    "provider": "google",
+                    "label": "Gmail",
+                    "reason": "not_connected",
+                },
             },
         )
         db.add(run)
@@ -187,6 +193,9 @@ async def test_reader_gets_one_redacted_channel(
     assert run_json["toolCalls"] == [{"tool": "search", "state": "done", "step": 1}]
     assert run_json["question"] is None and run_json["todos"] == []
     assert run_json["renderedComponents"] == []
+    # Whose account a tool wanted is the owner's business.
+    assert run_json["connectionRequired"] is None
+    assert owner_run["connectionRequired"]["label"] == "Gmail"
     assert "salary" not in str(run_json) and "secret result" not in str(run_json)
     assert owner_run["toolCalls"][0]["arguments"] == {"q": "salary of bob"}
     assert owner_run["question"] == "What is the password?"

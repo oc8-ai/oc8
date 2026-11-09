@@ -701,7 +701,9 @@ _READER_TIMING_KEYS = ("step", "modelWaitMs", "ttftMs", "toolWaitMs", "stepWallM
 
 def _redacted_run(dto: RunDTO) -> RunDTO:
     """The one run view a reader gets (Ruling 47): progress and the answer, with
-    no tool arguments or results, no pending question, no todos or components."""
+    no tool arguments or results, no pending question, no todos or components,
+    and no "connect your account" call to action -- whose account a tool
+    wanted is the owner's business."""
     calls = [
         {k: call[k] for k in ("tool", "state", "step") if k in call}
         for call in dto.tool_calls
@@ -723,6 +725,7 @@ def _redacted_run(dto: RunDTO) -> RunDTO:
             "rendered_components": [],
             "failure_reason": None,
             "task_id": None,
+            "connection_required": None,
         }
     )
 
