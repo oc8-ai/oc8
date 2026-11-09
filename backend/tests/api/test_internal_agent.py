@@ -2766,3 +2766,162 @@ async def test_restricted_knowledge_fetched_through_the_tool_endpoint_marks_the_
         row = await db.get(m.AgentRun, run_id)
         assert row is not None
         assert row.context.get("contains_restricted") is True
+
+
+@pytest.mark.parametrize(
+    ("grant", "reaches_server"),
+    [(True, True), (False, False)],
+    ids=["frame grants odoo", "frame withholds odoo"],
+)
+@pytest.mark.asyncio
+async def test_a_routed_core_name_is_the_connections_tool(
+    app_session: object, monkeypatch: pytest.MonkeyPatch, grant: bool, reaches_server: bool
+) -> None:
+    """`odoo.ask_user` is the CONNECTION's ask_user. The route rewrote it to the
+    bare name, which then took the core tool's early ALLOW and ran the core
+    implementation: the run parked, whatever the frame said about odoo."""
+    from oc8 import models as m
+
+    calls: list[str] = []
+
+    class _Session:
+        tools: list[Any] = []
+
+        def __init__(self, *a: Any, **kw: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> Any:
+            return self
+
+        async def __aexit__(self, *a: Any) -> None:
+            return None
+
+        async def call(self, name: str, arguments: dict[str, Any]) -> str:
+            calls.append(name)
+            return "asked in odoo"
+
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _Session)
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        dept = m.Department(
+            tenant_id=tenant,
+            name="Vertrieb",
+            frame={"tools": {"odoo": {"enabled": True, "read": True, "modify": True}}}
+            if grant
+            else {"tools": {}},
+        )
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(
+            tenant_id=tenant, department_id=dept.id, name="Nora", status="running",
+            narrowing={}, definition={}, presentation={},
+        )
+        db.add(agent)
+        await db.flush()
+        conn = m.McpConnection(
+            tenant_id=tenant, department_id=dept.id, name="odoo", transport="stdio",
+            server_url="stdio://odoo", connected=True, config={"command": "x", "args": []},
+            scopes={"read": ["search_records"], "write": ["ask_user"]},
+        )
+        task = m.Task(
+            tenant_id=tenant, department_id=dept.id, assigned_agent_id=agent.id,
+            title="Angebot", state="in_progress",
+        )
+        db.add_all([conn, task])
+        await db.flush()
+        run = m.AgentRun(
+            tenant_id=tenant, agent_id=agent.id, task_id=task.id, state="running",
+            context={
+                "task": "x",
+                "mcp_connection_id": str(conn.id),
+                "tool_routes": {"odoo.ask_user": ["odoo", "ask_user"]},
+            },
+        )
+        db.add(run)
+        await db.flush()
+        agent_id, run_id = agent.id, run.id
+
+    code, body = await _post_tool(
+        tenant, agent_id, run_id, "odoo.ask_user", {"question": "Which order?"}
+    )
+
+    assert code == 200, body
+    assert body["status"] != "waiting_for_input", "the core ask_user must not park the run"
+    assert calls == (["ask_user"] if reaches_server else [])
+    if not reaches_server:
+        assert body["status"] == "denied"
+
+
+@pytest.mark.asyncio
+async def test_a_routed_core_name_is_tiered_as_the_connections_write(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The B gate has to tier the tool that RUNS. `odoo.todo_write` is a write
+    on odoo; tiered by its bare name it was the core to-do list, a read, and a
+    conservative agent ran it without asking."""
+    from oc8 import models as m
+
+    calls: list[str] = []
+
+    class _Session:
+        tools: list[Any] = []
+
+        def __init__(self, *a: Any, **kw: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> Any:
+            return self
+
+        async def __aexit__(self, *a: Any) -> None:
+            return None
+
+        async def call(self, name: str, arguments: dict[str, Any]) -> str:
+            calls.append(name)
+            return "written in odoo"
+
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _Session)
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        dept = m.Department(
+            tenant_id=tenant,
+            name="Vertrieb",
+            frame={"tools": {"odoo": {"enabled": True, "read": True, "modify": True}}},
+        )
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(
+            tenant_id=tenant, department_id=dept.id, name="Nora", status="running",
+            narrowing={}, definition={"autonomy": "conservative"}, presentation={},
+        )
+        db.add(agent)
+        await db.flush()
+        conn = m.McpConnection(
+            tenant_id=tenant, department_id=dept.id, name="odoo", transport="stdio",
+            server_url="stdio://odoo", connected=True, config={"command": "x", "args": []},
+            scopes={"read": ["search_records"], "modify": ["todo_write"]},
+        )
+        task = m.Task(
+            tenant_id=tenant, department_id=dept.id, assigned_agent_id=agent.id,
+            title="Angebot", state="in_progress",
+        )
+        db.add_all([conn, task])
+        await db.flush()
+        run = m.AgentRun(
+            tenant_id=tenant, agent_id=agent.id, task_id=task.id, state="running",
+            context={
+                "task": "x",
+                "mcp_connection_id": str(conn.id),
+                "tool_routes": {"odoo.todo_write": ["odoo", "todo_write"]},
+            },
+        )
+        db.add(run)
+        await db.flush()
+        agent_id, run_id = agent.id, run.id
+
+    code, body = await _post_tool(tenant, agent_id, run_id, "odoo.todo_write", {"id": 7})
+
+    assert code == 200, body
+    assert body["status"] == "waiting_for_approval", body
+    assert calls == []

@@ -18,7 +18,7 @@ from sqlalchemy import func, select
 from oc8 import models as m
 from oc8.agent.control_tools import execute_control_tool
 from oc8.agent.engine import _authorize
-from oc8.authz.pdp import Effect
+from oc8.authz.pdp import Effect, ToolPolicy
 from oc8.chat.modes import MODES, WRITING_CONTROL_TOOLS
 from oc8.modelrouter import ToolCall
 
@@ -247,6 +247,12 @@ def test_no_writing_control_tool_falls_through_to_a_frame_denial(tool: str) -> N
     assert not (decision.effect is Effect.DENY and "no grant" in decision.reason), decision.reason
 
 
+# ------------------------------------------------------------------ routed names
+
+
+_ODOO = {"odoo": ToolPolicy(enabled=True, read=True, modify=True)}
+
+
 def _agent() -> m.Agent:
     return m.Agent(
         id=uuid.uuid4(),
@@ -257,6 +263,63 @@ def _agent() -> m.Agent:
         definition={},
         presentation={},
     )
+
+
+def test_a_routed_connection_tool_does_not_borrow_a_core_tools_allowance() -> None:
+    """`odoo.ask_user` is the CONNECTION's ask_user. Authorized by its bare name,
+    it took the core tool's early ALLOW and ran on the connection's server with
+    no frame grant at all."""
+    decision = _authorize(
+        _agent(),
+        ToolCall(id="c1", name="ask_user", arguments={"question": "?"}),
+        frame={"tools": {}},
+        tool_policies={},
+        connection_key="odoo",
+        tool_scopes={"modify": ["ask_user"]},
+        routed=True,
+    )
+    assert decision.effect is Effect.DENY
+
+
+def test_a_connection_that_declares_a_core_name_is_decided_by_the_frame() -> None:
+    decision = _authorize(
+        _agent(),
+        ToolCall(id="c1", name="run_shell", arguments={"command": "ls"}),
+        frame={"tools": {}},
+        tool_policies={},
+        connection_key="odoo",
+        tool_scopes={"modify": ["run_shell"]},
+    )
+    assert decision.effect is Effect.DENY
+
+
+def test_the_core_tool_itself_keeps_its_allowance() -> None:
+    decision = _authorize(
+        _agent(),
+        ToolCall(id="c1", name="ask_user", arguments={"question": "?"}),
+        frame={"tools": {}},
+        tool_policies={},
+        connection_key="odoo",
+        tool_scopes=None,
+        routed=False,
+    )
+    assert decision.effect is Effect.ALLOW
+
+
+def test_plan_withholds_a_routed_connection_write_that_shares_a_reading_core_name() -> None:
+    """`odoo.todo_write` is a write on odoo. Classified by its bare name it
+    looked like the core to-do list -- a read -- and /plan let it through."""
+    decision = _authorize(
+        _agent(),
+        ToolCall(id="c1", name="todo_write", arguments={}),
+        frame={"tools": {"odoo": {"enabled": True, "read": True, "modify": True}}},
+        tool_policies=_ODOO,
+        connection_key="odoo",
+        tool_scopes={"modify": ["todo_write"]},
+        routed=True,
+        chat_mode=MODES["plan"],
+    )
+    assert decision.effect is Effect.DENY
 
 
 def test_plan_still_loads_a_skill() -> None:
@@ -274,3 +337,29 @@ def test_plan_still_loads_a_skill() -> None:
         chat_mode=MODES["plan"],
     )
     assert decision.effect is Effect.ALLOW
+
+
+@pytest.mark.parametrize("tool", ["write_output_file", "request_decision", "ask_user"])
+def test_a_qualified_core_name_never_gets_the_core_allowance(tool: str) -> None:
+    """A runtime that authorizes the advertised name, unrouted, must not hand
+    `odoo.write_output_file` the core tool's ALLOW either."""
+    decision = _authorize(
+        _agent(),
+        ToolCall(id="c1", name=f"odoo.{tool}", arguments={}),
+        frame={"tools": {}},
+        tool_policies={},
+        connection_key="odoo",
+        tool_scopes=None,
+    )
+    assert decision.effect is Effect.DENY
+
+
+def test_is_core_call_matches_what_authorize_decides() -> None:
+    from oc8.agent.harness.stages.b_authorize import is_core_call
+
+    assert is_core_call("write_output_file", routed=False, tool_scopes=None)
+    assert not is_core_call("write_output_file", routed=True, tool_scopes=None)
+    assert not is_core_call(
+        "write_output_file", routed=False, tool_scopes={"modify": ["write_output_file"]}
+    )
+    assert not is_core_call("odoo.write_output_file", routed=False, tool_scopes=None)

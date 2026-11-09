@@ -205,12 +205,19 @@ def mode_refusal(
     tool_name: str,
     *,
     tool_scopes: Mapping[str, Any] | None,
+    core: bool = True,
 ) -> str | None:
     """Why this mode will not let this tool be called, or None.
 
     None means "no opinion here" -- never "allowed". The frame, the narrowing
     and the value threshold all still have their say afterwards; this only ever
     subtracts.
+
+    `core=False` says the name belongs to a CONNECTION's tool even though it
+    matches a core one (a routed `<connection>.todo_write`, or a connection
+    whose scopes declare the name). Such a call is classified by its scopes,
+    like any other connection tool -- its bare name says nothing about whether
+    it writes.
     """
     if mode is None:
         return None
@@ -226,7 +233,7 @@ def mode_refusal(
 
     if tool_name in WRITING_CONTROL_TOOLS:
         writes = True
-    elif tool_name in CONTROL_TOOL_NAMES:
+    elif core and tool_name in CONTROL_TOOL_NAMES:
         # A core tool is classified by name, not by scopes -- it sits on no
         # connection, and the gateway asks with `tool_scopes=None`.
         writes = False

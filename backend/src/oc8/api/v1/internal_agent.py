@@ -59,6 +59,7 @@ from oc8.agent.harness.stages.a_compaction import (
 from oc8.agent.harness.stages.a_masking import mask_observations
 from oc8.agent.harness.stages.b_approval import autonomy_of, strip_justification
 from oc8.agent.harness.stages.b_authorize import authorize as _authorize
+from oc8.agent.harness.stages.b_authorize import is_core_call
 from oc8.agent.harness.stages.b_blast_radius import check_blast_radius
 from oc8.agent.harness.stages.b_claims import claim_write
 from oc8.agent.harness.stages.b_clarify import (
@@ -1660,14 +1661,23 @@ async def _dispatch_one_tool(
     from oc8.api.mcp_gateway import _connections
 
     routed = _routed_connection(await _connections(db, run, dept), dict(run.context), tc.name)
+    #: The model named a connection's tool by a name the route rewrote
+    #: (`<connection>.ask_user` -> `ask_user`). It is that connection's tool even when
+    #: the real name matches a core one: it is decided by the frame, never by
+    #: the core tool's allowance, and it goes to the connection's server, never
+    #: to the core implementation of the same name.
+    renamed = False
     if routed is not None:
         conn, real_tool = routed
         if real_tool != tc.name:
             tc = ToolCall(id=tc.id, name=real_tool, arguments=tc.arguments)
+            renamed = True
 
     assigned_skills = await load_assigned_skills(db, agent=agent, tenant_id=run.tenant_id)
     skill_tool_names = frozenset(s.tool_name for s in assigned_skills)
-    is_control_call = tc.name in CONTROL_TOOL_NAMES or tc.name in skill_tool_names
+    is_control_call = not renamed and (
+        tc.name in CONTROL_TOOL_NAMES or tc.name in skill_tool_names
+    )
     # A core-owned tool (remember/ask/delegate/invoke a skill) is executed by the
     # control plane itself and needs no MCP connection. Requiring one here made
     # every one of them unusable on a run without a connection.
@@ -1727,6 +1737,7 @@ async def _dispatch_one_tool(
         is_team_lead=bool(pinned["is_team_lead"]),
         guardrail_attribute_specs=guardrail_attribute_specs,
         chat_mode=mode_from_context(run.context),
+        routed=renamed,
     )
     stripped, justification = strip_justification(tc.arguments)
     tc.arguments = stripped
@@ -1750,7 +1761,8 @@ async def _dispatch_one_tool(
         (
             raw
             for raw in ctx.get("tool_schemas", [])
-            if isinstance(raw, dict) and raw.get("name") == tc.name
+            # Listed under the name the model saw, which a route qualifies.
+            if isinstance(raw, dict) and raw.get("name") == body.name
         ),
         None,
     )
@@ -1766,6 +1778,9 @@ async def _dispatch_one_tool(
             config=cfg,
             annotations=typed_annotations,
             arguments=tc.arguments,
+            # The tool that runs: a renamed call is the connection's, so it is
+            # tiered by the connection's scopes, never by a core tool's tier.
+            core=is_core_call(tc.name, routed=renamed, tool_scopes=scopes),
         )
         definition = pinned["definition"] if isinstance(pinned["definition"], dict) else {}
         raw_b5_grants = definition.get("b5_grants")
@@ -2044,7 +2059,7 @@ async def _dispatch_one_tool(
             harness_state=harness.state,
             active_procedure_skills=[s for s in active_skills if s.definition.steps],
         )
-        if task is not None
+        if task is not None and is_control_call
         else None
     )
 

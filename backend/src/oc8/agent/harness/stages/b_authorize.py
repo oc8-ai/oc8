@@ -13,6 +13,7 @@ from typing import Any
 
 from oc8 import models as m
 from oc8.agent.control_tools import (
+    CONTROL_TOOL_NAMES,
     COPILOT_TOOL_NAMES,
     DEPTH_LIMIT_REASON,
     MAX_DELEGATION_DEPTH,
@@ -41,6 +42,7 @@ def authorize(
     narrowing: dict[str, Any] | None = None,
     is_team_lead: bool | None = None,
     chat_mode: ChatMode | None = None,
+    routed: bool = False,
 ) -> Decision:
     """PEP for a tool call. Every connection tool is decided against the
     department frame (§5.3): which entry governs it is the connection key, and
@@ -68,7 +70,14 @@ def authorize(
     delegate_task and memory_write too -- not just the connection's own tools.
     It can only ever DENY: there is no branch where a mode turns a refusal into
     an allow, which is what makes "a mode is a narrowing" true rather than
-    aspirational."""
+    aspirational.
+
+    `routed` says the model named this tool through a connection
+    (`<connection>.<tool>`), so `tc.name` is the CONNECTION's tool name. It may
+    match a core tool's name, and must not inherit that core tool's early
+    ALLOW: the call runs on the connection's server, so the frame decides it.
+    The same holds when the connection's own `tool_scopes` declare the name --
+    then the name is the connection's, whatever the core calls itself."""
     if narrowing is None:
         narrowing = agent.narrowing or {}
     if is_team_lead is None:
@@ -77,7 +86,8 @@ def authorize(
     # just the connection tools. Denying here also means the existing
     # append_event at all three call sites records it -- "denied because /plan"
     # is in the audit trail without a fourth writer.
-    skill_call = tc.name in skill_tool_names
+    core_call = is_core_call(tc.name, routed=routed, tool_scopes=tool_scopes)
+    skill_call = tc.name in skill_tool_names and not routed
     refused = mode_refusal(
         chat_mode,
         tc.name,
@@ -85,6 +95,7 @@ def authorize(
         # this, a skill no connection scope names failed closed to "modify",
         # and /plan withheld every skill.
         tool_scopes={"read": [tc.name]} if skill_call else tool_scopes,
+        core=core_call,
     )
     if refused is not None:
         # Tagged, so the control-tool dispatcher can tell "this turn's mode
@@ -93,6 +104,19 @@ def authorize(
         return Decision(Effect.DENY, refused, reason_code=MODE_WITHHELD)
     if skill_call:
         return Decision(Effect.ALLOW)
+    if not core_call:
+        # A connection's tool, even if it shares a core tool's name: none of the
+        # name-based branches below may decide it.
+        return _frame_decision(
+            agent,
+            tc,
+            tool_policies=tool_policies,
+            connection_key=connection_key,
+            tool_scopes=tool_scopes,
+            skill_thresholds=skill_thresholds,
+            value_spec=value_spec,
+            guardrail_attribute_specs=guardrail_attribute_specs,
+        )
     if tc.name == "ask_user":
         return Decision(Effect.ALLOW)
     if tc.name in ("write_output_file", "request_decision"):
@@ -190,6 +214,50 @@ def authorize(
         return authorize_memory_write(
             frame, narrowing, tier, personal_only=agent.is_tenant_assistant
         )
+    return _frame_decision(
+        agent,
+        tc,
+        tool_policies=tool_policies,
+        connection_key=connection_key,
+        tool_scopes=tool_scopes,
+        skill_thresholds=skill_thresholds,
+        value_spec=value_spec,
+        guardrail_attribute_specs=guardrail_attribute_specs,
+    )
+
+
+def is_core_call(name: str, *, routed: bool, tool_scopes: Mapping[str, Any] | None) -> bool:
+    """Whether a call is the CORE tool of that name, and may be decided as one.
+
+    Not when the route rewrote the name (the model named a connection's tool),
+    not when the connection's own scopes declare it, and never for a name that
+    is no core tool at all -- a qualified `<connection>.ask_user` included. The B risk
+    gate asks the same question, so it tiers the tool the PEP decided on.
+    """
+    return (
+        name in CONTROL_TOOL_NAMES and not routed and not _declared_by_connection(name, tool_scopes)
+    )
+
+
+def _declared_by_connection(tool: str, tool_scopes: Mapping[str, Any] | None) -> bool:
+    """Whether the connection's own scopes name this tool, under any right."""
+    if not tool_scopes:
+        return False
+    return any(isinstance(names, (list, tuple)) and tool in names for names in tool_scopes.values())
+
+
+def _frame_decision(
+    agent: m.Agent,
+    tc: ToolCall,
+    *,
+    tool_policies: Mapping[str, ToolPolicy],
+    connection_key: str | None,
+    tool_scopes: Mapping[str, Any] | None,
+    skill_thresholds: Sequence[float | None],
+    value_spec: dict[str, Any] | None,
+    guardrail_attribute_specs: Sequence[dict[str, Any]],
+) -> Decision:
+    """The department frame's verdict on a connection tool (§5.3)."""
     agent_threshold = (agent.presentation or {}).get("approval_value_eur")
     applicable_attributes = [
         spec

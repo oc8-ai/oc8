@@ -56,6 +56,7 @@ from oc8.agent.harness.stages.b_approval import autonomy_of, strip_justification
 from oc8.agent.harness.stages.b_authorize import (
     authorize as _authorize,  # re-exported for mcp_gateway.py and older tests
 )
+from oc8.agent.harness.stages.b_authorize import is_core_call
 from oc8.agent.harness.stages.b_blast_radius import check_blast_radius
 from oc8.agent.harness.stages.b_claims import claim_write
 from oc8.agent.harness.stages.b_clarify import (
@@ -844,14 +845,21 @@ async def run_agent(
                 config: dict[str, Any],
                 connection: str | None,
                 spec: dict[str, Any] | None,
+                advertised: str | None = None,
             ) -> GateVerdict:
-                offered = next((tool for tool in _offered() if tool.name == tc.name), None)
+                # `tc` carries the real tool name; the offer (and its
+                # annotations) is listed under the name the model saw, which a
+                # route qualifies. A routed name that matches a core tool is
+                # tiered as the connection's tool it is, not by the core tier.
+                shown = advertised or tc.name
+                offered = next((tool for tool in _offered() if tool.name == shown), None)
                 tier = classify_tier(
                     tc.name,
                     scopes=scopes,
                     config=config,
                     annotations=offered.annotations if offered is not None else None,
                     arguments=tc.arguments,
+                    core=is_core_call(tc.name, routed=shown != tc.name, tool_scopes=scopes),
                 )
                 identity = record_identity(tc.name, tc.arguments, spec)
                 return harness.gate(
@@ -1751,6 +1759,13 @@ async def run_agent(
                             if g.type == "value_threshold" and g.then == "require_approval"
                         ),
                         chat_mode=chat_mode,
+                        # Renamed by the route: the model named a connection's
+                        # tool (`<connection>.ask_user`). execute_control_tool below
+                        # sees the advertised name and leaves it to the
+                        # connection, so a core tool's allowance must not
+                        # decide it. A bare name is dispatched as the core tool
+                        # when it is one, so it is decided as one.
+                        routed=auth_tc.name != tc.name,
                     )
                     if tc.id in call_justifications:
                         justification = call_justifications[tc.id]
@@ -1865,6 +1880,7 @@ async def run_agent(
                                 config=call_config,
                                 connection=call_key,
                                 spec=call_focus,
+                                advertised=tc.name,
                             )
                             if gate_verdict.effect == "ask":
                                 verdict = pre_decided.get(_call_sig(tc)) if pre_decided else None
