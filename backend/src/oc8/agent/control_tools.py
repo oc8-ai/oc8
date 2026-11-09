@@ -1226,10 +1226,17 @@ def offered_tools(
         # By identity: only a tool that came in as an edition tool is judged
         # by the edition registry, never the agent's own tool of that name.
         from_edition = {id(t) for t in edition_tools}
+        # The mode's exemption (`ChatMode.permitted_writes`) is for the core
+        # tool of that name only (Ruling A8) -- by identity again, so a
+        # connection, skill or edition tool sharing the name never inherits it.
+        permitted = chat_mode.permitted_writes
         offered = [
             t
             for t in offered
-            if t.name not in WRITING_CONTROL_TOOLS
+            if (
+                t.name not in WRITING_CONTROL_TOOLS
+                or (t.name in permitted and CONTROL_TOOL_SCHEMAS.get(t.name) is t)
+            )
             and not (id(t) in from_edition and edition_tool_writes(t.name) is True)
         ]
     return offered

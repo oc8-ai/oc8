@@ -55,6 +55,14 @@ class ChatMode:
     instruction: str
     allows_tools: bool = True
     allows_writes: bool = True
+    #: Stays on the chat (`ChatSession.mode`) after the turn that set it, and
+    #: every later turn without a command of its own runs in it until the member
+    #: leaves it. Every other mode applies to one turn.
+    sticky: bool = False
+    #: Core tools this read-only mode does NOT withhold although they are in
+    #: `WRITING_CONTROL_TOOLS`. An exemption from the removal, never a grant:
+    #: the frame, the narrowing and the tool's own dispatch still decide.
+    permitted_writes: frozenset[str] = frozenset()
 
 
 ASK = ChatMode(
@@ -106,8 +114,34 @@ SUMMARISE = ChatMode(
     allows_writes=False,
 )
 
+AGENT = ChatMode(
+    key="agent",
+    summary="Set up a new agent together, step by step. Changes nothing until you confirm.",
+    instruction=(
+        "You are setting up one new agent with the person. Call builder_options "
+        "first: it lists the departments, connected systems, models and skills "
+        "they may use, with their ids. Ask only what you cannot infer, with "
+        "ask_user and structured questions (at most 6 per round, at most 3 "
+        "rounds in total): the department (pre-select their own), when the agent "
+        "works (on demand, a schedule, an event), which connected systems, and "
+        "what it must never do without approval. Propose everything else "
+        "yourself: name, role title, mission, model and skills. Then call "
+        "propose_agent once with the complete agent; the person sees it as a "
+        "card and nothing is created until they confirm there. If they ask for "
+        "changes, call propose_agent again with the revised agent -- it replaces "
+        "the previous one. If no connected system fits, say so plainly, point "
+        "them to the Knowledge page (/knowledge) where a system is connected, "
+        "and do not propose an agent that cannot work. Every other tool that "
+        "would change anything is withheld."
+    ),
+    allows_tools=True,
+    allows_writes=False,
+    sticky=True,
+    permitted_writes=frozenset({"ask_user", "propose_agent"}),
+)
+
 #: Keyed by command word. Insertion order is picker order.
-MODES: dict[str, ChatMode] = {m.key: m for m in (ASK, PLAN, DO, SUMMARISE)}
+MODES: dict[str, ChatMode] = {m.key: m for m in (ASK, PLAN, DO, SUMMARISE, AGENT)}
 
 #: Core-owned tools that CHANGE something, and therefore have no business in a
 #: read-only mode. The connection tools are classified by the pack's own
@@ -131,6 +165,7 @@ WRITING_CONTROL_TOOLS: frozenset[str] = frozenset(
         "delegate_task",
         "write_output_file",
         "propose_change",
+        "propose_agent",
         "decide_approval",
         "request_decision",
         "ask_user",
@@ -228,6 +263,17 @@ def mode_refusal(
     edition_writes = None if connection_tool else edition_tool_writes(tool_name)
     if edition_writes is not None:
         writes = edition_writes
+    elif (
+        tool_name in mode.permitted_writes
+        and tool_name in CONTROL_TOOL_NAMES
+        and not connection_tool
+    ):
+        # Exempt from this mode's removal (Agent mode keeps ask_user and
+        # propose_agent). Still "no opinion", never "allowed" -- and only for
+        # the core tool of that name (Ruling A8): an edition tool was
+        # classified above, and the agent's own connection tool of that name
+        # is not lent the exemption.
+        return None
     elif tool_name in WRITING_CONTROL_TOOLS:
         writes = True
     elif tool_name in CONTROL_TOOL_NAMES:

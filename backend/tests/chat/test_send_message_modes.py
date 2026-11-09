@@ -207,3 +207,136 @@ async def test_a_reference_of_an_unknown_kind_is_dropped(
             originating_operator="op",
         )
         assert msg.context_refs == []
+
+
+async def test_agent_command_makes_the_mode_stick(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        session = await _session(db, tenant)
+        msg, run = await send_message(
+            db,
+            session=session,
+            tenant_id=tenant,
+            message="/agent build me an invoice checker",
+            originating_operator="op",
+        )
+        assert msg.mode == "agent" and session.mode == "agent"
+        assert run is not None and run.context["chat_mode"] == "agent"
+
+
+async def test_a_plain_message_in_an_agent_session_runs_in_agent_mode(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        session = await _session(db, tenant)
+        session.mode = "agent"
+        await db.flush()
+        msg, run = await send_message(
+            db,
+            session=session,
+            tenant_id=tenant,
+            message="mornings, please",
+            originating_operator="op",
+        )
+        # Recorded on the turn, so regenerate_reply (which reads msg.mode) keeps it.
+        assert msg.mode == "agent"
+        assert run is not None and "[Mode: agent]" in run.context["task"]
+
+
+async def test_a_one_off_command_does_not_leave_the_sticky_mode(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        session = await _session(db, tenant)
+        session.mode = "agent"
+        await db.flush()
+        msg, _run = await send_message(
+            db,
+            session=session,
+            tenant_id=tenant,
+            message="/plan what next",
+            originating_operator="op",
+        )
+        assert msg.mode == "plan" and session.mode == "agent"
+
+
+async def test_a_followup_turn_ignores_the_sticky_mode(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        session = await _session(db, tenant)
+        session.mode = "agent"
+        await db.flush()
+        msg, run = await send_message(
+            db,
+            session=session,
+            tenant_id=tenant,
+            message="Follow-up for Offsite",
+            originating_operator=None,
+            role="followup",
+        )
+        assert msg.mode is None
+        assert run is not None and "chat_mode" not in run.context
+
+
+async def test_a_messenger_turn_neither_inherits_nor_sets_the_sticky_mode(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """Ruling A7: the chip and its ✕ exist only on the web, so a messenger
+    sender must never be stuck read-only -- `/agent` there is one turn."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        session = await _session(db, tenant)
+        session.mode = "agent"
+        await db.flush()
+        msg, run = await send_message(
+            db,
+            session=session,
+            tenant_id=tenant,
+            message="mornings, please",
+            originating_operator=None,
+            on_behalf_of="op",
+            chat_channel="telegram",
+            chat_channel_external_id="42",
+        )
+        assert msg.mode is None
+        assert run is not None and "chat_mode" not in run.context
+
+        session.mode = None
+        await db.flush()
+        msg, run = await send_message(
+            db,
+            session=session,
+            tenant_id=tenant,
+            message="/agent build me an invoice checker",
+            originating_operator=None,
+            on_behalf_of="op",
+            chat_channel="telegram",
+            chat_channel_external_id="42",
+        )
+        assert msg.mode == "agent" and session.mode is None
+        assert run is not None and run.context["chat_mode"] == "agent"
+
+
+async def test_extra_context_cannot_set_the_mode(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """Ruling 55: `chat_mode` never arrives through `extra_context`."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        session = await _session(db, tenant)
+        msg, run = await send_message(
+            db,
+            session=session,
+            tenant_id=tenant,
+            message="hello",
+            originating_operator="op",
+            extra_context={"chat_mode": "agent", "mode": "agent"},
+        )
+        assert msg.mode is None and session.mode is None
+        assert run is not None and "chat_mode" not in run.context

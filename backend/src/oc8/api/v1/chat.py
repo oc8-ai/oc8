@@ -65,6 +65,7 @@ from oc8.schemas.requests import (
     RenameChatSessionRequest,
     SendChatMessageRequest,
     SetChatModelRequest,
+    SetChatModeRequest,
 )
 
 router = APIRouter()
@@ -184,6 +185,7 @@ async def get_chat_modes() -> list[ChatModeDTO]:
             summary=mode.summary,
             allows_tools=mode.allows_tools,
             allows_writes=mode.allows_writes,
+            sticky=mode.sticky,
         )
         for mode in MODES.values()
     ]
@@ -505,6 +507,30 @@ async def set_chat_model(
     session.model_override_id = body.model_config_id
     await db.flush()
     dto = session_dto(session)
+    await db.commit()
+    return dto
+
+
+@router.put("/chat/sessions/{session_id}/mode", response_model=ChatSessionDTO)
+async def set_chat_mode(
+    session_id: uuid.UUID,
+    body: SetChatModeRequest,
+    db: DbSession,
+    actor: _ChatActor,
+) -> ChatSessionDTO:
+    """Keep a sticky mode on this chat (a bare `/agent`), or leave it (✕).
+    Owner-only like every other rearrangement of a chat; only a sticky mode
+    may be kept -- `/plan` stays a per-turn command."""
+    session = await session_owned_by_caller(session_id, db, actor)
+    if body.mode is not None:
+        mode = MODES.get(body.mode)
+        if mode is None or not mode.sticky:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, "this mode cannot be kept on a chat"
+            )
+    session.mode = body.mode
+    await db.flush()
+    dto = await session_detail(db, viewer=await actor_viewer(db, actor), session=session)
     await db.commit()
     return dto
 

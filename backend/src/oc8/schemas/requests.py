@@ -103,6 +103,11 @@ class SetChatModelRequest(CamelModel):
     model_config_id: uuid.UUID | None = None
 
 
+class SetChatModeRequest(CamelModel):
+    #: A sticky mode's key, or None to leave the mode.
+    mode: str | None = Field(default=None, max_length=32)
+
+
 class CreateAgentRequest(CamelModel):
     name: str
     department_id: uuid.UUID

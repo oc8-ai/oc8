@@ -1236,6 +1236,8 @@ class ChatSessionDTO(CamelModel):
     project_id: str | None = None
     #: Pinned chats list first.
     pinned: bool = False
+    #: The sticky mode this chat is in ("agent"), or None.
+    mode: str | None = None
 
 
 class ContextSearchItemDTO(CamelModel):
@@ -1309,6 +1311,8 @@ class ChatModeDTO(CamelModel):
     summary: str
     allows_tools: bool
     allows_writes: bool
+    #: Stays on the chat after the turn that set it (`PUT .../mode` keeps it).
+    sticky: bool = False
 
 
 class ChatMessageDTO(CamelModel):

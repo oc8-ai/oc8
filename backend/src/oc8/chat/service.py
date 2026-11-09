@@ -590,10 +590,24 @@ async def send_message(
     # unchanged with no mode, so a message that legitimately starts with a
     # slash is still sendable.
     if role == "followup":
-        # A follow-up's text is ours, not a member's command.
+        # A follow-up's text is ours, not a member's command, and it runs
+        # outside any sticky mode the member left on the chat.
         mode, body = None, message
     else:
         mode, body = parse_command(message)
+        # A sticky mode lives only on the web door (Ruling A7): the chip and
+        # its ✕ exist nowhere else, so a messenger turn neither inherits it
+        # (its sender could never leave it) nor sets it (`/agent` there is
+        # one turn).
+        if chat_channel is None:
+            if mode is not None and mode.sticky:
+                # `/agent ...` switches the chat, not just this turn.
+                session.mode = mode.key
+            elif mode is None and session.mode:
+                # Unknown keys resolve to None: a mode this release does not
+                # know must not narrow anything (same fail-open as
+                # mode_from_context).
+                mode = MODES.get(session.mode)
     manifest = await _turn_manifest(
         db,
         session=session,

@@ -214,10 +214,11 @@ def test_every_mode_has_a_one_line_summary_for_the_picker() -> None:
         assert len(mode.summary) <= 90
 
 
-def test_the_phase_one_command_set_is_exactly_four() -> None:
+def test_the_command_set_is_the_phase_one_four_plus_agent() -> None:
     """`/handoff` and `/review` need a room; `/approve` would duplicate a
-    screen; `/budget` never becomes a run and is answered client-side."""
-    assert set(MODES) == {"ask", "plan", "do", "summarise"}
+    screen; `/budget` never becomes a run and is answered client-side.
+    `/agent` is the Copilot Agent Builder's sticky mode."""
+    assert set(MODES) == {"ask", "plan", "do", "summarise", "agent"}
 
 
 @pytest.mark.parametrize("key", ["ask", "summarise"])
