@@ -525,6 +525,13 @@ async def test_project_instructions_pass_the_assistants_secret_gate(
             )
             assert refused.status_code == 422
             assert refused.json()["detail"] == SECRET_REFUSAL
+            policy = await c.post(
+                "/api/v1/chat/projects",
+                json={"name": "Policy", "instructions": "Explain our password policy"},
+                headers=h,
+            )
+            assert policy.status_code in (200, 201)
+            await c.delete(f"/api/v1/chat/projects/{policy.json()['id']}", headers=h)
             project = (
                 await c.post(
                     "/api/v1/chat/projects",

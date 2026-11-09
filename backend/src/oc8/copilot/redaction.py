@@ -42,6 +42,13 @@ def redact_value(value: Any) -> Any:
     return value
 
 
+def carries_secret_value(text: str) -> bool:
+    """A credential VALUE in the text (`password=...`, `Bearer ...`), not just a
+    word about one: for stored configuration such as project instructions,
+    where "explain our password policy" is ordinary content."""
+    return bool(_ASSIGNMENT.search(text) or _BEARER.search(text))
+
+
 def is_secret_request(message: str) -> bool:
     """The tenant Assistant never solicits, accepts, or forwards credential values."""
     return bool(_SENSITIVE_KEY.search(message))

@@ -34,7 +34,7 @@ from oc8.chat.projects import (
     list_projects,
     owned_project,
 )
-from oc8.copilot.redaction import is_secret_request
+from oc8.copilot.redaction import carries_secret_value
 from oc8.knowledge.browse import BrowseUnsupported, InvalidReference, browse_source
 from oc8.knowledge.connectors.base import ConnectorError
 from oc8.runtime.clarification import SECRET_REFUSAL
@@ -175,9 +175,10 @@ async def _audit_project(
 def _refuse_secret_instructions(instructions: str | None) -> None:
     """The tenant Assistant's secret gate, at write time and for every
     project: instructions reach the model of any chat the project is attached
-    to later, the Assistant's included. Same rule, sentence and status as chat
-    send and the answer doors."""
-    if instructions and is_secret_request(instructions):
+    to later, the Assistant's included. Stored configuration, so only an actual
+    credential value is refused (not the word "password" in a policy text);
+    same sentence and status as chat send and the answer doors."""
+    if instructions and carries_secret_value(instructions):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, SECRET_REFUSAL)
 
 
