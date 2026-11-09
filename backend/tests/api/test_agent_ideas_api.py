@@ -14,11 +14,13 @@ from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.auth import get_identity_provider
+from oc8.authz.permissions import SEAT_VIEWER
 from oc8.copilot.agent_templates import AgentTemplate
 from oc8.edition.contracts import EditionExtension
 from oc8.main import create_app
 from tests.conftest import AppSessionFactory
 from tests.copilot.builder_helpers import builder_office
+from tests.copilot.helpers import copilot_seat
 
 pytestmark = pytest.mark.asyncio
 
@@ -206,3 +208,29 @@ async def test_an_extension_without_the_hook_contributes_nothing() -> None:
 
     app = create_app(edition_extensions=[_Plain()])  # type: ignore[list-item]
     assert app.state.agent_templates == ()
+
+
+async def test_a_system_in_a_department_the_builder_would_refuse_does_not_count(
+    app_session: AppSessionFactory,
+) -> None:
+    """A26: a dept_manager reads every department (tenant-wide department:view)
+    but may propose only where a seat lets them view -- the builder lists and
+    accepts exactly those, so the ideas count exactly those too."""
+    tenant = await _office(app_session)
+    async with app_session(tenant) as db:
+        books = (
+            await db.execute(select(m.Department).where(m.Department.name == "Buchhaltung"))
+        ).scalar_one()
+        manager = await copilot_seat(db, tenant, "mgr", with_role=False)
+        db.add(
+            m.OrgMemberDepartment(
+                tenant_id=tenant,
+                member_id=manager.member_id,
+                department_id=books.id,
+                seat_role=SEAT_VIEWER,
+                agent_manage=False,
+            )
+        )
+    keys = await _keys(app_session, tenant, "mgr", "dept_manager")
+    assert "lead_qualification" not in keys, "HubSpot sits in a department outside the seat"
+    assert keys[0] == "invoice_checker"

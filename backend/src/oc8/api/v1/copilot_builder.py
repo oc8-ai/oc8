@@ -313,7 +313,11 @@ async def get_agent_ideas(request: Request, db: DbSession, actor: _Actor) -> lis
     departments, _total = await visible_departments(
         db, scope=actor.scope, tenant_wide=tenant_wide_read(authority, perm(DEPARTMENT, VIEW))
     )
-    kinds = await connected_kinds(db, tenant_id=actor.principal.tenant_id, departments=departments)
+    # Only where a proposal may land -- builder_options_text and
+    # create_builder_proposal apply the same seat check (A26): an idea must
+    # never offer a system in a department the builder would refuse.
+    proposable = [d for d in departments if actor.scope.may_view(d.id)]
+    kinds = await connected_kinds(db, tenant_id=actor.principal.tenant_id, departments=proposable)
     return [
         AgentIdeaDTO(
             key=t.key,
