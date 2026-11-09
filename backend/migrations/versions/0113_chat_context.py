@@ -1,7 +1,7 @@
 """oc8 Chat C3: pinned context per session, projects, pinned chats.
 
-Revision ID: 0109
-Revises: 0108
+Revision ID: 0113
+Revises: 0112
 """
 
 from __future__ import annotations
@@ -10,14 +10,14 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0109"
-down_revision: str | None = "0108"
+revision: str = "0113"
+down_revision: str | None = "0112"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    # Fail fast rather than queue the app behind a run's transaction (0108).
+    # Fail fast rather than queue the app behind a run's transaction (0112).
     op.execute("SET LOCAL lock_timeout = '5s'")
     op.execute(
         "ALTER TABLE chat_session ADD COLUMN IF NOT EXISTS pinned_refs jsonb "
@@ -57,7 +57,7 @@ def upgrade() -> None:
         EXCEPTION WHEN duplicate_object THEN NULL;
         END $$
     """)
-    # Said out loud like 0108 does: a database restored from a dump has no
+    # Said out loud like 0112 does: a database restored from a dump has no
     # default privileges, and the runtime role would get `permission denied`.
     op.execute("""
         DO $$ BEGIN
@@ -69,7 +69,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Fail fast rather than queue the app behind a run's transaction (0108).
+    # Fail fast rather than queue the app behind a run's transaction (0112).
     op.execute("SET LOCAL lock_timeout = '5s'")
     op.execute("DROP TABLE IF EXISTS chat_project")
     op.execute("DROP INDEX IF EXISTS ix_chat_session_project_id")

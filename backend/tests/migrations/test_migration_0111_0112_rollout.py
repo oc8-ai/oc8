@@ -1,4 +1,4 @@
-"""0107/0108 build their big indexes CONCURRENTLY and survive a down/up cycle."""
+"""0111/0112 build their big indexes CONCURRENTLY and survive a down/up cycle."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ def _index_state(pg_url: str) -> dict[str, bool]:
     return {name: valid for name, valid in rows}
 
 
-@pytest.mark.parametrize("name", ["0107_chat_c1.py", "0108_chat_live.py"])
+@pytest.mark.parametrize("name", ["0111_chat_c1.py", "0112_chat_live.py"])
 def test_the_migration_fails_fast_and_builds_indexes_concurrently(name: str) -> None:
     source = (_VERSIONS / name).read_text()
     assert "SET LOCAL lock_timeout" in source
@@ -37,7 +37,7 @@ def test_both_indexes_exist_and_are_valid(pg_url: str) -> None:
 
 def test_a_downgrade_and_upgrade_cycle_restores_the_schema(pg_url: str) -> None:
     cfg = Config(str(Path(__file__).resolve().parents[2] / "alembic.ini"))
-    command.downgrade(cfg, "0106")
+    command.downgrade(cfg, "0110")
     try:
         assert _index_state(pg_url) == {}
     finally:

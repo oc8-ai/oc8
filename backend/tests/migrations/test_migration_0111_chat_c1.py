@@ -1,4 +1,4 @@
-"""0107 adds the chat override/author/reply columns, parts and chat_enabled."""
+"""0111 adds the chat override/author/reply columns, parts and chat_enabled."""
 
 from __future__ import annotations
 

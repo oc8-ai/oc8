@@ -916,7 +916,7 @@ class UpdateResponsibilityRequest(CamelModel):
 
 
 class RunInputRequest(CamelModel):
-    """Mirrors `ck_run_input_text` (migration 0108) and MAX_INPUT_CHARS."""
+    """Mirrors `ck_run_input_text` (migration 0112) and MAX_INPUT_CHARS."""
 
     text: str = Field(min_length=1, max_length=4000)
 

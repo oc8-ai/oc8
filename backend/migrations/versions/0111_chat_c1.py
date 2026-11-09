@@ -9,8 +9,8 @@ Production-safe: `lock_timeout` makes the ALTERs fail fast rather than queue
 the app behind a long-running run's transaction, and the `chat_message` index
 is built CONCURRENTLY outside the transaction (see the PR's migration notes).
 
-Revision ID: 0107
-Revises: 0106
+Revision ID: 0111
+Revises: 0110
 """
 
 from __future__ import annotations
@@ -21,8 +21,8 @@ from typing import Final
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0107"
-down_revision: str | None = "0106"
+revision: str = "0111"
+down_revision: str | None = "0110"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

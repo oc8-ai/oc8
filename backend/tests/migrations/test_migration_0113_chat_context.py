@@ -1,4 +1,4 @@
-"""0109 adds session pins, chat projects and pinned chats."""
+"""0113 adds session pins, chat projects and pinned chats."""
 
 from __future__ import annotations
 

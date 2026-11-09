@@ -43,7 +43,7 @@ if TYPE_CHECKING:
     from oc8.auth.principal import Principal
     from oc8.realtime.bus import EventBus
 
-#: Mirrors `ck_run_input_text` (migration 0108).
+#: Mirrors `ck_run_input_text` (migration 0112).
 MAX_INPUT_CHARS: Final = 4000
 #: Unconsumed inputs one run may hold; bounds what a writer can pile up.
 MAX_PENDING_INPUTS: Final = 20

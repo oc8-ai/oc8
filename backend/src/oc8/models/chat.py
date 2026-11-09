@@ -50,7 +50,7 @@ class ChatSession(Base, PkMixin, TenantMixin, TimestampMixin):
     model_override_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
     #: "chat" for an ordinary conversation, "live" for the one continuous
     #: Live timeline per (member, agent) (spec §3.1); `uq_chat_session_live`
-    #: (migration 0108) keeps that to one row.
+    #: (migration 0112) keeps that to one row.
     kind: Mapped[str] = mapped_column(Text, nullable=False, default="chat", server_default="chat")
     #: Context pinned to this chat (spec §5.2): `[{"kind","id","label"}]`, each
     #: authorised against the member when pinned and re-checked per reader.
@@ -86,13 +86,13 @@ class ChatMessage(Base, PkMixin, TenantMixin, TimestampMixin):
     #: leaves an old turn readable instead of showing a bare uuid.
     context_refs: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     #: The member who wrote a human turn. NULL for assistant turns and for
-    #: rows written before 0107. Prepares for Rooms (spec §7).
+    #: rows written before 0111. Prepares for Rooms (spec §7).
     author_member_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
     #: For an assistant turn: the user turn it answers. Two answers to the same
     #: turn (Regenerate) share it.
     reply_to_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
     #: Typed message parts (sources, answers, document refs). NULL for rows
-    #: written before 0107, which render from `content`.
+    #: written before 0111, which render from `content`.
     parts: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
 
     __table_args__ = (
