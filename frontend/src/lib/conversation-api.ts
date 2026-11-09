@@ -321,15 +321,19 @@ const sameRef = (a: PinRef, b: PinRef) => a.kind === b.kind && a.id === b.id;
 
 /** Change the chat's pins (owner only, at most MAX_PINS). Each PUT is built
  *  from the session as cached when it runs, and writes run one at a time
- *  (one scope per chat), so quick changes never overwrite each other. The
- *  reply is the full session detail, written to its cache as is. A 422 names
- *  the refused refs: word it with `pinErrorText`. */
+ *  (one scope per chat), so quick changes never overwrite each other. A
+ *  session refetch still in flight (a live event started it) holds the pins
+ *  from before the write: it is cancelled when a write starts and when it
+ *  lands, so it never puts them back, and the next write is built from the
+ *  server's reply. A 422 names the refused refs: word it with `pinErrorText`. */
 export function useSetPins(sessionId: string | null) {
   const qc = useQueryClient();
+  const key = conversationKeys.session(sessionId ?? "");
   return useMutation({
     mutationKey: ["chat", "pins", sessionId ?? ""] as const,
     scope: { id: `chat-pins:${sessionId ?? ""}` },
-    mutationFn: (change: PinChange) => {
+    mutationFn: async (change: PinChange) => {
+      await qc.cancelQueries({ queryKey: key, exact: true });
       const current = (
         qc.getQueryData<ChatSessionDetailDTO>(conversationKeys.session(sessionId ?? ""))
           ?.pinnedRefs ?? []
@@ -345,7 +349,14 @@ export function useSetPins(sessionId: string | null) {
         { refs },
       );
     },
-    onSuccess: (session) => qc.setQueryData(conversationKeys.session(session.id), session),
+    onSuccess: async (session) => {
+      const landed = conversationKeys.session(session.id);
+      // A refetch that started while the PUT ran may have read the old pins.
+      await qc.cancelQueries({ queryKey: landed, exact: true });
+      qc.setQueryData(landed, session);
+      // Anything else that changed meanwhile (runs, a question) comes back.
+      void qc.invalidateQueries({ queryKey: landed, exact: true });
+    },
   });
 }
 

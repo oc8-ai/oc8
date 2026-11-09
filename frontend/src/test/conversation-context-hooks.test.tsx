@@ -181,4 +181,77 @@ describe("useSetPins", () => {
     );
     expect(put.mock.calls[1][1]).toEqual({ refs: [{ kind: "knowledge_base", id: "c" }] });
   });
+
+  /** A session refetch a live event started: it answers when told to. */
+  function slowRefetch(qc: QueryClient, pins: string[]) {
+    let answer: () => void = () => undefined;
+    const done = qc
+      .fetchQuery({
+        queryKey: conversationKeys.session("s/1"),
+        queryFn: () =>
+          new Promise<ChatSessionDetailDTO>((resolve) => {
+            answer = () => resolve(session(pins));
+          }),
+      })
+      .catch(() => undefined);
+    return { answer: () => answer(), done };
+  }
+
+  it("a refetch in flight when a pin is written never puts the old pins back", async () => {
+    const qc = fresh();
+    qc.setQueryData(conversationKeys.session("s/1"), session(["a"]));
+    put.mockImplementation(async (_url: string, body: { refs: { id: string }[] }) =>
+      session(body.refs.map((r) => r.id)),
+    );
+    const stale = slowRefetch(qc, ["a"]);
+    const { result } = renderHook(() => useSetPins("s/1"), { wrapper: wrapper(qc) });
+    await act(() => result.current.mutateAsync({ add: { kind: "knowledge_base", id: "b" } }));
+    stale.answer();
+    await stale.done;
+    const pins = () =>
+      qc
+        .getQueryData<ChatSessionDetailDTO>(conversationKeys.session("s/1"))
+        ?.pinnedRefs.map((p) => p.id);
+    expect(pins()).toEqual(["a", "b"]);
+    // The next write starts from the server's pins: "b" is not lost.
+    await act(() => result.current.mutateAsync({ add: { kind: "knowledge_base", id: "c" } }));
+    expect(put.mock.calls[1][1]).toEqual({
+      refs: [
+        { kind: "knowledge_base", id: "a" },
+        { kind: "knowledge_base", id: "b" },
+        { kind: "knowledge_base", id: "c" },
+      ],
+    });
+  });
+
+  it("a refetch that starts while the PUT runs cannot overwrite its reply", async () => {
+    const qc = fresh();
+    qc.setQueryData(conversationKeys.session("s/1"), session(["a"]));
+    let reply: () => void = () => undefined;
+    put.mockImplementation(
+      (_url: string, body: { refs: { id: string }[] }) =>
+        new Promise((resolve) => {
+          reply = () => resolve(session(body.refs.map((r) => r.id)));
+        }),
+    );
+    const { result } = renderHook(() => useSetPins("s/1"), { wrapper: wrapper(qc) });
+    let write: Promise<unknown> = Promise.resolve();
+    act(() => {
+      write = result.current.mutateAsync({ add: { kind: "knowledge_base", id: "b" } });
+    });
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    const stale = slowRefetch(qc, ["a"]);
+    await act(async () => {
+      reply();
+      await write;
+    });
+    stale.answer();
+    await stale.done;
+    expect(
+      qc
+        .getQueryData<ChatSessionDetailDTO>(conversationKeys.session("s/1"))
+        ?.pinnedRefs.map((p) => p.id),
+    ).toEqual(["a", "b"]);
+  });
 });
+
