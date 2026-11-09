@@ -1,7 +1,7 @@
 // The agent's Live tab (spec §3): one continuous Conversation per member and
 // agent, with the agent's autonomous runs as turns and a composer that writes
 // to the run that is running right now.
-import { useState, type MouseEvent, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { Bot, CalendarClock, Send, Square, User, Webhook, Zap } from "lucide-react";
 
 import { Skeleton } from "@/components/ui/skeleton";
@@ -29,9 +29,47 @@ const TERMINAL = new Set(["done", "failed", "interrupted"]);
 /** The tab sits on a page that scrolls as a whole, so it brings its own
  *  bounded height: the conversation scrolls inside it (sticking to the
  *  newest item, loading older ones at the top) and the composer stays in
- *  view under it. Roughly the viewport below the app and agent headers. */
+ *  view under it. The class is the first paint's guess; `useFitViewport`
+ *  then sets the exact rest of the viewport. */
 const LIVE_FRAME =
-  "flex h-[calc(100dvh-14rem)] min-h-[28rem] flex-col overflow-hidden rounded-lg border border-border";
+  "flex h-[calc(100dvh-14rem)] min-h-[20rem] flex-col overflow-hidden rounded-lg border border-border";
+const MIN_FRAME_PX = 320;
+
+/** The frame's height so the page ends at the viewport's bottom: the
+ *  viewport less everything above the frame (app header, agent card, tabs)
+ *  and the page's bottom padding under it. A page that scrolls would slide
+ *  the agent card under the sticky app header. Never under 20rem: on a short
+ *  window the page then scrolls a little rather than the chat vanishing. */
+function useFitViewport() {
+  const ref = useRef<HTMLDivElement>(null);
+  const [height, setHeight] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const fit = () => {
+      const rect = el.getBoundingClientRect();
+      const top = rect.top + window.scrollY;
+      // Nothing follows the frame on the page but the page's own padding.
+      const page = el.closest("main");
+      const below = page ? parseFloat(getComputedStyle(page).paddingBottom) || 0 : 0;
+      const next = Math.max(MIN_FRAME_PX, Math.floor(window.innerHeight - top - below));
+      setHeight((prev) => (prev === next ? prev : next));
+    };
+    fit();
+    window.addEventListener("resize", fit);
+    // A banner or the agent card changing height moves the frame.
+    let observer: ResizeObserver | undefined;
+    if (typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver(fit);
+      observer.observe(document.body);
+    }
+    return () => {
+      window.removeEventListener("resize", fit);
+      observer?.disconnect();
+    };
+  }, []);
+  return { ref, style: height !== null && height > 0 ? { height } : undefined };
+}
 
 type Translate = (en: string, de?: string) => string;
 
@@ -128,6 +166,7 @@ export function LiveTimeline({
   promptStarters: string[];
 }) {
   const t = useT();
+  const frame = useFitViewport();
   const mayManage = useMayManageAgent()(departmentId);
   const [allRuns, setAllRuns] = useState(false);
   // A refused input or a failed Stop, under the composer's target line.
@@ -191,7 +230,7 @@ export function LiveTimeline({
 
   if (!data) {
     return (
-      <div data-testid="live-frame" className={LIVE_FRAME}>
+      <div ref={frame.ref} style={frame.style} data-testid="live-frame" className={LIVE_FRAME}>
         {allRunsSwitch}
         {error ? (
           <p role="alert" className="px-4 py-6 text-center text-sm text-status-error">
@@ -245,7 +284,7 @@ export function LiveTimeline({
     ) : null;
 
   return (
-    <div data-testid="live-frame" className={LIVE_FRAME}>
+    <div ref={frame.ref} style={frame.style} data-testid="live-frame" className={LIVE_FRAME}>
       {allRunsSwitch}
       <Conversation
         agentId={agentId}

@@ -83,4 +83,28 @@ describe("Live tab layout", () => {
     fireEvent.scroll(scroller);
     expect(fetchOlder).toHaveBeenCalled();
   });
+
+  it("fits the rest of the viewport, so the page does not scroll under the sticky header (E2E B)", () => {
+    const rect = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockReturnValue({ top: 447, bottom: 900, left: 0, right: 0, width: 0, height: 0 } as DOMRect);
+    const fit = (innerHeight: number) => {
+      Object.defineProperty(window, "innerHeight", { configurable: true, value: innerHeight });
+      const view = render(
+        <QueryClientProvider client={new QueryClient()}>
+          <main style={{ paddingBottom: "32px" }}>
+            <LiveTimeline agentId="a" departmentId={null} promptStarters={[]} />
+          </main>
+        </QueryClientProvider>,
+      );
+      const height = screen.getByTestId("live-frame").style.height;
+      view.unmount();
+      return height;
+    };
+    // 1440x900: the frame ends 32px above the viewport's bottom.
+    expect(fit(900)).toBe("421px");
+    // 1280x720: never under 20rem.
+    expect(fit(720)).toBe("320px");
+    rect.mockRestore();
+  });
 });
