@@ -14,6 +14,7 @@ from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
 from oc8.api.v1.mcp import _manifest_connection
 from oc8.authz.permissions import INTEGRATION, MANAGE, VIEW, perm
+from oc8.connections.credential_env import credential_mcp_env
 from oc8.credentials.registry import CredentialTypeNotFound, get_credential_type
 from oc8.credentials.service import CredentialNotFound, create_credential, get_credential
 from oc8.schemas.dto import McpLoginDTO
@@ -100,7 +101,10 @@ async def create_login(
         # values already sitting in the credential store.
         try:
             cred = await get_credential(
-                db, tenant_id=principal.tenant_id, credential_id=body.credential_id
+                db,
+                tenant_id=principal.tenant_id,
+                credential_id=body.credential_id,
+                owner="organisation",
             )
         except CredentialNotFound as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "no such credential") from exc
@@ -179,10 +183,6 @@ async def create_login(
         resolved = _manifest_connection(source_conn)
         if resolved is not None:
             credential_env_fields = resolved[0].credential_env_fields
-    field_key_to_env_names: dict[str, list[str]] = {}
-    for env_name, field_key in credential_env_fields.items():
-        field_key_to_env_names.setdefault(field_key, []).append(env_name)
-
     # Derive config["secret_env"]/["env"] from the credential's OWN stored
     # refs/values -- resolve_mcp_env's existing per-entry loop (agent/mcp_env.py)
     # already knows how to resolve a plain secret-store ref the same way
@@ -193,21 +193,7 @@ async def create_login(
     # falls back to its own key, so a login with no matching manifest
     # connection (credential_type registered but not yet wired to any tool
     # pack) still gets a usable Credential + connection pair.
-    secret_env: dict[str, str] = {}
-    env: dict[str, str] = {}
-    secret_field_keys = {f.key for f in cred_type.fields if f.kind == "password"}
-    for field in cred_type.fields:
-        target_keys = field_key_to_env_names.get(field.key, [field.key])
-        if field.key in secret_field_keys:
-            ref = cred.secret_refs.get(field.key)
-            if ref:
-                for target_key in target_keys:
-                    secret_env[target_key] = ref
-        else:
-            value = cred.field_values.get(field.key)
-            if value:
-                for target_key in target_keys:
-                    env[target_key] = str(value)
+    env, secret_env = credential_mcp_env(cred, cred_type, credential_env_fields)
     # Everything from the manifest connection's own config EXCEPT env/
     # secret_env (those are this login's credential, not the shared
     # plugin's demo/default values) -- command, args, _plugin_name,

@@ -16,6 +16,7 @@ from oc8.authz.permissions import (
     AUDIT_VERIFY,
     AUDITOR,
     BUILTIN_ROLE_PERMISSIONS,
+    CONNECTION_OWN,
     COPILOT_USE,
     DEPT_MANAGER,
     OPERATOR,
@@ -59,8 +60,8 @@ def test_the_role_that_guarded_a_route_still_grants_nothing_operationally() -> N
     or `:manage` permission tenant-wide, and `menber` (a typo) still resolves to
     truly nothing.
     """
-    assert BUILTIN_ROLE_PERMISSIONS["member"] == frozenset({COPILOT_USE})
-    assert permissions_for("member") == frozenset({COPILOT_USE})
+    assert BUILTIN_ROLE_PERMISSIONS["member"] == frozenset({CONNECTION_OWN, COPILOT_USE})
+    assert permissions_for("member") == frozenset({CONNECTION_OWN, COPILOT_USE})
     assert permissions_for("menber") == frozenset()
     assert not role_has("member", APPROVAL_DECIDE)
 

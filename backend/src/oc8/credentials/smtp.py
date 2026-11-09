@@ -29,6 +29,8 @@ import smtplib
 import ssl
 from collections.abc import Iterator
 
+from oc8.credentials.errors import CredentialCheckFailed
+
 # The de-facto implicit-TLS ("SMTPS") port. Unlike 587, a server listening
 # here expects the TLS handshake FIRST -- there is no plaintext greeting to
 # read and no STARTTLS command to issue, so `smtplib.SMTP` would simply
@@ -118,14 +120,18 @@ def _check(host: str, port: int, username: str, password: str, use_tls: bool) ->
 async def validate_smtp(values: dict[str, str]) -> None:
     host = values.get("host", "")
     if not host:
-        raise ValueError("host is required")
+        raise CredentialCheckFailed("host is required", reason="invalid")
     port_raw = values.get("port", "587")
     try:
         port = int(port_raw)
     except ValueError as exc:
-        raise ValueError(f"port must be a number, got {port_raw!r}") from exc
+        raise CredentialCheckFailed(
+            f"port must be a number, got {port_raw!r}", reason="invalid"
+        ) from exc
     if not 1 <= port <= 65535:
-        raise ValueError(f"port must be between 1 and 65535, got {port}")
+        raise CredentialCheckFailed(
+            f"port must be between 1 and 65535, got {port}", reason="invalid"
+        )
     username = values.get("username", "")
     password = values.get("password", "")
     # Anything other than an explicit "false" means "use TLS" -- an empty or

@@ -1137,6 +1137,10 @@ class RunDTO(CamelModel):
     # never recorded one: the timeline renders a missing duration as nothing
     # at all rather than as zero.
     step_timings: list[dict[str, object]] = []
+    #: Why a tool call could not run: `{integration, provider, label, reason}`
+    #: (connections design). The chat and the run history show a "connect"
+    #: call to action for it.
+    connection_required: dict[str, Any] | None = None
 
 
 class RunSummaryDTO(CamelModel):
@@ -1277,6 +1281,14 @@ class TriggerDTO(CamelModel):
     last_run_at: str | None = None
     event_source: str | None = None
     event_type: str | None = None
+    created_by_member_id: str | None = None
+    #: The owner's display name, for showing whose trigger it is.
+    created_by_name: str | None = None
+    acts_for_creator: bool = False
+    #: Shown to its creator only: the agent changed since they last saved this
+    #: trigger, so it no longer acts through their own account until they save
+    #: it again (connection_required "schedule_needs_confirmation").
+    needs_confirmation: bool = False
     #: kind='webhook' only -- the full POST /webhooks/{token} URL, built
     #: server-side from the same base URL external OAuth redirects use
     #: (oauth_redirect_base_url). Not one-time-reveal: unlike a password, an
@@ -1400,6 +1412,10 @@ class OAuthStartDTO(CamelModel):
     authorization_url: str
 
 
+class AdminConsentUrlDTO(CamelModel):
+    url: str
+
+
 class OAuthConnectionDTO(CamelModel):
     """Connection metadata only — token material is never serialized."""
 
@@ -1411,6 +1427,83 @@ class OAuthConnectionDTO(CamelModel):
     client_source: str
     expires_at: str | None = None
     created_at: str
+
+
+class ConnectableIntegrationDTO(CamelModel):
+    """An installed plugin a person or an admin can connect (connections design)."""
+
+    name: str
+    label: str
+    summary: str
+    tool_key: str
+    kind: str  # "oauth" | "credential"
+    provider: str | None = None
+    credential_type: str | None = None
+    #: The credential type's fields (label/help/placeholder plus translations),
+    #: for the form; secrets are never pre-filled.
+    credential_fields: list[dict[str, Any]] = []
+    available: bool
+    capa_id: str
+    #: What making it available grants (the plugin's requested permissions).
+    permissions: list[str] = []
+
+
+class ConnectionDTO(CamelModel):
+    """One OAuth connection or credential as the Connections page shows it --
+    metadata only, never a token, a secret ref or a secret value."""
+
+    id: str
+    kind: str  # "oauth" | "credential"
+    integration: str | None = None
+    provider: str | None = None
+    credential_type: str | None = None
+    account_label: str
+    owner: str  # "me" | "organisation" | "member"
+    owner_member_id: str | None = None
+    owner_name: str | None = None
+    status: str
+    grant_type: str | None = None
+    created_at: str
+    created_by_name: str | None = None
+    last_tested_at: str | None = None
+    last_test_ok: bool | None = None
+
+
+class CredentialCheckDTO(CamelModel):
+    ok: bool
+    #: "auth" | "unreachable" | "invalid"; None when ok.
+    reason: str | None = None
+    detail: str | None = None
+
+
+class AgentToolAccessDTO(CamelModel):
+    """The account one agent uses for one connectable tool."""
+
+    tool_key: str
+    integration: str
+    label: str
+    kind: str  # "oauth" | "credential"
+    mode: str  # "default" | "user" | "fixed"
+    default_mode: str  # "user" | "organisation"
+    oauth_connection_id: str | None = None
+    credential_id: str | None = None
+    target_label: str | None = None
+    target_owner_name: str | None = None
+    #: A fixed binding whose connection or credential was removed.
+    target_missing: bool = False
+    #: A fixed binding the runtime refuses until its owner or an
+    #: administrator saves it again (`binding_needs_confirmation`).
+    needs_confirmation: bool = False
+    #: "not_confirmed" | "agent_changed" when `needs_confirmation`.
+    confirmation_reason: str | None = None
+
+
+class AccessOptionDTO(CamelModel):
+    kind: str  # "user" | "oauth" | "credential"
+    id: str | None = None
+    label: str
+    owner: str | None = None  # "organisation" | "me" | "member"
+    owner_name: str | None = None
 
 
 class DeviceLoginStartDTO(CamelModel):
@@ -1676,3 +1769,8 @@ class CopilotNoteDTO(CamelModel):
     id: str
     content: str
     created_at: datetime
+
+
+class CompleteOAuthDTO(CamelModel):
+    connected: str
+    connection: ConnectionDTO
