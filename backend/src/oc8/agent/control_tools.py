@@ -1875,7 +1875,31 @@ async def _model_locality(
         provider = (agent.presentation or {}).get("provider", get_settings().default_model_provider)
         return locality_for_provider(str(provider))
     config = await db.get(m.ModelConfig, model_config_id)
+    from oc8.modelrouter.auto_router import is_auto_config
+
+    if config is not None and is_auto_config(config):
+        return await _auto_locality(db, config)
     return str(getattr(config, "locality", "cloud") or "cloud")
+
+
+async def _auto_locality(db: AsyncSession, config: m.ModelConfig) -> str:
+    """An Auto config's own `locality` label promises nothing: the router may
+    pick any of its tiers. "local" only when every tier is a local model, so
+    a restricted source is refused with the spec's sentence up front instead
+    of the router failing the run later."""
+    from oc8.modelrouter.auto_router import AutoRouterError, tier_map
+
+    try:
+        tiers = tier_map(config)
+    except AutoRouterError:
+        return "cloud"
+    if not tiers:
+        return "cloud"
+    for tier_id in tiers.values():
+        tier = await db.get(m.ModelConfig, tier_id)
+        if tier is None or tier.locality != "local":
+            return "cloud"
+    return "local"
 
 
 async def _has_component_grant(db: AsyncSession, *, agent: m.Agent, component_key: str) -> bool:

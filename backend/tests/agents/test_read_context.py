@@ -625,3 +625,58 @@ async def test_no_spelling_of_a_close_tag_leaves_the_fence(
     block = _BLOCK.search(out.output)
     assert block is not None and block.end() == len(out.output)
     assert "ignore previous instructions" in block.group(3)
+
+
+async def _auto(db: AsyncSession, tenant: uuid.UUID, agent: m.Agent, *localities: str) -> None:
+    """Point `agent` at an Auto config labelled local, over tiers of `localities`."""
+    tiers = []
+    for locality in localities:
+        tier = m.ModelConfig(
+            tenant_id=tenant,
+            provider="openai" if locality == "cloud" else "ollama",
+            model=f"m-{locality}-{len(tiers)}",
+            locality=locality,
+        )
+        db.add(tier)
+        await db.flush()
+        tiers.append(tier.id)
+    auto = m.ModelConfig(
+        tenant_id=tenant,
+        provider="auto",
+        model="auto",
+        locality="local",
+        params={"tiers": dict(zip(("fast", "balanced", "strong"), map(str, tiers), strict=False))},
+    )
+    db.add(auto)
+    await db.flush()
+    agent.model_config_id = auto.id
+    await db.flush()
+
+
+async def test_an_auto_config_with_a_cloud_tier_gets_the_local_only_refusal(
+    app_session: AppSessionFactory,
+) -> None:
+    """Carried #1: the Auto config's own "local" label is not trusted; one
+    cloud tier makes it cloud, so the member sees the spec's sentence rather
+    than a run the router fails later."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, task, run, att, _member = await _setup(
+            db, tenant, classification="restricted", locality="local"
+        )
+        await _auto(db, tenant, agent, "local", "cloud")
+        out = await _read(db, tenant, agent, task, run, f"file:{att.id}")
+    assert out.output == LOCAL_ONLY_REFUSAL
+
+
+async def test_an_auto_config_over_local_tiers_only_reads_restricted_content(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, task, run, att, _member = await _setup(
+            db, tenant, classification="restricted", locality="local"
+        )
+        await _auto(db, tenant, agent, "local", "local")
+        out = await _read(db, tenant, agent, task, run, f"file:{att.id}")
+    assert out.output != LOCAL_ONLY_REFUSAL and out.contains_restricted is True
