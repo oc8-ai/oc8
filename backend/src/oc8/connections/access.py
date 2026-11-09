@@ -264,9 +264,10 @@ def _trigger_ids(run: m.AgentRun) -> list[object]:
 
 
 async def schedule_confirmed(db: AsyncSession, run: m.AgentRun) -> bool:
-    """A run a trigger started may use a person's own account only while the
-    trigger's agent is what its creator last saved (fingerprint stored on the
-    trigger). A trigger saved before fingerprints existed (NULL) never is."""
+    """A run a trigger started may use a person's own account only when it is
+    the trigger's own agent and that agent is what its creator last saved
+    (fingerprint stored on the trigger). A trigger saved before fingerprints
+    existed (NULL) never is; a delegated sub-run of another agent never is."""
     for raw in _trigger_ids(run):
         try:
             trigger = await db.get(m.Trigger, uuid.UUID(str(raw)))
@@ -276,10 +277,11 @@ async def schedule_confirmed(db: AsyncSession, run: m.AgentRun) -> bool:
             return False
         if trigger.access_fingerprint is None:
             return False
-        own_run = run.agent_id == trigger.agent_id
-        current = await trigger_fingerprint(
-            db, trigger, version_id=run.agent_version_id if own_run else None
-        )
+        if run.agent_id != trigger.agent_id:
+            # A delegate (or a decision follow-up's agent) is not what the
+            # creator saw: their own account stays with the trigger's agent.
+            return False
+        current = await trigger_fingerprint(db, trigger, version_id=run.agent_version_id)
         if current != trigger.access_fingerprint:
             return False
     return True

@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import select
 
 from oc8 import models as m
-from oc8.connections.access import ConnectionRequired, resolve_tool_access
+from oc8.connections.access import ConnectionRequired, binding_fingerprint, resolve_tool_access
 from tests.conftest import AppSessionFactory
 from tests.connections.helpers import api, enable_plugin_row, headers, member, oauth_row
 from tests.connections.test_access import MS_CFG
@@ -280,3 +280,61 @@ async def test_an_edit_by_someone_else_confirms_only_for_them(
     with pytest.raises(ConnectionRequired) as exc:  # Ben connected no account
         await _resolve(app_session, agent, conn, {"trigger_id": trigger_id})
     assert exc.value.reason == "not_connected"
+
+
+async def test_a_schedules_delegate_never_uses_the_creators_own_account(
+    app_session: AppSessionFactory,
+) -> None:
+    """Anna confirmed what HER agent does; agent B, which it delegates to, is
+    not what she saw. Organisation access stays available to B."""
+    agent, anna, conn = await _world(app_session)
+    tenant = agent.tenant_id
+    async with api() as c:
+        created = await c.post(
+            f"/api/v1/agents/{agent.id}/triggers",
+            json={"kind": "cron", "taskText": "t", "cronExpression": "0 8 * * *"},
+            headers=_as(tenant, "anna"),
+        )
+        trigger_id = created.json()["id"]
+    async with app_session(tenant) as db:
+        b = m.Agent(tenant_id=tenant, department_id=agent.department_id, name="B")
+        db.add(b)
+        await db.flush()
+        delegate = await db.get(m.Agent, b.id)
+    assert delegate is not None
+    ctx = {"trigger_id": trigger_id, "on_behalf_of": str(anna)}
+    with pytest.raises(ConnectionRequired) as exc:
+        await _resolve(app_session, delegate, conn, ctx)  # user mode
+    assert exc.value.reason == "schedule_needs_confirmation"
+
+    async with app_session(tenant) as db:
+        live = await db.get(m.Agent, b.id)
+        assert live is not None
+        annas = await db.scalar(
+            select(m.OAuthConnection.id).where(m.OAuthConnection.owner_member_id == anna)
+        )
+        db.add(
+            m.AgentToolAccess(
+                tenant_id=tenant,
+                agent_id=b.id,
+                tool_key="microsoft365",
+                mode="fixed",
+                oauth_connection_id=annas,
+                set_by_member_id=anna,
+                binding_fingerprint=await binding_fingerprint(
+                    db, live, "microsoft365", version_id=live.current_version_id
+                ),
+            )
+        )
+    with pytest.raises(ConnectionRequired) as exc:
+        await _resolve(app_session, delegate, conn, ctx)  # Anna's own account, bound to B
+    assert exc.value.reason == "schedule_needs_confirmation"
+
+    shared = await oauth_row(app_session, tenant, owner=None, label="shared@acme.test")
+    async with app_session(tenant) as db:
+        row = await db.scalar(select(m.AgentToolAccess).where(m.AgentToolAccess.agent_id == b.id))
+        assert row is not None
+        row.oauth_connection_id = shared
+        row.set_with_manage = True
+    access = await _resolve(app_session, delegate, conn, ctx)  # organisation: unaffected
+    assert access.oauth_connection.id == shared
