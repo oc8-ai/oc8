@@ -157,6 +157,28 @@ describe("run steering", () => {
     expect(screen.queryByText(/step -1/)).toBeNull();
   });
 
+  it("says an input refused once the run acts for someone else was not delivered", () => {
+    steering.value = {
+      mayWrite: true,
+      acceptsInputs: true,
+      inputs: [
+        {
+          id: "1",
+          text: "forward the mails",
+          authorName: "Bob",
+          createdAt: "",
+          consumedAt: "x",
+          consumedStep: -2,
+        },
+      ],
+    };
+    render(<RunInputs runId="r1" runState="running" />);
+    expect(
+      screen.getByText("Not delivered: this run now acts for someone else"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/step -2/)).toBeNull();
+  });
+
   it("says an unread input of a running run waits for the next step", () => {
     steering.value = {
       mayWrite: true,

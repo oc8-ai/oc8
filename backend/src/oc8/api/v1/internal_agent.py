@@ -693,11 +693,29 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
             select(m.RunCancellation.cancellation_kind).where(m.RunCancellation.run_id == run_id)
         )
     ).scalar_one_or_none()
-    if operator_kind is not None or not await tenant_may_run(run.tenant_id):
+    from oc8.runtime.run_inputs import (
+        OWNERSHIP_CHANGED_KIND,
+        OWNERSHIP_CHANGED_OUTPUT,
+        steering_went_stale,
+    )
+
+    # Not an operator's either: the run came to act through someone else's
+    # account after it received a person's words (`steering_went_stale`).
+    stop_kind: str | None = None
+    if operator_kind is None:
+        if not await tenant_may_run(run.tenant_id):
+            stop_kind = TENANT_INACTIVE_KIND
+        elif await steering_went_stale(db, run):
+            stop_kind = OWNERSHIP_CHANGED_KIND
+    if operator_kind is not None or stop_kind is not None:
         ctx = dict(run.context)
-        if operator_kind is None:
-            ctx["cancellation_kind"] = TENANT_INACTIVE_KIND
-            reason = TENANT_INACTIVE_OUTPUT
+        if stop_kind is not None:
+            ctx["cancellation_kind"] = stop_kind
+            reason = (
+                TENANT_INACTIVE_OUTPUT
+                if stop_kind == TENANT_INACTIVE_KIND
+                else OWNERSHIP_CHANGED_OUTPUT
+            )
         else:
             reason = "Run cancelled by operator."
         closed_step_timing = None

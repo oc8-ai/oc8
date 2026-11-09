@@ -968,9 +968,10 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             originating_operator = run.context.get("originating_operator")
 
             stopped_by_gate = False
+            stopped_by_owner_change = False
 
             async def _cancel_check() -> bool:
-                nonlocal stopped_by_gate
+                nonlocal stopped_by_gate, stopped_by_owner_change
                 # Per-step cancel probe (§7.2). Reads the run_cancellation table --
                 # a row this transaction does NOT lock -- so under READ COMMITTED it
                 # sees the cancel endpoint's committed insert at the next step
@@ -984,6 +985,13 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                     return True
                 if not await tenant_may_run(tenant_id):
                     stopped_by_gate = True
+                    return True
+                # Words the run already received, now under another person's
+                # account: stop rather than act on them (run_inputs).
+                from oc8.runtime.run_inputs import steering_went_stale
+
+                if await steering_went_stale(db, run):
+                    stopped_by_owner_change = True
                     return True
                 return False
 
@@ -1310,15 +1318,30 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         # An operator's run_cancellation row wins. Otherwise the
                         # gate stopped it: seen by _cancel_check in-process, or
                         # recorded on the run context by a container's /step.
+                        from oc8.runtime.run_inputs import (
+                            OWNERSHIP_CHANGED_KIND,
+                            OWNERSHIP_CHANGED_OUTPUT,
+                        )
+
                         kind = await _cancellation_kind(db, run_id)
                         if kind is None:
-                            gate_stopped = (
-                                stopped_by_gate
-                                or (run.context or {}).get("cancellation_kind")
-                                == TENANT_INACTIVE_KIND
-                            )
-                            kind = TENANT_INACTIVE_KIND if gate_stopped else "operator_interrupted"
+                            recorded = (run.context or {}).get("cancellation_kind")
+                            if stopped_by_gate or recorded == TENANT_INACTIVE_KIND:
+                                kind = TENANT_INACTIVE_KIND
+                            elif stopped_by_owner_change or recorded == OWNERSHIP_CHANGED_KIND:
+                                kind = OWNERSHIP_CHANGED_KIND
+                            else:
+                                kind = "operator_interrupted"
                         stop: dict[str, Any] = {"cancellation_kind": kind}
+                        if kind == OWNERSHIP_CHANGED_KIND:
+                            stop["output"] = OWNERSHIP_CHANGED_OUTPUT
+                            await record_activity(
+                                db,
+                                tenant_id=tenant_id,
+                                agent_id=agent.id,
+                                status="error",
+                                message=f"{agent.name}: {OWNERSHIP_CHANGED_OUTPUT}",
+                            )
                         if kind == TENANT_INACTIVE_KIND:
                             # The engine's interrupted result names the operator;
                             # this run was not stopped by one.

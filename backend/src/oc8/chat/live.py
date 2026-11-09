@@ -24,7 +24,6 @@ from sqlalchemy import (
     and_,
     cast,
     false,
-    func,
     literal,
     not_,
     or_,
@@ -35,7 +34,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.runtime.person import PERSON_KEYS, SEVERAL_PEOPLE, is_own, person_behind, present
+from oc8.runtime.person import (
+    SEVERAL_PEOPLE,
+    autonomous_sql,
+    ctx_text,
+    person_behind,
+    run_columns,
+    run_person_sql,
+    whose_run,
+)
 
 
 @dataclass(frozen=True)
@@ -185,50 +192,31 @@ async def trigger_names(
     return out
 
 
-#: Sources a run with nobody behind it comes from. `manual` (POST
-#: /agents/{id}/run) and `chat` are always somebody's; see `is_autonomous_run`.
-AUTONOMOUS_SOURCES: Final = frozenset(
-    {"cron", "event", "webhook", "delegation", "decision", "handoff"}
-)
-
-
-def is_autonomous_run(run: m.AgentRun) -> bool:
-    """The agent's own run: an autonomous source, and nobody behind it -- no
+async def is_autonomous_run(db: AsyncSession, run: m.AgentRun) -> bool:
+    """The agent's own run: an autonomous source, nobody behind it -- no
     `originating_operator`, no `for_person` (a wake-up or decision follow-up
-    continuing a person's work, Ruling 18) and no `chat_session_id` (a
-    sub-run delegated from a chat). "Present" is `oc8.runtime.person.present`
-    here and in the SQL twin `_autonomous`; both the timeline and live
-    watching (`oc8.chat.watch`) use these two and nothing else."""
-    ctx = run.context or {}
-    return run.source in AUTONOMOUS_SOURCES and not any(
-        present(ctx.get(key)) for key in (*PERSON_KEYS, "chat_session_id")
-    )
+    continuing a person's work, Ruling 18), no member whose personal account
+    it acts through (`on_behalf_of`, a schedule's creator) -- and no
+    `chat_session_id` (a sub-run delegated from a chat). One expression,
+    `oc8.runtime.person.autonomous_sql`, here and in the timeline's filter."""
+    return (await whose_run(db, run)).autonomous
 
 
-def is_colleague_run(run: m.AgentRun, member: m.OrgMember) -> bool:
+async def is_colleague_run(db: AsyncSession, run: m.AgentRun, member: m.OrgMember) -> bool:
     """Somebody else's run: not autonomous and not `member`'s (neither started
-    by her nor on her behalf). Shown only under "All runs", and only as step
-    labels and result (Ruling 15)."""
-    return not is_autonomous_run(run) and not is_own(person_behind(run.context), member.subject)
-
-
-def _ctx_text(key: str) -> ColumnElement[str]:
-    """The key's text, '' for absent or JSON null -- so `== ''` is exactly
-    "not `present`" (`->>` renders false, 0 or {} as non-empty text)."""
-    return func.coalesce(m.AgentRun.context[key].astext, "")
+    by her, nor on her behalf, nor through her account). Shown only under "All
+    runs", and only as step labels and result (Ruling 15)."""
+    return (await whose_run(db, run)).is_colleagues(member.subject)
 
 
 def _person() -> ColumnElement[str]:
-    """`person_behind`, in SQL: '' when nobody."""
-    return func.coalesce(*(func.nullif(_ctx_text(key), "") for key in PERSON_KEYS), literal(""))
+    """`run_person_sql` over the queried run: '' when nobody."""
+    return run_person_sql(run_columns())
 
 
 def _autonomous() -> ColumnElement[bool]:
     """`is_autonomous_run`, in SQL."""
-    return and_(
-        m.AgentRun.source.in_(AUTONOMOUS_SOURCES),
-        *(_ctx_text(key) == "" for key in (*PERSON_KEYS, "chat_session_id")),
-    )
+    return autonomous_sql(run_columns())
 
 
 def _hers_outside_chat(member: m.OrgMember) -> ColumnElement[bool]:
@@ -237,11 +225,12 @@ def _hers_outside_chat(member: m.OrgMember) -> ColumnElement[bool]:
     # The plain column first: PostgreSQL evaluates an AND's arguments in the
     # order given, and every `context->>` test detoasts the run's (large)
     # context. Chat runs -- most of a chat agent's runs -- stop here.
+    person = _person()
     return and_(
         m.AgentRun.source != "chat",
-        _ctx_text("chat_session_id") == "",
-        _person() == member.subject,
-        _person() != literal(SEVERAL_PEOPLE),
+        ctx_text(run_columns(), "chat_session_id") == "",
+        person == member.subject,
+        person != literal(SEVERAL_PEOPLE),
     )
 
 
@@ -251,10 +240,11 @@ def _colleagues(member: m.OrgMember) -> ColumnElement[bool]:
     own_sessions = select(cast(m.ChatSession.id, String)).where(
         m.ChatSession.tenant_id == member.tenant_id, m.ChatSession.member_id == member.id
     )
+    person = _person()
     return and_(
         not_(_autonomous()),
-        or_(_person() != member.subject, _person() == literal(SEVERAL_PEOPLE)),
-        not_(_ctx_text("chat_session_id").in_(own_sessions.scalar_subquery())),
+        or_(person != member.subject, person == literal(SEVERAL_PEOPLE)),
+        not_(ctx_text(run_columns(), "chat_session_id").in_(own_sessions.scalar_subquery())),
     )
 
 

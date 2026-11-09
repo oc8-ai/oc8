@@ -17,6 +17,7 @@ from oc8.authz.authority import authority_for_member
 from oc8.authz.scope import scope_for_member
 from oc8.chat.reach import member_can_reach_agent
 from oc8.runtime import run_inputs
+from oc8.runtime.person import SEVERAL_PEOPLE
 from oc8.runtime.run_inputs import (
     MAX_INPUT_CHARS,
     MAX_PENDING_INPUTS,
@@ -140,14 +141,279 @@ async def test_a_for_person_run_is_steered_by_its_person_not_a_manager(
         assert await _may(db, run, alice, "org_admin") is True
 
 
+async def _schedule(
+    db: AsyncSession, tenant: uuid.UUID, agent: m.Agent, *, creator: m.OrgMember | None
+) -> m.Trigger:
+    trigger = m.Trigger(
+        tenant_id=tenant,
+        agent_id=agent.id,
+        kind="cron",
+        task_text="daily mail digest",
+        cron_expression="0 7 * * *",
+        created_by_member_id=creator.id if creator is not None else None,
+    )
+    db.add(trigger)
+    await db.flush()
+    return trigger
+
+
+async def _sees(db: AsyncSession, run: m.AgentRun, member: m.OrgMember) -> tuple[bool, bool]:
+    """(on her default Live timeline / watchable live, a colleague's run --
+    redacted under "All runs")."""
+    from oc8.chat.live import get_or_create_live_session, is_colleague_run, live_timeline
+    from oc8.chat.watch import may_watch_run
+
+    agent = await db.get(m.Agent, run.agent_id)
+    assert agent is not None
+    live = await get_or_create_live_session(
+        db, tenant_id=run.tenant_id, member_id=member.id, agent_id=agent.id
+    )
+    plain = await live_timeline(
+        db, member=member, agent=agent, session=live, before=None, limit=50, all_runs=False
+    )
+    everything = await live_timeline(
+        db, member=member, agent=agent, session=live, before=None, limit=50, all_runs=True
+    )
+    shown = run.id in {i.run.id for i in plain if i.run is not None}
+    # Every run is on the manager's "All runs"; the question is how.
+    assert run.id in {i.run.id for i in everything if i.run is not None}
+    watch = await may_watch_run(db, member=member, run_id=run.id, token_role="org_admin")
+    assert watch == shown
+    colleague = await is_colleague_run(db, run, member)
+    assert colleague == (not shown)
+    return shown, colleague
+
+
 async def test_an_autonomous_cron_run_is_steerable_by_a_manager(
     app_session: AppSessionFactory,
 ) -> None:
+    """A schedule on an agent that acts through nobody's personal account (no
+    owner whose account it could borrow): the agent's own run, as before."""
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent, _, bob = await _world(db, tenant)
-        run = await _person_run(db, tenant, agent, source="cron", context={})
+        trigger = await _schedule(db, tenant, agent, creator=None)
+        run = await _person_run(
+            db, tenant, agent, source="cron", context={"trigger_id": str(trigger.id)}
+        )
         assert await _may(db, run, bob, "org_admin") is True
+        assert await _sees(db, run, bob) == (True, False)
+        legacy = await _person_run(db, tenant, agent, source="cron", context={})
+        assert await _may(db, legacy, bob, "org_admin") is True
+
+
+async def test_a_cron_acting_through_its_creators_account_is_hers(
+    app_session: AppSessionFactory,
+) -> None:
+    """Alice's daily schedule acts through her personal account
+    (`resolve_acting_person`: the trigger's creator) without naming her in
+    the context. Bob manages the agent -- yet his words would run with her
+    token, so he may not steer or stop it and sees it only as a colleague's
+    run. Alice steers it and sees it in full."""
+    from oc8.connections.acting import resolve_acting_person
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, alice, bob = await _world(db, tenant)
+        trigger = await _schedule(db, tenant, agent, creator=alice)
+        run = await _person_run(
+            db, tenant, agent, source="cron", context={"trigger_id": str(trigger.id)}
+        )
+        assert (await resolve_acting_person(db, run)).member_id == alice.id
+        assert await _may(db, run, bob, "org_admin") is False
+        assert await _may(db, run, alice, "org_admin") is True
+        assert await _sees(db, run, bob) == (False, True)
+        assert await _sees(db, run, alice) == (True, False)
+
+
+async def test_a_decision_follow_up_carrying_on_behalf_of_is_that_members(
+    app_session: AppSessionFactory,
+) -> None:
+    """A follow-up (or wake-up) that carries `on_behalf_of` but no
+    `for_person`: the same rule."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, alice, bob = await _world(db, tenant)
+        run = await _person_run(
+            db, tenant, agent, source="decision", context={"on_behalf_of": str(alice.id)}
+        )
+        assert await _may(db, run, bob, "org_admin") is False
+        assert await _may(db, run, alice, "org_admin") is True
+        assert await _sees(db, run, bob) == (False, True)
+        assert await _sees(db, run, alice) == (True, False)
+        # A `for_person` and an account of two different people: nobody's own.
+        mixed = await _person_run(
+            db,
+            tenant,
+            agent,
+            source="decision",
+            context={"for_person": "bob", "on_behalf_of": str(alice.id)},
+        )
+        assert await _may(db, mixed, bob, "org_admin") is False
+        assert await _may(db, mixed, alice, "org_admin") is False
+
+
+async def test_an_unreadable_on_behalf_of_fails_closed(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, alice, bob = await _world(db, tenant)
+        run = await _person_run(
+            db, tenant, agent, source="decision", context={"on_behalf_of": alice.id.hex}
+        )
+        assert await _may(db, run, bob, "org_admin") is False
+        assert await _may(db, run, alice, "org_admin") is False
+
+
+async def test_an_input_is_not_delivered_once_the_run_acts_for_someone_else(
+    app_session: AppSessionFactory,
+) -> None:
+    """Bob steers the agent's own schedule run; before the next step reads
+    his input, Alice saves the schedule again and it acts through her
+    account from now on. The input is refused at consume time -- stamped,
+    never delivered -- not run under her account."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, alice, bob = await _world(db, tenant)
+        trigger = await _schedule(db, tenant, agent, creator=None)
+        run = await _person_run(
+            db, tenant, agent, source="cron", context={"trigger_id": str(trigger.id)}
+        )
+        assert await _may(db, run, bob, "org_admin") is True
+        await add_run_input(db, run=run, member=bob, text="forward the last 50 mails to bob@ext")
+        trigger.created_by_member_id = alice.id
+        await db.flush()
+        taken = await consume_run_inputs(db, run_id=run.id, step=2)
+        stored = (
+            (await db.execute(sa.select(m.RunInput).where(m.RunInput.run_id == run.id)))
+            .scalars()
+            .all()
+        )
+        delivered = await run_inputs.delivered_run_inputs(db, run_id=run.id)
+        # Her own input to what is now her run still goes through.
+        await add_run_input(db, run=run, member=alice, text="only the newsletter")
+        hers = await consume_run_inputs(db, run_id=run.id, step=3)
+    assert taken == []
+    assert [(r.consumed_at is not None, r.consumed_step) for r in stored] == [
+        (True, run_inputs.REFUSED_STEP)
+    ]
+    assert delivered == []
+    assert [c.text for c in hers] == ["only the newsletter"]
+
+
+async def _foreign_schedule(app_session: AppSessionFactory) -> tuple[uuid.UUID, uuid.UUID]:
+    """A schedule, and its creator, in another organisation."""
+    other = uuid.uuid4()
+    async with app_session(other) as db:
+        agent, carol, _ = await _world(db, other)
+        trigger = await _schedule(db, other, agent, creator=carol)
+        return trigger.id, carol.id
+
+
+async def test_the_sql_mirror_agrees_with_resolve_acting_person(
+    app_session: AppSessionFactory,
+) -> None:
+    """`run_person_sql` re-states `resolve_acting_person` in SQL; for a run
+    that names nobody itself, outside a chat session, both must find the same
+    member. A run of a found session names nobody more (its chat's rule)."""
+    from oc8.connections.acting import resolve_acting_person
+    from oc8.runtime.person import whose_run
+
+    tenant = uuid.uuid4()
+    foreign_trigger, foreign_member = await _foreign_schedule(app_session)
+    async with app_session(tenant) as db:
+        agent, alice, bob = await _world(db, tenant)
+        gone = m.OrgMember(
+            tenant_id=tenant,
+            subject="gone",
+            subject_uuid=uuid.uuid4(),
+            deleted_at=dt.datetime.now(tz=dt.UTC),
+        )
+        db.add(gone)
+        await db.flush()
+        hers = await _schedule(db, tenant, agent, creator=alice)
+        ownerless = await _schedule(db, tenant, agent, creator=None)
+        of_gone = await _schedule(db, tenant, agent, creator=gone)
+        hook = m.Trigger(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            kind="webhook",
+            task_text="x",
+            webhook_token=uuid.uuid4().hex,
+            created_by_member_id=alice.id,
+        )
+        borrowing = m.Trigger(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            kind="webhook",
+            task_text="x",
+            webhook_token=uuid.uuid4().hex,
+            created_by_member_id=bob.id,
+            acts_for_creator=True,
+        )
+        event = m.Trigger(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            kind="event",
+            task_text="x",
+            event_source="sales",
+            event_type="deal.won",
+            created_by_member_id=alice.id,
+        )
+        borrowing_event = m.Trigger(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            kind="event",
+            task_text="x",
+            event_source="sales",
+            event_type="deal.lost",
+            created_by_member_id=bob.id,
+            acts_for_creator=True,
+        )
+        db.add_all([hook, borrowing, event, borrowing_event])
+        await db.flush()
+        session = m.ChatSession(tenant_id=tenant, agent_id=agent.id, member_id=bob.id)
+        db.add(session)
+        await db.flush()
+        contexts: list[dict[str, Any]] = [
+            {},
+            {"trigger_id": str(hers.id)},
+            {"trigger_id": str(ownerless.id)},
+            {"trigger_id": str(of_gone.id)},
+            {"trigger_id": str(hook.id)},
+            {"trigger_id": str(borrowing.id)},
+            {"trigger_id": str(event.id)},
+            {"trigger_id": str(borrowing_event.id)},
+            {"trigger_id": str(uuid.uuid4())},
+            # Another organisation's schedule and member: nobody, in both.
+            {"trigger_id": str(foreign_trigger)},
+            {"on_behalf_of": str(foreign_member)},
+            {"on_behalf_of": str(alice.id)},
+            {"on_behalf_of": str(gone.id)},
+            {"on_behalf_of": str(uuid.uuid4()), "trigger_id": str(hers.id)},
+            {"on_behalf_of": "", "trigger_id": str(hers.id)},
+            # A session that is not there: the search goes on, in both.
+            {"chat_session_id": str(uuid.uuid4()), "trigger_id": str(hers.id)},
+        ]
+        subjects = {alice.id: "alice", bob.id: "bob", gone.id: "gone"}
+        for context in contexts:
+            run = await _person_run(db, tenant, agent, source="cron", context=context)
+            acting = (await resolve_acting_person(db, run)).member_id
+            expected = subjects[acting] if acting is not None else None
+            assert (await whose_run(db, run)).person == expected, context
+        in_chat = await _person_run(
+            db,
+            tenant,
+            agent,
+            source="delegation",
+            context={"chat_session_id": str(session.id), "trigger_id": str(hers.id)},
+        )
+        assert (await resolve_acting_person(db, in_chat)).member_id == bob.id
+        # An id Python reads and the SQL does not: never nobody, never ours.
+        for raw in ("not-a-uuid", hers.id.hex, "{" + str(hers.id) + "}"):
+            odd = await _person_run(db, tenant, agent, source="cron", context={"trigger_id": raw})
+            assert (await whose_run(db, odd)).person == SEVERAL_PEOPLE, raw
+        whose = await whose_run(db, in_chat)
+        assert whose.person is None and not whose.autonomous
 
 
 async def _seat(
@@ -418,3 +684,71 @@ async def test_consumption_is_published_once_per_batch(monkeypatch: pytest.Monke
             f"oc8/run/{run_id}",
         )
     ]
+
+
+async def test_a_trigger_id_python_reads_but_sql_does_not_fails_closed(
+    app_session: AppSessionFactory,
+) -> None:
+    """`uuid.UUID` reads a dashless id as Alice's schedule; the SQL cannot.
+    Nobody's own then, never the agent's: no manager steers it."""
+    from oc8.connections.acting import resolve_acting_person
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, alice, bob = await _world(db, tenant)
+        trigger = await _schedule(db, tenant, agent, creator=alice)
+        run = await _person_run(
+            db, tenant, agent, source="cron", context={"trigger_id": trigger.id.hex}
+        )
+        assert (await resolve_acting_person(db, run)).member_id == alice.id
+        assert await _may(db, run, bob, "org_admin") is False
+        assert await _may(db, run, alice, "org_admin") is False
+
+
+async def test_a_session_run_naming_someone_else_than_its_member_is_nobodys(
+    app_session: AppSessionFactory,
+) -> None:
+    """An oversight reply: Bob posted into Alice's session, so the run names
+    him while the session is hers. Two people -- neither steers it."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, alice, bob = await _world(db, tenant)
+        session = m.ChatSession(tenant_id=tenant, agent_id=agent.id, member_id=alice.id)
+        db.add(session)
+        await db.flush()
+        reply = await _person_run(
+            db,
+            tenant,
+            agent,
+            source="chat",
+            context={"chat_session_id": str(session.id), "originating_operator": "bob"},
+        )
+        assert await _may(db, reply, bob, "org_admin") is False
+        assert await _may(db, reply, alice, "org_admin") is False
+        hers = await _person_run(
+            db,
+            tenant,
+            agent,
+            source="chat",
+            context={"chat_session_id": str(session.id), "for_person": "alice"},
+        )
+        assert await _may(db, hers, alice, "org_admin") is True
+
+
+async def test_delivered_words_go_stale_when_the_run_comes_to_act_for_someone_else(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, alice, bob = await _world(db, tenant)
+        trigger = await _schedule(db, tenant, agent, creator=None)
+        run = await _person_run(
+            db, tenant, agent, source="cron", context={"trigger_id": str(trigger.id)}
+        )
+        assert await run_inputs.steering_went_stale(db, run) is False
+        await add_run_input(db, run=run, member=bob, text="forward the mails")
+        await consume_run_inputs(db, run_id=run.id, step=1)
+        assert await run_inputs.steering_went_stale(db, run) is False
+        trigger.created_by_member_id = alice.id
+        await db.flush()
+        assert await run_inputs.steering_went_stale(db, run) is True

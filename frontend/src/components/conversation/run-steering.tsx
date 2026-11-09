@@ -93,6 +93,10 @@ export function runInputError(error: unknown, t: Translate): string {
  *  chat's next turn instead (Ruling 59). Mirrors the backend's
  *  `CARRIED_OVER_STEP`. */
 const CARRIED_OVER_STEP = -1;
+/** `consumedStep` of a message the run never received: by the time it would
+ *  have read it, the run was no longer one its author may steer (it now acts
+ *  through someone's own account). Mirrors the backend's `REFUSED_STEP`. */
+const REFUSED_STEP = -2;
 
 /** The messages written to a run, each with its fate. Only the run being
  *  steered asks the server (`enabled`); any other shows what is cached. */
@@ -117,17 +121,22 @@ export function RunInputs({
           <p className="text-xs text-muted-foreground" aria-live="polite">
             {input.consumedStep === CARRIED_OVER_STEP
               ? t("Answered as a new message", "Wird als neue Nachricht beantwortet")
-              : input.consumedStep !== null
+              : input.consumedStep === REFUSED_STEP
                 ? t(
-                    `Taken into account in step ${input.consumedStep}`,
-                    `Berücksichtigt in Schritt ${input.consumedStep}`,
+                    "Not delivered: this run now acts for someone else",
+                    "Nicht zugestellt: Dieser Lauf handelt jetzt für jemand anderen",
                   )
-                : TERMINAL.has(runState)
+                : input.consumedStep !== null
                   ? t(
-                      "The run finished before it read this",
-                      "Der Lauf war fertig, bevor er das gelesen hat",
+                      `Taken into account in step ${input.consumedStep}`,
+                      `Berücksichtigt in Schritt ${input.consumedStep}`,
                     )
-                  : t("Waiting for the next step", "Wartet auf den nächsten Schritt")}
+                  : TERMINAL.has(runState)
+                    ? t(
+                        "The run finished before it read this",
+                        "Der Lauf war fertig, bevor er das gelesen hat",
+                      )
+                    : t("Waiting for the next step", "Wartet auf den nächsten Schritt")}
           </p>
         </li>
       ))}

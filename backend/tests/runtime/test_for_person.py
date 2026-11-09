@@ -127,13 +127,13 @@ async def test_a_manual_runs_delegated_chain_stays_that_persons(
         assert wake.context["for_person"] == "bob"
         # Authority is untouched: the wake-up does not act AS bob.
         assert "originating_operator" not in wake.context
-        assert not is_autonomous_run(wake)
+        assert not await is_autonomous_run(db, wake)
         # A second hop from the wake-up keeps the person too.
         again = await _delegate_and_wake(
             db, tenant, lead=lead, worker=worker, task=task, run_id=wake.id
         )
         assert again.context["for_person"] == "bob"
-        assert not is_autonomous_run(again)
+        assert not await is_autonomous_run(db, again)
         assert await _on_alices_timeline(db, tenant, alice, lead) == set()
 
 
@@ -163,7 +163,7 @@ async def test_a_scheduled_chain_stays_autonomous(app_session: AppSessionFactory
             db, tenant, lead=lead, worker=worker, task=task, run_id=run.id
         )
         assert "for_person" not in wake.context
-        assert is_autonomous_run(wake)
+        assert await is_autonomous_run(db, wake)
         assert wake.id in await _on_alices_timeline(db, tenant, alice, lead)
 
 
@@ -219,8 +219,8 @@ async def test_a_decision_follow_up_from_a_members_run_is_that_members(
     assert follow.source == "decision"
     assert follow.context["for_person"] == "bob"
     assert "originating_operator" not in follow.context
-    assert not is_autonomous_run(follow)
     async with app_session(tenant) as db:
+        assert not await is_autonomous_run(db, follow)
         assert await _on_alices_timeline(db, tenant, alice, lead) == set()
 
 
@@ -230,7 +230,8 @@ async def test_a_decision_follow_up_from_an_autonomous_run_stays_autonomous(
     tenant = uuid.uuid4()
     follow, _alice, _lead = await _decide(app_session, tenant, monkeypatch, {}, "cron")
     assert "for_person" not in follow.context
-    assert is_autonomous_run(follow)
+    async with app_session(tenant) as db:
+        assert await is_autonomous_run(db, follow)
 
 
 async def test_a_task_board_request_is_the_requesting_members_chain(
@@ -290,7 +291,7 @@ async def test_a_task_board_request_is_the_requesting_members_chain(
             db, tenant, lead=lead_row, worker=worker_row, task=task, run_id=root.id
         )
         assert wake.context["for_person"] == "boss"
-        assert not is_autonomous_run(wake)
+        assert not await is_autonomous_run(db, wake)
         assert await _on_alices_timeline(db, tenant, alice_row, lead_row) == set()
         for run_id in (root.id, wake.id):
             assert not await may_watch_run(db, member=alice_row, run_id=run_id)
@@ -344,8 +345,8 @@ async def test_a_task_whose_runs_name_different_people_belongs_to_no_one(
         wake = await db.get(m.AgentRun, wake_id)
         assert wake is not None
         assert wake.context["for_person"] not in ("bob", "carol")
-        assert not is_autonomous_run(wake)
+        assert not await is_autonomous_run(db, wake)
         for subject in ("bob", "carol", "alice"):
             member = m.OrgMember(tenant_id=tenant, subject=subject)
-            assert is_colleague_run(wake, member)
+            assert await is_colleague_run(db, wake, member)
         assert wake.id not in await _on_alices_timeline(db, tenant, alice, lead)

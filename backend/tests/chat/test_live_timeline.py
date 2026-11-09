@@ -375,16 +375,21 @@ async def test_a_run_a_colleague_started_by_hand_is_not_autonomous(
     assert _run_ids(everything) == {hers.id, bobs.id, nobodys.id, carried.id}
 
 
-def test_autonomous_means_no_person_behind_the_run() -> None:
-    def run(source: str, **ctx: Any) -> m.AgentRun:
-        return m.AgentRun(source=source, context=ctx)
+async def test_autonomous_means_no_person_behind_the_run(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
 
-    for source in ("cron", "event", "webhook", "delegation", "decision", "handoff"):
-        assert is_autonomous_run(run(source))
-    assert not is_autonomous_run(run("manual"))
-    assert not is_autonomous_run(run("chat"))
-    assert not is_autonomous_run(run("cron", originating_operator="bob"))
-    assert not is_autonomous_run(run("delegation", chat_session_id=str(uuid.uuid4())))
+    def run(source: str, **ctx: Any) -> m.AgentRun:
+        return m.AgentRun(tenant_id=tenant, source=source, context=ctx)
+
+    async with app_session(tenant) as db:
+        for source in ("cron", "event", "webhook", "delegation", "decision", "handoff"):
+            assert await is_autonomous_run(db, run(source))
+        assert not await is_autonomous_run(db, run("manual"))
+        assert not await is_autonomous_run(db, run("chat"))
+        assert not await is_autonomous_run(db, run("cron", originating_operator="bob"))
+        assert not await is_autonomous_run(db, run("delegation", chat_session_id=str(uuid.uuid4())))
 
 
 async def test_trigger_names_resolve_the_firing_trigger_and_stay_in_the_tenant(
@@ -460,8 +465,8 @@ async def test_python_and_sql_agree_on_who_is_behind_a_run(
                 all_runs=False,
             )
         )
-    for run in runs:
-        assert (run.id in shown) == is_autonomous_run(run), run.context
+        for run in runs:
+            assert (run.id in shown) == await is_autonomous_run(db, run), run.context
 
 
 async def test_a_run_on_her_behalf_is_hers(app_session: AppSessionFactory) -> None:
@@ -478,9 +483,9 @@ async def test_a_run_on_her_behalf_is_hers(app_session: AppSessionFactory) -> No
         plain = await live_timeline(
             db, member=alice, agent=agent, session=live, before=None, limit=50, all_runs=False
         )
-    assert _run_ids(plain) == {hers.id}
-    assert not is_colleague_run(hers, alice)
-    assert is_colleague_run(bobs, alice)
+        assert _run_ids(plain) == {hers.id}
+        assert not await is_colleague_run(db, hers, alice)
+        assert await is_colleague_run(db, bobs, alice)
 
 
 async def test_started_by_names_the_person_not_the_delegating_agent(
@@ -542,7 +547,7 @@ async def test_the_several_people_marker_is_never_a_member(
         everything = await live_timeline(
             db, member=mallory, agent=agent, session=live, before=None, limit=50, all_runs=True
         )
-        assert is_colleague_run(mixed, mallory)
+        assert await is_colleague_run(db, mixed, mallory)
         assert _run_ids(plain) == set()
         assert _run_ids(everything) == {mixed.id}
         assert not await may_watch_run(db, member=mallory, run_id=mixed.id)
