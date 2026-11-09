@@ -5,9 +5,10 @@ import uuid
 from typing import Any
 
 import pytest
+from tests.audit.helpers import append_now
 from tests.conftest import AppSessionFactory
 
-from oc8.audit.chain import MacDowngrade, append_event, verify_chain
+from oc8.audit.chain import MacDowngrade, verify_chain
 from oc8.config import get_settings
 
 pytestmark = pytest.mark.asyncio
@@ -28,7 +29,7 @@ async def test_unkeyed_hashes_are_unchanged(app_session: AppSessionFactory) -> N
 
     tenant = uuid.uuid4()
     async with app_session(tenant) as s:
-        ev = await append_event(
+        ev = await append_now(
             s,
             tenant_id=tenant,
             actor_type="system",
@@ -60,7 +61,7 @@ async def test_keyed_rows_are_written_at_version_1(
     try:
         tenant = uuid.uuid4()
         async with app_session(tenant) as s:
-            ev = await append_event(
+            ev = await append_now(
                 s,
                 tenant_id=tenant,
                 actor_type="system",
@@ -80,7 +81,7 @@ async def test_a_chain_across_the_switch_point_verifies(
     tenant = uuid.uuid4()
     async with app_session(tenant) as s:
         for i in range(2):
-            await append_event(
+            await append_now(
                 s,
                 tenant_id=tenant,
                 actor_type="system",
@@ -92,7 +93,7 @@ async def test_a_chain_across_the_switch_point_verifies(
     try:
         async with app_session(tenant) as s:
             for i in range(2):
-                await append_event(
+                await append_now(
                     s,
                     tenant_id=tenant,
                     actor_type="system",
@@ -112,7 +113,7 @@ async def test_a_keyed_hash_cannot_be_reproduced_with_a_wrong_key(
     try:
         tenant = uuid.uuid4()
         async with app_session(tenant) as s:
-            ev = await append_event(
+            ev = await append_now(
                 s,
                 tenant_id=tenant,
                 actor_type="system",
@@ -147,7 +148,7 @@ async def test_writing_unkeyed_behind_a_keyed_head_is_refused(
     tenant = uuid.uuid4()
     try:
         async with app_session(tenant) as s:
-            await append_event(
+            await append_now(
                 s,
                 tenant_id=tenant,
                 actor_type="system",
@@ -161,7 +162,7 @@ async def test_writing_unkeyed_behind_a_keyed_head_is_refused(
 
     with pytest.raises(MacDowngrade):
         async with app_session(tenant) as s:
-            await append_event(
+            await append_now(
                 s,
                 tenant_id=tenant,
                 actor_type="system",

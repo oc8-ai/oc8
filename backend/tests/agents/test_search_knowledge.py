@@ -19,6 +19,7 @@ import pytest
 
 from oc8 import models as m
 from oc8.agent.control_tools import SEARCH_KNOWLEDGE, execute_control_tool
+from oc8.audit.chain import flush_audit
 from oc8.authz.pdp import Decision, Effect
 from oc8.modelrouter import ToolCall
 from tests.conftest import AppSessionFactory
@@ -134,6 +135,7 @@ async def test_a_lookup_leaves_a_trail(
         events = (await db.execute(m.ActivityEvent.__table__.select())).fetchall()
         assert any("Garantiedauer" in (e.message or "") for e in events), "no feed line"
 
+        await flush_audit(db)  # staged audit events reach the chain at commit
         audit = (await db.execute(m.AuditEvent.__table__.select())).fetchall()
         assert any(a.action == "knowledge.searched" for a in audit), "no audit entry"
 

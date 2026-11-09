@@ -24,6 +24,7 @@ import pytest
 from sqlalchemy import select
 
 from oc8 import models as m
+from oc8.audit.chain import flush_audit
 from oc8.config import Settings, get_settings
 from oc8.knowledge.connectors import registry
 from oc8.knowledge.connectors.base import (
@@ -167,6 +168,8 @@ async def _marks(db: Any, kb_id: uuid.UUID) -> dict[str, dt.datetime | None]:
 
 
 async def _held_events(db: Any, tenant: uuid.UUID) -> list[m.AuditEvent]:
+    # Staged events reach the chain at commit; write them so they read back.
+    await flush_audit(db)
     rows = await db.execute(
         select(m.AuditEvent).where(
             m.AuditEvent.tenant_id == tenant, m.AuditEvent.action == RECONCILE_HELD

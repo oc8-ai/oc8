@@ -25,7 +25,7 @@ from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from oc8 import models as m
-from oc8.audit.chain import verify_chain
+from oc8.audit.chain import flush_audit, verify_chain
 from oc8.auth import get_identity_provider
 from oc8.knowledge.chunks import list_documents
 from oc8.knowledge.connectors import registry
@@ -185,6 +185,8 @@ async def _all_chunks(db: Any, kb_id: uuid.UUID, uri: str) -> list[m.KbChunk]:
 
 
 async def _events(db: Any, tenant: uuid.UUID) -> list[m.AuditEvent]:
+    # Staged events reach the chain at commit; write them so they read back.
+    await flush_audit(db)
     rows = await db.execute(
         select(m.AuditEvent)
         .where(m.AuditEvent.tenant_id == tenant, m.AuditEvent.category == "knowledge")
@@ -1013,6 +1015,7 @@ async def test_unlink_source_from_base_erases_only_that_pairs_content(
         assert removal.documents == 1
         assert removal.chunks == 1
         assert removal.sha256 == hashlib.sha256(b"test://a-doc").hexdigest()
+        await flush_audit(db)  # the receipt exists once the chain is written
         assert removal.audit_seq is not None
 
         # A's content is gone from this base...
@@ -1047,7 +1050,7 @@ async def test_unlink_source_from_base_erases_only_that_pairs_content(
         again = await unlink_source_from_base(
             db, tenant_id=tenant, kb=kb, data_source=a, now=dt.datetime.now(tz=dt.UTC)
         )
-        assert again == Removal(documents=0, chunks=0, sha256=None, sources=0, audit_seq=None)
+        assert again == Removal(documents=0, chunks=0, sha256=None, sources=0)
 
 
 async def test_unlink_source_from_base_does_not_disturb_the_same_source_in_another_base(

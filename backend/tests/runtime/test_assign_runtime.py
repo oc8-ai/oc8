@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.audit.chain import flush_audit
 from oc8.auth import Principal
 from oc8.capas.lifecycle import enable_plugin
 from oc8.capas.service import install_plugin
@@ -72,6 +73,7 @@ async def test_assign_runtime_sets_ref_and_audits(app_session: AppSessionFactory
 
         assert agent.runtime_ref == str(capa_id)
 
+        await flush_audit(db)  # staged audit events reach the chain at commit
         events = (
             (
                 await db.execute(
@@ -110,6 +112,7 @@ async def test_assign_runtime_none_clears_ref_and_audits(app_session: AppSession
 
         assert agent.runtime_ref is None
 
+        await flush_audit(db)  # staged audit events reach the chain at commit
         events = (
             (
                 await db.execute(
@@ -241,6 +244,7 @@ async def test_assign_runtime_accepts_builtin_sentinels_and_audits(
         )
         assert agent.runtime_ref == BUILTIN_IN_PROCESS_RUNTIME_REF
 
+        await flush_audit(db)  # staged audit events reach the chain at commit
         events = (
             (
                 await db.execute(

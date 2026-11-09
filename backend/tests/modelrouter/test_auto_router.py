@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from oc8 import config
 from oc8 import models as m
+from oc8.audit.chain import flush_audit
 from oc8.constants import ACME_TENANT_ID
 from oc8.modelrouter.auto_router import (
     AUTO_MODEL,
@@ -152,6 +153,7 @@ async def test_resolve_picks_fast_and_audits(
         )
         assert concrete.id == fast.id
         assert decision.tier == "fast"
+        await flush_audit(db)  # staged audit events reach the chain at commit
         events = (
             (
                 await db.execute(

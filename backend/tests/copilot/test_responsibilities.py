@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.audit.chain import flush_audit
 from oc8.copilot.responsibilities import (
     ResponsibilityError,
     can_transition,
@@ -71,6 +72,7 @@ async def test_open_writes_audit_event(app_session: AppSessionFactory) -> None:
     tenant, member, agent_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     async with app_session(tenant) as db:
         r = await _open(db, tenant, member, uuid.uuid4(), agent_id)
+        await flush_audit(db)  # staged audit events reach the chain at commit
         events = (
             (
                 await db.execute(

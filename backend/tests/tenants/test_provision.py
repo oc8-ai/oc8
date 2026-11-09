@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import select
 
 from oc8 import models as m
+from oc8.audit.chain import flush_audit
 from oc8.tenants.provision import (
     TenantExists,
     create_tenant,
@@ -137,6 +138,7 @@ async def test_writes_a_tenant_created_audit_event(
 ) -> None:
     async with owner_session() as db:
         created = await create_tenant(db, slug=_slug(), name="A")
+        await flush_audit(db)  # staged audit events reach the chain at commit
         events = (
             (
                 await db.execute(

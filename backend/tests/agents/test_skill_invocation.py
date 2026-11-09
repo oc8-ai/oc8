@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.agent.engine import run_agent
+from oc8.audit.chain import flush_audit
 from oc8.modelrouter import CompletionResult, NeutralTool, ToolCall, Usage, chunk_from_result
 from oc8.modelrouter.types import CompletionRequest
 from tests.conftest import AppSessionFactory
@@ -148,6 +149,7 @@ async def test_skill_invocation_is_audited(
     async with app_session(tenant) as db:
         agent, skill, version = await _setup(db, tenant)
         await run_agent(db, agent=agent, task_text="book it", tenant_id=tenant)
+        await flush_audit(db)  # staged audit events reach the chain at commit
         events = (
             (
                 await db.execute(
