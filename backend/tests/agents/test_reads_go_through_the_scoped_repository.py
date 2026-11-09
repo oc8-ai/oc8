@@ -67,6 +67,15 @@ ALLOWED: dict[str, str] = {
         "names the agents behind delegated tasks on a timeline the caller was "
         "already admitted to (reach + watch rules); name only, never content"
     ),
+    "runtime/run_inputs.py": (
+        "reads the agent of a run the caller was already admitted to steer "
+        "(may_steer_run / run_accepts_inputs), for the secret gate and its "
+        "pinned runtime; no departmental browse"
+    ),
+    "chat/carry_over.py": (
+        "reads the finished run's own agent, after its owner's reach was "
+        "re-checked, to stage the follow-up turn; no departmental browse"
+    ),
     "runtime/clarification.py": (
         "the answer path reading the run's own agent for the secret gate "
         "(is_tenant_assistant); no departmental browse"
