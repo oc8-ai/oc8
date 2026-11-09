@@ -13,6 +13,8 @@ from typing import Any
 
 from oc8 import models as m
 from oc8.agent.control_tools import (
+    BUILDER_TOOL_NAMES,
+    CONTROL_TOOL_NAMES,
     COPILOT_TOOL_NAMES,
     DEPTH_LIMIT_REASON,
     MAX_DELEGATION_DEPTH,
@@ -24,6 +26,14 @@ from oc8.edition.tools import NO_EDITION_OFFER, EditionOffer
 from oc8.memory.policy import authorize_memory_write
 from oc8.memory.router import MAX_MEMORY_CONTENT_LENGTH
 from oc8.modelrouter import ToolCall
+
+
+def _scoped(tool_name: str, tool_scopes: Mapping[str, Any] | None) -> bool:
+    """Whether the connection's scopes classify `tool_name` at all."""
+    return any(
+        isinstance(names, list | tuple) and tool_name in names
+        for names in (tool_scopes or {}).values()
+    )
 
 
 def authorize(
@@ -86,8 +96,16 @@ def authorize(
     # append_event at all three call sites records it -- "denied because /plan"
     # is in the audit trail without a fourth writer.
     edition_call = edition_offer.claims(tc.name)
+    # A call by a core tool's name is the core tool -- every runtime dispatches
+    # those by name before any connection -- unless the connection's own scopes
+    # list that name: then it is the connection's tool and never inherits a
+    # mode's core-only exemption (Ruling A8).
+    core_call = tc.name in CONTROL_TOOL_NAMES and not _scoped(tc.name, tool_scopes)
     refused = mode_refusal(
-        chat_mode, tc.name, tool_scopes=tool_scopes, connection_tool=not edition_call
+        chat_mode,
+        tc.name,
+        tool_scopes=tool_scopes,
+        connection_tool=not edition_call and not core_call,
     )
     if refused is not None:
         return Decision(Effect.DENY, refused)
@@ -175,6 +193,12 @@ def authorize(
         # (oc8.copilot.tools) is the gate -- Copilot only, and scoped to the
         # member behind the task. Without this ALLOW every call would be
         # audited as a denial by the frame check below.
+        return Decision(Effect.ALLOW)
+    if tc.name in BUILDER_TOOL_NAMES:
+        # Belongs to no connection, like propose_change: the dispatch
+        # (oc8.copilot.builder_tools) is the gate -- Copilot only, web door,
+        # the session's own member. The mode check above already denied
+        # propose_agent outside Agent mode's exemption.
         return Decision(Effect.ALLOW)
     if tc.name == "delegate_task":
         if not is_team_lead:

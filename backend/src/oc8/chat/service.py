@@ -1014,11 +1014,23 @@ async def record_assistant_reply(db: AsyncSession, *, run: m.AgentRun, output: s
     # persisted, and kept ahead of core's own suggestions part, never over it.
     raw_parts = (run.context or {}).get("parts")
     reply_parts: list[dict[str, Any]] = clean_parts(raw_parts)
+    # The builder card (Copilot Agent Builder §3.3): a core part, written only
+    # by the propose_agent tool, never accepted from an edition (CORE_PART_TYPES).
+    from oc8.copilot.tools import uuid_or_none
+
+    raw_builder = (run.context or {}).get("builder_proposal_id")
+    builder_id = uuid_or_none(raw_builder) if raw_builder else None
+    if builder_id is not None:
+        reply_parts.append({"type": "agent_builder", "proposalId": str(builder_id)})
     if suggestions:
         reply_parts.append({"type": "suggestions", "options": suggestions})
     consumed = {
         key: None
-        for key, raw in (("suggestions", raw_suggestions), ("parts", raw_parts))
+        for key, raw in (
+            ("suggestions", raw_suggestions),
+            ("parts", raw_parts),
+            ("builder_proposal_id", raw_builder),
+        )
         if raw is not None
     }
     if consumed:

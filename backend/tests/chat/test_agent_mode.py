@@ -7,10 +7,7 @@ import dataclasses
 import uuid
 from typing import Any
 
-import pytest
-
 from oc8 import models as m
-from oc8.agent import control_tools
 from oc8.agent.control_tools import offered_tools
 from oc8.chat.modes import AGENT, MODES, mode_refusal, parse_command
 from oc8.modelrouter import NeutralTool
@@ -29,18 +26,6 @@ def _copilot() -> m.Agent:
     )
 
 
-@pytest.fixture
-def propose_agent_is_core(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`propose_agent` becomes a core control tool in Task 5; until then the
-    exemption (Ruling A8: core control tools only) is exercised with it
-    registered as one."""
-    monkeypatch.setattr(
-        control_tools,
-        "CONTROL_TOOL_NAMES",
-        control_tools.CONTROL_TOOL_NAMES | {"propose_agent"},
-    )
-
-
 def test_agent_is_a_known_sticky_command() -> None:
     mode, body = parse_command("/agent leg mir einen Rechnungsprüfer an")
     assert mode is AGENT and body == "leg mir einen Rechnungsprüfer an"
@@ -49,7 +34,6 @@ def test_agent_is_a_known_sticky_command() -> None:
     assert not any(MODES[k].sticky for k in ("ask", "plan", "do", "summarise"))
 
 
-@pytest.mark.usefixtures("propose_agent_is_core")
 def test_agent_mode_keeps_asking_and_proposing_and_withholds_every_write() -> None:
     assert mode_refusal(AGENT, "ask_user", tool_scopes=None) is None
     assert mode_refusal(AGENT, "propose_agent", tool_scopes=None) is None
@@ -61,7 +45,6 @@ def test_agent_mode_keeps_asking_and_proposing_and_withholds_every_write() -> No
     assert mode_refusal(AGENT, "create_record", tool_scopes=SCOPES) is not None
 
 
-@pytest.mark.usefixtures("propose_agent_is_core")
 def test_plan_still_withholds_propose_agent() -> None:
     assert mode_refusal(MODES["plan"], "propose_agent", tool_scopes=None) is not None
 

@@ -42,7 +42,7 @@ MAX_PARTS = 20
 #: At most this many bytes of serialised edition parts on one message.
 MAX_PARTS_BYTES = 64 * 1024
 #: Part types core itself writes; an edition part may not pose as one.
-CORE_PART_TYPES: frozenset[str] = frozenset({"answers", "suggestions"})
+CORE_PART_TYPES: frozenset[str] = frozenset({"answers", "suggestions", "agent_builder"})
 #: How deep a part may nest (the part object itself is depth 1).
 MAX_PART_DEPTH = 8
 _MAX_TYPE_LENGTH = 64

@@ -39,7 +39,7 @@ from oc8.realtime.emit import publish_copilot_changed
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["COPILOT_TOOLS", "execute_copilot_tool"]
+__all__ = ["COPILOT_TOOLS", "execute_copilot_tool", "uuid_or_none"]
 
 
 class _BadArgument(ValueError):
@@ -68,7 +68,8 @@ def _flag(args: dict[str, Any], key: str) -> bool:
     raise _BadArgument(f"{key} must be true or false")
 
 
-def _uuid(raw: Any) -> uuid.UUID | None:
+def uuid_or_none(raw: Any) -> uuid.UUID | None:
+    """An id the model or a run's context handed over, or None when it is not one."""
     try:
         return uuid.UUID(str(raw))
     except (ValueError, TypeError):
@@ -171,7 +172,7 @@ async def _dispatch(
     if door == "followup":
         # A follow-up turn may only touch the responsibility that fired it.
         fu = context.get("followup")
-        own = _uuid(fu.get("responsibility_id")) if isinstance(fu, dict) else None
+        own = uuid_or_none(fu.get("responsibility_id")) if isinstance(fu, dict) else None
         if own is None:
             return ControlOutcome(output="ERROR: this follow-up has no responsibility to act on")
     if tc.name == RESPONSIBILITY_OPEN.name:
@@ -179,7 +180,7 @@ async def _dispatch(
             return ControlOutcome(
                 output="ERROR: a follow-up cannot start new responsibilities; ask the person"
             )
-        session_id = _uuid(context.get("chat_session_id"))
+        session_id = uuid_or_none(context.get("chat_session_id"))
         if session_id is None:
             return ControlOutcome(output="ERROR: responsibilities start in a conversation")
         r = await open_responsibility(
@@ -199,7 +200,7 @@ async def _dispatch(
             output=f"Responsibility opened ({r.id}).", rendered_component=_card(r)
         )
     if tc.name == CANCEL_FOLLOWUP.name:
-        fid = _uuid(args.get("followup_id"))
+        fid = uuid_or_none(args.get("followup_id"))
         if door == "followup":
             mine = {
                 t.id
@@ -213,7 +214,7 @@ async def _dispatch(
         ):
             return ControlOutcome(output="ERROR: follow-up not found")
         return ControlOutcome(output="Follow-up ended.")
-    rid = _uuid(args.get("responsibility_id"))
+    rid = uuid_or_none(args.get("responsibility_id"))
     if rid is None:
         return ControlOutcome(output="ERROR: responsibility_id is required")
     if door == "followup" and tc.name != SCHEDULE_FOLLOWUP.name and rid != own:
@@ -261,7 +262,7 @@ async def _dispatch(
         # from it: only a single re-check of the SAME responsibility, and only
         # when nothing else is already scheduled for it.
         fu = context.get("followup")
-        firing = _uuid(fu.get("trigger_id")) if isinstance(fu, dict) else None
+        firing = uuid_or_none(fu.get("trigger_id")) if isinstance(fu, dict) else None
         if kind != "once":
             return ControlOutcome(
                 output="ERROR: a follow-up can only schedule one more single check; "
