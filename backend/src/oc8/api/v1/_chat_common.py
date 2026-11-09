@@ -84,17 +84,25 @@ async def ref_views(
 
 
 async def session_detail(
-    db: AsyncSession, *, viewer: Viewer, session: m.ChatSession
+    db: AsyncSession, *, viewer: Viewer, session: m.ChatSession, read_only: bool = False
 ) -> ChatSessionDTO:
     """One chat in full: the runs still answering it (so a page knows which
     run to watch), the question one is parked on, and its pins re-checked for
     `viewer`. Every route that answers with a single chat answers with this,
     so a cache write from any of them keeps the run watcher."""
     runs = await active_runs_for_session(db, tenant_id=session.tenant_id, session_id=session.id)
-    dto = session_dto(session, active_runs=runs, pending_question=await pending_question(db, runs))
-    return dto.model_copy(
-        update={"pinned_refs": await ref_views(db, viewer, list(session.pinned_refs or []))}
+    # A reader (read-only share) sees no parked question and never the label the
+    # owner stored for a pin the reader cannot open.
+    dto = session_dto(
+        session,
+        active_runs=runs,
+        read_only=read_only,
+        pending_question=None if read_only else await pending_question(db, runs),
     )
+    pins = await ref_views(db, viewer, list(session.pinned_refs or []))
+    if read_only:
+        pins = [p if p.available else p.model_copy(update={"label": ""}) for p in pins]
+    return dto.model_copy(update={"pinned_refs": pins})
 
 
 async def session_owned_by_caller(

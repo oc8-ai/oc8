@@ -24,7 +24,7 @@ async def may_watch_run(
     """A run the member started, or that runs on her behalf (`person_behind`),
     an autonomous run
     of the agent (it is on their Live timeline), or a chat run of a session
-    whose audience includes them -- never a colleague's run otherwise, not
+    they own (an edition's readers do NOT stream live) -- never a colleague's run otherwise, not
     even for a manager; in EVERY case only while they can still
     reach the run's agent. `token_role` is the member's own live
     token role (the socket has it), see `member_can_reach_agent`."""
@@ -67,7 +67,14 @@ async def _in_session_audience(
     session = await db.get(m.ChatSession, session_id)
     if session is None or session.agent_id != run.agent_id:
         return False
+    # The owner alone: a reader gets no live token, tool or reasoning stream
+    # (Ruling 47); they hear `chat.message_created` (ids only) and read the
+    # redacted run state.
     audience = await session_audience(
-        db, session=session, acting_subject=member.subject, acting_role=token_role
+        db,
+        session=session,
+        acting_subject=member.subject,
+        acting_role=token_role,
+        readers=False,
     )
     return member.id in audience

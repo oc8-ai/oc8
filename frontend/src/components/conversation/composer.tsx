@@ -82,7 +82,7 @@ export interface ComposerProps {
   extraPlusItems?: PlusMenuItem[];
   /** C5: dictation button. */
   trailing?: ReactNode;
-  /** Read-only share. */
+  /** Read-only share: no Stop button, Esc does not stop. */
   disabled?: boolean;
   /** Focus the message box on mount (the dock, when it opens). */
   autoFocus?: boolean;
@@ -341,7 +341,7 @@ export function Composer(props: ComposerProps) {
         return;
       }
     }
-    if (e.key === "Escape" && props.busy) {
+    if (e.key === "Escape" && props.busy && !props.disabled) {
       e.preventDefault();
       props.onStop();
       return;
@@ -522,7 +522,7 @@ export function Composer(props: ComposerProps) {
           )}
           <div className="flex-1" />
           {props.trailing}
-          {props.busy ? (
+          {props.busy && props.disabled ? null : props.busy ? (
             <button
               type="button"
               onClick={props.onStop}

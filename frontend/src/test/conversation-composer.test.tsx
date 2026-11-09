@@ -65,6 +65,14 @@ describe("Composer", () => {
     expect(onStop).toHaveBeenCalledTimes(1);
   });
 
+  it("offers no Stop and ignores Escape in a read-only chat", () => {
+    const onStop = vi.fn();
+    render(<Harness busy disabled onStop={onStop} />);
+    expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("textbox", { name: /Message/ }), { key: "Escape" });
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
   it("edits the last message with ArrowUp in an empty composer", () => {
     const onEditLast = vi.fn();
     render(<Harness onEditLast={onEditLast} />);

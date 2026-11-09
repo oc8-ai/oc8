@@ -57,15 +57,23 @@ def _info(session: m.ChatSession, access: Access) -> SessionInfo:
 
 
 async def session_access(
-    db: AsyncSession, *, member: m.OrgMember, session: m.ChatSession
+    db: AsyncSession,
+    *,
+    member: m.OrgMember,
+    session: m.ChatSession,
+    token_role: str | None = None,
 ) -> Access | None:
     """ "owner" for the member's own session, "reader" when an edition admits
-    them (and they still reach the agent), otherwise `None`."""
+    them (and they still reach the agent), otherwise `None`. `token_role` is the
+    member's own live token role when the call serves their request."""
     if session.tenant_id != member.tenant_id or member.deleted_at is not None:
         return None
     if session.member_id == member.id:
         return "owner"
-    return "reader" if member.id in await session_audience(db, session=session) else None
+    audience = await session_audience(
+        db, session=session, acting_subject=member.subject, acting_role=token_role
+    )
+    return "reader" if member.id in audience else None
 
 
 async def list_sessions(db: AsyncSession, *, member: m.OrgMember) -> list[SessionInfo]:

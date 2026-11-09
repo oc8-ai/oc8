@@ -48,7 +48,20 @@ async def extra_readers(db: AsyncSession, *, session: m.ChatSession) -> list[uui
     fn = _EXTRA.get()
     if fn is None:
         return []
-    wanted = [r for r in dict.fromkeys(await fn(db, session)) if r != session.member_id]
+    # A failing extension must never take chat down: it fails closed to
+    # owner-only. The SAVEPOINT keeps the caller's transaction usable if the
+    # extension's own query aborted it.
+    try:
+        async with db.begin_nested():
+            returned = list(await fn(db, session))
+    except Exception:
+        logger.warning(
+            "extra readers of chat session %s failed; treating the chat as owner-only",
+            session.id,
+            exc_info=True,
+        )
+        return []
+    wanted = [r for r in dict.fromkeys(returned) if r != session.member_id]
     if not wanted:
         return []
     rows = await db.execute(
@@ -74,6 +87,7 @@ async def session_audience(
     session: m.ChatSession,
     acting_subject: str | None = None,
     acting_role: str | None = None,
+    readers: bool = True,
 ) -> list[uuid.UUID]:
     """The session's owner and its readers -- each only while they can still
     reach its agent.
@@ -82,7 +96,8 @@ async def session_audience(
     hears nothing more about it. `acting_role` is the token role of whoever
     caused this (the run's `operator_role`); it is used for the owner only when
     `acting_subject` IS the owner (likewise for a reader), never to lend one
-    person's role to another."""
+    person's role to another. `readers=False` is the owner alone, for the
+    authority-like questions a reader must not answer (run watching)."""
     audience: list[uuid.UUID] = []
     owner = await db.get(m.OrgMember, session.member_id)
     if owner is not None and owner.tenant_id == session.tenant_id:
@@ -93,7 +108,7 @@ async def session_audience(
             token_role=_role_for(owner, acting_subject, acting_role),
         ):
             audience.append(owner.id)
-    for reader_id in await extra_readers(db, session=session):
+    for reader_id in await extra_readers(db, session=session) if readers else []:
         reader = await db.get(m.OrgMember, reader_id)
         if reader is not None and await member_can_reach_agent(
             db,

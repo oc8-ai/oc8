@@ -16,6 +16,7 @@ from oc8.agents.versioning import pinned_model_config_id, pinned_version_no, res
 from oc8.api.deps import CurrentPrincipal, DbSession, require_departmental, require_permission
 from oc8.api.v1._chat_common import (
     actor_viewer,
+    ref_views,
     session_detail,
     session_dto,
     session_owned_by_caller,
@@ -25,11 +26,12 @@ from oc8.audit import append_event
 from oc8.authz.authority import Authority, authority_for_principal
 from oc8.authz.permissions import AGENT, COPILOT, COPILOT_USE, MANAGE, RUN_START, VIEW, perm
 from oc8.authz.scope import HumanActor
-from oc8.chat.audience import is_reader_only
+from oc8.chat.context.base import Viewer
 from oc8.chat.model_choice import is_allowed_override, model_options
 from oc8.chat.modes import MODES
+from oc8.chat.port import session_access
 from oc8.chat.questions import QuestionError
-from oc8.chat.reach import member_can_reach_agent, reachable_chat_agent
+from oc8.chat.reach import reachable_chat_agent
 from oc8.chat.service import (
     QuestionNotAnswerable,
     active_runs_for_session,
@@ -73,7 +75,20 @@ _ChatActor = Annotated[
 ]
 
 
-async def _message_dto(msg: m.ChatMessage, db: DbSession, tenant_id: uuid.UUID) -> ChatMessageDTO:
+#: What a reader sees in place of an attachment's file name.
+_READER_ATTACHMENT_NAME = "Anhang"
+
+
+async def _message_dto(
+    msg: m.ChatMessage,
+    db: DbSession,
+    tenant_id: uuid.UUID,
+    *,
+    reader: Viewer | None = None,
+) -> ChatMessageDTO:
+    """`reader` is the viewer of a read-only share: the owner's stored context
+    labels are re-resolved for them (blank when they cannot see the object), and
+    attachments show neither a file name nor a size (downloads stay owner-only)."""
     result = await db.execute(
         select(m.FileAttachment).where(
             m.FileAttachment.tenant_id == tenant_id,
@@ -84,14 +99,30 @@ async def _message_dto(msg: m.ChatMessage, db: DbSession, tenant_id: uuid.UUID) 
     attachments = [
         FileAttachmentDTO(
             id=str(row.id),
-            filename=row.filename,
-            content_type=row.content_type,
-            size_bytes=row.size_bytes,
-            is_image=row.is_image,
+            filename=row.filename if reader is None else _READER_ATTACHMENT_NAME,
+            content_type=row.content_type if reader is None else "application/octet-stream",
+            size_bytes=row.size_bytes if reader is None else 0,
+            is_image=row.is_image if reader is None else False,
             created_at=row.created_at.isoformat(),
         )
         for row in result.scalars().all()
     ]
+    stored_refs = [ref for ref in (msg.context_refs or []) if isinstance(ref, dict)]
+    if reader is None:
+        context_refs = [
+            ChatContextRefDTO(
+                kind=str(ref.get("kind", "")),
+                id=str(ref.get("id", "")),
+                label=str(ref.get("label", "")),
+            )
+            for ref in stored_refs
+        ]
+    else:
+        views = await ref_views(db, reader, stored_refs)
+        context_refs = [
+            ChatContextRefDTO(kind=v.kind, id=v.id, label=v.label if v.available else "")
+            for v in views
+        ]
     author_name: str | None = None
     if msg.author_member_id is not None:
         author = await db.get(m.OrgMember, msg.author_member_id)
@@ -106,15 +137,7 @@ async def _message_dto(msg: m.ChatMessage, db: DbSession, tenant_id: uuid.UUID) 
         created_at=msg.created_at.isoformat(),
         attachments=attachments,
         mode=msg.mode,
-        context_refs=[
-            ChatContextRefDTO(
-                kind=str(ref.get("kind", "")),
-                id=str(ref.get("id", "")),
-                label=str(ref.get("label", "")),
-            )
-            for ref in (msg.context_refs or [])
-            if isinstance(ref, dict)
-        ],
+        context_refs=context_refs,
         author_member_id=str(msg.author_member_id) if msg.author_member_id else None,
         author_name=author_name,
         reply_to_id=str(msg.reply_to_id) if msg.reply_to_id else None,
@@ -275,13 +298,10 @@ async def _readable_session(
         session = await get_session(db, tenant_id=actor.principal.tenant_id, session_id=session_id)
         if (
             session is not None
-            and await is_reader_only(db, session=session, member_id=actor.member.id)
-            and await member_can_reach_agent(
-                db,
-                member=actor.member,
-                agent_id=session.agent_id,
-                token_role=actor.principal.role,
+            and await session_access(
+                db, member=actor.member, session=session, token_role=actor.principal.role
             )
+            == "reader"
         ):
             return session, True
         raise
@@ -297,9 +317,12 @@ async def get_messages(
         Depends(require_departmental(perm(AGENT, VIEW), or_tenant_wide=COPILOT_USE)),
     ],
 ) -> list[ChatMessageDTO]:
-    await _readable_session(request, session_id, db, actor)
+    _session, read_only = await _readable_session(request, session_id, db, actor)
     messages = await list_messages(db, tenant_id=actor.principal.tenant_id, session_id=session_id)
-    return [await _message_dto(msg, db, actor.principal.tenant_id) for msg in messages]
+    viewer = await actor_viewer(db, actor) if read_only else None
+    return [
+        await _message_dto(msg, db, actor.principal.tenant_id, reader=viewer) for msg in messages
+    ]
 
 
 @router.get("/chat/sessions/{session_id}", response_model=ChatSessionDTO)
@@ -309,8 +332,9 @@ async def get_chat_session(
     """One chat, with the runs still answering it -- so a page loaded mid-answer
     knows which run to watch. Same ownership gate as every session sub-route."""
     session, read_only = await _readable_session(request, session_id, db, actor)
-    detail = await session_detail(db, viewer=await actor_viewer(db, actor), session=session)
-    return detail.model_copy(update={"read_only": True}) if read_only else detail
+    return await session_detail(
+        db, viewer=await actor_viewer(db, actor), session=session, read_only=read_only
+    )
 
 
 @router.post("/chat/sessions/{session_id}/questions/{clarification_id}/answer")
@@ -643,6 +667,26 @@ async def message_feedback(
     await db.commit()
 
 
+def _redacted_run(dto: RunDTO) -> RunDTO:
+    """The one run view a reader gets (Ruling 47): progress and the answer, with
+    no tool arguments or results, no pending question, no todos or components."""
+    calls = [
+        {k: call[k] for k in ("tool", "state", "step") if k in call}
+        for call in dto.tool_calls
+        if isinstance(call, dict)
+    ]
+    return dto.model_copy(
+        update={
+            "tool_calls": calls,
+            "question": None,
+            "todos": [],
+            "rendered_components": [],
+            "failure_reason": None,
+            "task_id": None,
+        }
+    )
+
+
 @router.get("/chat/sessions/{session_id}/runs/{run_id}", response_model=RunDTO)
 async def get_session_run(
     request: Request,
@@ -664,11 +708,12 @@ async def get_session_run(
     run is enqueued (`chat/service.send_message`) -- so a caller who owns
     some OTHER session cannot read a run by guessing its id.
     """
-    await _readable_session(request, session_id, db, actor)
+    _session, read_only = await _readable_session(request, session_id, db, actor)
     run_row = await db.get(m.AgentRun, run_id)
     if run_row is None or (run_row.context or {}).get("chat_session_id") != str(session_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
     # Same `pinned_version_no` helper `GET /runs/{id}` (run.py) uses, so
     # `agentVersionNo` is filled identically on both routes that serialize a
     # `RunDTO` for the same frontend query-cache entry (`["run", runId]`).
-    return run_to_dto(run_row, agent_version_no=await pinned_version_no(db, run_row))
+    dto = run_to_dto(run_row, agent_version_no=await pinned_version_no(db, run_row))
+    return _redacted_run(dto) if read_only else dto
