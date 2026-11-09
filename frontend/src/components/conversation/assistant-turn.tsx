@@ -11,6 +11,8 @@ import {
   ThumbsUp,
 } from "lucide-react";
 
+import { useChatSlot } from "@/edition/composition";
+import { MessageActions, MessageParts } from "@/edition/slots";
 import { RunComponents } from "@/components/run-record-card";
 import { useMessageFeedback, useTurnRun } from "@/lib/conversation-api";
 import { sourcesOf, type RunActivityDTO } from "@/lib/hooks-chat";
@@ -105,6 +107,8 @@ export function AssistantTurn({
   const feedback = useMessageFeedback(sessionId);
   const openObject = useObjectNavigation();
   const sources = sourcesOf(message);
+  // An edition that draws `sources` itself replaces the core list.
+  const editionSources = useChatSlot("messageParts").some((r) => r.type === "sources");
   const components = message ? message.renderedComponents : (run?.components ?? []);
 
   function copy() {
@@ -149,7 +153,8 @@ export function AssistantTurn({
       )}
       <RunComponents components={components} />
       {cards}
-      <Sources sources={sources} highlighted={highlighted} />
+      {message && <MessageParts message={message} />}
+      {!editionSources && <Sources sources={sources} highlighted={highlighted} />}
       {footer}
       {!live && (message || total > 1) && (
         <div className="flex items-center gap-1">
@@ -207,6 +212,9 @@ export function AssistantTurn({
                 </>
               )}
             </>
+          )}
+          {message && (
+            <MessageActions message={message} sessionId={sessionId} readOnly={readOnly} />
           )}
         </div>
       )}

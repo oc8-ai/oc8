@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate, useRouterState } from "@tanstack/react-router";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { ChatHeaderActions, SidePanelHost, SidePanelProvider } from "@/edition/slots";
 import { ChatSessionPicker } from "@/components/chat-window";
 import { Conversation } from "@/components/conversation";
 import { CopilotAvatar, CopilotPersonaHeader } from "@/components/copilot-persona";
@@ -191,6 +192,7 @@ export function CopilotPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once per pin value; the ref guards re-runs
   }, [pin, mayUse]);
   const [panelOpen, setPanelOpen] = useState(true);
+  const { data: current } = useChatSession(sessionId);
   const mobile = useIsMobile();
   if (!may("copilot:use")) return null; // nav is the main gate; defense in depth
   const name = profile?.displayName ?? "Copilot";
@@ -241,80 +243,84 @@ export function CopilotPage({
     </div>
   );
   return (
-    <div className="flex min-h-0 flex-1">
-      <section className="flex min-w-0 flex-1 flex-col border-r border-border">
-        <div className="border-b border-border px-4 py-3">
-          <CopilotPersonaHeader variant="page">
-            <ChatSessionPicker
-              agentId={agentId}
-              sessions={sessions}
-              sessionId={sessionId}
-              onSelect={setSessionId}
-            />
-            {mobile ? (
-              <Sheet>
-                <SheetTrigger asChild>
-                  <Button variant="outline" size="sm">
-                    {t("Work", "Arbeit")}
-                    {profile?.status === "waiting" && profile.activeCount > 0 && (
-                      <span className="ml-1 rounded-full bg-primary px-1.5 text-xs text-primary-foreground">
-                        {profile.activeCount}
-                      </span>
-                    )}
-                  </Button>
-                </SheetTrigger>
-                <SheetContent side="bottom" className="h-[80vh] p-0">
-                  <SheetTitle className="sr-only">{t("Work", "Arbeit")}</SheetTitle>
-                  <CopilotWorkPanel />
-                </SheetContent>
-              </Sheet>
-            ) : (
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => setPanelOpen((o) => !o)}
-                aria-label={
-                  panelOpen
-                    ? t("Hide work panel", "Arbeitsbereich ausblenden")
-                    : t("Show work panel", "Arbeitsbereich einblenden")
-                }
-              >
-                {panelOpen ? (
-                  <PanelRightClose className="h-4 w-4" />
-                ) : (
-                  <PanelRightOpen className="h-4 w-4" />
-                )}
-              </Button>
-            )}
-          </CopilotPersonaHeader>
-        </div>
-        {foreignOwner && <ForeignSessionNotice agentId={foreignOwner} />}
-        {linkedGone && !pinNote && (
-          <p
-            role="status"
-            className="border-b border-border px-4 py-2 text-xs text-muted-foreground"
-          >
-            {t(
-              "That chat doesn't exist or isn't yours.",
-              "Diesen Chat gibt es nicht oder er gehört nicht dir.",
-            )}
-          </p>
+    <SidePanelProvider>
+      <div className="flex min-h-0 flex-1">
+        <section className="flex min-w-0 flex-1 flex-col border-r border-border">
+          <div className="border-b border-border px-4 py-3">
+            <CopilotPersonaHeader variant="page">
+              <ChatSessionPicker
+                agentId={agentId}
+                sessions={sessions}
+                sessionId={sessionId}
+                onSelect={setSessionId}
+              />
+              <ChatHeaderActions sessionId={sessionId} readOnly={!!current?.readOnly} />
+              {mobile ? (
+                <Sheet>
+                  <SheetTrigger asChild>
+                    <Button variant="outline" size="sm">
+                      {t("Work", "Arbeit")}
+                      {profile?.status === "waiting" && profile.activeCount > 0 && (
+                        <span className="ml-1 rounded-full bg-primary px-1.5 text-xs text-primary-foreground">
+                          {profile.activeCount}
+                        </span>
+                      )}
+                    </Button>
+                  </SheetTrigger>
+                  <SheetContent side="bottom" className="h-[80vh] p-0">
+                    <SheetTitle className="sr-only">{t("Work", "Arbeit")}</SheetTitle>
+                    <CopilotWorkPanel />
+                  </SheetContent>
+                </Sheet>
+              ) : (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => setPanelOpen((o) => !o)}
+                  aria-label={
+                    panelOpen
+                      ? t("Hide work panel", "Arbeitsbereich ausblenden")
+                      : t("Show work panel", "Arbeitsbereich einblenden")
+                  }
+                >
+                  {panelOpen ? (
+                    <PanelRightClose className="h-4 w-4" />
+                  ) : (
+                    <PanelRightOpen className="h-4 w-4" />
+                  )}
+                </Button>
+              )}
+            </CopilotPersonaHeader>
+          </div>
+          {foreignOwner && <ForeignSessionNotice agentId={foreignOwner} />}
+          {linkedGone && !pinNote && (
+            <p
+              role="status"
+              className="border-b border-border px-4 py-2 text-xs text-muted-foreground"
+            >
+              {t(
+                "That chat doesn't exist or isn't yours.",
+                "Diesen Chat gibt es nicht oder er gehört nicht dir.",
+              )}
+            </p>
+          )}
+          {pinNote && (
+            <p
+              role="status"
+              className="border-b border-border px-4 py-2 text-xs text-muted-foreground"
+            >
+              {pinNote}
+            </p>
+          )}
+          {chat}
+        </section>
+        {!mobile && <SidePanelHost sessionId={sessionId} />}
+        {!mobile && panelOpen && (
+          <aside className="hidden w-[380px] shrink-0 md:flex md:flex-col">
+            <CopilotWorkPanel />
+          </aside>
         )}
-        {pinNote && (
-          <p
-            role="status"
-            className="border-b border-border px-4 py-2 text-xs text-muted-foreground"
-          >
-            {pinNote}
-          </p>
-        )}
-        {chat}
-      </section>
-      {!mobile && panelOpen && (
-        <aside className="hidden w-[380px] shrink-0 md:flex md:flex-col">
-          <CopilotWorkPanel />
-        </aside>
-      )}
-    </div>
+      </div>
+    </SidePanelProvider>
   );
 }

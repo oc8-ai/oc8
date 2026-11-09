@@ -20,7 +20,10 @@ vi.mock("@/lib/hooks", () => ({
   useAgent: (id: string) => ({ data: { id, name: "Stock agent" } }),
 }));
 vi.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => m.mobile }));
-vi.mock("@/lib/governance-hooks", () => ({ useMay: () => () => true }));
+vi.mock("@/lib/governance-hooks", () => ({
+  useCallerCapabilities: () => null,
+  useMay: () => () => true,
+}));
 vi.mock("@/lib/hooks-chat", () => ({ useChatSessions: () => ({ data: m.sessions }) }));
 vi.mock("@/lib/hooks-copilot", () => ({
   useCopilotProfile: () => ({

@@ -37,6 +37,7 @@ vi.mock("@/lib/chat-commands", async (orig) => ({
   useChatModes: () => ({ data: [] }),
 }));
 vi.mock("@/lib/governance-hooks", () => ({
+  useCallerCapabilities: () => null,
   useCan: () => () => true,
   // No approval:view: the chat sends no approvals request.
   useMay: () => () => false,

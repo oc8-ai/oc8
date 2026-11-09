@@ -26,6 +26,7 @@ vi.mock("@/lib/chat-commands", async (orig) => ({
   useChatModes: () => ({ data: [] }),
 }));
 vi.mock("@/lib/governance-hooks", () => ({
+  useCallerCapabilities: () => null,
   useCan: () => () => true,
   useMay: () => (permission: string) => granted.current.includes(permission),
 }));

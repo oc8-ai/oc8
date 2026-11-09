@@ -60,6 +60,7 @@ import {
   composeFrontendEdition,
   editionBarePaths,
 } from "../edition/composition";
+import { ChatSlotProviders } from "../edition/slots";
 import { editionExtensions } from "@oc8/edition-entry";
 
 // An edition's onboarding screens are full-page like `/welcome`: no app shell.
@@ -295,7 +296,9 @@ function RootComponent() {
       <LiveUpdatesProvider>
         <EditionCompositionProvider extensions={editionExtensions}>
           <LanguageProvider>
-            <AuthGate>{gatedContent}</AuthGate>
+            <AuthGate>
+              <ChatSlotProviders>{gatedContent}</ChatSlotProviders>
+            </AuthGate>
             {/*
               The ONE <Toaster/> in the app, deliberately a sibling of `gatedContent`
               rather than inside it. `sonner` seeds a freshly mounted <Toaster/> from

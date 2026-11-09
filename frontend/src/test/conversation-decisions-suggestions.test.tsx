@@ -28,7 +28,11 @@ vi.mock("@/lib/chat-commands", async (orig) => ({
   ...(await orig<typeof import("@/lib/chat-commands")>()),
   useChatModes: () => ({ data: [] }),
 }));
-vi.mock("@/lib/governance-hooks", () => ({ useCan: () => () => true, useMay: () => () => true }));
+vi.mock("@/lib/governance-hooks", () => ({
+  useCallerCapabilities: () => null,
+  useCan: () => () => true,
+  useMay: () => () => true,
+}));
 
 import { Conversation } from "@/components/conversation";
 import { DecisionCard } from "@/components/conversation/decision-card";

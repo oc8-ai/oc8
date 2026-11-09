@@ -16,6 +16,8 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
+import { useChatSlot } from "@/edition/composition";
+import { SlotBoundary, useSidePanel } from "@/edition/slots";
 import { ArrowUp, Paperclip, Pin, Square, Upload, X } from "lucide-react";
 
 import {
@@ -101,6 +103,7 @@ export interface ComposerProps {
 }
 
 const MAX_REFS = 10;
+const EDITION_PREFIX = "edition:";
 // Read when needed, not at import: every page imports this through the dock,
 // and tests that stub `@/lib/api` should not have to stub this constant too.
 function maxMb(): number {
@@ -115,6 +118,19 @@ export function Composer(props: ComposerProps) {
   const can = useCan();
   const { data: modes } = useChatModes();
   const commands = chatCommands(modes, can);
+  const readOnly = !!props.disabled;
+  const composerActions = useChatSlot("composerActions");
+  const editionPickers = useChatSlot("composerPickers");
+  const { open: openSidePanel } = useSidePanel();
+  const slotProps = {
+    sessionId: props.sessionId,
+    readOnly,
+    insert: (text: string) => props.onDraftChange(props.draft + text),
+    openSidePanel,
+  };
+  // A read-only chat offers no edition write paths.
+  const pickers = readOnly ? [] : editionPickers;
+  const pickerCommands = pickers.filter((p) => p.command);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const [caret, setCaret] = useState(0);
@@ -179,11 +195,20 @@ export function Composer(props: ComposerProps) {
 
   const sigilItems: SigilItem[] =
     sigil?.kind === "/"
-      ? matchCommands(sigil.query, commands).map((c) => ({
-          id: c.key,
-          label: `/${c.key}`,
-          hint: commandSummary(c.key, c.summary, t),
-        }))
+      ? [
+          ...matchCommands(sigil.query, commands).map((c) => ({
+            id: c.key,
+            label: `/${c.key}`,
+            hint: commandSummary(c.key, c.summary, t),
+          })),
+          ...pickerCommands
+            .filter((p) => (p.command ?? "").startsWith(sigil.query.trim().toLowerCase()))
+            .map((p) => ({
+              id: `${EDITION_PREFIX}${p.id}`,
+              label: `/${p.command}`,
+              hint: t(p.label.en, p.label.de),
+            })),
+        ]
       : sigil?.kind === "@"
         ? (props.agentItems ?? [])
             .filter((a) => a.label.toLowerCase().includes(sigil.query.toLowerCase()))
@@ -201,7 +226,12 @@ export function Composer(props: ComposerProps) {
 
   function pick(item: SigilItem | undefined) {
     if (!sigil || !item || item.blocked) return;
-    if (sigil.kind === "/") {
+    if (sigil.kind === "/" && item.id.startsWith(EDITION_PREFIX)) {
+      // An edition command is answered locally, never sent as a message.
+      props.onDraftChange(replaceSigil(props.draft, sigil, ""));
+      setCaret(sigil.start);
+      pickers.find((p) => `${EDITION_PREFIX}${p.id}` === item.id)?.onSelect(slotProps);
+    } else if (sigil.kind === "/") {
       const next = replaceSigil(props.draft, sigil, `/${item.id} `);
       props.onDraftChange(next);
       setCaret(item.id.length + 2);
@@ -308,6 +338,12 @@ export function Composer(props: ComposerProps) {
       );
       return;
     }
+    const typed = pickerCommands.find((p) => text === `/${p.command}`);
+    if (typed) {
+      props.onDraftChange("");
+      typed.onSelect(slotProps);
+      return;
+    }
     const local = detectCommand(text, commands);
     if (local?.command.local) {
       props.onLocalCommand?.(local.command.key);
@@ -398,6 +434,12 @@ export function Composer(props: ComposerProps) {
       onSelect: () => fileInput.current?.click(),
     },
     ...(props.extraPlusItems ?? []),
+    ...pickers.map((p) => ({
+      id: `${EDITION_PREFIX}${p.id}`,
+      label: t(p.label.en, p.label.de),
+      icon: <p.icon className="size-4" aria-hidden />,
+      onSelect: () => p.onSelect(slotProps),
+    })),
   ];
   const canSend = !!props.draft.trim() && !props.disabled && uploading === 0;
   const chips = attachments.length > 0 || refs.length > 0 || uploading > 0;
@@ -522,6 +564,12 @@ export function Composer(props: ComposerProps) {
           )}
           <div className="flex-1" />
           {props.trailing}
+          {!readOnly &&
+            composerActions.map(({ id, component: Action }) => (
+              <SlotBoundary key={id} id={id}>
+                <Action {...slotProps} />
+              </SlotBoundary>
+            ))}
           {props.busy && props.disabled ? null : props.busy ? (
             <button
               type="button"

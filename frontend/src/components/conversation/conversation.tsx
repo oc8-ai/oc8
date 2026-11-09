@@ -32,6 +32,7 @@ import { useLang, useT } from "@/lib/i18n";
 import { useWatchRuns } from "@/lib/live/provider";
 import { cn } from "@/lib/utils";
 
+import { SidePanelProvider } from "@/edition/slots";
 import { AssistantTurn } from "./assistant-turn";
 import { Composer, type ComposerSubmit, type PlusMenuItem } from "./composer";
 import { ContextSearchDialog } from "./context-search";
@@ -143,6 +144,14 @@ function TurnSkeletons() {
 }
 
 export function Conversation(props: ConversationProps) {
+  return (
+    <SidePanelProvider>
+      <ConversationBody {...props} />
+    </SidePanelProvider>
+  );
+}
+
+function ConversationBody(props: ConversationProps) {
   const t = useT();
   const qc = useQueryClient();
   const { data: me } = useAuth();

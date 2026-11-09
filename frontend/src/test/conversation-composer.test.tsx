@@ -15,7 +15,10 @@ vi.mock("@/lib/chat-commands", async (orig) => ({
     data: [{ key: "plan", summary: "Plan", allowsTools: true, allowsWrites: false }],
   }),
 }));
-vi.mock("@/lib/governance-hooks", () => ({ useCan: () => () => true }));
+vi.mock("@/lib/governance-hooks", () => ({
+  useCallerCapabilities: () => null,
+  useCan: () => () => true,
+}));
 vi.mock("@/lib/conversation-api", async (orig) => ({
   ...(await orig<typeof import("@/lib/conversation-api")>()),
   useContextSearch: () => [{ kind: "knowledge_base", id: "kb1", label: "Handbook" }],

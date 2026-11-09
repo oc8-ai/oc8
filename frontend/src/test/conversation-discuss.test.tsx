@@ -19,7 +19,10 @@ vi.mock("@/lib/api", async (orig) => ({
     delete: vi.fn(),
   },
 }));
-vi.mock("@/lib/governance-hooks", () => ({ useMay: () => () => m.may }));
+vi.mock("@/lib/governance-hooks", () => ({
+  useCallerCapabilities: () => null,
+  useMay: () => () => m.may,
+}));
 vi.mock("@tanstack/react-router", () => ({
   createFileRoute: () => (opts: unknown) => opts,
   useRouter: () => null,
