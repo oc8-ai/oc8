@@ -1483,6 +1483,11 @@ class AgentToolAccessDTO(CamelModel):
     target_owner_name: str | None = None
     #: A fixed binding whose connection or credential was removed.
     target_missing: bool = False
+    #: A fixed binding the runtime refuses until its owner or an
+    #: administrator saves it again (`binding_needs_confirmation`).
+    needs_confirmation: bool = False
+    #: "not_confirmed" | "agent_changed" when `needs_confirmation`.
+    confirmation_reason: str | None = None
 
 
 class AccessOptionDTO(CamelModel):

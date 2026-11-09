@@ -19,7 +19,7 @@ from oc8.api.deps import DbSession, authorize_agent_write, require_agent_write
 from oc8.api.v1.connections import may_manage_integrations
 from oc8.audit import append_event
 from oc8.authz.scope import HumanActor
-from oc8.connections.access import binding_fingerprint, department_targets
+from oc8.connections.access import binding_fingerprint, department_targets, unconfirmed_reason
 from oc8.connections.integrations import Integration, installed_integrations
 from oc8.schemas.dto import AccessOptionDTO, AgentToolAccessDTO
 from oc8.schemas.requests import SetAgentToolAccessRequest
@@ -64,7 +64,7 @@ async def _names(db: AsyncSession, ids: set[uuid.UUID | None]) -> dict[uuid.UUID
 
 
 async def _dto(
-    db: AsyncSession, integ: Integration, row: m.AgentToolAccess | None
+    db: AsyncSession, agent: m.Agent, integ: Integration, row: m.AgentToolAccess | None
 ) -> AgentToolAccessDTO:
     base = AgentToolAccessDTO(
         tool_key=integ.tool_key,
@@ -76,33 +76,35 @@ async def _dto(
     )
     if row is None or row.mode != "fixed":
         return base
+    target: tuple[uuid.UUID, uuid.UUID | None, str] | None = None
+    update: dict[str, object] = {}
     if row.oauth_connection_id is not None:
         conn = await db.get(m.OAuthConnection, row.oauth_connection_id)
         if conn is not None:
-            names = await _names(db, {conn.owner_member_id})
-            return base.model_copy(
-                update={
-                    "oauth_connection_id": str(conn.id),
-                    "target_label": conn.account_label,
-                    "target_owner_name": names.get(conn.owner_member_id)
-                    if conn.owner_member_id
-                    else None,
-                }
-            )
-    if row.credential_id is not None:
+            target = (conn.id, conn.owner_member_id, conn.account_label)
+            update["oauth_connection_id"] = str(conn.id)
+    if target is None and row.credential_id is not None:
         cred = await db.get(m.Credential, row.credential_id)
         if cred is not None:
-            names = await _names(db, {cred.owner_member_id})
-            return base.model_copy(
-                update={
-                    "credential_id": str(cred.id),
-                    "target_label": cred.name,
-                    "target_owner_name": names.get(cred.owner_member_id)
-                    if cred.owner_member_id
-                    else None,
-                }
-            )
-    return base.model_copy(update={"target_missing": True})
+            target = (cred.id, cred.owner_member_id, cred.name)
+            update["credential_id"] = str(cred.id)
+    if target is None:
+        return base.model_copy(update={"target_missing": True})
+    target_id, owner, label = target
+    names = await _names(db, {owner})
+    # The same rule the runtime applies, against the agent as it is now.
+    reason = await unconfirmed_reason(
+        db, row, agent, integ.tool_key, target_id, owner, version_id=agent.current_version_id
+    )
+    return base.model_copy(
+        update={
+            **update,
+            "target_label": label,
+            "target_owner_name": names.get(owner) if owner else None,
+            "needs_confirmation": reason is not None,
+            "confirmation_reason": reason,
+        }
+    )
 
 
 @router.get("/agents/{agent_id}/tool-access", response_model=list[AgentToolAccessDTO])
@@ -122,7 +124,7 @@ async def list_tool_access(
         ).scalars()
     }
     return [
-        await _dto(db, integ, rows.get(key))
+        await _dto(db, agent, integ, rows.get(key))
         for key, integ in sorted((await _integrations(db)).items())
     ]
 
@@ -315,7 +317,7 @@ async def set_tool_access(
         },
         principal=actor.principal,
     )
-    dto = await _dto(db, integ, row)
+    dto = await _dto(db, agent, integ, row)
     await db.commit()
     return dto
 

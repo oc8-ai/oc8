@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import uuid
+
 import pytest
 from sqlalchemy import select
 
 from oc8 import models as m
-from oc8.connections.access import ToolAccess, resolve_tool_access
+from oc8.connections.access import (
+    ConnectionRequired,
+    ToolAccess,
+    binding_fingerprint,
+    resolve_tool_access,
+)
 from tests.conftest import AppSessionFactory
 from tests.connections.helpers import api, credential_row, headers, install, member, oauth_row
 from tests.factories import _make_agent
@@ -356,3 +363,91 @@ async def test_an_owners_binding_saved_through_the_api_is_used_at_runtime(
         assert r.status_code == 200, r.text
     access = await _resolve(app_session, agent, "ben@acme.test")
     assert access.oauth_connection.id == annas  # type: ignore[union-attr]
+
+
+async def _listed(c, agent: m.Agent, hdrs, tool_key: str = "microsoft365") -> dict:  # type: ignore[no-untyped-def,type-arg]
+    rows = (await c.get(f"/api/v1/agents/{agent.id}/tool-access", headers=hdrs)).json()
+    return next(row for row in rows if row["toolKey"] == tool_key)
+
+
+async def test_the_listing_flags_an_owners_binding_after_the_agent_changed(
+    app_session: AppSessionFactory,
+) -> None:
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    anna = await member(app_session, tenant, "anna@acme.test", name="Anna")
+    annas = await oauth_row(app_session, tenant, owner=anna)
+    async with api() as c:
+        await install(c, headers(tenant, "root@acme.test", ADMIN), "microsoft365")
+        me = headers(tenant, "anna@acme.test", MANAGER)
+        url = f"/api/v1/agents/{agent.id}/tool-access/microsoft365"
+        body = {"mode": "fixed", "oauthConnectionId": str(annas), "confirmShare": True}
+        saved = await c.put(url, json=body, headers=me)
+        assert (saved.json()["needsConfirmation"], saved.json()["confirmationReason"]) == (
+            False,
+            None,
+        )
+        assert (await _listed(c, agent, me))["needsConfirmation"] is False
+        async with app_session(tenant) as db:
+            live = await db.get(m.Agent, agent.id)
+            assert live is not None
+            live.current_version_id = uuid.uuid4()
+        row = await _listed(c, agent, me)
+        assert (row["needsConfirmation"], row["confirmationReason"]) == (True, "agent_changed")
+        # The runtime refuses the same binding.
+        with pytest.raises(ConnectionRequired) as exc:
+            await _resolve(app_session, agent, "ben@acme.test")
+        assert exc.value.reason == "binding_needs_confirmation"
+        # Saving it again confirms it.
+        assert (await c.put(url, json=body, headers=me)).status_code == 200
+        assert (await _listed(c, agent, me))["needsConfirmation"] is False
+
+
+async def test_the_listing_flags_a_personal_binding_its_owner_never_confirmed(
+    app_session: AppSessionFactory,
+) -> None:
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    anna = await member(app_session, tenant, "anna@acme.test", name="Anna")
+    ben = await member(app_session, tenant, "ben@acme.test", name="Ben")
+    annas = await oauth_row(app_session, tenant, owner=anna)
+    async with api() as c:
+        await install(c, headers(tenant, "root@acme.test", ADMIN), "microsoft365")
+        async with app_session(tenant) as db:
+            live = await db.get(m.Agent, agent.id)
+            assert live is not None
+            fp = await binding_fingerprint(
+                db, live, "microsoft365", version_id=live.current_version_id
+            )
+            db.add(
+                m.AgentToolAccess(
+                    tenant_id=tenant,
+                    agent_id=agent.id,
+                    tool_key="microsoft365",
+                    mode="fixed",
+                    oauth_connection_id=annas,
+                    set_by_member_id=ben,
+                    set_with_manage=False,
+                    binding_fingerprint=fp,
+                )
+            )
+        row = await _listed(c, agent, headers(tenant, "root@acme.test", ADMIN))
+    assert (row["needsConfirmation"], row["confirmationReason"]) == (True, "not_confirmed")
+
+
+async def test_the_listing_does_not_flag_defaults_user_mode_or_an_administrators_choice(
+    app_session: AppSessionFactory,
+) -> None:
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    anna = await member(app_session, tenant, "anna@acme.test", name="Anna")
+    annas = await oauth_row(app_session, tenant, owner=anna)
+    async with api() as c:
+        admin = headers(tenant, "root@acme.test", ADMIN)
+        await install(c, admin, "microsoft365")
+        url = f"/api/v1/agents/{agent.id}/tool-access/microsoft365"
+        assert (await _listed(c, agent, admin))["needsConfirmation"] is False
+        await c.put(url, json={"mode": "user"}, headers=admin)
+        assert (await _listed(c, agent, admin))["needsConfirmation"] is False
+        await c.put(url, json={"mode": "fixed", "oauthConnectionId": str(annas)}, headers=admin)
+        assert (await _listed(c, agent, admin))["needsConfirmation"] is False

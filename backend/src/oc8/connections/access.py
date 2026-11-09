@@ -232,6 +232,36 @@ async def _trigger_owner_ok(db: AsyncSession, run: m.AgentRun, owner: uuid.UUID)
     return True
 
 
+async def unconfirmed_reason(
+    db: AsyncSession,
+    row: m.AgentToolAccess,
+    agent: m.Agent,
+    tool_key: str,
+    target_id: uuid.UUID,
+    owner: uuid.UUID | None,
+    *,
+    version_id: uuid.UUID | None,
+) -> str | None:
+    """Why a fixed binding is not (or no longer) confirmed, or None when it is.
+    `not_confirmed`: neither an administrator nor (for a person's account) its
+    owner chose it. `agent_changed`: a person's account, and the agent changed
+    since it was confirmed. A trigger's own conditions are per run, not here."""
+    if owner is None:
+        # An organisation account: an administrator chose it, or it still is
+        # the department's own setup.
+        if row.set_with_manage or target_id in await department_targets(db, agent, tool_key):
+            return None
+        return "not_confirmed"
+    # A person's own account: that person (or an administrator) chose it and
+    # the agent is unchanged since.
+    if not (row.set_with_manage or row.set_by_member_id == owner):
+        return "not_confirmed"
+    current = await binding_fingerprint(db, agent, tool_key, version_id=version_id)
+    if row.binding_fingerprint is None or row.binding_fingerprint != current:
+        return "agent_changed"
+    return None
+
+
 async def _consented(
     db: AsyncSession,
     row: m.AgentToolAccess,
@@ -241,20 +271,19 @@ async def _consented(
     target_id: uuid.UUID,
     owner: uuid.UUID | None,
 ) -> bool:
-    if owner is None:
-        # An organisation account: an administrator chose it, or it still is
-        # the department's own setup.
-        return row.set_with_manage or target_id in await department_targets(db, agent, tool_key)
-    # A person's own account: that person (or an administrator) chose it, the
-    # agent is unchanged since, and a schedule or trigger is that person's.
-    if not (row.set_with_manage or row.set_by_member_id == owner):
-        return False
-    current = await binding_fingerprint(
-        db, agent, tool_key, version_id=run.agent_version_id or agent.current_version_id
+    reason = await unconfirmed_reason(
+        db,
+        row,
+        agent,
+        tool_key,
+        target_id,
+        owner,
+        version_id=run.agent_version_id or agent.current_version_id,
     )
-    if row.binding_fingerprint is None or row.binding_fingerprint != current:
+    if reason is not None:
         return False
-    return await _trigger_owner_ok(db, run, owner)
+    # A schedule or trigger acts through a person's account only if it is theirs.
+    return owner is None or await _trigger_owner_ok(db, run, owner)
 
 
 async def _fixed(
