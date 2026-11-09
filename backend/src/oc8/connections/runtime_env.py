@@ -19,12 +19,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.agent.mcp_env import (
     OAUTH_DELEGATED_REF_PREFIX,
-    OAUTH_REF_PREFIX,
     has_oauth_ref,
     resolve_mcp_env,
 )
 from oc8.audit import append_event
 from oc8.authz.pdp import ToolPolicy
+from oc8.capas.discovery import resolve_tool_pack_connection
 from oc8.capas.materialise import unbound_connection
 from oc8.connections.access import (
     ConnectionRequired,
@@ -34,7 +34,6 @@ from oc8.connections.access import (
 )
 from oc8.connections.credential_env import credential_env_targets, credential_mcp_env
 from oc8.connections.integrations import (
-    Integration,
     enabled_tool_pack_connection,
     integration_enabled,
     integration_for_connection,
@@ -58,21 +57,21 @@ def _cfg(conn: m.McpConnection) -> dict[str, Any]:
     return conn.config if isinstance(conn.config, dict) else {}
 
 
-def _without_identity(cfg: dict[str, Any], integration: Integration) -> dict[str, Any]:
-    """The config with no account in it: no OAuth reference, and none of the
-    variables a login of this integration fills (a department's stored login
-    must not start a bridge that is only listing tools for someone else)."""
-    login_vars = set(integration.credential_env_fields)
-    out = dict(cfg)
-    out["env"] = {k: v for k, v in dict(cfg.get("env") or {}).items() if k not in login_vars}
-    out["secret_env"] = {
-        k: v
-        for k, v in dict(cfg.get("secret_env") or {}).items()
-        if k not in login_vars
-        and not str(v).startswith((OAUTH_REF_PREFIX, OAUTH_DELEGATED_REF_PREFIX))
+def _without_identity(conn: m.McpConnection) -> dict[str, Any]:
+    """The config a bridge that only LISTS tools starts with when the run has
+    no account: an allowlist, not a filter. Only the plain `env` the plugin's
+    own manifest declares for this connection -- never anything stored on the
+    row (a department's login, a secret or OAuth reference, wherever it sits),
+    and no `secret_env` at all."""
+    cfg = _cfg(conn)
+    declared = resolve_tool_pack_connection(
+        str(cfg.get("_plugin_name", "")), str(cfg.get("_connection_key", ""))
+    )
+    env = dict(declared.config.get("env") or {}) if declared is not None else {}
+    return {
+        "env": {str(k): v for k, v in env.items() if isinstance(v, str)},
+        "secret_env": {},
     }
-    out.pop("oauth_connection_id", None)
-    return out
 
 
 async def require_enabled(db: AsyncSession, conn: m.McpConnection) -> None:
@@ -185,7 +184,7 @@ async def run_mcp_env(
             env = await resolve_mcp_env(
                 db,
                 tenant_id=run.tenant_id,
-                cfg=_without_identity(cfg, exc.integration),
+                cfg=_without_identity(conn),
                 connection_name=conn.name,
             )
             return McpLaunchEnv(env, reusable=False)
@@ -216,7 +215,7 @@ async def run_mcp_env(
             env = await resolve_mcp_env(
                 db,
                 tenant_id=run.tenant_id,
-                cfg=_without_identity(cfg, access.integration),
+                cfg=_without_identity(conn),
                 connection_name=conn.name,
             )
             return McpLaunchEnv(env, reusable=False)

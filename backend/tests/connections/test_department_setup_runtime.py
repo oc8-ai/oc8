@@ -192,3 +192,52 @@ async def test_another_department_without_access_gets_nothing_of_the_setup(
             assert exc.value.reason == "not_configured"
             listed = await run_mcp_env(db, run=run, conn=conn, listing=True)
             assert not SALES_VALUES & set(listed.env.values())
+
+
+async def test_a_bridge_that_only_lists_tools_gets_only_what_the_plugin_declares(
+    app_session: AppSessionFactory,
+) -> None:
+    """An allowlist, not a filter: whatever a stored config holds -- odd
+    names, lower case, delegated or credential references in values, nested
+    maps -- the listing bridge sees the manifest's plain env and nothing else."""
+    from oc8.capas.discovery import resolve_tool_pack_connection
+
+    tenant, _anna, marketing, _org = await _tenant_with_sales_setup(app_session)
+    await _second_org_login(app_session, tenant)
+    async with app_session(tenant) as db:
+        await store_secret(db, tenant_id=tenant, name="dept/hidden", value="hidden-pw", kind="x")
+        agent = m.Agent(tenant_id=tenant, department_id=marketing, name="Mia")
+        db.add(agent)
+        await db.flush()
+        run = m.AgentRun(tenant_id=tenant, agent_id=agent.id, source="manual", context={})
+        db.add(run)
+        sales_row = await db.scalar(
+            select(m.McpConnection).where(
+                m.McpConnection.name == "odoo", m.McpConnection.department_id.is_not(None)
+            )
+        )
+        assert sales_row is not None
+        cfg = dict(sales_row.config)
+        cfg["env"] = {
+            **cfg.get("env", {}),
+            "odoo_password": "plain-dept-pw",
+            "SOME_LOGIN": "credential/hidden",
+            "NESTED": {"token": "nested-dept-pw"},
+        }
+        cfg["secret_env"] = {
+            **cfg.get("secret_env", {}),
+            "x_token": "dept/hidden",
+            "Graph": "oauth-delegated:boss@acme.test",
+        }
+        cfg["auth_header_name"] = "odoo_password"
+        sales_row.config = cfg
+        await db.flush()
+        listed = await run_mcp_env(db, run=run, conn=sales_row, listing=True)
+    declared = resolve_tool_pack_connection("odoo_mcp", "primary")
+    assert declared is not None
+    assert listed.env == {
+        k: v for k, v in dict(declared.config.get("env") or {}).items() if isinstance(v, str)
+    }
+    assert not (SALES_VALUES | {"plain-dept-pw", "hidden-pw", "nested-dept-pw"}) & set(
+        str(v) for v in listed.env.values()
+    )
