@@ -17,6 +17,8 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    # Fail fast rather than queue the app behind a run's transaction (0108).
+    op.execute("SET LOCAL lock_timeout = '5s'")
     op.execute(
         "ALTER TABLE chat_session ADD COLUMN IF NOT EXISTS pinned_refs jsonb "
         "NOT NULL DEFAULT '[]'::jsonb"
@@ -67,6 +69,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Fail fast rather than queue the app behind a run's transaction (0108).
+    op.execute("SET LOCAL lock_timeout = '5s'")
     op.execute("DROP TABLE IF EXISTS chat_project")
     op.execute("DROP INDEX IF EXISTS ix_chat_session_project_id")
     op.execute("ALTER TABLE chat_session DROP COLUMN IF EXISTS pinned")
