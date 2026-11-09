@@ -26,18 +26,18 @@ vi.mock("@/lib/governance-hooks", async (importOriginal) => {
   return { ...actual, useMay: () => mayMock };
 });
 
-import { CredentialsPage } from "@/routes/credentials";
+import { OrganisationCredentials as CredentialsPage } from "@/components/connections/organisation-credentials";
 
-function renderPage() {
+function renderPage(excludeTypes?: string[]) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <CredentialsPage />
+      <CredentialsPage excludeTypes={excludeTypes} />
     </QueryClientProvider>,
   );
 }
 
-describe("Credentials settings page", () => {
+describe("Further credentials (organisation)", () => {
   beforeEach(() => {
     credentialsMock.mockReset();
     credentialTypesMock.mockReset();
@@ -147,5 +147,42 @@ describe("Credentials settings page", () => {
     expect(screen.queryByRole("button", { name: /test/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /edit/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /delete/i })).not.toBeInTheDocument();
+  });
+
+  it("is titled further credentials", () => {
+    renderPage();
+    expect(screen.getByRole("heading", { name: "Further credentials" })).toBeInTheDocument();
+  });
+
+  it("leaves out the types an integration already lists", () => {
+    credentialsMock.mockReturnValue({
+      data: [
+        {
+          id: "c1",
+          name: "Prod S3",
+          credentialType: "s3_api",
+          fieldValues: {},
+          lastTestedAt: null,
+          lastTestOk: null,
+        },
+        {
+          id: "c2",
+          name: "Odoo system",
+          credentialType: "odoo_login",
+          fieldValues: {},
+          lastTestedAt: null,
+          lastTestOk: null,
+        },
+      ],
+    });
+    renderPage(["odoo_login"]);
+    expect(screen.getByText("Prod S3")).toBeInTheDocument();
+    expect(screen.queryByText("Odoo system")).not.toBeInTheDocument();
+  });
+
+  it("renders nothing without secret:view", () => {
+    mayMock.mockReturnValue(false);
+    const { container } = renderPage();
+    expect(container).toBeEmptyDOMElement();
   });
 });
