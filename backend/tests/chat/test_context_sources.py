@@ -2,8 +2,8 @@
 
 Every ref is resolved under the VIEWING member's rights, reusing the rule the
 rest of oc8 applies to that object: `knowledge:view` for bases and sources
-(what `require_permission` gates `/knowledge/*` on), session ownership or
-audience for a chat file, agent visibility for a run's file (`api/v1/files.py`).
+(what `require_permission` gates `/knowledge/*` on), and for a file exactly
+what `GET /files/{id}` would serve (`storage/attachment_access.py`).
 Whatever the member may not see is dropped -- unknown, other-tenant, deleted
 and unauthorised read identically, so a ref never confirms that a row exists."""
 
@@ -12,6 +12,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,8 +21,8 @@ from oc8 import models as m
 from oc8.authz.permissions import KNOWLEDGE, VIEW, perm
 from oc8.chat.context.base import PAGE_CHARS, Viewer, paginate, viewer_for_member
 from oc8.chat.context.registry import RESOLVERS, resolve_ref, resolve_refs
-from oc8.knowledge import browse
-from oc8.knowledge.connectors.base import ConnectorError, FetchedFile
+from oc8.chat.context.sources import KnowledgeBaseResolver
+from oc8.knowledge.connectors.base import BrowseEntry, ConnectorError, FetchedFile
 from tests.conftest import AppSessionFactory
 
 
@@ -212,102 +213,264 @@ async def test_data_source_follows_knowledge_view(app_session: AppSessionFactory
     assert as_emp == []
 
 
-# --------------------------------------------------------------------- source file
-
-
-async def test_source_file_is_gated_by_its_source_and_read_in_pages(
-    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+async def test_a_source_inside_a_local_only_base_is_restricted(
+    app_session: AppSessionFactory,
 ) -> None:
-    calls: list[tuple[uuid.UUID, str]] = []
-
-    async def fake_fetch(
-        db: AsyncSession, *, source: m.DataSource, file_id: str, known_size: int | None = None
-    ) -> FetchedFile:
-        calls.append((source.id, file_id))
-        return FetchedFile(
-            name="q3.txt", content_type="text/plain", data=b"", text="y" * (PAGE_CHARS + 5)
-        )
-
-    monkeypatch.setattr(browse, "fetch_source_file", fake_fetch)
+    """The label its content carries once ingested (`knowledge/ingest.py`)."""
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
-        admin, emp = await _people(db, tenant)
-        src = m.DataSource(
-            tenant_id=tenant, connector_type="upload", name="Drive", classification="restricted"
+        admin, _emp = await _people(db, tenant)
+        local_src = m.DataSource(tenant_id=tenant, connector_type="upload", name="Local")
+        conf_src = m.DataSource(tenant_id=tenant, connector_type="upload", name="Conf")
+        free_src = m.DataSource(tenant_id=tenant, connector_type="upload", name="Free")
+        db.add_all([local_src, conf_src, free_src])
+        await db.flush()
+        gone = m.KnowledgeBase(
+            tenant_id=tenant,
+            name="Gone",
+            embedding_model="x",
+            classification="restricted",
+            source_ids=[str(free_src.id)],
+            deleted_at=datetime.now(tz=UTC),
         )
-        gone = m.DataSource(tenant_id=tenant, connector_type="upload", name="Old")
-        db.add_all([src, gone])
+        db.add_all(
+            [
+                m.KnowledgeBase(
+                    tenant_id=tenant,
+                    name="Local base",
+                    embedding_model="x",
+                    local_only=True,
+                    source_ids=[str(local_src.id)],
+                ),
+                m.KnowledgeBase(
+                    tenant_id=tenant,
+                    name="Conf base",
+                    embedding_model="x",
+                    classification="confidential",
+                    source_ids=[str(conf_src.id), str(free_src.id) + "x"],
+                ),
+                gone,
+            ]
+        )
         await db.flush()
-        gone.deleted_at = datetime.now(tz=UTC)
-        await db.flush()
-        ref_id = f"{src.id}:reports/2026/q3.txt"
-        resolved = await resolve_ref(db, viewer=admin, kind="source_file", ref_id=ref_id)
-        assert resolved is not None
-        ref, obj = resolved
-        page = await RESOLVERS["source_file"].read(db, obj, 2)
-        assert await resolve_ref(db, viewer=emp, kind="source_file", ref_id=ref_id) is None
-        dropped = await resolve_refs(
+        resolved = await resolve_refs(
             db,
             viewer=admin,
             refs=[
-                {"kind": "source_file", "id": str(src.id)},
-                {"kind": "source_file", "id": f"{src.id}:"},
-                {"kind": "source_file", "id": f"{gone.id}:a.txt"},
-                {"kind": "source_file", "id": f"{uuid.uuid4()}:a.txt"},
-                {"kind": "source_file", "id": "junk:a.txt"},
+                {"kind": "data_source", "id": str(s.id)} for s in (local_src, conf_src, free_src)
             ],
         )
+    assert [(r.label, r.classification) for r in resolved] == [
+        ("Local", "restricted"),
+        ("Conf", "confidential"),
+        ("Free", "internal"),
+    ]
+
+
+async def test_knowledge_kinds_are_not_loaded_for_a_viewer_without_knowledge_view(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No load, so no existence-timing oracle."""
+    loads: list[str] = []
+    original = KnowledgeBaseResolver.load
+
+    async def counting(self: Any, db: AsyncSession, tenant_id: Any, ref_id: str) -> Any:
+        loads.append(ref_id)
+        return await original(self, db, tenant_id, ref_id)
+
+    monkeypatch.setattr(KnowledgeBaseResolver, "load", counting)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        admin, emp = await _people(db, tenant)
+        kb = m.KnowledgeBase(tenant_id=tenant, name="Prices", embedding_model="x")
+        db.add(kb)
+        await db.flush()
+        assert await resolve_refs(db, viewer=emp, refs=[_kb_ref(kb)]) == []
+        assert loads == []
+        assert len(await resolve_refs(db, viewer=admin, refs=[_kb_ref(kb)])) == 1
+        assert loads == [str(kb.id)]
+
+
+async def test_ids_are_canonical_and_duplicates_collapse_on_them(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        admin, _emp = await _people(db, tenant)
+        kb = m.KnowledgeBase(tenant_id=tenant, name="Prices", embedding_model="x")
+        db.add(kb)
+        await db.flush()
+        shouted = {"kind": "knowledge_base", "id": str(kb.id).upper()}
+        resolved = await resolve_refs(db, viewer=admin, refs=[shouted, _kb_ref(kb)])
+    assert [r.id for r in resolved] == [str(kb.id)]
+
+
+# --------------------------------------------------------------------- source file
+
+
+class Drive:
+    """A browsing connector whose source exposes `reports/` and nothing else."""
+
+    type_id = "fake_drive"
+
+    def __init__(self, text: str = "") -> None:
+        self.text = text
+        self.fetched: list[str] = []
+
+    async def browse(self, config: dict[str, Any], path: str, auth: Any) -> list[BrowseEntry]:
+        return []
+
+    async def in_scope(self, config: dict[str, Any], file_id: str, auth: Any) -> bool:
+        return file_id.startswith("reports/")
+
+    async def fetch_file(
+        self, config: dict[str, Any], file_id: str, max_bytes: int, auth: Any
+    ) -> FetchedFile:
+        self.fetched.append(file_id)
+        return FetchedFile(name=file_id, content_type="text/plain", data=b"", text=self.text)
+
+
+class CannotFetch:
+    type_id = "fake_site"
+
+
+class TooLarge(Drive):
+    async def fetch_file(
+        self, config: dict[str, Any], file_id: str, max_bytes: int, auth: Any
+    ) -> FetchedFile:
+        raise RuntimeError("413 for https://u:hunter2@host")
+
+
+async def _drive(db: AsyncSession, tenant: uuid.UUID, **kw: Any) -> m.DataSource:
+    src = m.DataSource(tenant_id=tenant, connector_type="fake_drive", name="Drive", **kw)
+    db.add(src)
+    await db.flush()
+    return src
+
+
+async def test_source_file_is_gated_by_its_source_and_read_in_pages(
+    app_session: AppSessionFactory,
+) -> None:
+    drive = Drive(text="y" * (PAGE_CHARS + 5))
+    tenant = uuid.uuid4()
+    with patch("oc8.knowledge.browse.resolve_connector", return_value=drive):
+        async with app_session(tenant) as db:
+            admin, emp = await _people(db, tenant)
+            src = await _drive(db, tenant, classification="restricted")
+            gone = await _drive(db, tenant, deleted_at=datetime.now(tz=UTC))
+            ref_id = f"{src.id}:reports/2026/q3.txt"
+            resolved = await resolve_ref(db, viewer=admin, kind="source_file", ref_id=ref_id)
+            assert resolved is not None
+            ref, obj = resolved
+            page = await RESOLVERS["source_file"].read(db, obj, 2)
+            assert await resolve_ref(db, viewer=emp, kind="source_file", ref_id=ref_id) is None
+            dropped = await resolve_refs(
+                db,
+                viewer=admin,
+                refs=[
+                    {"kind": "source_file", "id": str(src.id)},
+                    {"kind": "source_file", "id": f"{src.id}:"},
+                    {"kind": "source_file", "id": f"{src.id}:reports/a\nb"},
+                    {"kind": "source_file", "id": f"{src.id}:" + "r" * 5000},
+                    {"kind": "source_file", "id": f"{gone.id}:reports/a.txt"},
+                    {"kind": "source_file", "id": f"{uuid.uuid4()}:reports/a.txt"},
+                    {"kind": "source_file", "id": "junk:reports/a.txt"},
+                ],
+            )
     assert (ref.label, ref.classification, ref.readable, ref.id) == (
         "q3.txt",
         "restricted",
         True,
         ref_id,
     )
-    assert calls == [(src.id, "reports/2026/q3.txt")]
+    assert drive.fetched == ["reports/2026/q3.txt"]
     assert page is not None and (page.page, page.pages, page.text) == (2, 2, "yyyyy")
     assert dropped == []
 
 
-async def test_source_file_on_a_connector_that_cannot_fetch_reads_nothing(
-    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+async def test_a_file_outside_the_sources_scope_is_dropped(
+    app_session: AppSessionFactory,
 ) -> None:
-    async def unsupported(db: AsyncSession, **_: Any) -> FetchedFile:
-        raise browse.BrowseUnsupported("upload")
+    """Ruling 29: the connection may reach it, the source does not expose it."""
+    drive = Drive(text="secret")
+    tenant = uuid.uuid4()
+    with patch("oc8.knowledge.browse.resolve_connector", return_value=drive):
+        async with app_session(tenant) as db:
+            admin, _emp = await _people(db, tenant)
+            src = await _drive(db, tenant)
+            outside = await resolve_ref(
+                db, viewer=admin, kind="source_file", ref_id=f"{src.id}:hr/salaries.xlsx"
+            )
+    assert outside is None
+    assert drive.fetched == []
 
-    monkeypatch.setattr(browse, "fetch_source_file", unsupported)
+
+async def test_a_source_that_cannot_fetch_single_files_pins_none(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    with patch("oc8.knowledge.browse.resolve_connector", return_value=CannotFetch()):
+        async with app_session(tenant) as db:
+            admin, _emp = await _people(db, tenant)
+            src = await _drive(db, tenant)
+            assert (
+                await resolve_ref(
+                    db, viewer=admin, kind="source_file", ref_id=f"{src.id}:reports/a"
+                )
+                is None
+            )
+
+
+async def test_reading_a_file_the_connector_cannot_find_reads_nothing(
+    app_session: AppSessionFactory,
+) -> None:
+    """Pinned while the connector browsed; the connector since lost browse."""
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         admin, _emp = await _people(db, tenant)
-        src = m.DataSource(tenant_id=tenant, connector_type="upload", name="Drive")
-        db.add(src)
-        await db.flush()
-        resolved = await resolve_ref(db, viewer=admin, kind="source_file", ref_id=f"{src.id}:a")
+        src = await _drive(db, tenant)
+        with patch("oc8.knowledge.browse.resolve_connector", return_value=Drive()):
+            resolved = await resolve_ref(
+                db, viewer=admin, kind="source_file", ref_id=f"{src.id}:reports/a"
+            )
         assert resolved is not None
-        assert await RESOLVERS["source_file"].read(db, resolved[1], 1) is None
+        with patch("oc8.knowledge.browse.resolve_connector", return_value=CannotFetch()):
+            assert await RESOLVERS["source_file"].read(db, resolved[1], 1) is None
 
 
 async def test_a_connector_failure_on_read_is_raised_not_hidden(
-    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+    app_session: AppSessionFactory,
 ) -> None:
-    """Too large, unreachable: the caller (the read tool) reports why."""
-
-    async def too_large(db: AsyncSession, **_: Any) -> FetchedFile:
-        raise ConnectorError("file is too large to pin")
-
-    monkeypatch.setattr(browse, "fetch_source_file", too_large)
+    """The read tool reports why; the message never carries connector text."""
     tenant = uuid.uuid4()
-    async with app_session(tenant) as db:
-        admin, _emp = await _people(db, tenant)
-        src = m.DataSource(tenant_id=tenant, connector_type="upload", name="Drive")
-        db.add(src)
-        await db.flush()
-        resolved = await resolve_ref(db, viewer=admin, kind="source_file", ref_id=f"{src.id}:a")
-        assert resolved is not None
-        with pytest.raises(ConnectorError):
-            await RESOLVERS["source_file"].read(db, resolved[1], 1)
+    with patch("oc8.knowledge.browse.resolve_connector", return_value=TooLarge()):
+        async with app_session(tenant) as db:
+            admin, _emp = await _people(db, tenant)
+            src = await _drive(db, tenant)
+            resolved = await resolve_ref(
+                db, viewer=admin, kind="source_file", ref_id=f"{src.id}:reports/a"
+            )
+            assert resolved is not None
+            with pytest.raises(ConnectorError) as ei:
+                await RESOLVERS["source_file"].read(db, resolved[1], 1)
+    assert "hunter2" not in str(ei.value)
 
 
 # ---------------------------------------------------------------------------- file
+
+
+async def _seated(db: AsyncSession, tenant: uuid.UUID, member: m.OrgMember) -> Viewer:
+    """A plain member with an `agent:view` seat -- what `/files/{id}` admits."""
+    dept = m.Department(tenant_id=tenant, name=f"D-{uuid.uuid4().hex[:6]}", frame={})
+    db.add(dept)
+    await db.flush()
+    db.add(
+        m.OrgMemberDepartment(
+            tenant_id=tenant, member_id=member.id, department_id=dept.id, seat_role="dept_viewer"
+        )
+    )
+    await db.flush()
+    return await viewer_for_member(db, member, token_role="member")
 
 
 async def _chat_file(
@@ -343,19 +506,32 @@ async def test_a_file_from_my_own_chat_is_readable_in_pages(
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         admin, emp = await _people(db, tenant)
+        me = await _seated(db, tenant, emp.member)
         att = await _chat_file(db, tenant, emp.member, sent=True, text="x" * 20000)
-        resolved = await resolve_ref(db, viewer=emp, kind="file", ref_id=str(att.id))
+        resolved = await resolve_ref(db, viewer=me, kind="file", ref_id=str(att.id))
         assert resolved is not None
         ref, obj = resolved
         page = await RESOLVERS["file"].read(db, obj, 2)
-        stranger = await viewer_for_member(db, await _member(db, tenant, "o"), token_role="member")
+        stranger = await _seated(db, tenant, await _member(db, tenant, "o"))
         assert await resolve_ref(db, viewer=stranger, kind="file", ref_id=str(att.id)) is None
         # Not even an org admin reads another member's chat file: the download
         # route refuses them too.
         assert await resolve_ref(db, viewer=admin, kind="file", ref_id=str(att.id)) is None
-    assert ref.readable and ref.label == "notes.txt"
+    assert ref.readable and ref.label == "notes.txt" and ref.id == str(att.id)
     assert (ref.size, ref.classification, ref.deep_link) == (20000, "internal", None)
     assert page is not None and page.page == 2 and page.pages == 3
+
+
+async def test_a_member_the_files_route_refuses_cannot_pin_even_their_own_file(
+    app_session: AppSessionFactory,
+) -> None:
+    """Without `agent:view` anywhere, `/files/{id}` 403s -- so pinning refuses."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        _admin, emp = await _people(db, tenant)
+        att = await _chat_file(db, tenant, emp.member, sent=True, text="x")
+        assert await resolve_ref(db, viewer=emp, kind="file", ref_id=str(att.id)) is None
+        assert await RESOLVERS["file"].search(db, emp, "notes", 5) == []
 
 
 async def test_a_file_uploaded_before_its_message_was_sent_resolves(
@@ -365,11 +541,14 @@ async def test_a_file_uploaded_before_its_message_was_sent_resolves(
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         _admin, emp = await _people(db, tenant)
+        me = await _seated(db, tenant, emp.member)
         att = await _chat_file(db, tenant, emp.member, sent=False, text="draft")
-        resolved = await resolve_ref(db, viewer=emp, kind="file", ref_id=str(att.id))
-        missing = await resolve_ref(db, viewer=emp, kind="file", ref_id=str(uuid.uuid4()))
+        resolved = await resolve_ref(db, viewer=me, kind="file", ref_id=str(att.id))
+        missing = await resolve_ref(db, viewer=me, kind="file", ref_id=str(uuid.uuid4()))
+        found = await RESOLVERS["file"].search(db, me, "notes", 5)
     assert resolved is not None and resolved[0].label == "notes.txt"
     assert missing is None
+    assert [f.id for f in found] == [att.id]
 
 
 async def test_a_run_output_file_follows_agent_visibility(
@@ -402,7 +581,10 @@ async def test_a_run_output_file_follows_agent_visibility(
         await db.flush()
         ref_id = str(att.id)
         as_admin = await resolve_ref(db, viewer=admin, kind="file", ref_id=ref_id)
-        as_emp_without_seat = await resolve_ref(db, viewer=emp, kind="file", ref_id=ref_id)
+        elsewhere = await _seated(db, tenant, emp.member)
+        as_emp_seated_elsewhere = await resolve_ref(
+            db, viewer=elsewhere, kind="file", ref_id=ref_id
+        )
         db.add(
             m.OrgMemberDepartment(
                 tenant_id=tenant,
@@ -415,7 +597,7 @@ async def test_a_run_output_file_follows_agent_visibility(
         seated = await viewer_for_member(db, emp.member, token_role="member")
         as_emp_with_seat = await resolve_ref(db, viewer=seated, kind="file", ref_id=ref_id)
     assert as_admin is not None and as_admin[0].label == "report.md"
-    assert as_emp_without_seat is None
+    assert as_emp_seated_elsewhere is None
     assert as_emp_with_seat is not None
 
 
@@ -428,3 +610,17 @@ def test_paginate_clamps() -> None:
     assert (paginate("", 0).page, paginate("", 0).pages) == (1, 1)
     two = paginate("z" * (PAGE_CHARS + 1), -3)
     assert (two.page, two.pages, len(two.text)) == (1, 2, PAGE_CHARS)
+
+
+def test_paginate_an_exact_multiple_has_no_empty_last_page() -> None:
+    text = "a" * PAGE_CHARS + "b" * PAGE_CHARS
+    last = paginate(text, 5)
+    assert (last.page, last.pages, last.text) == (2, 2, "b" * PAGE_CHARS)
+
+
+def test_paginate_counts_characters_not_bytes() -> None:
+    text = "ü€😀" * PAGE_CHARS  # 3 * PAGE_CHARS characters, far more bytes
+    pages = [paginate(text, n) for n in (1, 2, 3)]
+    assert [p.pages for p in pages] == [3, 3, 3]
+    assert "".join(p.text for p in pages) == text
+    assert all(len(p.text) == PAGE_CHARS for p in pages)

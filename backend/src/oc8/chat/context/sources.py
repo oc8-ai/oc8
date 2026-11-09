@@ -1,36 +1,36 @@
 """Knowledge bases, data sources, a file inside a source, and chat/run files as
 chat context.
 
-Each `authorize` is the rule oc8 already applies to that object:
+Each check is the rule oc8 already applies to that object:
 
 * knowledge base, data source, source file -- `knowledge:view`, held the way
-  `require_permission` reads it on every `/knowledge/*` read route. A source
-  file is exactly as visible as its source. There is no per-base or
-  per-department visibility for a person: `KnowledgeGrant` gives a base to an
-  AGENT's retrieval, not to a member.
-* file attachment -- `api/v1/files.py::_owned_attachment`: a chat file to the
-  owner of its session (the only member who can upload into it) or to the
-  session's audience; a run output or instruction file to whoever may see the
-  agent it belongs to.
+  `require_permission` reads it on every `/knowledge/*` read route, and checked
+  before anything is loaded. A source file is exactly as visible as its
+  source, and only a file the source's connector confirms lies inside the
+  source's own scope can be pinned or read (`browse.source_file_in_scope`).
+  There is no per-base or per-department visibility for a person:
+  `KnowledgeGrant` gives a base to an AGENT's retrieval, not to a member.
+* file attachment -- `storage.attachment_access.member_may_open_attachment`,
+  the predicate `GET /files/{id}` itself uses.
 """
 
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.agents.repo import visible_agent
-from oc8.authz.authority import tenant_wide_read
-from oc8.authz.permissions import AGENT, KNOWLEDGE, VIEW, perm
-from oc8.chat.audience import session_audience
+from oc8.authz.permissions import KNOWLEDGE, VIEW, perm
 from oc8.chat.context.base import ContextPage, Viewer, paginate
 from oc8.chat.context.registry import register
 from oc8.knowledge import browse
+from oc8.knowledge.connectors.base import ConnectorError
 from oc8.knowledge.embedding_policy import strictest
+from oc8.storage.attachment_access import member_may_open_attachment, passes_files_door
 
 #: What an object with no classification of its own is treated as: the
 #: column default of `KnowledgeBase.classification` and `DataSource.classification`.
@@ -53,7 +53,38 @@ async def _live_source(db: AsyncSession, tenant_id: Any, ref_id: str) -> m.DataS
     ).scalar_one_or_none()
 
 
-class KnowledgeBaseResolver:
+async def _source_classification(db: AsyncSession, source: m.DataSource) -> str:
+    """The strictest of the source's own label and that of every live base it
+    feeds, with a local-only base counting as `restricted` -- the label its
+    content carries once ingested (`knowledge/ingest.py`), so reading the raw
+    file is held to the same line as reading its chunks."""
+    bases = (
+        await db.execute(
+            select(m.KnowledgeBase.classification, m.KnowledgeBase.local_only).where(
+                m.KnowledgeBase.tenant_id == source.tenant_id,
+                m.KnowledgeBase.deleted_at.is_(None),
+                m.KnowledgeBase.source_ids.contains([str(source.id)]),
+            )
+        )
+    ).all()
+    return strictest(
+        source.classification,
+        *[label for label, _local in bases],
+        "restricted" if any(local for _label, local in bases) else None,
+    )
+
+
+class _KnowledgeKind:
+    """Shared by the three knowledge kinds: the gate is `knowledge:view`."""
+
+    def admits(self, viewer: Viewer) -> bool:
+        return _may_view_knowledge(viewer)
+
+    async def authorize(self, db: AsyncSession, viewer: Viewer, obj: Any) -> bool:
+        return _may_view_knowledge(viewer)
+
+
+class KnowledgeBaseResolver(_KnowledgeKind):
     kind = "knowledge_base"
     readable = False
 
@@ -68,13 +99,13 @@ class KnowledgeBaseResolver:
             )
         ).scalar_one_or_none()
 
-    async def authorize(self, db: AsyncSession, viewer: Viewer, obj: Any) -> bool:
-        return _may_view_knowledge(viewer)
+    def ref_id(self, obj: Any) -> str:
+        return str(obj.id)
 
     def label(self, obj: Any) -> str:
         return str(obj.name)
 
-    def classification(self, obj: Any) -> str:
+    async def classification(self, db: AsyncSession, obj: Any) -> str:
         # A local-only base is held to the same line as `restricted` content:
         # it never reaches a cloud model (`knowledge/embedding_policy.py`).
         return strictest(obj.classification, "restricted" if obj.local_only else None)
@@ -104,21 +135,21 @@ class KnowledgeBaseResolver:
         return list(rows.scalars())
 
 
-class DataSourceResolver:
+class DataSourceResolver(_KnowledgeKind):
     kind = "data_source"
     readable = False
 
     async def load(self, db: AsyncSession, tenant_id: Any, ref_id: str) -> Any | None:
         return await _live_source(db, tenant_id, ref_id)
 
-    async def authorize(self, db: AsyncSession, viewer: Viewer, obj: Any) -> bool:
-        return _may_view_knowledge(viewer)
+    def ref_id(self, obj: Any) -> str:
+        return str(obj.id)
 
     def label(self, obj: Any) -> str:
         return str(obj.name)
 
-    def classification(self, obj: Any) -> str:
-        return strictest(obj.classification)
+    async def classification(self, db: AsyncSession, obj: Any) -> str:
+        return await _source_classification(db, obj)
 
     async def summary(self, db: AsyncSession, obj: Any) -> str:
         return f"{obj.doc_count} documents"
@@ -145,42 +176,59 @@ class DataSourceResolver:
         return list(rows.scalars())
 
 
-class SourceFileResolver:
+@dataclass(frozen=True)
+class SourceFile:
+    source: m.DataSource
+    file_id: str
+
+
+class SourceFileResolver(_KnowledgeKind):
     """One file inside a data source. `id` is `"<data_source_id>:<file_id>"`;
     the connector's own file id is everything after the FIRST colon and may
-    itself contain colons. The object is the pair `(source, file_id)`."""
+    itself contain colons.
+
+    `load` accepts a file only when the source's connector confirms it lies
+    inside the source's configured scope (`BrowsingConnector.in_scope`): a
+    pinned id is untrusted, and the connection behind a source usually reaches
+    much more than the source was set up to share."""
 
     kind = "source_file"
     readable = True
 
     async def load(self, db: AsyncSession, tenant_id: Any, ref_id: str) -> Any | None:
         source_id, _, file_id = ref_id.partition(":")
-        if not file_id:
+        try:
+            file_id = browse.check_file_id(file_id)
+        except ConnectorError:
             return None
         source = await _live_source(db, tenant_id, source_id)
-        return (source, file_id) if source is not None else None
+        if source is None:
+            return None
+        if not await browse.source_file_in_scope(db, source=source, file_id=file_id):
+            return None
+        return SourceFile(source=source, file_id=file_id)
 
-    async def authorize(self, db: AsyncSession, viewer: Viewer, obj: Any) -> bool:
-        return _may_view_knowledge(viewer)
+    def ref_id(self, obj: Any) -> str:
+        return f"{obj.source.id}:{obj.file_id}"
 
     def label(self, obj: Any) -> str:
-        return str(obj[1]).rstrip("/").rsplit("/", 1)[-1] or str(obj[1])
+        return str(obj.file_id).rstrip("/").rsplit("/", 1)[-1] or str(obj.file_id)
 
-    def classification(self, obj: Any) -> str:
-        return strictest(obj[0].classification)
+    async def classification(self, db: AsyncSession, obj: Any) -> str:
+        return await _source_classification(db, obj.source)
 
     async def summary(self, db: AsyncSession, obj: Any) -> str:
-        return f"File in {obj[0].name}"
+        return f"File in {obj.source.name}"
 
     def deep_link(self, obj: Any) -> str | None:
         return None
 
     async def read(self, db: AsyncSession, obj: Any, page: int) -> ContextPage | None:
         """None when the source's connector cannot fetch single files. A
-        `ConnectorError` (too large, unreachable, invalid id) is raised so the
-        caller can say why; its message never carries connector internals."""
+        `ConnectorError` (too large, out of scope, unreachable) is raised so
+        the caller can say why; its message never carries connector internals."""
         try:
-            fetched = await browse.fetch_source_file(db, source=obj[0], file_id=obj[1])
+            fetched = await browse.fetch_source_file(db, source=obj.source, file_id=obj.file_id)
         except browse.BrowseUnsupported:
             return None
         return paginate(fetched.text, page)
@@ -190,44 +238,15 @@ class SourceFileResolver:
         return []
 
 
-async def _chat_session_of(
-    db: AsyncSession, tenant_id: uuid.UUID, owner_id: uuid.UUID
-) -> m.ChatSession | None:
-    """A chat file's session. `owner_id` is the session until the message
-    carrying the file is sent and the message from then on (`files.py`)."""
-    session = await _session(db, tenant_id, owner_id)
-    if session is not None:
-        return session
-    message = (
-        await db.execute(
-            select(m.ChatMessage).where(
-                m.ChatMessage.id == owner_id, m.ChatMessage.tenant_id == tenant_id
-            )
-        )
-    ).scalar_one_or_none()
-    if message is None:
-        return None
-    return await _session(db, tenant_id, message.session_id)
-
-
-async def _session(
-    db: AsyncSession, tenant_id: uuid.UUID, session_id: uuid.UUID
-) -> m.ChatSession | None:
-    return (
-        await db.execute(
-            select(m.ChatSession).where(
-                m.ChatSession.id == session_id, m.ChatSession.tenant_id == tenant_id
-            )
-        )
-    ).scalar_one_or_none()
-
-
 class FileResolver:
     """A `FileAttachment`: a chat upload, a run's output, or an agent's
-    instruction file."""
+    instruction file -- visible exactly when `GET /files/{id}` would serve it."""
 
     kind = "file"
     readable = True
+
+    def admits(self, viewer: Viewer) -> bool:
+        return passes_files_door(viewer.authority, viewer.scope)
 
     async def load(self, db: AsyncSession, tenant_id: Any, ref_id: str) -> Any | None:
         return (
@@ -240,40 +259,17 @@ class FileResolver:
         ).scalar_one_or_none()
 
     async def authorize(self, db: AsyncSession, viewer: Viewer, obj: Any) -> bool:
-        tenant_id = viewer.member.tenant_id
-        if obj.owner_type == "chat_message":
-            session = await _chat_session_of(db, tenant_id, obj.owner_id)
-            if session is None:
-                return False
-            if session.member_id == viewer.member.id:
-                return True
-            return viewer.member.id in await session_audience(db, session=session)
-        if obj.owner_type in ("agent_run", "agent_instructions"):
-            agent_id = obj.owner_id
-            if obj.owner_type == "agent_run":
-                run = (
-                    await db.execute(
-                        select(m.AgentRun).where(
-                            m.AgentRun.id == obj.owner_id, m.AgentRun.tenant_id == tenant_id
-                        )
-                    )
-                ).scalar_one_or_none()
-                if run is None:
-                    return False
-                agent_id = run.agent_id
-            agent = await visible_agent(
-                db,
-                scope=viewer.scope,
-                tenant_wide=tenant_wide_read(viewer.authority, perm(AGENT, VIEW)),
-                agent_id=agent_id,
-            )
-            return agent is not None
-        return False
+        return await member_may_open_attachment(
+            db, member=viewer.member, authority=viewer.authority, scope=viewer.scope, row=obj
+        )
+
+    def ref_id(self, obj: Any) -> str:
+        return str(obj.id)
 
     def label(self, obj: Any) -> str:
         return str(obj.filename)
 
-    def classification(self, obj: Any) -> str:
+    async def classification(self, db: AsyncSession, obj: Any) -> str:
         return DEFAULT_CLASSIFICATION
 
     async def summary(self, db: AsyncSession, obj: Any) -> str:
@@ -287,6 +283,8 @@ class FileResolver:
 
     async def search(self, db: AsyncSession, viewer: Viewer, query: str, limit: int) -> list[Any]:
         """Files from the viewer's own chats, newest first."""
+        if not self.admits(viewer):
+            return []
         sessions = select(m.ChatSession.id).where(
             m.ChatSession.tenant_id == viewer.member.tenant_id,
             m.ChatSession.member_id == viewer.member.id,

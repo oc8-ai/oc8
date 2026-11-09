@@ -35,9 +35,13 @@ class Viewer:
 async def viewer_for_member(
     db: AsyncSession, member: m.OrgMember, *, token_role: str | None = None
 ) -> Viewer:
-    """`token_role` is the role off the member's token when one was captured
-    (see `scope_for_member`); without it a member with no assigned role holds
-    only their stored rows, which is the fail-closed direction."""
+    """`token_role` MUST be the role on the live, authenticated request token
+    of THIS member -- never a role read back from storage, and never another
+    person's (an agent's, a run's operator's, a sharer's). It is the one term
+    of a member's authority that is not in the database, so whatever is passed
+    here is believed; lending a role widens the viewer to it. Without it a
+    member with no assigned role holds only their stored rows, which is the
+    fail-closed direction."""
     return Viewer(
         member=member,
         authority=await authority_for_member(db, member, token_role=token_role),
@@ -64,21 +68,35 @@ def paginate(text: str, page: int) -> ContextPage:
 class ContextResolver(Protocol):
     """One kind of thing a chat can point at.
 
-    `load` returns the live object of `tenant_id` or None (missing, deleted,
-    another tenant's, malformed id); `authorize` answers for the viewer. The
-    registry calls both and drops the ref on either refusal, so the two read
-    the same to the member."""
+    The registry asks, in order, and drops the ref on the first refusal so
+    every refusal reads the same to the member:
+
+    * `admits` -- a viewer-only gate, checked BEFORE anything is loaded, so a
+      viewer who may see nothing of this kind cannot time a load to learn
+      whether an id exists. A kind with no such gate returns True.
+    * `load` -- the live object of `tenant_id`, or None (missing, deleted,
+      another tenant's, malformed id).
+    * `authorize` -- the per-object answer for the viewer.
+
+    `ref_id(obj)` is the canonical id of a loaded object; the registry reports
+    and de-duplicates on it, never on the id it was handed.
+    `classification` is the object's sensitivity label (`public` ..
+    `restricted`), which may need the database to work out."""
 
     kind: str
     readable: bool
+
+    def admits(self, viewer: Viewer) -> bool: ...
 
     async def load(self, db: AsyncSession, tenant_id: Any, ref_id: str) -> Any | None: ...
 
     async def authorize(self, db: AsyncSession, viewer: Viewer, obj: Any) -> bool: ...
 
+    def ref_id(self, obj: Any) -> str: ...
+
     def label(self, obj: Any) -> str: ...
 
-    def classification(self, obj: Any) -> str: ...
+    async def classification(self, db: AsyncSession, obj: Any) -> str: ...
 
     async def summary(self, db: AsyncSession, obj: Any) -> str: ...
 

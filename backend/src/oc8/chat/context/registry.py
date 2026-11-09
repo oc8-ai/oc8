@@ -3,7 +3,8 @@
 Unknown kinds, malformed ids, other tenants', deleted and unauthorised objects
 are all DROPPED, silently and identically, so a ref never confirms to a member
 that something exists which they may not see. The order of the surviving refs
-is kept; a repeated ref is kept once."""
+is kept; a ref repeated under any spelling of its id (`ResolvedRef.id` is
+the canonical one) is kept once."""
 
 from __future__ import annotations
 
@@ -45,7 +46,7 @@ async def resolve_ref(
         # predicate `scope_for_member` applies).
         return None
     resolver = RESOLVERS.get(kind)
-    if resolver is None:
+    if resolver is None or not resolver.admits(viewer):
         return None
     try:
         obj = await resolver.load(db, viewer.member.tenant_id, ref_id)
@@ -57,9 +58,9 @@ async def resolve_ref(
     return (
         ResolvedRef(
             kind=kind,
-            id=ref_id,
+            id=resolver.ref_id(obj),
             label=resolver.label(obj),
-            classification=resolver.classification(obj),
+            classification=await resolver.classification(db, obj),
             readable=resolver.readable,
             size=size if isinstance(size, int) else None,
             deep_link=resolver.deep_link(obj),
@@ -72,13 +73,16 @@ async def resolve_refs(
     db: AsyncSession, *, viewer: Viewer, refs: Sequence[Mapping[str, Any]]
 ) -> list[ResolvedRef]:
     out: list[ResolvedRef] = []
-    seen: set[tuple[str, str]] = set()
+    asked: set[tuple[str, str]] = set()
+    kept: set[tuple[str, str]] = set()
     for ref in refs:
         kind, ref_id = str(ref.get("kind") or ""), str(ref.get("id") or "")
-        if (kind, ref_id) in seen:
+        if (kind, ref_id) in asked:
             continue
-        seen.add((kind, ref_id))
+        asked.add((kind, ref_id))
         resolved = await resolve_ref(db, viewer=viewer, kind=kind, ref_id=ref_id)
-        if resolved is not None:
-            out.append(resolved[0])
+        if resolved is None or (kind, resolved[0].id) in kept:
+            continue
+        kept.add((kind, resolved[0].id))
+        out.append(resolved[0])
     return out
