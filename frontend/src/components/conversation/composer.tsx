@@ -16,7 +16,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
-import { ArrowUp, BookOpen, Paperclip, Square, Upload, X } from "lucide-react";
+import { ArrowUp, Paperclip, Pin, Square, Upload, X } from "lucide-react";
 
 import {
   SigilPopover,
@@ -45,6 +45,7 @@ import { useCan } from "@/lib/governance-hooks";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
+import { kindIcon, kindLabel } from "./context-icons";
 import { ModelPicker } from "./model-picker";
 import { PlusMenu, type PlusMenuItem } from "./plus-menu";
 
@@ -89,6 +90,8 @@ export interface ComposerProps {
   /** C3: lets the + menu and # add a ref from outside (data source browser). */
   contextRefs?: ContextItem[];
   onContextRefsChange?: (refs: ContextItem[]) => void;
+  /** C3: "Pin to this chat" on a ref chip; left out, the chips offer no pin. */
+  onPinRef?: (ref: ContextItem) => void;
   /** C2: what is sent answers an open question, as text only. The hint says
    *  so; the + menu, the drop zone and # are off, and a send that still
    *  carries files or context is refused (they are never dropped). */
@@ -183,7 +186,12 @@ export function Composer(props: ComposerProps) {
         : sigil?.kind === "#"
           ? contextItems
               .filter((c) => !refs.some((r) => r.kind === c.kind && r.id === c.id))
-              .map((c) => ({ id: `${c.kind}:${c.id}`, label: c.label, hint: c.hint }))
+              .map((c) => ({
+                id: `${c.kind}:${c.id}`,
+                label: c.label,
+                hint: c.hint ?? kindLabel(c.kind, t),
+                blocked: c.connected === false ? t("Not connected", "Nicht verbunden") : undefined,
+              }))
           : [];
 
   function pick(item: SigilItem | undefined) {
@@ -197,9 +205,11 @@ export function Composer(props: ComposerProps) {
       props.onDraftChange(replaceSigil(props.draft, sigil, ""));
       setCaret(sigil.start);
     } else {
+      // A source_file id holds colons of its own: only the first one splits.
       const [kind, ...rest] = item.id.split(":");
+      const found = contextItems.find((c) => c.kind === kind && c.id === rest.join(":"));
       if (refs.length < MAX_REFS) {
-        setRefs([...refs, { kind, id: rest.join(":"), label: item.label, hint: item.hint }]);
+        setRefs([...refs, found ?? { kind, id: rest.join(":"), label: item.label }]);
       } else {
         setError(t("You can attach up to 10 items.", "Du kannst bis zu 10 Einträge anhängen."));
       }
@@ -403,7 +413,14 @@ export function Composer(props: ComposerProps) {
           activeIndex={pickerIndex}
           onPick={pick}
           onHoverIndex={setPickerIndex}
-          emptyText={t("Nothing matches that.", "Dazu passt nichts.")}
+          emptyText={
+            sigil.kind === "#" && !sigil.query.trim()
+              ? t(
+                  "Type to search knowledge, files and more.",
+                  "Tipp, um Wissen, Dateien und mehr zu suchen.",
+                )
+              : t("Nothing matches that.", "Dazu passt nichts.")
+          }
         />
       )}
       <div
@@ -434,23 +451,42 @@ export function Composer(props: ComposerProps) {
                 </button>
               </li>
             ))}
-            {refs.map((r) => (
-              <li
-                key={`${r.kind}:${r.id}`}
-                className="inline-flex h-9 items-center gap-1 rounded-full border border-border pl-3 text-xs text-muted-foreground"
-              >
-                <BookOpen className="size-3.5" aria-hidden />
-                {r.label}
-                <button
-                  type="button"
-                  aria-label={t(`Remove ${r.label}`, `${r.label} entfernen`)}
-                  onClick={() => setRefs(refs.filter((x) => !(x.kind === r.kind && x.id === r.id)))}
-                  className="grid size-9 place-items-center rounded-full hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            {refs.map((r) => {
+              const Icon = kindIcon(r.kind);
+              return (
+                <li
+                  key={`${r.kind}:${r.id}`}
+                  className="inline-flex h-9 min-w-0 max-w-full items-center gap-1 rounded-full border border-border pl-3 text-xs text-muted-foreground"
                 >
-                  <X className="size-3.5" aria-hidden />
-                </button>
-              </li>
-            ))}
+                  <Icon className="size-3.5 shrink-0" aria-hidden />
+                  <span className="min-w-0 truncate">{r.label}</span>
+                  {props.onPinRef && (
+                    <button
+                      type="button"
+                      aria-label={t(
+                        `Pin ${r.label} to this chat`,
+                        `${r.label} an diesen Chat heften`,
+                      )}
+                      title={t("Pin to this chat", "An diesen Chat heften")}
+                      onClick={() => props.onPinRef?.(r)}
+                      className="grid size-9 shrink-0 place-items-center rounded-full hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <Pin className="size-3.5" aria-hidden />
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    aria-label={t(`Remove ${r.label}`, `${r.label} entfernen`)}
+                    onClick={() =>
+                      setRefs(refs.filter((x) => !(x.kind === r.kind && x.id === r.id)))
+                    }
+                    className="grid size-9 place-items-center rounded-full hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <X className="size-3.5" aria-hidden />
+                  </button>
+                </li>
+              );
+            })}
             {uploading > 0 && (
               <li className="inline-flex h-9 items-center px-3 text-xs text-muted-foreground">
                 {t("Uploading …", "Wird hochgeladen …")}

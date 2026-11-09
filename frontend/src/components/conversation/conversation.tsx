@@ -3,16 +3,20 @@
 // between "full" (Copilot page, Live tab) and "compact" (dock, My Work).
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, X } from "lucide-react";
+import { ArrowDown, BookOpen, Bot, Database, X } from "lucide-react";
 
 import type { SigilItem } from "@/components/composer-sigils";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api, ApiError } from "@/lib/api";
 import {
   conversationKeys,
+  MAX_PINS,
+  refusedRefs,
   useAnswerQuestion,
   useRegenerate,
+  useSetPins,
   type ChatSessionDetailDTO,
+  type ContextItem,
   type LiveRunDTO,
 } from "@/lib/conversation-api";
 import { nextStepChips } from "@/lib/chat-suggestions";
@@ -29,8 +33,11 @@ import { useWatchRuns } from "@/lib/live/provider";
 import { cn } from "@/lib/utils";
 
 import { AssistantTurn } from "./assistant-turn";
-import { Composer, type ComposerSubmit } from "./composer";
+import { Composer, type ComposerSubmit, type PlusMenuItem } from "./composer";
+import { ContextSearchDialog } from "./context-search";
+import { DataSourceBrowser } from "./data-source-browser";
 import { DecisionCard } from "./decision-card";
+import { PinnedBar } from "./pinned-bar";
 import { PromptStarters } from "./prompt-starters";
 import { QuestionCard } from "./question-card";
 import { SuggestionChips, type ReplyChip } from "./suggestion-chips";
@@ -57,6 +64,10 @@ type Row =
   | { at: string; kind: "run"; extra: ExtraRunTurn };
 
 const TERMINAL = new Set(["done", "failed", "interrupted"]);
+/** Per-message refs, as the composer's own limit. */
+const MAX_MESSAGE_REFS = 10;
+/** What "oc8 object" in the + menu searches. */
+const OBJECT_KINDS = ["agent", "department", "run", "approval", "responsibility", "chat_session"];
 /** How close to the top (px) the reader must scroll for older items to load. */
 const TOP_THRESHOLD = 120;
 
@@ -279,6 +290,104 @@ export function Conversation(props: ConversationProps) {
           t,
         ).map((chip) => ({ label: chip.label, text: chip.insert }));
 
+  // Context for the next message (C3): picked from the + menu or with #,
+  // and pinned to the chat from its chip.
+  const [refs, setRefs] = useState<ContextItem[]>([]);
+  const [picker, setPicker] = useState<null | "source" | "knowledge" | "object">(null);
+  const [pinLimit, setPinLimit] = useState(false);
+  const pins = conv.session?.pinnedRefs ?? [];
+  const setPins = useSetPins(props.sessionId);
+  const mayKnowledge = may("knowledge:view");
+  const resetPins = setPins.reset;
+  useEffect(() => {
+    // Another chat's refusal is not this one's.
+    setPinLimit(false);
+    resetPins();
+  }, [props.sessionId, resetPins]);
+  const plusItems: PlusMenuItem[] = readOnly
+    ? []
+    : [
+        ...(mayKnowledge
+          ? [
+              {
+                id: "source",
+                label: t("Choose from data source ›", "Aus Datenquelle wählen ›"),
+                icon: <Database className="size-4" aria-hidden />,
+                onSelect: () => setPicker("source"),
+              },
+              {
+                id: "knowledge",
+                label: t("Knowledge base", "Wissensbasis"),
+                icon: <BookOpen className="size-4" aria-hidden />,
+                onSelect: () => setPicker("knowledge"),
+              },
+            ]
+          : []),
+        {
+          id: "object",
+          label: t("oc8 object", "oc8-Objekt"),
+          icon: <Bot className="size-4" aria-hidden />,
+          onSelect: () => setPicker("object"),
+        },
+      ];
+  function addRef(item: ContextItem) {
+    setRefs((prev) =>
+      prev.some((r) => r.kind === item.kind && r.id === item.id) || prev.length >= MAX_MESSAGE_REFS
+        ? prev
+        : [...prev, item],
+    );
+    setPicker(null);
+  }
+  function dropRef(ref: ContextItem) {
+    setRefs((prev) => prev.filter((r) => !(r.kind === ref.kind && r.id === ref.id)));
+  }
+  /** "Pin to this chat": the chip leaves the message once the chat holds it. */
+  function pinRef(ref: ContextItem) {
+    setPinLimit(false);
+    if (pins.some((p) => p.kind === ref.kind && p.id === ref.id)) {
+      dropRef(ref);
+      return;
+    }
+    if (pins.length >= MAX_PINS) {
+      setPinLimit(true);
+      return;
+    }
+    setPins.mutate(
+      [...pins.map(({ kind, id }) => ({ kind, id })), { kind: ref.kind, id: ref.id }],
+      { onSuccess: () => dropRef(ref) },
+    );
+  }
+  const refusedLabels = refusedRefs(setPins.error).map(
+    (r) => [...pins, ...refs].find((x) => x.kind === r.kind && x.id === r.id)?.label ?? r.id,
+  );
+  const pinError = pinLimit
+    ? t(
+        `A chat holds up to ${MAX_PINS} pins. Unpin one first.`,
+        `Ein Chat hält bis zu ${MAX_PINS} angeheftete Einträge. Löse zuerst einen.`,
+      )
+    : !setPins.error
+      ? null
+      : refusedLabels.length > 0
+        ? t(
+            `Not available to you: ${refusedLabels.join(", ")}. Unpin it, then try again.`,
+            `Für dich nicht verfügbar: ${refusedLabels.join(", ")}. Löse es und versuch es noch einmal.`,
+          )
+        : t(
+            "Your pins were not saved. Try again.",
+            "Deine angehefteten Einträge wurden nicht gespeichert. Versuch es noch einmal.",
+          );
+  const pinnedAbove =
+    props.sessionId && (pins.length > 0 || pinError) ? (
+      <>
+        <PinnedBar sessionId={props.sessionId} pins={pins} readOnly={readOnly} />
+        {pinError && (
+          <p role="alert" className="px-1 text-xs text-status-error">
+            {pinError}
+          </p>
+        )}
+      </>
+    ) : null;
+
   // One creation in flight at a time: a multi-file drop and a send during an
   // upload all wait for the same new chat instead of each making one.
   const creating = useRef<Promise<string> | null>(null);
@@ -304,6 +413,9 @@ export function Conversation(props: ConversationProps) {
               readOnly: false,
               pendingQuestion: null,
               taskId: null,
+              pinnedRefs: [],
+              projectId: session.projectId ?? null,
+              pinned: session.pinned ?? false,
             },
         );
         props.onSessionChange(session.id);
@@ -674,16 +786,41 @@ export function Conversation(props: ConversationProps) {
               : undefined
           }
           above={
-            questionAbove || props.composerAbove ? (
+            pinnedAbove || questionAbove || props.composerAbove ? (
               <>
+                {pinnedAbove}
                 {questionAbove}
                 {props.composerAbove}
               </>
             ) : undefined
           }
+          contextRefs={refs}
+          onContextRefsChange={setRefs}
+          extraPlusItems={plusItems}
+          onPinRef={props.sessionId && !readOnly ? pinRef : undefined}
           disabled={readOnly}
           autoFocus={props.autoFocus}
         />
+        {!readOnly && (
+          <>
+            <DataSourceBrowser
+              open={picker === "source"}
+              onPick={addRef}
+              onClose={() => setPicker(null)}
+            />
+            <ContextSearchDialog
+              open={picker === "knowledge" || picker === "object"}
+              kinds={picker === "knowledge" ? ["knowledge_base"] : OBJECT_KINDS}
+              title={
+                picker === "knowledge"
+                  ? t("Knowledge base", "Wissensbasis")
+                  : t("oc8 object", "oc8-Objekt")
+              }
+              onPick={addRef}
+              onClose={() => setPicker(null)}
+            />
+          </>
+        )}
       </div>
     </div>
   );

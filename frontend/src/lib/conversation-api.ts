@@ -1,6 +1,7 @@
 // REST hooks for the one chat (components/conversation). Session detail,
 // the model picker, regenerate and feedback; the transcript itself stays in
 // hooks-chat.ts.
+import { useEffect, useState } from "react";
 import {
   keepPreviousData,
   useInfiniteQuery,
@@ -17,7 +18,7 @@ import {
   type ChatSessionDTO,
   type RunActivityDTO,
 } from "@/lib/hooks-chat";
-import { useKnowledgeBases, type RunComponentDTO } from "@/lib/hooks";
+import type { RunComponentDTO } from "@/lib/hooks";
 
 export interface ActiveRunDTO {
   runId: string;
@@ -33,6 +34,20 @@ export interface ChatSessionDetailDTO extends ChatSessionDTO {
   /** What the chat's run is parked on (spec §4.1), or null. */
   pendingQuestion: PendingQuestionDTO | null;
   taskId: string | null;
+  /** The chat's pinned context, re-checked for the caller. */
+  pinnedRefs: ContextRefViewDTO[];
+  projectId: string | null;
+  pinned: boolean;
+}
+
+/** A pin as the caller sees it now. `available` is false once they can no
+ *  longer see it; `label` is then the one stored when it was pinned. The
+ *  label is the server's: render it as plain text only. */
+export interface ContextRefViewDTO {
+  kind: string;
+  id: string;
+  label: string;
+  available: boolean;
 }
 
 export interface ChatModelOptionDTO {
@@ -198,19 +213,130 @@ export interface ContextItem {
   id: string;
   label: string;
   hint?: string;
+  /** False for a data source that is not connected ("Connect"). */
+  connected?: boolean;
 }
 
-/** What `#` offers while the reader types. C1: knowledge bases. Task 36
- *  replaces the body with GET /chat/context/search, which covers every kind. */
-export function useContextSearch(query: string | null): ContextItem[] {
-  const { data } = useKnowledgeBases({ search: query ?? undefined, pageSize: 8 });
-  if (query === null) return [];
-  return (data?.items ?? []).map((kb) => ({
-    kind: "knowledge_base",
-    id: kb.id,
-    label: kb.name,
-    hint: kb.description || undefined,
+/** One `GET /chat/context/search` hit. */
+export interface ContextSearchItemDTO {
+  kind: string;
+  id: string;
+  label: string;
+  hint: string | null;
+  connected: boolean;
+}
+
+/** One entry of a data source folder. A file's `id` is the file part of a
+ *  `source_file` ref (`<source>:<id>`); a folder's is the `path` to browse. */
+export interface BrowseEntryDTO {
+  id: string;
+  name: string;
+  isFolder: boolean;
+  size: number | null;
+  contentType: string | null;
+}
+
+export interface BrowseListingDTO {
+  entries: BrowseEntryDTO[];
+  /** The folder holds more than is listed. */
+  truncated: boolean;
+}
+
+/** The backend's bounds on one search: query length and kinds per call. */
+const MAX_SEARCH_QUERY = 100;
+const MAX_SEARCH_KINDS = 16;
+const SEARCH_DEBOUNCE_MS = 200;
+/** At most this many pins per chat (backend MAX_PINNED_REFS). */
+export const MAX_PINS = 20;
+
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const id = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(id);
+  }, [value, delayMs]);
+  return debounced;
+}
+
+/** What `#` and the + menu offer: every kind the member may see (backend
+ *  GET /chat/context/search, authorised per kind with the member's rights),
+ *  or only `kinds`. `null` searches nothing. The query is debounced and the
+ *  previous hits stay while the next ones load. An empty query sends no
+ *  request unless `recents` asks for the server's first hits per kind. */
+export function useContextSearch(
+  query: string | null,
+  kinds?: string[],
+  options: { recents?: boolean } = {},
+): ContextItem[] {
+  const debounced = useDebouncedValue(query, SEARCH_DEBOUNCE_MS);
+  // Closing never waits for the debounce, and opening starts from what is typed.
+  const q = query === null ? null : (debounced ?? query).trim().slice(0, MAX_SEARCH_QUERY);
+  const wanted = (kinds ?? []).slice(0, MAX_SEARCH_KINDS).join(",");
+  const enabled = q !== null && (q !== "" || !!options.recents);
+  const { data } = useQuery({
+    queryKey: ["chat", "context-search", q ?? "", wanted] as const,
+    queryFn: () => {
+      const params = new URLSearchParams({ q: q ?? "" });
+      if (wanted) params.set("kinds", wanted);
+      return api.get<ContextSearchItemDTO[]>(`/chat/context/search?${params.toString()}`);
+    },
+    enabled,
+    placeholderData: keepPreviousData,
+    staleTime: 10_000,
+  });
+  if (!enabled) return [];
+  return (data ?? []).map((i) => ({
+    kind: i.kind,
+    id: i.id,
+    label: i.label,
+    hint: i.hint ?? undefined,
+    connected: i.connected,
   }));
+}
+
+/** Replace the chat's pins (owner only, at most MAX_PINS). The reply is the
+ *  full session detail, written to its cache as is. A 422 names the refused
+ *  refs: read them with `refusedRefs`. */
+export function useSetPins(sessionId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (refs: { kind: string; id: string }[]) =>
+      api.put<ChatSessionDetailDTO>(`/chat/sessions/${encodeURIComponent(sessionId ?? "")}/pins`, {
+        refs,
+      }),
+    onSuccess: (session) => qc.setQueryData(conversationKeys.session(session.id), session),
+  });
+}
+
+/** The refs a 422 from `PUT /pins` refused, by the kind and id sent. */
+export function refusedRefs(error: unknown): { kind: string; id: string }[] {
+  if (!(error instanceof ApiError) || error.status !== 422) return [];
+  try {
+    const detail = JSON.parse(error.message) as { refused?: unknown };
+    return Array.isArray(detail.refused)
+      ? detail.refused.filter((r: unknown): r is { kind: string; id: string } => {
+          const ref = r as { kind?: unknown; id?: unknown } | null;
+          return !!ref && typeof ref.kind === "string" && typeof ref.id === "string";
+        })
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/** One folder of a data source (`knowledge:view`). Errors come back as
+ *  ApiError: 409 the source can't be browsed, 404 gone or not allowed, 422 a
+ *  bad path, 502 the connector failed (its message is already scrubbed). */
+export function useBrowseSource(sourceId: string | null, path: string) {
+  return useQuery({
+    queryKey: ["chat", "browse", sourceId ?? "", path] as const,
+    queryFn: () =>
+      api.get<BrowseListingDTO>(
+        `/chat/data-sources/${encodeURIComponent(sourceId ?? "")}/browse?path=${encodeURIComponent(path)}`,
+      ),
+    enabled: !!sourceId,
+    retry: false,
+  });
 }
 
 /** A run on the Live timeline (backend LiveRunDTO). For a colleague's run
