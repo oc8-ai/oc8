@@ -1627,7 +1627,7 @@ async def _execute_read_resource(
     from oc8.agent.mcp_env import has_oauth_ref, resolve_mcp_env
     from oc8.agent.mcp_requirements import wrap_with_requirements
     from oc8.connections.access import ConnectionRequired
-    from oc8.connections.runtime_env import run_mcp_env
+    from oc8.connections.runtime_env import require_enabled, run_mcp_env
 
     connection = str(tc.arguments.get("connection", "")).strip()
     uri = str(tc.arguments.get("uri", "")).strip()
@@ -1650,6 +1650,10 @@ async def _execute_read_resource(
             return ControlOutcome(output=str(exc))
         env, reusable = launch.env, launch.reusable
     else:
+        try:
+            await require_enabled(db, row)
+        except ConnectionRequired as exc:
+            return ControlOutcome(output=str(exc))
         env = await resolve_mcp_env(
             db, tenant_id=tenant_id, cfg=cfg, connection_name=row.name
         )

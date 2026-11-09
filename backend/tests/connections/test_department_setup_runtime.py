@@ -9,9 +9,11 @@ import uuid
 from typing import Any
 
 import pytest
+from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.api.mcp_gateway import _connections
+from oc8.connections.access import ConnectionRequired
 from oc8.connections.runtime_env import run_mcp_env
 from oc8.credentials.service import create_credential
 from oc8.secrets.service import store_secret
@@ -134,3 +136,59 @@ async def test_another_department_uses_an_organisation_login_bound_by_an_admin(
     )
     launch = await _launch(app_session, tenant, run_id)
     assert (launch.env["ODOO_USER"], launch.env["ODOO_PASSWORD"]) == ("sales-bot", "org-pw")
+
+
+async def _second_org_login(app_session: AppSessionFactory, tenant: uuid.UUID) -> None:
+    """Two organisation logins: no single one is everybody's default."""
+    async with app_session(tenant) as db:
+        await create_credential(
+            db,
+            tenant_id=tenant,
+            name="Other Odoo",
+            credential_type="odoo_login",
+            field_values={"url": "https://other.acme.test", "username": "x", "password": "y"},
+        )
+
+
+SALES_VALUES = {"https://erp.acme.test", "acme", "sales-bot", "org-pw"}
+
+
+async def test_another_department_without_access_gets_nothing_of_the_setup(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant, _anna, marketing, _org = await _tenant_with_sales_setup(app_session)
+    await _second_org_login(app_session, tenant)
+    async with app_session(tenant) as db:
+        agent = m.Agent(tenant_id=tenant, department_id=marketing, name="Mia")
+        db.add(agent)
+        await db.flush()
+        run = m.AgentRun(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            source="manual",
+            context={"originating_operator": "anna@acme.test"},
+        )
+        db.add(run)
+        await db.flush()
+        sales_row = await db.scalar(
+            select(m.McpConnection).where(
+                m.McpConnection.name == "odoo", m.McpConnection.department_id.is_not(None)
+            )
+        )
+        assert sales_row is not None
+        template = m.McpConnection(
+            tenant_id=tenant,
+            name="odoo",
+            server_url="",
+            transport="stdio",
+            config={**sales_row.config},
+            connected=False,
+        )
+        # Whichever row the run is given -- Sales' own (a pinned run) or a
+        # copy of it without a department -- Sales' login is never used.
+        for conn in (sales_row, template):
+            with pytest.raises(ConnectionRequired) as exc:
+                await run_mcp_env(db, run=run, conn=conn, tool="search_records")
+            assert exc.value.reason == "not_configured"
+            listed = await run_mcp_env(db, run=run, conn=conn, listing=True)
+            assert not SALES_VALUES & set(listed.env.values())

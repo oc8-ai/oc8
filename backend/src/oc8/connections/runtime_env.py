@@ -34,7 +34,9 @@ from oc8.connections.access import (
 )
 from oc8.connections.credential_env import credential_env_targets, credential_mcp_env
 from oc8.connections.integrations import (
+    Integration,
     enabled_tool_pack_connection,
+    integration_enabled,
     integration_for_connection,
 )
 from oc8.credentials.registry import get_credential_type
@@ -56,14 +58,30 @@ def _cfg(conn: m.McpConnection) -> dict[str, Any]:
     return conn.config if isinstance(conn.config, dict) else {}
 
 
-def _without_identity(cfg: dict[str, Any]) -> dict[str, Any]:
+def _without_identity(cfg: dict[str, Any], integration: Integration) -> dict[str, Any]:
+    """The config with no account in it: no OAuth reference, and none of the
+    variables a login of this integration fills (a department's stored login
+    must not start a bridge that is only listing tools for someone else)."""
+    login_vars = set(integration.credential_env_fields)
     out = dict(cfg)
+    out["env"] = {k: v for k, v in dict(cfg.get("env") or {}).items() if k not in login_vars}
     out["secret_env"] = {
         k: v
         for k, v in dict(cfg.get("secret_env") or {}).items()
-        if not str(v).startswith((OAUTH_REF_PREFIX, OAUTH_DELEGATED_REF_PREFIX))
+        if k not in login_vars
+        and not str(v).startswith((OAUTH_REF_PREFIX, OAUTH_DELEGATED_REF_PREFIX))
     }
+    out.pop("oauth_connection_id", None)
     return out
+
+
+async def require_enabled(db: AsyncSession, conn: m.McpConnection) -> None:
+    """Refuse a connectable integration whose plugin is not enabled in this
+    tenant -- before any environment is built or any token minted. Disabling
+    keeps the plugin's rows (there is no uninstall)."""
+    integration = integration_for_connection(conn)
+    if integration is not None and not await integration_enabled(db, integration):
+        raise ConnectionRequired(integration, "not_configured")
 
 
 async def _effective(
@@ -147,6 +165,15 @@ async def run_mcp_env(
     caller's in-request copy of the run context that it writes back whole
     (the isolated-runtime step endpoint); the CTA is merged into it too."""
     cfg = _cfg(conn)
+    try:
+        await require_enabled(db, conn)
+    except ConnectionRequired as exc:
+        if not listing:
+            patch = {"connection_required": exc.as_context()}
+            await merge_context(db, run, patch)
+            if ctx is not None:
+                ctx.update(patch)
+        raise
     agent = await db.get(m.Agent, run.agent_id)
     if agent is None:
         env = await resolve_mcp_env(db, tenant_id=run.tenant_id, cfg=cfg, connection_name=conn.name)
@@ -156,7 +183,10 @@ async def run_mcp_env(
     except ConnectionRequired as exc:
         if listing:
             env = await resolve_mcp_env(
-                db, tenant_id=run.tenant_id, cfg=_without_identity(cfg), connection_name=conn.name
+                db,
+                tenant_id=run.tenant_id,
+                cfg=_without_identity(cfg, exc.integration),
+                connection_name=conn.name,
             )
             return McpLaunchEnv(env, reusable=False)
         patch = {"connection_required": exc.as_context()}
@@ -184,7 +214,10 @@ async def run_mcp_env(
         required = ConnectionRequired(access.integration, "needs_reauth")
         if listing:
             env = await resolve_mcp_env(
-                db, tenant_id=run.tenant_id, cfg=_without_identity(cfg), connection_name=conn.name
+                db,
+                tenant_id=run.tenant_id,
+                cfg=_without_identity(cfg, access.integration),
+                connection_name=conn.name,
             )
             return McpLaunchEnv(env, reusable=False)
         patch = {"connection_required": required.as_context()}

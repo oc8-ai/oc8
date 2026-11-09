@@ -11,12 +11,12 @@ from oc8 import models as m
 from oc8.api.mcp_gateway import _connections
 from oc8.api.v1.run import run_to_dto
 from oc8.authz.pdp import effective_tool_policies
-from oc8.connections.access import ConnectionRequired
+from oc8.connections.access import ConnectionRequired, binding_fingerprint
 from oc8.connections.runtime_env import integration_connections, run_mcp_env
 from oc8.oauth.tokens import access_ref
 from oc8.secrets.service import store_secret
 from tests.conftest import AppSessionFactory
-from tests.connections.helpers import credential_row, member, oauth_row
+from tests.connections.helpers import credential_row, enable_plugin_row, member, oauth_row
 from tests.connections.test_access import MS_CFG, ODOO_CFG
 
 pytestmark = pytest.mark.asyncio
@@ -63,7 +63,8 @@ async def _world(
         )
         db.add(run)
         await db.flush()
-        return tenant, anna, conn.id, run.id
+    await enable_plugin_row(app_session, tenant, str(cfg["_plugin_name"]))
+    return tenant, anna, conn.id, run.id
 
 
 async def _token(
@@ -145,20 +146,8 @@ async def test_a_dead_refresh_token_asks_to_reconnect(app_session: AppSessionFac
     assert exc.value.reason == "needs_reauth"
 
 
-async def _enable_plugin(app_session: AppSessionFactory, tenant: uuid.UUID, name: str) -> None:
-    """Install and enable a plugin for the tenant: its login types are then
-    the tenant's, through the normal enabled-plugin lookup."""
-    async with app_session(tenant) as db:
-        capa = m.Capa(tenant_id=tenant, name=name, type="tool_pack")
-        db.add(capa)
-        await db.flush()
-        db.add(m.CapaInstallation(tenant_id=tenant, capa_id=capa.id, status="enabled"))
-        await db.flush()
-
-
 async def test_a_persons_login_is_injected(app_session: AppSessionFactory) -> None:
     tenant, anna, conn_id, run_id = await _world(app_session, name="odoo", cfg=ODOO_CFG)
-    await _enable_plugin(app_session, tenant, "odoo_mcp")
     mine = await credential_row(app_session, tenant, owner=anna)
     async with app_session(tenant) as db:
         await store_secret(
@@ -229,7 +218,6 @@ async def test_a_persons_login_replaces_the_departments_identity_whole(
         "secret_env": {"ODOO_PASSWORD": "dept/pw", "ODOO_API_KEY": "dept/key"},
     }
     tenant, anna, conn_id, run_id = await _world(app_session, name="odoo", cfg=cfg, department=True)
-    await _enable_plugin(app_session, tenant, "odoo_mcp")
     await credential_row(app_session, tenant, owner=anna)  # url + username only
     async with app_session(tenant) as db:
         await store_secret(db, tenant_id=tenant, name="dept/pw", value="dept-pw", kind="credential")
@@ -335,3 +323,113 @@ async def test_the_in_process_engine_audits_each_session_it_opens(
         (e.resource["tool"], e.resource["on_behalf_of"], e.resource["connection_id"])
         for e in events
     ] == [("*", str(anna), str(mine))]
+
+
+@pytest.mark.parametrize("status", ["disabled", "installed", None])
+async def test_a_plugin_that_is_not_enabled_acts_through_nobody(
+    app_session: AppSessionFactory, status: str | None
+) -> None:
+    """Disabling a plugin keeps its rows (there is no uninstall), so the
+    runtime itself refuses: the person's own token is not used either."""
+    tenant, anna, conn_id, run_id = await _world(app_session)
+    mine = await oauth_row(app_session, tenant, owner=anna)
+    await _token(app_session, tenant, mine, "annas-token")
+    async with app_session(tenant) as db:
+        inst = (
+            await db.execute(
+                select(m.CapaInstallation)
+                .join(m.Capa, m.Capa.id == m.CapaInstallation.capa_id)
+                .where(m.Capa.name == "microsoft365")
+            )
+        ).scalar_one()
+        if status is None:
+            await db.delete(inst)
+        else:
+            inst.status = status
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        conn = await db.get(m.McpConnection, conn_id)
+        assert run is not None and conn is not None
+        with pytest.raises(ConnectionRequired) as exc:
+            await run_mcp_env(db, run=run, conn=conn, tool="mail_send")
+    assert exc.value.reason == "not_configured"
+
+
+async def _disable(app_session: AppSessionFactory, tenant: uuid.UUID, plugin: str) -> None:
+    async with app_session(tenant) as db:
+        inst = (
+            await db.execute(
+                select(m.CapaInstallation)
+                .join(m.Capa, m.Capa.id == m.CapaInstallation.capa_id)
+                .where(m.Capa.name == plugin)
+            )
+        ).scalar_one()
+        inst.status = "disabled"
+
+
+async def test_a_disabled_plugin_is_refused_on_every_launch_path(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Listing, a call, a fixed binding to the person's own account, a deleted
+    agent, the in-process engine (with and without a run) and read_resource
+    all stop at the gate -- before a token is minted."""
+    from oc8.agent import engine
+    from oc8.agent.control_tools import _execute_read_resource
+    from oc8.modelrouter.types import ToolCall
+
+    minted: list[str] = []
+
+    async def no_launch(**kw: Any) -> None:
+        minted.append("session")
+
+    monkeypatch.setattr(engine, "open_tool_session", no_launch)
+    tenant, anna, conn_id, run_id = await _world(app_session, department=True)
+    mine = await oauth_row(app_session, tenant, owner=anna)
+    await _token(app_session, tenant, mine, "annas-token")
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        agent = await db.get(m.Agent, run.agent_id)
+        assert agent is not None
+        db.add(
+            m.AgentToolAccess(
+                tenant_id=tenant,
+                agent_id=agent.id,
+                tool_key="microsoft365",
+                mode="fixed",
+                oauth_connection_id=mine,
+                set_by_member_id=anna,
+                binding_fingerprint=await binding_fingerprint(
+                    db, agent, "microsoft365", version_id=None
+                ),
+            )
+        )
+    await _disable(app_session, tenant, "microsoft365")
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        conn = await db.get(m.McpConnection, conn_id)
+        assert run is not None and conn is not None
+        agent = await db.get(m.Agent, run.agent_id)
+        assert agent is not None
+        for listing in (True, False):
+            with pytest.raises(ConnectionRequired) as exc:
+                await run_mcp_env(db, run=run, conn=conn, tool="mail_send", listing=listing)
+            assert exc.value.reason == "not_configured"
+        for with_run in (run, None):
+            with pytest.raises(ConnectionRequired):
+                await engine._open_mcp_session(db, tenant_id=tenant, mcp_conn=conn, run=with_run)
+        for rid in (run.id, None):
+            out = await _execute_read_resource(
+                db,
+                tenant_id=tenant,
+                agent=agent,
+                tc=ToolCall(id="1", name="read_resource", arguments={"connection": conn.name}),
+                run_id=rid,
+            )
+            assert "connection_required" in out.output
+        assert run.context["connection_required"]["reason"] == "not_configured"
+        await db.delete(agent)
+        await db.flush()
+        with pytest.raises(ConnectionRequired):
+            await run_mcp_env(db, run=run, conn=conn, tool="mail_send")
+    assert minted == []

@@ -21,7 +21,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.agents.versioning import snapshot_agent
 from oc8.connections.acting import ActingPerson, resolve_acting_person
-from oc8.connections.integrations import Integration, integration_for_connection
+from oc8.connections.integrations import (
+    Integration,
+    integration_enabled,
+    integration_for_connection,
+)
 
 
 class ConnectionRequired(Exception):
@@ -117,6 +121,10 @@ async def resolve_tool_access(
     integration = integration_for_connection(conn)
     if integration is None:
         return ToolAccess("legacy", None, acting.member_id)
+    if not await integration_enabled(db, integration):
+        # Disabling keeps the plugin's rows (there is no uninstall): its tools
+        # act through nobody's account until it is enabled again.
+        raise ConnectionRequired(integration, "not_configured")
     row = await db.scalar(
         select(m.AgentToolAccess).where(
             m.AgentToolAccess.agent_id == agent.id, m.AgentToolAccess.tool_key == conn.name
@@ -127,7 +135,7 @@ async def resolve_tool_access(
     if row is None:
         if conn.credential_id is not None:
             return ToolAccess("legacy", integration, acting.member_id)
-        default = await _default(db, conn, integration, acting)
+        default = await _default(db, conn, agent, integration, acting)
         if default is not None:
             return default
     return await _user(db, integration, acting)
@@ -316,14 +324,16 @@ async def _fixed(
 
 
 async def _default(
-    db: AsyncSession, conn: m.McpConnection, integration: Integration, acting: ActingPerson
+    db: AsyncSession,
+    conn: m.McpConnection,
+    agent: m.Agent,
+    integration: Integration,
+    acting: ActingPerson,
 ) -> ToolAccess | None:
-    cfg = conn.config if isinstance(conn.config, dict) else {}
-    if conn.department_id is not None and (
-        integration.kind == "credential" or cfg.get("oauth_connection_id")
-    ):
-        # A department's existing setup (app-only app registration, or the
-        # setup form's login): exactly what ran before connections existed.
+    if department_setup(conn, agent, integration):
+        # The agent's own department's existing setup (app-only app
+        # registration, or the setup form's login): exactly what ran before
+        # connections existed. Never another department's.
         return ToolAccess("legacy", integration, acting.member_id)
     if integration.kind == "credential":
         assert integration.credential_type is not None
@@ -332,6 +342,18 @@ async def _default(
             return ToolAccess("credential", integration, acting.member_id, credential=only)
         raise ConnectionRequired(integration, "not_configured")
     return None  # an OAuth integration without a department setup: user mode
+
+
+def department_setup(conn: m.McpConnection, agent: m.Agent, integration: Integration) -> bool:
+    """Whether `conn` is the agent's own department's setup of the integration
+    (a login, or an app-only OAuth app) -- the default access when the agent
+    has no access row."""
+    cfg = conn.config if isinstance(conn.config, dict) else {}
+    return (
+        conn.department_id is not None
+        and conn.department_id == agent.department_id
+        and (integration.kind == "credential" or bool(cfg.get("oauth_connection_id")))
+    )
 
 
 async def _user(db: AsyncSession, integration: Integration, acting: ActingPerson) -> ToolAccess:

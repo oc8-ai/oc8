@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.auth import get_identity_provider
@@ -111,3 +112,16 @@ async def credential_row(
         db.add(row)
         await db.flush()
         return row.id
+
+
+async def enable_plugin_row(app_session: AppSessionFactory, tenant: uuid.UUID, name: str) -> None:
+    """Mark a plugin installed and enabled for the tenant (rows only, no
+    materialisation): the runtime refuses integrations of other plugins."""
+    async with app_session(tenant) as db:
+        if await db.scalar(select(m.Capa).where(m.Capa.name == name)) is not None:
+            return
+        capa = m.Capa(tenant_id=tenant, name=name, type="tool_pack")
+        db.add(capa)
+        await db.flush()
+        db.add(m.CapaInstallation(tenant_id=tenant, capa_id=capa.id, status="enabled"))
+        await db.flush()

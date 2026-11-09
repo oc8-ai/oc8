@@ -19,7 +19,7 @@ from oc8.connections.access import (
 )
 from oc8.connections.revoke import purge_member_connections
 from tests.conftest import AppSessionFactory
-from tests.connections.helpers import credential_row, member, oauth_row
+from tests.connections.helpers import credential_row, enable_plugin_row, member, oauth_row
 from tests.factories import _make_agent
 
 pytestmark = pytest.mark.asyncio
@@ -72,7 +72,8 @@ async def _setup(
         )
         db.add(run)
         await db.flush()
-        return agent, anna, conn.id, run.id
+    await enable_plugin_row(app_session, agent.tenant_id, str(dict(cfg or MS_CFG)["_plugin_name"]))
+    return agent, anna, conn.id, run.id
 
 
 async def _access(
@@ -562,6 +563,7 @@ async def _bound_to_anna_on(
         db.add(run)
         await db.flush()
         conn_id, run_id = conn.id, run.id
+    await enable_plugin_row(app_session, agent.tenant_id, "microsoft365")
     annas = await oauth_row(app_session, agent.tenant_id, owner=anna)
     await _bind(
         app_session,

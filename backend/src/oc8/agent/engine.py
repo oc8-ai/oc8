@@ -120,7 +120,11 @@ from oc8.chat.modes import mode_from_context
 from oc8.coding.tools import CODING_FRAME_KEY, CODING_TOOL_RIGHTS, Toolset
 from oc8.config import get_settings
 from oc8.connections.access import ConnectionRequired
-from oc8.connections.runtime_env import integration_connections, run_mcp_env
+from oc8.connections.runtime_env import (
+    integration_connections,
+    require_enabled,
+    run_mcp_env,
+)
 from oc8.copilot.door import door_of
 from oc8.copilot.notes import member_behind_run_task
 from oc8.hooks.bus import dispatch_filter
@@ -455,6 +459,8 @@ async def _open_mcp_session(
     # (connections/access.py); a missing one raises ConnectionRequired, which
     # the caller reports as this system being unavailable. The session serves
     # every call of the run, so it is audited once, for all tools ("*").
+    if run is None:
+        await require_enabled(db, mcp_conn)
     env = (
         (await run_mcp_env(db, run=run, conn=mcp_conn, tool="*")).env
         if run is not None
@@ -649,6 +655,10 @@ async def run_agent(
                 except ConnectionRequired:
                     return None
             else:
+                try:
+                    await require_enabled(db, owner)
+                except ConnectionRequired:
+                    return None
                 cfg = owner.config if isinstance(owner.config, dict) else {}
                 env = await resolve_mcp_env(
                     db, tenant_id=tenant_id, cfg=cfg, connection_name=owner.name
