@@ -427,13 +427,13 @@ async def test_project_changes_are_audited_without_their_instructions(
             project = (
                 await c.post(
                     "/api/v1/chat/projects",
-                    json={"name": "Q4", "instructions": "SECRET PLAN"},
+                    json={"name": "Q4", "instructions": "CONFIDENTIAL PLAN"},
                     headers=h,
                 )
             ).json()
             await c.patch(
                 f"/api/v1/chat/projects/{project['id']}",
-                json={"name": "Q4b", "instructions": "SECRET TOO"},
+                json={"name": "Q4b", "instructions": "CONFIDENTIAL TOO"},
                 headers=h,
             )
             await c.delete(f"/api/v1/chat/projects/{project['id']}", headers=h)
@@ -454,7 +454,7 @@ async def test_project_changes_are_audited_without_their_instructions(
         ("chat.project.updated", {"project_id": project["id"], "name": "Q4b"}),
         ("chat.project.deleted", {"project_id": project["id"], "name": "Q4b"}),
     ]
-    assert "SECRET" not in repr([r.resource for r in rows])
+    assert "CONFIDENTIAL" not in repr([r.resource for r in rows])
 
 
 async def test_unpinning_keeps_a_stored_pin_that_became_unavailable(
@@ -501,3 +501,40 @@ async def test_unpinning_keeps_a_stored_pin_that_became_unavailable(
     ]
     assert added.status_code == 422
     assert added.json()["detail"]["refused"] == [{"kind": "knowledge_base", "id": never}]
+
+
+async def test_project_instructions_pass_the_assistants_secret_gate(
+    app_session: AppSessionFactory,
+) -> None:
+    """Instructions reach the model of any chat the project is attached to,
+    the Assistant's included: refused at write time like a chat send."""
+    from oc8.runtime.clarification import SECRET_REFUSAL
+
+    tenant = uuid.uuid4()
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            h = _h(tenant, "admin", "org_admin")
+            refused = await c.post(
+                "/api/v1/chat/projects",
+                json={"name": "Q4", "instructions": "apiKey=SENTINEL"},
+                headers=h,
+            )
+            assert refused.status_code == 422
+            assert refused.json()["detail"] == SECRET_REFUSAL
+            project = (
+                await c.post(
+                    "/api/v1/chat/projects",
+                    json={"name": "Q4", "instructions": "Be brief"},
+                    headers=h,
+                )
+            ).json()
+            update = await c.patch(
+                f"/api/v1/chat/projects/{project['id']}",
+                json={"name": "Q4", "instructions": "password=hunter2"},
+                headers=h,
+            )
+            assert update.status_code == 422
+            assert update.json()["detail"] == SECRET_REFUSAL
+            listed = (await c.get("/api/v1/chat/projects", headers=h)).json()
+    assert [p["instructions"] for p in listed] == ["Be brief"]

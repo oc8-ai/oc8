@@ -33,6 +33,7 @@ from oc8.authz.permissions import AGENT, MANAGE, perm
 from oc8.authz.scope import DepartmentScope
 from oc8.chat.live import is_autonomous_run
 from oc8.chat.reach import reachable_chat_agent
+from oc8.copilot.redaction import is_secret_request
 from oc8.db.session import tenant_session
 from oc8.runtime.fencing import fence, one_line
 from oc8.runtime.person import is_own, person_behind
@@ -107,6 +108,14 @@ async def add_run_input(
         raise InputRefused(422, "message must not be empty")
     if len(body) > MAX_INPUT_CHARS:
         raise InputRefused(422, f"message is longer than {MAX_INPUT_CHARS} characters")
+    # The tenant Assistant's secret gate, the same rule and sentence as chat
+    # send and every answer door: a credential never reaches its model.
+    if is_secret_request(body):
+        agent = await db.get(m.Agent, run.agent_id)
+        if agent is not None and agent.is_tenant_assistant:
+            from oc8.runtime.clarification import SECRET_REFUSAL
+
+            raise InputRefused(422, SECRET_REFUSAL)
     if RunState(run.state) in TERMINAL:
         raise InputRefused(409, "run has already finished")
     # Serialise writers per run, until commit: the pending cap below is then a

@@ -34,8 +34,10 @@ from oc8.chat.projects import (
     list_projects,
     owned_project,
 )
+from oc8.copilot.redaction import is_secret_request
 from oc8.knowledge.browse import BrowseUnsupported, InvalidReference, browse_source
 from oc8.knowledge.connectors.base import ConnectorError
+from oc8.runtime.clarification import SECRET_REFUSAL
 from oc8.schemas.dto import (
     BrowseEntryDTO,
     BrowseListingDTO,
@@ -170,6 +172,15 @@ async def _audit_project(
     )
 
 
+def _refuse_secret_instructions(instructions: str | None) -> None:
+    """The tenant Assistant's secret gate, at write time and for every
+    project: instructions reach the model of any chat the project is attached
+    to later, the Assistant's included. Same rule, sentence and status as chat
+    send and the answer doors."""
+    if instructions and is_secret_request(instructions):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, SECRET_REFUSAL)
+
+
 @router.get("/chat/projects", response_model=list[ChatProjectDTO])
 async def get_projects(db: DbSession, actor: _Actor) -> list[ChatProjectDTO]:
     rows = await list_projects(db, tenant_id=actor.principal.tenant_id, member_id=actor.member.id)
@@ -179,6 +190,7 @@ async def get_projects(db: DbSession, actor: _Actor) -> list[ChatProjectDTO]:
 
 @router.post("/chat/projects", response_model=ChatProjectDTO, status_code=status.HTTP_201_CREATED)
 async def create_project(body: ChatProjectRequest, db: DbSession, actor: _Actor) -> ChatProjectDTO:
+    _refuse_secret_instructions(body.instructions)
     viewer = await actor_viewer(db, actor)
     project = m.ChatProject(
         tenant_id=actor.principal.tenant_id,
@@ -201,6 +213,8 @@ async def update_project(
 ) -> ChatProjectDTO:
     """`name` is required; `instructions` and `pinnedRefs` change only when sent."""
     project = await _own_project_or_404(db, actor, project_id)
+    if "instructions" in body.model_fields_set:
+        _refuse_secret_instructions(body.instructions)
     viewer = await actor_viewer(db, actor)
     sent = body.model_fields_set
     if "pinned_refs" in sent:

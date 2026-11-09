@@ -14,6 +14,7 @@ from oc8 import models as m
 from oc8.auth import get_identity_provider
 from oc8.main import create_app
 from oc8.runtime.adapter import EchoRuntimeStub
+from oc8.runtime.clarification import SECRET_REFUSAL
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -247,3 +248,44 @@ async def test_a_manager_cannot_steer_a_run_on_somebody_elses_behalf(
         )
         assert ok.status_code == 201, ok.text
 
+
+async def test_the_assistants_secret_gate_covers_run_inputs(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    run_id = await _run(app_session, tenant, operator="alice", assistant=True)
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        r = await c.post(
+            f"/api/v1/runs/{run_id}/inputs",
+            json={"text": "apiKey=SENTINEL-NEVER-STORED"},
+            headers=_h(tenant, "alice"),
+        )
+        assert r.status_code == 422
+        assert r.json()["detail"] == SECRET_REFUSAL
+        fine = await c.post(
+            f"/api/v1/runs/{run_id}/inputs", json={"text": "use EU"}, headers=_h(tenant, "alice")
+        )
+        assert fine.status_code == 201
+    async with app_session(tenant) as db:
+        texts = (
+            (await db.execute(select(m.RunInput.text).where(m.RunInput.run_id == run_id)))
+            .scalars()
+            .all()
+        )
+    assert texts == ["use EU"]
+
+
+async def test_an_ordinary_agents_run_input_is_not_secret_gated(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    run_id = await _run(app_session, tenant, operator="alice")
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        r = await c.post(
+            f"/api/v1/runs/{run_id}/inputs",
+            json={"text": "apiKey=rotate-it-now"},
+            headers=_h(tenant, "alice"),
+        )
+        assert r.status_code == 201
