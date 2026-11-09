@@ -116,6 +116,19 @@ async def lock_builder_proposal(db: AsyncSession, proposal_id: uuid.UUID) -> Cop
     ).scalar_one_or_none()
 
 
+async def _lock_if_free(db: AsyncSession, proposal_id: uuid.UUID) -> CopilotProposal | None:
+    """The proposal row locked and freshly read -- or None at once if somebody
+    else holds it. For the run side only (see `create_builder_proposal`)."""
+    return (
+        await db.execute(
+            select(CopilotProposal)
+            .where(CopilotProposal.id == proposal_id, CopilotProposal.kind == BUILDER_KIND)
+            .with_for_update(skip_locked=True)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+
+
 async def _live_department(db: AsyncSession, department_id: uuid.UUID) -> m.Department | None:
     dept = await db.get(m.Department, department_id)
     return dept if dept is not None and dept.deleted_at is None else None
@@ -296,10 +309,17 @@ async def create_builder_proposal(
         CopilotProposal.kind == BUILDER_KIND,
         CopilotProposal.session_id == session_id,
     )
-    # A request awaiting approval is READ, not locked: the approval funnel locks
-    # it from the other side (approval row first, after a run may already have
-    # appended audit), and locking it here too would make the two wait on each
-    # other in opposite orders. Only one that is due gets locked, to expire it.
+    # Lock order (one way: the tenant audit lock first, then the rest). This
+    # runs inside the Copilot's run, which already holds the tenant audit lock
+    # from its `tool.call:propose_agent` event; the card's routes and the
+    # approvals funnel lock a builder row FIRST and append audit after. So this
+    # side never WAITS on a builder row: a row somebody else holds is a
+    # concurrent change in this chat, answered `superseded_concurrently` (the
+    # tool tells the model to retry). Waiting would close the cycle -- AB/BA,
+    # "Anpassen" and "Anlegen" at once. Holds as well if audit locks at commit.
+    #
+    # A request awaiting approval is only READ unless it is due: the funnel
+    # owns it while it is open.
     waiting = (
         (
             await db.execute(
@@ -314,21 +334,32 @@ async def create_builder_proposal(
     for row in waiting:
         if row.expires_at is None or row.expires_at > now:
             raise BuilderInvalid("awaiting_approval")
-        locked = await lock_builder_proposal(db, row.id)
-        if locked is not None and not expire_if_due(locked, now=now):
-            if locked.status == "awaiting_approval":
-                raise BuilderInvalid("awaiting_approval")
+        locked = await _lock_if_free(db, row.id)
+        if locked is None:
+            raise BuilderInvalid("superseded_concurrently")
+        if not expire_if_due(locked, now=now) and locked.status == "awaiting_approval":
+            raise BuilderInvalid("awaiting_approval")
     drafts = (
         (
             await db.execute(
                 select(CopilotProposal)
                 .where(*in_session, CopilotProposal.status == "draft")
-                .with_for_update()
+                .with_for_update(skip_locked=True)
+                .execution_options(populate_existing=True)
             )
         )
         .scalars()
         .all()
     )
+    # SKIP LOCKED leaves out a draft somebody holds ("Anlegen", "Zur Freigabe
+    # senden" mid-flight): one still visible but not locked here is theirs.
+    open_ids = (
+        await db.execute(
+            select(CopilotProposal.id).where(*in_session, CopilotProposal.status == "draft")
+        )
+    ).scalars()
+    if set(open_ids) - {row.id for row in drafts}:
+        raise BuilderInvalid("superseded_concurrently")
     superseded: list[str] = []
     superseded_rows: list[CopilotProposal] = []
     for row in drafts:
