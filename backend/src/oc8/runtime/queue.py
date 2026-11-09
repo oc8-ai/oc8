@@ -90,6 +90,40 @@ class RunQueue:
             approximate=True,
         )
 
+    async def undelivered_among(self, run_ids: set[str]) -> set[str]:
+        """Which of `run_ids` have an entry in the stream that no consumer of
+        this group has been handed yet -- the backlog.
+
+        A queued run in here is waiting for a worker, not stranded, however old
+        it is: under load the backlog can be older than any threshold. The
+        backlog is scanned in pages (it is bounded by the stream's MAXLEN) and
+        only the asked-for ids are kept, so the answer never grows past them.
+        An entry without a usable run id is skipped, not fatal: one corrupt
+        message must not stop the caller from recovering every other run.
+        """
+        if not run_ids:
+            return set()
+        await self._ensure_group()
+        groups: list[dict[str, Any]] = await self._client.xinfo_groups(self._key)
+        cursor = next(
+            (str(g["last-delivered-id"]) for g in groups if g.get("name") == self._group),
+            "0-0",
+        )
+        found: set[str] = set()
+        while True:
+            # "(" makes the range exclusive: everything after the cursor.
+            page = cast(
+                list[tuple[str, dict[str, str]]],
+                await self._client.xrange(self._key, min=f"({cursor}", max="+", count=500),
+            )
+            for _entry_id, fields in page:
+                run_id = fields.get("run_id") if isinstance(fields, dict) else None
+                if isinstance(run_id, str) and run_id in run_ids:
+                    found.add(run_id)
+            if len(page) < 500 or found == run_ids:
+                return found
+            cursor = page[-1][0]
+
     async def dequeue(self, *, timeout: float = 5.0) -> RunMessage | None:  # noqa: ASYNC109
         await self._ensure_group()
         try:

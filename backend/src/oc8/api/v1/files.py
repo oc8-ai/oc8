@@ -13,11 +13,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, stat
 from fastapi.responses import Response
 
 from oc8 import models as m
-from oc8.agents.repo import visible_agent
+from oc8.agents.repo import resolve_run_reach, run_reachable_agent, visible_agent
 from oc8.api.deps import DbSession, require_departmental
 from oc8.api.v1.chat import _owned_session
 from oc8.authz.authority import authority_for_principal, tenant_wide_read
-from oc8.authz.permissions import AGENT, VIEW, perm
+from oc8.authz.permissions import AGENT, RUN, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.schemas.dto import FileAttachmentDTO
 from oc8.storage import s3
@@ -108,7 +108,10 @@ async def _owned_attachment(
     `agent_run` (a file an agent produced during a run -- see
     `oc8.runtime.workspace`/`write_output_file`) shares the `agent_instructions`
     visibility check: `owner_id` is the `AgentRun.id`, resolved to its
-    `agent_id` first, then gated the same way.
+    `agent_id` first, then gated the same way -- AND by the run rule
+    (`resolve_run_reach` with `run:view`), because a run's output file is run
+    output: a seat that may see the agent but holds no `run:view` must not
+    download what `GET /runs/{id}` would refuse it.
     """
     row = await db.get(m.FileAttachment, attachment_id)
     if row is None or row.tenant_id != actor.principal.tenant_id:
@@ -128,6 +131,13 @@ async def _owned_attachment(
         )
         if agent is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "file not found")
+        if row.owner_type == "agent_run":
+            reach = await resolve_run_reach(request, db, actor, perm(RUN, VIEW))
+            reachable = await run_reachable_agent(
+                db, reach=reach, tenant_id=actor.principal.tenant_id, agent_id=agent_id
+            )
+            if reachable is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "file not found")
         return row
 
     from oc8.chat.service import get_session
