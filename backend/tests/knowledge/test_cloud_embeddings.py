@@ -233,6 +233,49 @@ async def test_retrieval_names_a_cloud_embedded_base_a_local_agent_cannot_search
         assert skipped == []
 
 
+async def test_a_restricted_cloud_embedded_base_gives_a_cloud_agent_nothing(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The skip path returns none of the skipped base's text: a base that
+    turned restricted after it was embedded in the cloud is not searched at
+    all, and the question never reaches the cloud provider."""
+    provider = _Provider(monkeypatch)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        kb = await _setup(db, tenant)
+        await ingest_document(
+            db,
+            tenant_id=tenant,
+            kb_id=kb.id,
+            filename="a.txt",
+            content="salaries are secret",
+            content_type="text/plain",
+        )
+        kb.classification = "restricted"
+        cfg = m.ModelConfig(tenant_id=tenant, provider="anthropic", model="c", locality="cloud")
+        db.add(cfg)
+        await db.flush()
+        agent = m.Agent(
+            tenant_id=tenant, department_id=uuid.uuid4(), name="A", model_config_id=cfg.id
+        )
+        db.add(agent)
+        await db.flush()
+        db.add(
+            m.KnowledgeGrant(
+                tenant_id=tenant, kb_id=kb.id, grantee_type="agent", grantee_id=agent.id
+            )
+        )
+        await db.flush()
+        before = len(provider.calls)
+        skipped: list[str] = []
+        ctx, restricted = await retrieve_kb_context(
+            db, agent=agent, tenant_id=tenant, query_text="salaries", skipped_local=skipped
+        )
+    assert ctx == "" and not restricted
+    assert skipped == ["Handbook"]
+    assert len(provider.calls) == before
+
+
 async def test_reembed_fills_missing_vectors_and_is_idempotent(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

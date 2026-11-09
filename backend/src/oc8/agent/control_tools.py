@@ -1701,12 +1701,14 @@ async def _execute_read_context(
     )
 
 
-def skipped_local_line(kb_name: str) -> str:
-    """The line a `search_knowledge` result carries for a base it could not
-    search: the question had to stay on a local model and the base embeds
-    with a cloud one. Its wording is matched by the chat's step list
-    (`frontend/src/lib/run-steps.ts`), so it changes in both places."""
-    return f"[Skipped: {kb_name} \u2013 needs a local embedding model]"
+#: The line a `search_knowledge` result starts with when a knowledge base
+#: could not be searched: the question had to stay on a local model and the
+#: base embeds with a cloud one. Deliberately generic: the result reaches the
+#: model, which may be a cloud one, and a restricted or local-only base's name
+#: must never reach it (restricted refs appear only as kind + "restricted").
+#: Matched by the chat's step list (`frontend/src/lib/run-steps.ts`), so its
+#: wording changes in both places.
+SKIPPED_LOCAL_LINE = "[Skipped: a knowledge base \u2013 needs a local embedding model]"
 
 
 async def _released_bases_refusal(
@@ -2444,13 +2446,11 @@ async def execute_control_tool(
             released_kb_ids=released,
             skipped_local=skipped_local,
         )
-        # A base that could not be searched with this model is said, once per
-        # base, in a fixed line the chat shows the member under the answer's
-        # steps -- otherwise it looks merely empty. First, because a step's
-        # stored result is cut at 300 characters.
-        skipped_note = "".join(
-            f"{skipped_local_line(name)}\n" for name in dict.fromkeys(skipped_local)
-        )
+        # A base that could not be searched with this model is said, once, in
+        # a fixed line the chat shows the member under the answer's steps --
+        # otherwise it looks merely empty. Never by name (see the constant).
+        # First, because a step's stored result is cut at 300 characters.
+        skipped_note = f"{SKIPPED_LOCAL_LINE}\n" if skipped_local else ""
         # A trail, because "did it consult the handbook or guess?" has to be
         # answerable afterwards. Without it I drew the wrong conclusion myself:
         # counted zero lookups and reported the knowledge base ignored, while the

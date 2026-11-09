@@ -6,7 +6,7 @@ import { ChevronRight } from "lucide-react";
 
 import { formatMs } from "@/lib/format";
 import { useLang, useT } from "@/lib/i18n";
-import { buildRunSteps, skippedKnowledgeBases, type RunStepRow } from "@/lib/run-steps";
+import { buildRunSteps, skippedLocalKnowledge, type RunStepRow } from "@/lib/run-steps";
 import { resolveToolLabel, useToolLabels } from "@/lib/tool-labels";
 import { cn } from "@/lib/utils";
 
@@ -123,9 +123,9 @@ export function StepList({ run, labelsOnly = false }: { run: StepListRun; labels
     [run.state, run.steps, run.toolCalls, run.stepTimings, catalogue, t, lang],
   );
   if (steps.rows.length === 0) return null;
-  // A pinned or released base this model could not search, said once: it
-  // otherwise looks merely empty.
-  const skipped = skippedKnowledgeBases(steps.rows);
+  // A pinned or granted base this model could not search, said once: it
+  // otherwise looks merely empty. Never by name -- see run-steps.ts.
+  const skipped = skippedLocalKnowledge(steps.rows);
   return (
     <>
       <ol className="space-y-1" aria-label={t("Steps", "Schritte")}>
@@ -133,14 +133,14 @@ export function StepList({ run, labelsOnly = false }: { run: StepListRun; labels
           <Step key={row.key} row={row} timings={run.stepTimings} labelsOnly={labelsOnly} />
         ))}
       </ol>
-      {skipped.map((name) => (
-        <p key={name} className="text-xs text-muted-foreground">
+      {skipped && (
+        <p className="text-xs text-muted-foreground">
           {t(
-            `${name} can't be searched with this model – it needs a local embedding model.`,
-            `${name} kann mit diesem Modell nicht durchsucht werden – dafür braucht es ein lokales Embedding-Modell.`,
+            "A knowledge base can't be searched with this model – it needs a local embedding model.",
+            "Eine Wissensdatenbank kann mit diesem Modell nicht durchsucht werden – dafür braucht es ein lokales Embedding-Modell.",
           )}
         </p>
-      ))}
+      )}
     </>
   );
 }

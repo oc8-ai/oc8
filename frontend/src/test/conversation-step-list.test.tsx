@@ -114,8 +114,8 @@ describe("StepList", () => {
     expect(items[1].querySelector("span.flex-1")?.className).toContain("text-status-error");
   });
 
-  it("says once which pinned base this model could not search (E2E H)", () => {
-    const line = "[Skipped: Sales KB \u2013 needs a local embedding model]";
+  it("says once that a knowledge base could not be searched with this model (E2E H)", () => {
+    const line = "[Skipped: a knowledge base \u2013 needs a local embedding model]";
     wrap(
       <StepList
         run={{
@@ -133,7 +133,7 @@ describe("StepList", () => {
     );
     expect(
       screen.getAllByText(
-        "Sales KB can't be searched with this model – it needs a local embedding model.",
+        "A knowledge base can't be searched with this model – it needs a local embedding model.",
       ),
     ).toHaveLength(1);
   });
