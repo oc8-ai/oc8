@@ -118,7 +118,10 @@ export function SessionPicker({
           aria-label={t("Switch chat", "Chat wechseln")}
           className="inline-flex h-9 max-w-[220px] items-center gap-1 rounded-md border border-border bg-background px-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
         >
-          <span className="truncate">{current?.title || untitled}</span>
+          {/* No chat selected is a new one, not an untitled one. */}
+          <span className="truncate">
+            {current ? current.title || untitled : t("New chat", "Neuer Chat")}
+          </span>
           <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-72 p-1">

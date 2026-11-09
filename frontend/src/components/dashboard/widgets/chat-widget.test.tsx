@@ -11,11 +11,12 @@ vi.mock("@/lib/hooks", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/hooks")>();
   return { ...actual, useAssistant: () => ({ data: { agentId: "agent-1" } }) };
 });
+const chatSessions = vi.hoisted(() => ({ data: [] as unknown[] }));
 vi.mock("@/lib/hooks-chat", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/hooks-chat")>();
   return {
     ...actual,
-    useChatSessions: () => ({ data: [] }),
+    useChatSessions: () => ({ data: chatSessions.data }),
   };
 });
 
@@ -45,6 +46,40 @@ describe("ChatWidget", () => {
   // this file -- there is no global mock-reset config (vitest.setup.ts).
   afterEach(() => {
     vi.restoreAllMocks();
+    chatSessions.data = [];
+  });
+
+  const older = "0190f2a0-0000-7000-8000-00000000000a";
+  const newer = "0190f2a0-0000-7000-8000-00000000000b";
+  const twoChats = [
+    {
+      id: older,
+      agentId: "agent-1",
+      title: "Old",
+      createdAt: "t",
+      lastMessageAt: "2026-11-01T00:00:00Z",
+    },
+    {
+      id: newer,
+      agentId: "agent-1",
+      title: "Testchat E2E",
+      createdAt: "t",
+      lastMessageAt: "2026-11-08T00:00:00Z",
+    },
+  ];
+
+  it("opens the most recent chat when the tile was never pointed at one (E2E E)", () => {
+    chatSessions.data = twoChats;
+    render(<ChatWidget config={{}} onConfigChange={vi.fn()} />, { wrapper });
+    expect(screen.getByTestId("conversation")).toHaveTextContent(newer);
+    expect(screen.getByRole("button", { name: "Switch chat" })).toHaveTextContent("Testchat E2E");
+  });
+
+  it("keeps a new chat new, and labels the picker New chat", () => {
+    chatSessions.data = twoChats;
+    render(<ChatWidget config={{ sessionId: null }} onConfigChange={vi.fn()} />, { wrapper });
+    expect(screen.getByTestId("conversation")).toHaveTextContent(/^create$/);
+    expect(screen.getByRole("button", { name: "Switch chat" })).toHaveTextContent("New chat");
   });
 
   it("mounts the one conversation for a tile with no session yet", () => {

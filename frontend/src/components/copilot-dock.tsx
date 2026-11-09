@@ -1,5 +1,5 @@
 import { ChevronDown, Plus, Sparkles, WifiOff, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { cn } from "@/lib/utils";
 import { urlId } from "@/lib/ids";
@@ -311,6 +311,23 @@ function CopilotDockPanel() {
     setTabs([{ uiId, sessionId: mostRecentSession(sessions)?.id ?? null }]);
     setActiveUiId(uiId);
   }, [memberId, loadedMemberId, tabs.length, sessions]);
+
+  // Tabs persisted while the member had no chat yet are all blank. Once per
+  // load, the active one opens the most recent chat instead, so the dock
+  // never greets a member who has chats with an empty one. A tab blanked
+  // later (New chat, New tab) stays blank.
+  const seededFor = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (loadedMemberId === undefined || loadedMemberId !== memberId) return;
+    if (seededFor.current === loadedMemberId || !sessions) return;
+    seededFor.current = loadedMemberId;
+    const recent = mostRecentSession(sessions);
+    if (!recent || tabs.length === 0 || tabs.some((tab) => tab.sessionId)) return;
+    const target = activeUiId ?? tabs[0].uiId;
+    setTabs((prev) =>
+      prev.map((tab) => (tab.uiId === target ? { ...tab, sessionId: recent.id } : tab)),
+    );
+  }, [memberId, loadedMemberId, sessions, tabs, activeUiId]);
 
   function openNewTab() {
     const uiId = crypto.randomUUID();

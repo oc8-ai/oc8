@@ -281,6 +281,34 @@ describe("CopilotDock", () => {
     expect(conversation).toHaveAttribute("data-variant", "compact");
   });
 
+  it("opens the most recent chat in a blank tab persisted before the member had one (E2E E)", () => {
+    localStorage.setItem(
+      "oc8-copilot-tabs-member-1",
+      JSON.stringify([{ uiId: "blank-1", sessionId: null }]),
+    );
+    sessionsMock.mockReturnValue({
+      data: [
+        {
+          id: "s1",
+          agentId: "assistant-1",
+          title: "Old",
+          createdAt: "t",
+          lastMessageAt: "2026-11-01",
+        },
+        {
+          id: "s2",
+          agentId: "assistant-1",
+          title: "Testchat",
+          createdAt: "t",
+          lastMessageAt: "2026-11-08",
+        },
+      ],
+    });
+    renderDock();
+    openDock();
+    expect(screen.getByTestId("conversation")).toHaveAttribute("data-session", "s2");
+  });
+
   // --- propose_change proposals are reviewable in the dock ---------------
   //
   // The Assistant's propose_change tool may only ever DRAFT. Between the dock

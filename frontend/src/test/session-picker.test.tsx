@@ -44,7 +44,8 @@ describe("SessionPicker", () => {
   it("preselects nothing when there is no current session", () => {
     renderPicker(null);
     const trigger = screen.getByRole("button", { name: "Switch chat" });
-    expect(trigger).toHaveTextContent("Untitled chat");
+    // No chat selected is a new chat (E2E E), not an untitled one.
+    expect(trigger).toHaveTextContent("New chat");
     expect(trigger).not.toHaveTextContent("VPN Tickets");
   });
 

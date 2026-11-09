@@ -10,6 +10,7 @@ import { PendingProposals } from "@/components/copilot-dock";
 import { SessionPicker } from "@/components/conversation/session-picker";
 import { useCan } from "@/lib/governance-hooks";
 import { useAssistant } from "@/lib/hooks";
+import { mostRecentSession } from "@/lib/chat-sessions";
 import { useChatSessions } from "@/lib/hooks-chat";
 import { useLiveConnectionStatus } from "@/lib/live/provider";
 import { useT } from "@/lib/i18n";
@@ -61,7 +62,12 @@ function ChatWidgetPanel({
   const { data: sessions } = useChatSessions(assistantAgentId);
   const liveConnectionStatus = useLiveConnectionStatus();
   // Stored with the dashboard and put into API paths: only a UUID is taken.
-  const sessionId = urlId(config.sessionId) ?? null;
+  // A widget never pointed at a chat opens the most recent one; "New chat"
+  // stores null, which stays a new chat.
+  const sessionId =
+    config.sessionId === undefined
+      ? (mostRecentSession(sessions)?.id ?? null)
+      : (urlId(config.sessionId) ?? null);
 
   function setSessionId(id: string | null) {
     onConfigChange({ ...config, sessionId: id });
