@@ -196,7 +196,8 @@ async def test_oauth_tool_call_passes_reusable_false(
         return {"GRAPH_ACCESS_TOKEN": "minted"}
 
     monkeypatch.setattr("oc8.api.v1.internal_agent.mcp_pool.call", fake_call)
-    monkeypatch.setattr("oc8.api.v1.internal_agent._mcp_env", fake_env)
+    # Only the mint is faked: the run's own resolution decides `reusable`.
+    monkeypatch.setattr("oc8.connections.runtime_env.resolve_mcp_env", fake_env)
     monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _ForbiddenSession)
 
     tenant = uuid.uuid4()

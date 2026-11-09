@@ -1137,6 +1137,10 @@ class RunDTO(CamelModel):
     # never recorded one: the timeline renders a missing duration as nothing
     # at all rather than as zero.
     step_timings: list[dict[str, object]] = []
+    #: Why a tool call could not run: `{integration, provider, label, reason}`
+    #: (connections design). The chat and the run history show a "connect"
+    #: call to action for it.
+    connection_required: dict[str, Any] | None = None
 
 
 class RunSummaryDTO(CamelModel):

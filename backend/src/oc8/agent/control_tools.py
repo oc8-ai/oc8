@@ -1618,6 +1618,7 @@ async def _execute_read_resource(
     tenant_id: uuid.UUID,
     agent: m.Agent,
     tc: ToolCall,
+    run_id: uuid.UUID | None = None,
 ) -> ControlOutcome:
     """One resource body, through the same pool as a tool call."""
     from sqlalchemy import select
@@ -1625,6 +1626,8 @@ async def _execute_read_resource(
     from oc8.agent import mcp_pool
     from oc8.agent.mcp_env import has_oauth_ref, resolve_mcp_env
     from oc8.agent.mcp_requirements import wrap_with_requirements
+    from oc8.connections.access import ConnectionRequired
+    from oc8.connections.runtime_env import run_mcp_env
 
     connection = str(tc.arguments.get("connection", "")).strip()
     uri = str(tc.arguments.get("uri", "")).strip()
@@ -1638,9 +1641,19 @@ async def _execute_read_resource(
     if row is None:
         return ControlOutcome(output=f"ERROR: no connected system named {connection}")
     cfg = row.config if isinstance(row.config, dict) else {}
-    env = await resolve_mcp_env(
-        db, tenant_id=tenant_id, cfg=cfg, connection_name=row.name
-    )
+    run = await db.get(m.AgentRun, run_id) if run_id is not None else None
+    if run is not None:
+        # The run decides whose account the bridge gets (connections/access.py).
+        try:
+            launch = await run_mcp_env(db, run=run, conn=row, tool=READ_RESOURCE.name)
+        except ConnectionRequired as exc:
+            return ControlOutcome(output=str(exc))
+        env, reusable = launch.env, launch.reusable
+    else:
+        env = await resolve_mcp_env(
+            db, tenant_id=tenant_id, cfg=cfg, connection_name=row.name
+        )
+        reusable = not has_oauth_ref(cfg)
     command, args = wrap_with_requirements(cfg.get("command", ""), cfg.get("args", []), cfg)
     try:
         text = await mcp_pool.read_resource(
@@ -1649,7 +1662,7 @@ async def _execute_read_resource(
             args=args,
             env=env,
             uri=uri,
-            reusable=not has_oauth_ref(cfg),
+            reusable=reusable,
         )
     except Exception as exc:
         return ControlOutcome(output=f"ERROR: {exc}")
@@ -1720,7 +1733,7 @@ async def execute_control_tool(
         if decision.effect is not Effect.ALLOW:
             return ControlOutcome(output=f"ERROR: {decision.reason or 'denied'}")
         return await _execute_read_resource(
-            db, tenant_id=tenant_id, agent=agent, tc=tc
+            db, tenant_id=tenant_id, agent=agent, tc=tc, run_id=run_id
         )
 
     if tc.name == PROCEDURE_STEP_DONE.name:

@@ -1,0 +1,264 @@
+"""The environment one tool call's bridge is launched with, for one run.
+
+Every launch path (MCP gateway, isolated-runtime step endpoint, in-process
+engine) calls this instead of resolving the connection's stored config
+directly: the run decides whose account the call uses (connections/access.py).
+A person's account is never put in a pooled bridge (`reusable=False`), so two
+people never share a bridge process.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any, Final
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from oc8 import models as m
+from oc8.agent.mcp_env import (
+    OAUTH_DELEGATED_REF_PREFIX,
+    OAUTH_REF_PREFIX,
+    has_oauth_ref,
+    resolve_mcp_env,
+)
+from oc8.audit import append_event
+from oc8.authz.pdp import ToolPolicy
+from oc8.capas.discovery import find_plugin
+from oc8.capas.manifest import CredentialTypeSpec, ManifestError, parse_manifest
+from oc8.connections.access import (
+    ConnectionRequired,
+    ToolAccess,
+    resolve_tool_access,
+    single_organisation_credential,
+)
+from oc8.connections.credential_env import credential_mcp_env
+from oc8.connections.integrations import integration_for_connection
+from oc8.credentials.registry import CredentialTypeNotFound, get_credential_type
+from oc8.oauth.errors import OAuthReauthRequired
+from oc8.runtime.run_context import merge_context
+
+#: Told to a bridge when its token is one person's own sign-in (not an app's).
+OAUTH_GRANT_ENV: Final = "OC8_OAUTH_GRANT"
+OAUTH_ACCOUNT_ENV: Final = "OC8_OAUTH_ACCOUNT"
+
+
+@dataclass(frozen=True)
+class McpLaunchEnv:
+    env: dict[str, str]
+    reusable: bool
+
+
+def _cfg(conn: m.McpConnection) -> dict[str, Any]:
+    return conn.config if isinstance(conn.config, dict) else {}
+
+
+def _without_identity(cfg: dict[str, Any]) -> dict[str, Any]:
+    out = dict(cfg)
+    out["secret_env"] = {
+        k: v
+        for k, v in dict(cfg.get("secret_env") or {}).items()
+        if not str(v).startswith((OAUTH_REF_PREFIX, OAUTH_DELEGATED_REF_PREFIX))
+    }
+    return out
+
+
+async def _credential_type(
+    db: AsyncSession, tenant_id: Any, name: str, plugin: str
+) -> CredentialTypeSpec:
+    """The login's type: registered for the tenant, else declared by the
+    tool pack's own plugin (the same on-disk manifest the integration and
+    the bridge's command come from)."""
+    try:
+        return await get_credential_type(db, tenant_id=tenant_id, name=name)
+    except CredentialTypeNotFound:
+        found = find_plugin(plugin) if plugin else None
+        if found is None or not found.valid or found.manifest is None:
+            raise
+        try:
+            manifest = parse_manifest(found.manifest)
+        except ManifestError:
+            raise CredentialTypeNotFound(name) from None
+        for spec in manifest.credential_types:
+            if spec.name == name:
+                return spec
+        raise
+
+
+async def _effective(
+    db: AsyncSession, cfg: dict[str, Any], access: ToolAccess, tenant_id: Any
+) -> dict[str, Any]:
+    if access.kind == "legacy":
+        return cfg
+    out = dict(cfg)
+    env = dict(cfg.get("env") or {})
+    secret_env = dict(cfg.get("secret_env") or {})
+    if access.kind == "oauth":
+        assert access.oauth_connection is not None
+        out["oauth_connection_id"] = str(access.oauth_connection.id)
+        if access.oauth_connection.grant_type == "authorization_code":
+            # One person's own account: the organisation's delegated mailboxes
+            # (a service account's identities) do not belong in this bridge.
+            secret_env = {
+                k: v
+                for k, v in secret_env.items()
+                if not str(v).startswith(OAUTH_DELEGATED_REF_PREFIX)
+            }
+            env[OAUTH_GRANT_ENV] = "authorization_code"
+            env[OAUTH_ACCOUNT_ENV] = access.oauth_connection.account_label
+    else:
+        assert access.credential is not None and access.integration is not None
+        cred_type = await _credential_type(
+            db, tenant_id, access.credential.credential_type, str(cfg.get("_plugin_name", ""))
+        )
+        cred_env, cred_secret_env = credential_mcp_env(
+            access.credential, cred_type, access.integration.credential_env_fields
+        )
+        env.update(cred_env)
+        secret_env.update(cred_secret_env)
+    out["env"] = env
+    out["secret_env"] = secret_env
+    return out
+
+
+def _connection_id(access: ToolAccess, cfg: dict[str, Any]) -> str | None:
+    if access.oauth_connection is not None:
+        return str(access.oauth_connection.id)
+    if access.credential is not None:
+        return str(access.credential.id)
+    raw = cfg.get("oauth_connection_id")
+    return str(raw) if raw else None
+
+
+async def run_mcp_env(
+    db: AsyncSession,
+    *,
+    run: m.AgentRun,
+    conn: m.McpConnection,
+    tool: str | None = None,
+    listing: bool = False,
+    ctx: dict[str, Any] | None = None,
+) -> McpLaunchEnv:
+    """`tool`: the call this launch serves (audited). `listing`: only listing
+    tools -- without an account the bridge starts without it, so the tools
+    stay visible and the first real call explains what is missing. `ctx`: a
+    caller's in-request copy of the run context that it writes back whole
+    (the isolated-runtime step endpoint); the CTA is merged into it too."""
+    cfg = _cfg(conn)
+    agent = await db.get(m.Agent, run.agent_id)
+    if agent is None:
+        env = await resolve_mcp_env(db, tenant_id=run.tenant_id, cfg=cfg, connection_name=conn.name)
+        return McpLaunchEnv(env, reusable=not has_oauth_ref(cfg))
+    try:
+        access = await resolve_tool_access(db, run=run, agent=agent, conn=conn)
+    except ConnectionRequired as exc:
+        if listing:
+            env = await resolve_mcp_env(
+                db, tenant_id=run.tenant_id, cfg=_without_identity(cfg), connection_name=conn.name
+            )
+            return McpLaunchEnv(env, reusable=False)
+        patch = {"connection_required": exc.as_context()}
+        await merge_context(db, run, patch)
+        if ctx is not None:
+            ctx.update(patch)
+        raise
+    effective = await _effective(db, cfg, access, run.tenant_id)
+    try:
+        # A personal OAuth connection is minted only here, after
+        # resolve_tool_access chose it for this run -- never from a stored config.
+        env = await resolve_mcp_env(
+            db,
+            tenant_id=run.tenant_id,
+            cfg=effective,
+            connection_name=conn.name,
+            allow_personal=access.kind == "oauth",
+        )
+    except OAuthReauthRequired:
+        # The refresh failed (get_access_token already marked the row
+        # needs_reauth): the person must reconnect -- say so like any other
+        # missing account instead of a raw provider error.
+        if access.kind != "oauth" or access.integration is None:
+            raise
+        required = ConnectionRequired(access.integration, "needs_reauth")
+        if listing:
+            env = await resolve_mcp_env(
+                db, tenant_id=run.tenant_id, cfg=_without_identity(cfg), connection_name=conn.name
+            )
+            return McpLaunchEnv(env, reusable=False)
+        patch = {"connection_required": required.as_context()}
+        await merge_context(db, run, patch)
+        if ctx is not None:
+            ctx.update(patch)
+        raise required from None
+    if tool is not None:
+        await append_event(
+            db,
+            tenant_id=run.tenant_id,
+            actor_type="agent",
+            actor_id=run.agent_id,
+            category="tool_action",
+            action="connection.used",
+            resource={
+                "tool": tool,
+                "connection": conn.name,
+                "access": access.kind,
+                "connection_id": _connection_id(access, cfg),
+                "on_behalf_of": str(access.on_behalf_of) if access.on_behalf_of else None,
+                "run_id": str(run.id),
+            },
+        )
+    return McpLaunchEnv(env, reusable=access.kind == "legacy" and not has_oauth_ref(effective))
+
+
+async def integration_connections(
+    db: AsyncSession, *, agent: m.Agent, policies: Mapping[str, ToolPolicy], have: set[str]
+) -> list[m.McpConnection]:
+    """The materialised, department-less connection of each enabled tool the
+    run has no system for yet -- when it can act at all: an OAuth integration
+    (user mode), a tool with an access row, or a login type with exactly one
+    organisation credential. The frame and narrowing (`policies`) stay the
+    ceiling."""
+    wanted = sorted(key for key, policy in policies.items() if policy.enabled and key not in have)
+    if not wanted:
+        return []
+    rows = (
+        (
+            await db.execute(
+                select(m.McpConnection)
+                .where(
+                    m.McpConnection.name.in_(wanted),
+                    m.McpConnection.department_id.is_(None),
+                    m.McpConnection.credential_id.is_(None),
+                )
+                .order_by(m.McpConnection.created_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    first: dict[str, m.McpConnection] = {}
+    for row in rows:
+        first.setdefault(row.name, row)
+    access_keys = set(
+        (
+            await db.execute(
+                select(m.AgentToolAccess.tool_key).where(m.AgentToolAccess.agent_id == agent.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    out: list[m.McpConnection] = []
+    for name in wanted:
+        conn = first.get(name)
+        integration = integration_for_connection(conn) if conn is not None else None
+        if conn is None or integration is None:
+            continue
+        if integration.kind == "oauth" or name in access_keys:
+            out.append(conn)
+        elif integration.credential_type and await single_organisation_credential(
+            db, integration.credential_type
+        ):
+            out.append(conn)
+    return out
