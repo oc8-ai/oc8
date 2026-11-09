@@ -79,7 +79,7 @@ async def test_install_with_plugin_depends_also_installs_but_never_enables_the_d
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
             resp = await client.post(
                 "/api/v1/capas/install-from-disk",
-                json={"pluginId": main_name},
+                json={"pluginId": main_name, "enable": False},
                 headers=headers,
             )
             assert resp.status_code == 201, resp.text

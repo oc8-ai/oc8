@@ -120,6 +120,12 @@ from oc8.capas.discovery import resolve_tool_pack_connection
 from oc8.chat.modes import mode_from_context
 from oc8.coding.tools import CODING_FRAME_KEY, CODING_TOOL_RIGHTS, Toolset
 from oc8.config import get_settings
+from oc8.connections.access import ConnectionRequired
+from oc8.connections.runtime_env import (
+    integration_connections,
+    require_enabled,
+    run_mcp_env,
+)
 from oc8.copilot.door import door_of
 from oc8.copilot.notes import member_behind_run_task
 from oc8.hooks.bus import dispatch_filter
@@ -443,10 +449,24 @@ def _mcp_auth(mcp_conn: m.McpConnection) -> _McpAuth:
 
 
 async def _open_mcp_session(
-    db: AsyncSession, *, tenant_id: uuid.UUID, mcp_conn: m.McpConnection
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    mcp_conn: m.McpConnection,
+    run: m.AgentRun | None = None,
 ) -> Any:
     cfg = mcp_conn.config if isinstance(mcp_conn.config, dict) else {}
-    env = await resolve_mcp_env(db, tenant_id=tenant_id, cfg=cfg, connection_name=mcp_conn.name)
+    # With a run, the run decides whose account the bridge gets
+    # (connections/access.py); a missing one raises ConnectionRequired, which
+    # the caller reports as this system being unavailable. The session serves
+    # every call of the run, so it is audited once, for all tools ("*").
+    if run is None:
+        await require_enabled(db, mcp_conn)
+    env = (
+        (await run_mcp_env(db, run=run, conn=mcp_conn, tool="*")).env
+        if run is not None
+        else await resolve_mcp_env(db, tenant_id=tenant_id, cfg=cfg, connection_name=mcp_conn.name)
+    )
     headers = resolve_auth_header(cfg, env)
     if mcp_conn.transport == "manual_http":
         return await open_tool_session(
@@ -577,6 +597,12 @@ async def run_agent(
                         extra_conns.append(loaded)
         if not extra_conns and mcp_conn is not None:
             extra_conns = [mcp_conn]
+        if toolset is None:
+            # A tool in the user's context needs no department setup
+            # (connections design): add its unbound connection.
+            extra_conns += await integration_connections(
+                db, agent=agent, policies=tool_policies, have={c.name for c in extra_conns}
+            )
         if toolset is not None:
             connection_config: dict[str, Any] = {}
             connection_key: str | None = CODING_FRAME_KEY
@@ -624,10 +650,20 @@ async def run_agent(
             ident = record_identity(name, arguments, spec if spec is not None else focus_spec)
             if ident is None:
                 return None
-            cfg = owner.config if isinstance(owner.config, dict) else {}
-            env = await resolve_mcp_env(
-                db, tenant_id=tenant_id, cfg=cfg, connection_name=owner.name
-            )
+            if run_row is not None:
+                try:
+                    env = (await run_mcp_env(db, run=run_row, conn=owner)).env
+                except ConnectionRequired:
+                    return None
+            else:
+                try:
+                    await require_enabled(db, owner)
+                except ConnectionRequired:
+                    return None
+                cfg = owner.config if isinstance(owner.config, dict) else {}
+                env = await resolve_mcp_env(
+                    db, tenant_id=tenant_id, cfg=cfg, connection_name=owner.name
+                )
             from oc8.agent.record_link import record_url_from_env
 
             return record_url_from_env(owner.name, env, ident)
@@ -2841,7 +2877,7 @@ async def run_agent(
                     cfg = only.config if isinstance(only.config, dict) else {}
                     try:
                         tool_session = await _open_mcp_session(
-                            db, tenant_id=tenant_id, mcp_conn=only
+                            db, tenant_id=tenant_id, mcp_conn=only, run=run_row
                         )
                         async with tool_session as server:
                             noted = apply_tool_notes(server.tools, cfg)
@@ -2868,7 +2904,9 @@ async def run_agent(
                     for conn in extra_conns:
                         cfg = conn.config if isinstance(conn.config, dict) else {}
                         try:
-                            opened = await _open_mcp_session(db, tenant_id=tenant_id, mcp_conn=conn)
+                            opened = await _open_mcp_session(
+                                db, tenant_id=tenant_id, mcp_conn=conn, run=run_row
+                            )
                             session = await stack.enter_async_context(opened)
                         except Exception as exc:
                             _note_unavailable(conn, exc)

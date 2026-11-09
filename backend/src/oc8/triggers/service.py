@@ -12,6 +12,7 @@ from croniter import CroniterBadCronError, croniter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oc8.connections.access import trigger_fingerprint
 from oc8.modelrouter.subscription_guard import assert_manual_only_compatible
 from oc8.models.core import Agent
 from oc8.models.triggers import Trigger
@@ -55,6 +56,8 @@ async def create_trigger(
     event_type: str | None = None,
     declared_events: set[tuple[str, str]] | None = None,
     jitter_seconds: int = 60,
+    created_by_member_id: uuid.UUID | None = None,
+    acts_for_creator: bool = False,
 ) -> Trigger:
     next_run_at = None
     if kind == "cron":
@@ -82,6 +85,8 @@ async def create_trigger(
     trigger = Trigger(
         tenant_id=tenant_id,
         agent_id=agent_id,
+        created_by_member_id=created_by_member_id,
+        acts_for_creator=acts_for_creator and created_by_member_id is not None,
         kind=kind,
         task_text=task_text,
         cron_expression=cron_expression,
@@ -92,6 +97,10 @@ async def create_trigger(
     )
     db.add(trigger)
     await db.flush()
+    if created_by_member_id is not None:
+        # Its creator saves it: their own account may serve it while the
+        # agent stays as they see it now (connections.access.schedule_confirmed).
+        trigger.access_fingerprint = await trigger_fingerprint(db, trigger)
     # The manual-trigger-only check for ChatGPT-subscription-backed models
     # (`oc8.modelrouter.subscription_guard`) lives HERE, not in the HTTP route,
     # because this function is the one funnel every trigger creation goes

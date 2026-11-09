@@ -92,6 +92,9 @@ async def fire_trigger(
     from it -- unlike kind='event', a webhook can carry literally anything --
     so it is folded straight into the task text the model reads, the only
     context field build_run_preamble actually surfaces (agent/preamble.py).
+
+    `trigger_id` lets a tool in the user's context act through the trigger
+    creator's account.
     """
     now = datetime.now(tz=UTC)
     trigger.last_run_at = now
@@ -104,7 +107,7 @@ async def fire_trigger(
         db,
         tenant_id=tenant_id,
         agent_id=trigger.agent_id,
-        context={"task": task},
+        context={"task": task, "trigger_id": str(trigger.id)},
         source=trigger.kind,
         coalesce_key=f"trigger:{trigger.id}",
         idempotency_key=idempotency_key,

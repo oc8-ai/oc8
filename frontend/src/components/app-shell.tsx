@@ -19,6 +19,7 @@ import {
   Moon,
   PanelLeftClose,
   PanelLeftOpen,
+  Plug,
   Puzzle,
   Settings,
   ShieldCheck,
@@ -656,13 +657,14 @@ export function AppShell() {
         },
         // Declares provider endpoints that `pdp.py` believes about locality.
         { to: "/models", label: t("Models", "Modelle"), icon: Cpu, needs: "model:view" },
-        // Reusable connections to other services (§12.3 secret store metadata).
-        // Gated on the same `secret:view` the backend endpoints require.
+        // Everybody's own accounts at other services, and -- for admins --
+        // the organisation's accesses (connections design). Every built-in
+        // role holds connection:own.
         {
-          to: "/credentials",
-          label: t("Credentials", "Zugangsdaten"),
-          icon: KeyRound,
-          needs: "secret:view",
+          to: "/connections",
+          label: t("Connections", "Verbindungen"),
+          icon: Plug,
+          needs: "connection:own",
         },
         // The compliance archive, read rarely and by few. `/activity` is the
         // operational feed and stays above; this is the tamper-evident record.

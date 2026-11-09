@@ -239,21 +239,34 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 // only ever read `.message`, and this is still a plain `Error` to them.
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  /** The parsed JSON body, when there was one (typed errors such as the
+   *  OAuth completion's `{error, adminConsentUrl}` carry no `detail`). */
+  body?: unknown;
+  constructor(message: string, status: number, body?: unknown) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.body = body;
   }
 }
 
 async function toError(res: Response): Promise<Error> {
   let detail: unknown;
+  let body: unknown;
   try {
-    detail = (await res.json()).detail;
+    body = await res.json();
+    detail = (body as { detail?: unknown }).detail;
+    if (detail === undefined && typeof (body as { error?: unknown }).error === "string") {
+      detail = (body as { error: string }).error;
+    }
   } catch {
     detail = res.statusText;
   }
-  return new ApiError(typeof detail === "string" ? detail : JSON.stringify(detail), res.status);
+  return new ApiError(
+    typeof detail === "string" ? detail : JSON.stringify(detail),
+    res.status,
+    body,
+  );
 }
 
 export const api = {
