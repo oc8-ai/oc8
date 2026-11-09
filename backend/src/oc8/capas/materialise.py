@@ -3,7 +3,7 @@
 `skill`, `flow_template` and `tool_pack` plugins carry no code -- they are data
 that has to become a Skill, a Flow, or MCP connections before anything can use
 them. `agent_template` capas may also ship `skills/` (merged into `skill_pack`
-by discovery); those skills materialise here on enable the same way. 
+by discovery); those skills materialise here on enable the same way.
 `department_template` has done agents since B2 via an explicit
 `instantiate_department`; skill/flow/tool_pack materialise on **enable** instead,
 because they have nothing to name or place and enable is where consent already
@@ -221,25 +221,31 @@ async def _materialise_tool_pack(
             for row in existing:
                 _refresh_declared_seams(row, conn)
             continue
-        config = dict(conn.config)
-        config["_plugin_name"] = manifest.name
-        config["_connection_key"] = conn.key
-        db.add(
-            m.McpConnection(
-                tenant_id=tenant_id,
-                name=conn.name,
-                server_url=conn.server_url,
-                transport=conn.transport,
-                scopes=conn.scopes if isinstance(conn.scopes, dict) else list(conn.scopes),
-                config=config,
-                # Created UNCONNECTED and unhealthy-unknown on purpose: a
-                # manifest may describe a server, but only an operator running
-                # the connection test may declare it reachable.
-                connected=False,
-                health={},
-            )
-        )
+        db.add(unbound_connection(tenant_id=tenant_id, manifest=manifest, conn=conn))
     await db.flush()
+
+
+def unbound_connection(
+    *, tenant_id: uuid.UUID, manifest: Manifest, conn: ToolPackConnection
+) -> m.McpConnection:
+    """The department-less connection a tool pack's manifest describes, before
+    any setup form gave it a department or an identity."""
+    config = dict(conn.config)
+    config["_plugin_name"] = manifest.name
+    config["_connection_key"] = conn.key
+    return m.McpConnection(
+        tenant_id=tenant_id,
+        name=conn.name,
+        server_url=conn.server_url,
+        transport=conn.transport,
+        scopes=conn.scopes if isinstance(conn.scopes, dict) else list(conn.scopes),
+        config=config,
+        # Created UNCONNECTED and unhealthy-unknown on purpose: a manifest may
+        # describe a server, but only an operator running the connection test
+        # may declare it reachable.
+        connected=False,
+        health={},
+    )
 
 
 async def materialise_plugin_data(

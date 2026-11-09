@@ -398,6 +398,7 @@ def test_main_executes_run_shell_locally_and_posts_the_result(
                                 "arguments": {"command": "echo hi"},
                             }
                         ],
+                        "local_allowed": ["run_shell"],
                     },
                 )
             return httpx.Response(200, json={"done": True, "text": "done", "tool_calls": []})
@@ -612,3 +613,84 @@ def test_main_ignores_parallel_tool_calls_flag_on_step(
     assert exit_code == 0
     assert len([p for p in posted_paths if p.endswith("/tools")]) == 1
     assert [p for p in posted_paths if _is_single_tool_path(p)] == []
+
+
+# --------------------------------------------------- local execution is the PEP's call
+
+
+def _shell_step_handler(
+    step_extra: dict[str, object], tools_bodies: list[dict[str, object]]
+) -> Callable[[httpx.Request], httpx.Response]:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/step"):
+            if not tools_bodies:
+                return httpx.Response(
+                    200,
+                    json={
+                        "done": False,
+                        "text": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "name": "run_shell",
+                                "arguments": {"command": "echo hi"},
+                            },
+                            {
+                                "id": "call_2",
+                                "name": "run_program",
+                                "arguments": {"code": "print('hi')"},
+                            },
+                        ],
+                        **step_extra,
+                    },
+                )
+            return httpx.Response(200, json={"done": True, "text": "done", "tool_calls": []})
+        if request.url.path.endswith("/tools"):
+            tools_bodies.append(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {"status": "denied", "output": "ERROR: not executed locally"}
+                    ]
+                },
+            )
+        if request.url.path.endswith("/finish"):
+            return httpx.Response(200, json={})
+        raise AssertionError(f"unexpected request: {request.url.path}")
+
+    return handler
+
+
+@pytest.mark.parametrize(
+    "step_extra",
+    [
+        pytest.param({}, id="an older backend says nothing"),
+        pytest.param({"local_allowed": []}, id="withheld, e.g. under /plan"),
+    ],
+)
+def test_main_runs_nothing_locally_that_the_control_plane_did_not_allow(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    step_extra: dict[str, object],
+) -> None:
+    """The shell runs a command BEFORE /tools decides on it, so /tools' DENY
+    comes too late to stop it. Without the control plane's go-ahead in /step,
+    nothing executes -- and the call is still posted, without a result, so the
+    model gets the refusal instead of silence."""
+    executed: list[str] = []
+
+    def _record(source: str, **_: object) -> dict[str, object]:
+        executed.append(source)
+        return {}
+
+    monkeypatch.setattr("oc8.isolated_shell._run_shell_locally", _record)
+    monkeypatch.setattr("oc8.isolated_shell._run_program_locally", _record)
+    tools_bodies: list[dict[str, object]] = []
+
+    assert _run_main(monkeypatch, _shell_step_handler(step_extra, tools_bodies)) == 0
+
+    assert executed == []
+    posted = [call for body in tools_bodies for call in body["calls"]]  # type: ignore[attr-defined]
+    assert [c["name"] for c in posted] == ["run_shell", "run_program"]
+    assert all("local_result" not in c for c in posted)

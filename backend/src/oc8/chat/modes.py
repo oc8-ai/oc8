@@ -144,6 +144,12 @@ WRITING_CONTROL_TOOLS: frozenset[str] = frozenset(
     }
 )
 
+#: `Decision.reason_code` of a refusal that came from the turn's mode rather than
+#: from the frame. The control-tool dispatcher stops on it for EVERY core tool,
+#: reads included: under /ask a read is withheld too, and a reading control
+#: tool has no reason of its own to look at its decision.
+MODE_WITHHELD = "mode_withheld"
+
 #: A leading command word, lowercase, followed by whitespace and a body.
 #:
 #: The `\s+` is what keeps "/etc/passwd is world readable?" a question: after
@@ -195,13 +201,23 @@ def mode_directive(mode: ChatMode) -> str:
 
 
 def mode_refusal(
-    mode: ChatMode | None, tool_name: str, *, tool_scopes: Mapping[str, Any] | None
+    mode: ChatMode | None,
+    tool_name: str,
+    *,
+    tool_scopes: Mapping[str, Any] | None,
+    core: bool = True,
 ) -> str | None:
     """Why this mode will not let this tool be called, or None.
 
     None means "no opinion here" -- never "allowed". The frame, the narrowing
     and the value threshold all still have their say afterwards; this only ever
     subtracts.
+
+    `core=False` says the name belongs to a CONNECTION's tool even though it
+    matches a core one (a routed `<connection>.todo_write`, or a connection
+    whose scopes declare the name). Such a call is classified by its scopes,
+    like any other connection tool -- its bare name says nothing about whether
+    it writes.
     """
     if mode is None:
         return None
@@ -217,7 +233,7 @@ def mode_refusal(
 
     if tool_name in WRITING_CONTROL_TOOLS:
         writes = True
-    elif tool_name in CONTROL_TOOL_NAMES:
+    elif core and tool_name in CONTROL_TOOL_NAMES:
         # A core tool is classified by name, not by scopes -- it sits on no
         # connection, and the gateway asks with `tool_scopes=None`.
         writes = False

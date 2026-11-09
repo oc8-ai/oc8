@@ -91,7 +91,9 @@ async def list_credentials_endpoint(
     principal: CurrentPrincipal,
     type: str | None = Query(default=None, alias="type"),
 ) -> list[CredentialDTO]:
-    rows = await list_credentials(db, tenant_id=principal.tenant_id, credential_type=type)
+    rows = await list_credentials(
+        db, tenant_id=principal.tenant_id, credential_type=type, owner="organisation"
+    )
     return [_to_dto(r) for r in rows]
 
 
@@ -111,6 +113,7 @@ async def update_credential_endpoint(
             db,
             tenant_id=principal.tenant_id,
             credential_id=credential_id,
+            owner="organisation",
             name=body.name,
             field_values=body.field_values,
         )
@@ -136,7 +139,9 @@ async def delete_credential_endpoint(
     credential_id: uuid.UUID, db: DbSession, principal: CurrentPrincipal
 ) -> None:
     try:
-        await delete_credential(db, tenant_id=principal.tenant_id, credential_id=credential_id)
+        await delete_credential(
+            db, tenant_id=principal.tenant_id, credential_id=credential_id, owner="organisation"
+        )
     except CredentialNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "credential not found") from exc
     except CredentialInUse as exc:
@@ -153,7 +158,9 @@ async def test_credential_endpoint(
     credential_id: uuid.UUID, db: DbSession, principal: CurrentPrincipal
 ) -> dict[str, bool]:
     try:
-        await test_credential(db, tenant_id=principal.tenant_id, credential_id=credential_id)
+        await test_credential(
+            db, tenant_id=principal.tenant_id, credential_id=credential_id, owner="organisation"
+        )
     except CredentialNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "credential not found") from exc
     except CredentialFieldNotSet as exc:
@@ -186,13 +193,13 @@ async def list_credential_types_endpoint(
             name=t.name,
             display_name=t.display_name,
             display_name_translations=translations_for(i18n, t.display_name),
-            fields=[_translate_field(f, i18n) for f in t.fields],
+            fields=[translate_field(f, i18n) for f in t.fields],
         )
         for t, i18n in types
     ]
 
 
-def _translate_field(field: SetupFieldSpec, i18n: CredentialTypeI18n) -> dict[str, Any]:
+def translate_field(field: SetupFieldSpec, i18n: CredentialTypeI18n) -> dict[str, Any]:
     out = field.model_dump(mode="json")
     for prop in ("label", "help", "placeholder"):
         value = out.get(prop)

@@ -17,7 +17,7 @@ import datetime as dt
 import json
 import logging
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -56,6 +56,7 @@ from oc8.agent.harness.stages.b_approval import autonomy_of, strip_justification
 from oc8.agent.harness.stages.b_authorize import (
     authorize as _authorize,  # re-exported for mcp_gateway.py and older tests
 )
+from oc8.agent.harness.stages.b_authorize import is_core_call
 from oc8.agent.harness.stages.b_blast_radius import check_blast_radius
 from oc8.agent.harness.stages.b_claims import claim_write
 from oc8.agent.harness.stages.b_clarify import (
@@ -119,6 +120,12 @@ from oc8.capas.discovery import resolve_tool_pack_connection
 from oc8.chat.modes import mode_from_context
 from oc8.coding.tools import CODING_FRAME_KEY, CODING_TOOL_RIGHTS, Toolset
 from oc8.config import get_settings
+from oc8.connections.access import ConnectionRequired
+from oc8.connections.runtime_env import (
+    integration_connections,
+    require_enabled,
+    run_mcp_env,
+)
 from oc8.copilot.door import door_of
 from oc8.copilot.notes import member_behind_run_task
 from oc8.hooks.bus import dispatch_filter
@@ -442,10 +449,24 @@ def _mcp_auth(mcp_conn: m.McpConnection) -> _McpAuth:
 
 
 async def _open_mcp_session(
-    db: AsyncSession, *, tenant_id: uuid.UUID, mcp_conn: m.McpConnection
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    mcp_conn: m.McpConnection,
+    run: m.AgentRun | None = None,
 ) -> Any:
     cfg = mcp_conn.config if isinstance(mcp_conn.config, dict) else {}
-    env = await resolve_mcp_env(db, tenant_id=tenant_id, cfg=cfg, connection_name=mcp_conn.name)
+    # With a run, the run decides whose account the bridge gets
+    # (connections/access.py); a missing one raises ConnectionRequired, which
+    # the caller reports as this system being unavailable. The session serves
+    # every call of the run, so it is audited once, for all tools ("*").
+    if run is None:
+        await require_enabled(db, mcp_conn)
+    env = (
+        (await run_mcp_env(db, run=run, conn=mcp_conn, tool="*")).env
+        if run is not None
+        else await resolve_mcp_env(db, tenant_id=tenant_id, cfg=cfg, connection_name=mcp_conn.name)
+    )
     headers = resolve_auth_header(cfg, env)
     if mcp_conn.transport == "manual_http":
         return await open_tool_session(
@@ -576,6 +597,12 @@ async def run_agent(
                         extra_conns.append(loaded)
         if not extra_conns and mcp_conn is not None:
             extra_conns = [mcp_conn]
+        if toolset is None:
+            # A tool in the user's context needs no department setup
+            # (connections design): add its unbound connection.
+            extra_conns += await integration_connections(
+                db, agent=agent, policies=tool_policies, have={c.name for c in extra_conns}
+            )
         if toolset is not None:
             connection_config: dict[str, Any] = {}
             connection_key: str | None = CODING_FRAME_KEY
@@ -623,10 +650,20 @@ async def run_agent(
             ident = record_identity(name, arguments, spec if spec is not None else focus_spec)
             if ident is None:
                 return None
-            cfg = owner.config if isinstance(owner.config, dict) else {}
-            env = await resolve_mcp_env(
-                db, tenant_id=tenant_id, cfg=cfg, connection_name=owner.name
-            )
+            if run_row is not None:
+                try:
+                    env = (await run_mcp_env(db, run=run_row, conn=owner)).env
+                except ConnectionRequired:
+                    return None
+            else:
+                try:
+                    await require_enabled(db, owner)
+                except ConnectionRequired:
+                    return None
+                cfg = owner.config if isinstance(owner.config, dict) else {}
+                env = await resolve_mcp_env(
+                    db, tenant_id=tenant_id, cfg=cfg, connection_name=owner.name
+                )
             from oc8.agent.record_link import record_url_from_env
 
             return record_url_from_env(owner.name, env, ident)
@@ -844,14 +881,21 @@ async def run_agent(
                 config: dict[str, Any],
                 connection: str | None,
                 spec: dict[str, Any] | None,
+                advertised: str | None = None,
             ) -> GateVerdict:
-                offered = next((tool for tool in _offered() if tool.name == tc.name), None)
+                # `tc` carries the real tool name; the offer (and its
+                # annotations) is listed under the name the model saw, which a
+                # route qualifies. A routed name that matches a core tool is
+                # tiered as the connection's tool it is, not by the core tier.
+                shown = advertised or tc.name
+                offered = next((tool for tool in _offered() if tool.name == shown), None)
                 tier = classify_tier(
                     tc.name,
                     scopes=scopes,
                     config=config,
                     annotations=offered.annotations if offered is not None else None,
                     arguments=tc.arguments,
+                    core=is_core_call(tc.name, routed=shown != tc.name),
                 )
                 identity = record_identity(tc.name, tc.arguments, spec)
                 return harness.gate(
@@ -866,6 +910,145 @@ async def run_agent(
                     identity=identity,
                     procedures=_active_procedures(active_skills),
                 )
+
+            def _skill_snapshot() -> dict[str, Any]:
+                """The active skills' guardrails, stored with a held call. A
+                resume leg starts with no active skills, and the answer may lift
+                the value over a threshold that was in force when the call was
+                made -- so the re-run is decided with these too."""
+                return {
+                    "skill_guards": [
+                        {"gt": g.gt, "metric": g.metric}
+                        for s in active_skills
+                        for g in s.definition.guardrails
+                        if g.type == "value_threshold" and g.then == "require_approval"
+                    ],
+                    "skill_tool_names": sorted(s.tool_name for s in active_skills),
+                }
+
+            def _held_route(
+                server: Toolset | None, advertised: str
+            ) -> tuple[
+                str | None,
+                dict[str, Any] | None,
+                list[dict[str, Any]],
+                dict[str, Any] | None,
+                dict[str, Any] | None,
+                dict[str, Any],
+                str,
+            ]:
+                """The connection a held call belongs to, and its PEP inputs:
+                (call_key, scopes, guardrails, value_spec, focus_spec, config,
+                real tool name) -- resolved exactly as the step loop resolves a
+                call, so the re-run is decided against the same connection."""
+                call_key = connection_key
+                scopes = tool_scopes
+                guardrails = guardrail_attribute_specs
+                per_value = value_spec
+                spec = focus_spec
+                real = advertised
+                if isinstance(server, RoutedToolset):
+                    found = server.route(advertised)
+                    if found is not None:
+                        bundle = server.auth_by_connection.get(found.connection)
+                        if isinstance(bundle, _McpAuth):
+                            call_key = bundle.connection_key
+                            scopes = bundle.tool_scopes
+                            guardrails = bundle.guardrail_attribute_specs
+                            per_value = bundle.value_spec
+                            spec = bundle.focus_spec
+                        real = found.tool
+                owner = next((c for c in extra_conns if c.name == call_key), None)
+                config = (
+                    owner.config
+                    if owner is not None and isinstance(owner.config, dict)
+                    else connection_config
+                )
+                return call_key, scopes, guardrails, per_value, spec, config, real
+
+            def _held_verdict(
+                advertised: str,
+                arguments: dict[str, Any],
+                route: tuple[Any, ...],
+                stored: Mapping[str, Any],
+            ) -> tuple[str, str]:
+                """("run" | "refuse" | "park", why) for an answered elicitation.
+
+                The re-run is a new call -- the answer is merged into its
+                arguments -- so it is decided as the step loop decides any call:
+                the PEP (frame, narrowing, the active skills' thresholds and
+                metrics, the run's mode) and then the B gate, both on the merged
+                arguments. One either would hold for a human parks for an
+                approval of THIS call; an approval of the call as it was before
+                the answer counts only when the signatures are equal.
+                """
+                call_key, scopes, guardrails, per_value, spec, config, real = route
+                # This leg's active skills AND the ones stored with the call.
+                guards: list[tuple[float | None, str | None]] = [
+                    (g.gt, g.metric)
+                    for s in active_skills
+                    for g in s.definition.guardrails
+                    if g.type == "value_threshold" and g.then == "require_approval"
+                ]
+                for raw in stored.get("skill_guards") or []:
+                    if isinstance(raw, dict):
+                        gt = raw.get("gt")
+                        guards.append(
+                            (
+                                float(gt) if isinstance(gt, (int, float)) else None,
+                                str(raw["metric"]) if raw.get("metric") else None,
+                            )
+                        )
+                metrics = [metric for _gt, metric in guards if metric]
+                held_value_spec = per_value
+                if metrics:
+                    held_value_spec = dict(per_value or {})
+                    held_value_spec["direct_fields"] = [
+                        *(held_value_spec.get("direct_fields") or []),
+                        *metrics,
+                    ]
+                held = ToolCall(id="held", name=advertised, arguments=arguments)
+                auth_held = ToolCall(id="held", name=real, arguments=arguments)
+                decision = _authorize(
+                    agent,
+                    auth_held,
+                    frame=frame,
+                    delegation_depth=task.delegation_depth,
+                    tool_policies=tool_policies,
+                    connection_key=call_key,
+                    tool_scopes=scopes,
+                    skill_tool_names=skill_tool_names
+                    | frozenset(str(n) for n in stored.get("skill_tool_names") or []),
+                    value_spec=held_value_spec,
+                    guardrail_attribute_specs=guardrails,
+                    narrowing=pinned["narrowing"] or {},
+                    is_team_lead=bool(pinned["is_team_lead"]),
+                    skill_thresholds=tuple(gt for gt, _metric in guards),
+                    chat_mode=chat_mode,
+                    # Always the connection's tool, whatever core tool shares
+                    # its name.
+                    routed=True,
+                )
+                verdict = (pre_decided or {}).get(_call_sig(held))
+                if decision.effect is Effect.DENY:
+                    return "refuse", decision.reason or "denied"
+                if verdict == "reject":
+                    return "refuse", "operator rejected this action"
+                if decision.effect is Effect.REQUIRE_APPROVAL and verdict != "approve":
+                    return "park", decision.reason or ""
+                gate = _gate(
+                    auth_held,
+                    scopes=scopes,
+                    config=config,
+                    connection=call_key,
+                    spec=spec,
+                    advertised=advertised,
+                )
+                if gate.effect == "deny":
+                    return "refuse", gate.reason or "denied"
+                if gate.effect == "ask" and verdict != "approve":
+                    return "park", gate.preview or ""
+                return "run", ""
 
             steps = 0
             step_timings: list[dict[str, Any]] = []
@@ -895,41 +1078,88 @@ async def run_agent(
                         if parked is not None and isinstance(parked.context, dict)
                         else []
                     )
+                    held_tool = str(pending.get("tool") or "") if isinstance(pending, dict) else ""
+                    held_route = _held_route(server, held_tool)
                     if (
                         isinstance(pending, dict)
                         and answers
-                        and str(pending.get("connection") or "") == (connection_key or "")
+                        and parked is not None
+                        and str(pending.get("connection") or "") == (held_route[0] or "")
                     ):
-                        tool_name = str(pending.get("tool") or "")
-                        arguments = arguments_with_answer(
-                            dict(pending.get("arguments") or {}), str(answers[-1]["answer"])
+                        tool_name = held_tool
+                        # Already merged when it was parked for an approval of
+                        # the merged call: the approval matches those exact
+                        # arguments, so they are never merged twice.
+                        arguments = (
+                            dict(pending.get("arguments") or {})
+                            if pending.get("merged")
+                            else arguments_with_answer(
+                                dict(pending.get("arguments") or {}), str(answers[-1]["answer"])
+                            )
                         )
                         parked_ctx = dict(parked.context or {})
-                        try:
-                            finished = await server.call(tool_name, arguments)
-                        except ElicitationNeeded as exc:
+                        effect, why = _held_verdict(tool_name, arguments, held_route, pending)
+                        # Audited like any call: the held re-run is a new one.
+                        await append_event(
+                            db,
+                            tenant_id=tenant_id,
+                            actor_type="agent",
+                            actor_id=agent.id,
+                            category="tool_action",
+                            action=f"tool.call:{tool_name}",
+                            resource={"tool": tool_name, "arguments": arguments},
+                            decision={
+                                "run": "allow",
+                                "refuse": "deny",
+                                "park": "require_approval",
+                            }[effect],
+                            reason=why or None,
+                            originating_operator=originating_operator,
+                        )
+                        if effect == "park":
+                            held_ar = await raise_approval(
+                                db,
+                                tenant_id=tenant_id,
+                                agent_id=agent.id,
+                                task_id=task.id,
+                                action_type="tool_send",
+                                title=f"{agent.name} wants to call {tool_name}",
+                                detail=why,
+                                payload={
+                                    "tool": tool_name,
+                                    "arguments": arguments,
+                                    "justification": "",
+                                    "preview": why,
+                                },
+                            )
                             parked_ctx["pending_elicitation"] = {
-                                "connection": connection_key or "",
-                                "tool": tool_name,
+                                **pending,
                                 "arguments": arguments,
-                                "question": exc.message,
+                                "merged": True,
                             }
                             parked.context = parked_ctx
-                            messages.append(
-                                NeutralMessage(
-                                    role="user",
-                                    content=(
-                                        f"The same call {tool_name} still needs an answer:\n"
-                                        f"{exc.message}"
-                                    ),
-                                )
+                            from oc8.realtime.bus import get_event_bus
+
+                            await get_event_bus().publish_event(
+                                held_ar.tenant_id,
+                                "approval.created",
+                                {
+                                    "approval_id": str(held_ar.id),
+                                    "action_type": held_ar.action_type,
+                                    "status": held_ar.status,
+                                    "title": held_ar.title,
+                                    "detail": held_ar.detail,
+                                },
+                                source=f"oc8/approval/{held_ar.id}",
                             )
-                            task.state = "waiting_for_input"
+                            task.state = "waiting_for_approval"
+                            agent.status = "waiting_for_approval"
+                            await publish_agent_status(agent)
                             return RunResult(
                                 task.id,
                                 agent.id,
-                                "waiting_for_input",
-                                exc.message,
+                                "waiting_for_approval",
+                                why,
                                 tool_trace,
                                 0,
                                 pending_runs,
@@ -937,8 +1167,81 @@ async def run_agent(
                                 todos,
                                 step_timings,
                             )
-                        except Exception as exc:
-                            finished = f"ERROR: {exc}"
+                        # The same replay-safety as the step loop's dispatch
+                        # (B9), keyed on the merged call: an identical later
+                        # call -- which the run-long approval would also let
+                        # through -- gets this result back instead of acting
+                        # twice, and so does a re-run after a crash.
+                        held_tc = ToolCall(id="held", name=tool_name, arguments=arguments)
+                        held_writes = required_right(held_route[6], held_route[1]) != "read"
+                        held_offer = next((t for t in _offered() if t.name == tool_name), None)
+                        held_idempotent = (
+                            held_offer is not None
+                            and held_offer.annotations is not None
+                            and held_offer.annotations.get("idempotentHint") is True
+                        )
+                        replayed = (
+                            await replay_for(
+                                db,
+                                tenant_id=tenant_id,
+                                task_id=task.id,
+                                tc=held_tc,
+                                writes=held_writes,
+                                idempotent=held_idempotent,
+                            )
+                            if effect == "run"
+                            else None
+                        )
+                        if effect == "refuse":
+                            finished = f"ERROR: {why}"
+                        elif replayed is not None:
+                            finished = replayed
+                        else:
+                            try:
+                                finished = await server.call(tool_name, arguments)
+                                await record_for(
+                                    db,
+                                    tenant_id=tenant_id,
+                                    task_id=task.id,
+                                    tc=held_tc,
+                                    writes=held_writes,
+                                    output=finished,
+                                    idempotent=held_idempotent,
+                                )
+                            except ElicitationNeeded as exc:
+                                parked_ctx["pending_elicitation"] = {
+                                    "connection": held_route[0] or "",
+                                    "tool": tool_name,
+                                    "arguments": arguments,
+                                    "question": exc.message,
+                                    "skill_guards": pending.get("skill_guards") or [],
+                                    "skill_tool_names": pending.get("skill_tool_names") or [],
+                                }
+                                parked.context = parked_ctx
+                                messages.append(
+                                    NeutralMessage(
+                                        role="user",
+                                        content=(
+                                            f"The same call {tool_name} still needs an "
+                                            f"answer:\n{exc.message}"
+                                        ),
+                                    )
+                                )
+                                task.state = "waiting_for_input"
+                                return RunResult(
+                                    task.id,
+                                    agent.id,
+                                    "waiting_for_input",
+                                    exc.message,
+                                    tool_trace,
+                                    0,
+                                    pending_runs,
+                                    rendered_components,
+                                    todos,
+                                    step_timings,
+                                )
+                            except Exception as exc:
+                                finished = f"ERROR: {exc}"
                         messages.append(
                             NeutralMessage(
                                 role="user",
@@ -948,6 +1251,19 @@ async def run_agent(
                                 ),
                             )
                         )
+                        tool_trace.append(
+                            {
+                                "tool": tool_name,
+                                "arguments": arguments,
+                                "result": str(finished)[:300],
+                                "step": 0,
+                                "connection": held_route[0],
+                                "state": call_state_for(
+                                    str(finished), dispatched=effect != "refuse"
+                                ),
+                            }
+                        )
+                        await _live_tool_call(tool_trace[-1])
                         parked_ctx.pop("pending_elicitation", None)
                         parked.context = parked_ctx
                 if not session_state["started"]:
@@ -1613,6 +1929,10 @@ async def run_agent(
                                 for g in s.definition.guardrails
                                 if g.type == "value_threshold" and g.then == "require_approval"
                             ),
+                            # The pre-pass calls the tool server before the
+                            # per-call PEP: a read the mode withholds (/ask)
+                            # must break the batch, not be fetched and dropped.
+                            chat_mode=chat_mode,
                         )
                         stripped, justification = strip_justification(_pre_tc.arguments)
                         _pre_tc.arguments = stripped
@@ -1751,6 +2071,13 @@ async def run_agent(
                             if g.type == "value_threshold" and g.then == "require_approval"
                         ),
                         chat_mode=chat_mode,
+                        # Renamed by the route: the model named a connection's
+                        # tool (`<connection>.ask_user`). execute_control_tool below
+                        # sees the advertised name and leaves it to the
+                        # connection, so a core tool's allowance must not
+                        # decide it. A bare name is dispatched as the core tool
+                        # when it is one, so it is decided as one.
+                        routed=auth_tc.name != tc.name,
                     )
                     if tc.id in call_justifications:
                         justification = call_justifications[tc.id]
@@ -1865,6 +2192,7 @@ async def run_agent(
                                 config=call_config,
                                 connection=call_key,
                                 spec=call_focus,
+                                advertised=tc.name,
                             )
                             if gate_verdict.effect == "ask":
                                 verdict = pre_decided.get(_call_sig(tc)) if pre_decided else None
@@ -2339,10 +2667,13 @@ async def run_agent(
                                             if parked is not None:
                                                 parked_ctx = dict(parked.context or {})
                                                 parked_ctx["pending_elicitation"] = {
-                                                    "connection": connection_key or "",
+                                                    # The connection this call ran
+                                                    # on, not the run's first one.
+                                                    "connection": call_key or "",
                                                     "tool": tc.name,
                                                     "arguments": dict(tc.arguments),
                                                     "question": exc.message,
+                                                    **_skill_snapshot(),
                                                 }
                                                 parked.context = parked_ctx
                                         task.state = "waiting_for_input"
@@ -2612,10 +2943,23 @@ async def run_agent(
                     cfg = only.config if isinstance(only.config, dict) else {}
                     try:
                         tool_session = await _open_mcp_session(
-                            db, tenant_id=tenant_id, mcp_conn=only
+                            db, tenant_id=tenant_id, mcp_conn=only, run=run_row
                         )
                         async with tool_session as server:
-                            return await loop(apply_tool_notes(server.tools, cfg), server)
+                            noted = apply_tool_notes(server.tools, cfg)
+                            if any(t.name in CONTROL_TOOL_NAMES for t in noted):
+                                # A tool named like a core one is offered
+                                # qualified, as with several connections (see
+                                # build_routes' `reserved`): a bare core name
+                                # must only ever reach the core tool.
+                                single = RoutedToolset(
+                                    {only.name: server},
+                                    {only.name: noted},
+                                    auth_by_connection={only.name: _mcp_auth(only)},
+                                    reserved=CONTROL_TOOL_NAMES,
+                                )
+                                return await loop(single.tools, single)
+                            return await loop(noted, server)
                     except Exception as exc:
                         _note_unavailable(only, exc)
                         return await loop([], None)
@@ -2626,7 +2970,9 @@ async def run_agent(
                     for conn in extra_conns:
                         cfg = conn.config if isinstance(conn.config, dict) else {}
                         try:
-                            opened = await _open_mcp_session(db, tenant_id=tenant_id, mcp_conn=conn)
+                            opened = await _open_mcp_session(
+                                db, tenant_id=tenant_id, mcp_conn=conn, run=run_row
+                            )
                             session = await stack.enter_async_context(opened)
                         except Exception as exc:
                             _note_unavailable(conn, exc)
@@ -2640,6 +2986,7 @@ async def run_agent(
                         sessions,
                         tools_by_connection,
                         auth_by_connection=auth_by_connection,
+                        reserved=CONTROL_TOOL_NAMES,
                     )
                     return await loop(routed.tools, routed)
             finally:

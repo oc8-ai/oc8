@@ -179,7 +179,7 @@ async def test_destructive_gate_parks_with_preview_and_stripped_justification(
     tenant = uuid.uuid4()
     recorder = _RecordingServer()
     monkeypatch.setattr(
-        "oc8.agent.engine.McpSession",
+        "oc8.agent.mcp_client.McpSession",
         _session_factory(recorder, ["delete_a"]),
     )
     monkeypatch.setattr(
@@ -242,7 +242,7 @@ async def test_resolved_b5_ask_does_not_park_again(
     tenant = uuid.uuid4()
     recorder = _RecordingServer()
     monkeypatch.setattr(
-        "oc8.agent.engine.McpSession",
+        "oc8.agent.mcp_client.McpSession",
         _session_factory(recorder, ["delete_a"]),
     )
     monkeypatch.setattr(
@@ -294,7 +294,7 @@ async def test_leading_read_batch_dispatches_concurrently(
     tenant = uuid.uuid4()
     recorder = _RecordingServer()
     monkeypatch.setattr(
-        "oc8.agent.engine.McpSession",
+        "oc8.agent.mcp_client.McpSession",
         _session_factory(recorder, ["read_a", "read_b", "read_c"]),
     )
     monkeypatch.setattr(
@@ -326,6 +326,50 @@ async def test_leading_read_batch_dispatches_concurrently(
     assert [t["tool"] for t in result.tool_calls] == ["read_a", "read_b", "read_c"]
 
 
+async def test_ask_prefetches_nothing_from_the_tool_server(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """/ask touches no system. The concurrent pre-pass calls the tool server
+    before the per-call PEP runs, so it has to ask the mode itself -- a later
+    DENY only discards an answer the system was already queried for."""
+    tenant = uuid.uuid4()
+    recorder = _RecordingServer()
+    monkeypatch.setattr(
+        "oc8.agent.mcp_client.McpSession",
+        _session_factory(recorder, ["read_a", "read_b", "read_c"]),
+    )
+    monkeypatch.setattr(
+        "oc8.agent.engine.stream_completion_with_fallback",
+        _ScriptedStream(
+            [
+                _turn(
+                    "",
+                    ToolCall(id="c1", name="read_a", arguments={}),
+                    ToolCall(id="c2", name="read_b", arguments={}),
+                    ToolCall(id="c3", name="read_c", arguments={}),
+                ),
+                _turn("Answered from what I know."),
+            ]
+        ),
+    )
+    async with app_session(tenant) as db:
+        agent, conn = await _fixture(
+            db,
+            tenant,
+            tool_scopes={"read": ["read_a", "read_b", "read_c"], "modify": []},
+        )
+        run = m.AgentRun(
+            tenant_id=tenant, agent_id=agent.id, state="running", context={"chat_mode": "ask"}
+        )
+        db.add(run)
+        await db.flush()
+        await run_agent(
+            db, agent=agent, task_text="go", tenant_id=tenant, mcp_conn=conn, run_id=run.id
+        )
+
+    assert recorder.windows == [], "no read may reach the tool server under /ask"
+
+
 async def test_precomputed_read_failure_is_shaped_and_invalidates_cache(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -350,7 +394,7 @@ async def test_precomputed_read_failure_is_shaped_and_invalidates_cache(
         invalidated.append(key)
 
     monkeypatch.setattr(
-        "oc8.agent.engine.McpSession",
+        "oc8.agent.mcp_client.McpSession",
         _session_factory(recorder, ["read_a", "read_b"]),
     )
     monkeypatch.setattr("oc8.agent.engine.dispatch_claude_event", _record_event)
@@ -396,7 +440,7 @@ async def test_write_call_breaks_the_batch(
     tenant = uuid.uuid4()
     recorder = _RecordingServer()
     monkeypatch.setattr(
-        "oc8.agent.engine.McpSession",
+        "oc8.agent.mcp_client.McpSession",
         _session_factory(recorder, ["read_a", "read_b", "write_a", "read_c"]),
     )
     monkeypatch.setattr(
@@ -441,7 +485,7 @@ async def test_outward_call_breaks_the_batch(
     tenant = uuid.uuid4()
     recorder = _RecordingServer()
     monkeypatch.setattr(
-        "oc8.agent.engine.McpSession",
+        "oc8.agent.mcp_client.McpSession",
         _session_factory(recorder, ["read_a", "read_b", "send_reply", "read_c"]),
     )
     monkeypatch.setattr(
@@ -491,7 +535,7 @@ async def test_approval_required_call_breaks_the_batch(
     tenant = uuid.uuid4()
     recorder = _RecordingServer()
     monkeypatch.setattr(
-        "oc8.agent.engine.McpSession",
+        "oc8.agent.mcp_client.McpSession",
         _session_factory(recorder, ["read_needs_approval", "read_ok"]),
     )
     monkeypatch.setattr(
@@ -532,7 +576,7 @@ async def test_control_tool_never_batched(
     tenant = uuid.uuid4()
     recorder = _RecordingServer()
     monkeypatch.setattr(
-        "oc8.agent.engine.McpSession",
+        "oc8.agent.mcp_client.McpSession",
         _session_factory(recorder, ["read_a", "read_b", "read_c"]),
     )
     monkeypatch.setattr(

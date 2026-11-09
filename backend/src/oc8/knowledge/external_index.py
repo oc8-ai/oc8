@@ -61,7 +61,9 @@ async def validate_external_index_binding(
         raise ExternalIndexRejected(str(exc)) from exc
 
     try:
-        cred = await get_credential(db, tenant_id=tenant_id, credential_id=credential_id)
+        cred = await get_credential(
+            db, tenant_id=tenant_id, credential_id=credential_id, owner="organisation"
+        )
     except CredentialNotFound as exc:
         raise ExternalIndexRejected(f"credential not found: {credential_id}") from exc
 

@@ -129,6 +129,9 @@ def run_to_dto(run: m.AgentRun, *, agent_version_no: int | None = None) -> RunDT
         agent_version_no=agent_version_no,
         updated_at=run.updated_at.isoformat(),
         step_timings=[step_timing_dto(e) for e in ctx.get("stepTimings", [])],
+        connection_required=ctx.get("connection_required")
+        if isinstance(ctx.get("connection_required"), dict)
+        else None,
     )
 
 

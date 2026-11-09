@@ -19,6 +19,9 @@ Two identities exist in this bridge's environment:
   comma-joined list, positionally paired with `GOOGLE_DELEGATED_TOKEN_0`,
   `_1`, ...) -- Gmail/Calendar, which need a `sub`-claimed token per mailbox.
   `resolve_mailbox_token` is how Gmail/Calendar tools reach the right one.
+
+With `OC8_OAUTH_GRANT=authorization_code` the self token IS one person's
+account: Gmail and Calendar act as `OC8_OAUTH_ACCOUNT` only.
 """
 
 from __future__ import annotations
@@ -45,6 +48,17 @@ def _delegated_mailboxes() -> list[str]:
     return [m.strip() for m in raw.split(",") if m.strip()]
 
 
+#: Set by the core when GOOGLE_TOKEN is one person's own sign-in.
+GRANT_ENV = "OC8_OAUTH_GRANT"
+ACCOUNT_ENV = "OC8_OAUTH_ACCOUNT"
+
+
+def _personal_account() -> str | None:
+    if os.environ.get(GRANT_ENV, "") != "authorization_code":
+        return None
+    return os.environ.get(ACCOUNT_ENV, "").strip() or None
+
+
 def resolve_mailbox_address(mailbox: str | None) -> str:
     """The actual mailbox address a call should act as: `mailbox` if given,
     else this connection's configured `GOOGLE_DEFAULT_MAILBOX`. Casefolds both
@@ -52,6 +66,12 @@ def resolve_mailbox_address(mailbox: str | None) -> str:
     in practice, and Google treats them so) but returns the ORIGINAL casing,
     never the casefolded form -- Gmail/Calendar URLs and attendee-matching both
     want the real address, not a normalized one."""
+    own = _personal_account()
+    if own is not None:
+        # A person's own connection acts as that one account, never another.
+        if mailbox and mailbox.casefold() != own.casefold():
+            raise RuntimeError(f"this connection acts as {own} only; omit mailbox or pass {own}")
+        return own
     target = mailbox or os.environ.get("GOOGLE_DEFAULT_MAILBOX", "")
     if not target:
         raise RuntimeError(
@@ -70,6 +90,9 @@ def resolve_mailbox_address(mailbox: str | None) -> str:
 
 def resolve_mailbox_token(mailbox: str | None) -> str:
     """The bearer token for `resolve_mailbox_address(mailbox)`."""
+    if _personal_account() is not None:
+        resolve_mailbox_address(mailbox)
+        return self_token()
     target = resolve_mailbox_address(mailbox)
     mailboxes = _delegated_mailboxes()
     folded = {m.casefold(): i for i, m in enumerate(mailboxes)}
