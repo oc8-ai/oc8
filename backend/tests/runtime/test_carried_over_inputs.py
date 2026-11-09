@@ -429,3 +429,76 @@ async def test_a_write_racing_the_end_of_an_auditing_run_does_not_deadlock(
         assert outcome.get("written") is True
         assert [i.consumed_step for i in inputs] == [CARRIED_OVER_STEP]
         assert messages[-1].content == "Noch schnell: nur Berlin."
+
+
+async def _runner_that_caches_the_owner(
+    app_session: AppSessionFactory,
+    world: _World,
+    change: Callable[[], Awaitable[None]],
+) -> _FnRuntime:
+    """A run that loads the chat and its owner into its OWN session first
+    (as `_resolve_agent_actor` and `_current_chat_sender` do), is written to,
+    and then the owner changes in another transaction before the run ends."""
+
+    held: list[Any] = []
+
+    async def fn(db: Any, **kw: Any) -> RunResult:
+        session = await db.get(m.ChatSession, world.session_id)
+        member = await db.get(m.OrgMember, world.member_id)
+        assert session is not None and member is not None
+        assert member.deleted_at is None and member.role_id is not None
+        # Kept referenced until the run ends, as a run's own objects are: the
+        # session's identity map holds rows only while something does.
+        held.extend([session, member])
+        await _write(app_session, world, "Nur die aus Berlin, bitte.")
+        await change()
+        return RunResult(
+            task_id=uuid.uuid4(),
+            agent_id=kw["agent"].id,
+            status="done",
+            output="Es sind 3 offen.",
+            tool_calls=[],
+            steps=1,
+        )
+
+    return _FnRuntime(fn)
+
+
+async def test_an_owner_offboarded_after_the_run_loaded_her_starts_nothing(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    world = await _world(app_session, messenger=False)
+
+    async def offboard() -> None:
+        async with app_session(world.tenant) as db:
+            member = await db.get(m.OrgMember, world.member_id)
+            assert member is not None
+            member.deleted_at = dt.datetime.now(tz=dt.UTC)
+            await db.commit()
+
+    await _execute(world, await _runner_that_caches_the_owner(app_session, world, offboard))
+
+    await _refused(app_session, world)
+
+
+async def test_an_owner_demoted_after_the_run_loaded_her_starts_nothing(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    world = await _world(app_session, messenger=False)
+    async with app_session(world.tenant) as db:
+        run = await db.get(m.AgentRun, world.run_id)
+        assert run is not None
+        run.context = {k: v for k, v in run.context.items() if k != "acting_token_role"}
+        await db.commit()
+
+    async def demote() -> None:
+        async with app_session(world.tenant) as db:
+            member = await db.get(m.OrgMember, world.member_id)
+            assert member is not None
+            member.role_id = None
+            member.all_departments = False
+            await db.commit()
+
+    await _execute(world, await _runner_that_caches_the_owner(app_session, world, demote))
+
+    await _refused(app_session, world)

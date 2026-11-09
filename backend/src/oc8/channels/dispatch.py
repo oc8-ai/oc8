@@ -16,6 +16,7 @@ import logging
 import uuid
 from typing import Any
 
+from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -593,8 +594,17 @@ async def _steer_running_turn(
     except InputRefused as exc:
         if exc.code == "finished":
             # The run ended before the text got to it: it is a new turn after
-            # all. Nothing was written, and the transaction (and its tenant
-            # binding) is still open for `send_message`.
+            # all. Nothing was written, but this transaction holds the
+            # tenant's audit and the run's input locks (`lock_run_inputs`):
+            # end it before the new turn, so `send_message` starts from a
+            # fresh one, and bind the tenant again for it. Commit, not
+            # rollback: whatever came before (nothing but reads today) stays,
+            # and loaded rows stay usable.
+            await db.commit()
+            await db.execute(
+                sql_text("SELECT set_config('app.tenant_id', :tid, true)"),
+                {"tid": str(session.tenant_id)},
+            )
             return False
         # Refused before anything was written; said in German, and the
         # secret gate's own sentence as is, ungated, like the secret refusal

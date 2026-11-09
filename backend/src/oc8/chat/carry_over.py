@@ -26,6 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.db.session import tenant_session
 from oc8.runtime.person import is_own, person_behind
 from oc8.runtime.run_inputs import CARRIED_OVER_STEP, unread_run_inputs
 from oc8.runtime.states import TERMINAL, RunState
@@ -69,15 +70,37 @@ async def stage_carried_over_turn(db: AsyncSession, *, run: m.AgentRun) -> uuid.
     rows = await unread_run_inputs(db, run_id=run.id)
     if not rows:
         return None
-    refusal = await _refusal(db, run=run, session_id=session_id, rows=rows)
-    if isinstance(refusal, str):
-        logger.info("run %s: unread inputs not carried over: %s", run.id, refusal)
+    # The checks read in a FRESH session: this one is the run's, and may hold
+    # the chat, its owner or her role as they were when the run loaded them
+    # (`_resolve_agent_actor`, `_current_chat_sender`) -- an owner offboarded
+    # or demoted since would pass on a cached row. Read-only; the writes
+    # below stay in the run's terminal transaction.
+    async with tenant_session(run.tenant_id) as fresh:
+        verdict = await _refusal(fresh, run=run, session_id=session_id, rows=rows)
+    if isinstance(verdict, str):
+        logger.info("run %s: unread inputs not carried over: %s", run.id, verdict)
         return None
-    session, member, agent, door = refusal
+    member_id, door = verdict
+    session = (
+        await db.execute(
+            select(m.ChatSession)
+            .where(m.ChatSession.id == session_id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    agent = (
+        await db.execute(
+            select(m.Agent)
+            .where(m.Agent.id == run.agent_id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if session is None or agent is None:
+        return None
     run_id = await _stage_turn(
         db,
         session=session,
-        member=member,
+        member_id=member_id,
         agent=agent,
         door=door,
         text="\n\n".join(row.text for row in rows),
@@ -92,8 +115,10 @@ async def stage_carried_over_turn(db: AsyncSession, *, run: m.AgentRun) -> uuid.
 
 async def _refusal(
     db: AsyncSession, *, run: m.AgentRun, session_id: uuid.UUID, rows: list[m.RunInput]
-) -> str | tuple[m.ChatSession, m.OrgMember, m.Agent, _Door]:
-    """The door's checks, made now. A reason when refused."""
+) -> str | tuple[uuid.UUID, _Door]:
+    """The door's checks, made now, in `db` -- a session of their own, so
+    every row is read as it is now. A reason when refused, else the owner's
+    member id and the door the turn goes through."""
     from oc8.authz.authority import authority_for_member, member_holds_assigned_permission
     from oc8.authz.permissions import COPILOT, MANAGE, RUN_START, perm
     from oc8.chat.reach import member_can_reach_agent
@@ -135,9 +160,7 @@ async def _refusal(
         ):
             return "no copilot:manage"
         return (
-            session,
-            member,
-            agent,
+            member.id,
             _Door(
                 originating_operator=None,
                 on_behalf_of=member.subject,
@@ -160,9 +183,7 @@ async def _refusal(
         if RUN_START not in authority.tenant_wide:
             return "the owner may not start runs"
     return (
-        session,
-        member,
-        agent,
+        member.id,
         _Door(
             originating_operator=member.subject,
             on_behalf_of=None,
@@ -176,7 +197,7 @@ async def _stage_turn(
     db: AsyncSession,
     *,
     session: m.ChatSession,
-    member: m.OrgMember,
+    member_id: uuid.UUID,
     agent: m.Agent,
     door: _Door,
     text: str,
@@ -203,7 +224,7 @@ async def _stage_turn(
         content=body,
         mode=mode.key if mode is not None else None,
         context_refs=[],
-        author_member_id=member.id,
+        author_member_id=member_id,
     )
     db.add(message)
     await db.flush()
