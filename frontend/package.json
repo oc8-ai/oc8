@@ -1,6 +1,6 @@
 {
   "name": "@oc8/community-frontend",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "oc8 Community Edition — frontend UI for agent orchestration",
   "private": true,
   "license": "LGPL-3.0-or-later",
