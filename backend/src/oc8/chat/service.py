@@ -35,6 +35,8 @@ from oc8 import models as m
 from oc8.audit import append_event
 from oc8.auth.principal import Principal
 from oc8.chat.audience import session_audience_or_nobody
+from oc8.chat.context.base import viewer_for_member
+from oc8.chat.context.manifest import Manifest, build_manifest, manifest_text
 from oc8.chat.modes import MODES, ChatMode, mode_directive, parse_command
 from oc8.chat.questions import (
     PLAIN_ID,
@@ -274,6 +276,68 @@ async def _resolve_context_refs(
     ]
 
 
+def _kb_reference_text(
+    resolved_refs: list[dict[str, str]], mode: ChatMode | None, manifest: Manifest | None
+) -> str:
+    """The line naming the knowledge bases attached to this one message, or "".
+
+    Quoted and attributed, never inlined as an instruction: the operator is
+    pointing at a source, and the agent already has `search_knowledge` to read
+    it with. Inlining a whole knowledge base here would blow the prompt and
+    defeat the retrieval narrowing (`context_kb_ids`)."""
+    kbs = [ref for ref in resolved_refs if ref.get("kind") == "knowledge_base"]
+    if not kbs:
+        return ""
+    named = ", ".join(f'"{ref["label"]}"' for ref in kbs)
+    if mode is not None and not mode.allows_tools:
+        # /ask and /summarise offer no tool at all -- telling the model to
+        # call one would only earn a refusal.
+        return f"\n\n[Context attached by the operator: knowledge base {named}.]"
+    if manifest is not None and manifest.released_kb_ids:
+        # The chat's pinned knowledge is searched as well (`released_kb_ids`).
+        return (
+            f"\n\n[Context attached by the operator: knowledge base {named}. "
+            "Search it with search_knowledge before answering.]"
+        )
+    return (
+        f"\n\n[Context attached by the operator: knowledge base {named}. "
+        "Search it with search_knowledge before answering; for this turn "
+        "that tool reads nothing else.]"
+    )
+
+
+async def _turn_manifest(
+    db: AsyncSession,
+    *,
+    session: m.ChatSession,
+    acting_member: m.OrgMember | None,
+    token_role: str | None,
+    message_refs: Sequence[Mapping[str, Any]],
+) -> Manifest | None:
+    """The turn's pinned context, resolved with the acting member's rights --
+    or None when the turn has no member of its own behind it (a channel
+    sender, a follow-up) or the member is not the chat's owner (an overseer
+    replying in a colleague's chat must not release the owner's pins, nor
+    read them back under their own rights).
+
+    `token_role` MUST be the role on THIS member's live request token
+    (`viewer_for_member`)."""
+    if acting_member is None or acting_member.id != session.member_id:
+        return None
+    viewer = await viewer_for_member(db, acting_member, token_role=token_role)
+    return await build_manifest(db, viewer=viewer, message_refs=message_refs, session=session)
+
+
+def _message_refs(manifest: Manifest) -> list[dict[str, str]]:
+    """The chips a sent turn keeps: every message ref that survived, labelled
+    from the row, not only knowledge bases."""
+    return [
+        {"kind": e["kind"], "id": e["id"], "label": e["label"]}
+        for e in manifest.entries
+        if e["scope"] == "message"
+    ]
+
+
 #: Context keys a caller's `extra_context` may never set: who is acting, where
 #: the turn goes, which message it answers and which model it may run on.
 _RESERVED_CONTEXT_KEYS = frozenset(
@@ -289,6 +353,10 @@ _RESERVED_CONTEXT_KEYS = frozenset(
         "reply_to_message_id",
         "model_override_id",
         "suggestions",
+        # What the member pinned (`chat.context.manifest`): only ever built
+        # here, from refs resolved under the member's own rights.
+        "context_manifest",
+        "released_kb_ids",
     }
 )
 
@@ -307,6 +375,7 @@ def _build_turn_context(
     mode: ChatMode | None,
     resolved_refs: list[dict[str, str]],
     extra_context: dict[str, object] | None,
+    manifest: Manifest | None = None,
 ) -> dict[str, object]:
     """The `AgentRun.context` for the run answering one chat turn.
 
@@ -314,7 +383,16 @@ def _build_turn_context(
     regenerated reply later) so both carry the same keys. `context["task"]`
     is `task_text` plus the mode directive when a mode is set -- callers that
     need the final text read it back from there.
+
+    `manifest` is the turn's pinned context (`chat.context.manifest`): its
+    entries are what `read_context` may page through, its released knowledge
+    bases what `search_knowledge` may search in addition, and its text is
+    appended to the task.
     """
+    if manifest is not None:
+        extra_text = manifest_text(manifest, tools=mode is None or mode.allows_tools)
+        if extra_text:
+            task_text = task_text + "\n\n" + extra_text
     context: dict[str, object] = {
         "task": task_text,
         "chat_session_id": str(session.id),
@@ -356,8 +434,15 @@ def _build_turn_context(
         # ignore it, and a silently denied tool wastes a step.
         context["chat_mode"] = mode.key
         context["task"] = task_text + "\n\n" + mode_directive(mode)
-    if resolved_refs:
-        context["context_kb_ids"] = [ref["id"] for ref in resolved_refs]
+    kb_ids = [ref["id"] for ref in resolved_refs if ref.get("kind") == "knowledge_base"]
+    if kb_ids:
+        context["context_kb_ids"] = kb_ids
+    if manifest is not None:
+        # Set after `extra_context`, and reserved there: a caller can never
+        # hand a turn a manifest or a release of its own.
+        context["context_manifest"] = manifest.entries
+        if manifest.released_kb_ids:
+            context["released_kb_ids"] = manifest.released_kb_ids
     return context
 
 
@@ -376,6 +461,7 @@ async def send_message(
     role: Literal["user", "followup"] = "user",
     extra_context: dict[str, object] | None = None,
     author_member_id: uuid.UUID | None = None,
+    acting_member: m.OrgMember | None = None,
 ) -> tuple[m.ChatMessage, m.AgentRun | None]:
     """Record the user's turn and enqueue the run that answers it.
 
@@ -401,6 +487,13 @@ async def send_message(
     turn's retrieval -- see `retrieve_kb_context`'s `only_kb_ids`, which
     intersects them with the agent's own grants and can therefore only ever
     shrink what is searched.
+
+    `acting_member` is the authenticated member sending this turn, and
+    `operator_role` then MUST be the role on that member's live token. With
+    both, the turn gets its context manifest (`chat.context.manifest`): every
+    kind of `context_refs` plus the chat's and its project's pins, resolved
+    under the member's rights. Without it (a channel sender, a follow-up)
+    only knowledge-base refs count, as before.
 
     A leading slash command is parsed out of `message` here (`chat.modes`) and
     recorded on the turn. The mode is NOT a shortcut past the run: `/ask`
@@ -432,6 +525,15 @@ async def send_message(
     else:
         mode, body = parse_command(message)
     resolved_refs = await _resolve_context_refs(db, tenant_id=tenant_id, refs=context_refs)
+    manifest = await _turn_manifest(
+        db,
+        session=session,
+        acting_member=acting_member if role == "user" else None,
+        token_role=operator_role,
+        message_refs=context_refs or [],
+    )
+    if manifest is not None:
+        resolved_refs = _message_refs(manifest)
     user_message = m.ChatMessage(
         tenant_id=tenant_id,
         session_id=session.id,
@@ -518,22 +620,7 @@ async def send_message(
         return user_message, None
 
     task_text = _build_task_text(history, body, new_role=role)
-    if resolved_refs:
-        # Quoted and attributed, never inlined as an instruction: the operator
-        # is pointing at a source, and the agent already has `search_knowledge`
-        # to read it with. Inlining a whole knowledge base here would blow the
-        # prompt and defeat the retrieval narrowing set up below.
-        named = ", ".join(f'"{ref["label"]}"' for ref in resolved_refs)
-        if mode is not None and not mode.allows_tools:
-            # /ask and /summarise offer no tool at all -- telling the model to
-            # call one would only earn a refusal.
-            task_text += f"\n\n[Context attached by the operator: knowledge base {named}.]"
-        else:
-            task_text += (
-                f"\n\n[Context attached by the operator: knowledge base {named}. "
-                "Search it with search_knowledge before answering; for this turn "
-                "that tool reads nothing else.]"
-            )
+    task_text += _kb_reference_text(resolved_refs, mode, manifest)
     for att in attachments:
         if att.is_image:
             continue
@@ -556,6 +643,7 @@ async def send_message(
         mode=mode,
         resolved_refs=resolved_refs,
         extra_context=extra_context,
+        manifest=manifest,
     )
     task_text = str(context["task"])
 
@@ -638,6 +726,7 @@ async def regenerate_reply(
     user_message: m.ChatMessage,
     originating_operator: str | None,
     operator_role: str | None,
+    acting_member: m.OrgMember | None = None,
 ) -> m.AgentRun:
     """A second answer to an existing user turn (spec §2.1 "Regenerate").
 
@@ -645,6 +734,12 @@ async def regenerate_reply(
     before `user_message` plus that turn, the new run carries the same
     `reply_to_message_id`, and `record_assistant_reply` files its answer next to
     the first one. The turn's mode, `#` references and attachments apply again.
+
+    The context manifest is REBUILT, not copied from the first run, the same
+    way `send_message` builds it and under the same rule for `acting_member`
+    and `operator_role`: the turn's own refs plus the chat's and project's pins
+    as they stand now, under the member's rights as they stand now. A pin
+    removed, or a right lost, since the first answer does not come back.
 
     COMMITS `db` (via `enqueue_run`) and re-binds the RLS tenant afterwards,
     like `send_message`.
@@ -658,17 +753,17 @@ async def regenerate_reply(
         if isinstance(r, dict)
     ]
     resolved_refs = await _resolve_context_refs(db, tenant_id=tenant_id, refs=refs)
+    manifest = await _turn_manifest(
+        db,
+        session=session,
+        acting_member=acting_member,
+        token_role=operator_role,
+        message_refs=refs,
+    )
+    if manifest is not None:
+        resolved_refs = _message_refs(manifest)
     task_text = _build_task_text(before, user_message.content, new_role="user")
-    if resolved_refs:
-        named = ", ".join(f'"{ref["label"]}"' for ref in resolved_refs)
-        if mode is not None and not mode.allows_tools:
-            task_text += f"\n\n[Context attached by the operator: knowledge base {named}.]"
-        else:
-            task_text += (
-                f"\n\n[Context attached by the operator: knowledge base {named}. "
-                "Search it with search_knowledge before answering; for this turn "
-                "that tool reads nothing else.]"
-            )
+    task_text += _kb_reference_text(resolved_refs, mode, manifest)
     attachments = list(
         (
             await db.execute(
@@ -700,6 +795,7 @@ async def regenerate_reply(
         mode=mode,
         resolved_refs=resolved_refs,
         extra_context={"regenerated": True},
+        manifest=manifest,
     )
     run, _published = await enqueue_run(
         db,

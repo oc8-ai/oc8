@@ -540,7 +540,7 @@ async def post_message(
         tenant_id=actor.principal.tenant_id,
         message=body.message,
         attachment_ids=body.attachment_ids,
-        context_refs=[{"kind": ref.kind, "id": str(ref.id)} for ref in body.context_refs],
+        context_refs=[{"kind": ref.kind, "id": ref.id} for ref in body.context_refs],
         originating_operator=actor.principal.subject,
         # The token's role claim, recorded on the run: a member with no
         # ASSIGNED role resolves to `permissions_for(token.role)` everywhere
@@ -548,6 +548,9 @@ async def post_message(
         # token to read it from later. See `control_tools._acting_token_role`.
         operator_role=actor.principal.role,
         author_member_id=actor.member.id,
+        # The member behind THIS request's token, whose role is the one above:
+        # the turn's pinned context is resolved under their rights.
+        acting_member=actor.member,
     )
     dto = await _message_dto(user_message, db, actor.principal.tenant_id)
     if run is not None:
@@ -629,6 +632,7 @@ async def regenerate_message(
         user_message=msg,
         originating_operator=actor.principal.subject,
         operator_role=actor.principal.role,
+        acting_member=actor.member,
     )
     return ActiveRunDTO(run_id=str(run.id), reply_to_id=str(msg.id), state=run.state)
 

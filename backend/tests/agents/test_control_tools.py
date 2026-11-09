@@ -189,6 +189,7 @@ def test_control_tool_names_matches_the_schemas() -> None:
         "delegate_task",
         "request_decision",
         "search_knowledge",
+        "read_context",
         "search_memory",
         "render_component",
         "propose_change",

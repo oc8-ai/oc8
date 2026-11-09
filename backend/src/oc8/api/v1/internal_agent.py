@@ -36,6 +36,8 @@ from oc8.agent.control_tools import (
     CONTROL_TOOL_NAMES,
     FIND_TOOLS,
     execute_control_tool,
+    has_readable_context,
+    has_released_knowledge,
     offered_tools,
 )
 from oc8.agent.elicitation import ElicitationNeeded, arguments_with_answer
@@ -903,9 +905,10 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         assigned_skills=assigned_skills,
         active_skills=active_skills,
         mcp_tools=mcp_tools,
-        has_knowledge=has_knowledge,
+        has_knowledge=has_knowledge or has_released_knowledge(ctx),
         has_instruction_files=has_instruction_files,
         copilot_permissions=copilot_permissions,
+        has_context=has_readable_context(ctx),
         offer_write_output_file=offer_write_output_file,
         offer_run_shell=offer_write_output_file,
         offer_run_program=caps.code_mode,

@@ -31,6 +31,8 @@ from oc8.agent.control_tools import (
     FIND_TOOLS,
     MAX_DELEGATION_DEPTH,  # re-exported for tests/coding/test_engine_delegation.py
     execute_control_tool,
+    has_readable_context,
+    has_released_knowledge,
     offered_tools,
 )
 from oc8.agent.elicitation import ElicitationNeeded, arguments_with_answer
@@ -826,9 +828,13 @@ async def run_agent(
                     assigned_skills=assigned_skills,
                     active_skills=active_skills,
                     mcp_tools=tools,
-                    has_knowledge=has_knowledge,
+                    has_knowledge=has_knowledge
+                    or has_released_knowledge(run_row.context if run_row is not None else None),
                     has_instruction_files=has_instruction_files,
                     copilot_permissions=copilot_permissions,
+                    has_context=has_readable_context(
+                        run_row.context if run_row is not None else None
+                    ),
                     # The in-process engine is the one runtime with no
                     # /workspace mount of its own -- see offered_tools' docstring.
                     offer_write_output_file=True,

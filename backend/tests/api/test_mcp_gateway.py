@@ -320,6 +320,28 @@ async def test_tools_list_hides_what_the_frame_forbids(
     assert core <= set(names)
 
 
+async def test_tools_list_offers_read_context_to_a_turn_with_readable_pins(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An isolated runtime reaches what the member pinned the same way the
+    in-process engine does (offered_tools' has_context)."""
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant)
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {
+            **run.context,
+            "context_manifest": [{"ref_id": "file:1", "kind": "file", "readable": True}],
+        }
+        await db.commit()
+
+    code, body = await _rpc(_token(tenant, agent_id, run_id), "tools/list")
+    assert code == 200, body
+    assert "read_context" in [t["name"] for t in body["result"]["tools"]]
+
+
 # ------------------------------------------------ a connection whose env expires
 #
 # A `secret_env` ref of the form `oauth:...` is minted per launch from the

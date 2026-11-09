@@ -36,12 +36,14 @@ from oc8.agent.control_tools import (
     CONTROL_TOOL_NAMES,
     DELEGATE_TASK,
     MEMORY_WRITE,
+    READ_CONTEXT,
     RENDER_COMPONENT,
     REQUEST_DECISION,
     SEARCH_KNOWLEDGE,
     SEARCH_MEMORY,
     SUGGEST_REPLIES,
     execute_control_tool,
+    has_readable_context,
 )
 from oc8.agent.engine import _authorize, _call_sig
 from oc8.agent.mcp_client import resolve_auth_header
@@ -445,6 +447,10 @@ async def _list_tools(
         RENDER_COMPONENT,
         SUGGEST_REPLIES,
     ]
+    # A read of what the member pinned to this chat turn -- only when the
+    # turn's manifest lists something readable (offered_tools' has_context).
+    if has_readable_context(run.context):
+        core.append(READ_CONTEXT)
     # Withheld from the tenant Assistant specifically, mirroring
     # control_tools.offered_tools' own reasoning: a park only WORKS if
     # something can answer it, and Telegram free text -- one of the
@@ -715,6 +721,7 @@ async def _call_tool(
         DELEGATE_TASK.name,
         RENDER_COMPONENT.name,
         SUGGEST_REPLIES.name,
+        READ_CONTEXT.name,
     ):
         if run.task_id is None:
             return _tool_result(

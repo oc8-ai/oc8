@@ -14,6 +14,7 @@ from pydantic import (
     field_validator,
 )
 
+from oc8.chat.context.manifest import MAX_MESSAGE_REFS
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import WidgetInstanceDTO
 
@@ -39,23 +40,32 @@ class CreateChatSessionRequest(CamelModel):
 
 
 class ChatContextRefRequest(CamelModel):
-    """One thing the operator attached to a message with `#` (§5.2).
+    """One thing attached to a message with `#` or the + menu (§5.1).
 
-    `knowledge_base` is the only kind Phase 1 accepts. The label is NOT taken
-    from the client -- `chat.service` resolves it from the row, so a client
-    cannot make a turn's transcript claim it consulted something else.
+    Any kind the context registry knows; resolved and authorised server-side
+    against the sending member (`chat.context`), and an unknown kind or an id
+    the member may not see is dropped. The label is NOT taken from the client
+    -- it is read off the row, so a client cannot make a turn's transcript
+    claim it consulted something else (and an extra field is refused).
     """
 
-    kind: Literal["knowledge_base"]
-    id: uuid.UUID
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field(min_length=1, max_length=40)
+    #: A source file's id is `<source uuid>:<connector file id>`.
+    id: str = Field(min_length=1, max_length=400)
 
 
 class SendChatMessageRequest(CamelModel):
+    model_config = ConfigDict(extra="forbid")
+
     message: str = Field(min_length=1, max_length=20_000)
     attachment_ids: list[uuid.UUID] = []
-    #: At most five: `#` is for pointing at a source, and a turn that names ten
-    #: of them is a search, not a reference.
-    context_refs: list[ChatContextRefRequest] = Field(default_factory=list, max_length=5)
+    #: `#` is for pointing at sources, and a turn that names more than this
+    #: is a search, not a reference.
+    context_refs: list[ChatContextRefRequest] = Field(
+        default_factory=list, max_length=MAX_MESSAGE_REFS
+    )
 
 
 class RenameChatSessionRequest(CamelModel):

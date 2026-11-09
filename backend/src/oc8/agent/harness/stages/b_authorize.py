@@ -113,6 +113,12 @@ def authorize(
         # should be for a tool that can only ever produce a draft a human has
         # to approve before anything changes.
         return Decision(Effect.ALLOW)
+    if tc.name == "read_context":
+        # Belongs to no connection either: it reads what the member pinned,
+        # re-authorised for them and checked against the model inside the
+        # tool (control_tools._execute_read_context). Falling through would
+        # audit every read as a denial.
+        return Decision(Effect.ALLOW)
     if tc.name == "suggest_replies":
         # Belongs to no connection, like propose_change: it only stores chips
         # on the answer, so the frame has nothing to decide it against and
