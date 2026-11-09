@@ -125,6 +125,7 @@ from oc8.connections.runtime_env import (
     require_enabled,
     run_mcp_env,
 )
+from oc8.connections.tool_denied import record_tool_denied, tool_denied
 from oc8.copilot.door import door_of
 from oc8.copilot.notes import member_behind_run_task
 from oc8.hooks.bus import dispatch_filter
@@ -2267,6 +2268,22 @@ async def run_agent(
                         elif decision.effect is Effect.DENY or server is None:
                             reason = decision.reason or "no tool server available"
                             output = f"ERROR: {reason}"
+                            denied = tool_denied(
+                                decision,
+                                frame=frame,
+                                agent=agent,
+                                conn=owner
+                                or (
+                                    mcp_conn
+                                    if mcp_conn is not None and mcp_conn.name == call_key
+                                    else None
+                                ),
+                            )
+                            if denied is not None:
+                                reason = denied.sentence()
+                                output = denied.model_message()
+                                if run_row is not None:
+                                    await record_tool_denied(db, run_row, denied)
                             source = "oc8"
                             tool_error = ToolError(kind="deny", message=reason)
                             _tool_call_dispatched = False

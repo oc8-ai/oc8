@@ -81,6 +81,7 @@ from oc8.capas.discovery import resolve_tool_pack_connection
 from oc8.chat.modes import mode_from_context, mode_refusal
 from oc8.connections.access import ConnectionRequired
 from oc8.connections.runtime_env import McpLaunchEnv, integration_connections, run_mcp_env
+from oc8.connections.tool_denied import record_tool_denied, tool_denied
 from oc8.memory.policy import authorize_memory_write
 from oc8.realtime.emit import note_focus, record_activity
 from oc8.runtime.approval_resume import pre_decided_map
@@ -961,6 +962,10 @@ async def _call_tool(
         )
 
     if decision.effect is Effect.DENY:
+        denied = tool_denied(decision, frame=frame, agent=agent, conn=conn)
+        if denied is not None:
+            await record_tool_denied(db, run, denied)
+            return _tool_result(denied.model_message(), is_error=True)
         return _tool_result(f"ERROR: {decision.reason or 'denied'}", is_error=True)
     if conn is None:
         return _tool_result("ERROR: no tool server available", is_error=True)

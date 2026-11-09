@@ -194,4 +194,34 @@ describe("CopilotRunActivity", () => {
       "/connections?connect=microsoft365",
     );
   });
+  it("says which tool the department withholds", async () => {
+    vi.mocked(api.get).mockResolvedValue({
+      id: "r1",
+      agentId: "a1",
+      state: "done",
+      phase: null,
+      output: "done",
+      steps: 1,
+      toolCalls: [],
+      taskId: null,
+      question: null,
+      renderedComponents: [],
+      toolDenied: {
+        connection: "microsoft365",
+        tool: "mail_search",
+        label: "Microsoft 365",
+        right: "read",
+        reason: "tool_not_in_frame",
+        scope: "department",
+        departmentId: "d1",
+        agentId: "a1",
+      },
+    });
+    render(<CopilotRunActivity sessionId="s1" runId="r1" />, { wrapper });
+    expect(
+      await screen.findByText(
+        "This department does not allow the tool “mail_search” (Microsoft 365). An admin can enable it under Department → Guardrails.",
+      ),
+    ).toBeInTheDocument();
+  });
 });

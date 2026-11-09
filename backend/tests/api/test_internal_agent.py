@@ -1238,6 +1238,56 @@ async def test_a_denied_call_records_no_timing(
     assert "durationMs" not in entry
 
 
+@pytest.mark.asyncio
+async def test_a_frame_denial_is_recorded_and_told_to_the_model_plainly(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The frame withholds the right: the run says which tool and where an
+    admin allows it, and the model's tool result is one sentence it can pass
+    on instead of the PDP's internal reason."""
+    from oc8 import models as m
+
+    class _NeverSession:
+        tools: list[Any] = []
+
+        def __init__(self, *a: Any, **kw: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> Any:
+            return self
+
+        async def __aexit__(self, *a: Any) -> None:
+            return None
+
+        async def call(self, name: str, arguments: dict[str, Any]) -> str:
+            raise AssertionError("a denied call must never reach the tool server")
+
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _NeverSession)
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id = await _mcp_backed_run(db, tenant, modify=False)
+
+    code, body = await _post_tool(
+        tenant, agent_id, run_id, "create_record", {"model": "sale.order", "values": {}}
+    )
+    assert code == 200, body
+    assert body["status"] == "denied", body
+    assert "department does not allow the tool 'create_record'" in body["output"]
+    assert "department's guardrails" in body["output"]
+
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        run = await db.get(m.AgentRun, run_id)
+        agent = await db.get(m.Agent, agent_id)
+        assert run is not None and agent is not None
+        denied = run.context["tool_denied"]
+    assert denied["connection"] == "odoo"
+    assert denied["tool"] == "create_record"
+    assert denied["reason"] == "right_not_granted"
+    assert denied["scope"] == "department"
+    assert denied["departmentId"] == str(agent.department_id)
+
+
 # ------------------------------------------------- real remote MCP transport
 
 #: A real FastMCP server bound to a real port, reused verbatim from

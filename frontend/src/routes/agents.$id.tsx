@@ -127,6 +127,7 @@ import { RUN_COMPONENT_REGISTRY } from "@/components/run-record-card";
 import { RunFailureReason, RunModelSteps } from "@/components/run-reasoning";
 import { AgentToolAccessPanel } from "@/components/connections/agent-tool-access";
 import { ConnectionRequiredNotice } from "@/components/connections/connection-required-notice";
+import { ToolDeniedNotice } from "@/components/connections/tool-denied-notice";
 import { TriggerOwner } from "@/components/connections/trigger-owner";
 import { RunStateBadge } from "@/components/run-state-badge";
 import { StatCard } from "@/components/stat-card";
@@ -2661,6 +2662,7 @@ function RunTranscript({ run, pending }: { run: RunDTO | undefined; pending: boo
       {run.state === "waiting_for_input" && <WaitingForInputCallout run={run} />}
       {run.state === "failed" && <RunFailureReason reason={run.failureReason ?? run.output} />}
       <ConnectionRequiredNotice value={run.connectionRequired} agentId={run.agentId} />
+      <ToolDeniedNotice value={run.toolDenied} />
       <RunModelSteps
         stepTimings={run.stepTimings}
         liveReasoning={run.liveReasoning}

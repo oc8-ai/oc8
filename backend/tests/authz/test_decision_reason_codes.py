@@ -79,13 +79,76 @@ def test_a_plain_allow_has_no_reason_code_or_context() -> None:
     assert d.context == {}
 
 
-def test_a_deny_has_no_reason_code_or_context() -> None:
+def test_a_deny_without_a_frame_reason_has_no_reason_code_or_context() -> None:
     d = authorize_tool_call(
         policies=_policies(),
-        connection_key="odoo",
+        connection_key=None,
         right="modify",
         value=None,
     )
     assert d.effect is Effect.DENY
     assert d.reason_code is None
     assert d.context == {}
+
+
+# The four frame denials carry a code and their terms, so a run can tell the
+# person which tool the department withholds and where an admin allows it.
+# The decision itself (DENY, and its reason text) is unchanged.
+
+
+def test_a_connection_missing_from_the_frame_reports_connection_not_in_frame() -> None:
+    d = authorize_tool_call(
+        policies=_policies(),
+        connection_key="odoo",
+        right="modify",
+        value=None,
+        tool="create_record",
+    )
+    assert d.effect is Effect.DENY
+    assert d.reason == "no grant for 'odoo' in this frame"
+    assert d.reason_code == "connection_not_in_frame"
+    assert d.context == {"connection": "odoo", "tool": "create_record", "right": "modify"}
+
+
+def test_a_disabled_connection_reports_connection_disabled() -> None:
+    d = authorize_tool_call(
+        policies=_policies(odoo=ToolPolicy(enabled=False, read=True, modify=True)),
+        connection_key="odoo",
+        right="read",
+        value=None,
+        tool="search_records",
+    )
+    assert d.effect is Effect.DENY
+    assert d.reason == "'odoo' is disabled in this frame"
+    assert d.reason_code == "connection_disabled"
+    assert d.context == {"connection": "odoo", "tool": "search_records", "right": "read"}
+
+
+def test_a_missing_right_reports_right_not_granted() -> None:
+    d = authorize_tool_call(
+        policies=_policies(odoo=ToolPolicy(enabled=True, read=True, modify=False)),
+        connection_key="odoo",
+        right="modify",
+        value=None,
+        tool="create_record",
+    )
+    assert d.effect is Effect.DENY
+    assert d.reason == "'odoo' does not grant 'modify'"
+    assert d.reason_code == "right_not_granted"
+    assert d.context == {"connection": "odoo", "tool": "create_record", "right": "modify"}
+
+
+def test_a_tool_outside_only_reports_tool_not_in_frame() -> None:
+    d = authorize_tool_call(
+        policies=_policies(
+            microsoft365=ToolPolicy(enabled=True, read=True, only=frozenset({"calendar_list"}))
+        ),
+        connection_key="microsoft365",
+        right="read",
+        value=None,
+        tool="mail_search",
+    )
+    assert d.effect is Effect.DENY
+    assert d.reason == "'microsoft365' does not grant the tool 'mail_search' in this frame"
+    assert d.reason_code == "tool_not_in_frame"
+    assert d.context == {"connection": "microsoft365", "tool": "mail_search", "right": "read"}

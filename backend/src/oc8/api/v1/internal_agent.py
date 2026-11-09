@@ -113,6 +113,7 @@ from oc8.chat.modes import mode_from_context
 from oc8.config import get_settings
 from oc8.connections.access import ConnectionRequired
 from oc8.connections.runtime_env import McpLaunchEnv, run_mcp_env
+from oc8.connections.tool_denied import record_tool_denied, tool_denied
 from oc8.copilot.door import door_of
 from oc8.metering import record_usage
 from oc8.modelrouter import (
@@ -2113,6 +2114,11 @@ async def _dispatch_one_tool(
     elif decision.effect is Effect.DENY:
         reason = decision.reason or "denied"
         output = f"ERROR: {reason}"
+        denied = tool_denied(decision, frame=frame, agent=agent, conn=conn)
+        if denied is not None:
+            reason = denied.sentence()
+            output = denied.model_message()
+            await record_tool_denied(db, run, denied, ctx=ctx)
         source = "oc8"
         tool_error = ToolError(kind="deny", message=reason)
         dispatched = False

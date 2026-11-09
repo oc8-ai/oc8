@@ -17,6 +17,7 @@
 import { useCopilotRunActivity } from "@/lib/hooks-chat";
 import { ChatMarkdown } from "@/components/chat-markdown";
 import { ConnectionRequiredNotice } from "@/components/connections/connection-required-notice";
+import { ToolDeniedNotice } from "@/components/connections/tool-denied-notice";
 import { RunFailureReason } from "@/components/run-reasoning";
 import { RunStepTimeline } from "@/components/run-step-timeline";
 
@@ -42,6 +43,11 @@ export function CopilotRunActivity({
       {run.connectionRequired && (
         <div className="px-3 py-2">
           <ConnectionRequiredNotice value={run.connectionRequired} agentId={run.agentId} />
+        </div>
+      )}
+      {run.toolDenied && (
+        <div className="px-3 py-2">
+          <ToolDeniedNotice value={run.toolDenied} />
         </div>
       )}
       <RunStepTimeline

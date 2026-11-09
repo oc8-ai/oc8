@@ -358,3 +358,21 @@ export function useResetAgentToolAccess(agentId: string) {
     onSuccess: () => qc.invalidateQueries({ queryKey: accessKey(agentId) }),
   });
 }
+
+/** A tool call the department frame (or the agent's own guardrails)
+ *  withholds (backend oc8.connections.tool_denied): which tool, and whose
+ *  guardrails allow it. */
+export interface ToolDeniedInfo {
+  connection: string;
+  tool: string | null;
+  label: string | null;
+  right: string | null;
+  reason:
+    | "tool_not_in_frame"
+    | "connection_not_in_frame"
+    | "connection_disabled"
+    | "right_not_granted";
+  scope: "department" | "agent";
+  departmentId: string | null;
+  agentId: string | null;
+}
