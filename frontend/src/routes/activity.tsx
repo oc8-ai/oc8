@@ -70,7 +70,7 @@ function RunFocus({
               type="button"
               onClick={onClose}
               aria-label={t("Close run", "Lauf schließen")}
-              className="ml-auto rounded-md p-1 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="ml-auto grid size-11 place-items-center rounded-md text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:size-9"
             >
               <X className="size-4" aria-hidden />
             </button>

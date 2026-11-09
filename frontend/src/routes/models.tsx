@@ -206,7 +206,7 @@ export function ChatAvailabilitySwitch({
         )}
       </p>
       {failed && (
-        <p role="alert" className="mt-1 text-xs text-[color:var(--status-error)]">
+        <p role="alert" className="mt-1 text-xs text-status-error">
           {t(
             "Could not save. Try again.",
             "Konnte nicht gespeichert werden. Versuch es noch einmal.",

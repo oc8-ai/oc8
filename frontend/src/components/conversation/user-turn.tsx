@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import { BookOpen, Paperclip, Pencil } from "lucide-react";
+import { Paperclip, Pencil } from "lucide-react";
 
 import { ChatMarkdown } from "@/components/chat-markdown";
 import { downloadFileAttachment } from "@/lib/api";
 import { answersOf } from "@/lib/hooks-chat";
 import { useT } from "@/lib/i18n";
 
+import { kindIcon } from "./context-icons";
 import { QuestionSummary } from "./question-card";
 import type { UserTurnModel } from "./types";
 import { useObjectNavigation } from "./use-object-navigation";
@@ -75,7 +76,7 @@ export function UserTurn({
           {m.authorName}
         </span>
       )}
-      <div className="max-w-[85%] space-y-2 rounded-lg bg-muted px-3 py-2">
+      <div className="min-w-0 max-w-[85%] space-y-2 rounded-lg bg-muted px-3 py-2 [overflow-wrap:anywhere]">
         {m.mode && (
           <span className="inline-block rounded-full border border-border px-2 font-mono text-xs text-muted-foreground">
             /{m.mode}
@@ -107,15 +108,18 @@ export function UserTurn({
         )}
         {m.contextRefs.length > 0 && (
           <ul className="flex flex-wrap gap-1">
-            {m.contextRefs.map((ref) => (
-              <li
-                key={`${ref.kind}-${ref.id}`}
-                className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-2 text-xs text-muted-foreground"
-              >
-                <BookOpen className="size-3.5" aria-hidden />
-                {ref.label}
-              </li>
-            ))}
+            {m.contextRefs.map((ref) => {
+              const Icon = kindIcon(ref.kind);
+              return (
+                <li
+                  key={`${ref.kind}-${ref.id}`}
+                  className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-2 text-xs text-muted-foreground"
+                >
+                  <Icon className="size-3.5" aria-hidden />
+                  {ref.label}
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>

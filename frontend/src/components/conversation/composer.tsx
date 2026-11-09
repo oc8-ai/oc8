@@ -115,8 +115,9 @@ function maxMb(): number {
   return Math.round(MAX_ATTACHMENT_BYTES / (1024 * 1024));
 }
 
+// 44 px on touch screens, 36 px with a pointer (DESIGN.md, Buttons).
 const ICON_BUTTON =
-  "grid size-9 place-items-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
+  "grid size-11 place-items-center sm:size-9 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
 
 export function Composer(props: ComposerProps) {
   const t = useT();
@@ -152,8 +153,12 @@ export function Composer(props: ComposerProps) {
   const [dismissed, setDismissed] = useState<SigilToken | null>(null);
   const textOnly = !!props.textOnlyHint;
   const typedSigil = props.disabled ? null : activeSigil(props.draft, caret);
-  // # pins context, which an answer cannot carry.
-  const rawSigil = textOnly && typedSigil?.kind === "#" ? null : typedSigil;
+  // # pins context, which an answer cannot carry; @ addresses an agent only
+  // where the surface offers some (the dock).
+  const rawSigil =
+    (textOnly && typedSigil?.kind === "#") || (typedSigil?.kind === "@" && !props.agentItems)
+      ? null
+      : typedSigil;
   const sigil: SigilToken | null =
     rawSigil &&
     !(

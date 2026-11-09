@@ -126,10 +126,28 @@ export function AssistantTurn({
       .catch(() => undefined);
   }
 
+  const [feedbackFailed, setFeedbackFailed] = useState<string | null>(null);
   function rate(value: "up" | "down") {
     if (!message) return;
-    setRatings((prev) => ({ ...prev, [message.id]: value }));
-    feedback.mutate({ messageId: message.id, rating: value });
+    const id = message.id;
+    const before = ratings[id];
+    setFeedbackFailed(null);
+    setRatings((prev) => ({ ...prev, [id]: value }));
+    feedback.mutate(
+      { messageId: id, rating: value },
+      {
+        // A failed save reverts the control and says so (DESIGN.md, Error).
+        onError: () => {
+          setRatings((prev) => {
+            const next = { ...prev };
+            if (before) next[id] = before;
+            else delete next[id];
+            return next;
+          });
+          setFeedbackFailed(id);
+        },
+      },
+    );
   }
 
   return (
@@ -218,6 +236,14 @@ export function AssistantTurn({
             <MessageActions message={message} sessionId={sessionId} readOnly={readOnly} />
           )}
         </div>
+      )}
+      {message && feedbackFailed === message.id && (
+        <p role="alert" className="text-xs text-status-error">
+          {t(
+            "Your rating was not saved. Try again.",
+            "Deine Bewertung wurde nicht gespeichert. Versuch es noch einmal.",
+          )}
+        </p>
       )}
     </article>
   );

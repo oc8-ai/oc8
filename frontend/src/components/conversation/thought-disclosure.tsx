@@ -56,7 +56,7 @@ export function ThoughtDisclosure({
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         disabled={!text}
-        className="inline-flex items-center gap-1 rounded-md text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-default disabled:hover:text-muted-foreground"
+        className="inline-flex min-h-11 items-center gap-1 rounded-md text-xs text-muted-foreground hover:text-foreground sm:min-h-9 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-default disabled:hover:text-muted-foreground"
       >
         <ChevronRight
           className={cn("size-3.5 transition-transform duration-150", open && "rotate-90")}

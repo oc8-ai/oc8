@@ -303,16 +303,21 @@ describe("Copilot sidebar", () => {
     expect(onSelect).toHaveBeenCalledWith("fresh");
   });
 
-  it("tells the member when a write fails", async () => {
+  it("tells the member inline when a write fails, not only in a toast", async () => {
     mount();
     openMenu("More: Today chat");
     fireEvent.click(screen.getByRole("menuitem", { name: "Pin" }));
-    (m.pin.mock.calls[0][1] as { onError: () => void }).onError();
-    expect(toast.error).toHaveBeenCalledWith("The chat was not changed. Try again.");
+    act(() => (m.pin.mock.calls[0][1] as { onError: () => void }).onError());
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The chat was not changed. Try again.",
+    );
     await confirmDelete("Today chat");
     await waitFor(() => expect(m.del).toHaveBeenCalled());
-    (m.del.mock.calls[0][1] as { onError: () => void }).onError();
-    expect(toast.error).toHaveBeenCalledWith("The chat was not deleted. Try again.");
+    act(() => (m.del.mock.calls[0][1] as { onError: () => void }).onError());
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent("The chat was not deleted. Try again."),
+    );
+    expect(toast.error).not.toHaveBeenCalled();
   });
 
   it("deleting the only open chat starts a new one", async () => {

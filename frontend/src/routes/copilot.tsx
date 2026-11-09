@@ -3,6 +3,7 @@ import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ChatHeaderActions, SidePanelHost, SidePanelProvider } from "@/edition/slots";
 import { Conversation } from "@/components/conversation";
+import { copilotStarters } from "@/components/conversation/copilot-starters";
 import { CopilotSidebar } from "@/components/conversation/copilot-sidebar";
 import { CopilotAvatar, CopilotPersonaHeader } from "@/components/copilot-persona";
 import { CopilotWorkPanel } from "@/components/copilot-work-panel";
@@ -81,7 +82,7 @@ function ForeignSessionNotice({ agentId }: { agentId: string }) {
   const href = `/agents/${encodeURIComponent(agentId)}`;
   return (
     <p role="status" className="border-b border-border px-4 py-2 text-xs text-muted-foreground">
-      {t("This conversation belongs to ", "Dieses Gespräch gehört zu ")}
+      {t("This chat belongs to ", "Dieser Chat gehört zu ")}
       <a
         href={href}
         onClick={(e) => {
@@ -209,23 +210,7 @@ export function CopilotPage({
   const mobile = useIsMobile();
   if (!may("copilot:use")) return null; // nav is the main gate; defense in depth
   const name = profile?.displayName ?? "Copilot";
-  const starters = [
-    {
-      title: t("Keep an eye on something for me", "Behalte etwas für mich im Blick"),
-      subtitle: t(
-        "I check it and tell you when it matters",
-        "Ich prüfe es und melde mich, wenn es wichtig wird",
-      ),
-    },
-    {
-      title: t("What are you working on for me?", "Woran arbeitest du gerade für mich?"),
-      subtitle: t("Open responsibilities and follow-ups", "Offene Aufgaben und Nachfassungen"),
-    },
-    {
-      title: t("What is waiting on me?", "Was wartet auf mich?"),
-      subtitle: t("Approvals and questions", "Freigaben und Fragen"),
-    },
-  ];
+  const starters = copilotStarters(t);
   const chat = agentId ? (
     <Conversation
       agentId={agentId}
@@ -277,7 +262,9 @@ export function CopilotPage({
                     <Button variant="outline" size="sm">
                       {t("Work", "Arbeit")}
                       {profile?.status === "waiting" && profile.activeCount > 0 && (
-                        <span className="ml-1 rounded-full bg-primary px-1.5 text-xs text-primary-foreground">
+                        // Waiting on you: the orange dot and count (DESIGN.md).
+                        <span className="ml-1 inline-flex items-center gap-1 text-xs">
+                          <span className="size-2 rounded-full bg-status-warning" aria-hidden />
                           {profile.activeCount}
                         </span>
                       )}

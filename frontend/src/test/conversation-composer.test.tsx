@@ -245,6 +245,26 @@ describe("Composer", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(/text only/);
   });
 
+  it("offers no empty Agents list for @ where the surface has no agents", () => {
+    render(<Harness />);
+    const box = screen.getByRole("textbox", { name: /Message/ });
+    fireEvent.change(box, { target: { value: "mail @ten", selectionStart: 9 } });
+    expect(screen.queryByText("Agents")).toBeNull();
+    expect(screen.queryByText("Nothing matches that.")).toBeNull();
+  });
+
+  it("gives Send and Stop a 44 px target on touch screens", () => {
+    const { unmount } = render(<Harness />);
+    expect(screen.getByRole("button", { name: "Send" }).className).toMatch(
+      /\bsize-11\b.*\bsm:size-9\b/,
+    );
+    unmount();
+    render(<Harness busy />);
+    expect(screen.getByRole("button", { name: "Stop the answer" }).className).toMatch(
+      /\bsize-11\b/,
+    );
+  });
+
   it("renders the above, target and trailing slots and extra + items", () => {
     const onSelect = vi.fn();
     render(

@@ -85,7 +85,11 @@ export function useScrollAnchor(dep: unknown, resetKey?: unknown) {
     atBottomRef.current = true;
     pinning.current = true;
     setAtBottom(true);
-    scrollEl(el, el.scrollHeight, "smooth");
+    // An explicit "smooth" overrides the global reduced-motion CSS rule.
+    const reduce =
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    scrollEl(el, el.scrollHeight, reduce ? "auto" : "smooth");
   }, []);
 
   return { ref, contentRef, atBottom, scrollToBottom };

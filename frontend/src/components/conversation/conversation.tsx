@@ -467,6 +467,21 @@ function ConversationBody(props: ConversationProps) {
   // The + menu item that opened a picker is gone once it closes.
   const composerArea = useRef<HTMLDivElement>(null);
   const focusComposer = () => composerArea.current?.querySelector("textarea")?.focus();
+  // An answered question's card unmounts with the focus inside it: the
+  // reader carries on in the composer instead of at the top of the page.
+  const pendingId = pending?.clarificationId ?? null;
+  const lastPending = useRef(pendingId);
+  useEffect(() => {
+    const had = lastPending.current;
+    lastPending.current = pendingId;
+    if (
+      had &&
+      had !== pendingId &&
+      (!document.activeElement || document.activeElement === document.body)
+    ) {
+      focusComposer();
+    }
+  }, [pendingId]);
   const pinnedAbove =
     props.sessionId && (pins.length > 0 || pinError) ? (
       <>
@@ -822,6 +837,8 @@ function ConversationBody(props: ConversationProps) {
           onClose={(notice) => {
             if (notice) setQuestionNotice(notice);
             setDismissed(pending.clarificationId);
+            // Focus was inside the card that is going away.
+            requestAnimationFrame(focusComposer);
           }}
         />
       )
@@ -952,10 +969,10 @@ function ConversationBody(props: ConversationProps) {
               <button
                 type="button"
                 onClick={() => setShowBudget(false)}
-                aria-label={t("Close", "Schließen")}
-                className="rounded-md text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label={t("Close budget", "Budget schließen")}
+                className="-mr-2 grid size-11 place-items-center rounded-md text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:size-9"
               >
-                <X className="size-3" aria-hidden />
+                <X className="size-3.5" aria-hidden />
               </button>
             </div>
             {budget ? (

@@ -6,6 +6,7 @@ import { urlId } from "@/lib/ids";
 import { CopilotPersonaHeader } from "@/components/copilot-persona";
 import type { SigilItem } from "@/components/composer-sigils";
 import { Conversation } from "@/components/conversation";
+import { copilotStarters } from "@/components/conversation/copilot-starters";
 import { useT } from "@/lib/i18n";
 import { useCan, useMay } from "@/lib/governance-hooks";
 import type { CopilotProposal } from "@/lib/hooks";
@@ -522,12 +523,13 @@ function CopilotDockPanel() {
               }
               placeholder={t("Configure or ask oc8…", "oc8 konfigurieren oder fragen …")}
               emptyState={<p className="py-6 text-sm text-muted-foreground">{greeting(de)}</p>}
+              promptStarters={activeTab.agentId ? undefined : copilotStarters(t)}
               composerAbove={
                 activeTab.agentId ? (
                   <p className="text-xs text-muted-foreground">
                     {t(
-                      `This conversation goes to ${activeAgentName ?? "an agent"} — not the copilot.`,
-                      `Dieses Gespräch geht an ${activeAgentName ?? "einen Agenten"} — nicht an den Copilot.`,
+                      `This chat goes to ${activeAgentName ?? "an agent"} — not the copilot.`,
+                      `Dieser Chat geht an ${activeAgentName ?? "einen Agenten"} — nicht an den Copilot.`,
                     )}
                   </p>
                 ) : undefined

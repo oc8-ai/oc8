@@ -5,7 +5,6 @@
 // opens from a button, in a sheet.
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
-import { toast } from "sonner";
 import {
   FolderPlus,
   MoreHorizontal,
@@ -13,6 +12,7 @@ import {
   PanelLeftOpen,
   Plus,
   MessageSquare,
+  X,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -381,6 +381,10 @@ export function CopilotSidebar({
     ),
   };
 
+  // A failed row action is said at the top of the list, never only in a
+  // toast (DESIGN.md, Error).
+  const [actionError, setActionError] = useState<string | null>(null);
+
   async function removeSession(s: ChatSessionDTO) {
     const title = s.title || t("Untitled chat", "Unbenannter Chat");
     const ok = await confirm({
@@ -394,7 +398,7 @@ export function CopilotSidebar({
     });
     if (!ok) return;
     deleteSession.mutate(s.id, {
-      onError: () => toast.error(failed.delete),
+      onError: () => setActionError(failed.delete),
       onSuccess: () => {
         if (s.id !== sessionId) return;
         // The next most recent chat, whatever is pinned; a new chat if none.
@@ -416,7 +420,7 @@ export function CopilotSidebar({
       confirmLabel: t("Delete project", "Projekt löschen"),
       cancelLabel: t("Cancel", "Abbrechen"),
     });
-    if (ok) deleteProject.mutate(p.id, { onError: () => toast.error(failed.deleteProject) });
+    if (ok) deleteProject.mutate(p.id, { onError: () => setActionError(failed.deleteProject) });
   }
 
   const actions: RowActions = {
@@ -424,17 +428,17 @@ export function CopilotSidebar({
     rename: (s, title) =>
       renameSession.mutate(
         { sessionId: s.id, title },
-        { onError: () => toast.error(failed.rename) },
+        { onError: () => setActionError(failed.rename) },
       ),
     pin: (s) =>
       pinSession.mutate(
         { sessionId: s.id, pinned: !s.pinned },
-        { onError: () => toast.error(failed.pin) },
+        { onError: () => setActionError(failed.pin) },
       ),
     move: (s, projectId) =>
       moveSession.mutate(
         { sessionId: s.id, projectId },
-        { onError: () => toast.error(failed.move) },
+        { onError: () => setActionError(failed.move) },
       ),
     remove: (s) => void removeSession(s),
   };
@@ -454,6 +458,19 @@ export function CopilotSidebar({
 
   const list = (
     <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-2">
+      {actionError && (
+        <p role="alert" className="flex items-start gap-2 px-2 text-xs text-status-error">
+          <span className="flex-1">{actionError}</span>
+          <button
+            type="button"
+            onClick={() => setActionError(null)}
+            aria-label={t("Dismiss", "Schließen")}
+            className="grid size-11 shrink-0 place-items-center rounded-md text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:size-9"
+          >
+            <X className="size-3.5" aria-hidden />
+          </button>
+        </p>
+      )}
       {isLoading ? (
         <ListSkeleton />
       ) : (

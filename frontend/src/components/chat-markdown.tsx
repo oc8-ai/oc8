@@ -65,10 +65,15 @@ function CodeBlock({ children }: { children?: ReactNode }) {
   }, [code, language]);
 
   function copy() {
-    void navigator.clipboard.writeText(code).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
+    // navigator.clipboard is undefined outside a secure context.
+    if (!navigator.clipboard) return;
+    navigator.clipboard
+      .writeText(code)
+      .then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      })
+      .catch(() => undefined);
   }
 
   return (
@@ -236,12 +241,13 @@ export function ChatMarkdown({
           target="_blank"
           rel="noopener noreferrer"
           className={cn(
-            "inline-flex items-baseline gap-0.5 rounded-md text-primary underline",
+            // Inline, so a long URL wraps instead of widening the column.
+            "inline rounded-md text-primary underline",
             FOCUS,
           )}
         >
           {children}
-          <ExternalLink className="size-3.5 self-center" aria-hidden />
+          <ExternalLink className="ml-0.5 inline size-3.5 align-text-bottom" aria-hidden />
           <span className="sr-only">{t(" (opens in a new tab)", " (öffnet in neuem Tab)")}</span>
         </a>
       );
@@ -258,7 +264,7 @@ export function ChatMarkdown({
       data-testid={streaming ? "stream-caret" : undefined}
       className={cn(
         streaming && "stream-caret",
-        "space-y-2 text-sm leading-relaxed text-foreground [&_code]:rounded-md [&_code]:bg-muted [&_code]:px-1 [&_code]:font-mono [&_code]:text-xs [&_h1]:text-base [&_h1]:font-semibold [&_h2]:text-base [&_h2]:font-semibold [&_h3]:text-sm [&_h3]:font-semibold [&_li]:ml-4 [&_ol]:list-decimal [&_ol]:space-y-0.5 [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:space-y-0.5 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_table]:block [&_table]:w-full [&_table]:overflow-x-auto [&_table]:border-collapse [&_th]:border [&_th]:border-border [&_th]:px-2 [&_th]:py-1 [&_th]:text-left [&_th]:font-medium [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1",
+        "min-w-0 space-y-2 text-sm leading-relaxed text-foreground [overflow-wrap:anywhere] [&_code]:rounded-md [&_code]:bg-muted [&_code]:px-1 [&_code]:font-mono [&_code]:text-xs [&_h1]:text-base [&_h1]:font-semibold [&_h2]:text-base [&_h2]:font-semibold [&_h3]:text-sm [&_h3]:font-semibold [&_li]:ml-4 [&_ol]:list-decimal [&_ol]:space-y-0.5 [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:space-y-0.5 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_table]:block [&_table]:w-full [&_table]:overflow-x-auto [&_table]:border-collapse [&_th]:border [&_th]:border-border [&_th]:px-2 [&_th]:py-1 [&_th]:text-left [&_th]:font-medium [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1",
         className,
       )}
     >

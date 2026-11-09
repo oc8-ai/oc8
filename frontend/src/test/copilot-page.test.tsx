@@ -123,7 +123,7 @@ describe("CopilotPage", () => {
       </QueryClientProvider>,
     );
     expect(screen.getByTestId("chat")).toHaveAttribute("data-session", "");
-    expect(screen.getByText(/This conversation belongs to/)).toBeInTheDocument();
+    expect(screen.getByText(/This chat belongs to/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Stock agent" })).toHaveAttribute(
       "href",
       "/agents/agent-2",

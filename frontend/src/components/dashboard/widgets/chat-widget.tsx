@@ -5,6 +5,7 @@ import { useState } from "react";
 import { urlId } from "@/lib/ids";
 import { Plus, WifiOff } from "lucide-react";
 import { Conversation } from "@/components/conversation";
+import { copilotStarters } from "@/components/conversation/copilot-starters";
 import { PendingProposals } from "@/components/copilot-dock";
 import { SessionPicker } from "@/components/conversation/session-picker";
 import { useCan } from "@/lib/governance-hooks";
@@ -105,6 +106,16 @@ function ChatWidgetPanel({
             variant="compact"
             draft={draft}
             onDraftChange={setDraft}
+            placeholder={t("Ask your Copilot …", "Frag deinen Copilot …")}
+            emptyState={
+              <p className="py-4 text-sm text-muted-foreground">
+                {t(
+                  "No chat here yet. Ask your Copilot something, or start with one of these.",
+                  "Hier gibt es noch keinen Chat. Frag deinen Copilot etwas oder fang mit einem davon an.",
+                )}
+              </p>
+            }
+            promptStarters={copilotStarters(t)}
           />
         )}
       </div>

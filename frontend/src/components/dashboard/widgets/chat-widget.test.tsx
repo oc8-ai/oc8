@@ -57,11 +57,19 @@ describe("ChatWidget", () => {
 
   it("binds the conversation to the tile's session without writing config on mount", () => {
     const onConfigChange = vi.fn();
-    render(<ChatWidget config={{ sessionId: "s1" }} onConfigChange={onConfigChange} />, {
+    const sid = "0190f2a0-0000-7000-8000-000000000001";
+    render(<ChatWidget config={{ sessionId: sid }} onConfigChange={onConfigChange} />, {
       wrapper,
     });
-    expect(screen.getByTestId("conversation")).toHaveTextContent("s1");
+    expect(screen.getByTestId("conversation")).toHaveTextContent(sid);
     expect(onConfigChange).not.toHaveBeenCalled();
+  });
+
+  it("never puts a stored session id that is not a UUID into a path", () => {
+    render(<ChatWidget config={{ sessionId: "../members" }} onConfigChange={vi.fn()} />, {
+      wrapper,
+    });
+    expect(screen.getByTestId("conversation")).not.toHaveTextContent("../members");
   });
 
   it("writes the newly created session id back into config", () => {
