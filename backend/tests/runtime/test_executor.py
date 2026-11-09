@@ -1102,6 +1102,54 @@ async def test_a_crashed_chat_run_still_records_a_reply_and_tells_telegram(
         assert "the model provider hung up" in run.context["error"]
 
 
+async def test_a_chat_run_stopped_for_repeating_a_question_still_records_a_reply(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The repeated-question guard fails the run instead of parking it again --
+    and, like the crash path once did, it never called `record_assistant_reply`,
+    so the member's answer was the last line of the chat for ever (seen live in
+    the agent builder E2E, 2026-11-09, with a small local model)."""
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    run_id, session_id = await _make_chat_run(
+        app_session, tenant, chat_channel="telegram", chat_channel_external_id="559"
+    )
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {
+            **run.context,
+            "clarifications": [{"question": "Welche Abteilung?", "answer": "Accounting"}],
+        }
+    fake = _RecordingChannels(app_session, tenant, run_id)
+    monkeypatch.setattr("oc8.channels.registry.channels_for_tenant", fake._channels_for_tenant)
+
+    async def fake_runner(db: Any, **kw: Any) -> RunResult:
+        return RunResult(
+            task_id=uuid.uuid4(),
+            agent_id=kw["agent"].id,
+            status="waiting_for_input",
+            output="Welche Abteilung?",
+            tool_calls=[],
+            steps=1,
+        )
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=_FnRuntime(fake_runner),
+    )
+
+    assert fake.observed_states == [RunState.FAILED.value]
+    assert len(fake.said) == 1 and fake.said[0][0] == "559"
+    async with app_session(tenant) as s:
+        messages = (
+            (await s.execute(select(m.ChatMessage).where(m.ChatMessage.session_id == session_id)))
+            .scalars()
+            .all()
+        )
+        assert len(messages) == 1, "a run stopped for a repeated question left no reply"
+        assert f"(oc8://run/{run_id})" in messages[0].content
+
+
 def _make_inactive(tenant: uuid.UUID) -> None:
     from oc8.tenants.activity import set_tenant_activity_gate
 
