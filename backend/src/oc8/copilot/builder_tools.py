@@ -61,8 +61,10 @@ _REFUSALS: dict[str, str] = {
 
 #: Losing the open-proposal race to a concurrent call is not the model's fault.
 _RETRY = (
-    "ERROR: another proposal was being saved in this conversation at the same "
-    "moment, so nothing was saved. Call propose_agent again with the same operations."
+    "ERROR: this conversation's proposal was being changed at the same moment "
+    "(saved, created or sent for approval), so nothing was saved. Call "
+    "propose_agent again with the same operations; if that reports "
+    "awaiting_approval, tell the person to wait for the decision."
 )
 
 
