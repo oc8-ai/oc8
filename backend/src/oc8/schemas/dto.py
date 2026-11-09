@@ -178,6 +178,9 @@ class ApprovalDTO(CamelModel):
     reason_context: dict[str, Any] | None = None
     #: The record in the source system, when the held call names one.
     record_url: str | None = None
+    #: The builder proposal a `copilot.agent_builder` approval decides, so the
+    #: pane can show the same preview read-only. None for every other kind.
+    proposal_id: str | None = None
 
 
 class QuestionOptionDTO(CamelModel):

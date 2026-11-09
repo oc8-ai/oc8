@@ -306,6 +306,11 @@ def approval_to_dto(a: m.ApprovalRequest, names: ApprovalNames | None = None) ->
         # (and any raiser that still only writes the payload).
         record_url=a.record_url
         or (payload.get("record_url") if isinstance(payload.get("record_url"), str) else None),
+        proposal_id=(
+            str(payload["proposal_id"])
+            if a.action_type == "copilot.agent_builder" and payload.get("proposal_id")
+            else None
+        ),
     )
 
 

@@ -88,6 +88,18 @@ class UnknownOption(ApprovalError):
     pass
 
 
+class EffectRefused(ApprovalError):
+    """Approving would apply an effect that can no longer be applied -- the agent
+    builder's name taken meanwhile, its department archived, a model switched
+    off. Raised AFTER the status flip: the caller must not commit. The inbox
+    route answers 409 and the request transaction rolls back, so the approval
+    stays pending and nothing is half-created."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(f"agent_builder:{code}")
+        self.code = code
+
+
 class NotYourSayAtAll(ApprovalError):
     """The actor may decide in this department, but not THIS kind of approval.
 
@@ -131,6 +143,11 @@ EFFECT_PERMISSIONS: Final[dict[str, str | None]] = {
     # Activates a pending agent, or soft-deletes it (`agents/hire.py`). Creating
     # one needs `agent:manage`; bringing it into service is the same authority.
     "hire_agent": perm(AGENT, MANAGE),
+    # Creates and configures an agent (`oc8.copilot.builder`). The same right as
+    # creating one there directly: tenant-wide `agent:manage`, OR the seat's
+    # agent_manage toggle in the approval's own department -- see
+    # `_may_apply_the_effect`, which checks the toggle first.
+    "copilot.agent_builder": perm(AGENT, MANAGE),
     # None means "a seat is enough", and each one is a claim, not a default:
     #
     # `tool_send` resumes the run that is holding the call -- the 3000-EUR gate,
@@ -145,7 +162,13 @@ EFFECT_PERMISSIONS: Final[dict[str, str | None]] = {
 }
 
 
-async def _may_apply_the_effect(db: AsyncSession, actor: DecisionActor, action_type: str) -> bool:
+async def _may_apply_the_effect(
+    db: AsyncSession,
+    actor: DecisionActor,
+    action_type: str,
+    *,
+    department_id: uuid.UUID | None = None,
+) -> bool:
     """Does this actor hold what approving THIS kind of approval actually costs?
 
     An unknown `action_type` is refused for anybody without `approval:decide_any`
@@ -169,7 +192,18 @@ async def _may_apply_the_effect(db: AsyncSession, actor: DecisionActor, action_t
     Async for that one reason -- the answer is a row now, and the alternative
     (carrying the resolved set on `HumanActor`) would put a default on the actor
     that a future door could satisfy by leaving it out.
+
+    `copilot.agent_builder` is the one effect a SEAT can carry: the seat's
+    agent_manage toggle in the approval's own department (`department_id`),
+    the same toggle `authorize_agent_write` honours for creating an agent
+    there directly. Without the toggle it falls back to the table's
+    tenant-wide `agent:manage`.
     """
+    if action_type == "copilot.agent_builder":
+        if not isinstance(actor, HumanActor):
+            return False
+        if actor.scope.may_manage_agents(department_id):
+            return True
     required = EFFECT_PERMISSIONS.get(action_type, APPROVAL_DECIDE_ANY)
     if required is None:
         return True
@@ -435,13 +469,20 @@ async def decide_approval(
     # vocabulary is closed against. Checked in the funnel and not at the route,
     # because the action_type is on the ROW -- a gate cannot see it, which is the
     # same reason the department term lives here.
-    if not await _may_apply_the_effect(db, actor, approval.action_type):
+    if not await _may_apply_the_effect(
+        db, actor, approval.action_type, department_id=approval.department_id
+    ):
         raise NotYourSayAtAll(
             f"deciding a {approval.action_type!r} approval requires "
             f"{EFFECT_PERMISSIONS.get(approval.action_type, APPROVAL_DECIDE_ANY)}"
         )
     if decision not in _STATUS:
         raise UnknownDecision(f"unknown decision {decision!r}")
+    # THIRD, the row itself, locked and read fresh: two people deciding the same
+    # approval at once serialise here, and the second one reads the first one's
+    # answer instead of applying the effect a second time. Only after both
+    # checks above, so the lock answers nothing about a row the actor may not see.
+    await db.refresh(approval, attribute_names=["status", "decided_at"], with_for_update=True)
     if approval.status != "pending":
         raise AlreadyDecided(approval.status, approval.decided_at)
 
@@ -517,6 +558,14 @@ async def decide_approval(
             # in waiting_for_approval, where it reads as "still waiting on a human"
             # forever and quietly fills the board with undead work.
             await _abandon_unresumable(db, approval=approval)
+    elif approval.action_type == "copilot.agent_builder":
+        from oc8.copilot.builder import resolve_builder_approval
+
+        # Applies the proposal with the approver's authority, or records the
+        # rejection. Raises EffectRefused when the world changed underneath it.
+        await resolve_builder_approval(
+            db, approval=approval, decision=decision, reason=reason, actor=actor
+        )
 
     await _close_out(db, approval)
     await append_event(

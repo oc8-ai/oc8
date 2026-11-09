@@ -11,6 +11,7 @@ from oc8.api.deps import DbSession, require_departmental
 from oc8.api.v1._serializers import approval_to_dto
 from oc8.approvals import (
     AlreadyDecided,
+    EffectRefused,
     NotYourDepartment,
     NotYourSayAtAll,
     UnknownDecision,
@@ -75,6 +76,11 @@ async def decide(
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     except UnknownOption as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+    except EffectRefused as exc:
+        # The decision could not take effect (the agent builder's name taken,
+        # its department gone). Raising rolls the request back: the approval
+        # stays pending and the approver reads why.
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
 
     dto = approval_to_dto(result.approval)
     # Only a tool_send decision suspends and resumes a run; the other action types

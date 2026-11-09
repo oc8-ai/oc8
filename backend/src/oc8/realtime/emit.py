@@ -59,6 +59,25 @@ async def publish_copilot_changed(tenant_id: uuid.UUID, *, member_id: uuid.UUID,
     )
 
 
+async def publish_builder_changed(
+    tenant_id: uuid.UUID,
+    *,
+    member_id: uuid.UUID,
+    proposal_id: uuid.UUID,
+    session_id: uuid.UUID | None,
+) -> None:
+    """A builder proposal's status changed (requested, applied, rejected).
+    To the requester only, ids only; the card refetches. Callers publish it
+    after their commit (`copilot.builder.announce_builder`)."""
+    await get_event_bus().publish_member_event(
+        tenant_id,
+        [member_id],
+        "copilot.agent_builder",
+        {"proposal_id": str(proposal_id), "session_id": str(session_id) if session_id else None},
+        source=f"oc8/copilot/builder/{proposal_id}",
+    )
+
+
 async def publish_mcp_test_log(
     tenant_id: uuid.UUID, *, connection_id: uuid.UUID, step: str, message: str
 ) -> None:
@@ -261,6 +280,10 @@ _after_commit_tasks: set[asyncio.Task[None]] = set()
 
 
 def _run_pending(session: Any) -> None:
+    # `after_commit` fires for a released SAVEPOINT too; only the root
+    # transaction's commit makes the rows visible to a reader.
+    if session.in_nested_transaction():
+        return
     pending = session.info.pop(_AFTER_COMMIT_KEY, [])
     if not pending:
         return

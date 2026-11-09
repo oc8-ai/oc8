@@ -26,7 +26,7 @@ from oc8.audit import append_event
 from oc8.auth import Principal
 from oc8.authz.authority import Authority
 from oc8.authz.permissions import AGENT, MANAGE, perm
-from oc8.authz.scope import DepartmentScope
+from oc8.authz.scope import DecisionActor, DepartmentScope, HumanActor
 from oc8.chat.model_choice import chat_enabled_model_ids
 from oc8.copilot.builder_ops import (
     BuilderInvalid,
@@ -51,6 +51,7 @@ from oc8.copilot.capabilities import (
 from oc8.copilot.models import CopilotOperation, CopilotProposal
 from oc8.copilot.redaction import carries_secret_value
 from oc8.departments.repo import visible_department
+from oc8.runtime.fencing import one_line
 
 logger = logging.getLogger(__name__)
 
@@ -484,3 +485,161 @@ async def apply_builder_proposal(
         principal=principal,
     )
     return agent_id
+
+
+async def announce_builder(db: AsyncSession, proposal: CopilotProposal) -> None:
+    """Tell the requester's open tabs the card changed, once this transaction
+    commits (a refetch before it would read the old status and stay stale; a
+    rollback drops the event). Best effort: realtime never breaks the write."""
+    try:
+        from oc8.realtime.emit import publish_after_commit, publish_builder_changed
+
+        session = await db.get(m.ChatSession, proposal.session_id) if proposal.session_id else None
+        if session is None:
+            return
+        tenant_id, member_id = proposal.tenant_id, session.member_id
+        proposal_id, session_id = proposal.id, proposal.session_id
+
+        async def _publish() -> None:
+            try:
+                await publish_builder_changed(
+                    tenant_id, member_id=member_id, proposal_id=proposal_id, session_id=session_id
+                )
+            except Exception:
+                logger.warning("could not announce builder proposal %s", proposal_id, exc_info=True)
+
+        publish_after_commit(db, _publish)
+    except Exception:
+        logger.warning("could not announce builder proposal %s", proposal.id, exc_info=True)
+
+
+async def _owned_by(db: AsyncSession, proposal: CopilotProposal, member: m.OrgMember) -> bool:
+    """The proposal's owner: whoever proposed it, in their own chat."""
+    if proposal.tenant_id != member.tenant_id or proposal.created_by != member.subject:
+        return False
+    session = await db.get(m.ChatSession, proposal.session_id) if proposal.session_id else None
+    return session is not None and session.member_id == member.id
+
+
+async def request_builder_approval(
+    db: AsyncSession, *, proposal_id: uuid.UUID, requester: m.OrgMember, now: dt.datetime
+) -> m.ApprovalRequest:
+    """Zur Freigabe senden: one ApprovalRequest in the agent's target
+    department, raised by the Copilot (an approval needs an agent; the agent
+    being proposed does not exist yet). Only the proposal's owner may send it;
+    for anybody else it does not exist. The approval carries ids, the name and
+    the role title -- never the mission (the queue and a messenger show it)."""
+    from oc8.agent.assistant import get_or_create_assistant
+    from oc8.approvals import raise_approval
+
+    proposal = await lock_builder_proposal(db, proposal_id)
+    if proposal is None or not await _owned_by(db, proposal, requester):
+        raise BuilderInvalid("not_found")
+    if expire_if_due(proposal, now=now):
+        await db.flush()
+        raise BuilderInvalid("expired")
+    if proposal.status != "draft":
+        raise BuilderInvalid("not_open")
+    create = _create_step(await load_steps(db, proposal))
+    if await _live_department(db, create.departmentId) is None:
+        raise BuilderInvalid("department_unknown", 0)
+    assistant = await get_or_create_assistant(db, tenant_id=proposal.tenant_id)
+    name = one_line(create.name, 120)
+    approval = await raise_approval(
+        db,
+        tenant_id=proposal.tenant_id,
+        agent_id=assistant.id,
+        action_type=AGENT_BUILDER_ACTION,
+        title=f"Create agent: {name}",
+        detail=one_line(create.roleTitle, 200),
+        payload={
+            "proposal_id": str(proposal.id),
+            "requested_by": str(requester.id),
+            "i18n": {"de": {"title": f"Agent anlegen: {name}"}},
+        },
+        expires_at=proposal.expires_at,
+        department_id=create.departmentId,
+    )
+    proposal.status = "awaiting_approval"
+    proposal.revision += 1
+    proposal.result = {**(proposal.result or {}), "approvalId": str(approval.id)}
+    await db.flush()
+    await append_event(
+        db,
+        tenant_id=proposal.tenant_id,
+        actor_type="operator",
+        actor_id=requester.id,
+        category="copilot",
+        action="agent_builder.requested",
+        resource={
+            "proposal_id": str(proposal.id),
+            "approval_id": str(approval.id),
+            "department_id": str(create.departmentId),
+            "requested_by": requester.subject,
+            "requested_by_member_id": str(requester.id),
+        },
+    )
+    await announce_builder(db, proposal)
+    return approval
+
+
+async def resolve_builder_approval(
+    db: AsyncSession,
+    *,
+    approval: m.ApprovalRequest,
+    decision: str,
+    reason: str | None,
+    actor: DecisionActor,
+) -> None:
+    """The approvals funnel's effect for `copilot.agent_builder`. Approve applies
+    the proposal as the approver; reject records the reason for the card.
+
+    Rejecting succeeds unless the proposal was applied -- an expired request
+    too, or nothing could ever clear it (Ruling A5). Approving an expired one
+    is refused and, the caller rolling back, leaves the approval pending. The
+    proposal row is locked (and the funnel locked the approval), so racing
+    decisions end in one outcome."""
+    from oc8.approvals.service import EffectRefused
+
+    try:
+        proposal_id = uuid.UUID(str((approval.payload or {}).get("proposal_id")))
+    except (TypeError, ValueError):
+        raise EffectRefused("not_found") from None
+    now = dt.datetime.now(tz=dt.UTC)
+    proposal = await lock_builder_proposal(db, proposal_id)
+    if proposal is None or proposal.tenant_id != approval.tenant_id:
+        raise EffectRefused("not_found")
+    if (proposal.result or {}).get("approvalId") != str(approval.id):
+        # Not the request this proposal is waiting on.
+        raise EffectRefused("not_open")
+    expire_if_due(proposal, now=now)
+    if proposal.status == "applied":
+        raise EffectRefused("already_applied")
+    if decision == "reject":
+        if proposal.status not in ("awaiting_approval", "expired"):
+            raise EffectRefused("not_open")
+        proposal.status = "rejected"
+        proposal.applied_by = actor.member.subject
+        proposal.revision += 1
+        proposal.result = {
+            **(proposal.result or {}),
+            "rejectedReason": (reason or "").strip()[:500],
+        }
+        await db.flush()
+        await announce_builder(db, proposal)
+        return
+    if proposal.status == "expired":
+        raise EffectRefused("expired")
+    try:
+        await apply_builder_proposal(
+            db,
+            proposal_id=proposal_id,
+            expect_status="awaiting_approval",
+            applied_by=actor.member.subject,
+            principal=actor.principal if isinstance(actor, HumanActor) else None,
+            now=now,
+            approval_id=approval.id,
+        )
+    except BuilderInvalid as exc:
+        raise EffectRefused(exc.code) from exc
+    await announce_builder(db, proposal)

@@ -40,7 +40,12 @@ SRC = pathlib.Path(__file__).resolve().parents[2] / "src" / "oc8"
 #: breach is genuinely company-wide: there is no department it belongs to, and
 #: filing it under the breaching agent's would hide the company's problem inside
 #: one team's queue.
-_MAY_OVERRIDE = {"metering/budget.py"}
+#:
+#: The agent builder overrides too, but never with None: the raising agent is
+#: the Copilot (the proposed agent does not exist yet), so deriving would file
+#: the request under the Copilot's department instead of the one the new agent
+#: is for (`copilot/builder.py::request_builder_approval`).
+_MAY_OVERRIDE = {"metering/budget.py", "copilot/builder.py"}
 
 
 def _subject_uuid(subject: str) -> uuid.UUID:

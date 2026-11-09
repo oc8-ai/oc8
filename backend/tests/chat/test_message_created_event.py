@@ -153,6 +153,26 @@ async def test_a_savepoint_rollback_keeps_the_pending_event(
     assert fired == ["x"]
 
 
+async def test_a_released_savepoint_does_not_publish_early(
+    app_session: AppSessionFactory,
+) -> None:
+    """A SAVEPOINT released inside the transaction is not the commit: the
+    event waits for the root transaction."""
+    fired: list[str] = []
+
+    async def _publish() -> None:
+        fired.append("x")
+
+    async with app_session(uuid.uuid4()) as db:
+        publish_after_commit(db, _publish)
+        async with db.begin_nested():
+            pass
+        await asyncio.sleep(0.01)
+        assert fired == []
+    await asyncio.sleep(0.01)
+    assert fired == ["x"]
+
+
 async def test_an_audience_lookup_failure_never_breaks_the_reply(
     app_session: AppSessionFactory, redis_url: str
 ) -> None:
