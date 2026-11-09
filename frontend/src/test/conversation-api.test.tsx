@@ -27,6 +27,7 @@ const session: ChatSessionDetailDTO = {
   kind: "chat",
   activeRuns: [{ runId: "r2", replyToId: "u1", state: "running" }],
   readOnly: false,
+  mode: null,
 };
 
 describe("useRegenerate", () => {

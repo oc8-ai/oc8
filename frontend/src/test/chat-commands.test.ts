@@ -126,3 +126,41 @@ describe("filtering the picker", () => {
     expect(matchCommands("zzz", ALL)).toEqual([] as ChatCommand[]);
   });
 });
+
+describe("a sticky mode", () => {
+  const withAgent = chatCommands(
+    [
+      ...MODES,
+      {
+        key: "agent",
+        summary: "Set up a new agent together.",
+        allowsTools: true,
+        allowsWrites: false,
+        sticky: true,
+      },
+    ],
+    () => true,
+  );
+
+  it("is a command on its own, without a body", () => {
+    expect(detectCommand("/agent", withAgent)).toEqual({
+      command: expect.objectContaining({ key: "agent", sticky: true }),
+      body: "",
+    });
+  });
+
+  it("still carries a body like any mode", () => {
+    expect(detectCommand("/agent leg einen an", withAgent)?.body).toBe("leg einen an");
+  });
+
+  it("leaves a bare per-turn mode a literal message", () => {
+    expect(detectCommand("/plan", withAgent)).toBeNull();
+  });
+
+  it("has a German summary", () => {
+    const de = (_en: string, de?: string) => de ?? _en;
+    expect(commandSummary("agent", "fallback", de)).toBe(
+      "Legt mit dir Schritt für Schritt einen neuen Agenten an. Ändert nichts, bis du bestätigst.",
+    );
+  });
+});

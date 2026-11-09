@@ -29,6 +29,8 @@ export interface ActiveRunDTO {
 }
 
 export interface ChatSessionDetailDTO extends ChatSessionDTO {
+  /** The sticky mode this chat is in ("agent"), or null. */
+  mode: string | null;
   modelOverrideId: string | null;
   kind: "chat" | "live";
   activeRuns: ActiveRunDTO[];
@@ -699,5 +701,22 @@ export function useSetSessionProject() {
         { projectId },
       ),
     onSuccess: (session) => writeSessionToCache(qc, session),
+  });
+}
+
+/** Keep a sticky mode on this chat, or leave it (null). Owner-only server-side. */
+export function useSetChatMode(sessionId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (mode: string | null) =>
+      api.put<ChatSessionDetailDTO>(`/chat/sessions/${encodeURIComponent(sessionId ?? "")}/mode`, {
+        mode,
+      }),
+    onSuccess: (session) => {
+      if (!sessionId) return;
+      qc.setQueryData<ChatSessionDetailDTO>(conversationKeys.session(sessionId), (prev) =>
+        prev ? { ...prev, mode: session.mode } : prev,
+      );
+    },
   });
 }
