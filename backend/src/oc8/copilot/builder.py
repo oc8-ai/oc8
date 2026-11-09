@@ -11,12 +11,13 @@ and the proposal names the step that refused.
 from __future__ import annotations
 
 import datetime as dt
-import json
 import logging
 import uuid
+from collections.abc import Iterator
 from typing import Any, Final, Literal
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import Text, cast, func, literal, or_, select
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -166,10 +167,27 @@ def _texts(operation: Operation) -> list[str]:
             if text is not None
         ]
     if isinstance(operation, GuardrailSet):
-        return [str(c.value) for c in operation.conditions if c.value is not None]
+        return [text for c in operation.conditions for text in _leaf_texts(c.model_dump())]
     if isinstance(operation, AgentNarrowingSet):
-        return [json.dumps(operation.narrowing, ensure_ascii=False)]
+        return list(_leaf_texts(operation.narrowing))
     return []
+
+
+def _leaf_texts(value: object, key: str | None = None) -> Iterator[str]:
+    """Every key and every leaf of a JSON-shaped value, and `key=value` for a
+    keyed leaf -- so `{"password": "x"}` reads as `password=x` to the secret
+    gate, at any depth (Ruling A20)."""
+    if isinstance(value, dict):
+        for k, v in value.items():
+            yield str(k)
+            yield from _leaf_texts(v, str(k))
+    elif isinstance(value, list | tuple):
+        for item in value:
+            yield from _leaf_texts(item, key)
+    elif value is not None:
+        yield str(value)
+        if key is not None:
+            yield f"{key}={value}"
 
 
 def _create_step(steps: list[BuilderStep]) -> AgentCreate:
@@ -206,7 +224,7 @@ async def check_selections(
         .where(
             m.Agent.tenant_id == tenant_id,
             m.Agent.deleted_at.is_(None),
-            func.lower(m.Agent.name) == create.name.strip().lower(),
+            func.lower(m.Agent.name) == func.lower(create.name.strip()),
         )
     )
     if taken:
@@ -216,7 +234,9 @@ async def check_selections(
         (
             await db.execute(
                 select(m.Skill.current_version_id).where(
-                    m.Skill.tenant_id == tenant_id, m.Skill.current_version_id.is_not(None)
+                    m.Skill.tenant_id == tenant_id,
+                    m.Skill.deleted_at.is_(None),
+                    m.Skill.current_version_id.is_not(None),
                 )
             )
         ).scalars()
@@ -290,8 +310,14 @@ async def create_builder_proposal(
         status="draft",
         result={},
     )
-    db.add(proposal)
-    await db.flush()
+    try:
+        # The open-builder unique index is the last word: a concurrent propose
+        # in the same chat that this one's FOR UPDATE could not see yet loses.
+        async with db.begin_nested():
+            db.add(proposal)
+            await db.flush()
+    except IntegrityError:
+        raise BuilderInvalid("superseded_concurrently") from None
     for ordinal, step in enumerate(steps):
         db.add(
             CopilotOperation(
@@ -352,6 +378,13 @@ async def _member_id(db: AsyncSession, *, tenant_id: uuid.UUID, subject: str) ->
     )
 
 
+async def _lock_agent_name(db: AsyncSession, *, tenant_id: uuid.UUID, name: str) -> None:
+    """Serialise applies that would create the same agent name in a tenant
+    until this transaction ends, so the name check cannot race."""
+    key = cast(literal(str(tenant_id)), Text) + ":" + func.lower(literal(name.strip()))
+    await db.execute(select(func.pg_advisory_xact_lock(func.hashtextextended(key, 0))))
+
+
 async def apply_builder_proposal(
     db: AsyncSession,
     *,
@@ -384,12 +417,12 @@ async def apply_builder_proposal(
     department = await _live_department(db, create.departmentId)
     if department is None:
         raise await _remember(db, proposal, BuilderInvalid("department_unknown", 0))
+    await _lock_agent_name(db, tenant_id=proposal.tenant_id, name=create.name)
     try:
         await check_selections(db, tenant_id=proposal.tenant_id, department=department, steps=steps)
     except BuilderInvalid as refused:
         raise await _remember(db, proposal, refused) from None
     refs: dict[str, uuid.UUID] = {}
-    agent_id: uuid.UUID | None = None
     failed_at = 0
     try:
         async with db.begin_nested():
@@ -401,14 +434,14 @@ async def apply_builder_proposal(
                     if created is None:
                         raise InvalidOperation()
                     refs[ref] = created
-                    agent_id = created
-    except (InvalidOperation, ValueError) as exc:
+    except (InvalidOperation, ValueError, SQLAlchemyError) as exc:
         # ValueError covers BuilderInvalid from resolve_step and any service
-        # refusal that is not yet an InvalidOperation. The savepoint is gone.
+        # refusal that is not yet an InvalidOperation; SQLAlchemyError a step
+        # the database refused. The savepoint is gone either way.
         failed = await _remember(db, proposal, BuilderInvalid("step_failed", failed_at))
         raise failed from exc
-    if agent_id is None:
-        raise BuilderInvalid("missing_create")
+    # `load_steps` admits exactly one ref, defined by the create step.
+    (agent_id,) = refs.values()
     agent = await db.get(m.Agent, agent_id)
     if agent is not None and agent.status == "pending_approval":
         # The tenant's hire gate held the new agent (`apply_operation` read the

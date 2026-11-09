@@ -3,13 +3,14 @@ use, applied in one transaction or not at all, single-use, expiring."""
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import uuid
 from typing import Any
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, text
 from starlette.requests import Request
 
 from oc8 import models as m
@@ -23,6 +24,7 @@ from oc8.copilot.builder import (
     may_create_agent,
 )
 from oc8.copilot.builder_ops import BuilderInvalid
+from oc8.copilot.capabilities import apply_operation
 from oc8.copilot.models import CopilotOperation, CopilotProposal
 from oc8.copilot.proposals import ProposalNotRejectable, ProposalRejected, apply_proposal
 from oc8.copilot.proposals import reject_proposal as reject_generic
@@ -134,6 +136,27 @@ async def test_selections_the_member_may_not_use_are_refused(
             "type": "agent.narrowing.set",
             "agentRef": "$new",
             "narrowing": {"tools": {"odoo": {"note": "api_key=sk-123"}}},
+        },
+        {
+            "type": "agent.narrowing.set",
+            "agentRef": "$new",
+            "narrowing": {"tools": {"odoo": {"password": "x"}}},
+        },
+        {
+            "type": "agent.guardrail.set",
+            "agentRef": "$new",
+            "connectionName": "odoo",
+            "function": "create_invoice",
+            "decision": "with_limits",
+            "conditions": [
+                {
+                    "attribute": "amount",
+                    "datatype": "number",
+                    "operator": "lt",
+                    "value": {"api_key": "sk-1"},
+                    "then": "approval_required",
+                }
+            ],
         },
     ],
 )
@@ -475,3 +498,108 @@ async def test_may_create_agent_agrees_with_the_agent_write_gate(
         scope = await scope_for_member(db, member, token_role=token_role)
         asked = may_create_agent(authority, scope, department_id)
         assert asked == await _gate_allows(db, member, department_id, token_role) == expected
+
+
+async def test_a_skill_archived_after_proposing_refuses_apply(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await builder_office(db, tenant)
+        proposal = await _propose(db, office, invoice_checker_ops(office))
+        skill = (await db.execute(select(m.Skill).where(m.Skill.tenant_id == tenant))).scalar_one()
+        skill.deleted_at = NOW
+        await db.flush()
+        with pytest.raises(BuilderInvalid) as caught:
+            await _apply(db, office, proposal.id)
+        assert caught.value.code == "skill_not_allowed" and caught.value.step == 2
+
+
+async def test_a_name_taken_after_proposing_refuses_apply_under_the_name_lock(
+    app_session: AppSessionFactory,
+) -> None:
+    """The name check at apply runs under a transaction-scoped advisory lock on
+    (tenant, lower(name)), and compares case-insensitively in SQL."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await builder_office(db, tenant)
+        proposal = await _propose(db, office, invoice_checker_ops(office, name="Invoice Checker"))
+        db.add(
+            m.Agent(tenant_id=tenant, department_id=office.department_id, name="INVOICE checker")
+        )
+        await db.flush()
+        with pytest.raises(BuilderInvalid) as caught:
+            await _apply(db, office, proposal.id)
+        assert caught.value.code == "name_taken" and caught.value.step == 0
+        # Another transaction cannot take the same (tenant, lower(name)) lock
+        # until this one ends.
+        async with app_session(tenant) as other:
+            free = await other.scalar(
+                text("SELECT pg_try_advisory_xact_lock(hashtextextended(:key, 0))"),
+                {"key": f"{tenant}:invoice checker"},
+            )
+        assert free is False
+
+
+async def test_a_database_refusal_in_a_step_is_a_failed_step(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = apply_operation
+
+    async def refusing(db: Any, *, tenant_id: uuid.UUID, data: dict[str, Any]) -> Any:
+        if data["type"] == "agent.skill.assign":
+            await db.execute(text("SELECT 1 / 0"))
+        return await real(db, tenant_id=tenant_id, data=data)
+
+    monkeypatch.setattr("oc8.copilot.builder.apply_operation", refusing)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await builder_office(db, tenant)
+        proposal = await _propose(db, office, invoice_checker_ops(office))
+        with pytest.raises(BuilderInvalid) as caught:
+            await _apply(db, office, proposal.id)
+        assert caught.value.code == "step_failed" and caught.value.step == 2
+        assert proposal.result == {"refusal": "step_failed", "failedStep": 2}
+        created = (
+            (await db.execute(select(m.Agent).where(m.Agent.name == "Rechnungsprüfer")))
+            .scalars()
+            .all()
+        )
+        assert created == [], "the session survives and nothing is half-created"
+
+
+async def test_a_concurrent_proposal_in_the_same_chat_loses_cleanly(
+    app_session: AppSessionFactory,
+) -> None:
+    """Two proposes in one chat at once: the second one's FOR UPDATE cannot see
+    the first's uncommitted draft, so the open-builder unique index decides,
+    and the loser gets a code rather than an IntegrityError."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await builder_office(db, tenant)
+
+    async def second() -> None:
+        async with app_session(tenant) as other:
+            await _propose(other, office, invoice_checker_ops(office, name="Zweite"))
+
+    async with app_session(tenant) as first:
+        await _propose(first, office, invoice_checker_ops(office))
+        racing = asyncio.create_task(second())
+        await asyncio.sleep(0.5)
+        assert not racing.done(), "the second insert waits on the first's index entry"
+    with pytest.raises(BuilderInvalid) as caught:
+        await racing
+    assert caught.value.code == "superseded_concurrently"
+    async with app_session(tenant) as db:
+        open_rows = (
+            (
+                await db.execute(
+                    select(CopilotProposal).where(
+                        CopilotProposal.kind == BUILDER_KIND, CopilotProposal.status == "draft"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(open_rows) == 1
