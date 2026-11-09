@@ -1867,9 +1867,7 @@ async def _dispatch_one_tool(
 
     assigned_skills = await load_assigned_skills(db, agent=agent, tenant_id=run.tenant_id)
     skill_tool_names = frozenset(s.tool_name for s in assigned_skills)
-    is_control_call = not renamed and (
-        tc.name in CONTROL_TOOL_NAMES or tc.name in skill_tool_names
-    )
+    is_control_call = not renamed and (tc.name in CONTROL_TOOL_NAMES or tc.name in skill_tool_names)
     # A core-owned tool (remember/ask/delegate/invoke a skill) is executed by the
     # control plane itself and needs no MCP connection. Requiring one here made
     # every one of them unusable on a run without a connection.
