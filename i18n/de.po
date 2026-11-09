@@ -1267,6 +1267,9 @@ msgstr "Einrichtung konnte nicht gestartet werden."
 msgid "Could not start the sign-in."
 msgstr "Anmeldung konnte nicht gestartet werden."
 
+msgid "Could not start the test"
+msgstr "Konnte den Test nicht starten"
+
 msgid "Could not sync a source"
 msgstr "Quelle konnte nicht synct werden"
 
@@ -5022,6 +5025,9 @@ msgstr "Wartet auf Freigabe"
 
 msgid "Waiting for confirmation…"
 msgstr "Warte auf Bestätigung …"
+
+msgid "Waiting for hiring approval"
+msgstr "Wartet auf Einstellungsfreigabe"
 
 msgid "waiting for input"
 msgstr "wartet auf Eingabe"
