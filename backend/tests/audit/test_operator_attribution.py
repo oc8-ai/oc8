@@ -80,4 +80,5 @@ async def test_non_operator_run_records_no_originating_operator(
                 headers={"Authorization": f"Bearer {token}"},
             )
             assert r.status_code == 403, r.text
-            assert "run:start" in r.text
+            # Refused at the run-reach door: a plugin principal stands in no department.
+            assert "operator principal" in r.text
