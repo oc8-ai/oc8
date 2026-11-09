@@ -232,6 +232,7 @@ export function Composer(props: ComposerProps) {
                 id: `${c.kind}:${c.id}`,
                 label: c.label,
                 hint: c.hint ?? kindLabel(c.kind, t),
+                icon: kindIcon(c.kind),
                 blocked: c.connected === false ? t("Not connected", "Nicht verbunden") : undefined,
               }))
           : [];

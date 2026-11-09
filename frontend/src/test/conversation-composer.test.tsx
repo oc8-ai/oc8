@@ -83,6 +83,15 @@ describe("Composer", () => {
     expect(onEditLast).toHaveBeenCalled();
   });
 
+  it("shows each # row's kind icon (E2E J)", () => {
+    render(<Harness />);
+    const box = screen.getByRole("textbox", { name: /Message/ }) as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: "#hand", selectionStart: 5 } });
+    const row = screen.getByRole("option", { name: /Handbook/ });
+    // lucide-react names its svg after the icon: a book for a knowledge base.
+    expect(row.querySelector("svg.lucide-book-open")).not.toBeNull();
+  });
+
   it("attaches # context with the keyboard", () => {
     const onSend = vi.fn();
     render(<Harness onSend={onSend} />);
