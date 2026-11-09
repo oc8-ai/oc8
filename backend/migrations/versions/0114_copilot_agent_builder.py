@@ -1,7 +1,7 @@
 """Copilot Agent Builder: builder proposals and a chat's sticky mode.
 
-Revision ID: 0110
-Revises: 0109
+Revision ID: 0114
+Revises: 0113
 """
 
 from __future__ import annotations
@@ -10,14 +10,14 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0110"
-down_revision: str | None = "0109"
+revision: str = "0114"
+down_revision: str | None = "0113"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    # Fail fast rather than queue the app behind a run's transaction (0108).
+    # Fail fast rather than queue the app behind a run's transaction (0112).
     op.execute("SET LOCAL lock_timeout = '5s'")
     op.execute(
         "ALTER TABLE copilot_proposal ADD COLUMN IF NOT EXISTS kind text "

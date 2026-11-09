@@ -1,4 +1,4 @@
-"""0110 adds the agent builder's proposal columns and a session's sticky mode."""
+"""0114 adds the agent builder's proposal columns and a session's sticky mode."""
 
 from __future__ import annotations
 
@@ -118,7 +118,7 @@ def test_a_downgrade_never_leaves_a_builder_proposal_open(pg_url: str) -> None:
                 (ids[key], tenant, status, uuid.uuid4(), kind, sid),
             )
     cfg = Config(str(Path(__file__).resolve().parents[2] / "alembic.ini"))
-    command.downgrade(cfg, "0109")
+    command.downgrade(cfg, "0113")
     try:
         with psycopg.connect(dsn) as conn:
             after: dict[uuid.UUID, str] = dict(
