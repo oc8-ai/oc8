@@ -8,15 +8,18 @@ import re
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
 from oc8 import models as m
+from oc8.agents.repo import RunReach, restrict_to_run_reach, run_reach, run_reachable_agent
 from oc8.agents.versioning import pinned_version_no
-from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
+from oc8.api.deps import DbSession, require_departmental
 from oc8.audit import append_event
-from oc8.authz.permissions import RUN, RUN_CONTROL, RUN_START, VIEW, perm
+from oc8.authz.authority import authority_for_principal, tenant_wide_read
+from oc8.authz.permissions import AGENT, RUN, RUN_CONTROL, RUN_START, VIEW, perm
+from oc8.authz.scope import HumanActor
 from oc8.runtime.clarification import resolve_clarification
 from oc8.runtime.intake import enqueue_run, publish_run
 from oc8.runtime.states import TERMINAL, RunState
@@ -27,6 +30,55 @@ from oc8.schemas.requests import RunAgentRequest
 
 router = APIRouter()
 _SPILL_BASENAME = re.compile(r"^step-\d+-.*\.txt$")
+
+#: The doors. `require_departmental` rather than `require_permission`: it admits
+#: on the same tenant-wide hold (none of the three is a seat permission today)
+#: and also hands the route body the caller's `DepartmentScope`, which
+#: `resolve_run_reach` needs to narrow to the agents the caller may see.
+_RunViewer = Annotated[HumanActor, Depends(require_departmental(perm(RUN, VIEW)))]
+_RunStarter = Annotated[HumanActor, Depends(require_departmental(RUN_START))]
+_RunController = Annotated[HumanActor, Depends(require_departmental(RUN_CONTROL))]
+
+
+async def resolve_run_reach(
+    request: Request, db: DbSession, actor: HumanActor, permission: str
+) -> RunReach:
+    """Whose runs this caller may reach with `permission`.
+
+    A run is visible exactly when its agent is: the rule is `GET /agents/{id}`'s
+    (`visible_agent`: tenant-wide `agent:view` read, or a seat in the agent's
+    department) plus `permission`, held tenant-wide or in that seat. Asked of
+    `tenant_wide_read` for BOTH permissions, so a composed role never widens a
+    caller past their seats -- the same rule every agent read follows.
+    """
+    authority = await authority_for_principal(request, db, actor.principal)
+    return run_reach(
+        scope=actor.scope,
+        tenant_wide=tenant_wide_read(authority, perm(AGENT, VIEW))
+        and tenant_wide_read(authority, permission),
+        departmental=permission in authority.tenant_wide or actor.scope.holds_anywhere(permission),
+    )
+
+
+async def _reachable_run(
+    db: DbSession, reach: RunReach, actor: HumanActor, run_id: uuid.UUID
+) -> m.AgentRun:
+    """One run whose agent `reach` admits, or a 404 -- the same 404 for "no such
+    run" and "a run of an agent you may not see", so a run id cannot be used to
+    learn that the run, or its agent, exists."""
+    stmt = select(m.AgentRun).where(
+        m.AgentRun.id == run_id, m.AgentRun.tenant_id == actor.principal.tenant_id
+    )
+    run_row = (
+        await db.execute(
+            restrict_to_run_reach(stmt, m.AgentRun.agent_id, reach).execution_options(
+                populate_existing=True
+            )
+        )
+    ).scalar_one_or_none()
+    if run_row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
+    return run_row
 
 
 class AnswerRequest(BaseModel):
@@ -103,14 +155,11 @@ def run_to_dto(run: m.AgentRun, *, agent_version_no: int | None = None) -> RunDT
 _MAX_RUNS = 20
 
 
-@router.get(
-    "/runs",
-    response_model=list[RunDTO],
-    dependencies=[Depends(require_permission(perm(RUN, VIEW)))],
-)
+@router.get("/runs", response_model=list[RunDTO])
 async def list_runs(
+    request: Request,
     db: DbSession,
-    principal: CurrentPrincipal,
+    actor: _RunViewer,
     state: str | None = None,
     limit: int = 10,
 ) -> list[RunDTO]:
@@ -126,12 +175,17 @@ async def list_runs(
     `waiting_for_aproval` would otherwise read the empty result as "nothing is
     parked". Omitted means every state.
 
-    Scoping is RLS (tenant) plus `run:view`, the same pair that already gates
-    `GET /runs/{id}`: this route deliberately does not add a departmental
-    narrowing that the single-run route does not have, because two different
-    answers to "may I see this run" is how one of them ends up wrong.
+    Scoping is RLS (tenant) plus `resolve_run_reach` -- the runs of agents the
+    caller may see, with `run:view` -- the same rule `GET /runs/{id}` applies,
+    because two different answers to "may I see this run" is how one of them
+    ends up wrong. Narrowed in the statement, before the limit.
     """
-    stmt = select(m.AgentRun).where(m.AgentRun.tenant_id == principal.tenant_id)
+    reach = await resolve_run_reach(request, db, actor, perm(RUN, VIEW))
+    stmt = restrict_to_run_reach(
+        select(m.AgentRun).where(m.AgentRun.tenant_id == actor.principal.tenant_id),
+        m.AgentRun.agent_id,
+        reach,
+    )
     if state:
         wanted = [s.strip() for s in state.split(",") if s.strip()]
         known = {s.value for s in RunState}
@@ -197,15 +251,12 @@ def run_to_summary(
     )
 
 
-@router.get(
-    "/agents/{agent_id}/runs",
-    response_model=Page[RunSummaryDTO],
-    dependencies=[Depends(require_permission(perm(RUN, VIEW)))],
-)
+@router.get("/agents/{agent_id}/runs", response_model=Page[RunSummaryDTO])
 async def list_agent_runs(
     agent_id: uuid.UUID,
+    request: Request,
     db: DbSession,
-    principal: CurrentPrincipal,
+    actor: _RunViewer,
     limit: Annotated[int, Query(ge=1, le=_MAX_HISTORY)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> Page[RunSummaryDTO]:
@@ -215,17 +266,20 @@ async def list_agent_runs(
     read in the order things were started, and a heartbeat must not move a run
     up the list while somebody is paging through it.
 
-    Same gate as `GET /runs/{id}` -- `run:view` plus the tenant -- for the same
-    reason `list_runs` gives: two answers to "may I see this run" is how one of
-    them ends up wrong. A deleted agent's history stays readable here; an agent
-    of another tenant is a 404.
+    Same rule as `GET /runs/{id}` (`resolve_run_reach`) for the same reason
+    `list_runs` gives: two answers to "may I see this run" is how one of them
+    ends up wrong. An agent the caller may not see is a 404, exactly as
+    `GET /agents/{id}` answers it. A deleted agent's history stays readable to
+    a tenant-wide reader and to whoever may see its department; an agent of
+    another tenant is a 404.
     """
-    agent = await db.get(m.Agent, agent_id)
-    if agent is None or agent.tenant_id != principal.tenant_id:
+    reach = await resolve_run_reach(request, db, actor, perm(RUN, VIEW))
+    agent = await run_reachable_agent(db, reach=reach, agent_id=agent_id)
+    if agent is None or agent.tenant_id != actor.principal.tenant_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
 
     base = select(m.AgentRun).where(
-        m.AgentRun.tenant_id == principal.tenant_id, m.AgentRun.agent_id == agent_id
+        m.AgentRun.tenant_id == actor.principal.tenant_id, m.AgentRun.agent_id == agent_id
     )
     total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
     rows = list(
@@ -277,18 +331,17 @@ async def list_agent_runs(
     )
 
 
-@router.post(
-    "/agents/{agent_id}/run",
-    response_model=RunDTO,
-    dependencies=[Depends(require_permission(RUN_START))],
-)
+@router.post("/agents/{agent_id}/run", response_model=RunDTO)
 async def run(
     agent_id: uuid.UUID,
     body: RunAgentRequest,
+    request: Request,
     db: DbSession,
-    principal: CurrentPrincipal,
+    actor: _RunStarter,
 ) -> RunDTO:
-    agent = await db.get(m.Agent, agent_id)
+    principal = actor.principal
+    reach = await resolve_run_reach(request, db, actor, RUN_START)
+    agent = await run_reachable_agent(db, reach=reach, agent_id=agent_id)
     if agent is None or agent.deleted_at is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
     if agent.status == "pending_approval":
@@ -314,13 +367,9 @@ async def run(
     return run_to_dto(run_row)
 
 
-@router.get(
-    "/agents/{agent_id}/workspace/files",
-    response_model=WorkspaceFilesDTO,
-    dependencies=[Depends(require_permission(perm(RUN, VIEW)))],
-)
+@router.get("/agents/{agent_id}/workspace/files", response_model=WorkspaceFilesDTO)
 async def list_workspace_files(
-    agent_id: uuid.UUID, db: DbSession, principal: CurrentPrincipal
+    agent_id: uuid.UUID, request: Request, db: DbSession, actor: _RunViewer
 ) -> WorkspaceFilesDTO:
     """Every file any of this agent's runs has produced -- via the
     `write_output_file` control tool or a synced `/workspace/output/` mount
@@ -328,8 +377,13 @@ async def list_workspace_files(
     these now, so unlike the old disk-based listing there is no more
     per-runtime "not applicable" case: an agent that has never produced one
     just gets an empty list. Content is downloaded via the shared
-    `GET /files/{attachment_id}` route, not a route of its own here."""
-    agent = await db.get(m.Agent, agent_id)
+    `GET /files/{attachment_id}` route, not a route of its own here.
+
+    The files are run output, so they follow the run rule: an agent whose runs
+    the caller may not see is a 404."""
+    principal = actor.principal
+    reach = await resolve_run_reach(request, db, actor, perm(RUN, VIEW))
+    agent = await run_reachable_agent(db, reach=reach, agent_id=agent_id)
     if agent is None or agent.deleted_at is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
 
@@ -365,32 +419,24 @@ async def list_workspace_files(
     )
 
 
-@router.get(
-    "/runs/{run_id}",
-    response_model=RunDTO,
-    dependencies=[Depends(require_permission(perm(RUN, VIEW)))],
-)
-async def get_run(run_id: uuid.UUID, db: DbSession, principal: CurrentPrincipal) -> RunDTO:
-    run_row = await db.get(m.AgentRun, run_id)
-    if run_row is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
+@router.get("/runs/{run_id}", response_model=RunDTO)
+async def get_run(run_id: uuid.UUID, request: Request, db: DbSession, actor: _RunViewer) -> RunDTO:
+    reach = await resolve_run_reach(request, db, actor, perm(RUN, VIEW))
+    run_row = await _reachable_run(db, reach, actor, run_id)
     return run_to_dto(run_row, agent_version_no=await pinned_version_no(db, run_row))
 
 
-@router.post(
-    "/runs/{run_id}/answer",
-    response_model=RunDTO,
-    dependencies=[Depends(require_permission(RUN_CONTROL))],
-)
+@router.post("/runs/{run_id}/answer", response_model=RunDTO)
 async def answer_run(
     run_id: uuid.UUID,
     body: AnswerRequest,
+    request: Request,
     db: DbSession,
-    principal: CurrentPrincipal,
+    actor: _RunController,
 ) -> RunDTO:
-    run_row = await db.get(m.AgentRun, run_id)
-    if run_row is None or run_row.tenant_id != principal.tenant_id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
+    principal = actor.principal
+    reach = await resolve_run_reach(request, db, actor, RUN_CONTROL)
+    run_row = await _reachable_run(db, reach, actor, run_id)
     if run_row.state != RunState.WAITING_FOR_INPUT.value:
         raise HTTPException(status.HTTP_409_CONFLICT, "run is not waiting for input")
     # Record the answer, fold it into the run context, and re-queue the
@@ -403,16 +449,13 @@ async def answer_run(
     return run_to_dto(run_row)
 
 
-@router.post(
-    "/runs/{run_id}/message",
-    status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_permission(RUN_CONTROL))],
-)
+@router.post("/runs/{run_id}/message", status_code=status.HTTP_202_ACCEPTED)
 async def message_run(
     run_id: uuid.UUID,
     body: RunMessageRequest,
+    request: Request,
     db: DbSession,
-    principal: CurrentPrincipal,
+    actor: _RunController,
 ) -> dict[str, str]:
     """Send a message to a RUNNING agent (live steering). Recorded in the
     append-only run_message table; the executor injects it as a user turn at its
@@ -421,9 +464,9 @@ async def message_run(
     text = body.body.strip()
     if not text:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "body must not be empty")
-    run_row = await db.get(m.AgentRun, run_id)
-    if run_row is None or run_row.tenant_id != principal.tenant_id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
+    principal = actor.principal
+    reach = await resolve_run_reach(request, db, actor, RUN_CONTROL)
+    run_row = await _reachable_run(db, reach, actor, run_id)
     if run_row.state in TERMINAL:
         raise HTTPException(status.HTTP_409_CONFLICT, "run has already finished")
     db.add(
@@ -438,15 +481,12 @@ async def message_run(
     return {"status": "queued"}
 
 
-@router.post(
-    "/runs/{run_id}/cancel",
-    response_model=RunDTO,
-    dependencies=[Depends(require_permission(RUN_CONTROL))],
-)
+@router.post("/runs/{run_id}/cancel", response_model=RunDTO)
 async def cancel_run(
     run_id: uuid.UUID,
+    request: Request,
     db: DbSession,
-    principal: CurrentPrincipal,
+    actor: _RunController,
 ) -> RunDTO:
     """Cancel a run cooperatively (§7.2, Paperclip A5). Records the operator's
     intent as a run_cancellation row; the executor (the sole agent_run.state
@@ -464,12 +504,13 @@ async def cancel_run(
       run is out of scope for this slice (queued + running); see the design spec's
       Non-Goals.
 
-    409 if the run is already terminal; 404 if missing or cross-tenant (RLS).
+    409 if the run is already terminal; 404 if missing, cross-tenant (RLS), or
+    a run of an agent the caller may not see.
     Idempotent: a second cancel adds no duplicate row.
     """
-    run_row = await db.get(m.AgentRun, run_id)
-    if run_row is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
+    principal = actor.principal
+    reach = await resolve_run_reach(request, db, actor, RUN_CONTROL)
+    run_row = await _reachable_run(db, reach, actor, run_id)
 
     current = RunState(run_row.state)
     if current in TERMINAL:
