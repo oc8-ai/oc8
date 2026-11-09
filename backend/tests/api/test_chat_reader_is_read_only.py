@@ -112,6 +112,14 @@ async def test_reader_gets_one_redacted_channel(
                         "result": "secret result",
                     }
                 ],
+                "stepTimings": [
+                    {
+                        "step": 1,
+                        "model_wait_ms": 10,
+                        "tokens_in": 99,
+                        "reasoning": "bob earns 9000",
+                    }
+                ],
                 "pending_question": "What is the password?",
                 "todos": [{"content": "x", "status": "pending"}],
                 "rendered_components": [{"component_key": "table", "props": {}}],
@@ -173,6 +181,9 @@ async def test_reader_gets_one_redacted_channel(
                 )
             ).json()
     assert run_json["output"] == "the answer" and run_json["steps"] == 2
+    assert "bob earns" not in str(run_json) and "tokensIn" not in str(run_json)
+    assert run_json["stepTimings"][0]["modelWaitMs"] == 10
+    assert "bob earns" in str(owner_run)
     assert run_json["toolCalls"] == [{"tool": "search", "state": "done", "step": 1}]
     assert run_json["question"] is None and run_json["todos"] == []
     assert run_json["renderedComponents"] == []

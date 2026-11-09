@@ -667,6 +667,9 @@ async def message_feedback(
     await db.commit()
 
 
+_READER_TIMING_KEYS = ("step", "modelWaitMs", "ttftMs", "toolWaitMs", "stepWallMs")
+
+
 def _redacted_run(dto: RunDTO) -> RunDTO:
     """The one run view a reader gets (Ruling 47): progress and the answer, with
     no tool arguments or results, no pending question, no todos or components."""
@@ -675,9 +678,17 @@ def _redacted_run(dto: RunDTO) -> RunDTO:
         for call in dto.tool_calls
         if isinstance(call, dict)
     ]
+    # Timings only: a step's stored reasoning can restate tool arguments and
+    # results, and its token counts are cost data.
+    timings = [
+        {k: t[k] for k in _READER_TIMING_KEYS if k in t}
+        for t in dto.step_timings
+        if isinstance(t, dict)
+    ]
     return dto.model_copy(
         update={
             "tool_calls": calls,
+            "step_timings": timings,
             "question": None,
             "todos": [],
             "rendered_components": [],
