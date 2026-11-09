@@ -60,6 +60,10 @@ ALLOWED: dict[str, str] = {
     "api/v1/run.py": "locks the open question of a tenant-checked run to answer it",
     "chat/service.py": "finds the open question of the runs of a session the caller owns",
     "channels/dispatch.py": "finds the open question of a run in the channel member's own sessions",
+    # A new builder proposal expires its chat's due request: it locks the one
+    # approval that proposal names (`result.approvalId`) to close it as expired.
+    # No person reads it -- nothing about it is returned or shown.
+    "copilot/builder.py": "closes the approval its own expired proposal names; nothing is shown",
 }
 
 
