@@ -14,6 +14,7 @@ import { TemplatePicker } from "@/components/dashboard/template-picker";
 import { WidgetPicker } from "@/components/dashboard/widget-picker";
 import { WIDGET_REGISTRY } from "@/components/dashboard/widget-registry";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { EditionHomeSections } from "@/edition/slots";
 import { useConfirm } from "@/hooks/use-confirm";
 import {
   useDashboardLayout,
@@ -210,6 +211,7 @@ export function WorkspacePage() {
 
   return (
     <div className="space-y-3">
+      <EditionHomeSections />
       <div className="flex justify-end gap-2">
         <button
           type="button"

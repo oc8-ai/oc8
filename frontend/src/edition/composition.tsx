@@ -1,6 +1,7 @@
 import { createContext, useContext, type ComponentType, type ReactNode } from "react";
 import type {
   EditionBanner,
+  EditionHomeSection,
   EditionNavigationItem,
   EditionOnboarding,
   EditionProfileSection,
@@ -18,6 +19,7 @@ export interface FrontendEditionComposition {
   readonly sidebarHeader: ComponentType<EditionSidebarSlotProps> | null;
   readonly sidebarFooter: ComponentType<EditionSidebarSlotProps> | null;
   readonly profileSections: readonly EditionProfileSection[];
+  readonly homeSections: readonly EditionHomeSection[];
 }
 
 export interface EditionCapabilityGateRule {
@@ -74,6 +76,7 @@ const emptyComposition: FrontendEditionComposition = {
   sidebarHeader: null,
   sidebarFooter: null,
   profileSections: [],
+  homeSections: [],
 };
 
 const EditionCompositionContext = createContext<FrontendEditionComposition>(emptyComposition);
@@ -94,6 +97,8 @@ export function composeFrontendEdition(
   let sidebarFooter: ComponentType<EditionSidebarSlotProps> | null = null;
   const profileSectionIds = new Set<string>();
   const profileSections: EditionProfileSection[] = [];
+  const homeSectionIds = new Set<string>();
+  const homeSections: EditionHomeSection[] = [];
 
   for (const extension of extensions) {
     if (extensionIds.has(extension.id))
@@ -131,6 +136,12 @@ export function composeFrontendEdition(
       profileSectionIds.add(section.id);
       profileSections.push(section);
     }
+    for (const section of extension.homeSections ?? []) {
+      if (homeSectionIds.has(section.id))
+        throw new Error(`Duplicate edition home section: ${section.id}`);
+      homeSectionIds.add(section.id);
+      homeSections.push(section);
+    }
   }
 
   return {
@@ -142,6 +153,7 @@ export function composeFrontendEdition(
     sidebarHeader,
     sidebarFooter,
     profileSections,
+    homeSections,
   };
 }
 

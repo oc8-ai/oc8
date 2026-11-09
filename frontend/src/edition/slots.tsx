@@ -24,3 +24,15 @@ export function EditionProfileSections() {
     </>
   );
 }
+
+/** Cards editions show at the top of the home page, in extension order. */
+export function EditionHomeSections() {
+  const { homeSections } = useFrontendEdition();
+  return (
+    <>
+      {homeSections.map(({ id, component: Section }) => (
+        <Section key={id} />
+      ))}
+    </>
+  );
+}
