@@ -12,6 +12,8 @@ from typing import Any
 import httpx
 import pytest
 
+from oc8.credentials.errors import CredentialCheckFailed
+
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -46,16 +48,18 @@ def _install(monkeypatch: pytest.MonkeyPatch, handler: _Handler) -> None:
 async def test_a_missing_app_id_is_rejected_before_any_call() -> None:
     from channel.setup import validate
 
-    with pytest.raises(ValueError, match="app id"):
+    with pytest.raises(CredentialCheckFailed) as caught:
         await validate({"app_password": "pw"})
+    assert (caught.value.reason, caught.value.detail) == ("invalid", "no app id submitted")
 
 
 @pytest.mark.asyncio
 async def test_a_missing_app_password_is_rejected_before_any_call() -> None:
     from channel.setup import validate
 
-    with pytest.raises(ValueError, match="app password"):
+    with pytest.raises(CredentialCheckFailed) as caught:
         await validate({"app_id": "app-1"})
+    assert (caught.value.reason, caught.value.detail) == ("invalid", "no app password submitted")
 
 
 @pytest.mark.asyncio
@@ -69,7 +73,7 @@ async def test_a_working_registration_does_not_raise(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.asyncio
-async def test_a_rejected_registration_raises_with_microsofts_reason(
+async def test_a_rejected_registration_does_not_repeat_microsofts_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from channel.setup import validate
@@ -80,8 +84,24 @@ async def test_a_rejected_registration_raises_with_microsofts_reason(
             401, json={"error": "invalid_client", "error_description": "bad secret"}
         ),
     )
-    with pytest.raises(ValueError, match="bad secret"):
+    with pytest.raises(CredentialCheckFailed) as caught:
         await validate({"app_id": "app-1", "app_password": "wrong"})
+    assert caught.value.reason == "auth"
+    assert caught.value.detail == "Microsoft rejected this app registration (HTTP 401)"
+
+
+@pytest.mark.asyncio
+async def test_an_unreachable_microsoft_is_a_worded_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    from channel.setup import validate
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(f"cannot connect to {request.url}", request=request)
+
+    _install(monkeypatch, handler)
+    with pytest.raises(CredentialCheckFailed) as caught:
+        await validate({"app_id": "app-1", "app_password": "pw"})
+    assert caught.value.reason == "unreachable"
+    assert caught.value.detail == "Could not reach Microsoft"
 
 
 @pytest.mark.asyncio

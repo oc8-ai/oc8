@@ -3,6 +3,33 @@ import { render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
+// The notice links through the router (no full page reload). Stub its Link
+// as an anchor that renders the href it would navigate to.
+vi.mock("@tanstack/react-router", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@tanstack/react-router")>();
+  return {
+    ...actual,
+    Link: ({
+      children,
+      to,
+      params,
+      search,
+    }: {
+      children?: ReactNode;
+      to: string;
+      params?: Record<string, string>;
+      search?: Record<string, string>;
+    }) => {
+      const path = to.replace(/\$(\w+)/g, (_, key: string) => params?.[key] ?? "");
+      const query = search ? `?${new URLSearchParams(search).toString()}` : "";
+      return (
+        <a href={`${path}${query}`} data-router-link="">
+          {children}
+        </a>
+      );
+    },
+  };
+});
 vi.mock("@/lib/api", () => ({ api: { get: vi.fn() } }));
 import { api } from "@/lib/api";
 import { CopilotRunActivity } from "@/components/copilot-run-activity";
@@ -138,5 +165,33 @@ describe("CopilotRunActivity", () => {
     // The record stays where the work happened -- reviewing what an agent
     // did yesterday is the core interaction this surface exists for.
     expect(await screen.findByText(/2 steps/)).toBeInTheDocument();
+  });
+  it("offers to connect the account a tool call needed", async () => {
+    vi.mocked(api.get).mockResolvedValue({
+      id: "r1",
+      agentId: "a1",
+      state: "succeeded",
+      phase: null,
+      output: "done",
+      steps: 1,
+      toolCalls: [],
+      taskId: null,
+      question: null,
+      renderedComponents: [],
+      connectionRequired: {
+        integration: "microsoft365",
+        provider: "microsoft",
+        label: "Microsoft 365",
+        reason: "not_connected",
+      },
+    });
+    render(<CopilotRunActivity sessionId="s1" runId="r1" />, { wrapper });
+    expect(
+      await screen.findByText("For this task the agent needs your Microsoft account."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Connect now →" })).toHaveAttribute(
+      "href",
+      "/connections?connect=microsoft365",
+    );
   });
 });

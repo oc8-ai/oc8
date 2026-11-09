@@ -135,8 +135,9 @@ const SURFACE_LABELS: Record<string, string> = {
   integrations: "capas",
 };
 
-// `install_from_disk` (backend) / `useInstallPluginFromDisk` (frontend) NEVER
-// auto-enables a capa -- every install lands in installationStatus
+// `install_from_disk` (backend) / `useInstallPluginFromDisk` (frontend)
+// enables a fresh install in the same step, but an install made with
+// `enable: false` (or before that change) lands in installationStatus
 // "installed" and stays there until a separate, deliberate
 // `useEnablePlugin()` call. So "installed" (never yet enabled) is a normal,
 // expected resting state, not an archived one -- only "disabled" (was
@@ -289,7 +290,16 @@ export function CapasPage() {
     setPending(p.pluginId);
     try {
       await install.mutateAsync(p.pluginId);
-      toast.success(t(`Installed ${p.label || p.name}`, `${p.label || p.name} installiert`));
+      // A fresh install is available right away; an update that asks for a
+      // new permission still waits for Enable, so it only says "updated".
+      toast.success(
+        p.installed
+          ? t(`${p.label || p.name} updated`, `${p.label || p.name} aktualisiert`)
+          : t(
+              `${p.label || p.name} installed and available`,
+              `${p.label || p.name} installiert und verfügbar`,
+            ),
+      );
     } catch (err) {
       toast.error(
         err instanceof Error

@@ -104,7 +104,10 @@ async def put_organization_settings(
             # Server-side filter (credentials/service.py:108-115), so this
             # never walks every credential the tenant owns.
             smtp_credentials = await list_credentials(
-                db, tenant_id=principal.tenant_id, credential_type="smtp_server"
+                db,
+                tenant_id=principal.tenant_id,
+                credential_type="smtp_server",
+                owner="organisation",
             )
             if not any(str(c.id) == body.active_smtp_credential_id for c in smtp_credentials):
                 raise HTTPException(status_code=404, detail="smtp_server credential not found")

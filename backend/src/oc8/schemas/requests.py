@@ -400,12 +400,14 @@ class CreateTriggerRequest(CamelModel):
     cron_expression: str | None = None
     event_source: str | None = None
     event_type: str | None = None
+    acts_for_creator: bool = False
 
 
 class UpdateTriggerRequest(CamelModel):
     task_text: str | None = None
     enabled: bool | None = None
     cron_expression: str | None = None
+    acts_for_creator: bool | None = None
 
 
 class CreateSecretRequest(CamelModel):
@@ -442,10 +444,32 @@ class UpdatePolicyRequest(CamelModel):
     judge_rubric: dict[str, Any] | None = None
 
 
-class StartOAuthRequest(CamelModel):
-    """Optional scope override; defaults to the provider's declared scopes."""
+class CompleteOAuthRequest(CamelModel):
+    pending: str
 
+
+class StartOAuthRequest(CamelModel):
+    """`owner`: whose account the result is -- the caller's own ("me") or the
+    organisation's (needs integration:manage). `scopes` overrides the tool
+    scope set and is accepted for an organisation connection only."""
+
+    scope_set: Literal["tools"] = "tools"
+    owner: Literal["me", "organisation"] = "me"
     scopes: list[str] | None = None
+
+
+class CreateConnectionCredentialRequest(CamelModel):
+    """Connect Odoo/HubSpot/Jira with a form (connections design)."""
+
+    integration: str
+    owner: Literal["me", "organisation"] = "me"
+    name: str | None = None
+    field_values: dict[str, Any]
+
+
+class CheckConnectionCredentialRequest(CamelModel):
+    integration: str
+    field_values: dict[str, Any]
 
 
 class DevicePollRequest(CamelModel):
@@ -810,3 +834,11 @@ class UpdateCopilotProfileRequest(CamelModel):
 class UpdateResponsibilityRequest(CamelModel):
     state: Literal["active", "paused", "done", "cancelled"]
     reason: str = ""
+
+
+class SetAgentToolAccessRequest(CamelModel):
+    mode: Literal["user", "fixed"]
+    oauth_connection_id: uuid.UUID | None = None
+    credential_id: uuid.UUID | None = None
+    #: Required when the target is the caller's own account.
+    confirm_share: bool = False

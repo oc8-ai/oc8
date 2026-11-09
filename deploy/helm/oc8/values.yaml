@@ -46,6 +46,9 @@ oc8:
   env: dev
   seedOnStart: true
   capasPath: /app/capas
+  # Private targets live checks and website sources may reach: comma-separated
+  # CIDRs and/or exact hostnames. Empty = none (cloud metadata is always refused).
+  outboundAllowedPrivate: ""
   pythonPath: /app/capas/cli_harness
 
   # Model provider keys (optional — can also configure in the UI).

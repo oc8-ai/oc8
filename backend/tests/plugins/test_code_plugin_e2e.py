@@ -53,7 +53,7 @@ async def test_a_code_plugin_goes_from_folder_to_working_connector() -> None:
             # 2. Install it for tenant A.
             inst = await c.post(
                 "/api/v1/capas/install-from-disk",
-                json={"pluginId": "demo_connector"},
+                json={"pluginId": "demo_connector", "enable": False},
                 headers=_h(tenant_a),
             )
             assert inst.status_code == 201, inst.text

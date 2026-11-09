@@ -104,7 +104,7 @@ function PilotSetup({ onOpenWizard }: { onOpenWizard: () => void }) {
     {
       label: t("Store a provider credential", "Provider-Zugangsdaten hinterlegen"),
       done: hasProviderCredential,
-      href: "/credentials",
+      href: "/connections",
     },
     {
       label: t("Test an MCP connection", "Eine MCP-Verbindung testen"),

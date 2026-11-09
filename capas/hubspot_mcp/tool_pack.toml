@@ -88,3 +88,8 @@ hubspot-batch-create-objects = "Creates"
 hubspot-batch-update-objects = "Updates"
 hubspot-create-engagement = "Logs a note on"
 hubspot-update-engagement = "Updates note on"
+
+# env var -> hubspot_login field: how a person's or the organisation's
+# HubSpot login reaches the bridge when an agent uses it (connections).
+[connections.credential_env_fields]
+PRIVATE_APP_ACCESS_TOKEN = "private_app_access_token"

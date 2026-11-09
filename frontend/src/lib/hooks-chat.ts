@@ -6,6 +6,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, uploadChatAttachment, type FileAttachmentDTO } from "@/lib/api";
+import type { ConnectionRequiredInfo } from "@/lib/connections";
 import type { LiveReasoning, RunComponentDTO } from "@/lib/hooks";
 
 export type { FileAttachmentDTO } from "@/lib/api";
@@ -153,6 +154,8 @@ export interface RunActivityDTO {
   output: string | null;
   // See RunDTO.failureReason (lib/hooks.ts): both routes share run_to_dto.
   failureReason?: string | null;
+  // See RunDTO.connectionRequired (lib/hooks.ts).
+  connectionRequired?: ConnectionRequiredInfo | null;
   steps: number;
   toolCalls: Record<string, unknown>[];
   // Same list GET /runs/{id} returns (both routes share run_to_dto) --

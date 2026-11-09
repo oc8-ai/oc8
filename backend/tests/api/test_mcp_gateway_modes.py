@@ -107,3 +107,38 @@ async def test_no_mode_behaves_exactly_as_before(
     _code, body = await _rpc(_token(tenant, agent_id, run_id), "tools/list")
     names = {t["name"] for t in body["result"]["tools"]}
     assert "create_record" in names
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        ("memory_write", {"content": "The customer prefers email.", "tier": "agent"}),
+        ("ask_user", {"question": "Which order?"}),
+    ],
+)
+async def test_plan_refuses_a_writing_core_tool_called_anyway(
+    app_session: AppSessionFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    tool: str,
+    arguments: dict[str, object],
+) -> None:
+    """Hidden from tools/list is not refused: these two have branches of their
+    own in the gateway, which never asked the mode."""
+    from sqlalchemy import func, select
+
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    tenant = uuid.uuid4()
+    agent_id, run_id = await _run_in_mode(app_session, tenant, "plan")
+    _code, body = await _rpc(
+        _token(tenant, agent_id, run_id), "tools/call", {"name": tool, "arguments": arguments}
+    )
+    assert body["result"]["isError"] is True
+    assert "/plan" in body["result"]["content"][0]["text"]
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        assert "isolated_result" not in run.context, "the run must not park"
+        memories = (
+            await db.execute(select(func.count()).select_from(m.MemoryRecord))
+        ).scalar_one()
+        assert memories == 0
