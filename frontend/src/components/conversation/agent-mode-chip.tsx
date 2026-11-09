@@ -7,7 +7,10 @@ import { useT } from "@/lib/i18n";
 export function AgentModeChip({ onLeave, busy = false }: { onLeave: () => void; busy?: boolean }) {
   const t = useT();
   return (
-    <div className="inline-flex min-h-9 items-center gap-2 rounded-full border border-border bg-card pl-3 pr-1 text-sm">
+    <div
+      role="status"
+      className="inline-flex min-h-9 items-center gap-2 rounded-full border border-border bg-card pl-3 pr-1 text-sm"
+    >
       <Bot className="size-4 text-primary" aria-hidden />
       <span>{t("Setting up an agent", "Agent anlegen")}</span>
       <button

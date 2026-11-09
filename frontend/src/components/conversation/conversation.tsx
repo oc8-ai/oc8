@@ -349,9 +349,11 @@ function ConversationBody(props: ConversationProps) {
   const [modeScope, setModeScope] = useState(props.sessionId);
   if (modeScope !== props.sessionId) {
     setModeScope(props.sessionId);
-    if (modeScope !== null) setHeldMode(null);
+    // Once the chat exists the server is the truth; never carry a refusal over.
+    setHeldMode(null);
+    setChatMode.reset();
   }
-  const chatMode = heldMode ?? conv.session?.mode ?? null;
+  const chatMode = props.sessionId ? (conv.session?.mode ?? null) : heldMode;
   function enterMode(key: string) {
     if (props.sessionId) setChatMode.mutate(key);
     else setHeldMode(key);
@@ -359,8 +361,8 @@ function ConversationBody(props: ConversationProps) {
   function leaveMode() {
     // Held, the mode is not on the server yet; once the chat exists (its first
     // message carried "/agent") leaving must reach the server too.
-    if (heldMode) setHeldMode(null);
     if (props.sessionId) setChatMode.mutate(null);
+    else setHeldMode(null);
   }
   // The server may refuse a switch (e.g. out of /plan or /ask): its sentence is
   // shown and the chat keeps the mode it had.
@@ -636,6 +638,12 @@ function ConversationBody(props: ConversationProps) {
     let modelRefused = false;
     try {
       const sessionId = await ensureSession();
+      if (heldMode && !props.sessionId && submit.text.startsWith("/")) {
+        // No "/agent" prefix goes out, so the server's chat is not in the mode.
+        qc.setQueryData<ChatSessionDetailDTO>(conversationKeys.session(sessionId), (prev) =>
+          prev ? { ...prev, mode: null } : prev,
+        );
+      }
       await applyHeldModel(sessionId).catch((error: unknown) => {
         modelRefused = true;
         throw error;

@@ -4,12 +4,18 @@ import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 const post = vi.hoisted(() => vi.fn());
+const put = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/api", async (orig) => ({
   ...(await orig<typeof import("@/lib/api")>()),
-  api: { get: vi.fn(), post, put: vi.fn(), patch: vi.fn(), delete: vi.fn() },
+  api: { get: vi.fn(), post, put, patch: vi.fn(), delete: vi.fn() },
 }));
 
-import { conversationKeys, useRegenerate, type ChatSessionDetailDTO } from "@/lib/conversation-api";
+import {
+  conversationKeys,
+  useRegenerate,
+  useSetChatMode,
+  type ChatSessionDetailDTO,
+} from "@/lib/conversation-api";
 
 function wrapper(qc: QueryClient) {
   return ({ children }: { children: ReactNode }) => (
@@ -49,5 +55,21 @@ describe("useRegenerate", () => {
     await act(() => result.current.mutateAsync("a1"));
     const after = qc.getQueryData<ChatSessionDetailDTO>(conversationKeys.session("s"));
     expect(after?.activeRuns.map((r) => r.runId)).toEqual(["r2", "r3"]);
+  });
+});
+
+describe("useSetChatMode", () => {
+  it("PUTs the mode to the chat and updates the cached session", async () => {
+    const qc = new QueryClient();
+    qc.setQueryData(conversationKeys.session("s"), session);
+    put.mockResolvedValue({ ...session, mode: "agent" });
+    const { result } = renderHook(() => useSetChatMode("s"), { wrapper: wrapper(qc) });
+    await act(async () => {
+      await result.current.mutateAsync("agent");
+    });
+    expect(put).toHaveBeenCalledWith("/chat/sessions/s/mode", { mode: "agent" });
+    expect(qc.getQueryData<ChatSessionDetailDTO>(conversationKeys.session("s"))?.mode).toBe(
+      "agent",
+    );
   });
 });
