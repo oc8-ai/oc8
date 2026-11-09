@@ -30,6 +30,7 @@ from oc8.modelrouter.auto_router import (
     store_agent_affinity,
 )
 from oc8.modelrouter.types import NeutralMessage, NeutralTool
+from tests.audit.helpers import flush_audit
 from tests.conftest import AppSessionFactory
 
 
@@ -152,6 +153,7 @@ async def test_resolve_picks_fast_and_audits(
         )
         assert concrete.id == fast.id
         assert decision.tier == "fast"
+        await flush_audit(db)  # staged audit events reach the chain at commit
         events = (
             (
                 await db.execute(

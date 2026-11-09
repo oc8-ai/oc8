@@ -15,9 +15,9 @@ import uuid
 
 import pytest
 import sqlalchemy as sa
+from tests.audit.helpers import append_now
 from tests.conftest import AppSessionFactory
 
-from oc8.audit.chain import append_event
 from oc8.audit.integrity import (
     adopt_checkpoints,
     get_checkpoint,
@@ -51,7 +51,7 @@ async def _existing_unkeyed_tenant(app_session: AppSessionFactory) -> uuid.UUID:
             {"id": str(tenant), "slug": str(tenant)},
         )
         for i in range(3):
-            await append_event(
+            await append_now(
                 s,
                 tenant_id=tenant,
                 actor_type="system",

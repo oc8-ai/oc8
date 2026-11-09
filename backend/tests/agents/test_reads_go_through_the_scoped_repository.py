@@ -58,7 +58,6 @@ ALLOWED: dict[str, str] = {
         "decision -- not a departmental browse; the Copilot's own call into this "
         "function is already gated the same way copilot/capabilities.py is above"
     ),
-    "api/v1/run.py": "loads the agent that owns the run being started or controlled",
     "api/v1/knowledge.py": "resolves the grantee (agent or department) of a KB share",
     "api/v1/components.py": "resolves the grantee (agent or department) of a component grant",
     "agent/control_tools.py": "the agent runtime reading its own department; no human here",

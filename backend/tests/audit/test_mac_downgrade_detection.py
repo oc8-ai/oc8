@@ -5,9 +5,9 @@ import uuid
 
 import pytest
 import sqlalchemy as sa
+from tests.audit.helpers import append_now
 from tests.conftest import AppSessionFactory
 
-from oc8.audit.chain import append_event
 from oc8.audit.integrity import verify_full, verify_incremental
 from oc8.config import get_settings
 
@@ -36,7 +36,7 @@ async def test_a_forged_unkeyed_row_behind_keyed_rows_is_detected(
         tenant = uuid.uuid4()
         async with app_session(tenant) as s:
             for i in range(2):
-                await append_event(
+                await append_now(
                     s,
                     tenant_id=tenant,
                     actor_type="system",
@@ -106,7 +106,7 @@ async def test_a_legitimate_switch_point_is_not_a_downgrade(
     tenant = uuid.uuid4()
     async with app_session(tenant) as s:
         for i in range(2):
-            await append_event(
+            await append_now(
                 s,
                 tenant_id=tenant,
                 actor_type="system",
@@ -117,7 +117,7 @@ async def test_a_legitimate_switch_point_is_not_a_downgrade(
     _enable_mac(monkeypatch)
     try:
         async with app_session(tenant) as s:
-            await append_event(
+            await append_now(
                 s,
                 tenant_id=tenant,
                 actor_type="system",
@@ -140,7 +140,7 @@ async def test_incremental_verify_seeds_the_version_floor_from_history(
     try:
         tenant = uuid.uuid4()
         async with app_session(tenant) as s:
-            await append_event(
+            await append_now(
                 s,
                 tenant_id=tenant,
                 actor_type="system",
@@ -205,7 +205,7 @@ async def test_an_unknown_mac_version_is_reported_not_swallowed(
 ) -> None:
     tenant = uuid.uuid4()
     async with app_session(tenant) as s:
-        await append_event(
+        await append_now(
             s,
             tenant_id=tenant,
             actor_type="system",
