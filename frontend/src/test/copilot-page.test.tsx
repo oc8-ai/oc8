@@ -19,6 +19,24 @@ vi.mock("@/lib/conversation-api", () => ({
 vi.mock("@/lib/hooks", () => ({
   useAgent: (id: string) => ({ data: { id, name: "Stock agent" } }),
 }));
+vi.mock("@/lib/agent-builder-api", () => ({
+  useAgentIdeas: () => ({
+    data: [
+      {
+        key: "invoice_checker",
+        title: { en: "Invoice checker", de: "Rechnungsprüfer" },
+        subtitle: {
+          en: "Checks open invoices every morning",
+          de: "Prüft jeden Morgen offene Rechnungen",
+        },
+        prompt: {
+          en: "/agent Set up an invoice checker.",
+          de: "/agent Leg mir einen Rechnungsprüfer an.",
+        },
+      },
+    ],
+  }),
+}));
 vi.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => m.mobile }));
 vi.mock("@/lib/governance-hooks", () => ({
   useCallerCapabilities: () => null,
@@ -49,7 +67,7 @@ vi.mock("@/components/conversation", () => ({
     sessionId: string | null;
     onSessionChange: (id: string) => void;
     emptyState?: React.ReactNode | ((send: (text: string) => void) => React.ReactNode);
-    promptStarters?: { title: string; subtitle: string }[];
+    promptStarters?: { title: string; subtitle: string; prompt?: string }[];
   }) => (
     <div data-testid="chat" data-session={sessionId ?? ""}>
       <button type="button" onClick={() => onSessionChange("s-8")}>
@@ -57,7 +75,7 @@ vi.mock("@/components/conversation", () => ({
       </button>
       {typeof emptyState === "function" ? emptyState((text) => m.sent.push(text)) : emptyState}
       {promptStarters.map((s) => (
-        <button key={s.title} type="button" onClick={() => m.sent.push(s.title)}>
+        <button key={s.title} type="button" onClick={() => m.sent.push(s.prompt ?? s.title)}>
           {s.title}
         </button>
       ))}
@@ -188,5 +206,15 @@ describe("CopilotPage", () => {
     wrap();
     fireEvent.click(screen.getByRole("button", { name: "What is waiting on me?" }));
     expect(m.sent).toEqual(["What is waiting on me?"]);
+  });
+
+  it("puts agent ideas in front of the usual starters", () => {
+    wrap();
+    const buttons = screen.getAllByRole("button").map((b) => b.textContent);
+    expect(buttons.indexOf("Invoice checker")).toBeLessThan(
+      buttons.indexOf("Keep an eye on something for me"),
+    );
+    fireEvent.click(screen.getByText("Invoice checker"));
+    expect(m.sent).toContain("/agent Set up an invoice checker.");
   });
 });

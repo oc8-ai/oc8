@@ -132,6 +132,9 @@ export interface Approval {
   // remains the only "why" for those.
   reasonContext?: Record<string, unknown> | null;
   recordUrl?: string | null;
+  // The builder proposal a "copilot.agent_builder" approval decides (the pane
+  // shows the same preview read-only). null/absent for every other kind.
+  proposalId?: string | null;
 }
 
 /** A question an agent parked mid-run. The other half of the workspace queue. */

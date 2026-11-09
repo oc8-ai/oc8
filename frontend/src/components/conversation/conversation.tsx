@@ -48,7 +48,7 @@ import { DataSourceBrowser } from "./data-source-browser";
 import { DecisionCard } from "./decision-card";
 import { AgentModeChip } from "./agent-mode-chip";
 import { PinnedBar } from "./pinned-bar";
-import { PromptStarters } from "./prompt-starters";
+import { PromptStarters, type PromptStarter } from "./prompt-starters";
 import { QuestionCard } from "./question-card";
 import { RunInputs, runInputError } from "./run-steering";
 import { SuggestionChips, type ReplyChip } from "./suggestion-chips";
@@ -161,7 +161,7 @@ export interface ConversationProps {
    *  anything in it can go out as the first message. */
   emptyState?: ReactNode | ((send: (text: string) => void) => ReactNode);
   /** Cards under the empty state; picking one sends its title. */
-  promptStarters?: { title: string; subtitle: string }[];
+  promptStarters?: PromptStarter[];
   draft?: string;
   onDraftChange?: (text: string) => void;
   agentItems?: SigilItem[];
