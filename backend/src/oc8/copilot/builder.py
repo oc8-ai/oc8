@@ -192,7 +192,7 @@ def _leaf_texts(value: object, key: str | None = None) -> Iterator[str]:
             yield f"{key}={value}"
 
 
-def _create_step(steps: list[BuilderStep]) -> AgentCreate:
+def create_step(steps: list[BuilderStep]) -> AgentCreate:
     create = steps[0].operation
     if not isinstance(create, AgentCreate):
         raise BuilderInvalid("missing_create")
@@ -216,7 +216,7 @@ async def check_selections(
     current skill versions, usable systems (A12), no credential value in stored
     text (A20), and a name nobody else has. Run when the proposal is made and
     again when it is applied -- the world may have moved."""
-    create = _create_step(steps)
+    create = create_step(steps)
     for index, step in enumerate(steps):
         if any(carries_secret_value(text) for text in _texts(step.operation)):
             raise BuilderInvalid("secret_value", index)
@@ -273,7 +273,7 @@ async def create_builder_proposal(
     the chat's open draft. A proposal already waiting for approval is not
     replaced: the member waits for the decision (or it expires)."""
     steps = parse_builder_operations(operations)
-    create = _create_step(steps)
+    create = create_step(steps)
     # Through the scoped repository, like builder_options lists them (A24):
     # a department outside the member's reach reads as unknown.
     department = await visible_department(
@@ -440,7 +440,7 @@ async def apply_builder_proposal(
         steps = await load_steps(db, proposal)
     except BuilderInvalid as refused:
         raise await _remember(db, proposal, refused) from None
-    create = _create_step(steps)
+    create = create_step(steps)
     department = await _live_department(db, create.departmentId)
     if department is None:
         raise await _remember(db, proposal, BuilderInvalid("department_unknown", 0))
@@ -566,7 +566,7 @@ async def request_builder_approval(
         raise BuilderInvalid("expired")
     if proposal.status != "draft":
         raise BuilderInvalid("not_open")
-    create = _create_step(await load_steps(db, proposal))
+    create = create_step(await load_steps(db, proposal))
     # Still within the requester's reach, through the scoped repository like at
     # propose time: a seat removed since then cannot file into that queue.
     department = await visible_department(

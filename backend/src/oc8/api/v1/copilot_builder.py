@@ -22,9 +22,9 @@ from oc8.authz.permissions import AGENT, COPILOT_USE, DEPARTMENT, MANAGE, VIEW, 
 from oc8.authz.scope import HumanActor
 from oc8.copilot.builder import (
     BUILDER_KIND,
-    _create_step,
     announce_builder,
     apply_builder_proposal,
+    create_step,
     expire_if_due,
     load_steps,
     may_create_agent,
@@ -118,7 +118,7 @@ async def builder_dto(
     read_only: bool,
     show_mission: bool,
 ) -> AgentBuilderDTO:
-    create = _create_step(steps)
+    create = create_step(steps)
     department = await db.get(m.Department, create.departmentId)
     mission = create.mission
     model: BuilderChoiceDTO | None = None
@@ -203,7 +203,7 @@ async def get_builder(
     request: Request, proposal_id: uuid.UUID, db: DbSession, actor: _Actor
 ) -> AgentBuilderDTO:
     proposal, owner, steps = await _load(db, actor, proposal_id)
-    department_id = _create_step(steps).departmentId
+    department_id = create_step(steps).departmentId
     # A draft, a superseded one, one never sent: the member's alone. Once it is
     # in a queue, whoever may view that department reads it (Ruling A4).
     if not owner and not (_was_submitted(proposal) and actor.scope.may_view(department_id)):
@@ -234,7 +234,7 @@ async def apply_builder(
     if not owner:
         raise HTTPException(status.HTTP_404_NOT_FOUND, _NOT_FOUND)
     authority = await authority_for_principal(request, db, actor.principal)
-    if not may_create_agent(authority, actor.scope, _create_step(steps).departmentId):
+    if not may_create_agent(authority, actor.scope, create_step(steps).departmentId):
         await db.commit()  # keep a lazy expiry
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, f"requires {perm(AGENT, MANAGE)} in this department"
@@ -285,7 +285,7 @@ async def request_builder(
         db,
         proposal,
         steps,
-        may_create=may_create_agent(authority, actor.scope, _create_step(steps).departmentId),
+        may_create=may_create_agent(authority, actor.scope, create_step(steps).departmentId),
         read_only=False,
         show_mission=True,
     )

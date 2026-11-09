@@ -79,6 +79,10 @@ ALLOWED: dict[str, str] = {
         "or the approval funnel decided reach, and reloads the agent it just created in "
         "the same transaction to raise its hire request"
     ),
+    "api/v1/copilot_builder.py": (
+        "the builder card reads the department and created agent a proposal names "
+        "only after the owner or submitted+may_view gate passed, tenant-checked"
+    ),
     "copilot/models.py": (
         "no load: the open-builder partial unique index's predicate names the "
         "'agent_builder' proposal kind, which the raw-SQL check reads as the agent table"
