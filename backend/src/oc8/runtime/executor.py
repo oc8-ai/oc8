@@ -24,7 +24,7 @@ from oc8.runtime.reconcile import ABANDONED_AFTER, heartbeat
 from oc8.runtime.registry import resolve_runtime
 from oc8.runtime.repository import RunRepository
 from oc8.runtime.run_context import merge_context
-from oc8.runtime.run_inputs import CarriedOver, carry_over_run_inputs, lock_run_inputs
+from oc8.runtime.run_inputs import has_pending_run_inputs, lock_run_inputs
 from oc8.runtime.states import TERMINAL, RunState
 from oc8.runtime.workspace import sync_run_output
 from oc8.tenants.activity import TENANT_INACTIVE_KIND, TENANT_INACTIVE_OUTPUT, tenant_may_run
@@ -119,6 +119,23 @@ async def _current_chat_sender(db: AsyncSession, run: m.AgentRun) -> tuple[str, 
         db, tenant_id=run.tenant_id, member_id=session.member_id, channel=sender[0]
     )
     return (sender[0], current) if current else None
+
+
+#: Told once to a messenger sender whose failed run never read what they
+#: wrote to it (Ruling 59): it is not carried over, so they must know.
+_UNREAD_AFTER_FAILURE = "Deine letzte Nachricht kam nicht mehr an – schick sie bitte nochmal."  # noqa: RUF001
+
+
+async def _tell_unread_inputs(
+    db: AsyncSession, run: m.AgentRun, channel_replies: list[tuple[uuid.UUID, str, str, str]]
+) -> None:
+    """A failed messenger turn with inputs it never read: say so, once, on the
+    run's channel (gated, like every reply). The inputs stay unread."""
+    sender = await _current_chat_sender(db, run)
+    if sender is None or not await has_pending_run_inputs(db, run_id=run.id):
+        return
+    channel, external_id = sender
+    channel_replies.append((run.tenant_id, channel, external_id, _UNREAD_AFTER_FAILURE))
 
 
 def _chat_channel_sender_of(run: m.AgentRun) -> tuple[str, str] | None:
@@ -693,9 +710,6 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
     #: durable would hand the user an answer the system never recorded, and
     #: a redelivery would then send it a second time.
     channel_replies: list[tuple[uuid.UUID, str, str, str]] = []
-    #: The inputs this run ended without reading, as its chat's next turn
-    #: (Ruling 59). Started after the commit, like `pending_runs`.
-    carried: CarriedOver | None = None
 
     with get_tracer().start_as_current_span("run.execute") as span:
         span.set_attribute("run_id", str(run_id))
@@ -1058,6 +1072,8 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 except Exception:
                     logger.exception("run %s: failed to wake parent after sub-task failure", run_id)
                 await sync_run_output(db, tenant_id=tenant_id, run_id=run_id)
+                # As at every end: no input arrives until this commits.
+                await lock_run_inputs(db, tenant_id=tenant_id, run_id=run.id)
                 await repo.transition(run, RunState.FAILED)
                 await record_activity(
                     db,
@@ -1088,6 +1104,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         channel_replies.append(
                             (run.tenant_id, failed_channel, failed_external_id, _CHAT_RUN_FAILED)
                         )
+                    await _tell_unread_inputs(db, run, channel_replies)
             else:
                 pending_runs.extend(result.pending_runs)
                 if result.status == "waiting_for_input":
@@ -1325,18 +1342,26 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         if wake_id is not None:
                             pending_runs.append(wake_id)
                     await sync_run_output(db, tenant_id=tenant_id, run_id=run_id)
+                    carry_over = False
                     if new_state in TERMINAL:
+                        from oc8.chat.carry_over import run_still_open
+
                         # No input is written to this run from here until the
                         # end below commits (`add_run_input` asks again under
-                        # this lock): each is either read, carried over, or
+                        # this lock, taken after the tenant's audit lock --
+                        # Ruling 60): each is either read, carried over, or
                         # refused to its writer -- never silently lost.
-                        await lock_run_inputs(db, run_id=run.id)
-                    if new_state is RunState.DONE:
-                        # Ruling 59: what the person wrote and the run never
-                        # read becomes the chat's next turn. Not for a stopped
-                        # run (stop means stop) nor a failed one (its failure
-                        # is the answer; the inputs stay "not read").
-                        carried = await carry_over_run_inputs(db, run=run)
+                        await lock_run_inputs(db, tenant_id=tenant_id, run_id=run.id)
+                        # Ruling 59: what the person wrote and a DONE run never
+                        # read becomes the chat's next turn -- unless somebody
+                        # else ended the run meanwhile. Not for a stopped run
+                        # (stop means stop) nor a failed one (its failure is
+                        # the answer; the inputs stay "not read").
+                        carry_over = (
+                            new_state is RunState.DONE
+                            and run.source == "chat"
+                            and await run_still_open(db, run_id=run.id)
+                        )
                     await repo.transition(run, new_state)
                     logger.info("run %s finished in state %s", run_id, new_state.value)
                     record_run_outcome(new_state.value)
@@ -1364,6 +1389,17 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             channel_replies.append(
                                 (run.tenant_id, done_channel, done_external_id, result.output)
                             )
+                    if carry_over:
+                        from oc8.chat.carry_over import stage_carried_over_turn
+
+                        # After the answer is recorded, in this transaction
+                        # (Ruling 61): the turn, its run and the inputs' stamp
+                        # commit together; the run is published below.
+                        carried_run = await stage_carried_over_turn(db, run=run)
+                        if carried_run is not None:
+                            pending_runs.append(carried_run)
+                    if run.source == "chat" and new_state is RunState.FAILED:
+                        await _tell_unread_inputs(db, run, channel_replies)
                     if new_state is RunState.WAITING_FOR_APPROVAL:
                         # Same reason as the waiting_for_input park above: the
                         # run is suspended, not finished, so nothing else tells
@@ -1405,18 +1441,6 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             await _tell_channel(
                 tenant_id=reply_tenant_id, channel=reply_channel, external_id=external_id, text=text
             )
-
-        # After the answer it follows, and only once the run's end (and the
-        # inputs' carried-over stamp) is committed.
-        if carried is not None:
-            from oc8.chat.service import start_carried_over_turn
-
-            try:
-                await start_carried_over_turn(carried)
-            except Exception:
-                # The run itself ended fine and is committed; say loudly that
-                # what the person wrote last did not become a turn.
-                logger.exception("run %s: could not start the turn for its unread inputs", run_id)
 
 
 async def recover_reclaimed(message: RunMessage) -> None:

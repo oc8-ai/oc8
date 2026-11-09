@@ -237,7 +237,7 @@ async def test_a_run_that_ended_before_the_write_gets_a_new_turn(
     run_id = await messenger_turn(app_session, tenant)
 
     async def ended(*_a: Any, **_kw: Any) -> None:
-        raise InputRefused(409, "run has already finished")
+        raise InputRefused(409, "run has already finished", "finished")
 
     monkeypatch.setattr("oc8.runtime.run_inputs.add_run_input", ended)
     impl = FakeChannel()

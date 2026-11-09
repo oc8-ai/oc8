@@ -124,6 +124,22 @@ def recompute_hash(event: AuditEvent, prev_hash: bytes) -> bytes:
     return _hash(prev_hash, payload, event.mac_version)
 
 
+async def lock_tenant_audit(session: AsyncSession, tenant_id: uuid.UUID) -> None:
+    """The tenant's audit-chain lock, until commit; reentrant within one
+    transaction. Flushes first (see `append_event`).
+
+    Lock order (Ruling 60): a transaction that also takes a narrower advisory
+    lock (`oc8.runtime.run_inputs.lock_run_inputs`) takes THIS one first, even
+    if it appends only later -- otherwise one transaction holds this and waits
+    for the narrower lock while another holds the narrower one and waits here
+    in `append_event`."""
+    await session.flush()
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:tenant, 0))"),
+        {"tenant": str(tenant_id)},
+    )
+
+
 async def append_event(
     session: AsyncSession,
     *,
@@ -171,11 +187,7 @@ async def append_event(
     # costs nothing (the SELECT below would have flushed anyway) and makes "the
     # append takes the tenant lock after all of the caller's row work is already
     # emitted" true by construction for every caller of this function.
-    await session.flush()
-    await session.execute(
-        text("SELECT pg_advisory_xact_lock(hashtextextended(:tenant, 0))"),
-        {"tenant": str(tenant_id)},
-    )
+    await lock_tenant_audit(session, tenant_id)
     target_version = 1 if get_settings().audit_mac_enabled else 0
     head = (
         await session.execute(

@@ -63,7 +63,6 @@ from oc8.runtime.clarification import resolve_clarification
 from oc8.runtime.fencing import fence, one_line
 from oc8.runtime.intake import enqueue_run
 from oc8.runtime.person import ON_BEHALF_OF
-from oc8.runtime.run_inputs import CarriedOver
 from oc8.runtime.states import TERMINAL, RunState
 from oc8.storage import s3
 
@@ -796,50 +795,6 @@ async def send_message(
             text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": str(tenant_id)}
         )
     return user_message, run
-
-
-async def start_carried_over_turn(carried: CarriedOver) -> uuid.UUID | None:
-    """The turn a finished run's unread inputs become (Ruling 59): one
-    ordinary turn of the same chat, by the person who wrote them, answered by
-    a new run -- so nothing a person wrote to a run disappears. Called by the
-    executor once the run's end is committed. Returns the new run's id.
-
-    It is the same turn the person would have got by sending the text a
-    moment later, through the same door: a messenger turn stays one (its
-    channel, `on_behalf_of`, the channel's classification gate on the reply),
-    a web turn keeps its run's `originating_operator` -- carried like a
-    delegation wake-up's, never the token role (Ruling 33), so no context
-    manifest. The secret gate applies again inside `send_message`."""
-    from oc8.db.session import tenant_session
-    from oc8.tenants.activity import TenantInactive
-
-    async with tenant_session(carried.tenant_id) as db:
-        session = await db.get(m.ChatSession, carried.session_id)
-        if session is None:
-            # The chat was deleted meanwhile: there is nobody to answer.
-            logger.info("carried-over inputs dropped: chat %s is gone", carried.session_id)
-            return None
-        try:
-            _msg, run = await send_message(
-                db,
-                session=session,
-                tenant_id=carried.tenant_id,
-                message=carried.text,
-                originating_operator=carried.originating_operator,
-                on_behalf_of=carried.on_behalf_of,
-                chat_channel=carried.chat_channel,
-                chat_channel_external_id=carried.chat_channel_external_id,
-                author_member_id=carried.author_member_id,
-            )
-        except TenantInactive:
-            await db.rollback()
-            logger.info(
-                "carried-over inputs of chat %s not answered: organisation %s is not active",
-                carried.session_id,
-                carried.tenant_id,
-            )
-            return None
-        return run.id if run is not None else None
 
 
 async def regenerate_reply(

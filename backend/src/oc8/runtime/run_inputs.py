@@ -20,7 +20,7 @@ import datetime as dt
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 from sqlalchemy import func, select
 from sqlalchemy import text as sql_text
@@ -36,7 +36,7 @@ from oc8.chat.reach import reachable_chat_agent
 from oc8.copilot.redaction import is_secret_request
 from oc8.db.session import tenant_session
 from oc8.runtime.fencing import fence, one_line
-from oc8.runtime.person import ON_BEHALF_OF, is_own, person_behind, present
+from oc8.runtime.person import is_own, person_behind
 from oc8.runtime.states import TERMINAL, RunState
 
 if TYPE_CHECKING:
@@ -49,11 +49,16 @@ MAX_INPUT_CHARS: Final = 4000
 MAX_PENDING_INPUTS: Final = 20
 
 
+#: Why an input was refused, for doors that word it themselves (a messenger).
+RefusalCode = Literal["empty", "too_long", "secret", "finished", "too_many"]
+
+
 class InputRefused(Exception):
-    def __init__(self, status_code: int, message: str) -> None:
+    def __init__(self, status_code: int, message: str, code: RefusalCode) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.message = message
+        self.code: RefusalCode = code
 
 
 @dataclass(frozen=True)
@@ -106,9 +111,9 @@ async def add_run_input(
     """Queue `text` for `run`. The caller has already checked `may_steer_run`."""
     body = text.strip()
     if not body:
-        raise InputRefused(422, "message must not be empty")
+        raise InputRefused(422, "message must not be empty", "empty")
     if len(body) > MAX_INPUT_CHARS:
-        raise InputRefused(422, f"message is longer than {MAX_INPUT_CHARS} characters")
+        raise InputRefused(422, f"message is longer than {MAX_INPUT_CHARS} characters", "too_long")
     # The tenant Assistant's secret gate, the same rule and sentence as chat
     # send and every answer door: a credential never reaches its model.
     if is_secret_request(body):
@@ -116,14 +121,17 @@ async def add_run_input(
         if agent is not None and agent.is_tenant_assistant:
             from oc8.runtime.clarification import SECRET_REFUSAL
 
-            raise InputRefused(422, SECRET_REFUSAL)
+            raise InputRefused(422, SECRET_REFUSAL, "secret")
     if RunState(run.state) in TERMINAL:
-        raise InputRefused(409, "run has already finished")
+        raise InputRefused(409, "run has already finished", "finished")
     # Serialise writers per run, until commit: the pending cap below is then a
     # real bound, and a lower `seq` is always committed before a higher one, so
     # consumers never see a later input before an earlier one. Not a row lock
-    # on agent_run: the executor holds that one for the whole run.
-    await lock_run_inputs(db, run_id=run.id)
+    # on agent_run: the executor holds that one for the whole run. The
+    # tenant's audit lock first -- the audit append below takes it anyway, and
+    # one order for both locks everywhere (Ruling 60) is what keeps this from
+    # deadlocking with the executor ending the run.
+    await lock_run_inputs(db, tenant_id=run.tenant_id, run_id=run.id)
     # Asked again under the lock, from the database: the executor takes the
     # same lock before a run's terminal transition and holds it until that
     # commits, so an input is either accepted before the run ends (and then
@@ -133,7 +141,7 @@ async def add_run_input(
         await db.execute(select(m.AgentRun.state).where(m.AgentRun.id == run.id))
     ).scalar_one_or_none()
     if state is None or RunState(state) in TERMINAL:
-        raise InputRefused(409, "run has already finished")
+        raise InputRefused(409, "run has already finished", "finished")
     pending = (
         await db.execute(
             select(func.count())
@@ -142,7 +150,7 @@ async def add_run_input(
         )
     ).scalar_one()
     if pending >= MAX_PENDING_INPUTS:
-        raise InputRefused(429, "too many messages are waiting for this run")
+        raise InputRefused(429, "too many messages are waiting for this run", "too_many")
     row = m.RunInput(tenant_id=run.tenant_id, run_id=run.id, author_member_id=member.id, text=body)
     db.add(row)
     await db.flush()
@@ -166,9 +174,14 @@ async def add_run_input(
     return row
 
 
-async def lock_run_inputs(db: AsyncSession, *, run_id: uuid.UUID) -> None:
-    """The per-run writer lock, until commit. Taken by every writer and by the
-    executor before a run's terminal transition."""
+async def lock_run_inputs(db: AsyncSession, *, tenant_id: uuid.UUID, run_id: uuid.UUID) -> None:
+    """The per-run writer lock, until commit, taken by every writer and by the
+    executor before a run's end. Always AFTER the tenant's audit lock, which
+    this takes first (Ruling 60: one order, so writers and the executor can
+    never wait on each other in a circle)."""
+    from oc8.audit.chain import lock_tenant_audit
+
+    await lock_tenant_audit(db, tenant_id)
     await db.execute(
         sql_text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
         {"key": f"run_input:{run_id}"},
@@ -176,71 +189,22 @@ async def lock_run_inputs(db: AsyncSession, *, run_id: uuid.UUID) -> None:
 
 
 #: `consumed_step` of an input the run never read because it ended first: it
-#: was carried over into a new turn of the same chat (Ruling 59). Not a step.
+#: became the next turn of the same chat (Ruling 59). Not a step. Set only
+#: together with that turn, in one transaction (Ruling 61).
 CARRIED_OVER_STEP: Final = -1
 
 
-@dataclass(frozen=True)
-class CarriedOver:
-    """What a finished chat run had not read yet, as the next turn of its chat."""
-
-    tenant_id: uuid.UUID
-    session_id: uuid.UUID
-    text: str
-    author_member_id: uuid.UUID
-    originating_operator: str | None
-    on_behalf_of: str | None
-    chat_channel: str | None
-    chat_channel_external_id: str | None
-
-
-async def carry_over_run_inputs(db: AsyncSession, *, run: m.AgentRun) -> CarriedOver | None:
-    """Take every input `run` had not read when it ended (Ruling 59): stamped
-    `CARRIED_OVER_STEP` and returned as ONE turn for the run's chat, which the
-    caller starts once the run's end is committed. None when nothing waits, or
-    the run is no chat turn.
-
-    The caller holds `lock_run_inputs` and has not yet committed the terminal
-    state: no writer can add to the run between this and that commit."""
-    ctx = run.context or {}
-    session_raw = ctx.get("chat_session_id")
-    if run.source != "chat" or not session_raw:
-        return None
-    try:
-        session_id = uuid.UUID(str(session_raw))
-    except ValueError:
-        return None
-    rows = list(
+async def unread_run_inputs(db: AsyncSession, *, run_id: uuid.UUID) -> list[m.RunInput]:
+    """The inputs `run_id` has not read, in acceptance order, locked."""
+    return list(
         (
             await db.execute(
                 select(m.RunInput)
-                .where(m.RunInput.run_id == run.id, m.RunInput.consumed_at.is_(None))
+                .where(m.RunInput.run_id == run_id, m.RunInput.consumed_at.is_(None))
                 .order_by(m.RunInput.seq)
                 .with_for_update()
             )
         ).scalars()
-    )
-    if not rows:
-        return None
-    now = dt.datetime.now(tz=dt.UTC)
-    for row in rows:
-        row.consumed_at = now
-        row.consumed_step = CARRIED_OVER_STEP
-    await db.flush()
-    channel = ctx.get("chat_channel")
-    external_id = ctx.get("chat_channel_external_id")
-    operator = ctx.get("originating_operator")
-    behalf = ctx.get(ON_BEHALF_OF)
-    return CarriedOver(
-        tenant_id=run.tenant_id,
-        session_id=session_id,
-        text="\n\n".join(row.text for row in rows),
-        # Every writer to a chat run is its one person (`may_steer_run`).
-        author_member_id=rows[0].author_member_id,
-        originating_operator=str(operator) if present(operator) else None,
-        on_behalf_of=str(behalf) if present(behalf) else None,
-        chat_channel=str(channel) if channel and external_id else None,
-        chat_channel_external_id=str(external_id) if channel and external_id else None,
     )
 
 
