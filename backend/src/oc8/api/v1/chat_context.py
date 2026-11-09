@@ -1,0 +1,273 @@
+"""Pinned context, chat projects, `#` search and source browsing (oc8 Chat spec §5).
+
+Every route admits through the chat door. What the caller may then see is the
+context registry's answer for THIS member (`chat.context`), never a second rule
+written here. Pins, a chat's project and its pinned state are written only by
+the chat's owner (`_session_owned_by_caller`, no oversight carve-out), and a
+project is visible to its owner alone."""
+
+from __future__ import annotations
+
+import uuid
+from typing import Annotated, Final
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+
+from oc8 import models as m
+from oc8.api.deps import DbSession, require_departmental, require_permission
+from oc8.api.v1.chat import _ref_views, _session_dto, _session_owned_by_caller, _viewer, _with_pins
+from oc8.authz.permissions import AGENT, COPILOT_USE, KNOWLEDGE, VIEW, perm
+from oc8.authz.scope import HumanActor
+from oc8.chat.context.registry import RESOLVERS, resolve_ref
+from oc8.chat.projects import (
+    PinRefused,
+    authorise_pins,
+    delete_project,
+    list_projects,
+    owned_project,
+)
+from oc8.knowledge.browse import BrowseUnsupported, InvalidReference, browse_source
+from oc8.knowledge.connectors.base import ConnectorError
+from oc8.schemas.dto import (
+    BrowseEntryDTO,
+    BrowseListingDTO,
+    ChatProjectDTO,
+    ChatSessionDTO,
+    ContextSearchItemDTO,
+)
+from oc8.schemas.requests import (
+    ChatContextRefRequest,
+    ChatProjectRequest,
+    PinRefsRequest,
+    SetPinnedRequest,
+    SetProjectRequest,
+)
+
+router = APIRouter()
+
+_Actor = Annotated[
+    HumanActor, Depends(require_departmental(perm(AGENT, VIEW), or_tenant_wide=COPILOT_USE))
+]
+
+#: `#` search bounds: the query's length, how many kinds one call may name,
+#: hits per kind, and hits in all.
+MAX_SEARCH_QUERY: Final = 100
+MAX_SEARCH_KINDS: Final = 16
+SEARCH_PER_KIND: Final = 8
+MAX_SEARCH_RESULTS: Final = 30
+
+_NOT_BROWSABLE = "This source can't be browsed — pin it as a whole."
+
+
+async def _authorised(
+    db: DbSession, actor: HumanActor, refs: list[ChatContextRefRequest]
+) -> list[dict[str, str]]:
+    """The refs to store, or a 422 naming each refused one by the id the
+    client sent. A ref that does not exist is refused exactly like one the
+    caller may not see, so the answer confirms nothing across tenants."""
+    try:
+        return await authorise_pins(
+            db, viewer=await _viewer(db, actor), refs=[{"kind": r.kind, "id": r.id} for r in refs]
+        )
+    except PinRefused as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            {"message": "not available to you", "refused": exc.refused},
+        ) from exc
+
+
+async def _session_reply(
+    db: DbSession, actor: HumanActor, session: m.ChatSession
+) -> ChatSessionDTO:
+    await db.flush()
+    dto = await _with_pins(db, actor, _session_dto(session), session)
+    await db.commit()
+    return dto
+
+
+@router.put("/chat/sessions/{session_id}/pins", response_model=ChatSessionDTO)
+async def put_pins(
+    session_id: uuid.UUID, body: PinRefsRequest, db: DbSession, actor: _Actor
+) -> ChatSessionDTO:
+    session = await _session_owned_by_caller(session_id, db, actor)
+    session.pinned_refs = await _authorised(db, actor, body.refs)
+    return await _session_reply(db, actor, session)
+
+
+@router.put("/chat/sessions/{session_id}/project", response_model=ChatSessionDTO)
+async def put_project(
+    session_id: uuid.UUID, body: SetProjectRequest, db: DbSession, actor: _Actor
+) -> ChatSessionDTO:
+    session = await _session_owned_by_caller(session_id, db, actor)
+    if body.project_id is not None and (
+        await owned_project(
+            db,
+            tenant_id=actor.principal.tenant_id,
+            member_id=actor.member.id,
+            project_id=body.project_id,
+        )
+        is None
+    ):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+    session.project_id = body.project_id
+    return await _session_reply(db, actor, session)
+
+
+@router.put("/chat/sessions/{session_id}/pinned", response_model=ChatSessionDTO)
+async def put_pinned(
+    session_id: uuid.UUID, body: SetPinnedRequest, db: DbSession, actor: _Actor
+) -> ChatSessionDTO:
+    session = await _session_owned_by_caller(session_id, db, actor)
+    session.pinned = body.pinned
+    return await _session_reply(db, actor, session)
+
+
+async def _project_dto(db: DbSession, actor: HumanActor, project: m.ChatProject) -> ChatProjectDTO:
+    refs = [r for r in (project.pinned_refs or []) if isinstance(r, dict)]
+    return ChatProjectDTO(
+        id=str(project.id),
+        name=project.name,
+        instructions=project.instructions,
+        pinned_refs=await _ref_views(db, actor, refs),
+        created_at=project.created_at.isoformat(),
+    )
+
+
+async def _own_project_or_404(
+    db: DbSession, actor: HumanActor, project_id: uuid.UUID
+) -> m.ChatProject:
+    project = await owned_project(
+        db, tenant_id=actor.principal.tenant_id, member_id=actor.member.id, project_id=project_id
+    )
+    if project is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+    return project
+
+
+@router.get("/chat/projects", response_model=list[ChatProjectDTO])
+async def get_projects(db: DbSession, actor: _Actor) -> list[ChatProjectDTO]:
+    rows = await list_projects(db, tenant_id=actor.principal.tenant_id, member_id=actor.member.id)
+    return [await _project_dto(db, actor, p) for p in rows]
+
+
+@router.post("/chat/projects", response_model=ChatProjectDTO, status_code=status.HTTP_201_CREATED)
+async def create_project(body: ChatProjectRequest, db: DbSession, actor: _Actor) -> ChatProjectDTO:
+    project = m.ChatProject(
+        tenant_id=actor.principal.tenant_id,
+        owner_member_id=actor.member.id,
+        name=body.name,
+        instructions=body.instructions,
+        pinned_refs=await _authorised(db, actor, body.pinned_refs),
+    )
+    db.add(project)
+    await db.flush()
+    dto = await _project_dto(db, actor, project)
+    await db.commit()
+    return dto
+
+
+@router.patch("/chat/projects/{project_id}", response_model=ChatProjectDTO)
+async def update_project(
+    project_id: uuid.UUID, body: ChatProjectRequest, db: DbSession, actor: _Actor
+) -> ChatProjectDTO:
+    """`name` is required; `instructions` and `pinnedRefs` change only when sent."""
+    project = await _own_project_or_404(db, actor, project_id)
+    sent = body.model_fields_set
+    if "pinned_refs" in sent:
+        project.pinned_refs = await _authorised(db, actor, body.pinned_refs)
+    if "instructions" in sent:
+        project.instructions = body.instructions
+    project.name = body.name
+    await db.flush()
+    dto = await _project_dto(db, actor, project)
+    await db.commit()
+    return dto
+
+
+@router.delete("/chat/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_project(project_id: uuid.UUID, db: DbSession, actor: _Actor) -> None:
+    """Delete the project; its chats stay, detached, in the same transaction."""
+    project = await _own_project_or_404(db, actor, project_id)
+    await delete_project(db, project=project)
+    await db.commit()
+
+
+@router.get("/chat/context/search", response_model=list[ContextSearchItemDTO])
+async def search_context(
+    db: DbSession,
+    actor: _Actor,
+    q: Annotated[str, Query(max_length=MAX_SEARCH_QUERY)] = "",
+    kinds: Annotated[str | None, Query(max_length=1000)] = None,
+) -> list[ContextSearchItemDTO]:
+    """What the caller could pin, by name. Each kind's own `search` decides
+    what this member sees. This feeds the member's own picker, not the model,
+    so restricted items may appear here."""
+    asked = [k.strip() for k in kinds.split(",") if k.strip()] if kinds else list(RESOLVERS)
+    if len(asked) > MAX_SEARCH_KINDS:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "too many kinds")
+    unknown = sorted({k for k in asked if k not in RESOLVERS})
+    if unknown:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, f"unknown kinds: {', '.join(unknown)}"
+        )
+    viewer = await _viewer(db, actor)
+    query = q.strip()
+    items: list[ContextSearchItemDTO] = []
+    for kind in dict.fromkeys(asked):
+        resolver = RESOLVERS[kind]
+        for obj in await resolver.search(db, viewer, query, SEARCH_PER_KIND):
+            items.append(
+                ContextSearchItemDTO(
+                    kind=kind,
+                    id=resolver.ref_id(obj),
+                    label=resolver.label(obj),
+                    connected=obj.connected if isinstance(obj, m.DataSource) else True,
+                )
+            )
+            if len(items) >= MAX_SEARCH_RESULTS:
+                return items
+    return items
+
+
+@router.get(
+    "/chat/data-sources/{source_id}/browse",
+    response_model=BrowseListingDTO,
+    dependencies=[Depends(require_permission(perm(KNOWLEDGE, VIEW)))],
+)
+async def browse(
+    source_id: uuid.UUID,
+    db: DbSession,
+    actor: _Actor,
+    path: Annotated[str, Query(max_length=2048)] = "/",
+) -> BrowseListingDTO:
+    """List one folder of a source, to pin a file from it. The source goes
+    through the `data_source` resolver: one the caller may not see, another
+    tenant's, or none at all is a 404."""
+    resolved = await resolve_ref(
+        db, viewer=await _viewer(db, actor), kind="data_source", ref_id=str(source_id)
+    )
+    if resolved is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "source not found")
+    try:
+        listing = await browse_source(db, source=resolved[1], path=path)
+    except BrowseUnsupported as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, _NOT_BROWSABLE) from exc
+    except InvalidReference as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+    except ConnectorError as exc:
+        # Already scrubbed by `browse`: it names the failure, never the
+        # connector's own words.
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+    return BrowseListingDTO(
+        entries=[
+            BrowseEntryDTO(
+                id=e.id,
+                name=e.name,
+                is_folder=e.is_folder,
+                size=e.size,
+                content_type=e.content_type,
+            )
+            for e in listing.entries
+        ],
+        truncated=listing.truncated,
+    )

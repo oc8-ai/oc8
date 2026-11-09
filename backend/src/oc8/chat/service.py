@@ -113,7 +113,12 @@ async def list_sessions(
     )
     if agent_id is not None:
         stmt = stmt.where(m.ChatSession.agent_id == agent_id)
-    stmt = stmt.order_by(m.ChatSession.last_message_at.desc().nulls_last(), m.ChatSession.id.desc())
+    # Pinned chats first; within each group, the most recently active first.
+    stmt = stmt.order_by(
+        m.ChatSession.pinned.desc(),
+        m.ChatSession.last_message_at.desc().nulls_last(),
+        m.ChatSession.id.desc(),
+    )
     return list((await db.execute(stmt)).scalars())
 
 

@@ -1206,6 +1206,16 @@ class ActiveRunDTO(CamelModel):
     state: str
 
 
+class ContextRefViewDTO(CamelModel):
+    """A pinned ref as the caller sees it now. `available` is False when the
+    caller can no longer see it; the label is then the one stored at pin time."""
+
+    kind: str
+    id: str
+    label: str
+    available: bool
+
+
 class ChatSessionDTO(CamelModel):
     id: str
     agent_id: str
@@ -1220,6 +1230,46 @@ class ChatSessionDTO(CamelModel):
     #: The question this chat's active run is parked on, if any (spec §4.1).
     pending_question: PendingQuestionDTO | None = None
     task_id: str | None = None
+    #: The chat's pinned context, re-checked for the caller. Filled on the
+    #: single-chat routes; the list leaves it empty.
+    pinned_refs: list[ContextRefViewDTO] = []
+    project_id: str | None = None
+    #: Pinned chats list first.
+    pinned: bool = False
+
+
+class ContextSearchItemDTO(CamelModel):
+    """One `#` search hit. The member's own picker, not the model's context:
+    restricted items may appear here."""
+
+    kind: str
+    id: str
+    label: str
+    hint: str | None = None
+    #: False for a data source that is not connected.
+    connected: bool = True
+
+
+class BrowseEntryDTO(CamelModel):
+    id: str
+    name: str
+    is_folder: bool
+    size: int | None = None
+    content_type: str | None = None
+
+
+class BrowseListingDTO(CamelModel):
+    entries: list[BrowseEntryDTO]
+    #: True when the source holds more entries than are listed.
+    truncated: bool
+
+
+class ChatProjectDTO(CamelModel):
+    id: str
+    name: str
+    instructions: str
+    pinned_refs: list[ContextRefViewDTO]
+    created_at: str
 
 
 class ChatModelOptionDTO(CamelModel):

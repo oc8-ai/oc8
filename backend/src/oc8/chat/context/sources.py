@@ -127,7 +127,7 @@ class KnowledgeBaseResolver(_KnowledgeKind):
             .where(
                 m.KnowledgeBase.tenant_id == viewer.member.tenant_id,
                 m.KnowledgeBase.deleted_at.is_(None),
-                m.KnowledgeBase.name.ilike(f"%{query}%"),
+                m.KnowledgeBase.name.icontains(query, autoescape=True),
             )
             .order_by(m.KnowledgeBase.name)
             .limit(limit)
@@ -168,7 +168,7 @@ class DataSourceResolver(_KnowledgeKind):
             .where(
                 m.DataSource.tenant_id == viewer.member.tenant_id,
                 m.DataSource.deleted_at.is_(None),
-                m.DataSource.name.ilike(f"%{query}%"),
+                m.DataSource.name.icontains(query, autoescape=True),
             )
             .order_by(m.DataSource.name)
             .limit(limit)
@@ -299,7 +299,7 @@ class FileResolver:
                     m.FileAttachment.owner_id.in_(messages),
                     m.FileAttachment.owner_id.in_(sessions),
                 ),
-                m.FileAttachment.filename.ilike(f"%{query}%"),
+                m.FileAttachment.filename.icontains(query, autoescape=True),
             )
             .order_by(m.FileAttachment.created_at.desc())
             .limit(limit)

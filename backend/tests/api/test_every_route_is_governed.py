@@ -302,6 +302,17 @@ _CHAT_ROUTES: dict[tuple[str, str], str] = {
     ("POST", "/api/v1/runs/{}/inputs"): "agent:view",
     ("POST", "/api/v1/runs/{}/stop"): "agent:view",
     ("GET", "/api/v1/agents/{}/live"): "agent:view",
+    ("PUT", "/api/v1/chat/sessions/{}/pins"): "agent:view",
+    ("PUT", "/api/v1/chat/sessions/{}/project"): "agent:view",
+    ("PUT", "/api/v1/chat/sessions/{}/pinned"): "agent:view",
+    ("GET", "/api/v1/chat/projects"): "agent:view",
+    ("POST", "/api/v1/chat/projects"): "agent:view",
+    ("PATCH", "/api/v1/chat/projects/{}"): "agent:view",
+    ("DELETE", "/api/v1/chat/projects/{}"): "agent:view",
+    ("GET", "/api/v1/chat/context/search"): "agent:view",
+    # Browsing a source is reading knowledge: the same `knowledge:view` the
+    # `data_source` resolver admits on (Ruling 27), on top of the chat door.
+    ("GET", "/api/v1/chat/data-sources/{}/browse"): "knowledge:view",
 }
 
 

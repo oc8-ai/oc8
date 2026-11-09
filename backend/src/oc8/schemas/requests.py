@@ -14,7 +14,7 @@ from pydantic import (
     field_validator,
 )
 
-from oc8.chat.context.manifest import MAX_MESSAGE_REFS
+from oc8.chat.context.manifest import MAX_MESSAGE_REFS, MAX_PINNED_REFS
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import WidgetInstanceDTO
 
@@ -64,6 +64,29 @@ class SendChatMessageRequest(CamelModel):
     context_refs: list[ChatContextRefRequest] = Field(
         default_factory=list, max_length=MAX_MESSAGE_REFS
     )
+
+
+class PinRefsRequest(CamelModel):
+    """Replace a chat's pinned context. Labels come from the rows, not the client."""
+
+    refs: list[ChatContextRefRequest] = Field(max_length=MAX_PINNED_REFS)
+
+
+class ChatProjectRequest(CamelModel):
+    name: str = Field(min_length=1, max_length=120)
+    instructions: str = Field(default="", max_length=8000)
+    pinned_refs: list[ChatContextRefRequest] = Field(
+        default_factory=list, max_length=MAX_PINNED_REFS
+    )
+
+
+class SetProjectRequest(CamelModel):
+    #: None takes the chat out of its project.
+    project_id: uuid.UUID | None
+
+
+class SetPinnedRequest(CamelModel):
+    pinned: bool
 
 
 class RenameChatSessionRequest(CamelModel):

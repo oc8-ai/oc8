@@ -53,6 +53,11 @@ class BrowseUnsupported(Exception):
     """This source's connector cannot browse; pin the source as a whole."""
 
 
+class InvalidReference(ConnectorError):
+    """The caller's path or file id was refused before any connector saw it --
+    the caller's mistake, not the source's."""
+
+
 def _auth(db: AsyncSession, source: m.DataSource) -> SourceAuthContext:
     return SourceAuthContext(
         db, tenant_id=source.tenant_id, connection_id=source.oauth_connection_id
@@ -66,9 +71,9 @@ def _has_control_chars(value: str) -> bool:
 def _check_path(path: str) -> str:
     path = path or "/"
     if len(path) > _MAX_REF_LEN or _has_control_chars(path):
-        raise ConnectorError("invalid browse path")
+        raise InvalidReference("invalid browse path")
     if ".." in path.replace("\\", "/").split("/"):
-        raise ConnectorError("invalid browse path: '..' segments are not allowed")
+        raise InvalidReference("invalid browse path: '..' segments are not allowed")
     return path
 
 
@@ -76,7 +81,7 @@ def check_file_id(file_id: str) -> str:
     """`file_id`, or `ConnectorError` if it is empty, oversized or holds
     control characters."""
     if not file_id or len(file_id) > _MAX_REF_LEN or _has_control_chars(file_id):
-        raise ConnectorError("invalid file id")
+        raise InvalidReference("invalid file id")
     return file_id
 
 

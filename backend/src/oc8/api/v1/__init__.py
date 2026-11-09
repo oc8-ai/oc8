@@ -17,6 +17,7 @@ from oc8.api.v1 import (
     catalog,
     channels,
     chat,
+    chat_context,
     chat_live,
     clarifications,
     components,
@@ -71,6 +72,7 @@ api_router.include_router(model_prices.router, tags=["catalog"])
 api_router.include_router(reconciliation.router, tags=["catalog"])
 api_router.include_router(channels.router, tags=["channels"])
 api_router.include_router(chat.router, tags=["chat"])
+api_router.include_router(chat_context.router, tags=["chat"])
 api_router.include_router(files.router, tags=["files"])
 api_router.include_router(skills_write.router, tags=["skills"])
 api_router.include_router(budgets.router, tags=["budgets"])

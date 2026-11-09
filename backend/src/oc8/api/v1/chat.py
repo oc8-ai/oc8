@@ -5,8 +5,8 @@ exactly as they do to an autonomous run."""
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
-from typing import Annotated
+from collections.abc import Mapping, Sequence
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
@@ -21,8 +21,10 @@ from oc8.audit import append_event
 from oc8.authz.authority import Authority, authority_for_principal
 from oc8.authz.permissions import AGENT, COPILOT, COPILOT_USE, MANAGE, RUN_START, VIEW, perm
 from oc8.authz.scope import HumanActor
+from oc8.chat.context.base import Viewer, viewer_for_member
 from oc8.chat.model_choice import is_allowed_override, model_options
 from oc8.chat.modes import MODES
+from oc8.chat.projects import pinned_refs_for_viewer
 from oc8.chat.questions import QuestionError
 from oc8.chat.reach import reachable_chat_agent
 from oc8.chat.service import (
@@ -49,6 +51,7 @@ from oc8.schemas.dto import (
     ChatModeDTO,
     ChatModelOptionDTO,
     ChatSessionDTO,
+    ContextRefViewDTO,
     FileAttachmentDTO,
     PendingQuestionDTO,
     RunDTO,
@@ -96,7 +99,31 @@ def _session_dto(
         read_only=read_only,
         pending_question=pending_question,
         task_id=str(session.task_id) if session.task_id else None,
+        project_id=str(session.project_id) if session.project_id else None,
+        pinned=bool(session.pinned),
     )
+
+
+async def _viewer(db: DbSession, actor: HumanActor) -> Viewer:
+    """The caller, with the role on THIS request's token (never a stored one)."""
+    return await viewer_for_member(db, actor.member, token_role=actor.principal.role)
+
+
+async def _ref_views(
+    db: DbSession, actor: HumanActor, refs: Sequence[Mapping[str, Any]]
+) -> list[ContextRefViewDTO]:
+    views = await pinned_refs_for_viewer(db, viewer=await _viewer(db, actor), refs=refs)
+    return [
+        ContextRefViewDTO(kind=v.kind, id=v.id, label=v.label, available=v.available) for v in views
+    ]
+
+
+async def _with_pins(
+    db: DbSession, actor: HumanActor, dto: ChatSessionDTO, session: m.ChatSession
+) -> ChatSessionDTO:
+    """`dto` with the chat's pinned context, re-checked for the caller."""
+    refs = [r for r in (session.pinned_refs or []) if isinstance(r, dict)]
+    return dto.model_copy(update={"pinned_refs": await _ref_views(db, actor, refs)})
 
 
 async def _pending_question(db: DbSession, runs: Sequence[m.AgentRun]) -> PendingQuestionDTO | None:
@@ -325,9 +352,10 @@ async def get_chat_session(
     runs = await active_runs_for_session(
         db, tenant_id=actor.principal.tenant_id, session_id=session.id
     )
-    return _session_dto(
+    dto = _session_dto(
         session, active_runs=runs, pending_question=await _pending_question(db, runs)
     )
+    return await _with_pins(db, actor, dto, session)
 
 
 @router.post("/chat/sessions/{session_id}/questions/{clarification_id}/answer")
