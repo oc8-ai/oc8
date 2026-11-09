@@ -27,8 +27,9 @@ VIEWING member's authority:
 
 A summary is shown to a model as untrusted data, so it is plain text of at
 most `SUMMARY_CHARS`, credential-shaped text is redacted, and nothing from a
-run's context but its task, result, step count and tool names is ever read
-(never `pending_questions`, `originating_operator` or any other key).
+run's context but its result, step count and tool names is ever read: not its
+task, which the Live tab does not show either, and never `pending_questions`,
+`originating_operator` or any other key.
 """
 
 from __future__ import annotations
@@ -215,12 +216,20 @@ class DepartmentResolver(_Summarized):
 
 @dataclass
 class RunView:
-    """A run as one viewer may see it. `redacted` starts True (fail closed)
-    and only `authorize` clears it, for a run that is the viewer's own, the
-    agent's autonomous run, or a run of the viewer's own chat."""
+    """A run as one viewer may see it. Both flags fail closed and only
+    `authorize` sets them: `authorized` once the viewer may see the run at
+    all (until then nothing of it is shown, like `Scoped.loaded()`), and
+    `redacted` is cleared for a run that is the viewer's own, the agent's
+    autonomous run, or a run of the viewer's own chat."""
 
     run: m.AgentRun
     redacted: bool = True
+    authorized: bool = False
+
+    def shown(self) -> m.AgentRun:
+        if not self.authorized:
+            raise LookupError("not authorized yet")
+        return self.run
 
 
 class RunResolver(_Summarized):
@@ -252,13 +261,15 @@ class RunResolver(_Summarized):
             or await self._of_own_chat(db, viewer, run)
         ):
             obj.redacted = False
+            obj.authorized = True
             return True
         # A colleague's run: under "All runs" only, which needs the right to
         # manage the agent -- and then labels and state only (Ruling 15).
         obj.redacted = True
-        return await may_manage_agent(
+        obj.authorized = await may_manage_agent(
             db, agent=agent, authority=viewer.authority, scope=viewer.scope
         )
+        return bool(obj.authorized)
 
     @staticmethod
     async def _of_own_chat(db: AsyncSession, viewer: Viewer, run: m.AgentRun) -> bool:
@@ -285,10 +296,11 @@ class RunResolver(_Summarized):
         return str(obj.run.id)
 
     def label(self, obj: Any) -> str:
-        return f"Run {str(obj.run.id)[:8]} ({obj.run.source})"
+        run = obj.shown()
+        return f"Run {str(run.id)[:8]} ({run.source})"
 
     async def summary(self, db: AsyncSession, obj: Any) -> str:
-        run: m.AgentRun = obj.run
+        run: m.AgentRun = obj.shown()
         ctx = run.context or {}
         steps = ctx.get("steps") if isinstance(ctx.get("steps"), int) else 0
         head = f"run ({run.source}), state {run.state}, {steps} steps."
@@ -300,10 +312,10 @@ class RunResolver(_Summarized):
                     tools.append(name)
             listed = f" Tools used: {', '.join(tools[:_RUN_TOOLS])}." if tools else ""
             return _compact(f"A colleague's {head}{listed} Task and result are not shown.")
-        task = _compact(str(ctx.get("task") or ""), 160) or "none"
+        # Never the task: no more than the Live tab's run item shows.
         output = ctx.get("output")
-        result = _compact(str(output), 250) if output else "none yet"
-        return _compact(f"Agent {head} Task: {task} Result: {result}")
+        result = _compact(str(output), 400) if output else "none yet"
+        return _compact(f"Agent {head} Result: {result}")
 
     def deep_link(self, obj: Any) -> str | None:
         return f"/activity?run={obj.run.id}"
@@ -401,7 +413,7 @@ class ResponsibilityResolver(_Summarized):
             .where(
                 m.Responsibility.tenant_id == viewer.member.tenant_id,
                 m.Responsibility.member_id == viewer.member.id,
-                m.Responsibility.title.ilike(f"%{query}%"),
+                m.Responsibility.title.icontains(query, autoescape=True),
             )
             .order_by(m.Responsibility.created_at.desc())
             .limit(limit)
@@ -471,7 +483,7 @@ class ChatSessionResolver(_Summarized):
             .where(
                 m.ChatSession.tenant_id == viewer.member.tenant_id,
                 m.ChatSession.member_id == viewer.member.id,
-                m.ChatSession.title.ilike(f"%{query}%"),
+                m.ChatSession.title.icontains(query, autoescape=True),
             )
             .order_by(m.ChatSession.last_message_at.desc().nulls_last())
             .limit(limit)

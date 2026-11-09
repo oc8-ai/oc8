@@ -45,7 +45,7 @@ async def _member(
     tenant: uuid.UUID,
     subject: str,
     *,
-    token_role: str,
+    token_role: str | None,
     seat_in: Any = None,
     manages: bool = False,
 ) -> Viewer:
@@ -292,7 +292,9 @@ async def test_run_refs_follow_the_live_tab_rule(app_session: AppSessionFactory)
         assert "secret plan" not in await _summary(db, w.boss, "run", str(own.id))
 
         full = await _summary(db, w.sam, "run", str(own.id))
-        assert "secret plan of sam" in full and "Offer sent" in full
+        assert "Offer sent" in full
+        # Not even her own run's task: no more than the Live tab shows.
+        assert "secret plan" not in full
         assert "hidden question" not in full and "ceo@acme" not in full
         assert "Offer sent" in await _summary(db, w.sam, "run", str(autonomous.id))
         resolved = await resolve_ref(db, viewer=w.sam, kind="run", ref_id=str(own.id))
@@ -504,3 +506,90 @@ async def test_a_chat_summary_is_compact_and_keeps_the_newest_turn(
         assert text.startswith("Chat 'Long':")
         assert text.endswith("user: last one, token=[redacted]")
         assert "abc123" not in text and "turn 0" not in text
+
+
+# ------------------------------------------------------------------- hardening
+
+
+async def test_an_unauthorized_run_shows_nothing(app_session: AppSessionFactory) -> None:
+    """`label`/`summary` refuse a run `authorize` has not admitted, the way
+    `Scoped.loaded()` does -- whatever path reaches them."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        w = await _world(db, tenant)
+        run = _run(tenant, w.seller, source="cron")
+        colleagues = _run(tenant, w.seller, source="chat", originating_operator="alice")
+        db.add_all([run, colleagues])
+        await db.flush()
+        resolver = RESOLVERS["run"]
+        loaded = await resolver.load(db, tenant, str(run.id))
+        with pytest.raises(LookupError):
+            resolver.label(loaded)
+        with pytest.raises(LookupError):
+            await resolver.summary(db, loaded)
+        # Refused by `authorize` (a seat that may not manage the agent).
+        refused = await resolver.load(db, tenant, str(colleagues.id))
+        assert not await resolver.authorize(db, w.sam, refused)
+        with pytest.raises(LookupError):
+            await resolver.summary(db, refused)
+
+
+async def test_owners_without_the_door_are_dropped(app_session: AppSessionFactory) -> None:
+    """A responsibility needs `copilot:use`, a run and a chat the chat door --
+    even the member's own, and before anything is loaded."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        w = await _world(db, tenant)
+        # No token role, no assigned role, no seat: no door at all.
+        nobody = await _member(db, tenant, "nobody", token_role=None)
+        session = m.ChatSession(
+            tenant_id=tenant, agent_id=w.seller.id, member_id=nobody.member.id, title="Mine"
+        )
+        db.add(session)
+        await db.flush()
+        resp = m.Responsibility(
+            tenant_id=tenant,
+            member_id=nobody.member.id,
+            chat_session_id=session.id,
+            title="Mine",
+            goal="g",
+        )
+        run = _run(tenant, w.seller, source="manual", originating_operator="nobody")
+        db.add_all([resp, run])
+        await db.flush()
+        owned = {"responsibility": resp.id, "run": run.id, "chat_session": session.id}
+        for kind, ref_id in owned.items():
+            with patch.object(RESOLVERS[kind], "load", side_effect=AssertionError("loaded")):
+                assert await resolve_ref(db, viewer=nobody, kind=kind, ref_id=str(ref_id)) is None
+            assert await RESOLVERS[kind].search(db, nobody, "Mine", 5) == []
+
+
+async def test_title_searches_take_wildcards_literally(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        w = await _world(db, tenant)
+        literal = m.ChatSession(
+            tenant_id=tenant, agent_id=w.seller.id, member_id=w.emp.member.id, title="100% sure"
+        )
+        other = m.ChatSession(
+            tenant_id=tenant, agent_id=w.seller.id, member_id=w.emp.member.id, title="1000 sure"
+        )
+        db.add_all([literal, other])
+        await db.flush()
+
+        def resp(title: str) -> m.Responsibility:
+            return m.Responsibility(
+                tenant_id=tenant,
+                member_id=w.emp.member.id,
+                chat_session_id=literal.id,
+                title=title,
+                goal="g",
+            )
+
+        snake, plain = resp("deal_a"), resp("dealxa")
+        db.add_all([snake, plain])
+        await db.flush()
+        chats = await RESOLVERS["chat_session"].search(db, w.emp, "0%", 5)
+        assert [c.id for c in chats] == [literal.id]
+        found = await RESOLVERS["responsibility"].search(db, w.emp, "l_a", 5)
+        assert [r.id for r in found] == [snake.id]
