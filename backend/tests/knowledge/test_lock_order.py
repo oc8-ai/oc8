@@ -48,8 +48,8 @@ from oc8.knowledge.tombstone import (
     tombstone_source,
     unlink_source_from_base,
 )
-from tests.conftest import AppSessionFactory
 from tests.audit.helpers import flush_audit
+from tests.conftest import AppSessionFactory
 from tests.knowledge.test_tombstone import (
     STUB,
     _FakeEmbedRouter,

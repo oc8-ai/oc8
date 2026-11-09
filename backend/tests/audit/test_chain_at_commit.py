@@ -419,3 +419,40 @@ async def test_committing_the_root_with_a_savepoint_open_is_refused(
         await s.rollback()
     assert await _business_rows(app_session, tenant, "unaudited") == 0
     assert await _actions(app_session, tenant) == []
+
+
+async def test_an_abandoned_session_with_a_savepoint_event_does_not_pin_its_connection() -> None:
+    """The commit guard's per-connection registry must not keep a Connection
+    alive. A staged event's scope (the savepoint SessionTransaction) references
+    the Connection; if the registry's VALUE reached it, a weak KEY could never
+    be collected and the pool slot -- with its open transaction -- would be
+    pinned forever."""
+    import gc
+    import os
+
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    engine = create_async_engine(
+        os.environ["OC8_DATABASE_URL"], pool_size=1, max_overflow=0, pool_timeout=5
+    )
+    tenant = uuid.uuid4()
+    try:
+
+        async def _abandon() -> None:
+            s = AsyncSession(engine, expire_on_commit=False)
+            await s.execute(
+                sa.text("SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant)}
+            )
+            await s.begin_nested()
+            await _append(s, tenant, "abandoned")
+            # Neither closed nor rolled back: dropped on the floor.
+
+        await _abandon()
+        gc.collect()
+        await asyncio.sleep(0)
+        gc.collect()
+        assert engine.sync_engine.pool.checkedout() == 0  # type: ignore[attr-defined]
+        async with AsyncSession(engine) as s2:
+            assert (await s2.execute(sa.text("SELECT 1"))).scalar_one() == 1
+    finally:
+        await engine.dispose()

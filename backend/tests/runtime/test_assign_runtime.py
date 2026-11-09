@@ -21,8 +21,8 @@ from oc8.runtime.registry import (
     assign_runtime,
 )
 from oc8.runtime.supervision_hook import NOOP_SUPERVISION_RUN_HOOK, use_supervision_runtime
-from tests.conftest import AppSessionFactory
 from tests.audit.helpers import flush_audit
+from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
 

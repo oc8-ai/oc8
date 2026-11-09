@@ -21,8 +21,8 @@ from oc8 import models as m
 from oc8.agent.control_tools import SEARCH_KNOWLEDGE, execute_control_tool
 from oc8.authz.pdp import Decision, Effect
 from oc8.modelrouter import ToolCall
-from tests.conftest import AppSessionFactory
 from tests.audit.helpers import flush_audit
+from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
 

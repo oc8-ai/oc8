@@ -5,8 +5,8 @@ from typing import Any
 
 import pytest
 from sqlalchemy import select
-from tests.conftest import AppSessionFactory
 from tests.audit.helpers import flush_audit
+from tests.conftest import AppSessionFactory
 
 from oc8 import models as m
 from oc8.agent.engine import run_agent

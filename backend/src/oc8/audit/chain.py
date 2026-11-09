@@ -262,8 +262,8 @@ def _write_staged(session: Session) -> None:
     except BaseException:
         session.info[_POISONED_KEY] = True
         raise
-    # In place: the same list object is registered for the connection in the
-    # engine-level commit guard (see _guard_dbapi_commit).
+    # In place: the engine-level commit guard reads this same list through
+    # the session (see _guard_dbapi_commit).
     pending.clear()
 
 
@@ -284,17 +284,30 @@ def _on_before_commit(session: Session) -> None:
     _write_staged(session)
 
 
-# The staged list of the session using each Connection, for the engine-level
+# The session that staged events on each Connection, for the engine-level
 # commit guard. Keyed by the Connection OBJECT (one per checkout), weakly, and
 # deliberately not stored in `Connection.info`: that property goes through
 # `Connection.connection`, which REVALIDATES -- checks a connection out again --
 # when the DBAPI connection is gone, and doing that from a commit/rollback
 # listener during a cancelled task's teardown hung the event loop (measured:
-# tests/runtime/test_workspace_archive_sync.py). It also keeps a pooled DBAPI
-# connection from carrying a reference to an earlier session's list.
-_PENDING_BY_CONNECTION: weakref.WeakKeyDictionary[Connection, list[_Staged]] = (
+# tests/runtime/test_workspace_archive_sync.py).
+#
+# The VALUE is a weak reference to the session, never the staged list: a staged
+# event's scope (a savepoint SessionTransaction) references the Connection, so
+# a strong value would keep its own weak key alive -- an abandoned session would
+# pin its connection, pool slot and open transaction for ever. A dead reference
+# means nothing is staged.
+_SESSION_BY_CONNECTION: weakref.WeakKeyDictionary[Connection, weakref.ref[Session]] = (
     weakref.WeakKeyDictionary()
 )
+
+
+def _staged_on(conn: Connection) -> int:
+    ref = _SESSION_BY_CONNECTION.get(conn)
+    session = ref() if ref is not None else None
+    if session is None:
+        return 0
+    return len(session.info.get(_PENDING_KEY) or ())
 
 
 @event.listens_for(Engine, "commit")
@@ -308,20 +321,19 @@ def _guard_dbapi_commit(conn: Connection) -> None:
     regardless. Raising here stops the COMMIT, so the business rows are not
     persisted without their audit rows.
     """
-    pending = _PENDING_BY_CONNECTION.get(conn)
-    if pending:
+    staged = _staged_on(conn)
+    if staged:
         raise AuditChainPoisoned(
-            f"refusing to COMMIT: {len(pending)} staged audit event(s) were not "
-            "written to the chain"
+            f"refusing to COMMIT: {staged} staged audit event(s) were not written to the chain"
         )
-    _PENDING_BY_CONNECTION.pop(conn, None)
+    _SESSION_BY_CONNECTION.pop(conn, None)
 
 
 @event.listens_for(Engine, "rollback")
 def _forget_on_rollback(conn: Connection) -> None:
     # The connection's transaction is over; whatever was staged against it is
     # gone with it.
-    _PENDING_BY_CONNECTION.pop(conn, None)
+    _SESSION_BY_CONNECTION.pop(conn, None)
 
 
 @event.listens_for(Session, "after_soft_rollback")
@@ -419,12 +431,12 @@ async def append_event(
     pending.append(
         _Staged(tenant_id=tenant_id, event=ev, payload=payload, scope=sync.get_nested_transaction())
     )
-    # The same list, registered on the connection, so the engine-level guard
-    # sees it at the DBAPI COMMIT (see _guard_dbapi_commit).
-    conn = await session.connection()
+    # Registered against the connection the event will be written on, so the
+    # engine-level guard sees it at the DBAPI COMMIT (see _guard_dbapi_commit).
+    conn = await session.connection(bind_arguments={"mapper": AuditEvent})
     sync_conn = conn.sync_connection
     assert sync_conn is not None  # session.connection() always returns a live one
-    _PENDING_BY_CONNECTION[sync_conn] = pending
+    _SESSION_BY_CONNECTION[sync_conn] = weakref.ref(sync)
     return ev
 
 

@@ -16,8 +16,8 @@ from oc8.copilot.responsibilities import (
     open_responsibility,
     update_responsibility,
 )
-from tests.conftest import AppSessionFactory
 from tests.audit.helpers import flush_audit
+from tests.conftest import AppSessionFactory
 
 
 async def _open(

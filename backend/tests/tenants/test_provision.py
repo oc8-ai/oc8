@@ -5,7 +5,6 @@ import uuid
 import pytest
 from sqlalchemy import select
 
-from tests.audit.helpers import flush_audit
 from oc8 import models as m
 from oc8.tenants.provision import (
     TenantExists,
@@ -13,6 +12,7 @@ from oc8.tenants.provision import (
     list_tenants,
     slug_is_free,
 )
+from tests.audit.helpers import flush_audit
 from tests.tenants.conftest import OwnerSessionFactory
 
 pytestmark = pytest.mark.asyncio

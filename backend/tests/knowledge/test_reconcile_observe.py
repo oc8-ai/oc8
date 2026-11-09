@@ -37,8 +37,8 @@ from oc8.knowledge.ingest import run_source_sync
 from oc8.knowledge.reconcile import observe_listing, sweep_knowledge_deletions
 from oc8.knowledge.tombstone import RECONCILE_HELD
 from oc8.models.knowledge import EMBED_DIM
-from tests.conftest import AppSessionFactory
 from tests.audit.helpers import flush_audit
+from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
 

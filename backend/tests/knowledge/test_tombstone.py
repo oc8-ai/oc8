@@ -50,8 +50,8 @@ from oc8.knowledge.tombstone import (
 )
 from oc8.main import create_app
 from oc8.models.knowledge import EMBED_DIM
-from tests.conftest import AppSessionFactory
 from tests.audit.helpers import flush_audit
+from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
 

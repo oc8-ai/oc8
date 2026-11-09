@@ -30,8 +30,8 @@ from oc8.modelrouter.auto_router import (
     store_agent_affinity,
 )
 from oc8.modelrouter.types import NeutralMessage, NeutralTool
-from tests.conftest import AppSessionFactory
 from tests.audit.helpers import flush_audit
+from tests.conftest import AppSessionFactory
 
 
 @dataclass
