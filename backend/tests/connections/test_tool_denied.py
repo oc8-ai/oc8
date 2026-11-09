@@ -115,6 +115,39 @@ def test_a_connection_the_department_does_not_grant_at_all() -> None:
     assert "the connection 'microsoft365'" in denied.model_message()
 
 
+def test_an_agent_without_a_department_is_pointed_at_its_own_guardrails() -> None:
+    """No department, so no department's guardrails to send anyone to."""
+    agent = m.Agent(id=uuid.uuid4(), tenant_id=uuid.uuid4(), department_id=None, name="Solo")
+    decision = authorize_tool_call(
+        policies={}, connection_key="microsoft365", right="read", value=None, tool="mail_search"
+    )
+    denied = tool_denied(decision, frame={}, agent=agent, conn=None)
+    assert denied is not None
+    assert denied.scope == "agent"
+    assert denied.department_id is None
+    assert "department" not in denied.sentence()
+    assert "this agent's guardrails" in denied.sentence()
+
+
+def test_a_long_tool_name_is_capped_where_it_is_echoed() -> None:
+    """The tool name is whatever the model asked for: never echoed whole."""
+    long_name = "x" * 500
+    decision = authorize_tool_call(
+        policies=effective_tool_policies(ONLY_CALENDAR, {}),
+        connection_key="microsoft365",
+        right="read",
+        value=None,
+        tool=long_name,
+    )
+    denied = tool_denied(decision, frame=ONLY_CALENDAR, agent=_agent(), conn=None)
+    assert denied is not None
+    assert denied.tool is not None
+    assert len(denied.tool) == 80
+    assert denied.tool.endswith("…")
+    assert long_name not in denied.sentence()
+    assert denied.as_context()["tool"] == denied.tool
+
+
 @pytest.mark.parametrize(
     "decision",
     [

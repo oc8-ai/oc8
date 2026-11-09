@@ -33,6 +33,15 @@ FRAME_DENIALS: Final = frozenset(
 )
 
 
+#: How much of a model-supplied name is echoed back (to the model, onto the
+#: run, into the UI): the name is whatever the model asked for.
+MAX_ECHOED_NAME: Final = 80
+
+
+def _cap(name: str) -> str:
+    return name if len(name) <= MAX_ECHOED_NAME else name[: MAX_ECHOED_NAME - 1] + "…"
+
+
 @dataclass(frozen=True)
 class ToolDenied:
     connection: str
@@ -102,7 +111,8 @@ def tool_denied(
     if decision.effect is not Effect.DENY or decision.reason_code not in FRAME_DENIALS:
         return None
     terms = decision.context
-    connection = str(terms.get("connection") or "")
+    # read_resource takes its connection from the call's arguments: capped too.
+    connection = _cap(str(terms.get("connection") or ""))
     if not connection:
         return None
     tool = terms.get("tool")
@@ -114,13 +124,17 @@ def tool_denied(
         value=None,
         tool=str(tool) if tool else None,
     )
+    # An agent without a department has no department guardrails to send
+    # anyone to: only its own.
     scope: Literal["department", "agent"] = (
-        "department" if by_frame.reason_code in FRAME_DENIALS else "agent"
+        "department"
+        if agent.department_id is not None and by_frame.reason_code in FRAME_DENIALS
+        else "agent"
     )
     integration = integration_for_connection(conn) if conn is not None else None
     return ToolDenied(
         connection=connection,
-        tool=str(tool) if tool else None,
+        tool=_cap(str(tool)) if tool else None,
         right=str(right) if right else None,
         reason=str(decision.reason_code),
         scope=scope,

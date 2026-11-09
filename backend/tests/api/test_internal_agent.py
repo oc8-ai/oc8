@@ -1281,6 +1281,9 @@ async def test_a_frame_denial_is_recorded_and_told_to_the_model_plainly(
         agent = await db.get(m.Agent, agent_id)
         assert run is not None and agent is not None
         denied = run.context["tool_denied"]
+        record = run.context["toolCalls"][-1]
+    # The call record keeps the PDP's own reason; only the model gets the sentence.
+    assert record["reason"] == "'odoo' does not grant 'modify'"
     assert denied["connection"] == "odoo"
     assert denied["tool"] == "create_record"
     assert denied["reason"] == "right_not_granted"

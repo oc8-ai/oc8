@@ -35,3 +35,13 @@ export function useSlowStart(active: boolean): boolean {
   }, [active]);
   return active && slow;
 }
+
+/** A run phase in the reader's language. The start phases have their own
+ *  words; anything else (no other writer today) is shown as it is. */
+export function phaseLabel(phase: string, t: (en: string, de: string) => string): string {
+  if (phase === "provisioning") {
+    return t("Preparing the workspace", "Arbeitsumgebung wird bereitgestellt");
+  }
+  if (phase === "starting") return t("Workspace starting", "Arbeitsumgebung startet");
+  return phase;
+}

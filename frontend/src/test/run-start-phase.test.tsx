@@ -1,7 +1,7 @@
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RunStartPhase } from "@/components/run-start-phase";
-import { isStartPhase } from "@/lib/run-start-phase";
+import { isStartPhase, phaseLabel } from "@/lib/run-start-phase";
 import { LanguageProvider } from "@/lib/i18n";
 
 function renderLine(phase: string | null | undefined, state = "running") {
@@ -73,5 +73,14 @@ describe("RunStartPhase", () => {
     expect(isStartPhase("starting")).toBe(true);
     expect(isStartPhase("planning")).toBe(false);
     expect(isStartPhase(null)).toBe(false);
+  });
+  it("labels a phase in the reader's language, never the raw value for a known one", () => {
+    const de = (_en: string, deText: string) => deText;
+    const en = (enText: string) => enText;
+    expect(phaseLabel("provisioning", de)).toBe("Arbeitsumgebung wird bereitgestellt");
+    expect(phaseLabel("starting", de)).toBe("Arbeitsumgebung startet");
+    expect(phaseLabel("provisioning", en)).toBe("Preparing the workspace");
+    expect(phaseLabel("starting", en)).toBe("Workspace starting");
+    expect(phaseLabel("planning", de)).toBe("planning");
   });
 });

@@ -2020,6 +2020,9 @@ async def _dispatch_one_tool(
     #: near-zero duration for a call that never ran.
     dispatched = True
     tool_error: ToolError | None = None
+    #: A frame denial's PDP reason, for the call record (tool_error carries
+    #: the model's sentence instead).
+    denial_record_reason: str | None = None
     precomputed_duration_ms: int | None = None
     source = conn.name if conn is not None else "oc8"
     writes = required_right(tc.name, scopes) != "read"
@@ -2120,6 +2123,9 @@ async def _dispatch_one_tool(
         output = f"ERROR: {reason}"
         denied = tool_denied(decision, frame=frame, agent=agent, conn=conn)
         if denied is not None:
+            # The PDP's reason stays on the call record; the model reads the
+            # sentence it can pass on.
+            denial_record_reason = reason
             reason = denied.sentence()
             output = denied.model_message()
             await record_tool_denied(db, run, denied, ctx=ctx)
@@ -2423,7 +2429,9 @@ async def _dispatch_one_tool(
         live_call["startedAt"] = started_at.isoformat()
         live_call["durationMs"] = duration_ms
     else:
-        live_call["reason"] = tool_error.message if tool_error is not None else None
+        live_call["reason"] = denial_record_reason or (
+            tool_error.message if tool_error is not None else None
+        )
     await append_tool_call(db, run, live_call)
     await db.commit()
     await publish_run_tool_call(run.tenant_id, run_id=run.id, call=live_call)

@@ -129,7 +129,7 @@ import { AgentToolAccessPanel } from "@/components/connections/agent-tool-access
 import { ConnectionRequiredNotice } from "@/components/connections/connection-required-notice";
 import { ToolDeniedNotice } from "@/components/connections/tool-denied-notice";
 import { RunStartPhase } from "@/components/run-start-phase";
-import { isStartPhase } from "@/lib/run-start-phase";
+import { isStartPhase, phaseLabel } from "@/lib/run-start-phase";
 import { TriggerOwner } from "@/components/connections/trigger-owner";
 import { RunStateBadge } from "@/components/run-state-badge";
 import { StatCard } from "@/components/stat-card";
@@ -2657,7 +2657,7 @@ function RunTranscript({ run, pending }: { run: RunDTO | undefined; pending: boo
         </span>
         {run.phase && !isStartPhase(run.phase) && (
           <span className="rounded-md border border-border bg-background/40 px-2 py-1">
-            {t("phase", "Phase")}: {run.phase}
+            {t("phase", "Phase")}: {phaseLabel(run.phase, t)}
           </span>
         )}
       </div>

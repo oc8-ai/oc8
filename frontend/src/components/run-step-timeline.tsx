@@ -19,7 +19,13 @@ import {
 } from "lucide-react";
 
 import { RunModelSteps } from "@/components/run-reasoning";
-import { SLOW_START_TEXT, START_TEXT, isStartPhase, useSlowStart } from "@/lib/run-start-phase";
+import {
+  SLOW_START_TEXT,
+  START_TEXT,
+  isStartPhase,
+  phaseLabel,
+  useSlowStart,
+} from "@/lib/run-start-phase";
 import { formatMs } from "@/lib/format";
 import type { LiveReasoning } from "@/lib/hooks";
 import { useLang, useT } from "@/lib/i18n";
@@ -238,8 +244,8 @@ export function RunStepTimeline({
     : steps.live
       ? run.phase
         ? t(
-            `Working · ${run.phase} · step ${steps.stepCount}`,
-            `Arbeitet · ${run.phase} · Schritt ${steps.stepCount}`,
+            `Working · ${phaseLabel(run.phase, t)} · step ${steps.stepCount}`,
+            `Arbeitet · ${phaseLabel(run.phase, t)} · Schritt ${steps.stepCount}`,
           )
         : t(`Working · step ${steps.stepCount}`, `Arbeitet · Schritt ${steps.stepCount}`)
       : t(

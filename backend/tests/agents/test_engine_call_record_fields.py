@@ -250,6 +250,8 @@ async def test_a_frame_denial_is_recorded_on_the_run_and_told_plainly(
     entry = result.tool_calls[-1]
     assert entry["state"] == "denied"
     assert "department does not allow the tool 'fs_write'" in entry["result"]
+    # The call record keeps the PDP's own reason; only the model gets the sentence.
+    assert entry["reason"] == "'coding' does not grant the tool 'fs_write' in this frame"
     async with app_session(tenant) as db:
         stored = await db.get(m.AgentRun, run_id)
         assert stored is not None

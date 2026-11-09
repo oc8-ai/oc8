@@ -163,4 +163,10 @@ describe("RunStepTimeline", () => {
       vi.useRealTimers();
     }
   });
+  it("never shows a start phase raw, even after the first step", async () => {
+    vi.mocked(api.get).mockResolvedValue(catalogue);
+    render(<RunStepTimeline run={run({ state: "running", phase: "starting" })} />, { wrapper });
+    expect(await screen.findByText(/workspace/i)).toBeInTheDocument();
+    expect(screen.queryByText(/starting/)).toBeNull();
+  });
 });
