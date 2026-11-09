@@ -63,6 +63,12 @@ def downgrade() -> None:
     op.execute("DROP INDEX IF EXISTS uq_copilot_proposal_open_builder")
     op.execute("DROP INDEX IF EXISTS ix_copilot_proposal_session_status")
     op.execute("ALTER TABLE copilot_proposal DROP CONSTRAINT IF EXISTS ck_copilot_proposal_kind")
+    # Without `kind` an open builder row would read as a generic proposal, and
+    # the generic apply path would run its steps: close every one first.
+    op.execute(
+        "UPDATE copilot_proposal SET status = 'expired' "
+        "WHERE kind = 'agent_builder' AND status IN ('draft','awaiting_approval')"
+    )
     # Rows in the two new statuses cannot survive the old CHECK.
     op.execute(
         "UPDATE copilot_proposal SET status = 'expired' "

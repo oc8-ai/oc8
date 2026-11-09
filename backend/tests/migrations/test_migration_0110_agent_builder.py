@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from pathlib import Path
 
+import psycopg
 import pytest
+from alembic import command
+from alembic.config import Config
 from sqlalchemy.exc import IntegrityError
 
 from oc8 import models as m
 from oc8.copilot.models import CopilotProposal
 from tests.conftest import AppSessionFactory
-
-pytestmark = pytest.mark.asyncio
 
 
 def _builder(tenant: uuid.UUID, session_id: uuid.UUID, status: str) -> CopilotProposal:
@@ -94,3 +96,40 @@ async def test_a_chat_session_has_no_mode_until_one_is_set(app_session: AppSessi
         await db.flush()
         await db.refresh(s)
         assert s.mode == "agent"
+
+
+def test_a_downgrade_never_leaves_a_builder_proposal_open(pg_url: str) -> None:
+    """Without `kind`, an open builder row would read as a generic proposal --
+    one that applies operations nobody reviewed as such. The downgrade closes
+    every open builder row as expired; generic proposals keep their status."""
+    tenant, session_id = uuid.uuid4(), uuid.uuid4()
+    rows = {
+        "builder_draft": ("agent_builder", "draft", session_id),
+        "builder_waiting": ("agent_builder", "awaiting_approval", uuid.uuid4()),
+        "generic_draft": ("operations", "draft", None),
+    }
+    ids = {key: uuid.uuid4() for key in rows}
+    dsn = pg_url.replace("+psycopg", "")
+    with psycopg.connect(dsn) as conn:
+        for key, (kind, status, sid) in rows.items():
+            conn.execute(
+                "INSERT INTO copilot_proposal (id, tenant_id, status, created_by, "
+                "idempotency_key, kind, session_id) VALUES (%s, %s, %s, 'emp', %s, %s, %s)",
+                (ids[key], tenant, status, uuid.uuid4(), kind, sid),
+            )
+    cfg = Config(str(Path(__file__).resolve().parents[2] / "alembic.ini"))
+    command.downgrade(cfg, "0109")
+    try:
+        with psycopg.connect(dsn) as conn:
+            after: dict[uuid.UUID, str] = dict(
+                conn.execute(
+                    "SELECT id, status FROM copilot_proposal WHERE tenant_id = %s", (tenant,)
+                ).fetchall()
+            )
+    finally:
+        command.upgrade(cfg, "head")
+    assert after == {
+        ids["builder_draft"]: "expired",
+        ids["builder_waiting"]: "expired",
+        ids["generic_draft"]: "draft",
+    }
