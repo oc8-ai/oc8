@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.capas.discovery import find_plugin
-from oc8.capas.manifest import Manifest, ManifestError, parse_manifest
+from oc8.capas.manifest import Manifest, ManifestError, ToolPackConnection, parse_manifest
 
 #: Providers a person can sign in with to connect their own account.
 PERSONAL_OAUTH_PROVIDERS: Final = frozenset({"microsoft", "google"})
@@ -128,3 +128,45 @@ def integration_for_connection(conn: m.McpConnection) -> Integration | None:
     if integration is None or integration.tool_key != conn.name:
         return None
     return integration
+
+
+async def integration_enabled(db: AsyncSession, integration: Integration) -> bool:
+    """Whether the integration's plugin is enabled in this tenant (RLS-bound
+    session). A disabled or never-enabled plugin's tools act through nobody."""
+    status = await db.scalar(
+        select(m.CapaInstallation.status)
+        .join(m.Capa, m.Capa.id == m.CapaInstallation.capa_id)
+        .where(m.Capa.name == integration.name)
+        .limit(1)
+    )
+    return status == "enabled"
+
+
+async def enabled_tool_pack_connection(
+    db: AsyncSession, tool_key: str
+) -> tuple[Manifest, ToolPackConnection, Integration] | None:
+    """The enabled plugin whose tool pack provides `tool_key`, with the
+    manifest connection it describes and the integration it is."""
+    rows = (
+        await db.execute(
+            select(m.CapaVersion)
+            .join(m.Capa, m.Capa.current_version_id == m.CapaVersion.id)
+            .join(m.CapaInstallation, m.CapaInstallation.capa_id == m.Capa.id)
+            .where(m.CapaInstallation.status == "enabled")
+        )
+    ).scalars()
+    for version in rows:
+        try:
+            manifest = parse_manifest(version.manifest)
+        except ManifestError:
+            continue
+        integration = integration_from_manifest(manifest)
+        if integration is None or integration.tool_key != tool_key or manifest.tool_pack is None:
+            continue
+        conn = next(
+            (c for c in manifest.tool_pack.connections if c.key == integration.connection_key),
+            None,
+        )
+        if conn is not None:
+            return manifest, conn, integration
+    return None

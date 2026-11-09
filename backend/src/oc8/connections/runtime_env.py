@@ -25,6 +25,7 @@ from oc8.agent.mcp_env import (
 )
 from oc8.audit import append_event
 from oc8.authz.pdp import ToolPolicy
+from oc8.capas.materialise import unbound_connection
 from oc8.connections.access import (
     ConnectionRequired,
     ToolAccess,
@@ -32,7 +33,10 @@ from oc8.connections.access import (
     single_organisation_credential,
 )
 from oc8.connections.credential_env import credential_env_targets, credential_mcp_env
-from oc8.connections.integrations import integration_for_connection
+from oc8.connections.integrations import (
+    enabled_tool_pack_connection,
+    integration_for_connection,
+)
 from oc8.credentials.registry import get_credential_type
 from oc8.oauth.errors import OAuthReauthRequired
 from oc8.runtime.run_context import merge_context
@@ -213,11 +217,17 @@ async def run_mcp_env(
 async def integration_connections(
     db: AsyncSession, *, agent: m.Agent, policies: Mapping[str, ToolPolicy], have: set[str]
 ) -> list[m.McpConnection]:
-    """The materialised, department-less connection of each enabled tool the
-    run has no system for yet -- when it can act at all: an OAuth integration
-    (user mode), a tool with an access row, or a login type with exactly one
-    organisation credential. The frame and narrowing (`policies`) stay the
-    ceiling."""
+    """The connection of each enabled tool the run has no system for yet --
+    when it can act at all: an OAuth integration (user mode), a tool with an
+    access row, or a login type with exactly one organisation credential. The
+    frame and narrowing (`policies`) stay the ceiling.
+
+    Which row carries the server config: the agent's own department's, else
+    the tenant's department-less one, else one materialised now from the
+    enabled plugin's manifest. A department's setup form adopts the
+    department-less row, so without the last step every other department
+    would lose the tool. Another department's row is never used: it carries
+    that department's identity."""
     wanted = sorted(key for key, policy in policies.items() if policy.enabled and key not in have)
     if not wanted:
         return []
@@ -227,8 +237,11 @@ async def integration_connections(
                 select(m.McpConnection)
                 .where(
                     m.McpConnection.name.in_(wanted),
-                    m.McpConnection.department_id.is_(None),
-                    m.McpConnection.credential_id.is_(None),
+                    (m.McpConnection.department_id == agent.department_id)
+                    | (
+                        m.McpConnection.department_id.is_(None)
+                        & m.McpConnection.credential_id.is_(None)
+                    ),
                 )
                 .order_by(m.McpConnection.created_at)
             )
@@ -236,9 +249,10 @@ async def integration_connections(
         .scalars()
         .all()
     )
-    first: dict[str, m.McpConnection] = {}
+    own: dict[str, m.McpConnection] = {}
+    unbound: dict[str, m.McpConnection] = {}
     for row in rows:
-        first.setdefault(row.name, row)
+        (own if row.department_id is not None else unbound).setdefault(row.name, row)
     access_keys = set(
         (
             await db.execute(
@@ -250,14 +264,29 @@ async def integration_connections(
     )
     out: list[m.McpConnection] = []
     for name in wanted:
-        conn = first.get(name)
-        integration = integration_for_connection(conn) if conn is not None else None
-        if conn is None or integration is None:
+        conn = own.get(name) or unbound.get(name)
+        template = None
+        if conn is not None:
+            integration = integration_for_connection(conn)
+        else:
+            template = await enabled_tool_pack_connection(db, name)
+            integration = template[2] if template is not None else None
+        if integration is None:
             continue
-        if integration.kind == "oauth" or name in access_keys:
-            out.append(conn)
-        elif integration.credential_type and await single_organisation_credential(
-            db, integration.credential_type
+        if not (
+            integration.kind == "oauth"
+            or name in access_keys
+            or (
+                integration.credential_type
+                and await single_organisation_credential(db, integration.credential_type)
+            )
         ):
-            out.append(conn)
+            continue
+        if conn is None:
+            assert template is not None
+            manifest, pack_conn, _ = template
+            conn = unbound_connection(tenant_id=agent.tenant_id, manifest=manifest, conn=pack_conn)
+            db.add(conn)
+            await db.flush()
+        out.append(conn)
     return out
