@@ -73,7 +73,11 @@ async def test_agent_create_proposal_applies_into_an_existing_department(
 
         agent = (
             await db.execute(
-                select(m.Agent).where(m.Agent.tenant_id == acme_tenant, m.Agent.name == "Nora")
+                select(m.Agent).where(
+                    m.Agent.tenant_id == acme_tenant,
+                    m.Agent.department_id == dept_id,
+                    m.Agent.name == "Nora",
+                )
             )
         ).scalar_one()
         assert agent.department_id == dept_id
