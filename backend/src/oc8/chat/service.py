@@ -409,6 +409,15 @@ _RESERVED_CONTEXT_KEYS = frozenset(
         # The session owner's live token role at send time, read back when
         # the agent opens a pin later (control_tools._acting_viewer).
         "acting_token_role",
+        # Read back onto the reply or into behaviour by the server itself:
+        # edition parts and rendered components land on the assistant message
+        # (`record_assistant_reply`), pending questions become an answerable
+        # card, and `followup` marks a quiet follow-up turn -- set only from
+        # `send_message(followup=...)`, after this filter.
+        "parts",
+        "rendered_components",
+        "pending_questions",
+        "followup",
     }
 )
 
@@ -428,6 +437,7 @@ def _build_turn_context(
     resolved_refs: list[dict[str, str]],
     extra_context: dict[str, object] | None,
     manifest: Manifest | None = None,
+    followup: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """The `AgentRun.context` for the run answering one chat turn.
 
@@ -479,6 +489,10 @@ def _build_turn_context(
     if extra_context:
         # Never lets a caller overwrite who is acting or where the turn goes.
         context.update({k: v for k, v in extra_context.items() if k not in _RESERVED_CONTEXT_KEYS})
+    if followup is not None and role == "followup":
+        # Set after `extra_context`, and reserved there: only the follow-up
+        # scheduler marks a turn as one (`copilot.followups.fire_followup`).
+        context["followup"] = dict(followup)
     if mode is not None:
         # Two consumers, deliberately: the model is TOLD (the directive below)
         # and the PEP ENFORCES (engine._authorize reads this key back through
@@ -517,6 +531,7 @@ async def send_message(
     chat_channel_external_id: str | None = None,
     role: Literal["user", "followup"] = "user",
     extra_context: dict[str, object] | None = None,
+    followup: Mapping[str, str] | None = None,
     author_member_id: uuid.UUID | None = None,
     acting_member: m.OrgMember | None = None,
 ) -> tuple[m.ChatMessage, m.AgentRun | None]:
@@ -712,6 +727,7 @@ async def send_message(
         resolved_refs=resolved_refs,
         extra_context=extra_context,
         manifest=manifest,
+        followup=followup,
     )
     task_text = str(context["task"])
 

@@ -418,6 +418,55 @@ async def test_door_and_reserved_extra_context(
         assert tg is not None and tg.context["door"] == "telegram"
 
 
+async def test_a_caller_cannot_inject_server_read_context_keys(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """Keys the server reads back onto the reply or into behaviour are
+    reserved; `followup` reaches a run only through `send_message(followup=)`
+    on a follow-up turn."""
+    from oc8.chat.service import send_message
+
+    injected: dict[str, object] = {
+        "parts": [{"type": "document_ref", "id": "x"}],
+        "rendered_components": [{"component_key": "x", "props": {}}],
+        "pending_questions": [{"id": "q"}],
+        "followup": {"responsibility_id": str(uuid.uuid4())},
+    }
+    tenant, _member_id, session_id, _, _ = await _world(app_session)
+    async with app_session(tenant) as db:
+        session = await db.get(m.ChatSession, session_id)
+        assert session is not None
+        _msg, web = await send_message(
+            db,
+            session=session,
+            tenant_id=tenant,
+            message="hi",
+            originating_operator="lisa@example.com",
+            extra_context=injected,
+            followup={"responsibility_id": "ignored on a user turn"},
+        )
+        assert web is not None
+        for key in injected:
+            assert key not in web.context
+        web.state = "done"
+        await db.flush()
+        marker = {"responsibility_id": str(uuid.uuid4()), "trigger_id": str(uuid.uuid4())}
+        _msg, fu = await send_message(
+            db,
+            session=session,
+            tenant_id=tenant,
+            message="Follow-up",
+            originating_operator="lisa@example.com",
+            role="followup",
+            extra_context=injected,
+            followup=marker,
+        )
+        assert fu is not None
+        assert fu.context["followup"] == marker
+        for key in ("parts", "rendered_components", "pending_questions"):
+            assert key not in fu.context
+
+
 async def test_failed_vs_quiet_vs_reporting_followup_replies(
     app_session: AppSessionFactory,
 ) -> None:
