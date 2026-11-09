@@ -11,6 +11,14 @@ const start = vi.fn();
 const check = vi.fn();
 const create = vi.fn();
 const may = vi.fn();
+const capaIcon = vi.fn();
+const toastError = vi.fn();
+
+vi.mock("sonner", () => ({ toast: { error: (m: string) => toastError(m), success: vi.fn() } }));
+vi.mock("@/lib/hooks", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/hooks")>();
+  return { ...actual, useCapaIcon: (id: string) => capaIcon(id) };
+});
 
 vi.mock("@/lib/connections", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/connections")>();
@@ -80,6 +88,8 @@ describe("ConnectDialog", () => {
   beforeEach(() => {
     integrations.mockReturnValue({ data: [MS, ODOO], isLoading: false });
     may.mockReturnValue(false);
+    capaIcon.mockReturnValue({ data: null });
+    toastError.mockReset();
     start.mockReset();
     check.mockReset();
     create.mockReset();
@@ -176,5 +186,110 @@ describe("returnErrorText", () => {
     expect(
       screen.getByDisplayValue("https://login.microsoftonline.com/consent"),
     ).toBeInTheDocument();
+  });
+});
+
+describe("ConnectDialog fix round 1", () => {
+  beforeEach(() => {
+    integrations.mockReturnValue({ data: [MS, ODOO], isLoading: false });
+    may.mockReturnValue(false);
+    capaIcon.mockReturnValue({ data: null });
+    toastError.mockReset();
+    start.mockReset();
+    create.mockReset();
+    check.mockReset();
+  });
+
+  it("never prints the raw check detail", async () => {
+    check.mockResolvedValue({ ok: false, reason: "invalid", detail: "SECRET-BACKEND-TEXT" });
+    renderDialog("odoo_mcp");
+    fireEvent.click(await screen.findByRole("button", { name: "Check connection" }));
+    await screen.findByRole("status");
+    expect(screen.queryByText(/SECRET-BACKEND-TEXT/)).not.toBeInTheDocument();
+  });
+
+  it("does not toast raw error messages", async () => {
+    create.mockRejectedValue(new Error("SECRET-BACKEND-TEXT"));
+    renderDialog("odoo_mcp");
+    fireEvent.click(await screen.findByRole("button", { name: "Save" }));
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    expect(toastError.mock.calls[0][0]).not.toMatch(/SECRET-BACKEND-TEXT/);
+  });
+
+  it("falls back to 'me' when the permission disappears", async () => {
+    may.mockReturnValue(true);
+    start.mockResolvedValue({ authorizationUrl: "https://x" });
+    const qc = new QueryClient();
+    const ui = () => (
+      <QueryClientProvider client={qc}>
+        <LanguageProvider>
+          <ConnectDialog
+            integration="microsoft365"
+            open
+            onOpenChange={vi.fn()}
+            defaultOwner="organisation"
+            redirect={vi.fn()}
+          />
+        </LanguageProvider>
+      </QueryClientProvider>
+    );
+    const { rerender } = render(ui());
+    may.mockReturnValue(false);
+    rerender(ui());
+    fireEvent.click(screen.getByRole("button", { name: "Sign in with Microsoft" }));
+    await waitFor(() => expect(start).toHaveBeenCalledWith({ provider: "microsoft", owner: "me" }));
+  });
+
+  it("honours defaultOwner when permissions load after mount", async () => {
+    start.mockResolvedValue({ authorizationUrl: "https://x" });
+    const qc = new QueryClient();
+    const ui = () => (
+      <QueryClientProvider client={qc}>
+        <LanguageProvider>
+          <ConnectDialog
+            integration="microsoft365"
+            open
+            onOpenChange={vi.fn()}
+            defaultOwner="organisation"
+            redirect={vi.fn()}
+          />
+        </LanguageProvider>
+      </QueryClientProvider>
+    );
+    const { rerender } = render(ui());
+    may.mockReturnValue(true);
+    rerender(ui());
+    fireEvent.click(screen.getByRole("button", { name: "Sign in with Microsoft" }));
+    await waitFor(() =>
+      expect(start).toHaveBeenCalledWith({ provider: "microsoft", owner: "organisation" }),
+    );
+  });
+
+  it("shows the capa's own icon when it has one", () => {
+    capaIcon.mockReturnValue({ data: "blob:icon" });
+    const { container } = render(
+      <QueryClientProvider client={new QueryClient()}>
+        <LanguageProvider>
+          <ConnectDialog integration="microsoft365" open onOpenChange={vi.fn()} />
+        </LanguageProvider>
+      </QueryClientProvider>,
+    );
+    expect(capaIcon).toHaveBeenCalledWith("c1");
+    expect(document.body.querySelector('img[src="blob:icon"]')).not.toBeNull();
+    expect(container).toBeTruthy();
+  });
+
+  it("has a localized description and a real error state", async () => {
+    window.localStorage.setItem("oc8-lang", "de");
+    renderDialog("microsoft365");
+    expect(await screen.findByText("E-Mails, Kalender und Dateien")).toBeInTheDocument();
+    window.localStorage.removeItem("oc8-lang");
+  });
+
+  it("shows an error, not 'not available', when loading fails", () => {
+    integrations.mockReturnValue({ data: undefined, isLoading: false, isError: true });
+    renderDialog("microsoft365");
+    expect(screen.queryByText(/not available yet/)).not.toBeInTheDocument();
+    expect(screen.getByText(/could not be loaded/)).toBeInTheDocument();
   });
 });

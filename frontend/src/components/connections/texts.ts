@@ -56,10 +56,9 @@ export function checkErrorText(check: CredentialCheck, t: T): string {
       "Der Server ist nicht erreichbar. Bitte prüfen Sie die Adresse.",
     );
   }
-  const detail = check.detail ?? "";
   return t(
-    `The connection did not work: ${detail}`,
-    `Die Verbindung hat nicht geklappt: ${detail}`,
+    "The connection did not work. Please check your entries and try again.",
+    "Die Verbindung hat nicht geklappt. Bitte prüfen Sie Ihre Eingaben und versuchen Sie es erneut.",
   );
 }
 
@@ -141,4 +140,28 @@ export function startErrorText(err: unknown, t: T): string {
     "Connecting could not start. Please try again.",
     "Das Verbinden konnte nicht starten. Bitte versuchen Sie es erneut.",
   );
+}
+
+/** A failed save or check, in plain words; never the backend's own text. */
+export function saveErrorText(err: unknown, t: T, action: "save" | "check" = "save"): string {
+  if (err instanceof ApiError) {
+    if (err.status === 403) {
+      return t("You are not allowed to do this.", "Sie haben dafür keine Berechtigung.");
+    }
+    if (err.status === 409) {
+      return t("This access already exists.", "Dieser Zugang existiert bereits.");
+    }
+    if (err.status === 422) {
+      return t("Please check your entries.", "Bitte prüfen Sie Ihre Eingaben.");
+    }
+  }
+  return action === "check"
+    ? t(
+        "The check failed. Please try again.",
+        "Die Prüfung ist fehlgeschlagen. Bitte versuchen Sie es erneut.",
+      )
+    : t(
+        "Saving failed. Please try again.",
+        "Das Speichern ist fehlgeschlagen. Bitte versuchen Sie es erneut.",
+      );
 }

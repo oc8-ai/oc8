@@ -13,7 +13,9 @@ import { type Owner, useIntegrations } from "@/lib/connections";
 import { useMay } from "@/lib/governance-hooks";
 import { useT } from "@/lib/i18n";
 import { CredentialAssistant } from "./credential-assistant";
+import { IntegrationIcon } from "./integration-icon";
 import { OAuthAssistant } from "./oauth-assistant";
+import { oneLineBenefit } from "./texts";
 
 export interface ConnectDialogProps {
   /** The integration's name (the plugin name, e.g. "microsoft365", "odoo_mcp"). */
@@ -38,22 +40,39 @@ export function ConnectDialog({
   const t = useT();
   const may = useMay();
   const mayChooseOwner = may("integration:manage") && !editCredentialId;
-  const [owner, setOwner] = useState<Owner>(mayChooseOwner ? defaultOwner : "me");
-  const { data: integrations = [], isLoading } = useIntegrations();
+  const [chosen, setChosen] = useState<Owner | null>(null);
+  const owner: Owner = mayChooseOwner ? (chosen ?? defaultOwner) : "me";
+  const setOwner = setChosen;
+  const { data: integrations = [], isLoading, isError } = useIntegrations();
   const integration = integrations.find((i) => i.name === name);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle>
+          <DialogTitle className="flex items-center gap-2">
+            {integration && <IntegrationIcon integration={integration} />}
             {integration
               ? t(`Connect ${integration.label}`, `${integration.label} verbinden`)
               : t("Connect", "Verbinden")}
           </DialogTitle>
-          {integration?.summary && <DialogDescription>{integration.summary}</DialogDescription>}
+          <DialogDescription>
+            {integration
+              ? oneLineBenefit(integration, t)
+              : t(
+                  "Connect an account to use it in oc8.",
+                  "Verbinden Sie ein Konto, um es in oc8 zu nutzen.",
+                )}
+          </DialogDescription>
         </DialogHeader>
-        {isLoading ? null : !integration || !integration.available ? (
+        {isLoading ? null : isError ? (
+          <p role="alert" className="text-sm text-destructive">
+            {t(
+              "The integrations could not be loaded. Please try again later.",
+              "Die Integrationen konnten nicht geladen werden. Bitte versuchen Sie es später erneut.",
+            )}
+          </p>
+        ) : !integration || !integration.available ? (
           <p className="text-sm text-muted-foreground">
             {t(
               "This integration is not available yet.",

@@ -9,7 +9,7 @@ import {
   useUpdateOrganisationCredential,
 } from "@/lib/connections";
 import { resolveTranslation, useLang, useT } from "@/lib/i18n";
-import { checkErrorText } from "./texts";
+import { checkErrorText, saveErrorText } from "./texts";
 import { whereToFind } from "./where-to-find";
 
 const INPUT =
@@ -54,11 +54,7 @@ export function CredentialAssistant({
     try {
       setResult(await check.mutateAsync({ integration: integration.name, fieldValues: values }));
     } catch (err) {
-      toast.error(
-        err instanceof Error
-          ? err.message
-          : t("The check failed.", "Die Prüfung ist fehlgeschlagen."),
-      );
+      toast.error(saveErrorText(err, t, "check"));
     }
   };
 
@@ -69,9 +65,7 @@ export function CredentialAssistant({
       toast.success(t(`${integration.label} saved.`, `${integration.label} gespeichert.`));
       onDone();
     } catch (err) {
-      toast.error(
-        err instanceof Error ? err.message : t("Saving failed.", "Speichern fehlgeschlagen."),
-      );
+      toast.error(saveErrorText(err, t));
     }
   };
 
