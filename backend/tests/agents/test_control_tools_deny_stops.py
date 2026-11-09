@@ -462,3 +462,59 @@ def test_is_core_call_matches_what_authorize_decides() -> None:
     assert is_core_call("write_output_file", routed=False)
     assert not is_core_call("write_output_file", routed=True)
     assert not is_core_call("odoo.write_output_file", routed=False)
+
+
+def test_the_routine_frame_denial_of_a_core_tool_is_tagged() -> None:
+    """The frame's verdict on a core tool without a branch of its own is about
+    the run's bound connection, not the tool. It carries its own reason_code,
+    and that code -- and only that one -- lets a reading tool run anyway."""
+    from oc8.authz.pdp import NOT_THIS_CONNECTION
+
+    decision = _authorize(
+        _agent(),
+        ToolCall(id="c1", name="todo_write", arguments={"todos": []}),
+        frame={"tools": {}},
+        tool_policies={},
+        connection_key="odoo",
+        tool_scopes=None,
+    )
+    assert decision.effect is Effect.DENY
+    assert decision.reason_code == NOT_THIS_CONNECTION
+    connection_tool = _authorize(
+        _agent(),
+        ToolCall(id="c1", name="create_record", arguments={}),
+        frame={"tools": {}},
+        tool_policies={},
+        connection_key="odoo",
+        tool_scopes=None,
+    )
+    assert connection_tool.reason_code != NOT_THIS_CONNECTION
+
+
+@pytest.mark.asyncio
+async def test_any_other_denial_stops_a_reading_control_tool(app_session: Any) -> None:
+    """An operator rejected the call, say. Not the routine frame verdict, so
+    the dispatcher stops it -- reads included."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, task, run = await _seed(db, tenant)
+        outcome = await execute_control_tool(
+            db,
+            tenant_id=tenant,
+            agent=agent,
+            task=task,
+            tc=ToolCall(
+                id="c1",
+                name="todo_write",
+                arguments={"todos": [{"content": "x", "status": "pending"}]},
+            ),
+            decision=Decision(Effect.DENY, "operator rejected this action"),
+            assigned_skills=[],
+            active_skills=[],
+            mcp_conn=None,
+            originating_operator=None,
+            run_id=run.id,
+        )
+    assert outcome is not None
+    assert outcome.output == "ERROR: operator rejected this action"
+    assert outcome.todos is None

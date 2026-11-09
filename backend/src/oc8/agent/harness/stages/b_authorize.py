@@ -19,7 +19,14 @@ from oc8.agent.control_tools import (
     MAX_DELEGATION_DEPTH,
 )
 from oc8.agent.tool_semantics import extract_attributes, extract_value
-from oc8.authz.pdp import Decision, Effect, ToolPolicy, authorize_tool_call, required_right
+from oc8.authz.pdp import (
+    NOT_THIS_CONNECTION,
+    Decision,
+    Effect,
+    ToolPolicy,
+    authorize_tool_call,
+    required_right,
+)
 from oc8.chat.modes import MODE_WITHHELD, ChatMode, mode_refusal
 from oc8.memory.policy import authorize_memory_write
 from oc8.memory.router import MAX_MEMORY_CONTENT_LENGTH
@@ -212,7 +219,10 @@ def authorize(
         return authorize_memory_write(
             frame, narrowing, tier, personal_only=agent.is_tenant_assistant
         )
-    return _frame_decision(
+    # A core tool with no branch above: the frame can only judge the run's
+    # bound connection, which this tool does not belong to. A DENY here is
+    # tagged so the dispatcher can tell it from every real refusal.
+    verdict = _frame_decision(
         agent,
         tc,
         tool_policies=tool_policies,
@@ -222,6 +232,9 @@ def authorize(
         value_spec=value_spec,
         guardrail_attribute_specs=guardrail_attribute_specs,
     )
+    if verdict.effect is Effect.DENY:
+        return Decision(Effect.DENY, verdict.reason, reason_code=NOT_THIS_CONNECTION)
+    return verdict
 
 
 def is_core_call(name: str, *, routed: bool) -> bool:

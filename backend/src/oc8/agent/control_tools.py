@@ -42,11 +42,11 @@ from oc8.approvals import (
 from oc8.approvals.repo import load_for_actor, visible_approvals
 from oc8.audit import append_event
 from oc8.authz.authority import authority_for_member, tenant_wide_read
-from oc8.authz.pdp import Decision, Effect
+from oc8.authz.pdp import NOT_THIS_CONNECTION, Decision, Effect
 from oc8.authz.permissions import AGENT, APPROVAL, BUDGET, DEPARTMENT, STATISTICS, VIEW, perm
 from oc8.authz.scope import AgentActor, scope_for_member
 from oc8.capas.discovery import find_plugin
-from oc8.chat.modes import MODE_WITHHELD, WRITING_CONTROL_TOOLS, ChatMode
+from oc8.chat.modes import WRITING_CONTROL_TOOLS, ChatMode
 from oc8.config import get_settings
 from oc8.copilot.notes import member_behind_run_task
 from oc8.departments.repo import visible_department, visible_departments
@@ -1695,18 +1695,20 @@ async def execute_control_tool(
 
     # Every runtime dispatches here BEFORE its own DENY branch, and a non-None
     # outcome skips that branch -- so a denial of a tool this dispatcher owns
-    # has to take effect HERE, or it is only ever recorded. Two kinds stop:
-    # anything the turn's mode withholds (reads included, under /ask), and any
-    # denial of a writing tool. A reading tool still runs under the routine
-    # "no grant for <connection>" DENY the frame hands every core tool without
-    # a branch of its own in `authorize` -- that verdict is about a connection
-    # the tool does not belong to. delegate_task keeps its own DENY branch,
-    # which also reports the depth limit to the operator.
+    # has to take effect HERE, or it is only ever recorded. Every denial stops,
+    # with one exception: a READING tool still runs under the routine frame
+    # DENY (`NOT_THIS_CONNECTION`) that `authorize` hands a core tool without a
+    # branch of its own -- that verdict is about the run's bound connection,
+    # which the tool does not belong to. A writing tool never runs under it,
+    # and a mode's refusal (`MODE_WITHHELD`) is never that code. delegate_task
+    # keeps its own DENY branch, which also reports the depth limit.
     if (
         decision.effect is Effect.DENY
         and tc.name != DELEGATE_TASK.name
         and (tc.name in CONTROL_TOOL_NAMES or tc.name in skill_by_tool)
-        and (decision.reason_code == MODE_WITHHELD or tc.name in WRITING_CONTROL_TOOLS)
+        and (
+            decision.reason_code != NOT_THIS_CONNECTION or tc.name in WRITING_CONTROL_TOOLS
+        )
     ):
         return ControlOutcome(output=f"ERROR: {decision.reason or 'denied'}")
 
