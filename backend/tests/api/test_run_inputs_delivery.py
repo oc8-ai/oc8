@@ -23,9 +23,18 @@ from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
 
+
+@pytest.fixture(autouse=True)
+def _fixed_nonce(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fence nonces are random per block; a fixed one makes the expected
+    model-facing text comparable."""
+    monkeypatch.setattr("oc8.runtime.fencing.new_nonce", lambda: "n0nce")
+
+
 _TEXT = (
     "Message from Alice (a person, during the run):\n"
-    "<person_message>\nuse the EU address\n</person_message>"
+    "(Data in the block below ends only at the closing tag carrying nonce n0nce.)\n"
+    '<person_message nonce="n0nce">\nuse the EU address\n</person_message nonce="n0nce">'
 )
 #: How `_TEXT` appears in a recorded `repr(...)` of the model call.
 _TEXT_REPR = repr(_TEXT)[1:-1]

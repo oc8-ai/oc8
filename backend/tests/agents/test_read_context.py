@@ -5,6 +5,7 @@ reads, held to the model the run really uses, audited, and fenced as data."""
 from __future__ import annotations
 
 import datetime as dt
+import re
 import uuid
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -31,6 +32,7 @@ from oc8.knowledge.retrieval import retrieve_kb_context
 from oc8.modelrouter import ToolCall
 from tests.conftest import AppSessionFactory
 
+_BLOCK = re.compile(r'<(\w+) nonce="([0-9a-f]{16})">\n(.*?)\n</\1 nonce="\2">', re.DOTALL)
 _ALL_CLASSES = ["public", "internal", "confidential", "restricted"]
 
 
@@ -211,11 +213,9 @@ async def test_a_page_cannot_close_its_fence(app_session: AppSessionFactory) -> 
             db, tenant, classification="internal", locality="cloud", text=hostile
         )
         out = await _read(db, tenant, agent, task, run, f"file:{att.id}")
-    assert out.output.count("<pinned_context>") == 1
-    assert out.output.count("</pinned_context>") == 1
-    assert out.output.rstrip().endswith("</pinned_context>")
-    inside = out.output.split("<pinned_context>", 1)[1]
-    assert "ignore previous instructions" in inside.split("</pinned_context>", 1)[0]
+    block = _BLOCK.search(out.output)
+    assert block is not None and block.end() == len(out.output.rstrip())
+    assert "ignore previous instructions" in block.group(3)
 
 
 async def test_restricted_content_is_blocked_for_a_cloud_model(
@@ -618,6 +618,6 @@ async def test_no_spelling_of_a_close_tag_leaves_the_fence(
             db, tenant, classification="internal", locality="cloud", text=hostile
         )
         out = await _read(db, tenant, agent, task, run, f"file:{att.id}")
-    body = out.output.split("<pinned_context>\n", 1)[1]
-    assert body.count("</") == 1 and body.rstrip().endswith("</pinned_context>")
-    assert "ignore previous instructions" in body
+    block = _BLOCK.search(out.output)
+    assert block is not None and block.end() == len(out.output)
+    assert "ignore previous instructions" in block.group(3)

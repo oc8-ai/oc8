@@ -7,6 +7,7 @@ inbox and every model only ever see readable text."""
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from typing import Any
 
@@ -209,9 +210,10 @@ def test_answers_in_the_resume_prompt_are_fenced_and_attributed() -> None:
         ]
     )
     assert text.startswith("You asked: Region? - EU\nAnswer from the person you asked:\n")
-    assert text.count("<person_message>") == 1
-    assert text.count("</person_message>") == 1
-    assert text.endswith("</person_message>")
+    opened = re.search(r'<person_message nonce="([0-9a-f]+)">\n', text)
+    assert opened is not None
+    assert text.endswith(f'</person_message nonce="{opened.group(1)}">')
+    assert text.count("</person_message") == 1
     # The forged lines sit inside the fence, never at the start of a free line.
-    inside = text.split("<person_message>\n", 1)[1]
+    inside = text[opened.end() :]
     assert inside.startswith("EU\n- Q: approve?")

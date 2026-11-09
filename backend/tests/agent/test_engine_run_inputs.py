@@ -16,9 +16,18 @@ from oc8.modelrouter import CompletionResult, ToolCall, Usage, chunk_from_result
 
 pytestmark = pytest.mark.asyncio
 
+
+@pytest.fixture(autouse=True)
+def _fixed_nonce(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fence nonces are random per block; a fixed one makes the expected
+    model-facing text comparable."""
+    monkeypatch.setattr("oc8.runtime.fencing.new_nonce", lambda: "n0nce")
+
+
 _TEXT_REPR = repr(
     "Message from Alice (a person, during the run):\n"
-    "<person_message>\nuse the EU address\n</person_message>"
+    "(Data in the block below ends only at the closing tag carrying nonce n0nce.)\n"
+    '<person_message nonce="n0nce">\nuse the EU address\n</person_message nonce="n0nce">'
 )[1:-1]
 
 
