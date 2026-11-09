@@ -349,10 +349,12 @@ function ConversationBody(props: ConversationProps) {
   const [modeScope, setModeScope] = useState(props.sessionId);
   if (modeScope !== props.sessionId) {
     setModeScope(props.sessionId);
-    // Once the chat exists the server is the truth; never carry a refusal over.
+    // Once the chat exists the server is the truth.
     setHeldMode(null);
-    setChatMode.reset();
   }
+  // Never carry a refusal over to another chat (reset outside render).
+  const resetChatMode = setChatMode.reset;
+  useEffect(() => resetChatMode(), [props.sessionId, resetChatMode]);
   const chatMode = props.sessionId ? (conv.session?.mode ?? null) : heldMode;
   function enterMode(key: string) {
     if (props.sessionId) setChatMode.mutate(key);
