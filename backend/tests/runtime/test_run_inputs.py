@@ -101,6 +101,55 @@ async def test_an_autonomous_run_is_steered_by_managers_only(
         assert await _may(db, run, bob, "member") is False
 
 
+async def _person_run(
+    db: AsyncSession, tenant: uuid.UUID, agent: m.Agent, *, source: str, context: dict[str, Any]
+) -> m.AgentRun:
+    run = m.AgentRun(
+        tenant_id=tenant, agent_id=agent.id, source=source, state="running", context=context
+    )
+    db.add(run)
+    await db.flush()
+    return run
+
+
+async def test_an_admin_cannot_steer_a_colleagues_messenger_chat_turn(
+    app_session: AppSessionFactory,
+) -> None:
+    """Ruling 54: a messenger turn has no operator but is somebody's run (the
+    same rule as Live and watch), so no manager steers it -- nobody does."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, alice, bob = await _world(db, tenant)
+        run = await _person_run(
+            db, tenant, agent, source="chat", context={"chat_session_id": str(uuid.uuid4())}
+        )
+        assert await _may(db, run, alice, "org_admin") is False
+        assert await _may(db, run, bob, "org_admin") is False
+
+
+async def test_an_on_behalf_of_run_is_steered_by_its_person_not_a_manager(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, alice, bob = await _world(db, tenant)
+        run = await _person_run(
+            db, tenant, agent, source="decision", context={"on_behalf_of": "alice"}
+        )
+        assert await _may(db, run, bob, "org_admin") is False
+        assert await _may(db, run, alice, "org_admin") is True
+
+
+async def test_an_autonomous_cron_run_is_steerable_by_a_manager(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, _, bob = await _world(db, tenant)
+        run = await _person_run(db, tenant, agent, source="cron", context={})
+        assert await _may(db, run, bob, "org_admin") is True
+
+
 async def _seat(
     db: AsyncSession, tenant: uuid.UUID, member: m.OrgMember, agent: m.Agent, *, manage: bool
 ) -> None:

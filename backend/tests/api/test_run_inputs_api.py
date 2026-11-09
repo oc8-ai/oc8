@@ -30,19 +30,25 @@ async def _run(
     *,
     operator: str | None,
     state: str = "running",
+    source: str | None = None,
+    context: dict[str, Any] | None = None,
+    assistant: bool = False,
 ) -> uuid.UUID:
     async with app_session(tenant) as db:
         dept = m.Department(tenant_id=tenant, name="Ops", frame={})
         db.add(dept)
         await db.flush()
-        agent = m.Agent(tenant_id=tenant, department_id=dept.id, name="A")
+        agent = m.Agent(
+            tenant_id=tenant, department_id=dept.id, name="A", is_tenant_assistant=assistant
+        )
         db.add(agent)
         await db.flush()
         ctx = {"originating_operator": operator} if operator else {}
+        ctx.update(context or {})
         run = m.AgentRun(
             tenant_id=tenant,
             agent_id=agent.id,
-            source="chat" if operator else "cron",
+            source=source or ("chat" if operator else "cron"),
             state=state,
             context=ctx,
         )
@@ -196,3 +202,48 @@ async def test_stop_records_a_cancellation_for_the_operator(app_session: AppSess
         )
     assert len(rows) == 1 and rows[0].cancellation_kind == "operator_interrupted"
     assert events and events[0].resource["door"] == "chat"
+
+
+async def _refused_everywhere(c: AsyncClient, run_id: uuid.UUID, h: dict[str, str]) -> None:
+    """Inputs, steering and stop all answer "no such run"."""
+    assert (
+        await c.post(f"/api/v1/runs/{run_id}/inputs", json={"text": "x"}, headers=h)
+    ).status_code == 404
+    assert (await c.get(f"/api/v1/runs/{run_id}/steering", headers=h)).status_code == 404
+    assert (await c.post(f"/api/v1/runs/{run_id}/stop", headers=h)).status_code == 404
+
+
+async def test_an_admin_cannot_steer_a_colleagues_messenger_chat_turn(
+    app_session: AppSessionFactory,
+) -> None:
+    """Ruling 54: a messenger turn (no operator, `source=chat`) is somebody's
+    run, not the agent's own -- managing the agent does not open it."""
+    tenant = uuid.uuid4()
+    run_id = await _run(
+        app_session,
+        tenant,
+        operator=None,
+        source="chat",
+        context={"chat_session_id": str(uuid.uuid4())},
+    )
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        await _refused_everywhere(c, run_id, _h(tenant, "admin"))
+
+
+async def test_a_manager_cannot_steer_a_run_on_somebody_elses_behalf(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    run_id = await _run(
+        app_session, tenant, operator=None, source="decision", context={"on_behalf_of": "alice"}
+    )
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        await _refused_everywhere(c, run_id, _h(tenant, "admin"))
+        # Her run: she steers it.
+        ok = await c.post(
+            f"/api/v1/runs/{run_id}/inputs", json={"text": "go on"}, headers=_h(tenant, "alice")
+        )
+        assert ok.status_code == 201, ok.text
+

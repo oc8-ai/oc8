@@ -2,7 +2,8 @@
 
 A member-facing door beside the admin `/runs/{id}/message` and `/cancel`
 (both `run:control`, unchanged): the gate here is the run's own authority --
-its originating operator, or the agent's managers for an autonomous run
+its person (`originating_operator` or `on_behalf_of`), or the agent's managers
+for an autonomous run
 (`may_steer_run`). Stop uses exactly the same rule as writing, so this door
 never lets anyone stop a run they could not also steer. "Not yours" and "no
 such run" are the same 404.

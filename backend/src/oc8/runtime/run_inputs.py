@@ -1,9 +1,11 @@
 """Writing to a running run (spec §3.2).
 
 The input runs under the RUN's authority, so the only people who may write are
-the person the run already acts for (`originating_operator`) or, for a run with
-nobody behind it (schedule, webhook, delegation), the agent's managers. Nobody
-steers somebody else's run, and nobody steers an agent they can no longer reach.
+the run's person (`originating_operator`, or `on_behalf_of` -- `person_behind`)
+or, for the agent's own autonomous run (`is_autonomous_run`: schedule, webhook,
+delegation with nobody behind it), the agent's managers. The same "whose run"
+rule as the Live timeline and live watching. Nobody steers somebody else's
+run -- a manager neither -- and nobody steers an agent they can no longer reach.
 The text is only text: guardrails and approvals judge whatever the agent does
 next exactly as before.
 
@@ -29,9 +31,11 @@ from oc8.audit.chain import append_event
 from oc8.authz.authority import Authority
 from oc8.authz.permissions import AGENT, MANAGE, perm
 from oc8.authz.scope import DepartmentScope
+from oc8.chat.live import is_autonomous_run
 from oc8.chat.reach import reachable_chat_agent
 from oc8.db.session import tenant_session
 from oc8.runtime.fencing import fence, one_line
+from oc8.runtime.person import is_own, person_behind
 from oc8.runtime.states import TERMINAL, RunState
 
 if TYPE_CHECKING:
@@ -83,10 +87,15 @@ async def may_steer_run(
     agent = await reachable_chat_agent(db, authority=authority, scope=scope, agent_id=run.agent_id)
     if agent is None:
         return False
-    operator = (run.context or {}).get("originating_operator")
-    if operator:
-        return bool(operator == member.subject)
-    return await may_manage_agent(db, agent=agent, authority=authority, scope=scope)
+    # One rule with Live and watch (Ruling 54): somebody's run is steered by
+    # that person alone; only the agent's own autonomous run by its managers.
+    # A run that is somebody's without naming anyone who may act (a messenger
+    # chat turn) is steered by nobody.
+    if is_own(person_behind(run.context), member.subject):
+        return True
+    if is_autonomous_run(run):
+        return await may_manage_agent(db, agent=agent, authority=authority, scope=scope)
+    return False
 
 
 async def add_run_input(
