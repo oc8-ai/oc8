@@ -13,6 +13,8 @@ from sqlalchemy import select
 from oc8 import config
 from oc8 import models as m
 from oc8.capas.discovery import invalidate_discovery_cache
+from oc8.hooks.registry import get_hook_registry
+from oc8.hooks.types import HookHandler
 from tests.conftest import AppSessionFactory
 from tests.connections.conftest import _PLUGINS_DIR
 from tests.connections.helpers import api, headers
@@ -184,3 +186,85 @@ async def test_setting_up_a_never_enabled_install_enables_it(
         )
     assert setup.status_code == 200, setup.text
     assert await _status(app_session, tenant, "engineering_dev_agent") == "enabled"
+
+
+# --- Fail closed: an error or an unknown state never leaves a capa enabled ---
+
+_POINT = "test.install_available"
+
+
+@pytest.fixture
+def sentinel_hooks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stand in for a plugin's hook registration with one observable handler."""
+
+    def register(tenant_id: uuid.UUID, plugin: m.Capa, version: object, granted: object) -> None:
+        reg = get_hook_registry(tenant_id)
+        reg.declare_point(_POINT, "action")
+        reg.register_handler(HookHandler(plugin_id=str(plugin.id), point=_POINT))
+
+    monkeypatch.setattr("oc8.capas.lifecycle._register_hooks", register)
+
+
+async def test_an_enable_that_fails_midway_leaves_nothing_enabled_or_registered(
+    app_session: AppSessionFactory, sentinel_hooks: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def broken(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("materialise failed")
+
+    monkeypatch.setattr("oc8.capas.lifecycle.materialise_plugin_data", broken)
+    tenant = uuid.uuid4()
+    admin = headers(tenant, "admin@acme.test", "org_admin")
+    async with api() as c:
+        with pytest.raises(RuntimeError, match="materialise failed"):
+            await c.post(
+                "/api/v1/capas/install-from-disk", json={"pluginId": "odoo_mcp"}, headers=admin
+            )
+    async with app_session(tenant) as db:
+        assert (await db.execute(select(m.CapaInstallation))).scalars().all() == []
+    assert get_hook_registry(tenant).handlers_for(_POINT) == []
+
+
+async def test_a_setup_that_fails_after_enabling_leaves_it_not_enabled_nor_registered(
+    app_session: AppSessionFactory, sentinel_hooks: None
+) -> None:
+    tenant = uuid.uuid4()
+    admin = headers(tenant, "admin@acme.test", "org_admin")
+    async with api() as c:
+        r = await c.post(
+            "/api/v1/capas/install-from-disk",
+            json={"pluginId": "engineering_dev_agent", "enable": False},
+            headers=admin,
+        )
+        capa_id = r.json()["pluginId"]
+        setup = await c.post(
+            f"/api/v1/capas/{capa_id}/setup",
+            json={"values": {"repo": "", "label": "", "base_branch": ""}},
+            headers=admin,
+        )
+    assert setup.status_code == 422, setup.text
+    assert await _status(app_session, tenant, "engineering_dev_agent") == "installed"
+    assert get_hook_registry(tenant).handlers_for(_POINT) == []
+
+
+async def test_an_update_is_judged_against_what_was_actually_granted(
+    app_session: AppSessionFactory, odoo_copy: Path
+) -> None:
+    """The consent on record, not the previous manifest, decides: an enabled
+    row whose grant is missing what the update needs waits for consent."""
+    tenant = uuid.uuid4()
+    admin = headers(tenant, "admin@acme.test", "org_admin")
+    async with api() as c:
+        first = await c.post(
+            "/api/v1/capas/install-from-disk", json={"pluginId": "odoo_mcp"}, headers=admin
+        )
+        assert first.status_code == 201, first.text
+        async with app_session(tenant) as db:
+            inst = (await db.execute(select(m.CapaInstallation))).scalar_one()
+            inst.granted_permissions = []
+            await db.commit()
+        _bump(odoo_copy)
+        updated = await c.post(
+            "/api/v1/capas/install-from-disk", json={"pluginId": "odoo_mcp"}, headers=admin
+        )
+        assert updated.status_code == 201, updated.text
+    assert await _status(app_session, tenant, "odoo_mcp") == "disabled"

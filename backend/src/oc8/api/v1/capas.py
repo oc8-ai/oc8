@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission, require_scope, unguarded
@@ -24,6 +25,7 @@ from oc8.capas.lifecycle import (
     QuarantinedError,
     disable_plugin,
     enable_plugin,
+    forget_plugin_runtime,
 )
 from oc8.capas.loader import TRUSTED, LoaderError, import_entry_point
 from oc8.capas.manifest import (
@@ -502,17 +504,36 @@ async def configure_plugin(
     ).scalar_one_or_none()
     version = await db.get(m.CapaVersion, plugin.current_version_id)
     assert version is not None
-    if installation is None or installation.status == "installed":
-        # Installed before "installing makes it available" and never enabled:
-        # setting it up (plugin:manage, like enable) makes it available now.
-        installation = await enable_plugin(
-            db,
-            tenant_id=principal.tenant_id,
-            capa_id=plugin.id,
-            granted_permissions=list(version.permissions),
-        )
-    if installation.status != "enabled":
-        raise HTTPException(status.HTTP_409_CONFLICT, "plugin must be enabled before setup")
+    if installation is not None and installation.status != "installed":
+        if installation.status != "enabled":
+            raise HTTPException(status.HTTP_409_CONFLICT, "plugin must be enabled before setup")
+        return await _apply_plugin_setup(plugin, version, installation, body, db, principal)
+    # Installed before "installing makes it available" and never enabled:
+    # setting it up (plugin:manage, like enable) makes it available now. Any
+    # failure below rolls the transaction back -- the enable included -- so
+    # its in-process registration is dropped too (fail closed).
+    installation = await enable_plugin(
+        db,
+        tenant_id=principal.tenant_id,
+        capa_id=plugin.id,
+        granted_permissions=list(version.permissions),
+    )
+    try:
+        return await _apply_plugin_setup(plugin, version, installation, body, db, principal)
+    except BaseException:
+        await forget_plugin_runtime(principal.tenant_id, plugin.id)
+        raise
+
+
+async def _apply_plugin_setup(
+    plugin: m.Capa,
+    version: m.CapaVersion,
+    installation: m.CapaInstallation,
+    body: PluginSetupRequest,
+    db: AsyncSession,
+    principal: Principal,
+) -> PluginSetupResult:
+    """Validate and apply the setup form of an enabled plugin (configure_plugin)."""
     manifest = parse_manifest(version.manifest)
     setup = manifest.setup
     if setup is None:
