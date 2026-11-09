@@ -194,6 +194,36 @@ def _acting_subject(cols: RunColumns) -> ColumnElement[str]:
     )
 
 
+def _session_member(cols: RunColumns) -> ColumnElement[str]:
+    """The subject of the member whose chat session the run belongs to,
+    deleted or not ('' when that member row is missing, which disagrees with
+    any named person). When the run names no session found in its tenant,
+    the named person itself: nothing to disagree with."""
+    from oc8 import models as m
+
+    session_raw = ctx_text(cols, "chat_session_id")
+    member = (
+        select(m.OrgMember.subject)
+        .join(m.ChatSession, m.ChatSession.member_id == m.OrgMember.id)
+        .where(
+            m.ChatSession.id == _as_uuid(session_raw),
+            m.ChatSession.tenant_id == cols.tenant_id,
+            m.OrgMember.tenant_id == cols.tenant_id,
+        )
+        .scalar_subquery()
+    )
+    found = exists(
+        select(m.ChatSession.id).where(
+            m.ChatSession.id == _as_uuid(session_raw),
+            m.ChatSession.tenant_id == cols.tenant_id,
+        )
+    )
+    named = func.coalesce(
+        *(func.nullif(ctx_text(cols, key), "") for key in PERSON_KEYS), literal("")
+    )
+    return case((found, func.coalesce(member, "")), else_=named)
+
+
 def run_person_sql(cols: RunColumns) -> ColumnElement[str]:
     """Whose run it is: `person_behind` and the member it acts through
     combined. The subject when they agree (or only one names anybody),
@@ -203,10 +233,21 @@ def run_person_sql(cols: RunColumns) -> ColumnElement[str]:
         *(func.nullif(ctx_text(cols, key), "") for key in PERSON_KEYS), literal("")
     )
     acting = _acting_subject(cols)
-    carried = ctx_text(cols, "on_behalf_of")
-    unreadable = and_(carried != "", not_(carried.regexp_match(_CANONICAL_UUID)))
+    # An id Python's `uuid.UUID` might still read (no dashes, braces, a urn)
+    # but this expression cannot: whose account it is is unknown, so nobody's
+    # own -- never the agent's own.
+    unreadable = or_(
+        *(
+            and_(raw != "", not_(raw.regexp_match(_CANONICAL_UUID)))
+            for raw in (ctx_text(cols, "on_behalf_of"), ctx_text(cols, "trigger_id"))
+        )
+    )
     return case(
         (unreadable, literal(SEVERAL_PEOPLE)),
+        # A run of a chat session that names someone other than the session's
+        # member (an oversight reply, or a context that disagrees with itself):
+        # two people, nobody's own.
+        (and_(named != "", _session_member(cols) != named), literal(SEVERAL_PEOPLE)),
         (named == "", acting),
         (or_(acting == "", acting == named), named),
         else_=literal(SEVERAL_PEOPLE),

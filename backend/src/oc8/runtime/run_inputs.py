@@ -192,6 +192,51 @@ async def add_run_input(
     return row
 
 
+#: `cancellation_kind` of a run stopped because it came to act for someone
+#: other than a person whose words it had already received (`steering_went_stale`).
+OWNERSHIP_CHANGED_KIND: Final = "ownership_changed"
+OWNERSHIP_CHANGED_OUTPUT: Final = (
+    "Stopped: this run now acts for someone other than a person who wrote to it."
+)
+
+
+async def steering_went_stale(db: AsyncSession, run: Any) -> bool:
+    """Has the run come to be somebody else's since it RECEIVED an input?
+
+    Consuming re-checks only what is still waiting (`may_still_take`). An
+    input already in the run's conversation stays there: if the run now acts
+    through another person's account (a schedule re-saved by its creator, an
+    `on_behalf_of` that appeared), continuing would act on those words with
+    that person's token. Asked at every step boundary where the run would
+    otherwise go on -- the executor's and the isolated `/step`'s cancel probe
+    -- so the run stops instead. A plain read; nothing when nobody wrote."""
+    authors = list(
+        (
+            await db.execute(
+                select(m.RunInput.author_member_id)
+                .where(
+                    m.RunInput.run_id == run.id,
+                    m.RunInput.consumed_at.is_not(None),
+                    m.RunInput.consumed_step >= 0,
+                )
+                .distinct()
+            )
+        ).scalars()
+    )
+    if not authors:
+        return False
+    whose = await whose_run(db, run)
+    if whose.autonomous:
+        return False
+    # The author's subject even after she left: whose words they were does
+    # not change with her membership.
+    rows = await db.execute(
+        select(m.OrgMember.id, m.OrgMember.subject).where(m.OrgMember.id.in_(authors))
+    )
+    subjects = {member_id: subject for member_id, subject in rows}
+    return any(not may_still_take(whose, subjects.get(author)) for author in authors)
+
+
 async def lock_run_inputs(db: AsyncSession, *, tenant_id: uuid.UUID, run_id: uuid.UUID) -> None:
     """The per-run writer lock, until commit, taken by every writer and by the
     executor before a run's end. Always AFTER the tenant's audit lock, which
