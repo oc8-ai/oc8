@@ -42,6 +42,7 @@ from oc8.agent.elicitation import ElicitationNeeded, arguments_with_answer
 from oc8.agent.engine import _max_steps
 from oc8.agent.harness import Harness, resolve_caps
 from oc8.agent.harness.calls import call_sig as _call_sig
+from oc8.agent.harness.pipeline import GateVerdict
 from oc8.agent.harness.procedures import (
     newly_satisfied_lines,
     procedure_haystack,
@@ -57,7 +58,7 @@ from oc8.agent.harness.stages.a_compaction import (
     should_compact,
 )
 from oc8.agent.harness.stages.a_masking import mask_observations
-from oc8.agent.harness.stages.b_approval import autonomy_of, posture, strip_justification
+from oc8.agent.harness.stages.b_approval import autonomy_of, strip_justification
 from oc8.agent.harness.stages.b_authorize import authorize as _authorize
 from oc8.agent.harness.stages.b_authorize import is_core_call
 from oc8.agent.harness.stages.b_blast_radius import check_blast_radius
@@ -332,6 +333,62 @@ def _mcp_params(conn: m.McpConnection) -> dict[str, Any]:
 _LOCAL_TOOLS = ("run_shell", "run_program")
 
 
+def _b_gate(
+    harness: Harness,
+    tc: ToolCall,
+    *,
+    advertised: str,
+    renamed: bool,
+    conn: m.McpConnection | None,
+    pinned: Mapping[str, Any],
+    active_skills: Sequence[LoadedSkill],
+    schemas: Any,
+) -> GateVerdict:
+    """The B risk gate's verdict on `tc` -- THE one computation of it.
+
+    /tools and every place that has to know the verdict before /tools runs
+    (local execution, a held call's re-run) call this, so the tier, config,
+    annotations and arguments the gate sees are always those of the call that
+    runs. `tc` carries the real tool name and the arguments as they will be
+    sent; `advertised` is the name the model saw (annotations are listed under
+    it); `renamed` says the route rewrote it to a connection's tool.
+    """
+    cfg = _mcp_params(conn) if conn is not None else {}
+    focus_spec = cfg.get("focus_spec") if isinstance(cfg.get("focus_spec"), dict) else None
+    schema = next(
+        (
+            raw
+            for raw in (schemas if isinstance(schemas, list) else [])
+            if isinstance(raw, dict) and raw.get("name") == advertised
+        ),
+        None,
+    )
+    annotations = schema.get("annotations") if schema is not None else None
+    tier = classify_tier(
+        tc.name,
+        scopes=_manifest_scopes(conn),
+        config=cfg,
+        annotations=annotations if isinstance(annotations, dict) else None,
+        arguments=tc.arguments,
+        core=is_core_call(tc.name, routed=renamed),
+    )
+    definition = pinned["definition"] if isinstance(pinned["definition"], dict) else {}
+    raw_grants = definition.get("b5_grants")
+    grants = raw_grants if isinstance(raw_grants, list) else []
+    return harness.gate(
+        tc,
+        tier=tier,
+        ledger=harness.state.ledger,
+        connection=conn.name if conn is not None else "oc8",
+        config=cfg,
+        autonomy=autonomy_of(definition),
+        granted=tier in grants,
+        record_label=describe_focus(tc.name, tc.arguments, focus_spec) or "",
+        identity=record_identity(tc.name, tc.arguments, focus_spec),
+        procedures=_active_procedures(list(active_skills)),
+    )
+
+
 def _local_refusal(tools: Sequence[NeutralTool], mode: ChatMode | None, name: str) -> str | None:
     """Why the shell may not run this local tool at all this leg, or None.
 
@@ -350,41 +407,56 @@ def _local_allowed(
     mode: ChatMode | None,
     *,
     calls: Sequence[ToolCall],
-    definition: Mapping[str, Any],
-    resolved: Any,
+    harness: Harness,
+    conn: m.McpConnection | None,
+    pinned: Mapping[str, Any],
+    active_skills: Sequence[LoadedSkill],
+    ctx: Mapping[str, Any],
 ) -> list[str]:
     """Which local-execution tools the shell may run for this step.
 
-    The shell runs them BEFORE /tools decides, so this is the PEP's verdict
-    given up front:
+    The shell runs them BEFORE /tools decides, so this is /tools' verdict given
+    up front, on the very calls the shell is handed:
 
     * offered this leg, and not withheld by the run's mode -- the frame has no
       say, neither tool belongs to a connection (see `authorize`);
-    * and, where the B gate would ASK (conservative autonomy, a write), only
-      once an operator has approved every such call in this step. Otherwise
-      the shell posts the call unexecuted and /tools raises the approval
-      first; the approved call runs on a later leg.
+    * and the B gate (`_b_gate`, the same computation /tools makes) allows
+      every call of that tool in this step -- or asks, and an operator already
+      approved that exact call. A gate that denies, or asks without an
+      approval, keeps the tool out: the shell posts the call unexecuted and
+      /tools refuses it or raises the approval before anything runs.
+
+    Keyed by tool name, because that is what the shell matches on -- so one
+    call of a tool that may not run keeps every call of it from running.
     """
-    autonomy = autonomy_of(dict(definition))
-    raw_grants = definition.get("b5_grants")
-    grants = raw_grants if isinstance(raw_grants, list) else []
-    decided = pre_decided_map(resolved if isinstance(resolved, list) else [])
+    decided = pre_decided_map(ctx.get("resolved_tool_approvals", []) or [])
     allowed: list[str] = []
     for name in _LOCAL_TOOLS:
         if _local_refusal(tools, mode, name) is not None:
             continue
-        tier = classify_tier(name, scopes=None, config=None, annotations=None)
-        if posture(tier, autonomy, granted=tier in grants) == "ask":
-            sigs = [
-                _call_sig(
-                    ToolCall(id=c.id, name=c.name, arguments=strip_justification(c.arguments)[0])
-                )
-                for c in calls
-                if c.name == name
-            ]
-            if not sigs or any(decided.get(sig) != "approve" for sig in sigs):
+        mine = [c for c in calls if c.name == name]
+        if not mine:
+            continue
+        ok = True
+        for c in mine:
+            sent = ToolCall(id=c.id, name=c.name, arguments=strip_justification(c.arguments)[0])
+            verdict = _b_gate(
+                harness,
+                sent,
+                advertised=c.name,
+                renamed=False,
+                conn=conn,
+                pinned=pinned,
+                active_skills=active_skills,
+                schemas=ctx.get("tool_schemas", []),
+            )
+            if verdict.effect == "allow":
                 continue
-        allowed.append(name)
+            if verdict.effect == "ask" and decided.get(_call_sig(sent)) == "approve":
+                continue
+            ok = False
+        if ok:
+            allowed.append(name)
     return allowed
 
 
@@ -622,6 +694,12 @@ async def _mcp_env(conn: m.McpConnection, db: DbSession, tenant_id: uuid.UUID) -
 # --------------------------------------------------------------------- step
 
 
+def _active_skills_of(ctx: Mapping[str, Any], assigned: Sequence[LoadedSkill]) -> list[LoadedSkill]:
+    """The run's active skills, as every /step and /tools reads them."""
+    active_ids = {str(s) for s in ctx.get("active_skill_ids", [])}
+    return [s for s in assigned if str(s.skill_version_id) in active_ids]
+
+
 def _refuse_held_call(
     *,
     agent: m.Agent,
@@ -631,13 +709,15 @@ def _refuse_held_call(
     ctx: Mapping[str, Any],
     tool: str,
     arguments: dict[str, Any],
+    active_skills: Sequence[LoadedSkill],
 ) -> str | None:
     """Why a held connection call may not run now, or None.
 
     An answered elicitation re-runs the call on a later /step. It runs NOW, so
-    the PEP decides it now -- the frame, the narrowing and the run's mode as
-    they are at this moment. A call that needs approval runs only once an
-    operator approved this exact call.
+    it is decided now, on exactly the `arguments` that will be sent (the answer
+    merged in): the PEP -- frame, narrowing and the run's mode as they are at
+    this moment -- and the B gate. A call either of them would hold for a
+    human runs only once an operator approved this exact call.
     """
     frame = dept.frame if dept is not None else {}
     narrowing = pinned["narrowing"] or {}
@@ -657,15 +737,30 @@ def _refuse_held_call(
         # Always the connection's tool, whatever core tool shares its name.
         routed=True,
     )
-    if decision.effect is Effect.ALLOW:
-        return None
-    if decision.effect is Effect.REQUIRE_APPROVAL:
-        verdict = pre_decided_map(ctx.get("resolved_tool_approvals", [])).get(
-            _call_sig(ToolCall(id="held", name=tool, arguments=arguments))
-        )
-        if verdict == "approve":
-            return None
-    return decision.reason or "denied"
+    held = ToolCall(id="held", name=tool, arguments=arguments)
+    approved = (
+        pre_decided_map(ctx.get("resolved_tool_approvals", []) or []).get(_call_sig(held))
+        == "approve"
+    )
+    if decision.effect is Effect.DENY:
+        return decision.reason or "denied"
+    if decision.effect is Effect.REQUIRE_APPROVAL and not approved:
+        return f"{decision.reason or 'this call needs approval'} -- call it again to ask for it"
+    gate = _b_gate(
+        Harness.from_run_context(dict(ctx)),
+        held,
+        advertised=tool,
+        renamed=True,
+        conn=conn,
+        pinned=pinned,
+        active_skills=active_skills,
+        schemas=[],
+    )
+    if gate.effect == "deny":
+        return gate.reason or "denied"
+    if gate.effect == "ask" and not approved:
+        return "this call needs approval -- call it again to ask for it"
+    return None
 
 
 async def _finish_elicitation(
@@ -677,6 +772,7 @@ async def _finish_elicitation(
     *,
     agent: m.Agent,
     pinned: Mapping[str, Any],
+    active_skills: Sequence[LoadedSkill],
 ) -> None:
     """Send the operator's answer back to the server and finish the same call."""
     pending = ctx.get("pending_elicitation")
@@ -708,7 +804,9 @@ async def _finish_elicitation(
             pinned=pinned,
             ctx=ctx,
             tool=tool,
-            arguments=dict(pending.get("arguments") or {}),
+            # The arguments that will actually be sent, answer included.
+            arguments=arguments,
+            active_skills=active_skills,
         )
         if conn is not None and tool
         else None
@@ -908,7 +1006,18 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         return StepResult(done=True, text="Reached step limit.", status_override="done")
 
     transcript: list[dict[str, Any]] = list(ctx.get("transcript", []))
-    await _finish_elicitation(db, run, dept, ctx, transcript, agent=agent, pinned=pinned)
+    await _finish_elicitation(
+        db,
+        run,
+        dept,
+        ctx,
+        transcript,
+        agent=agent,
+        pinned=pinned,
+        active_skills=_active_skills_of(
+            ctx, await load_assigned_skills(db, agent=agent, tenant_id=run.tenant_id)
+        ),
+    )
     tool_schemas_raw: list[dict[str, Any]] = list(ctx.get("tool_schemas", []))
 
     # Resolved BEFORE seeding, because the preamble's KB retrieval needs the
@@ -1576,8 +1685,11 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
             tools,
             mode_from_context(ctx),
             calls=[t for t in result.tool_calls if t.id not in handed],
-            definition=pinned["definition"] if isinstance(pinned["definition"], dict) else {},
-            resolved=ctx.get("resolved_tool_approvals", []),
+            harness=harness,
+            conn=conn,
+            pinned=pinned,
+            active_skills=active_skills,
+            ctx=ctx,
         ),
     )
 
@@ -1665,6 +1777,10 @@ async def _precompute_leading_reads(
         if isinstance(routes, dict):
             pair = routes.get(call.name)
             if isinstance(pair, list) and len(pair) == 2 and str(pair[0]) != conn.name:
+                break
+            # Renamed by the route: it would be decided and sent under the
+            # advertised name here, but runs under its real one. Sequential.
+            if isinstance(pair, list) and len(pair) == 2 and str(pair[1]) != call.name:
                 break
         tc = ToolCall(id=call.id, name=call.name, arguments=dict(call.arguments))
         pre_decision = _authorize(
@@ -1962,31 +2078,21 @@ async def _dispatch_one_tool(
     gate_verdict = None
     tier = None
     if decision.effect is Effect.ALLOW:
-        tier = classify_tier(
-            tc.name,
-            scopes=scopes,
-            config=cfg,
-            annotations=typed_annotations,
-            arguments=tc.arguments,
-            # The tool that runs: a renamed call is the connection's, so it is
-            # tiered by the connection's scopes, never by a core tool's tier.
-            core=is_core_call(tc.name, routed=renamed),
-        )
-        definition = pinned["definition"] if isinstance(pinned["definition"], dict) else {}
-        raw_b5_grants = definition.get("b5_grants")
-        b5_grants = raw_b5_grants if isinstance(raw_b5_grants, list) else []
-        gate_verdict = harness.gate(
+        # The one gate computation (`_b_gate`), shared with /step's local
+        # verdict and a held call's re-run, so they can never disagree. A
+        # renamed call is the connection's: tiered by its scopes, never by a
+        # core tool's static tier.
+        gate_verdict = _b_gate(
+            harness,
             tc,
-            tier=tier,
-            ledger=harness.state.ledger,
-            connection=conn.name if conn is not None else "oc8",
-            config=cfg,
-            autonomy=autonomy_of(definition),
-            granted=tier in b5_grants,
-            record_label=describe_focus(tc.name, tc.arguments, focus_spec) or "",
-            identity=record_identity(tc.name, tc.arguments, focus_spec),
-            procedures=_active_procedures(active_skills),
+            advertised=body.name,
+            renamed=renamed,
+            conn=conn,
+            pinned=pinned,
+            active_skills=active_skills,
+            schemas=ctx.get("tool_schemas", []),
         )
+        tier = gate_verdict.tier
         if gate_verdict.effect == "ask":
             verdict = pre_decided_map(run.context.get("resolved_tool_approvals", [])).get(
                 _call_sig(tc)

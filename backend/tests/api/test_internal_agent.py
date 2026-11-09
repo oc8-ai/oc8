@@ -3120,3 +3120,153 @@ async def test_an_answered_elicitation_is_authorized_again_before_the_call_runs(
             assert any(
                 "/plan" in str(e.get("content", "")) for e in row.context["transcript"]
             ), "the model must hear why the held call did not run"
+
+
+@pytest.mark.asyncio
+async def test_an_answered_elicitation_is_decided_on_the_arguments_that_run(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The answer is merged into the held call's arguments. It is that merged
+    call that runs, so it is the one the PEP decides: an answer that lifts the
+    order over the approval threshold must not run on the earlier verdict."""
+    from sqlalchemy import select
+
+    from oc8 import models as m
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    reached: list[dict[str, Any]] = []
+
+    async def fake_call(*args: Any, tool: str, arguments: dict[str, Any], **kw: Any) -> str:
+        reached.append(arguments)
+        return "created"
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        return CompletionResult(
+            text="ok", tool_calls=[], usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="stop", provider="ollama", model="m",
+        )
+
+    monkeypatch.setattr("oc8.agent.mcp_pool.call", fake_call)
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id = await _mcp_backed_run(db, tenant)
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        dept = await db.get(m.Department, agent.department_id)
+        assert dept is not None
+        dept.frame = {
+            "tools": {
+                "odoo": {"enabled": True, "read": True, "modify": True, "approval_eur": 3000}
+            }
+        }
+        conn = (
+            await db.execute(
+                select(m.McpConnection).where(m.McpConnection.department_id == dept.id)
+            )
+        ).scalar_one()
+        conn.config = {**conn.config, "value_spec": {"direct_fields": ["amount_total"]}}
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {
+            **run.context,
+            "transcript": [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+            "pending_elicitation": {
+                "connection": "odoo",
+                "tool": "create_record",
+                "arguments": {"model": "sale.order"},
+                "question": "How much?",
+            },
+            "clarifications": [{"question": "How much?", "answer": '{"amount_total": 9000}'}],
+        }
+        await db.flush()
+
+    await _post_step(tenant, agent_id, run_id)
+
+    assert reached == [], "the merged call is over the threshold and was not approved"
+
+
+@pytest.mark.asyncio
+async def test_local_allowed_uses_the_gate_the_call_will_meet(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """/tools tiers run_shell with the bound connection's config, so a
+    connection that marks it destructive makes the B gate ask even under
+    default autonomy. /step must reach the same verdict before the shell runs
+    the command -- not a looser one computed without that config."""
+    from oc8 import models as m
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        return CompletionResult(
+            text="", tool_calls=[ToolCall(id="c1", name="run_shell", arguments={"command": "ls"})],
+            usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="tool_use", provider="ollama", model="m",
+        )
+
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id = await _mcp_backed_run(db, tenant, destructive_tools=["run_shell"])
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {**run.context, "tool_schemas": [
+            {"name": "search_records", "description": "", "parameters": {}}
+        ]}
+        await db.flush()
+
+    body = await _post_step(tenant, agent_id, run_id)
+
+    assert [c["name"] for c in body["tool_calls"]] == ["run_shell"]
+    assert body["local_allowed"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_renamed_call_is_never_prefetched_under_its_advertised_name(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The prefetch decides and calls by the name it was handed. A routed name
+    is rewritten before it runs, so a prefetch under the advertised name would
+    decide one call and send another: such a call breaks the batch."""
+    from oc8 import models as m
+    from oc8.api.v1 import internal_agent as ia
+
+    reached: list[str] = []
+
+    async def fake_call(*args: Any, tool: str, **kw: Any) -> str:
+        reached.append(tool)
+        return "rows"
+
+    monkeypatch.setattr("oc8.agent.mcp_pool.call", fake_call)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        _agent_id, run_id = await _mcp_backed_run(db, tenant, parallel_tool_calls=True)
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {
+            **run.context,
+            "tool_routes": {"odoo.search_records": ["odoo", "search_records"]},
+        }
+        await db.flush()
+        agent, dept, conn, pinned = await ia._load(db, run)
+        assert conn is not None
+        conn.scopes = {"read": ["odoo.search_records", "search_records"], "write": []}
+        result = await ia._precompute_leading_reads(
+            run=run,
+            agent=agent,
+            dept=dept,
+            conn=conn,
+            pinned=pinned,
+            db=db,
+            calls=[
+                ia.ToolBody(id="r1", name="odoo.search_records", arguments={"model": "a"}),
+                ia.ToolBody(id="r2", name="odoo.search_records", arguments={"model": "b"}),
+            ],
+        )
+
+    assert reached == []
+    assert result == {}
