@@ -84,12 +84,16 @@ describe("sidebar cache writes", () => {
 
   it("deleting a project detaches its chats into the date groups", async () => {
     api.delete.mockResolvedValue(undefined);
+    qc.setQueryData(["chat", "session", "c"], { ...s("c", { projectId: "p1" }) });
     const { result } = renderHook(() => useDeleteProject(), { wrapper });
     result.current.mutate("p1");
     await waitFor(() =>
       expect(qc.getQueryData<ChatProjectDTO[]>(["chat", "projects"])).toEqual([]),
     );
     expect(listOf().find((x) => x.id === "c")?.projectId).toBeNull();
+    expect(
+      qc.getQueryData<{ projectId: string | null }>(["chat", "session", "c"])?.projectId,
+    ).toBeNull();
     expect(groupSessions(listOf(), new Date(2026, 10, 8, 12)).today.map((x) => x.id)).toEqual([
       "a",
       "b",
@@ -104,8 +108,12 @@ describe("sidebar cache writes", () => {
     rename.result.current.mutate({ sessionId: "b", title: "Budget" });
     await waitFor(() => expect(listOf().find((x) => x.id === "b")?.title).toBe("Budget"));
     const del = renderHook(() => useDeleteChatSession("x"), { wrapper });
+    qc.setQueryData(["chat", "session", "a"], s("a"));
+    qc.setQueryData(chatKeys.messages("a"), []);
     del.result.current.mutate("a");
     await waitFor(() => expect(listOf().map((x) => x.id)).toEqual(["b", "c"]));
+    expect(qc.getQueryData(["chat", "session", "a"])).toBeUndefined();
+    expect(qc.getQueryData(chatKeys.messages("a"))).toBeUndefined();
   });
 
   it("saves a project: POST creates and appends, PATCH sends only what was given", async () => {

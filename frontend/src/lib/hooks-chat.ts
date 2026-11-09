@@ -165,6 +165,8 @@ export function useDeleteChatSession(_agentId?: string) {
       qc.setQueriesData<ChatSessionDTO[]>({ queryKey: ["chat", "sessions"] }, (prev) =>
         prev?.filter((s) => s.id !== sessionId),
       );
+      qc.removeQueries({ queryKey: ["chat", "session", sessionId] });
+      qc.removeQueries({ queryKey: chatKeys.messages(sessionId) });
     },
   });
 }

@@ -633,6 +633,9 @@ export function useDeleteProject() {
       qc.setQueriesData<ChatSessionDTO[]>({ queryKey: ["chat", "sessions"] }, (prev) =>
         prev?.map((s) => (s.projectId === id ? { ...s, projectId: null } : s)),
       );
+      qc.setQueriesData<ChatSessionDetailDTO>({ queryKey: ["chat", "session"] }, (prev) =>
+        prev?.projectId === id ? { ...prev, projectId: null } : prev,
+      );
     },
   });
 }

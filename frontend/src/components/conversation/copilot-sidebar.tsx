@@ -3,7 +3,9 @@
 // pin, move and delete on every row. Full-text search is an Enterprise
 // section (chatSidebarSections), not part of core. Under 640 px the list
 // opens from a button, in a sheet.
-import { useId, useRef, useState, type ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { toast } from "sonner";
 import {
   FolderPlus,
   MoreHorizontal,
@@ -43,6 +45,7 @@ import {
   type ChatProjectDTO,
 } from "@/lib/conversation-api";
 import {
+  chatKeys,
   useChatSessions,
   useDeleteChatSession,
   useRenameChatSession,
@@ -81,7 +84,9 @@ export function groupSessions(sessions: ChatSessionDTO[], now: Date): SessionGro
     if (s.pinned) {
       groups.pinned.push(s);
     } else if (s.projectId) {
-      groups.byProject.set(s.projectId, [...(groups.byProject.get(s.projectId) ?? []), s]);
+      const inProject = groups.byProject.get(s.projectId);
+      if (inProject) inProject.push(s);
+      else groups.byProject.set(s.projectId, [s]);
     } else {
       const at = activityAt(s);
       if (at >= startOfToday) groups.today.push(s);
@@ -91,6 +96,8 @@ export function groupSessions(sessions: ChatSessionDTO[], now: Date): SessionGro
   }
   return groups;
 }
+
+const NO_SESSIONS: ChatSessionDTO[] = [];
 
 interface RowActions {
   projects: ChatProjectDTO[];
@@ -102,7 +109,7 @@ interface RowActions {
 
 const itemClass = "min-h-11 cursor-pointer text-sm sm:min-h-9";
 const triggerClass =
-  "grid size-9 shrink-0 cursor-pointer place-items-center rounded-md text-muted-foreground hover:bg-accent focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100";
+  "grid size-9 max-sm:size-11 shrink-0 cursor-pointer place-items-center rounded-md text-muted-foreground hover:bg-accent focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100";
 
 function Row({
   s,
@@ -121,6 +128,19 @@ function Row({
   const [value, setValue] = useState(title);
   // Escape ends the edit, and the blur that follows must not save it.
   const cancelled = useRef(false);
+  // The menu is closing: the field opens once its focus return is done.
+  const renameNext = useRef(false);
+  // Radix hands focus back to the menu trigger as it closes; a blur in the
+  // field's first frame is that, not the member leaving, so it is ignored.
+  const armed = useRef(false);
+  useEffect(() => {
+    if (!editing) return;
+    armed.current = false;
+    const frame = requestAnimationFrame(() => {
+      armed.current = true;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [editing]);
 
   function commit() {
     const next = value.trim();
@@ -137,7 +157,14 @@ function Row({
           value={value}
           maxLength={200}
           onChange={(e) => setValue(e.target.value)}
-          onBlur={commit}
+          onFocus={(e) => e.currentTarget.select()}
+          onBlur={(e) => {
+            if (!armed.current) {
+              e.currentTarget.focus();
+              return;
+            }
+            commit();
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter") e.currentTarget.blur();
             if (e.key === "Escape") {
@@ -158,7 +185,7 @@ function Row({
           type="button"
           onClick={() => onSelect(s.id)}
           aria-current={active ? "true" : undefined}
-          className="min-h-9 min-w-0 flex-1 truncate rounded-md px-2 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="min-h-9 max-sm:min-h-11 min-w-0 flex-1 truncate rounded-md px-2 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           {title}
         </button>
@@ -169,13 +196,22 @@ function Row({
           >
             <MoreHorizontal className="size-4" aria-hidden />
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-56 p-1">
+          <DropdownMenuContent
+            align="end"
+            className="w-56 p-1"
+            onCloseAutoFocus={(e) => {
+              if (!renameNext.current) return;
+              renameNext.current = false;
+              e.preventDefault();
+              cancelled.current = false;
+              setValue(title);
+              setEditing(true);
+            }}
+          >
             <DropdownMenuItem
               className={itemClass}
               onSelect={() => {
-                cancelled.current = false;
-                setValue(title);
-                setEditing(true);
+                renameNext.current = true;
               }}
             >
               {t("Rename", "Umbenennen")}
@@ -296,12 +332,14 @@ export function CopilotSidebar({
   onToggle,
 }: SidebarProps) {
   const t = useT();
+  const projectsHeadingId = useId();
   const narrow = useIsNarrow();
   const [sheetOpen, setSheetOpen] = useState(false);
   const [editingProject, setEditingProject] = useState<{ project: ChatProjectDTO | null } | null>(
     null,
   );
-  const { data: sessions = [], isLoading } = useChatSessions(agentId || undefined);
+  const qc = useQueryClient();
+  const { data: sessions = NO_SESSIONS, isLoading } = useChatSessions(agentId || undefined);
   const { data: projects = [] } = useChatProjects();
   const sections = useChatSlot("chatSidebarSections");
   const renameSession = useRenameChatSession(agentId);
@@ -310,12 +348,38 @@ export function CopilotSidebar({
   const moveSession = useSetSessionProject();
   const deleteProject = useDeleteProject();
   const { confirm, ConfirmDialog } = useConfirm();
-  const groups = groupSessions(sessions, new Date());
+  // Regroup when the list changes or the local day turns over, not on every render.
+  const localDay = new Date().toDateString();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `localDay` stands for `now`
+  const groups = useMemo(() => groupSessions(sessions, new Date()), [sessions, localDay]);
 
   function open(id: string | null) {
     onSelect(id);
     setSheetOpen(false);
   }
+
+  const failed = {
+    delete: t(
+      "The chat was not deleted. Try again.",
+      "Der Chat wurde nicht gelöscht. Versuch es noch einmal.",
+    ),
+    rename: t(
+      "The chat was not renamed. Try again.",
+      "Der Chat wurde nicht umbenannt. Versuch es noch einmal.",
+    ),
+    pin: t(
+      "The chat was not changed. Try again.",
+      "Der Chat wurde nicht geändert. Versuch es noch einmal.",
+    ),
+    move: t(
+      "The chat was not moved. Try again.",
+      "Der Chat wurde nicht verschoben. Versuch es noch einmal.",
+    ),
+    deleteProject: t(
+      "The project was not deleted. Try again.",
+      "Das Projekt wurde nicht gelöscht. Versuch es noch einmal.",
+    ),
+  };
 
   async function removeSession(s: ChatSessionDTO) {
     const title = s.title || t("Untitled chat", "Unbenannter Chat");
@@ -330,10 +394,13 @@ export function CopilotSidebar({
     });
     if (!ok) return;
     deleteSession.mutate(s.id, {
+      onError: () => toast.error(failed.delete),
       onSuccess: () => {
         if (s.id !== sessionId) return;
         // The next most recent chat, whatever is pinned; a new chat if none.
-        const next = mostRecentSession(sessions.filter((x) => x.id !== s.id))?.id ?? null;
+        const latest =
+          qc.getQueryData<ChatSessionDTO[]>(chatKeys.sessions(agentId || undefined)) ?? sessions;
+        const next = mostRecentSession(latest.filter((x) => x.id !== s.id))?.id ?? null;
         onSelect(next);
       },
     });
@@ -349,14 +416,26 @@ export function CopilotSidebar({
       confirmLabel: t("Delete project", "Projekt löschen"),
       cancelLabel: t("Cancel", "Abbrechen"),
     });
-    if (ok) deleteProject.mutate(p.id);
+    if (ok) deleteProject.mutate(p.id, { onError: () => toast.error(failed.deleteProject) });
   }
 
   const actions: RowActions = {
     projects,
-    rename: (s, title) => renameSession.mutate({ sessionId: s.id, title }),
-    pin: (s) => pinSession.mutate({ sessionId: s.id, pinned: !s.pinned }),
-    move: (s, projectId) => moveSession.mutate({ sessionId: s.id, projectId }),
+    rename: (s, title) =>
+      renameSession.mutate(
+        { sessionId: s.id, title },
+        { onError: () => toast.error(failed.rename) },
+      ),
+    pin: (s) =>
+      pinSession.mutate(
+        { sessionId: s.id, pinned: !s.pinned },
+        { onError: () => toast.error(failed.pin) },
+      ),
+    move: (s, projectId) =>
+      moveSession.mutate(
+        { sessionId: s.id, projectId },
+        { onError: () => toast.error(failed.move) },
+      ),
     remove: (s) => void removeSession(s),
   };
   const shared = { sessionId, onSelect: (id: string) => open(id), actions };
@@ -388,8 +467,8 @@ export function CopilotSidebar({
             </p>
           )}
           <Group title={t("Pinned", "Angeheftet")} sessions={groups.pinned} {...shared} />
-          <section aria-labelledby="chat-projects-heading" className="space-y-1">
-            <h2 id="chat-projects-heading" className="text-micro px-2">
+          <section aria-labelledby={projectsHeadingId} className="space-y-1">
+            <h2 id={projectsHeadingId} className="text-micro px-2">
               {t("Projects", "Projekte")}
             </h2>
             {projects.map((p) => (

@@ -14,6 +14,7 @@ const m = vi.hoisted(() => ({
   loading: false,
 }));
 
+vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 vi.mock("@/hooks/use-mobile", () => ({ useIsNarrow: () => m.narrow, useIsMobile: () => m.narrow }));
 vi.mock("@/lib/governance-hooks", () => ({
   useCallerCapabilities: () => null,
@@ -34,6 +35,8 @@ vi.mock("@/lib/conversation-api", async (orig) => ({
   useSaveProject: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
 }));
 
+import { toast } from "sonner";
+import { chatKeys } from "@/lib/hooks-chat";
 import { CopilotSidebar, groupSessions } from "@/components/conversation/copilot-sidebar";
 import { EditionCompositionProvider } from "@/edition/composition";
 import type { FrontendEditionExtension } from "@/edition/contracts";
@@ -183,46 +186,66 @@ describe("Copilot sidebar", () => {
     mount();
     openMenu("More: Today chat");
     fireEvent.click(screen.getByRole("menuitem", { name: "Pin" }));
-    expect(m.pin).toHaveBeenCalledWith({ sessionId: "b", pinned: true });
+    expect(m.pin).toHaveBeenCalledWith({ sessionId: "b", pinned: true }, expect.anything());
   });
 
   it("offers Unpin on a pinned chat", () => {
     mount();
     openMenu("More: Pinned one");
     fireEvent.click(screen.getByRole("menuitem", { name: "Unpin" }));
-    expect(m.pin).toHaveBeenCalledWith({ sessionId: "a", pinned: false });
+    expect(m.pin).toHaveBeenCalledWith({ sessionId: "a", pinned: false }, expect.anything());
   });
 
   it("moves a chat into a project and out of it", () => {
     mount();
     openMenu("More: Today chat");
     fireEvent.click(screen.getByRole("menuitem", { name: "Move to Q4 pricing" }));
-    expect(m.move).toHaveBeenCalledWith({ sessionId: "b", projectId: "p1" });
+    expect(m.move).toHaveBeenCalledWith({ sessionId: "b", projectId: "p1" }, expect.anything());
     openMenu("More: In project");
     expect(screen.getByRole("menuitem", { name: "Move to Q4 pricing" })).toHaveAttribute(
       "aria-disabled",
       "true",
     );
     fireEvent.click(screen.getByRole("menuitem", { name: "Remove from project" }));
-    expect(m.move).toHaveBeenLastCalledWith({ sessionId: "c", projectId: null });
+    expect(m.move).toHaveBeenLastCalledWith({ sessionId: "c", projectId: null }, expect.anything());
   });
 
-  it("renames in place on Enter and cancels on Escape", () => {
-    mount();
+  async function startRename() {
     openMenu("More: Today chat");
     fireEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
-    const field = screen.getByRole("textbox", { name: "Chat name" });
+    const field = await screen.findByRole("textbox", { name: "Chat name" });
+    // Past the first frame: from here a blur is the member leaving the field.
+    await act(() => new Promise((r) => requestAnimationFrame(() => r(null))));
+    return field;
+  }
+
+  it("renames in place on Enter and cancels on Escape", async () => {
+    mount();
+    const field = await startRename();
     fireEvent.change(field, { target: { value: "Budget" } });
     fireEvent.keyDown(field, { key: "Enter" });
-    expect(m.rename).toHaveBeenCalledWith({ sessionId: "b", title: "Budget" });
+    expect(m.rename).toHaveBeenCalledWith({ sessionId: "b", title: "Budget" }, expect.anything());
 
     m.rename.mockClear();
-    openMenu("More: Today chat");
-    fireEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
-    const again = screen.getByRole("textbox", { name: "Chat name" });
+    const again = await startRename();
     fireEvent.change(again, { target: { value: "Nope" } });
     fireEvent.keyDown(again, { key: "Escape" });
     expect(m.rename).not.toHaveBeenCalled();
+  });
+
+  it("ignores the blur of the menu's focus return while the rename field opens", async () => {
+    mount();
+    openMenu("More: Today chat");
+    fireEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
+    const field = await screen.findByRole("textbox", { name: "Chat name" });
+    fireEvent.change(field, { target: { value: "Budget" } });
+    // Radix returning focus to the trigger blurs the field in its first frame.
+    fireEvent.blur(field);
+    expect(screen.getByRole("textbox", { name: "Chat name" })).toHaveFocus();
+    expect(m.rename).not.toHaveBeenCalled();
+    await act(() => new Promise((r) => requestAnimationFrame(() => r(null))));
+    fireEvent.blur(screen.getByRole("textbox", { name: "Chat name" }));
+    expect(m.rename).toHaveBeenCalledWith({ sessionId: "b", title: "Budget" }, expect.anything());
   });
 
   async function confirmDelete(title: string) {
@@ -253,6 +276,45 @@ describe("Copilot sidebar", () => {
     expect(onSelect).toHaveBeenCalledWith("c");
   });
 
+  it("picks the next chat from the latest cache, not the list captured at render", async () => {
+    const qc = new QueryClient();
+    // A newer chat arrived after this render: the list shown here is stale.
+    qc.setQueryData(chatKeys.sessions("x"), [
+      ...m.sessions,
+      session("fresh", { id: "fresh", title: "Fresh", lastMessageAt: "2026-11-08T11:00:00Z" }),
+    ]);
+    const onSelect = vi.fn();
+    render(
+      <QueryClientProvider client={qc}>
+        <EditionCompositionProvider extensions={[]}>
+          <CopilotSidebar
+            agentId="x"
+            sessionId="b"
+            onSelect={onSelect}
+            collapsed={false}
+            onToggle={vi.fn()}
+          />
+        </EditionCompositionProvider>
+      </QueryClientProvider>,
+    );
+    await confirmDelete("Today chat");
+    await waitFor(() => expect(m.del).toHaveBeenCalled());
+    act(() => (m.del.mock.calls[0][1] as { onSuccess: () => void }).onSuccess());
+    expect(onSelect).toHaveBeenCalledWith("fresh");
+  });
+
+  it("tells the member when a write fails", async () => {
+    mount();
+    openMenu("More: Today chat");
+    fireEvent.click(screen.getByRole("menuitem", { name: "Pin" }));
+    (m.pin.mock.calls[0][1] as { onError: () => void }).onError();
+    expect(toast.error).toHaveBeenCalledWith("The chat was not changed. Try again.");
+    await confirmDelete("Today chat");
+    await waitFor(() => expect(m.del).toHaveBeenCalled());
+    (m.del.mock.calls[0][1] as { onError: () => void }).onError();
+    expect(toast.error).toHaveBeenCalledWith("The chat was not deleted. Try again.");
+  });
+
   it("deleting the only open chat starts a new one", async () => {
     m.sessions = [session("only", { id: "only", title: "Only chat" })];
     const { onSelect } = mount({ sessionId: "only" });
@@ -276,7 +338,7 @@ describe("Copilot sidebar", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Delete project" }));
     const dialog = await screen.findByRole("alertdialog");
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete project" }));
-    await waitFor(() => expect(m.delProject).toHaveBeenCalledWith("p1"));
+    await waitFor(() => expect(m.delProject).toHaveBeenCalledWith("p1", expect.anything()));
   });
 
   it("opens the new-project sheet", () => {
