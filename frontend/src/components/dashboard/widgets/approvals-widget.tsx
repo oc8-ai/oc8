@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { DiscussWithCopilot } from "@/components/conversation/discuss-with-copilot";
 import { toast } from "sonner";
 import {
   AlertTriangle,
@@ -656,6 +657,9 @@ export function ApprovalPane({
             )}
           </div>
           <h2 className="mt-2 font-serif text-2xl leading-tight">{approval.title}</h2>
+          <div className="mt-2">
+            <DiscussWithCopilot kind="approval" id={approval.id} label={approval.title} />
+          </div>
           {reasonSentence ? (
             <div className="mt-2 flex items-start gap-2 rounded-md border border-border bg-panel/60 px-3 py-2 text-sm leading-relaxed text-foreground/90">
               <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden />

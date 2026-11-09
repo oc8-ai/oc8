@@ -13,6 +13,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { DiscussWithCopilot } from "@/components/conversation/discuss-with-copilot";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -153,7 +154,7 @@ function ResponsibilityRow({ r }: { r: ResponsibilityDTO }) {
           {t("Updated", "Aktualisiert")} {updated}
         </p>
       )}
-      <div className="flex flex-wrap gap-1.5 pt-1">
+      <div className="flex flex-wrap items-center gap-1.5 pt-1">
         <Button
           size="sm"
           variant="outline"
@@ -194,6 +195,7 @@ function ResponsibilityRow({ r }: { r: ResponsibilityDTO }) {
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
+        <DiscussWithCopilot kind="responsibility" id={r.id} label={r.title} variant="link" />
       </div>
     </div>
   );

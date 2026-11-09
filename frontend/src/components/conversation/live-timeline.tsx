@@ -18,6 +18,7 @@ import { useMayManageAgent } from "@/lib/governance-hooks";
 import { useT } from "@/lib/i18n";
 
 import { Conversation, type ExtraRunTurn } from "./conversation";
+import { DiscussWithCopilot } from "./discuss-with-copilot";
 import { cronWords } from "./cron-words";
 import { isPlainClick } from "./object-links";
 import { RunInputs, runInputError, steeringTarget } from "./run-steering";
@@ -156,11 +157,16 @@ export function LiveTimeline({
     footer: (
       <>
         <RunInputs runId={run.id} runState={run.state} />
-        {/* `pin=run:<id>` -- the Copilot pins the run (C3, Task 37). */}
+        {/* A new Copilot chat with the run pinned. Only for a run the reader
+            can reach: a colleague's (`redacted`) run is labels only here. */}
         {TERMINAL.has(run.state) && !run.redacted && (
-          <AppLink href={`/copilot?pin=${encodeURIComponent(`run:${run.id}`)}`}>
-            {t("Continue", "Weiterführen")}
-          </AppLink>
+          <DiscussWithCopilot
+            kind="run"
+            id={run.id}
+            label={t("this run", "diesen Lauf")}
+            variant="link"
+            text={t("Continue", "Weitermachen")}
+          />
         )}
       </>
     ),

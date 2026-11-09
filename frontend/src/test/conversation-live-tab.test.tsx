@@ -10,6 +10,7 @@ const stopRun = vi.hoisted(() => vi.fn());
 const conversationProps = vi.hoisted(() => ({ last: null as null | Record<string, unknown> }));
 const state = vi.hoisted(() => ({
   manager: true,
+  mayCopilot: true,
   runs: [] as unknown[],
   error: null as unknown,
   allRunsCalls: [] as boolean[],
@@ -40,7 +41,10 @@ vi.mock("@/components/conversation/conversation", () => ({
     );
   },
 }));
-vi.mock("@/lib/governance-hooks", () => ({ useMayManageAgent: () => () => state.manager }));
+vi.mock("@/lib/governance-hooks", () => ({
+  useMayManageAgent: () => () => state.manager,
+  useMay: () => () => state.mayCopilot,
+}));
 vi.mock("@/lib/conversation-api", async (orig) => ({
   ...(await orig<typeof import("@/lib/conversation-api")>()),
   useLiveTimeline: (_agentId: string, allRuns: boolean) => {
@@ -99,6 +103,7 @@ const tab = () => <LiveTimeline agentId="a" departmentId="d" promptStarters={[]}
 
 beforeEach(() => {
   state.manager = true;
+  state.mayCopilot = true;
   state.runs = [run()];
   state.error = null;
   state.allRunsCalls = [];
@@ -222,6 +227,17 @@ describe("Live tab", () => {
     const links = screen.getAllByRole("link", { name: /Continue/ });
     expect(links).toHaveLength(1);
     expect(links[0]).toHaveAttribute("href", "/copilot?pin=run%3Ar2");
+  });
+
+  it("offers no Continue without copilot:use, nor on a colleague's redacted run", () => {
+    state.runs = [run({ id: "r2", state: "done", redacted: true })];
+    wrap(tab());
+    expect(screen.queryByRole("link", { name: /Continue/ })).toBeNull();
+    state.runs = [run({ id: "r3", state: "done" })];
+    state.mayCopilot = false;
+    wrap(tab());
+    expect(screen.queryByRole("link", { name: /Continue/ })).toBeNull();
+    state.mayCopilot = true;
   });
 });
 

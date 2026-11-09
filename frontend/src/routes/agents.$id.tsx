@@ -1,4 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { DiscussWithCopilot } from "@/components/conversation/discuss-with-copilot";
 import {
   ArrowLeft,
   AlertTriangle,
@@ -383,6 +384,7 @@ function AgentDetail() {
           <div className="flex shrink-0 items-center gap-2">
             <HeaderStatusPill agentId={agent.id} status={status} runId={runId} />
             <DeleteAgentButton agent={agent} mayManage={mayManage} />
+            <DiscussWithCopilot kind="agent" id={agent.id} label={agent.name} />
             <button
               type="button"
               onClick={() => setRunPickerOpen(true)}

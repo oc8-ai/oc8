@@ -134,7 +134,9 @@ describe("chip targets select the object", () => {
     expect(validate({})).toEqual({});
     expect(validate({ session: "../../members/x" })).toEqual({});
     expect(validate({ pin: `run:${id}` })).toEqual({ pin: `run:${id}` });
-    expect(validate({ pin: "run:../../members/x" })).toEqual({});
-    expect(validate({ pin: id })).toEqual({});
+    // Kept as text: the page checks it (parsePin) before creating anything,
+    // and tells the member when it is not a pin it can open.
+    expect(validate({ pin: "run:../../members/x" })).toEqual({ pin: "run:../../members/x" });
+    expect(validate({ pin: ["run"] })).toEqual({});
   });
 });

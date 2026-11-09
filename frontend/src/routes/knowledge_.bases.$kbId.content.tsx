@@ -10,6 +10,7 @@
 // path), but registers the route's parent as root instead of `KnowledgeRoute`
 // -- verified against the generated `routeTree.gen.ts` (`getParentRoute: ()
 // => rootRouteImport`) before committing this file.
+import { DiscussWithCopilot } from "@/components/conversation/discuss-with-copilot";
 import { useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { ArrowLeft, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
@@ -36,12 +37,19 @@ function KbContentRoute() {
   const t = useT();
   return (
     <div className="space-y-6">
-      <Link
-        to="/knowledge"
-        className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-primary"
-      >
-        <ArrowLeft className="h-4 w-4" /> {t("Back to knowledge", "Zurück zu Wissen")}
-      </Link>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <Link
+          to="/knowledge"
+          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-primary"
+        >
+          <ArrowLeft className="h-4 w-4" /> {t("Back to knowledge", "Zurück zu Wissen")}
+        </Link>
+        <DiscussWithCopilot
+          kind="knowledge_base"
+          id={kbId}
+          label={t("this knowledge base", "diese Wissensbasis")}
+        />
+      </div>
       <KbContentView kbId={kbId} />
     </div>
   );

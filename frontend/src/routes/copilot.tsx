@@ -1,6 +1,6 @@
-import { createFileRoute, useRouterState } from "@tanstack/react-router";
+import { createFileRoute, useNavigate, useRouterState } from "@tanstack/react-router";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChatSessionPicker } from "@/components/chat-window";
 import { Conversation } from "@/components/conversation";
 import { CopilotAvatar, CopilotPersonaHeader } from "@/components/copilot-persona";
@@ -13,43 +13,59 @@ import { mascotState } from "@/lib/copilot-status";
 import { useMay } from "@/lib/governance-hooks";
 import { isPlainClick } from "@/components/conversation/object-links";
 import { useObjectNavigation } from "@/components/conversation/use-object-navigation";
+import { parsePin, useOpenPinnedChat } from "@/components/conversation/open-pinned-chat";
 import { useChatSession } from "@/lib/conversation-api";
 import { useAgent } from "@/lib/hooks";
 import { useChatSessions } from "@/lib/hooks-chat";
 import { useCopilotProfile } from "@/lib/hooks-copilot";
-import { isUuid, urlId } from "@/lib/ids";
+import { urlId } from "@/lib/ids";
 import { useT } from "@/lib/i18n";
 
 export interface CopilotSearch {
   /** A conversation to open -- where an answer's session chip
    *  ("oc8://chat_session/<id>") lands. */
   session?: string;
-  /** An object to pin to a new conversation, as "<kind>:<id>" -- the Live
-   *  tab's "Continue" sends "run:<id>". Accepted here so the link keeps it;
-   *  the Copilot pins it once C3 pinning lands (Task 37). */
+  /** An object to pin to a new conversation, as "<kind>:<id>" -- "Discuss
+   *  with Copilot" and the Live tab's "Continue" send it. Untrusted: kept
+   *  here as text and checked by `parsePin` before anything is created. */
   pin?: string;
 }
 
 export const Route = createFileRoute("/copilot")({
   validateSearch: (search: Record<string, unknown>): CopilotSearch => {
     const session = urlId(search.session);
-    const pin = typeof search.pin === "string" ? /^([a-z_]+):(.+)$/.exec(search.pin) : null;
+    const pin = typeof search.pin === "string" && search.pin.length <= 4200 ? search.pin : null;
     return {
       ...(session ? { session } : {}),
-      ...(pin && isUuid(pin[2]) ? { pin: `${pin[1]}:${pin[2]}` } : {}),
+      ...(pin ? { pin } : {}),
     };
   },
   component: CopilotRoute,
 });
 
 function CopilotRoute() {
-  const { session } = Route.useSearch();
+  const { session, pin } = Route.useSearch();
+  const navigate = useNavigate();
   // Every navigation gets a fresh history key, so following the same link
   // again (after switching conversations) selects it again.
   const navKey = useRouterState({
     select: (s) => s.location.state.__TSR_key ?? s.location.state.key ?? s.location.href,
   });
-  return <CopilotPage initialSessionId={session ?? null} navKey={navKey} />;
+  return (
+    <CopilotPage
+      initialSessionId={session ?? null}
+      navKey={navKey}
+      pin={pin}
+      // So a reload does not create another chat.
+      onPinHandled={(sessionId) =>
+        void navigate({
+          to: "/copilot",
+          search: sessionId ? { session: sessionId } : {},
+          replace: true,
+        })
+      }
+    />
+  );
 }
 
 /** A link named a conversation that is not the Copilot's: say whose it is
@@ -81,7 +97,17 @@ function ForeignSessionNotice({ agentId }: { agentId: string }) {
 export function CopilotPage({
   initialSessionId = null,
   navKey,
-}: { initialSessionId?: string | null; navKey?: string } = {}) {
+  pin,
+  onPinHandled,
+}: {
+  initialSessionId?: string | null;
+  navKey?: string;
+  /** The raw `?pin=` value: a new chat is opened with that object pinned. */
+  pin?: string;
+  /** The pin was handled (chat created, or the link refused): drop it from
+   *  the address, selecting `sessionId` when there is one. */
+  onPinHandled?: (sessionId: string | null) => void;
+} = {}) {
   const t = useT();
   const may = useMay();
   const { data: profile } = useCopilotProfile();
@@ -98,6 +124,58 @@ export function CopilotPage({
   useEffect(() => {
     if (ownLink && initialSessionId) setSessionId(initialSessionId);
   }, [ownLink, initialSessionId, navKey]);
+  // A `?pin=` link: one new chat per link, however often this effect runs
+  // (StrictMode, a second click on the same link). It only creates the chat
+  // and pins the object; it never sends a message or starts a run.
+  const openPinned = useOpenPinnedChat();
+  const [pinNote, setPinNote] = useState<string | null>(null);
+  const pinStarted = useRef<string | null>(null);
+  const mayUse = may("copilot:use");
+  useEffect(() => {
+    if (!pin) {
+      pinStarted.current = null;
+      return;
+    }
+    if (!mayUse || pinStarted.current === pin) return;
+    pinStarted.current = pin;
+    const parsed = parsePin(pin);
+    if (!parsed) {
+      setPinNote(
+        t(
+          "That link did not name an object I can pin, so this is a new chat.",
+          "Dieser Link nennt kein Objekt, das ich anheften kann. Das hier ist ein neuer Chat.",
+        ),
+      );
+      onPinHandled?.(null);
+      return;
+    }
+    openPinned(parsed).then(
+      ({ sessionId: opened, pinned }) => {
+        setSessionId(opened);
+        setPinNote(
+          pinned === "refused"
+            ? t("You can't pin that", "Das kannst du nicht anheften")
+            : pinned === "failed"
+              ? t(
+                  "The object was not pinned. Try pinning it from the + menu.",
+                  "Das Objekt wurde nicht angeheftet. Versuch es über das Plus-Menü.",
+                )
+              : null,
+        );
+        onPinHandled?.(opened);
+      },
+      () => {
+        setPinNote(
+          t(
+            "The new chat could not be created. Try again.",
+            "Der neue Chat konnte nicht angelegt werden. Versuch es noch einmal.",
+          ),
+        );
+        onPinHandled?.(null);
+      },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per pin value; the ref guards re-runs
+  }, [pin, mayUse]);
   const [panelOpen, setPanelOpen] = useState(true);
   const mobile = useIsMobile();
   if (!may("copilot:use")) return null; // nav is the main gate; defense in depth
@@ -197,6 +275,14 @@ export function CopilotPage({
           </CopilotPersonaHeader>
         </div>
         {foreignOwner && <ForeignSessionNotice agentId={foreignOwner} />}
+        {pinNote && (
+          <p
+            role="status"
+            className="border-b border-border px-4 py-2 text-xs text-muted-foreground"
+          >
+            {pinNote}
+          </p>
+        )}
         {chat}
       </section>
       {!mobile && panelOpen && (
