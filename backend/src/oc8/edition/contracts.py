@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Protocol
 from fastapi import APIRouter
 
 if TYPE_CHECKING:
+    from oc8.copilot.agent_templates import AgentTemplate
     from oc8.edition.tools import EditionTool
 
 
@@ -35,6 +36,12 @@ class EditionExtension(Protocol):
         need to implement it. `Protocol` subclasses inherit this concrete
         body through ordinary nominal inheritance.
         """
+        return ()
+
+    def agent_templates(self) -> Sequence[AgentTemplate]:
+        """Agent ideas this edition adds to the Copilot's empty chat (Copilot
+        Agent Builder §3.6). Appended after core's; a key core already uses is
+        ignored. Defaults to none, like tools()."""
         return ()
 
     def tools(self) -> Sequence[EditionTool]:

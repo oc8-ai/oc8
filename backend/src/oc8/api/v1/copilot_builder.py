@@ -16,10 +16,16 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.api.deps import DbSession, require_departmental
+from oc8.api.deps import DbSession, require_departmental, require_permission
 from oc8.authz.authority import authority_for_principal, tenant_wide_read
 from oc8.authz.permissions import AGENT, COPILOT_USE, DEPARTMENT, MANAGE, VIEW, perm
 from oc8.authz.scope import HumanActor
+from oc8.copilot.agent_templates import (
+    CORE_TEMPLATES,
+    connected_kinds,
+    merge_templates,
+    pick_ideas,
+)
 from oc8.copilot.builder import (
     BUILDER_KIND,
     announce_builder,
@@ -43,10 +49,12 @@ from oc8.copilot.models import CopilotProposal
 from oc8.copilot.tools import uuid_or_none
 from oc8.schemas.dto import (
     AgentBuilderDTO,
+    AgentIdeaDTO,
     BuilderAgentDTO,
     BuilderChoiceDTO,
     BuilderLimitDTO,
     BuilderTriggerDTO,
+    LocalizedTextDTO,
 )
 
 router = APIRouter()
@@ -291,3 +299,22 @@ async def request_builder(
     )
     await db.commit()
     return dto
+
+
+@router.get(
+    "/copilot/agent-ideas",
+    response_model=list[AgentIdeaDTO],
+    dependencies=[Depends(require_permission(COPILOT_USE))],
+)
+async def get_agent_ideas(request: Request, db: DbSession, actor: _Actor) -> list[AgentIdeaDTO]:
+    templates = merge_templates(CORE_TEMPLATES, getattr(request.app.state, "agent_templates", ()))
+    kinds = await connected_kinds(db, tenant_id=actor.principal.tenant_id, scope=actor.scope)
+    return [
+        AgentIdeaDTO(
+            key=t.key,
+            title=LocalizedTextDTO(en=t.title_en, de=t.title_de),
+            subtitle=LocalizedTextDTO(en=t.subtitle_en, de=t.subtitle_de),
+            prompt=LocalizedTextDTO(en=t.prompt_en, de=t.prompt_de),
+        )
+        for t in pick_ideas(templates, kinds)
+    ]

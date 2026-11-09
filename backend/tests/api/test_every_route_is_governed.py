@@ -298,6 +298,7 @@ _CHAT_ROUTES: dict[tuple[str, str], str] = {
     ("PUT", "/api/v1/chat/sessions/{}/model"): "agent:view",
     ("PUT", "/api/v1/chat/sessions/{}/mode"): "agent:view",
     # The agent builder's card: owner-only writes, gated further in the route.
+    ("GET", "/api/v1/copilot/agent-ideas"): "copilot:use",
     ("GET", "/api/v1/copilot/builder/{}"): "agent:view",
     ("POST", "/api/v1/copilot/builder/{}/apply"): "agent:view",
     ("POST", "/api/v1/copilot/builder/{}/request"): "agent:view",

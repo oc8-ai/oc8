@@ -1927,3 +1927,18 @@ class LiveTimelineDTO(CamelModel):
     items: list[LiveItemDTO]
     next_before: str | None = None
     may_view_all_runs: bool
+
+
+class LocalizedTextDTO(CamelModel):
+    en: str
+    de: str
+
+
+class AgentIdeaDTO(CamelModel):
+    """One agent idea for the empty Copilot chat. Both languages travel: the
+    texts are catalogue data, not UI strings the frontend's t() knows."""
+
+    key: str
+    title: LocalizedTextDTO
+    subtitle: LocalizedTextDTO
+    prompt: LocalizedTextDTO

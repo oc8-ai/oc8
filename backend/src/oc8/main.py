@@ -108,6 +108,10 @@ def create_app(
         version=__version__,
         lifespan=lifespan,
     )
+    # Agent ideas editions contribute (GET /copilot/agent-ideas reads them).
+    app.state.agent_templates = tuple(
+        template for ext in edition_extensions for template in ext.agent_templates()
+    )
 
     app.add_middleware(
         CORSMiddleware,
