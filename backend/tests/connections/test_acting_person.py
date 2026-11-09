@@ -621,3 +621,32 @@ async def test_applying_a_proposal_records_the_actor_as_trigger_owner(
             select(m.Trigger.created_by_member_id).where(m.Trigger.agent_id == agent.id)
         )
     assert owner == anna
+
+
+async def test_a_trigger_names_its_owner(app_session: AppSessionFactory) -> None:
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    await member(app_session, tenant, "anna@acme.test", name="Anna")
+    async with app_session(tenant) as db:
+        db.add(
+            m.Trigger(
+                tenant_id=tenant,
+                agent_id=agent.id,
+                kind="cron",
+                task_text="legacy",
+                cron_expression="0 8 * * *",
+            )
+        )
+    admin = headers(tenant, "anna@acme.test", "org_admin")
+    async with api() as c:
+        created = await c.post(
+            f"/api/v1/agents/{agent.id}/triggers",
+            json={"kind": "webhook", "taskText": "w"},
+            headers=admin,
+        )
+        assert created.json()["createdByName"] == "Anna"
+        listed = (await c.get(f"/api/v1/agents/{agent.id}/triggers", headers=admin)).json()
+    assert sorted((t["taskText"], t["createdByName"]) for t in listed) == [
+        ("legacy", None),
+        ("w", "Anna"),
+    ]

@@ -6,6 +6,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
@@ -35,7 +36,23 @@ def _webhook_url(token: str) -> str:
     return f"{base}/api/v1/webhooks/{token}"
 
 
-def _to_dto(t: m.Trigger) -> TriggerDTO:
+async def _owner_names(db: DbSession, triggers: list[m.Trigger]) -> dict[uuid.UUID, str]:
+    ids = {t.created_by_member_id for t in triggers if t.created_by_member_id is not None}
+    if not ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(m.OrgMember.id, m.OrgMember.display_name).where(m.OrgMember.id.in_(ids))
+        )
+    ).all()
+    return {r.id: r.display_name for r in rows}
+
+
+async def _to_dto(db: DbSession, t: m.Trigger) -> TriggerDTO:
+    return _dto_with(t, await _owner_names(db, [t]))
+
+
+def _dto_with(t: m.Trigger, names: dict[uuid.UUID, str]) -> TriggerDTO:
     return TriggerDTO(
         id=str(t.id),
         agent_id=str(t.agent_id),
@@ -49,6 +66,7 @@ def _to_dto(t: m.Trigger) -> TriggerDTO:
         event_type=t.event_type,
         webhook_url=_webhook_url(t.webhook_token) if t.webhook_token else None,
         created_by_member_id=str(t.created_by_member_id) if t.created_by_member_id else None,
+        created_by_name=names.get(t.created_by_member_id) if t.created_by_member_id else None,
         acts_for_creator=t.acts_for_creator,
     )
 
@@ -110,7 +128,7 @@ async def create_agent_trigger(
     # service flushed before checking never reaches the database.
     except SubscriptionModelNotManualOnly as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
-    return _to_dto(trigger)
+    return await _to_dto(db, trigger)
 
 
 @router.get(
@@ -122,7 +140,8 @@ async def list_agent_triggers(
     agent_id: uuid.UUID, db: DbSession, principal: CurrentPrincipal
 ) -> list[TriggerDTO]:
     rows = await list_triggers_for_agent(db, agent_id=agent_id)
-    return [_to_dto(t) for t in rows]
+    names = await _owner_names(db, list(rows))
+    return [_dto_with(t, names) for t in rows]
 
 
 @router.patch(
@@ -186,7 +205,7 @@ async def update_agent_trigger(
             )
         except SubscriptionModelNotManualOnly as exc:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
-    return _to_dto(updated)
+    return await _to_dto(db, updated)
 
 
 @router.delete(
