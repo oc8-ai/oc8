@@ -539,8 +539,9 @@ export const useDepartment = (id: string) => {
   const { lang } = useLang();
   return useQuery({
     queryKey: ["departments", id],
-    queryFn: () => api.get<Department>(`/departments/${id}`),
+    queryFn: () => api.get<Department>(`/departments/${encodeURIComponent(id)}`),
     select: (d) => localizeDepartment(d, lang),
+    enabled: !!id,
   });
 };
 
@@ -606,11 +607,12 @@ export const useDepartmentBoard = (id: string, limit = 25) => {
   const { lang } = useLang();
   return useQuery({
     queryKey: [...keys.board(id), limit],
-    queryFn: () => api.get<Board>(`/departments/${id}/board?limit=${limit}`),
+    queryFn: () => api.get<Board>(`/departments/${encodeURIComponent(id)}/board?limit=${limit}`),
     select: (board) => ({
       ...board,
       tasks: board.tasks.map((t) => localizeTask(t, lang)),
     }),
+    enabled: !!id,
   });
 };
 
@@ -626,7 +628,7 @@ export interface DepartmentToolsDTO {
 export function useDepartmentTools(id: string) {
   return useQuery({
     queryKey: ["departments", id, "tools"],
-    queryFn: () => api.get<DepartmentToolsDTO>(`/departments/${id}/tools`),
+    queryFn: () => api.get<DepartmentToolsDTO>(`/departments/${encodeURIComponent(id)}/tools`),
     enabled: !!id,
     // A short staleTime, not zero: `useSetDepartmentTools` already
     // invalidates this exact key on every successful save, so a save made
@@ -641,7 +643,7 @@ export function useSetDepartmentTools(id: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (tools: Record<string, Record<string, unknown>>) =>
-      api.put<DepartmentToolsDTO>(`/departments/${id}/tools`, { tools }),
+      api.put<DepartmentToolsDTO>(`/departments/${encodeURIComponent(id)}/tools`, { tools }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["departments", id, "tools"] }),
   });
 }
@@ -649,7 +651,7 @@ export function useSetDepartmentTools(id: string) {
 export const useDepartmentAgents = (id: string) =>
   useQuery({
     queryKey: ["departments", id, "agents"],
-    queryFn: () => api.get<Agent[]>(`/departments/${id}/agents`),
+    queryFn: () => api.get<Agent[]>(`/departments/${encodeURIComponent(id)}/agents`),
     enabled: !!id,
   });
 
@@ -940,7 +942,7 @@ export function useUpdateKnowledgeBase() {
       name?: string;
       description?: string;
       embeddingModel?: string;
-    }) => api.patch<KnowledgeBase>(`/knowledge/bases/${kbId}`, body),
+    }) => api.patch<KnowledgeBase>(`/knowledge/bases/${encodeURIComponent(kbId)}`, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.bases }),
   });
 }
@@ -953,7 +955,9 @@ export function useDeleteKnowledgeBase() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (kbId: string) =>
-      api.delete<{ kbId: string; documents: number; chunks: number }>(`/knowledge/bases/${kbId}`),
+      api.delete<{ kbId: string; documents: number; chunks: number }>(
+        `/knowledge/bases/${encodeURIComponent(kbId)}`,
+      ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.bases });
       qc.invalidateQueries({ queryKey: keys.sources });
@@ -978,7 +982,7 @@ export function useUnlinkSourceFromBase() {
         chunks: number;
         sha256: string | null;
         auditSeq: number | null;
-      }>(`/knowledge/bases/${kbId}/sources/${sourceId}`),
+      }>(`/knowledge/bases/${encodeURIComponent(kbId)}/sources/${encodeURIComponent(sourceId)}`),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.bases });
       qc.invalidateQueries({ queryKey: keys.sources });
@@ -1065,7 +1069,9 @@ export const useKbDocuments = (kbId: string, opts: { includeDeleted?: boolean } 
     queryFn: () => {
       const q = new URLSearchParams();
       if (opts.includeDeleted) q.set("includeDeleted", "true");
-      return api.get<KnowledgeDocument[]>(`/knowledge/bases/${kbId}/documents?${q.toString()}`);
+      return api.get<KnowledgeDocument[]>(
+        `/knowledge/bases/${encodeURIComponent(kbId)}/documents?${q.toString()}`,
+      );
     },
     enabled: Boolean(kbId),
   });
@@ -1088,7 +1094,9 @@ export const useKbChunks = (kbId: string, params: KbChunkQueryParams = {}) =>
       if (params.sourceUri) q.set("sourceUri", params.sourceUri);
       q.set("limit", String(pageSize));
       q.set("offset", String(((params.page ?? 1) - 1) * pageSize));
-      return api.get<Page<KbChunk>>(`/knowledge/bases/${kbId}/chunks?${q.toString()}`);
+      return api.get<Page<KbChunk>>(
+        `/knowledge/bases/${encodeURIComponent(kbId)}/chunks?${q.toString()}`,
+      );
     },
     enabled: Boolean(kbId),
   });
@@ -1098,7 +1106,10 @@ export const useKbChunks = (kbId: string, params: KbChunkQueryParams = {}) =>
 export const useSimilarChunks = (kbId: string, chunkId: string | null) =>
   useQuery({
     queryKey: ["similarChunks", kbId, chunkId] as const,
-    queryFn: () => api.get<SimilarChunk[]>(`/knowledge/bases/${kbId}/chunks/${chunkId}/similar`),
+    queryFn: () =>
+      api.get<SimilarChunk[]>(
+        `/knowledge/bases/${encodeURIComponent(kbId)}/chunks/${encodeURIComponent(chunkId ?? "")}/similar`,
+      ),
     enabled: Boolean(kbId) && Boolean(chunkId),
   });
 
@@ -1263,7 +1274,8 @@ export function useCreateDepartment() {
 export function useDeleteDepartment() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.delete<{ outcome: string }>(`/departments/${id}`),
+    mutationFn: (id: string) =>
+      api.delete<{ outcome: string }>(`/departments/${encodeURIComponent(id)}`),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.departments });
       qc.invalidateQueries({ queryKey: keys.agents });
@@ -1276,7 +1288,8 @@ export function useDeleteDepartment() {
 export function useRestoreDepartment() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.post<Department>(`/departments/${id}/restore`),
+    mutationFn: (id: string) =>
+      api.post<Department>(`/departments/${encodeURIComponent(id)}/restore`),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.departments }),
   });
 }
@@ -1289,7 +1302,7 @@ export function useUpdateDepartment(id: string) {
       goal?: string;
       icon?: string;
       promptCachingEnabled?: boolean;
-    }) => api.patch<Department>(`/departments/${id}`, body),
+    }) => api.patch<Department>(`/departments/${encodeURIComponent(id)}`, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.departments }),
   });
 }
@@ -1593,7 +1606,8 @@ export function useAgentMemory(agentId: string) {
 export function useDeleteAgentMemory(agentId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (recordId: string) => api.delete<void>(`/agents/${agentId}/memory/${recordId}`),
+    mutationFn: (recordId: string) =>
+      api.delete<void>(`/agents/${agentId}/memory/${encodeURIComponent(recordId)}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["agents", agentId, "memory"] }),
   });
 }
@@ -1601,7 +1615,8 @@ export function useDeleteAgentMemory(agentId: string) {
 export function useDepartmentMemory(departmentId: string) {
   return useQuery({
     queryKey: ["departments", departmentId, "memory"],
-    queryFn: () => api.get<MemoryList>(`/departments/${departmentId}/memory`),
+    queryFn: () => api.get<MemoryList>(`/departments/${encodeURIComponent(departmentId)}/memory`),
+    enabled: !!departmentId,
   });
 }
 
@@ -1609,7 +1624,9 @@ export function useDeleteDepartmentMemory(departmentId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (recordId: string) =>
-      api.delete<void>(`/departments/${departmentId}/memory/${recordId}`),
+      api.delete<void>(
+        `/departments/${encodeURIComponent(departmentId)}/memory/${encodeURIComponent(recordId)}`,
+      ),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["departments", departmentId, "memory"] }),
   });
 }
@@ -2060,7 +2077,10 @@ export function useEmitEvent() {
       eventType: string;
       payload: Record<string, unknown>;
     }) =>
-      api.post<{ handoffs: string[] }>(`/departments/${departmentId}/emit`, { eventType, payload }),
+      api.post<{ handoffs: string[] }>(`/departments/${encodeURIComponent(departmentId)}/emit`, {
+        eventType,
+        payload,
+      }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["handoffs"] }),
   });
 }
@@ -2198,7 +2218,8 @@ export interface DepartmentContractsDTO {
 export function useDepartmentContracts(departmentId: string) {
   return useQuery({
     queryKey: ["department-contracts", departmentId],
-    queryFn: () => api.get<DepartmentContractsDTO>(`/departments/${departmentId}/contracts`),
+    queryFn: () =>
+      api.get<DepartmentContractsDTO>(`/departments/${encodeURIComponent(departmentId)}/contracts`),
     enabled: !!departmentId,
   });
 }
@@ -2207,7 +2228,10 @@ export function useSetDepartmentContracts(departmentId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: DepartmentContractsDTO) =>
-      api.put<DepartmentContractsDTO>(`/departments/${departmentId}/contracts`, body),
+      api.put<DepartmentContractsDTO>(
+        `/departments/${encodeURIComponent(departmentId)}/contracts`,
+        body,
+      ),
     onSuccess: (data) => {
       qc.setQueryData(["department-contracts", departmentId], data);
     },
@@ -3113,7 +3137,7 @@ export function useDepartmentKpis(departmentId: string, params?: KPIFilterParams
     queryKey: ["departments", departmentId, "kpis", params] as const,
     queryFn: () =>
       api.get<KPIData>(
-        `/departments/${departmentId}/kpis${buildQuery(params as Record<string, unknown>)}`,
+        `/departments/${encodeURIComponent(departmentId)}/kpis${buildQuery(params as Record<string, unknown>)}`,
       ),
     enabled: !!departmentId,
   });

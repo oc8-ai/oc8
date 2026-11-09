@@ -53,7 +53,7 @@ describe("Confirm-email route", () => {
     stubFetch({ status: 200, ok: true, json: async () => ({ id: "m1" }) });
     const fetchMock = vi.mocked(fetch);
 
-    await renderAt("/confirm-email?token=abc123");
+    await renderAt("/confirm-email?token=Gx3kP0tq_fM2-aN8vR5yZ1cW7eH4jL9uB6dS0oQiT2k");
 
     expect(await screen.findByText("Your email has been updated.")).toBeInTheDocument();
 
@@ -64,7 +64,9 @@ describe("Confirm-email route", () => {
     const [url, init] = confirmCall!;
     expect(String(url)).toContain("/auth/email/confirm");
     expect(init?.method).toBe("POST");
-    expect(JSON.parse(init?.body as string)).toEqual({ token: "abc123" });
+    expect(JSON.parse(init?.body as string)).toEqual({
+      token: "Gx3kP0tq_fM2-aN8vR5yZ1cW7eH4jL9uB6dS0oQiT2k",
+    });
     // No Authorization header: this endpoint is `unguarded` on the backend --
     // the mailed link is the credential, not a bearer session.
     expect((init?.headers as Record<string, string> | undefined)?.authorization).toBeUndefined();
@@ -88,9 +90,37 @@ describe("Confirm-email route", () => {
   it("shows the generic invalid-link message when the backend rejects the token, never a specific reason", async () => {
     stubFetch({ status: 400, ok: false, json: async () => ({ detail: "token expired" }) });
 
-    await renderAt("/confirm-email?token=stale-token");
+    await renderAt("/confirm-email?token=Stale0tq_fM2-aN8vR5yZ1cW7eH4jL9uB6dS0oQiT2k");
 
     expect(await screen.findByText("This link is invalid or has expired.")).toBeInTheDocument();
     expect(screen.queryByText(/token expired/i)).not.toBeInTheDocument();
+  });
+
+  it("takes the token out of the address bar once it has read it", async () => {
+    stubFetch({ status: 200, ok: true, json: async () => ({ id: "m1" }) });
+    await renderAt("/confirm-email?token=Nw3kP0tq_fM2-aN8vR5yZ1cW7eH4jL9uB6dS0oQiT2k");
+    expect(await screen.findByText("Your email has been updated.")).toBeInTheDocument();
+    expect(window.location.search).toBe("");
+    expect(window.location.href).not.toContain("Nw3kP0tq_fM2-aN8vR5yZ1cW7eH4jL9uB6dS0oQiT2k");
+  });
+
+  it("spends the token once, even when the page mounts twice", async () => {
+    stubFetch({ status: 200, ok: true, json: async () => ({ id: "m1" }) });
+    const fetchMock = vi.mocked(fetch);
+    await renderAt("/confirm-email?token=Tw1cE0tq_fM2-aN8vR5yZ1cW7eH4jL9uB6dS0oQiT2k");
+    expect(await screen.findByText("Your email has been updated.")).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.filter(([u]) => String(u).includes("/auth/email/confirm")),
+    ).toHaveLength(1);
+  });
+
+  it("never posts a malformed token", async () => {
+    stubFetch({ status: 200, ok: true, json: async () => ({ id: "m1" }) });
+    const fetchMock = vi.mocked(fetch);
+    await renderAt("/confirm-email?token=../../members%2Fx");
+    expect(await screen.findByText("This link is invalid or has expired.")).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([u]) => String(u).includes("/auth/email/confirm"))).toBe(
+      false,
+    );
   });
 });

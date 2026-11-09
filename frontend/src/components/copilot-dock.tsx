@@ -2,6 +2,7 @@ import { ChevronDown, Plus, Sparkles, WifiOff, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { cn } from "@/lib/utils";
+import { urlId } from "@/lib/ids";
 import { CopilotPersonaHeader } from "@/components/copilot-persona";
 import type { SigilItem } from "@/components/composer-sigils";
 import { Conversation } from "@/components/conversation";
@@ -183,10 +184,18 @@ function loadTabs(memberId: string): CopilotTab[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (t): t is CopilotTab =>
-        typeof t === "object" && t !== null && typeof (t as CopilotTab).uiId === "string",
-    );
+    // Stored ids go into API paths: a tab whose ids are not UUIDs keeps its
+    // place but starts a new chat with the assistant.
+    return parsed
+      .filter(
+        (t): t is CopilotTab =>
+          typeof t === "object" && t !== null && typeof (t as CopilotTab).uiId === "string",
+      )
+      .map((t) => ({
+        uiId: t.uiId,
+        sessionId: urlId(t.sessionId) ?? null,
+        agentId: urlId(t.agentId),
+      }));
   } catch {
     return [];
   }

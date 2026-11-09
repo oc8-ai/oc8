@@ -2,6 +2,7 @@
 // `Conversation` as the Copilot page and the dock (spec §2.1); draft text is
 // scoped to this component's own state rather than a shared tabs manager.
 import { useState } from "react";
+import { urlId } from "@/lib/ids";
 import { Plus, WifiOff } from "lucide-react";
 import { Conversation } from "@/components/conversation";
 import { PendingProposals } from "@/components/copilot-dock";
@@ -58,7 +59,8 @@ function ChatWidgetPanel({
   const assistantAgentId = assistant?.agentId;
   const { data: sessions } = useChatSessions(assistantAgentId);
   const liveConnectionStatus = useLiveConnectionStatus();
-  const sessionId = typeof config.sessionId === "string" ? config.sessionId : null;
+  // Stored with the dashboard and put into API paths: only a UUID is taken.
+  const sessionId = urlId(config.sessionId) ?? null;
 
   function setSessionId(id: string | null) {
     onConfigChange({ ...config, sessionId: id });

@@ -17,6 +17,7 @@ import { Panel } from "@/components/app-shell";
 import { DiscussWithCopilot } from "@/components/conversation/discuss-with-copilot";
 import { useKbDocuments, useKbChunks, useSimilarChunks } from "@/lib/hooks";
 import { ApiError } from "@/lib/api";
+import { urlId } from "@/lib/ids";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -33,7 +34,8 @@ export const Route = createFileRoute("/knowledge_/bases/$kbId/content")({
 // ("useRouter must be used inside a <RouterProvider>") without a full router
 // context that test intentionally doesn't set up.
 function KbContentRoute() {
-  const { kbId } = Route.useParams();
+  // Not a UUID: nothing is fetched or pinned, and the page says so.
+  const kbId = urlId(Route.useParams().kbId);
   const t = useT();
   return (
     <div className="space-y-6">
@@ -44,14 +46,30 @@ function KbContentRoute() {
         >
           <ArrowLeft className="h-4 w-4" /> {t("Back to knowledge", "Zurück zu Wissen")}
         </Link>
-        <DiscussWithCopilot
-          kind="knowledge_base"
-          id={kbId}
-          label={t("this knowledge base", "diese Wissensdatenbank")}
-        />
+        {kbId && (
+          <DiscussWithCopilot
+            kind="knowledge_base"
+            id={kbId}
+            label={t("this knowledge base", "diese Wissensdatenbank")}
+          />
+        )}
       </div>
-      <KbContentView kbId={kbId} />
+      {kbId ? <KbContentView kbId={kbId} /> : <KbNotFound />}
     </div>
+  );
+}
+
+function KbNotFound() {
+  const t = useT();
+  return (
+    <Panel className="p-8 text-center">
+      <p className="text-sm text-muted-foreground">
+        {t(
+          "This knowledge base doesn't exist, or the link is broken. Pick one from the knowledge page.",
+          "Diese Wissensdatenbank gibt es nicht, oder der Link ist kaputt. Wähl eine auf der Wissensseite.",
+        )}
+      </p>
+    </Panel>
   );
 }
 
