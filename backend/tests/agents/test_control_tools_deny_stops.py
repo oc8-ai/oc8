@@ -9,6 +9,7 @@ request raised, a run parked, a shell result handed back to the model.
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from typing import Any
 
@@ -18,8 +19,9 @@ from sqlalchemy import func, select
 from oc8 import models as m
 from oc8.agent.control_tools import execute_control_tool
 from oc8.agent.engine import _authorize
-from oc8.authz.pdp import Effect, ToolPolicy
+from oc8.authz.pdp import Decision, Effect, ToolPolicy
 from oc8.chat.modes import MODES, WRITING_CONTROL_TOOLS
+from oc8.copilot.models import CopilotProposal
 from oc8.modelrouter import ToolCall
 
 #: Arguments that pass each writing tool's own validation, so a refusal can only
@@ -53,6 +55,8 @@ _TRACE_TABLES = (
     m.AgentRun,
     m.Responsibility,
     m.MemoryRecord,
+    m.Trigger,
+    CopilotProposal,
 )
 
 
@@ -99,23 +103,114 @@ async def _traces(db: Any) -> dict[str, int]:
     return out
 
 
+_COPILOT_TOOLS = frozenset(
+    {
+        "responsibility_open",
+        "responsibility_update",
+        "responsibility_close",
+        "schedule_followup",
+        "cancel_followup",
+    }
+)
+_SOON = (dt.datetime.now(tz=dt.UTC) + dt.timedelta(days=30)).replace(hour=9).isoformat()
+
+
+async def _live(
+    db: Any, tenant: uuid.UUID, tool: str
+) -> tuple[m.Agent, m.Task, uuid.UUID, dict[str, Any]]:
+    """An agent, task, run and arguments under which `tool` really SUCCEEDS
+    when ALLOWed -- real rows for every id it names. Without that, a refusal
+    under /plan could come from a missing row instead of from the decision."""
+    if tool in _COPILOT_TOOLS:
+        from tests.copilot.test_tools import _call, _setup
+
+        cop, _seat, task, run = await _setup(db, tenant, door="web")
+        if tool == "responsibility_open":
+            return cop, task, run.id, {"title": "Offsite", "goal": "Keep it on track"}
+        await _call(db, tenant, cop, task, run, "responsibility_open", title="t", goal="g")
+        rid = str((await db.execute(select(m.Responsibility))).scalar_one().id)
+        followup = {
+            "responsibility_id": rid,
+            "kind": "once",
+            "run_at": _SOON,
+            "timezone": "Europe/Berlin",
+            "prompt": "p",
+        }
+        if tool == "schedule_followup":
+            return cop, task, run.id, followup
+        if tool == "cancel_followup":
+            saved = await _call(db, tenant, cop, task, run, "schedule_followup", **followup)
+            assert saved is not None and saved.rendered_component is not None
+            return cop, task, run.id, {"followup_id": saved.rendered_component["props"]["id"]}
+        if tool == "responsibility_update":
+            return cop, task, run.id, {"responsibility_id": rid, "next_step": "Call them"}
+        return cop, task, run.id, {"responsibility_id": rid, "state": "done", "reason": "x"}
+
+    from tests.agents.test_control_tools import (
+        _assistant_and_task,
+        _human_behind,
+        _pending_approval,
+    )
+
+    assistant, task = await _assistant_and_task(db, tenant)
+    await _human_behind(db, tenant, task, all_departments=True)
+    run = m.AgentRun(
+        tenant_id=tenant, agent_id=assistant.id, task_id=task.id, state="running", context={}
+    )
+    db.add(run)
+    await db.flush()
+    args = dict(_ARGS[tool])
+    if tool == "delegate_task":
+        mate = m.Agent(
+            tenant_id=tenant,
+            department_id=assistant.department_id,
+            name="Rico",
+            status="idle",
+            definition={},
+            presentation={},
+        )
+        db.add(mate)
+        await db.flush()
+        args["agent_id"] = str(mate.id)
+    elif tool == "decide_approval":
+        approval = await _pending_approval(db, tenant, department_id=task.department_id)
+        args["approval_id"] = str(approval.id)
+    elif tool == "propose_change":
+        args = {
+            "operation_type": "department.create",
+            "payload": {"name": "Support EU", "goal": "", "icon": "building"},
+        }
+    return assistant, task, run.id, args
+
+
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [None, "plan"], ids=["allowed", "plan"])
 @pytest.mark.parametrize("tool", sorted(WRITING_CONTROL_TOOLS))
-async def test_a_writing_control_tool_under_plan_does_nothing(app_session: Any, tool: str) -> None:
+async def test_a_writing_control_tool_under_plan_does_nothing(
+    app_session: Any, request: pytest.FixtureRequest, tool: str, mode: str | None
+) -> None:
+    """`allowed` proves the arguments are live: ALLOWed, the same call works.
+    `plan` is the point: the PEP's mode refusal comes back, and nothing in the
+    database moved."""
+    if tool == "write_output_file":
+        request.getfixturevalue("minio_url")  # a real attachment store
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
-        agent, task, run = await _seed(db, tenant)
-        tc = ToolCall(id="c1", name=tool, arguments=dict(_ARGS[tool]))
-        decision = _authorize(
-            agent,
-            tc,
-            frame={},
-            tool_policies={},
-            connection_key=None,
-            tool_scopes=None,
-            chat_mode=MODES["plan"],
-        )
-        assert decision.effect is Effect.DENY
+        agent, task, run_id, args = await _live(db, tenant, tool)
+        tc = ToolCall(id="c1", name=tool, arguments=args)
+        if mode is None:
+            decision = Decision(Effect.ALLOW)
+        else:
+            decision = _authorize(
+                agent,
+                tc,
+                frame={},
+                tool_policies={},
+                connection_key=None,
+                tool_scopes=None,
+                chat_mode=MODES[mode],
+            )
+            assert decision.effect is Effect.DENY
         before = await _traces(db)
         outcome = await execute_control_tool(
             db,
@@ -128,13 +223,17 @@ async def test_a_writing_control_tool_under_plan_does_nothing(app_session: Any, 
             active_skills=[],
             mcp_conn=None,
             originating_operator=None,
-            run_id=run.id,
+            run_id=run_id,
             local_result=dict(_LOCAL) if tool in {"run_shell", "run_program"} else None,
         )
         await db.flush()
         after = await _traces(db)
     assert outcome is not None
+    if mode is None:
+        assert not outcome.output.startswith("ERROR"), outcome.output
+        return
     assert outcome.output.startswith("ERROR"), outcome.output
+    assert "/plan" in outcome.output, outcome.output
     assert "exit_code" not in outcome.output
     assert outcome.suspend is None
     assert outcome.pending_run is None
