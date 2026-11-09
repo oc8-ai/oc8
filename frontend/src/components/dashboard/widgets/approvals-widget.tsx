@@ -690,16 +690,17 @@ export function ApprovalPane({
         </section>
         {approval.actionType === "copilot.agent_builder" && approval.proposalId && (
           <section>
-            <div className="mb-2 text-micro">
-              {t("What happens if you agree", "Was passiert, wenn du zustimmst")}
-            </div>
-            <AgentBuilderCard proposalId={approval.proposalId} readOnly />
+            <AgentBuilderCard
+              proposalId={approval.proposalId}
+              readOnly
+              heading={t("What happens if you agree", "Was passiert, wenn du zustimmst")}
+            />
           </section>
         )}
 
         {(approval.toolName || options.length > 0) && (
           <section>
-            <div className="mb-2 text-[10px] uppercase tracking-widest text-muted-foreground">
+            <div className="mb-2 text-micro">
               {t("What happens if you agree", "Was passiert, wenn du zustimmst")}
             </div>
 

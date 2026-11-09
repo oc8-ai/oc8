@@ -7,6 +7,7 @@ import { builderRefusalText } from "@/lib/agent-builder-api";
 
 const m = vi.hoisted(() => ({
   card: undefined as unknown,
+  error: false,
   apply: vi.fn(),
   request: vi.fn(),
   run: vi.fn(),
@@ -17,7 +18,7 @@ const m = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/agent-builder-api", async (orig) => ({
   ...(await orig<typeof import("@/lib/agent-builder-api")>()),
-  useAgentBuilder: () => ({ data: m.card, isLoading: false }),
+  useAgentBuilder: () => ({ data: m.card, isLoading: false, isError: m.error }),
   useApplyAgentBuilder: () => ({
     mutate: m.apply,
     isPending: m.applyPending,
@@ -75,6 +76,7 @@ beforeEach(() => {
   m.run.mockReset();
   m.navigate.mockReset();
   m.may = true;
+  m.error = false;
   m.applyError = null;
   m.applyPending = false;
 });
@@ -91,6 +93,22 @@ describe("AgentBuilderCard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create this agent" }));
     expect(m.apply).toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "Send for approval" })).not.toBeInTheDocument();
+  });
+
+  it.each([403, 404])("says the preview is unavailable when the read fails (%i)", () => {
+    m.card = undefined;
+    m.error = true;
+    const { container } = render(<AgentBuilderCard proposalId="p1" heading="What happens" />);
+    expect(screen.getByText("Preview unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("What happens")).not.toBeInTheDocument();
+    expect(screen.queryAllByRole("button")).toHaveLength(0);
+    expect(container.querySelector(".animate-pulse")).toBeNull();
+  });
+
+  it("shows its heading once the card is there", () => {
+    m.card = draft;
+    render(<AgentBuilderCard proposalId="p1" readOnly heading="What happens" />);
+    expect(screen.getByText("What happens")).toBeInTheDocument();
   });
 
   it("offers approval to a member who may not create", () => {

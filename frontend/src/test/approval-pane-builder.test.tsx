@@ -2,7 +2,15 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@/components/conversation/agent-builder-card", () => ({
-  AgentBuilderCard: ({ proposalId, readOnly }: { proposalId: string; readOnly?: boolean }) => (
+  AgentBuilderCard: ({
+    proposalId,
+    readOnly,
+    heading,
+  }: {
+    proposalId: string;
+    readOnly?: boolean;
+    heading?: string;
+  }) => (
     <div
       data-testid="builder-preview"
       data-proposal={proposalId}

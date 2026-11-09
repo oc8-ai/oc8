@@ -5,6 +5,8 @@ export interface PromptStarter {
   title: string;
   subtitle: string;
   prompt?: string;
+  /** Stable identity when titles can repeat; defaults to the title. */
+  key?: string;
 }
 
 export function PromptStarters({
@@ -19,7 +21,7 @@ export function PromptStarters({
     <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
       {starters.map((s) => (
         <button
-          key={s.title}
+          key={s.key ?? s.title}
           type="button"
           onClick={() => onPick(s.prompt ?? s.title)}
           className="min-h-11 rounded-lg border border-border bg-card p-3 text-left hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
