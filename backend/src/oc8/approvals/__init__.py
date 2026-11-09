@@ -13,6 +13,7 @@ from oc8.approvals.service import (
     UnknownDecision,
     UnknownOption,
     decide_approval,
+    expire_approval,
     raise_approval,
 )
 
@@ -28,6 +29,7 @@ __all__ = [
     "UnknownDecision",
     "UnknownOption",
     "decide_approval",
+    "expire_approval",
     "raise_approval",
     "record_url_for_connection",
 ]

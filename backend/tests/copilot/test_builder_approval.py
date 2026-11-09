@@ -40,14 +40,17 @@ NOW = dt.datetime.now(tz=dt.UTC)
 class _Recorder:
     def __init__(self) -> None:
         self.member_events: list[tuple[list[uuid.UUID], str, dict[str, Any]]] = []
+        self.events: list[tuple[str, dict[str, Any]]] = []
 
     async def publish_member_event(  # type: ignore[no-untyped-def]
         self, tenant_id, member_ids, type_, data, *, source
     ):
         self.member_events.append((list(member_ids), type_, data))
 
-    async def publish_event(self, *args: Any, **kwargs: Any) -> None:
-        return None
+    async def publish_event(  # type: ignore[no-untyped-def]
+        self, tenant_id, type_, data, *, source
+    ):
+        self.events.append((type_, data))
 
 
 async def _load[T](db: AsyncSession, model: type[T], row_id: uuid.UUID) -> T:
@@ -407,6 +410,35 @@ async def test_proposing_again_does_not_lock_a_request_awaiting_approval(
             with pytest.raises(BuilderInvalid) as caught:
                 await asyncio.wait_for(_propose(db, office), timeout=5)
             assert caught.value.code == "awaiting_approval"
+
+
+async def test_proposing_again_after_the_request_expired_closes_the_request(
+    app_session: AppSessionFactory,
+) -> None:
+    """A due request is expired by the next propose in that chat; its approval
+    must not stay pending in the queue for a proposal that can never apply."""
+    tenant = uuid.uuid4()
+    rec = _Recorder()
+    with (
+        patch("oc8.realtime.bus.get_event_bus", return_value=rec),
+        patch("oc8.realtime.emit.get_event_bus", return_value=rec),
+    ):
+        async with app_session(tenant) as db:
+            office = await builder_office(db, tenant)
+            proposal, approval = await _requested(db, office)
+            proposal.expires_at = NOW - dt.timedelta(minutes=1)
+            await db.flush()
+            fresh = await _propose(db, office)
+            assert fresh.status == "draft" and proposal.status == "expired"
+            assert approval.status == "expired" and approval.decided_at is not None
+            assert approval.decided_by is None, "nobody decided it"
+            assert not rec.events, "nothing is announced before the commit"
+        await asyncio.sleep(0.05)
+    assert ("approval.decided", {"approval_id": str(approval.id), "status": "expired"}) in (
+        rec.events
+    )
+    told = {e[2]["proposal_id"] for e in rec.member_events if e[1] == "copilot.agent_builder"}
+    assert str(proposal.id) in told
 
 
 async def test_a_rejection_keeps_its_reason(app_session: AppSessionFactory) -> None:

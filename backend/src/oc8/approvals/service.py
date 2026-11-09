@@ -30,7 +30,7 @@ from oc8.audit import append_event
 from oc8.authz.authority import granted_for_member
 from oc8.authz.permissions import AGENT, APPROVAL_DECIDE_ANY, BUDGET, MANAGE, perm
 from oc8.authz.scope import DecisionActor, HumanActor
-from oc8.realtime.emit import record_activity
+from oc8.realtime.emit import publish_after_commit, record_activity
 
 Verdict = Literal["approve", "reject"]
 
@@ -382,6 +382,52 @@ async def _close_out(db: AsyncSession, approval: m.ApprovalRequest) -> None:
         logger.warning(
             "could not withdraw approval %s from its channels", approval.id, exc_info=True
         )
+
+
+async def expire_approval(db: AsyncSession, approval: m.ApprovalRequest) -> None:
+    """Close a pending request nobody can decide any more, because what it asks
+    about has expired. Not a decision: nobody decided it and no effect runs, so
+    it bypasses `decide_approval` and sets `expired` (the status the table has
+    always allowed). The caller holds the row locked. The queue hears of it once
+    the transaction commits; a messenger withdraws the question now, exactly as
+    after a decision."""
+    if approval.status != "pending":
+        return
+    approval.status = "expired"
+    approval.decided_at = dt.datetime.now(tz=dt.UTC)
+    await db.flush()
+    await append_event(
+        db,
+        tenant_id=approval.tenant_id,
+        actor_type="agent",
+        actor_id=approval.agent_id,
+        category="approval",
+        action="approval.expire",
+        resource={
+            "approval_id": str(approval.id),
+            "agent_id": str(approval.agent_id),
+            "department_id": str(approval.department_id) if approval.department_id else None,
+            "action_type": approval.action_type,
+        },
+        decision="expired",
+    )
+    tenant_id, approval_id = approval.tenant_id, approval.id
+
+    async def _publish() -> None:
+        try:
+            from oc8.realtime.bus import get_event_bus
+
+            await get_event_bus().publish_event(
+                tenant_id,
+                "approval.decided",
+                {"approval_id": str(approval_id), "status": "expired"},
+                source=f"oc8/approval/{approval_id}",
+            )
+        except Exception:
+            logger.warning("could not announce expired approval %s", approval_id, exc_info=True)
+
+    publish_after_commit(db, _publish)
+    await _close_out(db, approval)
 
 
 async def _abandon_unresumable(db: AsyncSession, *, approval: m.ApprovalRequest) -> None:

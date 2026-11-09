@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agents.hire import create_hire_request
+from oc8.approvals import expire_approval
 from oc8.audit import append_event
 from oc8.auth import Principal
 from oc8.authz.authority import Authority
@@ -127,6 +128,35 @@ async def _lock_if_free(db: AsyncSession, proposal_id: uuid.UUID) -> CopilotProp
             .execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
+
+
+async def _pending_request_if_free(
+    db: AsyncSession, proposal: CopilotProposal
+) -> m.ApprovalRequest | None:
+    """The pending approval `proposal` waits on, locked -- None when there is
+    none. Raises `superseded_concurrently` when somebody holds it (a decision is
+    under way): like `_lock_if_free`, never a wait."""
+    try:
+        approval_id = uuid.UUID(str((proposal.result or {}).get("approvalId")))
+    except ValueError:
+        return None
+    in_tenant = (
+        m.ApprovalRequest.id == approval_id,
+        m.ApprovalRequest.tenant_id == proposal.tenant_id,
+    )
+    approval = (
+        await db.execute(
+            select(m.ApprovalRequest)
+            .where(*in_tenant)
+            .with_for_update(skip_locked=True)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if approval is None:
+        if await db.scalar(select(m.ApprovalRequest.id).where(*in_tenant)) is not None:
+            raise BuilderInvalid("superseded_concurrently")
+        return None
+    return approval if approval.status == "pending" else None
 
 
 async def _live_department(db: AsyncSession, department_id: uuid.UUID) -> m.Department | None:
@@ -331,13 +361,22 @@ async def create_builder_proposal(
         .scalars()
         .all()
     )
+    expired_requests: list[CopilotProposal] = []
     for row in waiting:
         if row.expires_at is None or row.expires_at > now:
             raise BuilderInvalid("awaiting_approval")
+        # The funnel's order: the approval, then the proposal -- neither waited on.
+        approval = await _pending_request_if_free(db, row)
         locked = await _lock_if_free(db, row.id)
         if locked is None:
             raise BuilderInvalid("superseded_concurrently")
-        if not expire_if_due(locked, now=now) and locked.status == "awaiting_approval":
+        if expire_if_due(locked, now=now):
+            if approval is not None:
+                # Its request closes with it: the queue must not keep offering a
+                # decision that can only ever be refused.
+                await expire_approval(db, approval)
+            expired_requests.append(locked)
+        elif locked.status == "awaiting_approval":
             raise BuilderInvalid("awaiting_approval")
     drafts = (
         (
@@ -414,8 +453,8 @@ async def create_builder_proposal(
             "member_id": str(member.id),
         },
     )
-    # The replaced cards collapse live, once this transaction commits.
-    for row in superseded_rows:
+    # The replaced and the expired cards collapse live, once this commits.
+    for row in [*superseded_rows, *expired_requests]:
         await announce_builder(db, row)
     return proposal
 
