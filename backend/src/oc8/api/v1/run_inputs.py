@@ -18,18 +18,16 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 
 from oc8 import models as m
-from oc8.agents.versioning import resolve_version
 from oc8.api.deps import DbSession, require_departmental
 from oc8.authz.authority import authority_for_principal
 from oc8.authz.permissions import AGENT, COPILOT_USE, VIEW, perm
 from oc8.authz.scope import HumanActor
-from oc8.runtime.registry import RuntimeResolutionError, resolve_runtime
 from oc8.runtime.run_inputs import (
     InputRefused,
     add_run_input,
     may_steer_run,
     request_stop,
-    runtime_accepts_inputs,
+    run_accepts_inputs,
 )
 from oc8.runtime.states import TERMINAL, RunState
 from oc8.schemas.dto import RunInputDTO, RunSteeringDTO
@@ -67,18 +65,7 @@ async def _steerable(
 
 
 async def _accepts(db: DbSession, run: m.AgentRun) -> bool:
-    """By the run's PINNED runtime, the one actually executing it."""
-    agent = await db.get(m.Agent, run.agent_id)
-    if agent is None:
-        return False
-    pinned = await resolve_version(db, run, agent)
-    try:
-        adapter = await resolve_runtime(
-            db, tenant_id=run.tenant_id, agent=agent, runtime_ref=pinned["runtime_ref"]
-        )
-    except RuntimeResolutionError:
-        return False
-    return runtime_accepts_inputs(adapter)
+    return await run_accepts_inputs(db, run)
 
 
 def _is_terminal(run: m.AgentRun) -> bool:

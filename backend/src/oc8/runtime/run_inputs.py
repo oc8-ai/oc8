@@ -90,8 +90,9 @@ async def may_steer_run(
         return False
     # One rule with Live and watch (Ruling 54): somebody's run is steered by
     # that person alone; only the agent's own autonomous run by its managers.
-    # A run that is somebody's without naming anyone who may act (a messenger
-    # chat turn) is steered by nobody.
+    # A messenger chat turn names its chat owner as `on_behalf_of` (Ruling
+    # 58), so it is hers like any other. A run that is somebody's without
+    # naming anyone (a messenger turn from before that) is steered by nobody.
     if is_own(person_behind(run.context), member.subject):
         return True
     if is_autonomous_run(run):
@@ -366,12 +367,40 @@ def runtime_accepts_inputs(adapter: object) -> bool:
     return bool(getattr(adapter, "accepts_inputs", True))
 
 
+async def run_accepts_inputs(db: AsyncSession, run: m.AgentRun) -> bool:
+    """`runtime_accepts_inputs` by the run's PINNED runtime, the one actually
+    executing it. False when that runtime cannot be resolved."""
+    # Deferred: the registry reaches the runtime adapters, which import the
+    # engine, which reaches this module.
+    from oc8.agents.versioning import resolve_version
+    from oc8.runtime.registry import RuntimeResolutionError, resolve_runtime
+
+    agent = await db.get(m.Agent, run.agent_id)
+    if agent is None:
+        return False
+    pinned = await resolve_version(db, run, agent)
+    try:
+        adapter = await resolve_runtime(
+            db, tenant_id=run.tenant_id, agent=agent, runtime_ref=pinned["runtime_ref"]
+        )
+    except RuntimeResolutionError:
+        return False
+    return runtime_accepts_inputs(adapter)
+
+
 async def request_stop(
-    db: AsyncSession, *, run: m.AgentRun, actor_member_id: uuid.UUID, principal: Principal
+    db: AsyncSession,
+    *,
+    run: m.AgentRun,
+    actor_member_id: uuid.UUID,
+    principal: Principal | None,
+    door: str = "chat",
 ) -> None:
     """The composer's Stop: the same run_cancellation row the admin cancel
     writes, so the executor stops the run at its next step boundary. The
-    caller has checked `may_steer_run` and refused a terminal run."""
+    caller has checked `may_steer_run` (or, on a messenger, that the run is
+    the sender's own) and refused a terminal run. `principal` is None on a
+    messenger, which carries no token; `door` names where the stop came from."""
     from oc8.runtime.cancellation import record_operator_cancel
 
     await record_operator_cancel(
@@ -379,5 +408,5 @@ async def request_stop(
         run=run,
         principal=principal,
         actor_id=actor_member_id,
-        resource_extra={"door": "chat"},
+        resource_extra={"door": door},
     )

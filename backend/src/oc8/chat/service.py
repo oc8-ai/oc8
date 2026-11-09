@@ -62,6 +62,7 @@ from oc8.realtime.emit import publish_chat_message_created
 from oc8.runtime.clarification import resolve_clarification
 from oc8.runtime.fencing import fence, one_line
 from oc8.runtime.intake import enqueue_run
+from oc8.runtime.person import ON_BEHALF_OF
 from oc8.runtime.states import TERMINAL, RunState
 from oc8.storage import s3
 
@@ -414,6 +415,7 @@ def _build_turn_context(
     chat_channel_external_id: str | None,
     role: Literal["user", "followup"],
     mode: ChatMode | None,
+    on_behalf_of: str | None = None,
     resolved_refs: list[dict[str, str]],
     extra_context: dict[str, object] | None,
     manifest: Manifest | None = None,
@@ -450,6 +452,11 @@ def _build_turn_context(
         ]
     if originating_operator is not None:
         context["originating_operator"] = originating_operator
+    elif on_behalf_of is not None:
+        # Whose turn it is when nobody acts (Ruling 58: a messenger turn is its
+        # chat owner's). Grants nothing (`oc8.runtime.person`); only steering,
+        # stopping and live watching ask for it.
+        context[ON_BEHALF_OF] = on_behalf_of
     if operator_role is not None:
         context["operator_role"] = operator_role
     if chat_channel is not None and chat_channel_external_id is not None:
@@ -509,6 +516,7 @@ async def send_message(
     operator_role: str | None = None,
     chat_channel: str | None = None,
     chat_channel_external_id: str | None = None,
+    on_behalf_of: str | None = None,
     role: Literal["user", "followup"] = "user",
     extra_context: dict[str, object] | None = None,
     followup: Mapping[str, str] | None = None,
@@ -523,6 +531,12 @@ async def send_message(
     `control_tools._acting_token_role`. None for a channel sender (Telegram,
     Teams, ...): that door carries no token, and its authority is the
     binding row.
+
+    `on_behalf_of` is whose turn it is when nobody acts for it: the messenger
+    door passes the chat owner's subject (Ruling 58), so the owner -- and only
+    the owner -- may steer and stop the run. It grants nothing: the secret
+    gate, the audit trail and every policy decision still see no operator.
+    Ignored when `originating_operator` is set.
 
     `attachment_ids` are `FileAttachment` rows uploaded via
     `POST /chat/sessions/{id}/attachments` while still owned by this
@@ -704,6 +718,7 @@ async def send_message(
         chat_channel_external_id=chat_channel_external_id,
         role=role,
         mode=mode,
+        on_behalf_of=on_behalf_of,
         resolved_refs=resolved_refs,
         extra_context=extra_context,
         manifest=manifest,

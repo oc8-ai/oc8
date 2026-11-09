@@ -457,13 +457,22 @@ async def bind_from_free_text(
             db, tenant_id=tenant_id, agent_id=assistant.id, member_id=member.id
         )
     )
+    if await _steer_running_turn(
+        db, impl, session=session, channel=channel, member=member, text=text
+    ):
+        return
     try:
         _msg, run = await send_message(
             db,
             session=session,
             tenant_id=tenant_id,
             message=text.text,
+            # Nobody acts for a messenger turn (its authority is the binding
+            # row), but it is the chat owner's turn (Ruling 58): stamped as
+            # `on_behalf_of`, which grants nothing, so the owner alone may
+            # steer and stop it -- here and in the web chat.
             originating_operator=None,
+            on_behalf_of=member.subject,
             chat_channel=channel,
             chat_channel_external_id=text.external_id,
         )
@@ -485,6 +494,90 @@ async def bind_from_free_text(
         await tell_sender(impl, text.external_id, _SECRET_REFUSAL)
         return
     await tell_sender_gated(impl, text.external_id, "Bin dran, melde mich gleich.")
+
+
+#: Sent when a message went to the sender's running answer (Ruling 52's
+#: "Geht an die laufende Antwort", on a messenger).
+_STEERED = "Hab ich – geht an die laufende Antwort."  # noqa: RUF001 -- German typography
+#: Sent when a stop word stopped the sender's running answer.
+_STOPPED = "Gestoppt."
+#: Sent when the running answer's runtime takes no messages: it can only be
+#: stopped, and a second run beside it would answer the same chat twice.
+_NOT_STEERABLE = (
+    "Die laufende Antwort nimmt keine Nachrichten an. Schreib „stop“, wenn du sie abbrechen willst."
+)
+
+#: Sent when the running answer already holds the most messages it may.
+_TOO_MANY_WAITING = (
+    "Es warten schon zu viele Nachrichten auf die laufende Antwort. Warte kurz oder schreib „stop“."
+)
+
+#: States a run is still writing its answer in. A run parked on a question
+#: (`waiting_for_input`) is not: the question door answers it, and anything
+#: else the sender writes starts a new turn as before.
+_STEERABLE_STATES = ("queued", "running", "waiting_for_approval")
+
+
+async def _steer_running_turn(
+    db: AsyncSession,
+    impl: Any,
+    *,
+    session: m.ChatSession,
+    channel: str,
+    member: m.OrgMember,
+    text: ChannelFreeText,
+) -> bool:
+    """Free text while the sender's previous turn is still being answered goes
+    to THAT run (Ruling 52, as in the web composer); a stop word stops it.
+
+    Only the sender's own run (Ruling 58: the same "whose run" rule as Live,
+    watch and the web's steer, `person_behind`) in the chat this message would
+    otherwise go to. Returns True when the message was consumed; False lets it
+    start a new turn (nothing is running, or the run is somebody else's)."""
+    from sqlalchemy import select
+
+    from oc8.runtime.person import is_own, person_behind
+    from oc8.runtime.run_inputs import (
+        InputRefused,
+        add_run_input,
+        request_stop,
+        run_accepts_inputs,
+    )
+
+    run = (
+        await db.execute(
+            select(m.AgentRun)
+            .where(
+                m.AgentRun.tenant_id == session.tenant_id,
+                m.AgentRun.source == "chat",
+                m.AgentRun.context["chat_session_id"].astext == str(session.id),
+                m.AgentRun.state.in_(_STEERABLE_STATES),
+            )
+            .order_by(m.AgentRun.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if run is None or not is_own(person_behind(run.context), member.subject):
+        return False
+    if text.text.strip().lower() in _ESCAPE_WORDS:
+        await request_stop(db, run=run, actor_member_id=member.id, principal=None, door=channel)
+        await db.commit()
+        await tell_sender_gated(impl, text.external_id, _STOPPED)
+        return True
+    if not await run_accepts_inputs(db, run):
+        await tell_sender_gated(impl, text.external_id, _NOT_STEERABLE)
+        return True
+    try:
+        await add_run_input(db, run=run, member=member, text=text.text)
+    except InputRefused as exc:
+        # Refused before anything was written. The secret gate's sentence is
+        # said as is, ungated, like the secret refusal of a new turn.
+        refusal = _TOO_MANY_WAITING if exc.status_code == 429 else exc.message
+        await tell_sender(impl, text.external_id, refusal)
+        return True
+    await db.commit()
+    await tell_sender_gated(impl, text.external_id, _STEERED)
+    return True
 
 
 #: Sent once a messenger reply has answered a parked question. German, like

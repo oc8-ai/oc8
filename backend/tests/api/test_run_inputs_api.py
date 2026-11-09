@@ -133,7 +133,7 @@ async def test_a_runtime_that_takes_no_messages_says_so(
     async def _echo(*_a: Any, **_kw: Any) -> EchoRuntimeStub:
         return EchoRuntimeStub()
 
-    monkeypatch.setattr("oc8.api.v1.run_inputs.resolve_runtime", _echo)
+    monkeypatch.setattr("oc8.runtime.registry.resolve_runtime", _echo)
     tenant = uuid.uuid4()
     run_id = await _run(app_session, tenant, operator="alice")
     app = create_app()
@@ -230,6 +230,31 @@ async def test_an_admin_cannot_steer_a_colleagues_messenger_chat_turn(
     app = create_app()
     async with LifespanManager(app), _client(app) as c:
         await _refused_everywhere(c, run_id, _h(tenant, "admin"))
+
+
+async def test_the_owner_steers_and_stops_her_messenger_turn_and_an_admin_cannot(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """Ruling 58: a messenger turn is its chat owner's run -- in the web chat
+    she gets Steer and Stop for it; an admin (another member) still gets
+    nothing."""
+    from tests.channels.test_messenger_steering import messenger_turn
+
+    tenant = uuid.uuid4()
+    run_id = await messenger_turn(app_session, tenant)
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        await _refused_everywhere(c, run_id, _h(tenant, "admin"))
+        owner = _h(tenant, "pat")
+        steering = await c.get(f"/api/v1/runs/{run_id}/steering", headers=owner)
+        assert steering.status_code == 200, steering.text
+        assert steering.json()["mayWrite"] is True
+        ok = await c.post(
+            f"/api/v1/runs/{run_id}/inputs", json={"text": "nur Berlin"}, headers=owner
+        )
+        assert ok.status_code == 201, ok.text
+        stop = await c.post(f"/api/v1/runs/{run_id}/stop", headers=owner)
+        assert stop.status_code == 202, stop.text
 
 
 async def test_a_manager_cannot_steer_a_run_on_somebody_elses_behalf(

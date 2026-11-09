@@ -26,7 +26,7 @@ async def record_operator_cancel(
     db: AsyncSession,
     *,
     run: m.AgentRun,
-    principal: Principal,
+    principal: Principal | None,
     actor_id: uuid.UUID | None,
     resource_extra: dict[str, Any] | None = None,
 ) -> None:
