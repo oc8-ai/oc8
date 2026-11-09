@@ -453,9 +453,10 @@ async def _open_mcp_session(
     cfg = mcp_conn.config if isinstance(mcp_conn.config, dict) else {}
     # With a run, the run decides whose account the bridge gets
     # (connections/access.py); a missing one raises ConnectionRequired, which
-    # the caller reports as this system being unavailable.
+    # the caller reports as this system being unavailable. The session serves
+    # every call of the run, so it is audited once, for all tools ("*").
     env = (
-        (await run_mcp_env(db, run=run, conn=mcp_conn)).env
+        (await run_mcp_env(db, run=run, conn=mcp_conn, tool="*")).env
         if run is not None
         else await resolve_mcp_env(db, tenant_id=tenant_id, cfg=cfg, connection_name=mcp_conn.name)
     )

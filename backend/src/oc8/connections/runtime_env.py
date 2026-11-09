@@ -25,17 +25,15 @@ from oc8.agent.mcp_env import (
 )
 from oc8.audit import append_event
 from oc8.authz.pdp import ToolPolicy
-from oc8.capas.discovery import find_plugin
-from oc8.capas.manifest import CredentialTypeSpec, ManifestError, parse_manifest
 from oc8.connections.access import (
     ConnectionRequired,
     ToolAccess,
     resolve_tool_access,
     single_organisation_credential,
 )
-from oc8.connections.credential_env import credential_mcp_env
+from oc8.connections.credential_env import credential_env_targets, credential_mcp_env
 from oc8.connections.integrations import integration_for_connection
-from oc8.credentials.registry import CredentialTypeNotFound, get_credential_type
+from oc8.credentials.registry import get_credential_type
 from oc8.oauth.errors import OAuthReauthRequired
 from oc8.runtime.run_context import merge_context
 
@@ -64,28 +62,6 @@ def _without_identity(cfg: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-async def _credential_type(
-    db: AsyncSession, tenant_id: Any, name: str, plugin: str
-) -> CredentialTypeSpec:
-    """The login's type: registered for the tenant, else declared by the
-    tool pack's own plugin (the same on-disk manifest the integration and
-    the bridge's command come from)."""
-    try:
-        return await get_credential_type(db, tenant_id=tenant_id, name=name)
-    except CredentialTypeNotFound:
-        found = find_plugin(plugin) if plugin else None
-        if found is None or not found.valid or found.manifest is None:
-            raise
-        try:
-            manifest = parse_manifest(found.manifest)
-        except ManifestError:
-            raise CredentialTypeNotFound(name) from None
-        for spec in manifest.credential_types:
-            if spec.name == name:
-                return spec
-        raise
-
-
 async def _effective(
     db: AsyncSession, cfg: dict[str, Any], access: ToolAccess, tenant_id: Any
 ) -> dict[str, Any]:
@@ -109,17 +85,38 @@ async def _effective(
             env[OAUTH_ACCOUNT_ENV] = access.oauth_connection.account_label
     else:
         assert access.credential is not None and access.integration is not None
-        cred_type = await _credential_type(
-            db, tenant_id, access.credential.credential_type, str(cfg.get("_plugin_name", ""))
+        cred_type = await get_credential_type(
+            db, tenant_id=tenant_id, name=access.credential.credential_type
         )
-        cred_env, cred_secret_env = credential_mcp_env(
-            access.credential, cred_type, access.integration.credential_env_fields
-        )
+        fields = access.integration.credential_env_fields
+        # The chosen login replaces the stored identity whole: a variable it
+        # leaves empty must not keep the department's value (never a mix of
+        # two logins in one bridge).
+        for target in credential_env_targets(cred_type, fields):
+            env.pop(target, None)
+            secret_env.pop(target, None)
+        cred_env, cred_secret_env = credential_mcp_env(access.credential, cred_type, fields)
         env.update(cred_env)
         secret_env.update(cred_secret_env)
     out["env"] = env
     out["secret_env"] = secret_env
     return out
+
+
+async def _clear_connection_required(
+    db: AsyncSession, run: m.AgentRun, integration: str, ctx: dict[str, Any] | None
+) -> None:
+    """This integration works now (the person reconnected): its call to
+    action is stale. Another integration's stays."""
+
+    def _is_ours(context: Any) -> bool:
+        cta = context.get("connection_required") if isinstance(context, dict) else None
+        return isinstance(cta, dict) and cta.get("integration") == integration
+
+    if _is_ours(run.context):
+        await merge_context(db, run, {"connection_required": None})
+    if ctx is not None and _is_ours(ctx):
+        ctx["connection_required"] = None
 
 
 def _connection_id(access: ToolAccess, cfg: dict[str, Any]) -> str | None:
@@ -191,6 +188,8 @@ async def run_mcp_env(
         if ctx is not None:
             ctx.update(patch)
         raise required from None
+    if not listing and access.integration is not None:
+        await _clear_connection_required(db, run, access.integration.name, ctx)
     if tool is not None:
         await append_event(
             db,

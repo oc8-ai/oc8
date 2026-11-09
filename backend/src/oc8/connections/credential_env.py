@@ -34,3 +34,14 @@ def credential_mcp_env(
                 for target in targets:
                     env[target] = str(value)
     return env, secret_env
+
+
+def credential_env_targets(
+    cred_type: CredentialTypeSpec, credential_env_fields: dict[str, str]
+) -> set[str]:
+    """Every env name a login of this type can set: the mapped ones and each
+    unmapped field's own key. A person's login replaces all of them, so no
+    value of another login (the department's) can survive next to it."""
+    mapped = set(credential_env_fields)
+    fields = set(credential_env_fields.values())
+    return mapped | {f.key for f in cred_type.fields if f.key not in fields}
