@@ -403,7 +403,8 @@ async def test_door_and_reserved_extra_context(
         )
         assert web is not None and web.context["door"] == "web"
         assert web.context["originating_operator"] == "lisa@example.com"
-        assert web.context["keep"] == 1
+        # An allow-list (Ruling 55): an unknown key is dropped too.
+        assert "keep" not in web.context
         web.state = "done"
         await db.flush()
         _msg, tg = await send_message(
@@ -421,12 +422,18 @@ async def test_door_and_reserved_extra_context(
 async def test_a_caller_cannot_inject_server_read_context_keys(
     app_session: AppSessionFactory, redis_url: str
 ) -> None:
-    """Keys the server reads back onto the reply or into behaviour are
-    reserved; `followup` reaches a run only through `send_message(followup=)`
-    on a follow-up turn."""
+    """`extra_context` is an allow-list (Ruling 55): keys the server reads
+    back onto the reply or into behaviour never get through it; `followup`
+    reaches a run only through `send_message(followup=)` on a follow-up
+    turn."""
     from oc8.chat.service import send_message
 
     injected: dict[str, object] = {
+        "task_images": [{"bucket_key": "other-tenant/x.png", "content_type": "image/png"}],
+        "chat_mode": "act",
+        "context_kb_ids": [str(uuid.uuid4())],
+        "delegation_depth": 0,
+        "contains_restricted": False,
         "parts": [{"type": "document_ref", "id": "x"}],
         "rendered_components": [{"component_key": "x", "props": {}}],
         "pending_questions": [{"id": "q"}],
@@ -463,7 +470,7 @@ async def test_a_caller_cannot_inject_server_read_context_keys(
         )
         assert fu is not None
         assert fu.context["followup"] == marker
-        for key in ("parts", "rendered_components", "pending_questions"):
+        for key in injected.keys() - {"followup"}:
             assert key not in fu.context
 
 

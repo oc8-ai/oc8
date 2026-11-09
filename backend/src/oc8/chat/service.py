@@ -26,7 +26,7 @@ import datetime as dt
 import logging
 import uuid
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -387,39 +387,13 @@ def _message_refs(manifest: Manifest) -> list[dict[str, str]]:
     ]
 
 
-#: Context keys a caller's `extra_context` may never set: who is acting, where
-#: the turn goes, which message it answers and which model it may run on.
-_RESERVED_CONTEXT_KEYS = frozenset(
-    {
-        "originating_operator",
-        "on_behalf_of",
-        "operator_role",
-        "door",
-        "chat_channel",
-        "chat_channel_external_id",
-        "chat_session_id",
-        "task",
-        "reply_to_message_id",
-        "model_override_id",
-        "suggestions",
-        # What the member pinned (`chat.context.manifest`): only ever built
-        # here, from refs resolved under the member's own rights.
-        "context_manifest",
-        "released_kb_ids",
-        # The session owner's live token role at send time, read back when
-        # the agent opens a pin later (control_tools._acting_viewer).
-        "acting_token_role",
-        # Read back onto the reply or into behaviour by the server itself:
-        # edition parts and rendered components land on the assistant message
-        # (`record_assistant_reply`), pending questions become an answerable
-        # card, and `followup` marks a quiet follow-up turn -- set only from
-        # `send_message(followup=...)`, after this filter.
-        "parts",
-        "rendered_components",
-        "pending_questions",
-        "followup",
-    }
-)
+#: The only keys a caller's `extra_context` may set (Ruling 55): an allow-list,
+#: so a key the server later trusts -- who is acting, where the turn goes,
+#: which model, what was pinned or released, `task_images`, `chat_mode`,
+#: `followup` -- can never arrive through it. Every caller was checked:
+#: `regenerate_reply` passes `regenerated`; follow-ups pass `followup=`
+#: (set after this filter), and the other doors pass nothing.
+_EXTRA_CONTEXT_KEYS: Final = frozenset({"regenerated"})
 
 
 def _build_turn_context(
@@ -487,10 +461,10 @@ def _build_turn_context(
         # Re-checked when the run resolves its version (chat.model_choice).
         context["model_override_id"] = str(session.model_override_id)
     if extra_context:
-        # Never lets a caller overwrite who is acting or where the turn goes.
-        context.update({k: v for k, v in extra_context.items() if k not in _RESERVED_CONTEXT_KEYS})
+        # Everything outside the allow-list is dropped, silently.
+        context.update({k: v for k, v in extra_context.items() if k in _EXTRA_CONTEXT_KEYS})
     if followup is not None and role == "followup":
-        # Set after `extra_context`, and reserved there: only the follow-up
+        # Set after `extra_context`, and never allowed there: only the follow-up
         # scheduler marks a turn as one (`copilot.followups.fire_followup`).
         context["followup"] = dict(followup)
     if mode is not None:
@@ -504,7 +478,7 @@ def _build_turn_context(
     if kb_ids:
         context["context_kb_ids"] = kb_ids
     if manifest is not None:
-        # Set after `extra_context`, and reserved there: a caller can never
+        # Set after `extra_context`, and never allowed there: a caller can never
         # hand a turn a manifest or a release of its own.
         context["context_manifest"] = manifest.entries
         if manifest.released_kb_ids:

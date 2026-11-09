@@ -572,3 +572,27 @@ async def test_a_hash_ref_without_knowledge_view_is_dropped(
     assert run is not None
     assert "context_kb_ids" not in run.context
     assert "Prices" not in run.context["task"]
+
+
+async def test_extra_context_is_an_allow_list(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """Ruling 55: only the keys a real caller passes (`regenerated`) get
+    through `extra_context`; everything else is dropped."""
+    from oc8.chat.service import _EXTRA_CONTEXT_KEYS
+
+    assert _EXTRA_CONTEXT_KEYS == {"regenerated"}
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        _agent, _member, session = await _chat(db, tenant)
+        _msg, run = await send_message(
+            db,
+            session=session,
+            tenant_id=tenant,
+            message="hi",
+            originating_operator="admin",
+            extra_context={"regenerated": True, "task_images": [], "anything": 1},
+        )
+    assert run is not None
+    assert run.context["regenerated"] is True
+    assert "task_images" not in run.context and "anything" not in run.context
