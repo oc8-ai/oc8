@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.audit.chain import append_event
 from oc8.authz.authority import Authority
-from oc8.authz.permissions import AGENT, MANAGE, perm
+from oc8.authz.permissions import AGENT, MANAGE, RUN_CONTROL, perm
 from oc8.authz.scope import DepartmentScope
 from oc8.chat.reach import reachable_chat_agent
 from oc8.copilot.redaction import is_secret_request
@@ -108,7 +108,16 @@ async def may_steer_run(
     if whose.is_own(member.subject):
         return True
     if whose.autonomous:
-        return await may_manage_agent(db, agent=agent, authority=authority, scope=scope)
+        # Steering, stopping or continuing the agent's own run controls a run
+        # that is not hers: the run doors' rule too (`run:control` in run
+        # reach), on top of managing the agent.
+        from oc8.chat.reach import reaches_agent_runs
+
+        return await may_manage_agent(
+            db, agent=agent, authority=authority, scope=scope
+        ) and await reaches_agent_runs(
+            db, authority=authority, scope=scope, agent=agent, permission=RUN_CONTROL
+        )
     return False
 
 

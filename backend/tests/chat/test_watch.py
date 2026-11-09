@@ -179,11 +179,12 @@ async def _seated(
     return member
 
 
-async def test_a_member_who_sees_the_agent_may_watch_its_scheduled_runs(
+async def test_a_member_who_reaches_the_agents_runs_may_watch_its_scheduled_runs(
     app_session: AppSessionFactory,
 ) -> None:
-    """The Live timeline shows autonomous runs to everyone who reaches the
-    agent, so their live events follow."""
+    """The Live timeline shows autonomous runs to whoever reaches the agent
+    AND its runs (`run:view`, run reach), so their live events follow. A seat
+    alone reaches the agent, not its runs."""
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent = await _dept_agent(db, tenant)
@@ -194,7 +195,10 @@ async def test_a_member_who_sees_the_agent_may_watch_its_scheduled_runs(
         await db.flush()
         # No role, no seat: sees no department, so no scheduled run either.
         assert not await may_watch_run(db, member=stranger, run_id=run.id)
-        assert await may_watch_run(db, member=viewer, run_id=run.id)
+        # A seat reaches the agent, but a plain member holds no `run:view`.
+        assert not await may_watch_run(db, member=viewer, run_id=run.id, token_role="member")
+        # An operator reads every agent's runs.
+        assert await may_watch_run(db, member=viewer, run_id=run.id, token_role="operator")
 
 
 async def test_a_colleagues_run_is_never_watched_live_not_even_by_a_manager(

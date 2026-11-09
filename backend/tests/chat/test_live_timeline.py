@@ -117,10 +117,24 @@ async def test_timeline_merges_turns_and_autonomous_runs_never_others_chat_text(
         _, bob_run = await _bob_chat(db, tenant, agent, bob)
 
         plain = await live_timeline(
-            db, member=alice, agent=agent, session=live, before=None, limit=50, all_runs=False
+            db,
+            member=alice,
+            agent=agent,
+            session=live,
+            before=None,
+            limit=50,
+            all_runs=False,
+            reaches_runs=True,
         )
         everything = await live_timeline(
-            db, member=alice, agent=agent, session=live, before=None, limit=50, all_runs=True
+            db,
+            member=alice,
+            agent=agent,
+            session=live,
+            before=None,
+            limit=50,
+            all_runs=True,
+            reaches_runs=True,
         )
 
     assert [i.kind for i in plain] == ["message", "run"]
@@ -158,10 +172,24 @@ async def test_a_sub_run_delegated_from_another_members_chat_counts_as_that_memb
         await db.flush()
 
         plain = await live_timeline(
-            db, member=alice, agent=agent, session=live, before=None, limit=50, all_runs=False
+            db,
+            member=alice,
+            agent=agent,
+            session=live,
+            before=None,
+            limit=50,
+            all_runs=False,
+            reaches_runs=True,
         )
         everything = await live_timeline(
-            db, member=alice, agent=agent, session=live, before=None, limit=50, all_runs=True
+            db,
+            member=alice,
+            agent=agent,
+            session=live,
+            before=None,
+            limit=50,
+            all_runs=True,
+            reaches_runs=True,
         )
 
     assert _run_ids(plain) == {autonomous.id}
@@ -205,6 +233,7 @@ async def test_the_members_own_chat_runs_are_never_run_items(
                 before=None,
                 limit=50,
                 all_runs=all_runs,
+                reaches_runs=True,
             )
             assert _run_ids(items) == set()
 
@@ -224,7 +253,14 @@ async def test_runs_of_other_agents_are_not_on_this_timeline(
             db, tenant_id=tenant, member_id=alice.id, agent_id=agent.id
         )
         items = await live_timeline(
-            db, member=alice, agent=agent, session=live, before=None, limit=50, all_runs=True
+            db,
+            member=alice,
+            agent=agent,
+            session=live,
+            before=None,
+            limit=50,
+            all_runs=True,
+            reaches_runs=True,
         )
     assert items == []
 
@@ -256,6 +292,7 @@ async def test_before_and_limit_page_backwards(app_session: AppSessionFactory) -
             before=base + dt.timedelta(minutes=4),
             limit=2,
             all_runs=False,
+            reaches_runs=True,
         )
     assert [i.message.content for i in page if i.message] == ["m2", "m3"]
 
@@ -297,6 +334,7 @@ async def test_paging_is_stable_when_items_share_a_timestamp(
                 before_id=before_id,
                 limit=3,
                 all_runs=False,
+                reaches_runs=True,
             )
             if not page:
                 break
@@ -366,10 +404,24 @@ async def test_a_run_a_colleague_started_by_hand_is_not_autonomous(
         db.add_all([bobs, nobodys, hers, carried])
         await db.flush()
         plain = await live_timeline(
-            db, member=alice, agent=agent, session=live, before=None, limit=50, all_runs=False
+            db,
+            member=alice,
+            agent=agent,
+            session=live,
+            before=None,
+            limit=50,
+            all_runs=False,
+            reaches_runs=True,
         )
         everything = await live_timeline(
-            db, member=alice, agent=agent, session=live, before=None, limit=50, all_runs=True
+            db,
+            member=alice,
+            agent=agent,
+            session=live,
+            before=None,
+            limit=50,
+            all_runs=True,
+            reaches_runs=True,
         )
     assert _run_ids(plain) == {hers.id}
     assert _run_ids(everything) == {hers.id, bobs.id, nobodys.id, carried.id}
@@ -463,6 +515,7 @@ async def test_python_and_sql_agree_on_who_is_behind_a_run(
                 before=None,
                 limit=100,
                 all_runs=False,
+                reaches_runs=True,
             )
         )
         for run in runs:
@@ -481,7 +534,14 @@ async def test_a_run_on_her_behalf_is_hers(app_session: AppSessionFactory) -> No
         db.add_all([hers, bobs])
         await db.flush()
         plain = await live_timeline(
-            db, member=alice, agent=agent, session=live, before=None, limit=50, all_runs=False
+            db,
+            member=alice,
+            agent=agent,
+            session=live,
+            before=None,
+            limit=50,
+            all_runs=False,
+            reaches_runs=True,
         )
         assert _run_ids(plain) == {hers.id}
         assert not await is_colleague_run(db, hers, alice)
@@ -542,10 +602,24 @@ async def test_the_several_people_marker_is_never_a_member(
             db, tenant_id=tenant, member_id=mallory.id, agent_id=agent.id
         )
         plain = await live_timeline(
-            db, member=mallory, agent=agent, session=live, before=None, limit=50, all_runs=False
+            db,
+            member=mallory,
+            agent=agent,
+            session=live,
+            before=None,
+            limit=50,
+            all_runs=False,
+            reaches_runs=True,
         )
         everything = await live_timeline(
-            db, member=mallory, agent=agent, session=live, before=None, limit=50, all_runs=True
+            db,
+            member=mallory,
+            agent=agent,
+            session=live,
+            before=None,
+            limit=50,
+            all_runs=True,
+            reaches_runs=True,
         )
         assert await is_colleague_run(db, mixed, mallory)
         assert _run_ids(plain) == set()
@@ -570,7 +644,7 @@ async def test_the_live_timeline_walks_the_agent_created_index_and_drops_chat_ru
     async with app_session(tenant) as db:
         agent, _alice, bob = await _world(db, tenant)
         stmt = (
-            timeline_runs(agent=agent, member=bob, all_runs=False)
+            timeline_runs(agent=agent, member=bob, all_runs=False, reaches_runs=True)
             .order_by(m.AgentRun.created_at.desc(), m.AgentRun.id.desc())
             .limit(51)
         )

@@ -107,7 +107,14 @@ async def _on_alices_timeline(
         db, tenant_id=tenant, member_id=alice.id, agent_id=agent.id
     )
     items = await live_timeline(
-        db, member=alice, agent=agent, session=live, before=None, limit=50, all_runs=False
+        db,
+        member=alice,
+        agent=agent,
+        session=live,
+        before=None,
+        limit=50,
+        all_runs=False,
+        reaches_runs=True,
     )
     return {i.run.id for i in items if i.run is not None}
 

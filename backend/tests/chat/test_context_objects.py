@@ -38,6 +38,7 @@ class World:
     emp: Viewer
     sam: Viewer
     boss: Viewer
+    ops: Viewer
 
 
 async def _member(
@@ -94,6 +95,8 @@ async def _world(db: AsyncSession, tenant: uuid.UUID) -> World:
         sam=await _member(db, tenant, "sam", token_role="member", seat_in=sales),
         # A viewer seat in Sales that may manage its agents.
         boss=await _member(db, tenant, "boss", token_role="member", seat_in=sales, manages=True),
+        # An operator (every agent's runs in reach) who may manage Sales' agents.
+        ops=await _member(db, tenant, "ops", token_role="operator", seat_in=sales, manages=True),
     )
 
 
@@ -272,31 +275,33 @@ async def test_run_refs_follow_the_live_tab_rule(app_session: AppSessionFactory)
             str(uuid.uuid4()),
         ]
 
-        # Sam reaches Sales' agent: her own runs, its autonomous runs and the
-        # runs of her own chats -- never a colleague's, and nothing of Legal's.
-        assert await _ids(db, w.sam, "run", *asked) == [
-            str(own.id),
-            str(autonomous.id),
-            str(in_own_chat.id),
-        ]
+        # Sam reaches Sales' agent but not its runs (a seat holds no
+        # `run:view`): her own runs and the runs of her own chats -- never the
+        # agent's autonomous runs, a colleague's, or anything of Legal's.
+        assert await _ids(db, w.sam, "run", *asked) == [str(own.id), str(in_own_chat.id)]
         # Reaching nothing but the Assistant, the copilot-only member gets none.
         assert await _ids(db, w.emp, "run", *asked) == []
-        # The right to manage the agent adds every colleague's run ("All runs"):
-        # for Boss, Sam's runs are colleagues' runs too.
-        assert await _ids(db, w.boss, "run", *asked) == [
+        # Managing the agent without run reach adds nothing ("All runs" is a
+        # run read): Boss has no run of his own here.
+        assert await _ids(db, w.boss, "run", *asked) == []
+        # Run reach and the right to manage the agent: its autonomous runs and
+        # every colleague's run -- for Ops, Sam's runs are colleagues' too --
+        # plus Legal's autonomous run, since an operator reads every agent's runs.
+        assert await _ids(db, w.ops, "run", *asked) == [
             str(own.id),
             str(autonomous.id),
             str(in_own_chat.id),
             str(colleagues.id),
+            str(elsewhere.id),
         ]
-        assert "secret plan" not in await _summary(db, w.boss, "run", str(own.id))
+        assert "secret plan" not in await _summary(db, w.ops, "run", str(own.id))
 
         full = await _summary(db, w.sam, "run", str(own.id))
         assert "Offer sent" in full
         # Not even her own run's task: no more than the Live tab shows.
         assert "secret plan" not in full
         assert "hidden question" not in full and "ceo@acme" not in full
-        assert "Offer sent" in await _summary(db, w.sam, "run", str(autonomous.id))
+        assert "Offer sent" in await _summary(db, w.ops, "run", str(autonomous.id))
         resolved = await resolve_ref(db, viewer=w.sam, kind="run", ref_id=str(own.id))
         assert resolved is not None
         assert resolved[0].deep_link == f"/activity?run={own.id}"
@@ -311,7 +316,7 @@ async def test_a_colleagues_run_is_redacted(app_session: AppSessionFactory) -> N
         colleagues = _run(tenant, w.seller, source="chat", originating_operator="alice")
         db.add(colleagues)
         await db.flush()
-        for viewer in (w.boss, w.admin):
+        for viewer in (w.ops, w.admin):
             text = await _summary(db, viewer, "run", str(colleagues.id))
             assert "send_email" in text and "done" in text
             for leaked in ("secret plan", "Offer sent", "ceo@acme", "991", "alice", "hidden"):
