@@ -72,6 +72,25 @@ async def test_a_new_proposal_supersedes_the_open_one(app_session: AppSessionFac
         assert second.expires_at == NOW + dt.timedelta(days=7)
 
 
+async def test_superseding_announces_the_replaced_proposal_after_commit(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from unittest.mock import AsyncMock
+
+    published = AsyncMock()
+    monkeypatch.setattr("oc8.realtime.emit.publish_builder_changed", published)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await builder_office(db, tenant)
+        first = await _propose(db, office, invoice_checker_ops(office))
+        second = await _propose(db, office, invoice_checker_ops(office, name="Rechnungsprüferin"))
+        published.assert_not_called()  # nothing before the commit
+        first_id, second_id = first.id, second.id
+    await asyncio.sleep(0.05)
+    ids = {c.kwargs["proposal_id"] for c in published.await_args_list}
+    assert first_id in ids and second_id not in ids
+
+
 async def test_a_proposal_awaiting_approval_is_not_superseded(
     app_session: AppSessionFactory,
 ) -> None:

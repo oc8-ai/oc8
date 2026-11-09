@@ -330,12 +330,14 @@ async def create_builder_proposal(
         .all()
     )
     superseded: list[str] = []
+    superseded_rows: list[CopilotProposal] = []
     for row in drafts:
         if expire_if_due(row, now=now):
             continue
         row.status = "superseded"
         row.revision += 1
         superseded.append(str(row.id))
+        superseded_rows.append(row)
     await db.flush()
     proposal = CopilotProposal(
         tenant_id=tenant_id,
@@ -381,6 +383,9 @@ async def create_builder_proposal(
             "member_id": str(member.id),
         },
     )
+    # The replaced cards collapse live, once this transaction commits.
+    for row in superseded_rows:
+        await announce_builder(db, row)
     return proposal
 
 
