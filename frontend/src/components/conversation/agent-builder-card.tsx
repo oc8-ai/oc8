@@ -5,7 +5,7 @@
 // read-only.
 import { useNavigate, Link } from "@tanstack/react-router";
 import { Bot } from "lucide-react";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -93,6 +93,7 @@ export function AgentBuilderCard({
   const apply = useApplyAgentBuilder(proposalId);
   const request = useRequestAgentBuilder(proposalId);
   const runAgent = useRunAgent();
+  const [testFailed, setTestFailed] = useState(false);
 
   // Not found, or not this member's to see: a note, never a skeleton that
   // never resolves.
@@ -198,35 +199,50 @@ export function AgentBuilderCard({
           </p>
         )}
         {card.status === "applied" && card.agent && (
-          <div className="flex flex-wrap items-center gap-2">
-            <Link
-              to="/agents/$id"
-              params={{ id: card.agent.id }}
-              className="text-sm text-primary underline-offset-2 hover:underline"
-            >
-              {t(`Created: ${card.agent.name}`, `Angelegt: ${card.agent.name}`)}
-            </Link>
-            {actionsAllowed && may("run:start") && card.agent.status !== "pending_approval" && (
-              <Button
-                variant="outline"
-                disabled={runAgent.isPending}
-                onClick={() => {
-                  const agentId = card.agent!.id;
-                  runAgent.mutate(
-                    { agentId, task: testTask },
-                    {
-                      onSuccess: () =>
-                        void navigate({
-                          to: "/agents/$id",
-                          params: { id: agentId },
-                          search: { tab: "live" },
-                        }),
-                    },
-                  );
-                }}
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <Link
+                to="/agents/$id"
+                params={{ id: card.agent.id }}
+                className="text-sm text-primary underline-offset-2 hover:underline"
               >
-                {t("Test now", "Jetzt testen")}
-              </Button>
+                {t(`Created: ${card.agent.name}`, `Angelegt: ${card.agent.name}`)}
+              </Link>
+              {actionsAllowed && may("run:start") && card.agent.status !== "pending_approval" && (
+                <Button
+                  variant="outline"
+                  disabled={runAgent.isPending}
+                  onClick={() => {
+                    const agentId = card.agent!.id;
+                    setTestFailed(false);
+                    runAgent.mutate(
+                      { agentId, task: testTask },
+                      {
+                        onSuccess: () =>
+                          void navigate({
+                            to: "/agents/$id",
+                            params: { id: agentId },
+                            search: { tab: "live" },
+                          }),
+                        onError: () => setTestFailed(true),
+                      },
+                    );
+                  }}
+                >
+                  {t("Test now", "Jetzt testen")}
+                </Button>
+              )}
+            </div>
+            {/* The tenant's hire gate holds it until somebody approves the hire. */}
+            {card.agent.status === "pending_approval" && (
+              <p className="text-xs text-muted-foreground">
+                {t("Waiting for hiring approval", "Wartet auf Einstellungsfreigabe")}
+              </p>
+            )}
+            {testFailed && (
+              <p role="alert" className="text-xs text-status-error">
+                {t("Could not start the test", "Konnte den Test nicht starten")}
+              </p>
             )}
           </div>
         )}

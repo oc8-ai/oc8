@@ -143,6 +143,38 @@ describe("AgentBuilderCard", () => {
     );
   });
 
+  it("says the created agent waits for hiring approval", () => {
+    m.card = {
+      ...draft,
+      status: "applied",
+      mayCreate: false,
+      mayRequest: false,
+      agent: { id: "ag1", name: "Rechnungsprüfer", status: "pending_approval" },
+    };
+    render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByText("Created: Rechnungsprüfer")).toBeInTheDocument();
+    expect(screen.getByText("Waiting for hiring approval")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Test now" })).not.toBeInTheDocument();
+  });
+
+  it("says so when the test run could not start", () => {
+    m.run.mockImplementation((_vars: unknown, opts: { onError?: (e: Error) => void }) =>
+      opts.onError?.(new ApiError("boom", 500)),
+    );
+    m.card = {
+      ...draft,
+      status: "applied",
+      mayCreate: false,
+      mayRequest: false,
+      agent: { id: "ag1", name: "Rechnungsprüfer", status: "stopped" },
+    };
+    render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Test now" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not start the test");
+    expect(m.navigate).not.toHaveBeenCalled();
+  });
+
   it("hides the test run without run:start", () => {
     m.may = false;
     m.card = {
