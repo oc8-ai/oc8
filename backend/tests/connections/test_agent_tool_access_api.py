@@ -451,3 +451,37 @@ async def test_the_listing_does_not_flag_defaults_user_mode_or_an_administrators
         assert (await _listed(c, agent, admin))["needsConfirmation"] is False
         await c.put(url, json={"mode": "fixed", "oauthConnectionId": str(annas)}, headers=admin)
         assert (await _listed(c, agent, admin))["needsConfirmation"] is False
+
+
+async def test_the_default_shown_is_the_departments_app_only_setup_when_it_has_one(
+    app_session: AppSessionFactory,
+) -> None:
+    """The runtime keeps a department's app-only setup as the default (it can
+    reach every mailbox the app may): the screen must not say "the user's
+    context" then."""
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    app_only = await oauth_row(
+        app_session, tenant, owner=None, label="Acme app", grant_type="client_credentials"
+    )
+    async with api() as c:
+        await install(c, headers(tenant, "root@acme.test", "org_admin"), "microsoft365")
+        async with app_session(tenant) as db:
+            conn = (
+                await db.execute(
+                    select(m.McpConnection).where(m.McpConnection.name == "microsoft365")
+                )
+            ).scalar_one()
+            conn.department_id = agent.department_id
+            conn.config = {**conn.config, "oauth_connection_id": str(app_only)}
+        rows = (
+            await c.get(
+                f"/api/v1/agents/{agent.id}/tool-access",
+                headers=headers(tenant, "root@acme.test", "org_admin"),
+            )
+        ).json()
+    by_key = {row["toolKey"]: row for row in rows}
+    assert (by_key["microsoft365"]["mode"], by_key["microsoft365"]["defaultMode"]) == (
+        "default",
+        "organisation",
+    )

@@ -19,7 +19,12 @@ from oc8.api.deps import DbSession, authorize_agent_write, require_agent_write
 from oc8.api.v1.connections import may_manage_integrations
 from oc8.audit import append_event
 from oc8.authz.scope import HumanActor
-from oc8.connections.access import binding_fingerprint, department_targets, unconfirmed_reason
+from oc8.connections.access import (
+    binding_fingerprint,
+    department_setup,
+    department_targets,
+    unconfirmed_reason,
+)
 from oc8.connections.integrations import Integration, installed_integrations
 from oc8.schemas.dto import AccessOptionDTO, AgentToolAccessDTO
 from oc8.schemas.requests import SetAgentToolAccessRequest
@@ -63,6 +68,23 @@ async def _names(db: AsyncSession, ids: set[uuid.UUID | None]) -> dict[uuid.UUID
     return {r.id: r.display_name for r in rows}
 
 
+async def _default_mode(db: AsyncSession, agent: m.Agent, integ: Integration) -> str:
+    """What the runtime uses without an access row (access._default): the
+    department's own setup -- for an OAuth integration an app-only access
+    reaching the organisation's accounts -- else the user's context."""
+    if integ.kind != "oauth":
+        return "organisation"
+    conns = (
+        await db.execute(
+            select(m.McpConnection).where(
+                m.McpConnection.name == integ.tool_key,
+                m.McpConnection.department_id == agent.department_id,
+            )
+        )
+    ).scalars()
+    return "organisation" if any(department_setup(c, agent, integ) for c in conns) else "user"
+
+
 async def _dto(
     db: AsyncSession, agent: m.Agent, integ: Integration, row: m.AgentToolAccess | None
 ) -> AgentToolAccessDTO:
@@ -72,7 +94,7 @@ async def _dto(
         label=integ.label,
         kind=integ.kind,
         mode="default" if row is None else row.mode,
-        default_mode="user" if integ.kind == "oauth" else "organisation",
+        default_mode=await _default_mode(db, agent, integ),
     )
     if row is None or row.mode != "fixed":
         return base
