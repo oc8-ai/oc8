@@ -108,7 +108,8 @@ export function AssistantTurn({
   const openObject = useObjectNavigation();
   const sources = sourcesOf(message);
   // An edition that draws `sources` itself replaces the core list.
-  const editionSources = useChatSlot("messageParts").some((r) => r.type === "sources");
+  const partRenderers = useChatSlot("messageParts");
+  const editionSources = partRenderers.some((r) => r.type === "sources");
   const components = message ? message.renderedComponents : (run?.components ?? []);
 
   function copy() {
@@ -153,7 +154,7 @@ export function AssistantTurn({
       )}
       <RunComponents components={components} />
       {cards}
-      {message && <MessageParts message={message} />}
+      {message && <MessageParts message={message} renderers={partRenderers} />}
       {!editionSources && <Sources sources={sources} highlighted={highlighted} />}
       {footer}
       {!live && (message || total > 1) && (

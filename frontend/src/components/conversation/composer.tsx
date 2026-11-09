@@ -566,7 +566,7 @@ export function Composer(props: ComposerProps) {
           {props.trailing}
           {!readOnly &&
             composerActions.map(({ id, component: Action }) => (
-              <SlotBoundary key={id} id={id}>
+              <SlotBoundary key={id} id={id} resetKey={props.sessionId}>
                 <Action {...slotProps} />
               </SlotBoundary>
             ))}

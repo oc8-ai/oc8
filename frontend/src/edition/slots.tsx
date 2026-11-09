@@ -2,7 +2,7 @@ import { Component, createContext, useContext, useState, type ReactNode } from "
 
 import type { ChatMessageDTO } from "@/lib/hooks-chat";
 
-import { useChatSlot, useFrontendEdition } from "./composition";
+import { useChatSlot, useFrontendEdition, type ComposedChat } from "./composition";
 import type { EditionSidebarSlotProps } from "./contracts";
 
 /** Part types core renders itself; an extension never gets them. */
@@ -11,10 +11,16 @@ const CORE_PART_TYPES = new Set(["answers", "suggestions"]);
 /** A contributed component that throws renders nothing (or `fallback`) and must not
  *  take the chat down with it. */
 export class SlotBoundary extends Component<
-  { id: string; children: ReactNode; fallback?: ReactNode },
+  { id: string; children: ReactNode; fallback?: ReactNode; resetKey?: string | null },
   { failed: boolean }
 > {
   state = { failed: false };
+
+  componentDidUpdate(prev: { resetKey?: string | null }) {
+    // A failure belongs to the chat it happened in: another chat tries again.
+    if (this.state.failed && prev.resetKey !== this.props.resetKey)
+      this.setState({ failed: false });
+  }
 
   static getDerivedStateFromError() {
     return { failed: true };
@@ -55,8 +61,13 @@ export function EditionProfileSections() {
 
 /** Typed message parts, each drawn by the edition renderer registered for its
  *  type. Unknown types render nothing; core part types are never delegated. */
-export function MessageParts({ message }: { message: ChatMessageDTO }) {
-  const renderers = useChatSlot("messageParts");
+export function MessageParts({
+  message,
+  renderers,
+}: {
+  message: ChatMessageDTO;
+  renderers: ComposedChat["messageParts"];
+}) {
   const parts = message.parts ?? [];
   return (
     <>
@@ -109,7 +120,7 @@ export function ChatHeaderActions({
   return (
     <>
       {actions.map(({ id, component: Action }) => (
-        <SlotBoundary key={id} id={id}>
+        <SlotBoundary key={id} id={id} resetKey={sessionId}>
           <Action sessionId={sessionId} readOnly={readOnly} />
         </SlotBoundary>
       ))}
@@ -117,17 +128,62 @@ export function ChatHeaderActions({
   );
 }
 
-/** Wraps the app in the edition's global providers, first one outermost. */
+/** Errors thrown by the app subtree under a provider: not the provider's. */
+const appErrors = new WeakSet<object>();
+
+/** Marks errors from `children` as the app's own and passes them up. */
+class AppSubtree extends Component<{ children: ReactNode }, { error: unknown }> {
+  state = { error: null as unknown };
+
+  static getDerivedStateFromError(error: unknown) {
+    if (typeof error === "object" && error !== null) appErrors.add(error);
+    return { error };
+  }
+
+  render() {
+    if (this.state.error !== null) throw this.state.error;
+    return this.props.children;
+  }
+}
+
+/** Catches only a provider's own failure; an error from the app below it is
+ *  rethrown untouched, so it is neither swallowed nor logged as a slot failure. */
+class ProviderBoundary extends Component<
+  { id: string; fallback: ReactNode; children: ReactNode },
+  { error: unknown }
+> {
+  state = { error: null as unknown };
+
+  static getDerivedStateFromError(error: unknown) {
+    return { error: error ?? new Error("provider failed") };
+  }
+
+  componentDidCatch(error: unknown) {
+    if (typeof error === "object" && error !== null && appErrors.has(error)) return;
+    console.error(`Edition chat slot "${this.props.id}" failed`, error);
+  }
+
+  render() {
+    const { error } = this.state;
+    if (error === null) return this.props.children;
+    if (typeof error === "object" && appErrors.has(error)) throw error;
+    return this.props.fallback;
+  }
+}
+
+/** Wraps the app in the edition's global providers, first one outermost.
+ *  A provider that throws is skipped. Extension contexts must therefore be
+ *  optional: a consumer has to tolerate its provider being missing. */
 export function ChatSlotProviders({ children }: { children: ReactNode }) {
   const providers = useChatSlot("globalProviders");
-  return providers.reduceRight<ReactNode>(
-    (inner, { id, component: Provider }) => (
-      <SlotBoundary key={id} id={id} fallback={inner}>
-        <Provider>{inner}</Provider>
-      </SlotBoundary>
-    ),
-    children,
-  );
+  return providers.reduceRight<ReactNode>((inner, { id, component: Provider }) => {
+    const subtree = <AppSubtree>{inner}</AppSubtree>;
+    return (
+      <ProviderBoundary key={id} id={id} fallback={inner}>
+        <Provider>{subtree}</Provider>
+      </ProviderBoundary>
+    );
+  }, children);
 }
 
 interface SidePanelState {
@@ -167,12 +223,18 @@ export function useSidePanel(): SidePanelState {
 export function SidePanelHost({ sessionId }: { sessionId: string | null }) {
   const panels = useChatSlot("sidePanels");
   const { openId, close } = useSidePanel();
+  // Another chat starts with its panel closed.
+  const [seenSession, setSeenSession] = useState(sessionId);
+  if (seenSession !== sessionId) {
+    setSeenSession(sessionId);
+    if (openId !== null) close();
+  }
   const panel = panels.find((p) => p.id === openId);
   if (!panel) return null;
   const Panel = panel.component;
   return (
     <aside className="hidden w-[420px] shrink-0 border-l border-border md:flex md:flex-col">
-      <SlotBoundary id={panel.id}>
+      <SlotBoundary id={panel.id} resetKey={sessionId}>
         <Panel sessionId={sessionId} onClose={close} />
       </SlotBoundary>
     </aside>
