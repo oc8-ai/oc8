@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 /** The reasoning of a run's steps (plus the step still streaming) and the
  *  model time those steps took. One filter decides which steps count, so the
  *  text and the seconds always describe the same steps. */
+// eslint-disable-next-line react-refresh/only-export-components -- shared helper, used beside the component
 export function thoughtOf(run: {
   stepTimings?: Array<Record<string, unknown>>;
   liveReasoning?: LiveReasoning;

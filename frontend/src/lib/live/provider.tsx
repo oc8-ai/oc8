@@ -22,6 +22,7 @@ const LiveConnectionStatusContext = createContext<LiveConnectionStatus>("connect
  * close/error fires, "connected" again the moment it reopens -- distinct
  * from the reconnect backoff itself, which callers of this hook don't need
  * to know the timing of, only the current yes/no. */
+// eslint-disable-next-line react-refresh/only-export-components -- shared helper, used beside the component
 export function useLiveConnectionStatus(): LiveConnectionStatus {
   return useContext(LiveConnectionStatusContext);
 }
@@ -30,6 +31,7 @@ const LiveSocketContext = createContext<LiveSocket | null>(null);
 
 /** Watch these runs for as long as the caller is mounted. Ids that drop out of
  *  the list are unwatched. A no-op outside LiveUpdatesProvider (tests). */
+// eslint-disable-next-line react-refresh/only-export-components -- shared helper, used beside the component
 export function useWatchRuns(runIds: readonly string[]): void {
   const socket = useContext(LiveSocketContext);
   const key = runIds.join(",");

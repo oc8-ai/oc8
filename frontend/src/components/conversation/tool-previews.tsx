@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- a fixed registry of per-kind previews; the file exports helpers beside them */
 // One preview per kind of step (spec §2.1 StepList/ToolPreview). A fixed,
 // compiled registry -- like RUN_COMPONENT_REGISTRY, an unknown kind falls
 // back to "generic", never to a dynamic lookup.

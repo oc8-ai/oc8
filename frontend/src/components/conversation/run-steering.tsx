@@ -14,6 +14,7 @@ type Translate = (en: string, de?: string) => string;
 
 /** What the composer's target line says while a run is active, and whether
  *  the composer's text goes to the run (`route`) instead of the chat. */
+// eslint-disable-next-line react-refresh/only-export-components -- shared helper, used beside the component
 export function steeringTarget(
   steering: RunSteeringDTO | undefined,
   t: Translate,
@@ -48,6 +49,7 @@ export function steeringTarget(
 
 /** An inline error for a refused input (POST /runs/{id}/inputs) -- shown
  *  under the composer, never only as a toast. */
+// eslint-disable-next-line react-refresh/only-export-components -- shared helper, used beside the component
 export function runInputError(error: unknown, t: Translate): string {
   const status = error instanceof ApiError ? error.status : null;
   if (status === 409) {
