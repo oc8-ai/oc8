@@ -19,7 +19,7 @@ from oc8.agent.control_tools import (
 )
 from oc8.agent.tool_semantics import extract_attributes, extract_value
 from oc8.authz.pdp import Decision, Effect, ToolPolicy, authorize_tool_call, required_right
-from oc8.chat.modes import ChatMode, mode_refusal
+from oc8.chat.modes import MODE_WITHHELD, ChatMode, mode_refusal
 from oc8.memory.policy import authorize_memory_write
 from oc8.memory.router import MAX_MEMORY_CONTENT_LENGTH
 from oc8.modelrouter import ToolCall
@@ -77,12 +77,31 @@ def authorize(
     # just the connection tools. Denying here also means the existing
     # append_event at all three call sites records it -- "denied because /plan"
     # is in the audit trail without a fourth writer.
-    refused = mode_refusal(chat_mode, tc.name, tool_scopes=tool_scopes)
+    skill_call = tc.name in skill_tool_names
+    refused = mode_refusal(
+        chat_mode,
+        tc.name,
+        # Loading a skill only hands the model a procedure: a read. Without
+        # this, a skill no connection scope names failed closed to "modify",
+        # and /plan withheld every skill.
+        tool_scopes={"read": [tc.name]} if skill_call else tool_scopes,
+    )
     if refused is not None:
-        return Decision(Effect.DENY, refused)
-    if tc.name in skill_tool_names:
+        # Tagged, so the control-tool dispatcher can tell "this turn's mode
+        # withholds it" (stop, for every core tool) from the routine frame DENY
+        # a reading core tool runs under (see below).
+        return Decision(Effect.DENY, refused, reason_code=MODE_WITHHELD)
+    if skill_call:
         return Decision(Effect.ALLOW)
     if tc.name == "ask_user":
+        return Decision(Effect.ALLOW)
+    if tc.name in ("write_output_file", "request_decision"):
+        # Like ask_user: neither belongs to a connection, so the frame has
+        # nothing to decide them against. Falling through used to DENY them
+        # with "no grant for <connection>" -- which nothing enforced, so the
+        # file was written anyway, and the B risk gate behind an ALLOW was
+        # silently skipped. The dispatcher now stops every denied writing
+        # control tool, so these need a real verdict.
         return Decision(Effect.ALLOW)
     if tc.name == "read_resource":
         # Same read right as a read tool on the connection the call names.

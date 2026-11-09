@@ -608,6 +608,19 @@ async def _call_tool(
     active_ids = {str(s) for s in run.context.get("active_skill_ids", [])}
     active = [s for s in assigned if str(s.skill_version_id) in active_ids]
 
+    if name in CONTROL_TOOL_NAMES or name in skill_tool_names:
+        # Before ask_user's and memory_write's own branches, which never asked:
+        # a mode is not enforced by hiding a tool from tools/list, since a
+        # harness may hold an older list.
+        mode_denial = mode_refusal(
+            mode_from_context(run.context),
+            name,
+            # A skill only loads a procedure -- a read, as in `authorize`.
+            tool_scopes={"read": [name]} if name in skill_tool_names else None,
+        )
+        if mode_denial is not None:
+            return _tool_result(f"ERROR: {mode_denial}", is_error=True)
+
     if name in skill_tool_names:
         skill = next(s for s in assigned if s.tool_name == name)
         if skill in active:

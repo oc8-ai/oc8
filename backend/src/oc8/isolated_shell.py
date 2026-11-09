@@ -222,6 +222,11 @@ def main() -> int:
                 step = r.json()
                 output = step.get("text") or output
                 calls = step.get("tool_calls") or []
+                # The control plane's go-ahead for running a local tool at all.
+                # A command runs here BEFORE /tools decides on it, so /tools'
+                # DENY would come too late. Absent (an older backend) means
+                # none: fail closed.
+                local_allowed = set(step.get("local_allowed") or ())
                 # Code-mode SDK: write once from /step's sdk_py when the file
                 # is not already on disk. Programs import oc8_tools from cwd.
                 sdk_py = step.get("sdk_py") or ""
@@ -296,7 +301,12 @@ def main() -> int:
                             "name": name,
                             "arguments": tc.get("arguments", {}),
                         }
-                        if name == "run_shell":
+                        if name not in local_allowed:
+                            # Posted without a result: the control plane answers
+                            # "was not executed locally" (or the mode's refusal),
+                            # so the model hears why instead of nothing.
+                            log(f"step {step_no}: {name} not allowed to run locally")
+                        elif name == "run_shell":
                             body["local_result"] = _run_shell_locally(
                                 str(tc.get("arguments", {}).get("command", ""))
                             )

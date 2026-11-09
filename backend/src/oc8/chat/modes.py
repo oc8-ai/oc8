@@ -144,6 +144,12 @@ WRITING_CONTROL_TOOLS: frozenset[str] = frozenset(
     }
 )
 
+#: `Decision.reason_code` of a refusal that came from the turn's mode rather than
+#: from the frame. The control-tool dispatcher stops on it for EVERY core tool,
+#: reads included: under /ask a read is withheld too, and a reading control
+#: tool has no reason of its own to look at its decision.
+MODE_WITHHELD = "mode_withheld"
+
 #: A leading command word, lowercase, followed by whitespace and a body.
 #:
 #: The `\s+` is what keeps "/etc/passwd is world readable?" a question: after
@@ -195,7 +201,10 @@ def mode_directive(mode: ChatMode) -> str:
 
 
 def mode_refusal(
-    mode: ChatMode | None, tool_name: str, *, tool_scopes: Mapping[str, Any] | None
+    mode: ChatMode | None,
+    tool_name: str,
+    *,
+    tool_scopes: Mapping[str, Any] | None,
 ) -> str | None:
     """Why this mode will not let this tool be called, or None.
 

@@ -2294,6 +2294,53 @@ async def test_step_withholds_run_shell_from_a_real_runtime_plugin(
     assert "run_shell" not in offered
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("chat_mode", "expected"), [(None, ["run_shell"]), ("plan", [])])
+async def test_step_tells_the_shell_which_local_tools_it_may_run(
+    app_session: object,
+    monkeypatch: pytest.MonkeyPatch,
+    chat_mode: str | None,
+    expected: list[str],
+) -> None:
+    """The isolated shell runs run_shell BEFORE /tools can deny it, so /step
+    gives the verdict up front: offered this leg and not withheld by the mode.
+    Under /plan the shell must not execute anything."""
+    from asgi_lifespan import LifespanManager
+    from httpx import ASGITransport, AsyncClient
+
+    from oc8.main import create_app
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        lead, _mate, run = await _seed_lead_with_mate_and_skill(db, tenant)
+        if chat_mode is not None:
+            run.context = {**run.context, "chat_mode": chat_mode}
+        lead_id, run_id = lead.id, run.id
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        return CompletionResult(
+            text="", tool_calls=[ToolCall(id="c1", name="run_shell", arguments={"command": "ls"})],
+            usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="tool_use", provider="ollama", model="m",
+        )
+
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+    token = _agent_token(tenant, lead_id, run_id)
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post(
+                f"/api/v1/internal/agent/{run_id}/step",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert r.status_code == 200, r.text
+
+    assert r.json()["local_allowed"] == expected
+
+
 # --------------------------------------------------- parallel reads under caps
 
 

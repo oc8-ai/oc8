@@ -46,7 +46,7 @@ from oc8.authz.pdp import Decision, Effect
 from oc8.authz.permissions import AGENT, APPROVAL, BUDGET, DEPARTMENT, STATISTICS, VIEW, perm
 from oc8.authz.scope import AgentActor, scope_for_member
 from oc8.capas.discovery import find_plugin
-from oc8.chat.modes import WRITING_CONTROL_TOOLS, ChatMode
+from oc8.chat.modes import MODE_WITHHELD, WRITING_CONTROL_TOOLS, ChatMode
 from oc8.config import get_settings
 from oc8.copilot.notes import member_behind_run_task
 from oc8.departments.repo import visible_department, visible_departments
@@ -1692,6 +1692,23 @@ async def execute_control_tool(
     callers (and unit tests) may pass fakes or leave it None.
     """
     skill_by_tool = {s.tool_name: s for s in assigned_skills}
+
+    # Every runtime dispatches here BEFORE its own DENY branch, and a non-None
+    # outcome skips that branch -- so a denial of a tool this dispatcher owns
+    # has to take effect HERE, or it is only ever recorded. Two kinds stop:
+    # anything the turn's mode withholds (reads included, under /ask), and any
+    # denial of a writing tool. A reading tool still runs under the routine
+    # "no grant for <connection>" DENY the frame hands every core tool without
+    # a branch of its own in `authorize` -- that verdict is about a connection
+    # the tool does not belong to. delegate_task keeps its own DENY branch,
+    # which also reports the depth limit to the operator.
+    if (
+        decision.effect is Effect.DENY
+        and tc.name != DELEGATE_TASK.name
+        and (tc.name in CONTROL_TOOL_NAMES or tc.name in skill_by_tool)
+        and (decision.reason_code == MODE_WITHHELD or tc.name in WRITING_CONTROL_TOOLS)
+    ):
+        return ControlOutcome(output=f"ERROR: {decision.reason or 'denied'}")
 
     from oc8.copilot.tools import execute_copilot_tool
 

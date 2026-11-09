@@ -21,7 +21,7 @@ import datetime as dt
 import json
 import logging
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -109,7 +109,7 @@ from oc8.authz.pdp import (
     required_right,
 )
 from oc8.capas.discovery import resolve_tool_pack_connection
-from oc8.chat.modes import mode_from_context
+from oc8.chat.modes import ChatMode, mode_from_context, mode_refusal
 from oc8.config import get_settings
 from oc8.copilot.door import door_of
 from oc8.metering import record_usage
@@ -325,6 +325,24 @@ async def _load(
 def _mcp_params(conn: m.McpConnection) -> dict[str, Any]:
     cfg = conn.config if isinstance(conn.config, dict) else {}
     return cfg
+
+
+#: The tools the isolated shell executes itself, before /tools ever sees them.
+_LOCAL_TOOLS = ("run_shell", "run_program")
+
+
+def _local_allowed(tools: Sequence[NeutralTool], mode: ChatMode | None) -> list[str]:
+    """Which local-execution tools the shell may run for this step.
+
+    Offered this leg, and not withheld by the run's mode. The frame has no say:
+    neither tool belongs to a connection (see `authorize`'s early ALLOWs).
+    """
+    offered = {t.name for t in tools}
+    return [
+        name
+        for name in _LOCAL_TOOLS
+        if name in offered and mode_refusal(mode, name, tool_scopes=None) is None
+    ]
 
 
 def _routed_connection(
@@ -613,6 +631,14 @@ class StepResult(BaseModel):
     #: when code_mode is off or the seed has not stored it. The shell writes
     #: the file once when present and missing on disk.
     sdk_py: str = ""
+    #: The local-execution tools (run_shell, run_program) the shell may run
+    #: in its container for THIS step's calls. The shell executes them BEFORE
+    #: posting to /tools, so /tools' PEP decision comes too late to stop the
+    #: command itself -- this is the PEP's answer given up front: offered this
+    #: leg, and not withheld by the turn's mode. Absent (an older backend) or
+    #: not naming the tool means "do not run it"; the shell then posts the call
+    #: without a result and gets the "was not executed locally" refusal.
+    local_allowed: list[str] = []
 
 
 @router.post(
@@ -1362,6 +1388,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         status_override="failed" if truncated_empty else None,
         parallel_tool_calls=caps.parallel_tool_calls,
         sdk_py=str(ctx.get("oc8_tools_py") or ""),
+        local_allowed=_local_allowed(tools, mode_from_context(ctx)),
     )
 
 
