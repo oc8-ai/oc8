@@ -2925,3 +2925,50 @@ async def test_a_routed_core_name_is_tiered_as_the_connections_write(
     assert code == 200, body
     assert body["status"] == "waiting_for_approval", body
     assert calls == []
+
+
+@pytest.mark.parametrize(("chat_mode", "prefetched"), [(None, 2), ("ask", 0)])
+@pytest.mark.asyncio
+async def test_ask_prefetches_no_read_from_the_tool_server(
+    app_session: object,
+    monkeypatch: pytest.MonkeyPatch,
+    chat_mode: str | None,
+    prefetched: int,
+) -> None:
+    """/ask touches no system. The leading-read prefetch calls the tool server
+    BEFORE /tools decides on each call, so it has to ask the mode itself -- a
+    later DENY only throws the answer away after the system was queried."""
+    from oc8 import models as m
+    from oc8.api.v1 import internal_agent as ia
+
+    reached: list[str] = []
+
+    async def fake_call(*args: Any, tool: str, **kw: Any) -> str:
+        reached.append(tool)
+        return "rows"
+
+    monkeypatch.setattr("oc8.agent.mcp_pool.call", fake_call)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        _agent_id, run_id = await _mcp_backed_run(db, tenant, parallel_tool_calls=True)
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        if chat_mode is not None:
+            run.context = {**run.context, "chat_mode": chat_mode}
+            await db.flush()
+        agent, dept, conn, pinned = await ia._load(db, run)
+        result = await ia._precompute_leading_reads(
+            run=run,
+            agent=agent,
+            dept=dept,
+            conn=conn,
+            pinned=pinned,
+            db=db,
+            calls=[
+                ia.ToolBody(id="r1", name="search_records", arguments={"model": "a"}),
+                ia.ToolBody(id="r2", name="search_records", arguments={"model": "b"}),
+            ],
+        )
+
+    assert len(reached) == prefetched
+    assert len(result) == prefetched

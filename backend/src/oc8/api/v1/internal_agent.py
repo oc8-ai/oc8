@@ -1345,6 +1345,9 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
                 tool_scopes=scopes,
                 value_spec=value_spec,
                 guardrail_attribute_specs=guardrail_attribute_specs,
+                # A hint only, but it must agree with /tools: a call the mode
+                # withholds is not a batchable read.
+                chat_mode=mode_from_context(ctx),
             )
             if pre_decision.effect is not Effect.ALLOW:
                 break
@@ -1495,6 +1498,9 @@ async def _precompute_leading_reads(
             tool_scopes=scopes,
             value_spec=value_spec,
             guardrail_attribute_specs=guardrail_attribute_specs,
+            # Prefetched from the tool server before /tools decides: a call the
+            # mode withholds (/ask) must break the batch, never be fetched.
+            chat_mode=mode_from_context(ctx),
         )
         if pre_decision.effect is not Effect.ALLOW:
             break

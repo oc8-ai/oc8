@@ -1621,6 +1621,10 @@ async def run_agent(
                                 for g in s.definition.guardrails
                                 if g.type == "value_threshold" and g.then == "require_approval"
                             ),
+                            # The pre-pass calls the tool server before the
+                            # per-call PEP: a read the mode withholds (/ask)
+                            # must break the batch, not be fetched and dropped.
+                            chat_mode=chat_mode,
                         )
                         stripped, justification = strip_justification(_pre_tc.arguments)
                         _pre_tc.arguments = stripped
