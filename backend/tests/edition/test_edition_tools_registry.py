@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 import pytest
@@ -15,6 +16,7 @@ from oc8.agent.control_tools import CONTROL_TOOL_NAMES, ControlOutcome
 from oc8.edition import EditionExtension
 from oc8.edition.runtime import RuntimeComposition
 from oc8.edition.tools import (
+    MAX_PART_DEPTH,
     MAX_PARTS,
     MAX_PARTS_BYTES,
     EditionTool,
@@ -266,3 +268,55 @@ def test_clean_parts_caps_count_and_size(caplog: pytest.LogCaptureFixture) -> No
     assert clean_parts([big, big, small]) == [big, small]
     assert clean_parts([{"type": "blob", "data": "x" * MAX_PARTS_BYTES}]) == []
     assert "dropped" in caplog.text
+
+
+def _nested(depth: int) -> dict[str, object]:
+    """A part whose object nesting is exactly `depth` (the part is depth 1)."""
+    inner: object = "leaf"
+    for _ in range(depth - 1):
+        inner = [inner]
+    return {"type": "deep", "v": inner}
+
+
+def test_clean_parts_bounds_depth_without_recursing(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.WARNING)
+    assert clean_parts([_nested(MAX_PART_DEPTH)]) == [_nested(MAX_PART_DEPTH)]
+    assert clean_parts([_nested(MAX_PART_DEPTH + 1)]) == []
+    deep: object = []
+    for _ in range(200_000):
+        deep = [deep]
+    assert clean_parts([{"type": "deep", "v": deep}, {"type": "ok"}]) == [{"type": "ok"}]
+    assert "deeper" in caplog.text
+
+
+def test_clean_parts_refuses_strings_jsonb_cannot_hold() -> None:
+    ok = {"type": "ok"}
+    assert clean_parts([{"type": "t", "s": "a\ud800b"}, ok]) == [ok]
+    assert clean_parts([{"type": "t", "s": "a\x00b"}, ok]) == [ok]
+    assert clean_parts([{"type": "t", "k\x00": 1}, ok]) == [ok]
+    assert clean_parts([{"type": "t", "n": [1, {"s": "\x00"}]}, ok]) == [ok]
+    assert clean_parts([{"type": "t\ud800"}, ok]) == [ok]
+
+
+def test_clean_parts_refuses_huge_values_without_serialising_them() -> None:
+    ok = {"type": "ok"}
+    huge = "x" * 50_000_000
+    assert clean_parts([{"type": "t", "s": huge}, ok]) == [ok]
+    assert clean_parts([{"type": "t", huge: 1}, ok]) == [ok]
+    assert clean_parts([{"type": "t", "n": 10**100_000}, ok]) == [ok]
+    assert clean_parts([{"type": "t", "n": float("inf")}, ok]) == [ok]
+    assert clean_parts([{"type": "t", 1: "int key"}, ok]) == [ok]
+
+
+def test_clean_parts_never_raises() -> None:
+    class _Hostile(dict[str, object]):
+        def __iter__(self) -> Iterator[str]:
+            raise RuntimeError("boom")
+
+    class _HostileList(list[object]):
+        def __iter__(self) -> Iterator[object]:
+            raise RuntimeError("boom")
+
+    hostile = _Hostile(type="t")
+    assert clean_parts([hostile, {"type": "ok"}]) == [{"type": "ok"}]
+    assert clean_parts(_HostileList([{"type": "ok"}])) == []

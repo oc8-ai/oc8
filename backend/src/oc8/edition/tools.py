@@ -42,11 +42,25 @@ MAX_PARTS = 20
 MAX_PARTS_BYTES = 64 * 1024
 #: Part types core itself writes; an edition part may not pose as one.
 CORE_PART_TYPES: frozenset[str] = frozenset({"answers", "suggestions"})
+#: How deep a part may nest (the part object itself is depth 1).
+MAX_PART_DEPTH = 8
 _MAX_TYPE_LENGTH = 64
+#: Integers beyond this many bits are refused: JSON readers disagree on them.
+_MAX_INT_BITS = 63
 
 
 @dataclass(frozen=True)
 class EditionToolContext:
+    """What core hands an edition tool's executor for one call.
+
+    `db` is the run's own session, already bound to `tenant_id` (row-level
+    security). An executor works through it: it must not open sessions of its
+    own, and must not rebind the tenant or move `agent`/`task` to another one.
+    What it returns -- `ControlOutcome.output` and `.parts` -- is untrusted:
+    the output reaches the model like any tool result, and the parts pass
+    `clean_parts` before they are stored.
+    """
+
     db: AsyncSession
     tenant_id: uuid.UUID
     agent: m.Agent
@@ -121,6 +135,13 @@ def use_edition_tools(
 
 
 def registered_edition_tool(name: str) -> EditionTool | None:
+    """The registered edition tool of that name, if any.
+
+    Not authorisation: being registered says nothing about whether this
+    tenant is entitled to it or whether it was offered on this run. The
+    dispatcher checks that at call time (`edition_tool_entitled`, and that it
+    was offered), never relying on this lookup alone.
+    """
     return _STATE.get().tools.get(name)
 
 
@@ -160,49 +181,140 @@ async def offered_edition_tools(
     return offered
 
 
-def _clean_part(raw: object) -> tuple[dict[str, Any], int] | str:
-    """The part as plain JSON and its serialised size, or why it was refused."""
+class _Refused(Exception):
+    """Why a part was dropped."""
+
+
+def _check_string(value: str, budget: int) -> int:
+    """The string's UTF-8 size; refuses one over `budget`, with a NUL, or with
+    a lone surrogate (neither survives JSONB). The length test comes first so
+    a huge string is never encoded."""
+    if len(value) > budget:
+        raise _Refused("too large")
+    if "\x00" in value:
+        raise _Refused("contains NUL")
+    try:
+        size = len(value.encode("utf-8"))
+    except UnicodeEncodeError:
+        raise _Refused("not valid UTF-8 (lone surrogate)") from None
+    if size > budget:
+        raise _Refused("too large")
+    return size
+
+
+def _plain_json(raw: dict[Any, Any], budget: int) -> dict[str, Any]:
+    """A plain-JSON copy of `raw`, walked iteratively (no recursion) within
+    MAX_PART_DEPTH and an estimated `budget` of bytes, so neither deep nesting
+    nor a huge value is ever serialised whole before being refused."""
+    used = 0
+
+    def spend(n: int) -> None:
+        nonlocal used
+        used += n
+        if used > budget:
+            raise _Refused("too large")
+
+    root: dict[str, Any] = {}
+    # (source container, its copy, depth of the container)
+    stack: list[tuple[Any, Any, int]] = [(raw, root, 1)]
+    while stack:
+        src, dst, depth = stack.pop()
+        spend(2)  # brackets
+        items: list[tuple[str | None, Any]]
+        if isinstance(src, dict):
+            items = []
+            for key in src:
+                if not isinstance(key, str):
+                    raise _Refused("non-string key")
+                spend(_check_string(key, budget - used) + 4)  # quotes, colon, comma
+                items.append((key, src[key]))
+        else:
+            items = [(None, v) for v in src]
+        for key, value in items:
+            spend(1)
+            copy: Any
+            if value is None or isinstance(value, bool):
+                copy = value
+                spend(len(json.dumps(value)))
+            elif isinstance(value, int):
+                if value.bit_length() > _MAX_INT_BITS:
+                    raise _Refused("integer out of range")
+                copy = int(value)
+                spend(len(str(copy)))
+            elif isinstance(value, float):
+                if value != value or value in (float("inf"), float("-inf")):
+                    raise _Refused("non-finite number")
+                copy = float(value)
+                spend(len(repr(copy)))
+            elif isinstance(value, str):
+                spend(_check_string(value, budget - used) + 2)
+                copy = str(value)
+            elif isinstance(value, dict | list | tuple):
+                if depth >= MAX_PART_DEPTH:
+                    raise _Refused(f"nested deeper than {MAX_PART_DEPTH}")
+                copy = {} if isinstance(value, dict) else []
+                stack.append((value, copy, depth + 1))
+            else:
+                raise _Refused(f"not JSON ({type(value).__name__})")
+            if key is None:
+                dst.append(copy)
+            else:
+                dst[key] = copy
+    return root
+
+
+def _clean_part(raw: object, budget: int) -> tuple[dict[str, Any], int]:
+    """The part as plain JSON and its serialised size; raises _Refused."""
     if not isinstance(raw, dict):
-        return "not an object"
+        raise _Refused("not an object")
     kind = raw.get("type")
     if not isinstance(kind, str) or not kind or len(kind) > _MAX_TYPE_LENGTH:
-        return "no string type"
+        raise _Refused("no string type")
     if kind in CORE_PART_TYPES:
-        return f"reserved type {kind!r}"
-    try:
-        encoded = json.dumps(raw, allow_nan=False, ensure_ascii=False, separators=(",", ":"))
-    except (TypeError, ValueError):
-        return "not JSON-serialisable"
-    # Round-tripped, so what is stored is plain JSON (no tuples, no subclasses).
-    return json.loads(encoded), len(encoded.encode())
+        raise _Refused(f"reserved type {kind!r}")
+    part = _plain_json(raw, budget)
+    # Bounded and validated by the walk, so this is cheap and cannot fail on
+    # content; ensure_ascii keeps the measure independent of the encoding.
+    size = len(json.dumps(part, allow_nan=False, ensure_ascii=True, separators=(",", ":")))
+    if size > budget:
+        raise _Refused("too large")
+    return part, size
 
 
 def clean_parts(raw: object) -> list[dict[str, Any]]:
     """Untrusted edition parts made safe to store: JSON objects with a non-empty
-    string `type` that is not a core part type, at most MAX_PARTS of them and
-    MAX_PARTS_BYTES serialised. Anything else is dropped with a warning."""
-    if not isinstance(raw, list):
-        if raw is not None:
-            logger.warning("edition parts dropped: expected a list, got %s", type(raw).__name__)
+    string `type` that is not a core part type, nested at most MAX_PART_DEPTH
+    deep, no NUL or lone surrogate in any string, at most MAX_PARTS of them
+    and MAX_PARTS_BYTES serialised. Anything else is dropped with a warning.
+
+    Never raises: whatever an edition hands back, the reply is still stored.
+    """
+    try:
+        if not isinstance(raw, list):
+            if raw is not None:
+                logger.warning("edition parts dropped: expected a list, got %s", type(raw).__name__)
+            return []
+        out: list[dict[str, Any]] = []
+        used = 0
+        for index, item in enumerate(raw):
+            if len(out) >= MAX_PARTS:
+                logger.warning(
+                    "edition parts dropped: %d beyond the limit of %d",
+                    len(raw) - index,
+                    MAX_PARTS,
+                )
+                break
+            try:
+                part, size = _clean_part(item, MAX_PARTS_BYTES - used)
+            except _Refused as refused:
+                logger.warning("edition part %d dropped: %s", index, refused)
+                continue
+            except Exception:
+                logger.warning("edition part %d dropped: could not be read", index, exc_info=True)
+                continue
+            used += size
+            out.append(part)
+        return out
+    except Exception:
+        logger.warning("edition parts dropped: could not be read", exc_info=True)
         return []
-    out: list[dict[str, Any]] = []
-    used = 0
-    for index, item in enumerate(raw):
-        if len(out) >= MAX_PARTS:
-            logger.warning(
-                "edition parts dropped: %d beyond the limit of %d", len(raw) - index, MAX_PARTS
-            )
-            break
-        cleaned = _clean_part(item)
-        if isinstance(cleaned, str):
-            logger.warning("edition part %d dropped: %s", index, cleaned)
-            continue
-        part, size = cleaned
-        if used + size > MAX_PARTS_BYTES:
-            logger.warning(
-                "edition part %d dropped: %d bytes would exceed %d", index, size, MAX_PARTS_BYTES
-            )
-            continue
-        used += size
-        out.append(part)
-    return out
