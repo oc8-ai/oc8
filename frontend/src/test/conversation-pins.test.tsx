@@ -33,12 +33,17 @@ vi.mock("@/lib/governance-hooks", () => ({
 vi.mock("@/lib/conversation-api", async (orig) => ({
   ...(await orig<typeof import("@/lib/conversation-api")>()),
   useContextSearch: () => [{ kind: "agent", id: "a1", label: "Lennart" }],
+  useContextSearchResults: () => ({
+    items: [{ kind: "agent", id: "a1", label: "Lennart" }],
+    isLoading: false,
+  }),
   useSessionModels: () => ({ data: [] }),
   useSetSessionModel: () => ({ mutate: vi.fn() }),
 }));
 
 import { Conversation } from "@/components/conversation";
 import { api } from "@/lib/api";
+import { conversationKeys } from "@/lib/conversation-api";
 
 function detail(overrides: Record<string, unknown> = {}) {
   return {
@@ -61,8 +66,11 @@ function detail(overrides: Record<string, unknown> = {}) {
 }
 
 function mount() {
+  const qc = new QueryClient();
+  // The pin writer builds each PUT from the cached session.
+  qc.setQueryData(conversationKeys.session("s"), session.current);
   render(
-    <QueryClientProvider client={new QueryClient()}>
+    <QueryClientProvider client={qc}>
       <Conversation agentId="a" sessionId="s" onSessionChange={vi.fn()} variant="full" />
     </QueryClientProvider>,
   );
@@ -123,7 +131,7 @@ describe("Conversation pins", () => {
     mount();
     openPlus();
     fireEvent.click(screen.getByRole("menuitem", { name: /oc8 object/ }));
-    fireEvent.click(await screen.findByRole("button", { name: /Lennart/ }));
+    fireEvent.click(await screen.findByRole("option", { name: /Lennart/ }));
     fireEvent.click(await screen.findByRole("button", { name: "Pin Lennart to this chat" }));
     await waitFor(() =>
       expect(put).toHaveBeenCalledWith("/chat/sessions/s/pins", {
@@ -136,5 +144,16 @@ describe("Conversation pins", () => {
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Pin Lennart to this chat" })).toBeNull(),
     );
+  });
+
+  it("returns focus to the message box when a picker closes", async () => {
+    granted.current = [];
+    session.current = detail();
+    mount();
+    openPlus();
+    fireEvent.click(screen.getByRole("menuitem", { name: /oc8 object/ }));
+    const search = await screen.findByRole("combobox", { name: "Search" });
+    fireEvent.keyDown(search, { key: "Escape" });
+    await waitFor(() => expect(screen.getByRole("textbox", { name: /Message/ })).toHaveFocus());
   });
 });

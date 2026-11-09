@@ -8,7 +8,7 @@ import { ChevronRight, FileText, Folder } from "lucide-react";
 
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useBrowseSource, useContextSearch, type ContextItem } from "@/lib/conversation-api";
+import { useBrowseSource, useContextSearchResults, type ContextItem } from "@/lib/conversation-api";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -34,10 +34,13 @@ export function DataSourceBrowser({
   open,
   onPick,
   onClose,
+  returnFocus,
 }: {
   open: boolean;
   onPick: (item: ContextItem) => void;
   onClose: () => void;
+  /** Where focus goes once it closes; the trigger (a + menu item) is gone. */
+  returnFocus?: () => void;
 }) {
   const t = useT();
   const narrow = useSyncExternalStore(subscribeNarrow, isNarrow, () => false);
@@ -45,6 +48,11 @@ export function DataSourceBrowser({
     <Sheet open={open} onOpenChange={(o) => !o && onClose()}>
       <SheetContent
         side={narrow ? "bottom" : "right"}
+        onCloseAutoFocus={(e) => {
+          if (!returnFocus) return;
+          e.preventDefault();
+          returnFocus();
+        }}
         className={cn(
           "flex flex-col gap-4 overflow-y-auto p-5",
           narrow ? "max-h-[85dvh] rounded-t-lg" : "w-full sm:max-w-md",
@@ -78,7 +86,11 @@ function BrowserPanel({ onPick }: { onPick: (item: ContextItem) => void }) {
   const [query, setQuery] = useState("");
   const [source, setSource] = useState<ContextItem | null>(null);
   const [crumbs, setCrumbs] = useState<Crumb[]>([]);
-  const sources = useContextSearch(source ? null : query, ["data_source"], { recents: true });
+  const { items: sources, isLoading: sourcesLoading } = useContextSearchResults(
+    source ? null : query,
+    ["data_source"],
+    { recents: true },
+  );
   const path = crumbs[crumbs.length - 1]?.path ?? "/";
   const browse = useBrowseSource(source?.id ?? null, path);
   const status = (browse.error as { status?: number } | null | undefined)?.status;
@@ -101,44 +113,52 @@ function BrowserPanel({ onPick }: { onPick: (item: ContextItem) => void }) {
           placeholder={t("Search sources …", "Quellen suchen …")}
           className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         />
-        <ul className="space-y-1">
-          {sources.length === 0 && (
-            <li className="px-2 py-3 text-sm text-muted-foreground">
-              {t(
-                "No data source you can open matches that.",
-                "Keine Datenquelle, die du öffnen darfst, passt dazu.",
-              )}
-            </li>
-          )}
-          {sources.map((s) => (
-            <li key={s.id} className="flex min-w-0 items-center gap-2">
-              {s.connected === false ? (
-                <>
-                  <span className={cn(ROW, "flex-1 text-muted-foreground hover:bg-transparent")}>
+        {sourcesLoading ? (
+          <div className="space-y-2" aria-busy="true" aria-label={t("Loading", "Lädt")}>
+            {[0, 1, 2].map((i) => (
+              <Skeleton key={i} className="h-11 rounded-md" />
+            ))}
+          </div>
+        ) : (
+          <ul className="space-y-1">
+            {sources.length === 0 && (
+              <li className="px-2 py-3 text-sm text-muted-foreground">
+                {t(
+                  "No data source you can open matches that.",
+                  "Keine Datenquelle, die du öffnen darfst, passt dazu.",
+                )}
+              </li>
+            )}
+            {sources.map((s) => (
+              <li key={s.id} className="flex min-w-0 items-center gap-2">
+                {s.connected === false ? (
+                  <>
+                    <span className={cn(ROW, "flex-1 text-muted-foreground hover:bg-transparent")}>
+                      <SourceIcon className="size-4 shrink-0" aria-hidden />
+                      <span className="min-w-0 flex-1 truncate">{s.label}</span>
+                      <span className="shrink-0 text-xs">
+                        {t("Not connected", "Nicht verbunden")}
+                      </span>
+                    </span>
+                    <a
+                      href="/knowledge"
+                      aria-label={t(`Connect ${s.label}`, `${s.label} verbinden`)}
+                      className="inline-flex min-h-9 shrink-0 items-center rounded-md px-2 text-xs text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      {t("Connect", "Verbinden")}
+                    </a>
+                  </>
+                ) : (
+                  <button type="button" onClick={() => openSource(s)} className={ROW}>
                     <SourceIcon className="size-4 shrink-0" aria-hidden />
                     <span className="min-w-0 flex-1 truncate">{s.label}</span>
-                    <span className="shrink-0 text-xs">
-                      {t("Not connected", "Nicht verbunden")}
-                    </span>
-                  </span>
-                  <a
-                    href="/knowledge"
-                    aria-label={t(`Connect ${s.label}`, `${s.label} verbinden`)}
-                    className="inline-flex min-h-9 shrink-0 items-center rounded-md px-2 text-xs text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  >
-                    {t("Connect", "Verbinden")}
-                  </a>
-                </>
-              ) : (
-                <button type="button" onClick={() => openSource(s)} className={ROW}>
-                  <SourceIcon className="size-4 shrink-0" aria-hidden />
-                  <span className="min-w-0 flex-1 truncate">{s.label}</span>
-                  <ChevronRight className="size-4 shrink-0" aria-hidden />
-                </button>
-              )}
-            </li>
-          ))}
-        </ul>
+                    <ChevronRight className="size-4 shrink-0" aria-hidden />
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
     );
   }

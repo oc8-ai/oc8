@@ -12,6 +12,7 @@ import {
 } from "@tanstack/react-query";
 
 import { api, ApiError } from "@/lib/api";
+import { isUuid } from "@/lib/ids";
 import {
   chatKeys,
   type ChatMessageDTO,
@@ -263,17 +264,17 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
  *  or only `kinds`. `null` searches nothing. The query is debounced and the
  *  previous hits stay while the next ones load. An empty query sends no
  *  request unless `recents` asks for the server's first hits per kind. */
-export function useContextSearch(
+export function useContextSearchResults(
   query: string | null,
   kinds?: string[],
   options: { recents?: boolean } = {},
-): ContextItem[] {
+): { items: ContextItem[]; isLoading: boolean } {
   const debounced = useDebouncedValue(query, SEARCH_DEBOUNCE_MS);
   // Closing never waits for the debounce, and opening starts from what is typed.
   const q = query === null ? null : (debounced ?? query).trim().slice(0, MAX_SEARCH_QUERY);
   const wanted = (kinds ?? []).slice(0, MAX_SEARCH_KINDS).join(",");
   const enabled = q !== null && (q !== "" || !!options.recents);
-  const { data } = useQuery({
+  const { data, isPending } = useQuery({
     queryKey: ["chat", "context-search", q ?? "", wanted] as const,
     queryFn: () => {
       const params = new URLSearchParams({ q: q ?? "" });
@@ -284,28 +285,87 @@ export function useContextSearch(
     placeholderData: keepPreviousData,
     staleTime: 10_000,
   });
-  if (!enabled) return [];
-  return (data ?? []).map((i) => ({
-    kind: i.kind,
-    id: i.id,
-    label: i.label,
-    hint: i.hint ?? undefined,
-    connected: i.connected,
-  }));
+  if (!enabled) return { items: [], isLoading: false };
+  return {
+    items: (data ?? []).map((i) => ({
+      kind: i.kind,
+      id: i.id,
+      label: i.label,
+      hint: i.hint ?? undefined,
+      connected: i.connected,
+    })),
+    // Only the first answer is waited for: later ones keep the previous hits.
+    isLoading: isPending && data === undefined,
+  };
 }
 
-/** Replace the chat's pins (owner only, at most MAX_PINS). The reply is the
- *  full session detail, written to its cache as is. A 422 names the refused
- *  refs: read them with `refusedRefs`. */
+/** `useContextSearchResults` without the loading state (the composer's `#`). */
+export function useContextSearch(
+  query: string | null,
+  kinds?: string[],
+  options: { recents?: boolean } = {},
+): ContextItem[] {
+  return useContextSearchResults(query, kinds, options).items;
+}
+
+export interface PinRef {
+  kind: string;
+  id: string;
+}
+
+/** One change to a chat's pins. */
+export type PinChange = { add: PinRef } | { remove: PinRef };
+
+const sameRef = (a: PinRef, b: PinRef) => a.kind === b.kind && a.id === b.id;
+
+/** Change the chat's pins (owner only, at most MAX_PINS). Each PUT is built
+ *  from the session as cached when it runs, and writes run one at a time
+ *  (one scope per chat), so quick changes never overwrite each other. The
+ *  reply is the full session detail, written to its cache as is. A 422 names
+ *  the refused refs: word it with `pinErrorText`. */
 export function useSetPins(sessionId: string | null) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (refs: { kind: string; id: string }[]) =>
-      api.put<ChatSessionDetailDTO>(`/chat/sessions/${encodeURIComponent(sessionId ?? "")}/pins`, {
-        refs,
-      }),
+    mutationKey: ["chat", "pins", sessionId ?? ""] as const,
+    scope: { id: `chat-pins:${sessionId ?? ""}` },
+    mutationFn: (change: PinChange) => {
+      const current = (
+        qc.getQueryData<ChatSessionDetailDTO>(conversationKeys.session(sessionId ?? ""))
+          ?.pinnedRefs ?? []
+      ).map(({ kind, id }) => ({ kind, id }));
+      const refs =
+        "add" in change
+          ? current.some((r) => sameRef(r, change.add))
+            ? current
+            : [...current, { kind: change.add.kind, id: change.add.id }]
+          : current.filter((r) => !sameRef(r, change.remove));
+      return api.put<ChatSessionDetailDTO>(
+        `/chat/sessions/${encodeURIComponent(sessionId ?? "")}/pins`,
+        { refs },
+      );
+    },
     onSuccess: (session) => qc.setQueryData(conversationKeys.session(session.id), session),
   });
+}
+
+/** The inline sentence for a failed pin write: a 422 names the refused refs
+ *  by the labels in `known`, anything else asks to try again. */
+export function pinErrorText(
+  error: unknown,
+  known: { kind: string; id: string; label: string }[],
+  t: (en: string, de?: string) => string,
+): string | null {
+  if (!error) return null;
+  const labels = refusedRefs(error).map((r) => known.find((k) => sameRef(k, r))?.label ?? r.id);
+  return labels.length > 0
+    ? t(
+        `Not available to you: ${labels.join(", ")}. Remove it, then try again.`,
+        `Für dich nicht verfügbar: ${labels.join(", ")}. Entfern es und versuch es noch einmal.`,
+      )
+    : t(
+        "Your pins were not saved. Try again.",
+        "Deine angehefteten Einträge wurden nicht gespeichert. Versuch es noch einmal.",
+      );
 }
 
 /** The refs a 422 from `PUT /pins` refused, by the kind and id sent. */
@@ -334,7 +394,7 @@ export function useBrowseSource(sourceId: string | null, path: string) {
       api.get<BrowseListingDTO>(
         `/chat/data-sources/${encodeURIComponent(sourceId ?? "")}/browse?path=${encodeURIComponent(path)}`,
       ),
-    enabled: !!sourceId,
+    enabled: isUuid(sourceId),
     retry: false,
   });
 }

@@ -92,6 +92,8 @@ export interface ComposerProps {
   onContextRefsChange?: (refs: ContextItem[]) => void;
   /** C3: "Pin to this chat" on a ref chip; left out, the chips offer no pin. */
   onPinRef?: (ref: ContextItem) => void;
+  /** A pin write is running: the chips' pin buttons wait for it. */
+  pinBusy?: boolean;
   /** C2: what is sent answers an open question, as text only. The hint says
    *  so; the + menu, the drop zone and # are off, and a send that still
    *  carries files or context is refused (they are never dropped). */
@@ -170,7 +172,10 @@ export function Composer(props: ComposerProps) {
     // Only on mount: the dock mounts a fresh chat whenever it opens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const contextItems = useContextSearch(sigil?.kind === "#" ? sigil.query : null);
+  // A bare `#` lists the first hits of each kind, as C1 listed knowledge bases.
+  const contextItems = useContextSearch(sigil?.kind === "#" ? sigil.query : null, undefined, {
+    recents: true,
+  });
 
   const sigilItems: SigilItem[] =
     sigil?.kind === "/"
@@ -413,14 +418,7 @@ export function Composer(props: ComposerProps) {
           activeIndex={pickerIndex}
           onPick={pick}
           onHoverIndex={setPickerIndex}
-          emptyText={
-            sigil.kind === "#" && !sigil.query.trim()
-              ? t(
-                  "Type to search knowledge, files and more.",
-                  "Tipp, um Wissen, Dateien und mehr zu suchen.",
-                )
-              : t("Nothing matches that.", "Dazu passt nichts.")
-          }
+          emptyText={t("Nothing matches that.", "Dazu passt nichts.")}
         />
       )}
       <div
@@ -468,8 +466,9 @@ export function Composer(props: ComposerProps) {
                         `${r.label} an diesen Chat heften`,
                       )}
                       title={t("Pin to this chat", "An diesen Chat heften")}
+                      disabled={props.pinBusy}
                       onClick={() => props.onPinRef?.(r)}
-                      className="grid size-9 shrink-0 place-items-center rounded-full hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      className="grid size-9 shrink-0 place-items-center rounded-full hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
                     >
                       <Pin className="size-3.5" aria-hidden />
                     </button>

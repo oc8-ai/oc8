@@ -11,7 +11,7 @@ import { api, ApiError } from "@/lib/api";
 import {
   conversationKeys,
   MAX_PINS,
-  refusedRefs,
+  pinErrorText,
   useAnswerQuestion,
   useRegenerate,
   useSetPins,
@@ -296,9 +296,10 @@ export function Conversation(props: ConversationProps) {
   const [picker, setPicker] = useState<null | "source" | "knowledge" | "object">(null);
   const [pinLimit, setPinLimit] = useState(false);
   const pins = conv.session?.pinnedRefs ?? [];
-  const setPins = useSetPins(props.sessionId);
+  // The chat's one pin writer, shared by the pinned bar and the chips.
+  const pinning = useSetPins(props.sessionId);
   const mayKnowledge = may("knowledge:view");
-  const resetPins = setPins.reset;
+  const resetPins = pinning.reset;
   useEffect(() => {
     // Another chat's refusal is not this one's.
     setPinLimit(false);
@@ -352,34 +353,21 @@ export function Conversation(props: ConversationProps) {
       setPinLimit(true);
       return;
     }
-    setPins.mutate(
-      [...pins.map(({ kind, id }) => ({ kind, id })), { kind: ref.kind, id: ref.id }],
-      { onSuccess: () => dropRef(ref) },
-    );
+    pinning.mutate({ add: { kind: ref.kind, id: ref.id } }, { onSuccess: () => dropRef(ref) });
   }
-  const refusedLabels = refusedRefs(setPins.error).map(
-    (r) => [...pins, ...refs].find((x) => x.kind === r.kind && x.id === r.id)?.label ?? r.id,
-  );
   const pinError = pinLimit
     ? t(
         `A chat holds up to ${MAX_PINS} pins. Unpin one first.`,
         `Ein Chat hält bis zu ${MAX_PINS} angeheftete Einträge. Löse zuerst einen.`,
       )
-    : !setPins.error
-      ? null
-      : refusedLabels.length > 0
-        ? t(
-            `Not available to you: ${refusedLabels.join(", ")}. Unpin it, then try again.`,
-            `Für dich nicht verfügbar: ${refusedLabels.join(", ")}. Löse es und versuch es noch einmal.`,
-          )
-        : t(
-            "Your pins were not saved. Try again.",
-            "Deine angehefteten Einträge wurden nicht gespeichert. Versuch es noch einmal.",
-          );
+    : pinErrorText(pinning.error, [...pins, ...refs], t);
+  // The + menu item that opened a picker is gone once it closes.
+  const composerArea = useRef<HTMLDivElement>(null);
+  const focusComposer = () => composerArea.current?.querySelector("textarea")?.focus();
   const pinnedAbove =
     props.sessionId && (pins.length > 0 || pinError) ? (
       <>
-        <PinnedBar sessionId={props.sessionId} pins={pins} readOnly={readOnly} />
+        <PinnedBar key={props.sessionId} pins={pins} pinning={pinning} readOnly={readOnly} />
         {pinError && (
           <p role="alert" className="px-1 text-xs text-status-error">
             {pinError}
@@ -703,6 +691,7 @@ export function Conversation(props: ConversationProps) {
         </div>
       </div>
       <div
+        ref={composerArea}
         className={cn(
           "relative mx-auto w-full max-w-[760px]",
           full ? "px-4 pb-4 md:px-6" : "px-3 pb-3",
@@ -798,6 +787,7 @@ export function Conversation(props: ConversationProps) {
           onContextRefsChange={setRefs}
           extraPlusItems={plusItems}
           onPinRef={props.sessionId && !readOnly ? pinRef : undefined}
+          pinBusy={pinning.isPending}
           disabled={readOnly}
           autoFocus={props.autoFocus}
         />
@@ -807,6 +797,7 @@ export function Conversation(props: ConversationProps) {
               open={picker === "source"}
               onPick={addRef}
               onClose={() => setPicker(null)}
+              returnFocus={focusComposer}
             />
             <ContextSearchDialog
               open={picker === "knowledge" || picker === "object"}
@@ -818,6 +809,7 @@ export function Conversation(props: ConversationProps) {
               }
               onPick={addRef}
               onClose={() => setPicker(null)}
+              returnFocus={focusComposer}
             />
           </>
         )}
