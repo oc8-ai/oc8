@@ -99,7 +99,7 @@ describe("TriggerOwner", () => {
       createdByName: null,
     });
     expect(
-      screen.getByText("Zeitplan hat keinen Besitzer, bitte einmal neu speichern."),
+      screen.getByText("Dieser Zeitplan hat keinen Besitzer. Bitte speichern Sie ihn einmal neu."),
     ).toBeInTheDocument();
   });
 

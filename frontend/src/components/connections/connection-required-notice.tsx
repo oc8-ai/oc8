@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import type { ConnectionRequiredInfo } from "@/lib/connections";
 import { useT } from "@/lib/i18n";
 import { providerName } from "./texts";
@@ -23,52 +24,47 @@ export function ConnectionRequiredNotice({
         de: `Ihren Zugang zu ${value.label}`,
         deDative: `Ihrem Zugang zu ${value.label}`,
       };
-  const connectHref = `/connections?connect=${encodeURIComponent(value.integration)}`;
+  // Where the problem gets fixed: the connect assistant, or the agent's
+  // access setting. A null target means nothing to link to.
+  let target: "connect" | "agent" | null = "connect";
+  let linkLabel = t("Connect now →", "Jetzt verbinden →");
   let text: string;
-  let link: { href: string; label: string } | null = {
-    href: connectHref,
-    label: t("Connect now →", "Jetzt verbinden →"),
-  };
   switch (value.reason) {
     case "needs_reauth":
       text = t(
         `The connection to ${account.en} has expired.`,
         `Die Verbindung zu ${account.deDative} ist abgelaufen.`,
       );
-      link = { href: connectHref, label: t("Reconnect now →", "Jetzt erneut verbinden →") };
+      linkLabel = t("Reconnect now →", "Jetzt erneut verbinden →");
       break;
     case "schedule_without_owner":
       text = t(
         "This schedule has no owner. Please save it once again.",
-        "Zeitplan hat keinen Besitzer, bitte einmal neu speichern.",
+        "Dieser Zeitplan hat keinen Besitzer. Bitte speichern Sie ihn einmal neu.",
       );
-      link = null;
+      target = null;
       break;
     case "no_acting_person":
       text = t(
-        "Nobody is working with this run, so the agent cannot choose an account. Give the agent a fixed access.",
+        "This run has no acting person, so the agent cannot pick an account. Give the agent a fixed access.",
         "Niemand arbeitet mit diesem Lauf, daher kann der Agent kein Konto wählen. Legen Sie beim Agenten einen festen Zugang fest.",
       );
-      link = null;
+      target = null;
       break;
     case "binding_needs_confirmation":
       text = t(
         `This agent's access to ${value.label} must be confirmed again.`,
         `Der Zugang dieses Agenten zu ${value.label} muss erneut bestätigt werden.`,
       );
-      link = agentId
-        ? {
-            href: `/agents/${encodeURIComponent(agentId)}?tab=guardrails`,
-            label: t("Check access →", "Zugang prüfen →"),
-          }
-        : null;
+      target = agentId ? "agent" : null;
+      linkLabel = t("Check access →", "Zugang prüfen →");
       break;
     case "not_configured":
       text = t(
         `No access to ${value.label} is set up yet.`,
         `Für ${value.label} ist noch kein Zugang eingerichtet.`,
       );
-      link = { href: connectHref, label: t("Set up now →", "Jetzt einrichten →") };
+      linkLabel = t("Set up now →", "Jetzt einrichten →");
       break;
     default:
       text = t(
@@ -82,14 +78,25 @@ export function ConnectionRequiredNotice({
       className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm"
     >
       <span>{text}</span>
-      {link && (
-        <a
-          href={link.href}
-          className="font-medium underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+      {target === "connect" && (
+        <Link to="/connections" search={{ connect: value.integration }} className={LINK}>
+          {linkLabel}
+        </Link>
+      )}
+      {target === "agent" && agentId && (
+        // The agent page reads `?tab=` once on arrival (agents.$id.tsx).
+        <Link
+          to="/agents/$id"
+          params={{ id: agentId }}
+          search={{ tab: "guardrails" }}
+          className={LINK}
         >
-          {link.label}
-        </a>
+          {linkLabel}
+        </Link>
       )}
     </div>
   );
 }
+
+const LINK =
+  "font-medium underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";

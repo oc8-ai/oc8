@@ -3,6 +3,33 @@ import { render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
+// The notice links through the router (no full page reload). Stub its Link
+// as an anchor that renders the href it would navigate to.
+vi.mock("@tanstack/react-router", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@tanstack/react-router")>();
+  return {
+    ...actual,
+    Link: ({
+      children,
+      to,
+      params,
+      search,
+    }: {
+      children?: ReactNode;
+      to: string;
+      params?: Record<string, string>;
+      search?: Record<string, string>;
+    }) => {
+      const path = to.replace(/\$(\w+)/g, (_, key: string) => params?.[key] ?? "");
+      const query = search ? `?${new URLSearchParams(search).toString()}` : "";
+      return (
+        <a href={`${path}${query}`} data-router-link="">
+          {children}
+        </a>
+      );
+    },
+  };
+});
 vi.mock("@/lib/api", () => ({ api: { get: vi.fn() } }));
 import { api } from "@/lib/api";
 import { CopilotRunActivity } from "@/components/copilot-run-activity";

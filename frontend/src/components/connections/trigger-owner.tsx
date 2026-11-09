@@ -47,7 +47,7 @@ export function TriggerOwner({ agentId, trigger }: { agentId: string; trigger: T
           <p>
             {t(
               "This schedule has no owner. Please save it once again.",
-              "Zeitplan hat keinen Besitzer, bitte einmal neu speichern.",
+              "Dieser Zeitplan hat keinen Besitzer. Bitte speichern Sie ihn einmal neu.",
             )}
           </p>
         )

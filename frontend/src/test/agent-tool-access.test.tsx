@@ -185,7 +185,7 @@ describe("AgentToolAccessPanel", () => {
     await waitFor(() => expect(reset).toHaveBeenCalledWith("microsoft365"));
   });
 
-  it("lets the owner confirm their binding again after the agent changed", async () => {
+  it("asks the owner again before re-confirming their own binding", async () => {
     access.mockReturnValue(
       rows({
         mode: "fixed",
@@ -203,12 +203,59 @@ describe("AgentToolAccessPanel", () => {
       ),
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Bestätigen" }));
+    expect(
+      await screen.findByText(
+        "Wenn Kolleginnen und Kollegen mit diesem Agenten arbeiten, nutzt er dafür Ihr Konto me@acme.de.",
+      ),
+    ).toBeInTheDocument();
+    expect(setAccess).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Konto freigeben" }));
     await waitFor(() =>
       expect(setAccess).toHaveBeenCalledWith({
         toolKey: "microsoft365",
         body: { mode: "fixed", oauthConnectionId: "m1", confirmShare: true },
       }),
     );
+  });
+
+  it("sends nothing when the owner cancels the re-confirmation", async () => {
+    access.mockReturnValue(
+      rows({
+        mode: "fixed",
+        oauthConnectionId: "m1",
+        targetLabel: "me@acme.de",
+        targetOwnerName: "Ich",
+        needsConfirmation: true,
+        confirmationReason: "not_confirmed",
+      }),
+    );
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Bestätigen" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Abbrechen" }));
+    await waitFor(() =>
+      expect(screen.queryByText(/nutzt er dafür Ihr Konto/)).not.toBeInTheDocument(),
+    );
+    expect(setAccess).not.toHaveBeenCalled();
+  });
+
+  it("tells someone who cannot edit the agent to ask an administrator", async () => {
+    access.mockReturnValue(
+      rows({
+        mode: "fixed",
+        oauthConnectionId: "m1",
+        targetLabel: "me@acme.de",
+        targetOwnerName: "Ich",
+        needsConfirmation: true,
+        confirmationReason: "agent_changed",
+      }),
+    );
+    renderPanel(false);
+    expect(
+      await screen.findByText(
+        "Sie können diesen Agenten nicht bearbeiten. Bitte wenden Sie sich an eine Administratorin bzw. einen Administrator oder an jemanden, der den Agenten bearbeiten darf.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Bestätigen" })).not.toBeInTheDocument();
   });
 
   it("lets an administrator confirm a colleague's binding without sharing their own", async () => {

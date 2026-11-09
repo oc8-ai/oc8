@@ -220,17 +220,28 @@ function AccessRow({
             <button
               type="button"
               disabled={busy}
-              onClick={() => void put(fixedBody(boundOption, boundOption.owner === "me"))}
+              onClick={() =>
+                // Your own account: re-tell what sharing means before it is
+                // shared again. A colleague's (administrators only): direct.
+                void (boundOption.owner === "me"
+                  ? shareOwn(boundOption)
+                  : put(fixedBody(boundOption, false)))
+              }
               className="mt-2 min-h-11 rounded-md border border-border bg-background px-3 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-60"
             >
               {t("Confirm", "Bestätigen")}
             </button>
           ) : (
             <p className="mt-1 text-muted-foreground">
-              {t(
-                "The account's owner or an administrator can confirm it.",
-                "Bestätigen können der Besitzer des Kontos oder eine Administratorin bzw. ein Administrator.",
-              )}
+              {disabled
+                ? t(
+                    "You cannot edit this agent. Please ask an administrator or someone who may edit the agent.",
+                    "Sie können diesen Agenten nicht bearbeiten. Bitte wenden Sie sich an eine Administratorin bzw. einen Administrator oder an jemanden, der den Agenten bearbeiten darf.",
+                  )
+                : t(
+                    "The account's owner or an administrator can confirm it.",
+                    "Bestätigen können der Besitzer des Kontos oder eine Administratorin bzw. ein Administrator.",
+                  )}
             </p>
           )}
         </div>

@@ -1,5 +1,34 @@
 import { render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import type { ReactNode } from "react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+// The notice links through the router (no full page reload). Stub its Link
+// as an anchor that renders the href it would navigate to.
+vi.mock("@tanstack/react-router", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@tanstack/react-router")>();
+  return {
+    ...actual,
+    Link: ({
+      children,
+      to,
+      params,
+      search,
+    }: {
+      children?: ReactNode;
+      to: string;
+      params?: Record<string, string>;
+      search?: Record<string, string>;
+    }) => {
+      const path = to.replace(/\$(\w+)/g, (_, key: string) => params?.[key] ?? "");
+      const query = search ? `?${new URLSearchParams(search).toString()}` : "";
+      return (
+        <a href={`${path}${query}`} data-router-link="">
+          {children}
+        </a>
+      );
+    },
+  };
+});
 import { ConnectionRequiredNotice } from "@/components/connections/connection-required-notice";
 import { LanguageProvider } from "@/lib/i18n";
 
@@ -34,6 +63,7 @@ describe("ConnectionRequiredNotice", () => {
       "href",
       "/connections?connect=microsoft365",
     );
+    expect(screen.getByRole("link")).toHaveAttribute("data-router-link");
   });
 
   it("explains a schedule without owner, without a connect link", () => {
@@ -58,7 +88,7 @@ describe("ConnectionRequiredNotice", () => {
       reason: "schedule_without_owner",
     });
     expect(
-      screen.getByText("Zeitplan hat keinen Besitzer, bitte einmal neu speichern."),
+      screen.getByText("Dieser Zeitplan hat keinen Besitzer. Bitte speichern Sie ihn einmal neu."),
     ).toBeInTheDocument();
   });
 
@@ -118,7 +148,7 @@ describe("ConnectionRequiredNotice", () => {
     });
     expect(
       screen.getByText(
-        "Nobody is working with this run, so the agent cannot choose an account. Give the agent a fixed access.",
+        "This run has no acting person, so the agent cannot pick an account. Give the agent a fixed access.",
       ),
     ).toBeInTheDocument();
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
