@@ -209,7 +209,9 @@ async def create_task(
         db,
         tenant_id=tenant_id,
         agent_id=lead.id,
-        context={"task": instructions},
+        # The member asked for it: a tool "in the user's context" acts for
+        # them (connections design).
+        context={"task": instructions, "on_behalf_of": str(member_id)},
         source="manual",
         idempotency_key=f"member-task:{task.id}",
         task_id=task.id,

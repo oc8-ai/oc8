@@ -2218,6 +2218,9 @@ async def execute_control_tool(
                 "options": options,
                 "recommendation": str(recommendation) if recommendation else None,
                 "task_title": task.title,
+                # The run that asked: its follow-up acts for the same person
+                # (decision_followup.carry_out_decision).
+                "run_id": str(run_id) if run_id is not None else None,
             },
         )
         await append_event(

@@ -21,6 +21,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.connections.acting import resolve_acting_person
 from oc8.runtime.intake import enqueue_run
 from oc8.tenants.activity import TenantInactive
 
@@ -72,6 +73,31 @@ def instruction_for(approval: m.ApprovalRequest, *, decision: str, reason: str) 
     return "\n".join(lines)
 
 
+async def _carried_from_asking_run(db: AsyncSession, approval: m.ApprovalRequest) -> dict[str, Any]:
+    """The person the run that asked acted for, and the trigger that started
+    it -- what a delegation carries too (connections design). Nothing when
+    that run is unknown or gone: the follow-up then acts for nobody."""
+    raw = (approval.payload or {}).get("run_id")
+    try:
+        asking = await db.get(m.AgentRun, uuid.UUID(str(raw))) if raw else None
+    except ValueError:
+        asking = None
+    if asking is None or asking.tenant_id != approval.tenant_id:
+        return {}
+    carried: dict[str, Any] = {}
+    acting = await resolve_acting_person(db, asking)
+    if acting.member_id is not None:
+        carried["on_behalf_of"] = str(acting.member_id)
+    ctx = asking.context if isinstance(asking.context, dict) else {}
+    followup = ctx.get("followup")
+    trigger_id = ctx.get("trigger_id") or (
+        followup.get("trigger_id") if isinstance(followup, dict) else None
+    )
+    if trigger_id:
+        carried["trigger_id"] = str(trigger_id)
+    return carried
+
+
 async def carry_out_decision(
     db: AsyncSession,
     *,
@@ -93,12 +119,16 @@ async def carry_out_decision(
         approval.decision_option = option
     await db.flush()
 
+    context: dict[str, Any] = {
+        "task": instruction_for(approval, decision=decision, reason=reason),
+        **await _carried_from_asking_run(db, approval),
+    }
     try:
         run, _published = await enqueue_run(
             db,
             tenant_id=approval.tenant_id,
             agent_id=approval.agent_id,
-            context={"task": instruction_for(approval, decision=decision, reason=reason)},
+            context=context,
             source="decision",
             # One run per decision, forever: a double-click on approve must not
             # have the agent act twice on an external system.
