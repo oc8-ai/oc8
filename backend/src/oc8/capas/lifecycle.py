@@ -227,13 +227,28 @@ async def enable_plugin(
     inst.disabled_reason = None
     inst.failure_count = 0
     await db.flush()
-    _register_hooks(tenant_id, plugin, version, list(granted_permissions))
-    _register_claude_hooks(tenant_id, plugin, version, list(granted_permissions))
-    # Data-only plugin types (skill / flow_template / tool_pack) become real rows
-    # here: they carry no code, so enable is the only moment they can take
-    # effect. Idempotent, and never undone by disable_plugin.
-    await materialise_plugin_data(db, tenant_id=tenant_id, version=version)
+    try:
+        _register_hooks(tenant_id, plugin, version, list(granted_permissions))
+        _register_claude_hooks(tenant_id, plugin, version, list(granted_permissions))
+        # Data-only plugin types (skill / flow_template / tool_pack) become real
+        # rows here: they carry no code, so enable is the only moment they can
+        # take effect. Idempotent, and never undone by disable_plugin.
+        await materialise_plugin_data(db, tenant_id=tenant_id, version=version)
+    except BaseException:
+        # The caller's transaction rolls back on this error; the in-process
+        # registries must not keep handlers for a plugin the database never
+        # enabled (fail closed).
+        await forget_plugin_runtime(tenant_id, capa_id)
+        raise
     return inst
+
+
+async def forget_plugin_runtime(tenant_id: uuid.UUID, capa_id: uuid.UUID) -> None:
+    """Drop a plugin's in-process hook and Claude-hook registrations without
+    touching the database -- for undoing an enable whose transaction is about
+    to roll back."""
+    await _unregister_and_teardown(get_hook_registry(tenant_id), capa_id)
+    _unregister_claude_hooks(tenant_id, capa_id)
 
 
 async def disable_plugin(

@@ -20,6 +20,10 @@ Two ways to name it, in this order:
    field, so the common single-mailbox case does not force the model to guess
    a UPN on every single call.
 
+A person's own (delegated) token -- core sets `OC8_OAUTH_GRANT=authorization_code`
+-- does have a user: such a call works on `/me/...`, and only on the person's own
+mailbox. A `userId` naming anyone else is refused, never forwarded to Graph.
+
 Neither present is a configuration error, not a call to make against Graph:
 raising here says so in words an operator can act on, rather than building
 `/users//messages` and letting Graph answer something unrelated.
@@ -62,3 +66,27 @@ def resolve_user(args: dict[str, Any]) -> str:
         "pass userId (a UPN or Graph object id) or set a default mailbox in the "
         "plugin's setup form"
     )
+
+
+#: Set by the core when the token is one person's own sign-in.
+GRANT_ENV = "OC8_OAUTH_GRANT"
+#: The connected account's label (the person's sign-in name).
+ACCOUNT_ENV = "OC8_OAUTH_ACCOUNT"
+
+
+def is_personal() -> bool:
+    return os.environ.get(GRANT_ENV, "") == "authorization_code"
+
+
+def user_base(args: dict[str, Any]) -> str:
+    """The Graph path prefix for this call: `/me` for a person's own token
+    (a `userId` naming anyone but that person is refused), `/users/{id}`
+    otherwise."""
+    if is_personal():
+        explicit = str(args.get("userId") or "").strip()
+        own = os.environ.get(ACCOUNT_ENV, "").strip()
+        if explicit and explicit.casefold() != own.casefold():
+            who = own or "its connected person"
+            raise RuntimeError(f"this connection acts as {who} only; omit userId")
+        return "/me"
+    return f"/users/{resolve_user(args)}"

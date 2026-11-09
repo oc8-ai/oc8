@@ -108,6 +108,11 @@ async def schedule_followup(
     )
     db.add(trigger)
     await db.flush()
+    from oc8.connections.access import trigger_fingerprint
+
+    # The member scheduled it: their own account may serve it while the
+    # Copilot stays as it is now (connections.access.schedule_confirmed).
+    trigger.access_fingerprint = await trigger_fingerprint(db, trigger)
     # Same guard and order as triggers.service.create_trigger: checked after
     # the flush, so this follow-up itself counts as the enabled trigger. A tool
     # call turns the rejection into an ERROR and the run carries on, so the

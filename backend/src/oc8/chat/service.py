@@ -465,6 +465,8 @@ async def send_message(
             "chat_channel",
             "chat_channel_external_id",
             "chat_session_id",
+            "on_behalf_of",
+            "trigger_id",
             "task",
         }
         context.update({k: v for k, v in extra_context.items() if k not in reserved})

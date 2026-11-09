@@ -52,6 +52,9 @@ _OVERRIDES: dict[tuple[str, str], Any] = {
     ("trigger", "kind"): "cron",
     ("trigger", "cron_expression"): "0 * * * *",
     ("agent_run", "state"): RunState.QUEUED.value,
+    # mode "user" must carry neither a connection nor a credential.
+    ("agent_tool_access", "oauth_connection_id"): None,
+    ("agent_tool_access", "credential_id"): None,
 }
 
 _ANY_ARRAY = re.compile(r"\(\(?(\w+)\)?(?:::text)? = ANY \(\(?ARRAY\['([^']*)'")
@@ -155,12 +158,12 @@ async def _populate(db: AsyncSession, tenant_id: uuid.UUID) -> None:
             for column in table.columns:
                 if column.name == "tenant_id":
                     continue
+                if (table.name, column.name) in _OVERRIDES:
+                    values[column.name] = _OVERRIDES[(table.name, column.name)]
+                    continue
                 parent = fks.get((table.name, column.name))
                 if parent is not None and parent in inserted:
                     values[column.name] = inserted[parent]
-                    continue
-                if (table.name, column.name) in _OVERRIDES:
-                    values[column.name] = _OVERRIDES[(table.name, column.name)]
                     continue
                 if column.nullable or column.server_default is not None:
                     continue

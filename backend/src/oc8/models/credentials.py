@@ -10,10 +10,11 @@ credential's `region`) -- secret values are never persisted on this row.
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Text, UniqueConstraint, Uuid
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -31,4 +32,16 @@ class Credential(Base, PkMixin, TenantMixin, TimestampMixin):
     last_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_test_ok: Mapped[bool | None] = mapped_column(Boolean)
 
-    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_credential_tenant_name"),)
+    #: NULL: the organisation's credential (every row before migration 0107).
+    #: Otherwise one member's own login ("Nur für mich").
+    owner_member_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "owner_member_id",
+            "name",
+            name="uq_credential_tenant_owner_name",
+            postgresql_nulls_not_distinct=True,
+        ),
+    )

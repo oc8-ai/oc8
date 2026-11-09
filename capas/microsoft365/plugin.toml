@@ -10,7 +10,8 @@
 
 [plugin]
 name = "microsoft365"
-version = "1.0.1"
+label = "Microsoft 365"
+version = "1.0.2"
 type = "tool_pack"
 trust = "first_party"
 summary = "Connect Microsoft 365 — SharePoint/OneDrive knowledge base, plus Outlook, Calendar, Teams, Word, Excel and PowerPoint tools"

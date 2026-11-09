@@ -438,7 +438,9 @@ async def test_test_credential_with_no_validate_entry_point_succeeds_trivially(
 
 
 async def test_test_credential_resolves_a_plugin_owned_validate_entry_point(
-    app_session: AppSessionFactory, _real_s3_source_plugin: None
+    app_session: AppSessionFactory,
+    _real_s3_source_plugin: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Bug 1 regression (Task 15 report, "Test button fails for plugin-owned
     credential types"). Exercises the REAL, shipped `s3_source` Capa and its
@@ -459,6 +461,9 @@ async def test_test_credential_resolves_a_plugin_owned_validate_entry_point(
     # the real, plugin-contributed one below. The autouse fixture's own
     # teardown re-pops "s3_api" afterwards regardless, so this is harmless.
     registry.CORE_CREDENTIAL_TYPES.pop("s3_api", None)
+    # The example endpoint has no DNS; the url guard needs it to resolve.
+    monkeypatch.setattr("oc8.net.outbound.resolve_ips", lambda host: ["10.9.9.9"])
+    monkeypatch.setattr(get_settings(), "outbound_allowed_private", "minio.example.test")
 
     tenant = uuid.uuid4()
     found = find_plugin("s3_source")
