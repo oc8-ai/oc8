@@ -421,7 +421,7 @@ function ConversationBody(props: ConversationProps) {
               },
               {
                 id: "knowledge",
-                label: t("Knowledge base", "Wissensbasis"),
+                label: t("Knowledge base", "Wissensdatenbank"),
                 icon: <BookOpen className="size-4" aria-hidden />,
                 onSelect: () => setPicker("knowledge"),
               },
@@ -1047,7 +1047,7 @@ function ConversationBody(props: ConversationProps) {
               kinds={picker === "knowledge" ? ["knowledge_base"] : OBJECT_KINDS}
               title={
                 picker === "knowledge"
-                  ? t("Knowledge base", "Wissensbasis")
+                  ? t("Knowledge base", "Wissensdatenbank")
                   : t("oc8 object", "oc8-Objekt")
               }
               onPick={addRef}

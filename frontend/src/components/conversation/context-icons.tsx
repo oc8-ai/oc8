@@ -36,7 +36,7 @@ export function kindIcon(kind: string): LucideIcon {
 export function kindLabel(kind: string, t: (en: string, de?: string) => string): string {
   switch (kind) {
     case "knowledge_base":
-      return t("Knowledge base", "Wissensbasis");
+      return t("Knowledge base", "Wissensdatenbank");
     case "data_source":
       return t("Data source", "Datenquelle");
     case "source_file":
@@ -48,7 +48,7 @@ export function kindLabel(kind: string, t: (en: string, de?: string) => string):
     case "department":
       return t("Department", "Abteilung");
     case "run":
-      return t("Run", "Lauf");
+      return t("Agent run", "Lauf");
     case "approval":
       return t("Approval", "Freigabe");
     case "responsibility":

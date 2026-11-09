@@ -161,14 +161,14 @@ describe("sources suppression", () => {
   it("keeps the core Sources list without an edition sources renderer", () => {
     caps.value = [];
     render(turn([]));
-    expect(screen.getByRole("region", { name: "Sources" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Cited sources" })).toBeInTheDocument();
     expect(screen.queryByText("edition sources")).toBeNull();
   });
 
   it("drops the core list when an edition renders sources", () => {
     caps.value = null;
     render(turn([ext]));
-    expect(screen.queryByRole("region", { name: "Sources" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Cited sources" })).toBeNull();
     expect(screen.getByText("edition sources")).toBeInTheDocument();
   });
 });

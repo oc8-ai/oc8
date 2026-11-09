@@ -33,7 +33,7 @@ export function OrganisationIdLine({ tenantId }: { tenantId: string }) {
       <span className="text-xs text-muted-foreground">
         {t(
           "Please include it when you contact support.",
-          "Bitte geben Sie sie bei Support-Anfragen an.",
+          "Gib sie bei Support-Anfragen an.",
         )}
       </span>
     </div>

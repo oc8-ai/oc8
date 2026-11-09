@@ -173,7 +173,7 @@ export function LiveTimeline({
             id={run.id}
             label={t("this run", "diesen Lauf")}
             variant="link"
-            text={t("Continue", "Weitermachen")}
+            text={t("Continue in Copilot", "Im Copilot weitermachen")}
           />
         )}
       </>

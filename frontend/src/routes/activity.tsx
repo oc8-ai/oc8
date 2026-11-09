@@ -51,10 +51,10 @@ function RunFocus({
   const { data: run, isError } = useRun(runId);
   return (
     <Panel>
-      <section aria-label={t("Run", "Lauf")} className="space-y-3 p-4">
+      <section aria-label={t("Run details", "Laufdetails")} className="space-y-3 p-4">
         <div className="flex items-center gap-2 text-sm">
           <span className="font-medium">
-            {run ? (agentName(run.agentId) ?? t("Agent", "Agent")) : t("Run", "Lauf")}
+            {run ? (agentName(run.agentId) ?? t("Agent", "Agent")) : t("Agent run", "Lauf")}
           </span>
           {run && (
             <span

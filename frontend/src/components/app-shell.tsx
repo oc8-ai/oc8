@@ -476,7 +476,7 @@ export function EditionCapabilityGate({ path, children }: { path: string; childr
     <div role="alert" className="mx-auto max-w-md py-16 text-center text-sm text-muted-foreground">
       {t(
         "This feature is not available for your organisation.",
-        "Diese Funktion ist für Ihre Organisation nicht verfügbar.",
+        "Diese Funktion ist für deine Organisation nicht verfügbar.",
       )}
     </div>
   );

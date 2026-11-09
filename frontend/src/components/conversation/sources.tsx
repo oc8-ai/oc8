@@ -22,7 +22,7 @@ export function Sources({
   const t = useT();
   if (sources.length === 0) return null;
   return (
-    <section aria-label={t("Sources", "Quellen")} className="space-y-1">
+    <section aria-label={t("Cited sources", "Quellen")} className="space-y-1">
       <h4 className="text-micro">
         {t(`Sources (${sources.length})`, `Quellen (${sources.length})`)}
       </h4>

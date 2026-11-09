@@ -47,7 +47,7 @@ function KbContentRoute() {
         <DiscussWithCopilot
           kind="knowledge_base"
           id={kbId}
-          label={t("this knowledge base", "diese Wissensbasis")}
+          label={t("this knowledge base", "diese Wissensdatenbank")}
         />
       </div>
       <KbContentView kbId={kbId} />

@@ -279,7 +279,7 @@ msgstr "Alle Abteilungen"
 
 
 msgid "All knowledge bases are already linked."
-msgstr "Alle Wissensbasen sind bereits verknüpft."
+msgstr "Alle Wissensdatenbanken sind bereits verknüpft."
 
 msgid "All runs"
 msgstr "Alle Läufe"
@@ -474,7 +474,7 @@ msgid "Assign"
 msgstr "Zuweisen"
 
 msgid "Assign knowledge base"
-msgstr "Wissensbasis zuweisen"
+msgstr "Wissensdatenbank zuweisen"
 
 msgid "Assign skill"
 msgstr "Skill zuweisen"
@@ -1305,7 +1305,7 @@ msgid "Could not update."
 msgstr "Konnte nicht aktualisiert werden."
 
 msgid "Couldn't assign knowledge base"
-msgstr "Wissensbasis konnte nicht zugewiesen werden"
+msgstr "Wissensdatenbank konnte nicht zugewiesen werden"
 
 msgid "Couldn't assign skill"
 msgstr "Skill konnte nicht zugewiesen werden"
@@ -2365,14 +2365,14 @@ msgid "Instance not yet initialized. Please complete setup."
 msgstr "Instanz noch nicht initialisiert. Bitte führen Sie das Setup durch."
 
 msgid "Instructions"
-msgstr "Anleitung"
+msgstr "Anweisungen"
 
 
 msgid "Instructions saved"
 msgstr "Anweisungen gespeichert"
 
 msgid "interrupted"
-msgstr "abgebrochen"
+msgstr "unterbrochen"
 
 msgid "Invalid"
 msgstr "Ungültig"
@@ -2413,7 +2413,7 @@ msgid "Knowledge base"
 msgstr "Wissensdatenbank"
 
 msgid "Knowledge base assigned"
-msgstr "Wissensbasis zugewiesen"
+msgstr "Wissensdatenbank zugewiesen"
 
 msgid "Knowledge base deleted"
 msgstr "Wissensdatenbank gelöscht"
@@ -2422,7 +2422,7 @@ msgid "Knowledge base updated"
 msgstr "Wissensdatenbank aktualisiert"
 
 msgid "Knowledge bases"
-msgstr "Wissensbasen"
+msgstr "Wissensdatenbanken"
 
 msgid "Knowledge Bases"
 msgstr "Wissensdatenbanken"
@@ -3022,7 +3022,7 @@ msgstr "kein Schlüssel"
 
 
 msgid "No knowledge bases match your search."
-msgstr "Keine Wissensbasen passen zur Suche."
+msgstr "Keine Wissensdatenbanken passen zur Suche."
 
 msgid "No limits set yet. Add one to protect your budget."
 msgstr "Noch keine Limits gesetzt. Fügen Sie eines hinzu, um Ihr Budget zu schützen."
@@ -4052,11 +4052,11 @@ msgid "Search…"
 msgstr "Suchen…"
 
 msgid "Searched the knowledge base"
-msgstr "Wissensbasis durchsucht"
+msgstr "Wissensdatenbank durchsucht"
 
 
 msgid "Searching the knowledge base"
-msgstr "Durchsucht die Wissensbasis"
+msgstr "Durchsucht die Wissensdatenbank"
 
 
 msgid "Seat added"
@@ -4377,7 +4377,7 @@ msgstr "Schritte"
 
 
 msgid "Stop"
-msgstr "Abbrechen"
+msgstr "Stoppen"
 
 msgid "Stop run"
 msgstr "Lauf stoppen"
@@ -4683,7 +4683,7 @@ msgstr "Sie verschwinden aus der Benutzerliste und können sich nicht mehr anmel
 
 
 msgid "Thinking…"
-msgstr "Denkt nach…"
+msgstr "Denkt nach …"
 
 msgid "This action is blocked by an OC8 security policy."
 msgstr "Diese Aktion ist durch eine OC8-Sicherheitsrichtlinie gesperrt."
@@ -4760,7 +4760,7 @@ msgstr "Hier arbeitet dieser Agent. Seine Läufe und deine Nachrichten erscheine
 
 
 msgid "this knowledge base"
-msgstr "diese Wissensbasis"
+msgstr "diese Wissensdatenbank"
 
 
 msgid "This legacy preview is read-only. The live token budgets above are the only enforced budget controls until a cost-limit API exists."

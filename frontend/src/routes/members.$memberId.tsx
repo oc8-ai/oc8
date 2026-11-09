@@ -522,7 +522,7 @@ export function MemberDetailForm({ member }: { member: Member }) {
             <p className="text-sm text-muted-foreground">
               {t(
                 "Or send them a link to set their own password. The mail is tried first; if no mail server is configured, you get a copyable link instead.",
-                "Oder senden Sie ihnen einen Link, damit sie selbst ein Passwort setzen. Zuerst wird die E-Mail versucht; ist kein Mailserver konfiguriert, erhalten Sie stattdessen einen kopierbaren Link.",
+                "Oder sende ihnen einen Link, damit sie selbst ein Passwort setzen. Zuerst wird die E-Mail versucht; ist kein Mailserver konfiguriert, erhältst du stattdessen einen kopierbaren Link.",
               )}
             </p>
             <button
@@ -763,7 +763,7 @@ function ResetLinkDialog({
           <DialogDescription>
             {t(
               "No mail server is configured for this instance, so the reset could not be emailed. Copy this link and send it to them yourself — it lets them set a new password.",
-              "Für diese Instanz ist kein Mailserver konfiguriert, daher konnte der Reset nicht per E-Mail versendet werden. Kopieren Sie diesen Link und senden Sie ihn selbst — damit kann ein neues Passwort gesetzt werden.",
+              "Für diese Instanz ist kein Mailserver konfiguriert, daher konnte der Reset nicht per E-Mail versendet werden. Kopiere diesen Link und sende ihn selbst — damit kann ein neues Passwort gesetzt werden.",
             )}
           </DialogDescription>
         </DialogHeader>

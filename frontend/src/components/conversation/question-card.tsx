@@ -292,7 +292,7 @@ export function QuestionCard({
 
   return (
     <section
-      aria-label={t("Questions", "Fragen")}
+      aria-label={t("Questions", "Rückfragen")}
       className="turn-in rounded-lg border border-border bg-card p-3"
     >
       <header className="mb-2 flex items-start gap-2">

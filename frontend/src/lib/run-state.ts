@@ -27,7 +27,7 @@ export function stateLabel(t: (en: string, de?: string) => string, state: string
     case "cancelled":
       return t("cancelled", "abgebrochen");
     case "queued":
-      return t("queued", "in der Warteschlange");
+      return t("queued", "eingereiht");
     case "running":
       return t("running", "läuft");
     case "waiting_for_input":

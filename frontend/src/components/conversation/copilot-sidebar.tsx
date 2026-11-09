@@ -517,7 +517,7 @@ export function CopilotSidebar({
           </section>
           <Group title={t("Today", "Heute")} sessions={groups.today} {...shared} />
           <Group title={t("Previous 7 days", "Letzte 7 Tage")} sessions={groups.week} {...shared} />
-          <Group title={t("Older", "Älter")} sessions={groups.older} {...shared} />
+          <Group title={t("Older", "Ältere")} sessions={groups.older} {...shared} />
           {sections.map(({ id, component: Extra }) => (
             <SlotBoundary key={id} id={id}>
               <Extra agentId={agentId} onOpenSession={(sid) => open(sid)} />
