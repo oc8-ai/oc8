@@ -75,9 +75,9 @@ function buildVersions(
  * on every agent-detail-page view.
  *
  * Talks to the tenant's real Assistant agent over the same session/message
- * hooks `ChatWindow` (chat-window.tsx) and the floating Copilot dock
+ * hooks the Conversation uses and the floating Copilot dock
  * (copilot-dock.tsx) use -- no separate mechanism. There is no "Start chat"
- * step here (unlike ChatWindow): the first Generate click lazily creates the
+ * step here (unlike the Conversation): the first Generate click lazily creates the
  * session itself via `pendingMessage`, mirroring copilot-dock.tsx's identical
  * create-then-send bootstrap. Because the Assistant is a single tenant-wide
  * agent, this reuses whatever session already exists for it (e.g. one
@@ -119,7 +119,7 @@ function DraftWithCopilot({
   const createSession = useCreateChatSession();
   const [sessionId, setSessionId] = useState<string | null>(null);
 
-  // Same bootstrap as ChatWindow/copilot-dock.tsx: default to the most
+  // Same bootstrap as copilot-dock.tsx: default to the most
   // recently active session (`mostRecentSession`, not the list's first entry,
   // which is a pinned chat when there is one) once the Assistant's id and its sessions have
   // both loaded; never runs again once one is selected.
@@ -312,7 +312,7 @@ export function AgentInstructionsPanel({
   const history = useAgentInstructionHistory(agentId);
 
   // "Attached files": reference material (PDF, Excel, images) this agent can
-  // read on demand via read_instruction_file, the same shape as ChatWindow's
+  // read on demand via read_instruction_file, the same shape as the Conversation's
   // upload button but scoped to owner_type="agent_instructions" instead of a
   // single chat turn -- see agent/preamble.py's has_instruction_files.
   const files = useAgentInstructionFiles(agentId);

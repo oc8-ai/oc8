@@ -342,8 +342,8 @@ export function CopilotSidebar({
   const { data: sessions = NO_SESSIONS, isLoading } = useChatSessions(agentId || undefined);
   const { data: projects = [] } = useChatProjects();
   const sections = useChatSlot("chatSidebarSections");
-  const renameSession = useRenameChatSession(agentId);
-  const deleteSession = useDeleteChatSession(agentId);
+  const renameSession = useRenameChatSession();
+  const deleteSession = useDeleteChatSession();
   const pinSession = useSetSessionPinned();
   const moveSession = useSetSessionProject();
   const deleteProject = useDeleteProject();

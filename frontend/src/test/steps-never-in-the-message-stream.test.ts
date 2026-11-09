@@ -20,7 +20,7 @@ const SRC = join(process.cwd(), "src");
 /** The only files allowed to read a run's tool-call records.
  *  - lib/run-steps.ts builds the view model,
  *  - components/run-step-timeline.tsx renders it,
- *  - components/copilot-run-activity.tsx + the two widgets mount it,
+ *  - the two widgets mount the shared timeline,
  *  - routes/agents.$id.tsx is the OPERATOR run drawer, a different surface
  *    with a different audience (see the spec's non-goals),
  *  - lib/live/apply-event.ts patches the cache,
@@ -35,7 +35,6 @@ const ALLOWED = new Set([
   "lib/conversation-api.ts",
   "lib/live/apply-event.ts",
   "components/run-step-timeline.tsx",
-  "components/copilot-run-activity.tsx",
   "components/conversation/step-list.tsx",
   "components/conversation/timeline-runs.ts",
   "components/dashboard/widgets/activity-widget.tsx",

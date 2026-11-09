@@ -5,7 +5,7 @@ import { useState } from "react";
 import { Plus, WifiOff } from "lucide-react";
 import { Conversation } from "@/components/conversation";
 import { PendingProposals } from "@/components/copilot-dock";
-import { ChatSessionPicker } from "@/components/chat-window";
+import { SessionPicker } from "@/components/conversation/session-picker";
 import { useCan } from "@/lib/governance-hooks";
 import { useAssistant } from "@/lib/hooks";
 import { useChatSessions } from "@/lib/hooks-chat";
@@ -73,13 +73,13 @@ function ChatWidgetPanel({
             onClick={() => setSessionId(null)}
             aria-label={t("New chat", "Neuer Chat")}
             title={t("New chat", "Neuer Chat")}
-            className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground transition hover:bg-muted/40 hover:text-foreground"
+            className="grid size-9 shrink-0 place-items-center rounded-md text-muted-foreground transition hover:bg-muted/40 hover:text-foreground"
           >
             <Plus className="h-4 w-4" />
           </button>
         )}
         {assistantAgentId && sessions && sessions.length > 0 && (
-          <ChatSessionPicker
+          <SessionPicker
             agentId={assistantAgentId}
             sessions={sessions}
             sessionId={sessionId}

@@ -551,7 +551,7 @@ export function Composer(props: ComposerProps) {
           onClick={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
-          className="max-h-48 min-h-10 w-full resize-none bg-transparent px-1 py-1 text-sm outline-none placeholder:text-muted-foreground"
+          className="edition-accent-focus max-h-48 min-h-10 w-full resize-none rounded-md bg-transparent px-1 py-1 text-sm outline-none placeholder:text-muted-foreground"
         />
         <div className="flex items-center gap-1">
           <PlusMenu items={plusItems} disabled={props.disabled || textOnly} />

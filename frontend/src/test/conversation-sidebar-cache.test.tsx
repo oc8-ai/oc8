@@ -104,10 +104,10 @@ describe("sidebar cache writes", () => {
   it("renaming and deleting a chat update the list", async () => {
     api.patch.mockResolvedValue(s("b", { title: "Budget" }));
     api.delete.mockResolvedValue(undefined);
-    const rename = renderHook(() => useRenameChatSession("x"), { wrapper });
+    const rename = renderHook(() => useRenameChatSession(), { wrapper });
     rename.result.current.mutate({ sessionId: "b", title: "Budget" });
     await waitFor(() => expect(listOf().find((x) => x.id === "b")?.title).toBe("Budget"));
-    const del = renderHook(() => useDeleteChatSession("x"), { wrapper });
+    const del = renderHook(() => useDeleteChatSession(), { wrapper });
     qc.setQueryData(["chat", "session", "a"], s("a"));
     qc.setQueryData(chatKeys.messages("a"), []);
     del.result.current.mutate("a");

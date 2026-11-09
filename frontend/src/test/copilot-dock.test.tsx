@@ -15,7 +15,6 @@ const {
   proposalsMock,
   applyProposalMock,
   rejectProposalMock,
-  runActivityMock,
   liveStatusMock,
   agentsMock,
   departmentsMock,
@@ -36,7 +35,6 @@ const {
   proposalsMock: vi.fn(),
   applyProposalMock: vi.fn(),
   rejectProposalMock: vi.fn(),
-  runActivityMock: vi.fn(),
   liveStatusMock: vi.fn(),
   agentsMock: vi.fn(),
   departmentsMock: vi.fn(),
@@ -82,8 +80,6 @@ vi.mock("@/lib/hooks-chat", () => ({
   useSendChatMessage: () => ({ mutate: sendMessageMock, isPending: false }),
   useRenameChatSession: () => ({ mutate: renameSessionMock, isPending: false }),
   useDeleteChatSession: () => ({ mutate: deleteSessionMock, isPending: false }),
-  useCopilotRunActivity: (sessionId: string | null, runId: string | null) =>
-    runActivityMock(sessionId, runId),
 }));
 
 vi.mock("@/lib/live/provider", async (importOriginal) => {
@@ -211,8 +207,6 @@ describe("CopilotDock", () => {
     proposalsMock.mockReturnValue({ data: [] });
     applyProposalMock.mockReset();
     rejectProposalMock.mockReset();
-    runActivityMock.mockReset();
-    runActivityMock.mockReturnValue({ data: null });
     liveStatusMock.mockReset();
     liveStatusMock.mockReturnValue("connected");
     agentsMock.mockReset();
@@ -565,7 +559,7 @@ describe("CopilotDock", () => {
     expect(screen.getByPlaceholderText(/configure or ask oc8/i)).toHaveValue("Draft in tab two");
   });
 
-  it("selecting a session via ChatSessionPicker focuses its existing tab instead of duplicating it", () => {
+  it("selecting a session via SessionPicker focuses its existing tab instead of duplicating it", () => {
     sessionsMock.mockReturnValue({
       data: [
         {

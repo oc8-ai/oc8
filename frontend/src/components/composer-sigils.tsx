@@ -1,5 +1,5 @@
 // The `/`, `@` and `#` affordances, shared by both composers (§5 of the AI
-// workplace design). Split out of chat-window.tsx/copilot-dock.tsx rather than
+// workplace design). Split out of the old chat window and dock rather than
 // implemented twice, because two composers that disagree about what `@` does
 // is exactly how a convention stops being one.
 //

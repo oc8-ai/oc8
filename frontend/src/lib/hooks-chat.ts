@@ -148,7 +148,7 @@ export function writeSessionToCache(qc: QueryClient, session: ChatSessionDTO) {
   );
 }
 
-export function useRenameChatSession(_agentId?: string) {
+export function useRenameChatSession() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ sessionId, title }: { sessionId: string; title: string }) =>
@@ -157,7 +157,7 @@ export function useRenameChatSession(_agentId?: string) {
   });
 }
 
-export function useDeleteChatSession(_agentId?: string) {
+export function useDeleteChatSession() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (sessionId: string) => api.delete<void>(`/chat/sessions/${sessionId}`),
@@ -203,7 +203,7 @@ export function useSendChatMessage(sessionId: string) {
 // until the message that names it in `attachmentIds` is actually sent, at
 // which point `chat/service.py::send_message` re-points `owner_id` to the
 // new `ChatMessage`. Nothing here removes an attachment the caller uploaded
-// and then never sent -- see chat-window.tsx's pending-chip removal.
+// and then never sent -- see the Conversation composer's pending-chip removal.
 export function useUploadChatAttachment(sessionId: string) {
   return useMutation({
     mutationFn: (file: File) => uploadChatAttachment(sessionId, file),
@@ -236,22 +236,4 @@ export interface RunActivityDTO {
   // Same WS-only rule, from "run.reasoning_delta": the reasoning of the step
   // in progress.
   liveReasoning?: LiveReasoning;
-}
-
-// Seeds the exact ["run", runId] cache entry the WS patchers in
-// live/apply-event.ts already write to (run.status/output_delta/
-// component_rendered/token_delta) -- those patchers only ever UPDATE an
-// existing entry (`prev ? {...} : prev`), they never create one, so this
-// hook's own fetch is what makes a freshly opened tab's live-activity strip
-// receive those patches at all instead of silently discarding them.
-export function useCopilotRunActivity(sessionId: string | null, runId: string | null) {
-  return useQuery({
-    queryKey: ["run", runId ?? ""],
-    queryFn: () => api.get<RunActivityDTO>(`/chat/sessions/${sessionId}/runs/${runId}`),
-    enabled: !!sessionId && !!runId,
-    // A terminal run's state does not change again; a poll interval would
-    // just be wasted requests once the WS has already delivered every event
-    // an open tab will ever see for this run.
-    staleTime: Infinity,
-  });
 }

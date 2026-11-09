@@ -56,7 +56,7 @@ vi.mock("@/components/conversation", () => ({
     <div data-testid="chat" data-session={sessionId ?? ""} />
   ),
 }));
-vi.mock("@/components/chat-window", () => ({ ChatSessionPicker: () => null }));
+vi.mock("@/components/conversation/session-picker", () => ({ SessionPicker: () => null }));
 vi.mock("@/components/conversation/copilot-sidebar", () => ({ CopilotSidebar: () => null }));
 vi.mock("@/components/copilot-work-panel", () => ({ CopilotWorkPanel: () => null }));
 

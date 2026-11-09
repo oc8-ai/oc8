@@ -20,7 +20,7 @@ import {
 import { mostRecentSession } from "@/lib/chat-sessions";
 import { useChatSessions } from "@/lib/hooks-chat";
 import { useLiveConnectionStatus } from "@/lib/live/provider";
-import { ChatSessionPicker } from "@/components/chat-window";
+import { SessionPicker } from "@/components/conversation/session-picker";
 
 // Set by DoneStep right before the full-page navigation into "/" that follows
 // onboarding — sessionStorage (not React state) because that navigation
@@ -41,7 +41,7 @@ function proposalFailedText(de: boolean): string {
 
 // The tab bar's fallback label for a tab whose session doesn't exist yet
 // (a brand new blank tab) or whose session exists but has no title yet (the
-// same "no title" state ChatSessionPicker itself falls back on, worded the
+// same "no title" state SessionPicker itself falls back on, worded the
 // same way, deliberately NOT "New chat" -- that copy is reserved for the
 // header's own "reset to a blank tab" button, and re-using it here would
 // make a tab pill and that button indistinguishable by accessible name).
@@ -228,7 +228,7 @@ function CopilotDockPanel() {
   const { data: sessions } = useChatSessions(assistantAgentId);
   // Titles for EVERY session this member has, not just the assistant's: a tab
   // may now address another agent, and its title comes from the same list.
-  // `useChatSessions(assistantAgentId)` above stays as-is -- ChatSessionPicker
+  // `useChatSessions(assistantAgentId)` above stays as-is -- SessionPicker
   // is the assistant's own history and must not start listing other agents'.
   const { data: allSessions } = useChatSessions();
   const may = useMay();
@@ -465,13 +465,13 @@ function CopilotDockPanel() {
               <Plus className="h-4 w-4" />
             </button>
             {assistantAgentId && sessions && sessions.length > 0 && (
-              <ChatSessionPicker
+              <SessionPicker
                 agentId={assistantAgentId}
                 sessions={sessions}
                 sessionId={activeTab?.sessionId ?? null}
                 onSelect={(sid) => {
                   if (sid === null) {
-                    // ChatSessionPicker calls onSelect(null) after deleting
+                    // SessionPicker calls onSelect(null) after deleting
                     // the ACTIVE session -- reset that tab to blank, same as
                     // the header's own "New chat" button, rather than opening
                     // a new tab.

@@ -1,7 +1,7 @@
 // frontend/src/test/one-conversation-everywhere.test.ts
 // Spec §8 invariant 1: all surfaces render the same Conversation. A surface
 // that mounts its own transcript or textarea fails here.
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -31,5 +31,27 @@ describe("one conversation everywhere", () => {
     expect(source).toMatch(/import \{ LiveTimeline \}/);
     expect(source).toMatch(/<LiveTimeline\b/);
     expect(source).not.toMatch(/\bChatWindow\b/);
+  });
+});
+
+function allSources(dir: string, acc: string[] = []): string[] {
+  for (const entry of readdirSync(dir)) {
+    const full = join(dir, entry);
+    if (statSync(full).isDirectory()) allSources(full, acc);
+    else if (/\.tsx?$/.test(entry)) acc.push(full);
+  }
+  return acc;
+}
+
+describe("the old chat is gone", () => {
+  it("nothing references the retired chat components", () => {
+    const offenders = allSources(SRC).filter((path) =>
+      /\b(ChatWindow|CopilotChatTab|CopilotRunActivity|CopilotStreamingAnswer|useCopilotRunActivity|ChatSessionPicker)\b/.test(
+        readFileSync(path, "utf8"),
+      ),
+    );
+    expect(offenders.map((p) => p.slice(SRC.length + 1))).toEqual([
+      "test/one-conversation-everywhere.test.ts",
+    ]);
   });
 });

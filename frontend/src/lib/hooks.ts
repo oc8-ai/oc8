@@ -1136,7 +1136,7 @@ export const useApprovals = (status = "pending", options: { enabled?: boolean } 
  * quietly returning the open ones, so there is no parameter here to get wrong.
  *
  * `refetchInterval` defaults to off (the sidebar badge only needs it on
- * navigation/focus) — chat-window.tsx passes one while a session's run is
+ * navigation/focus) — the Conversation composer passes one while a session's run is
  * outstanding, so a question that opens mid-chat surfaces without a reload.
  */
 export const useClarifications = (refetchInterval: number | false = false) =>
