@@ -60,6 +60,17 @@ export function runInputError(error: unknown, t: Translate): string {
         )
       : t("The run has already finished.", "Der Lauf ist schon fertig.");
   }
+  // The server's own sentence (e.g. the Assistant's secret refusal); the
+  // length refusal and a validation list get the localized length hint.
+  if (
+    status === 422 &&
+    error instanceof ApiError &&
+    error.message &&
+    !/^[[{]/.test(error.message) &&
+    !/longer than|too long/i.test(error.message)
+  ) {
+    return error.message;
+  }
   if (status === 422) {
     return t(
       "Your message is too long (at most 4,000 characters).",

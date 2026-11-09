@@ -163,6 +163,9 @@ describe("run steering", () => {
     expect(runInputError(new ApiError("message is longer than 4000 characters", 422), t)).toBe(
       "Your message is too long (at most 4,000 characters).",
     );
+    expect(
+      runInputError(new ApiError("I cannot accept, request, or use credential values.", 422), t),
+    ).toBe("I cannot accept, request, or use credential values.");
     expect(runInputError(new ApiError("too many", 429), t)).toBe(
       "Too many messages are waiting for this run. Wait until it has read them.",
     );

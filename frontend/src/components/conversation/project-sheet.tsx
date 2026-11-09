@@ -21,6 +21,7 @@ import {
   type ContextRefViewDTO,
 } from "@/lib/conversation-api";
 import { useIsNarrow } from "@/hooks/use-mobile";
+import { ApiError } from "@/lib/api";
 import { useT } from "@/lib/i18n";
 
 import { ContextSearchDialog } from "./context-search";
@@ -135,10 +136,16 @@ export function ProjectSheet({
           </div>
           {save.isError && (
             <p role="alert" className="text-sm text-destructive">
-              {t(
-                "The project could not be saved. Check the name and try again.",
-                "Das Projekt konnte nicht gespeichert werden. Prüf den Namen und versuch es noch einmal.",
-              )}
+              {save.error instanceof ApiError &&
+              save.error.status === 422 &&
+              save.error.message &&
+              !/^[[{]/.test(save.error.message)
+                ? // The server's own sentence, e.g. the secret refusal.
+                  save.error.message
+                : t(
+                    "The project could not be saved. Check the name and try again.",
+                    "Das Projekt konnte nicht gespeichert werden. Prüf den Namen und versuch es noch einmal.",
+                  )}
             </p>
           )}
           <SheetFooter className="mt-auto gap-2">
