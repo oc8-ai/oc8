@@ -279,11 +279,17 @@ _AFTER_COMMIT_KEY = "oc8_after_commit"
 _after_commit_tasks: set[asyncio.Task[None]] = set()
 
 
+#: Per open SAVEPOINT, how many events were queued before it began: rolling the
+#: savepoint back drops exactly the ones queued inside it.
+_SAVEPOINT_MARKS_KEY = "oc8_after_commit_marks"
+
+
 def _run_pending(session: Any) -> None:
     # `after_commit` fires for a released SAVEPOINT too; only the root
     # transaction's commit makes the rows visible to a reader.
     if session.in_nested_transaction():
         return
+    session.info.pop(_SAVEPOINT_MARKS_KEY, None)
     pending = session.info.pop(_AFTER_COMMIT_KEY, [])
     if not pending:
         return
@@ -295,11 +301,19 @@ def _run_pending(session: Any) -> None:
 
 
 def _drop_pending(session: Any, previous_transaction: Any) -> None:
-    # `after_soft_rollback` fires for SAVEPOINT rollbacks too; only the root
-    # transaction's rollback means the rows never existed. A savepoint rolled
-    # back inside a transaction that then commits keeps its pending events.
+    # `after_soft_rollback` fires for SAVEPOINT rollbacks too. The root
+    # transaction's rollback means none of the rows ever existed; a savepoint's
+    # means only the ones written inside it did not, so only the events queued
+    # inside it go. A savepoint rolled back inside a transaction that then
+    # commits keeps every event queued before it.
     if previous_transaction.parent is None:
         session.info.pop(_AFTER_COMMIT_KEY, None)
+        session.info.pop(_SAVEPOINT_MARKS_KEY, None)
+        return
+    marks = session.info.get(_SAVEPOINT_MARKS_KEY, {})
+    mark = marks.pop(previous_transaction, None)
+    if mark is not None:
+        del session.info.get(_AFTER_COMMIT_KEY, [])[mark:]
 
 
 def publish_after_commit(db: AsyncSession, factory: Callable[[], Awaitable[None]]) -> None:
@@ -309,12 +323,22 @@ def publish_after_commit(db: AsyncSession, factory: Callable[[], Awaitable[None]
     before the executor's commit, that refetch would come back without the
     message (the executor publishes run.status before it commits, see
     lib/live/apply-event.ts). Dropped on rollback: an event for a row that never
-    existed is worse than none."""
+    existed is worse than none -- including one queued inside a SAVEPOINT that
+    is rolled back while the transaction around it commits."""
     sync = db.sync_session
     if not sa_event.contains(sync, "after_commit", _run_pending):
         sa_event.listen(sync, "after_commit", _run_pending)
         sa_event.listen(sync, "after_soft_rollback", _drop_pending)
-    sync.info.setdefault(_AFTER_COMMIT_KEY, []).append(factory)
+    pending = sync.info.setdefault(_AFTER_COMMIT_KEY, [])
+    # Mark every enclosing savepoint on the first event queued inside it. One
+    # with no mark yet has had nothing queued inside it, so the current length
+    # is exactly where its events begin.
+    marks = sync.info.setdefault(_SAVEPOINT_MARKS_KEY, {})
+    transaction = sync.get_nested_transaction()
+    while transaction is not None and transaction.nested:
+        marks.setdefault(transaction, len(pending))
+        transaction = transaction.parent
+    pending.append(factory)
 
 
 async def publish_chat_message_created(
