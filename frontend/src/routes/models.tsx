@@ -149,6 +149,10 @@ export function SubscriptionRiskBadge() {
   );
 }
 
+/** The one line that explains the Chat column, said once above the table;
+ *  every row's switch points to it. */
+const CHAT_HINT_ID = "models-chat-hint";
+
 /**
  * Whether members may pick this model in a chat. Saves on toggle; shows the
  * new state at once and goes back to the saved one if the save fails.
@@ -196,15 +200,10 @@ export function ChatAvailabilitySwitch({
           disabled={!mayManage}
           onCheckedChange={(next) => void handleChange(next)}
           aria-label={t("Available in chat", "Im Chat verfügbar")}
+          aria-describedby={CHAT_HINT_ID}
         />
         <span>{t("Available in chat", "Im Chat verfügbar")}</span>
       </label>
-      <p className="mt-1 max-w-xs text-xs text-muted-foreground">
-        {t(
-          "Members can pick it in the chat. Agents keep their own default model.",
-          "Mitglieder können es im Chat auswählen. Agenten behalten ihr eigenes Standardmodell.",
-        )}
-      </p>
       {failed && (
         <p role="alert" className="mt-1 text-xs text-status-error">
           {t(
@@ -429,6 +428,15 @@ export function ModelsPage() {
             )}
           </div>
         </div>
+        <p
+          id={CHAT_HINT_ID}
+          className="border-b border-border px-5 py-2 text-xs text-muted-foreground"
+        >
+          {t(
+            "Chat: members can pick a model that is available in chat. Agents keep their own default model.",
+            "Chat: Mitglieder können ein im Chat verfügbares Modell auswählen. Agenten behalten ihr eigenes Standardmodell.",
+          )}
+        </p>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>

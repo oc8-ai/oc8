@@ -79,9 +79,19 @@ describe("Models table: available in chat", () => {
     modelsMock.mockReturnValue({ data: [model({ chatEnabled: false })] });
     renderPage();
     expect(chatSwitch()).toHaveAttribute("aria-checked", "false");
-    expect(
-      screen.getByText("Members can pick it in the chat. Agents keep their own default model."),
-    ).toBeInTheDocument();
+    // The column's hint is said once, not in every row (E2E I).
+    expect(chatSwitch()).toHaveAccessibleDescription(
+      "Chat: members can pick a model that is available in chat. Agents keep their own default model.",
+    );
+  });
+
+  it("says the Chat column's hint once for all rows (E2E I)", () => {
+    modelsMock.mockReturnValue({
+      data: [model(), model({ id: "m2", model: "qwen2.5:3b" })],
+    });
+    renderPage();
+    expect(screen.getAllByRole("switch", { name: /Available in chat/ })).toHaveLength(2);
+    expect(screen.getAllByText(/Agents keep their own default model/)).toHaveLength(1);
   });
 
   it("treats a model without the flag as available", () => {
