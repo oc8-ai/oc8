@@ -73,10 +73,17 @@ def instruction_for(approval: m.ApprovalRequest, *, decision: str, reason: str) 
     return "\n".join(lines)
 
 
-async def _carried_from_asking_run(db: AsyncSession, approval: m.ApprovalRequest) -> dict[str, Any]:
+async def _carried_from_asking_run(
+    db: AsyncSession, approval: m.ApprovalRequest, reason: str
+) -> dict[str, Any]:
     """The person the run that asked acted for, and the trigger that started
     it -- what a delegation carries too (connections design). Nothing when
-    that run is unknown or gone: the follow-up then acts for nobody."""
+    that run is unknown or gone: the follow-up then acts for nobody.
+
+    The approver's free-text reason becomes the follow-up's overriding
+    instruction, so it acts for that person only when they wrote it themselves
+    or nobody wrote anything: someone else's words never run under their
+    account."""
     raw = (approval.payload or {}).get("run_id")
     try:
         asking = await db.get(m.AgentRun, uuid.UUID(str(raw))) if raw else None
@@ -86,7 +93,9 @@ async def _carried_from_asking_run(db: AsyncSession, approval: m.ApprovalRequest
         return {}
     carried: dict[str, Any] = {}
     acting = await resolve_acting_person(db, asking)
-    if acting.member_id is not None:
+    if acting.member_id is not None and (
+        not reason.strip() or approval.decided_by == acting.member_id
+    ):
         carried["on_behalf_of"] = str(acting.member_id)
     ctx = asking.context if isinstance(asking.context, dict) else {}
     followup = ctx.get("followup")
@@ -121,7 +130,7 @@ async def carry_out_decision(
 
     context: dict[str, Any] = {
         "task": instruction_for(approval, decision=decision, reason=reason),
-        **await _carried_from_asking_run(db, approval),
+        **await _carried_from_asking_run(db, approval, reason),
     }
     try:
         run, _published = await enqueue_run(

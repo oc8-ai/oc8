@@ -139,3 +139,74 @@ async def test_carrying_out_a_decision_acts_for_the_original_runs_person(
         assert followup.context.get("on_behalf_of") == (str(anna) if expected else None)
         assert "originating_operator" not in followup.context
         assert followup.context.get("trigger_id") == context.get("trigger_id")
+
+
+@pytest.mark.parametrize(
+    ("approver", "reason", "acts_for_anna"),
+    [
+        ("bob", "Also forward it to bob@acme.test", False),
+        ("anna", "Bitte mit Kopie", True),
+        ("bob", "", True),
+    ],
+)
+async def test_an_approvers_instruction_never_runs_under_someone_elses_account(
+    app_session: AppSessionFactory, queue: Any, approver: str, reason: str, acts_for_anna: bool
+) -> None:
+    """The approver's free text becomes the follow-up's top instruction: written
+    by someone else, it must not be carried out through Anna's account."""
+    tenant = uuid.uuid4()
+    anna = await member(app_session, tenant, "anna@acme.test")
+    async with app_session(tenant) as db:
+        agent = m.Agent(tenant_id=tenant, department_id=uuid.uuid4(), name="Sina")
+        db.add(agent)
+        await db.flush()
+        run = m.AgentRun(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            source="manual",
+            context={"originating_operator": "anna@acme.test"},
+        )
+        task = m.Task(
+            tenant_id=tenant,
+            department_id=agent.department_id,
+            assigned_agent_id=agent.id,
+            title="Ticket",
+            state="in_progress",
+        )
+        db.add_all([run, task])
+        await db.flush()
+        await execute_control_tool(
+            db,
+            tenant_id=tenant,
+            agent=agent,
+            task=task,
+            tc=ToolCall(
+                id="1",
+                name=REQUEST_DECISION.name,
+                arguments={"question": "Senden?", "context": "Entwurf liegt vor."},
+            ),
+            decision=Decision(Effect.ALLOW),
+            assigned_skills=[],
+            active_skills=[],
+            mcp_conn=None,
+            originating_operator=None,
+            run_id=run.id,
+        )
+        approval = (await db.execute(select(m.ApprovalRequest))).scalar_one()
+        principal = Principal(subject=f"{approver}@acme.test", tenant_id=tenant, role="org_admin")
+        who, scope = await scope_for_principal(db, principal, upsert=True)
+        assert who is not None
+        await decide_approval(
+            db,
+            approval,
+            decision="approve",
+            tenant_id=tenant,
+            actor=HumanActor(principal=principal, member=who, scope=scope),
+            reason=reason,
+        )
+    async with app_session(tenant) as db:
+        followup = (
+            await db.execute(select(m.AgentRun).where(m.AgentRun.source == "decision"))
+        ).scalar_one()
+        acting = await resolve_acting_person(db, followup)
+    assert acting.member_id == (anna if acts_for_anna else None)
