@@ -1512,7 +1512,8 @@ async def _precompute_leading_reads(
 
     try:
         tools = ",".join(sorted({call.name for call, _ in batch}))
-        launch = await _mcp_env(conn, db, run, tool=tools)
+        # The live context: a call to action this clears stays cleared.
+        launch = await _mcp_env(conn, db, run, tool=tools, ctx=ctx)
     except ConnectionRequired:
         # A missing account: per-call dispatch fails each call with the reason.
         return {}
