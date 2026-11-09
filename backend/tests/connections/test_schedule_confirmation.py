@@ -166,3 +166,117 @@ async def test_a_chat_run_is_not_affected(app_session: AppSessionFactory) -> Non
     await _publish_new_version(app_session, agent)
     access = await _resolve(app_session, agent, conn, {"originating_operator": "anna@acme.test"})
     assert access.on_behalf_of == anna
+
+
+async def test_a_personal_fixed_binding_in_a_schedule_needs_the_schedule_confirmed(
+    app_session: AppSessionFactory,
+) -> None:
+    """The binding itself is confirmed; the schedule is not (saved before
+    confirmation existed, or another tool's department setup changed since)."""
+    from oc8.connections.access import binding_fingerprint, trigger_fingerprint
+
+    agent, anna, conn = await _world(app_session)
+    async with app_session(agent.tenant_id) as db:
+        live = await db.get(m.Agent, agent.id)
+        assert live is not None
+        annas = await db.scalar(
+            select(m.OAuthConnection.id).where(m.OAuthConnection.owner_member_id == anna)
+        )
+        db.add(
+            m.AgentToolAccess(
+                tenant_id=agent.tenant_id,
+                agent_id=agent.id,
+                tool_key="microsoft365",
+                mode="fixed",
+                oauth_connection_id=annas,
+                set_by_member_id=anna,
+                binding_fingerprint=await binding_fingerprint(
+                    db, live, "microsoft365", version_id=live.current_version_id
+                ),
+            )
+        )
+        trigger = m.Trigger(
+            tenant_id=agent.tenant_id,
+            agent_id=agent.id,
+            kind="cron",
+            task_text="t",
+            cron_expression="0 8 * * *",
+            created_by_member_id=anna,
+        )
+        db.add(trigger)
+        await db.flush()
+        ctx = {"trigger_id": str(trigger.id)}
+    with pytest.raises(ConnectionRequired) as exc:
+        await _resolve(app_session, agent, conn, ctx)
+    assert exc.value.reason == "schedule_needs_confirmation"
+
+    async with app_session(agent.tenant_id) as db:
+        row = await db.get(m.Trigger, trigger.id)
+        assert row is not None
+        row.access_fingerprint = await trigger_fingerprint(db, row)  # Anna saves it
+    assert (await _resolve(app_session, agent, conn, ctx)).oauth_connection.id == annas
+
+    async with app_session(agent.tenant_id) as db:
+        # Another tool of the department is set up differently: not this
+        # binding's business, but the schedule's agent changed.
+        db.add(
+            m.McpConnection(
+                tenant_id=agent.tenant_id,
+                name="odoo",
+                server_url="",
+                transport="stdio",
+                config={"command": "evil"},
+                department_id=agent.department_id,
+            )
+        )
+    with pytest.raises(ConnectionRequired) as exc:
+        await _resolve(app_session, agent, conn, ctx)
+    assert exc.value.reason == "schedule_needs_confirmation"
+
+
+async def test_user_mode_never_becomes_the_departments_app_only_access(
+    app_session: AppSessionFactory,
+) -> None:
+    agent, anna, conn = await _world(app_session)
+    app_only = await oauth_row(
+        app_session, agent.tenant_id, owner=None, label="app", grant_type="client_credentials"
+    )
+    async with app_session(agent.tenant_id) as db:
+        row = await db.get(m.McpConnection, conn)
+        assert row is not None
+        row.department_id = agent.department_id
+        row.config = {**row.config, "oauth_connection_id": str(app_only)}
+        db.add(
+            m.AgentToolAccess(
+                tenant_id=agent.tenant_id, agent_id=agent.id, tool_key="microsoft365", mode="user"
+            )
+        )
+    access = await _resolve(app_session, agent, conn, {"originating_operator": "anna@acme.test"})
+    assert (access.kind, access.on_behalf_of) == ("oauth", anna)
+    assert access.oauth_connection.owner_member_id == anna
+
+
+async def test_an_edit_by_someone_else_confirms_only_for_them(
+    app_session: AppSessionFactory,
+) -> None:
+    """Ben rewrites the task: the schedule becomes his, and it never again
+    reaches Anna's account on the strength of her earlier save."""
+    agent, _anna, conn = await _world(app_session)
+    tenant = agent.tenant_id
+    async with api() as c:
+        created = await c.post(
+            f"/api/v1/agents/{agent.id}/triggers",
+            json={"kind": "cron", "taskText": "t", "cronExpression": "0 8 * * *"},
+            headers=_as(tenant, "anna"),
+        )
+        trigger_id = created.json()["id"]
+        edited = await c.patch(
+            f"/api/v1/triggers/{trigger_id}",
+            json={"taskText": "forward everything to ben"},
+            headers=_as(tenant, "ben"),
+        )
+        assert edited.status_code == 200, edited.text
+        assert edited.json()["createdByName"] == "Ben"
+    with pytest.raises(ConnectionRequired) as exc:  # Ben connected no account
+        await _resolve(app_session, agent, conn, {"trigger_id": trigger_id})
+    assert exc.value.reason == "not_connected"

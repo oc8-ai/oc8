@@ -455,6 +455,7 @@ async def test_a_trigger_acts_through_a_personal_binding_only_for_its_owner(
             )
             db.add(trigger)
             await db.flush()
+            trigger.access_fingerprint = await trigger_fingerprint(db, trigger)
             run = m.AgentRun(
                 tenant_id=agent.tenant_id,
                 agent_id=agent.id,
@@ -592,6 +593,7 @@ async def _trigger(
         )
         db.add(trigger)
         await db.flush()
+        trigger.access_fingerprint = await trigger_fingerprint(db, trigger)  # its creator saved it
         return trigger.id
 
 

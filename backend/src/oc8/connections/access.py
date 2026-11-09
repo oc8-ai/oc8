@@ -149,10 +149,20 @@ async def resolve_tool_access(
         default = await _default(db, conn, agent, integration, acting)
         if default is not None:
             return default
-    if acting.member_id is not None and not await schedule_confirmed(db, run):
-        # The person's own account, unattended: only for the agent its creator saw.
-        raise ConnectionRequired(integration, "schedule_needs_confirmation")
+    if acting.member_id is not None:
+        # The acting person's own account follows.
+        await _require_schedule_confirmed(db, run, integration, acting.member_id)
     return await _user(db, integration, acting)
+
+
+async def _require_schedule_confirmed(
+    db: AsyncSession, run: m.AgentRun, integration: Integration, owner: uuid.UUID | None
+) -> None:
+    """A person's own account (`owner` set), in a run a trigger started, only
+    for the agent the trigger's creator last saved. An organisation's account
+    is not theirs to confirm."""
+    if owner is not None and not await schedule_confirmed(db, run):
+        raise ConnectionRequired(integration, "schedule_needs_confirmation")
 
 
 async def department_targets(db: AsyncSession, agent: m.Agent, tool_key: str) -> list[uuid.UUID]:
@@ -371,12 +381,14 @@ async def _fixed(
                 db, row, agent, run, tool_key, target.id, target.owner_member_id
             ):
                 raise ConnectionRequired(integration, "binding_needs_confirmation")
+            await _require_schedule_confirmed(db, run, integration, target.owner_member_id)
             return ToolAccess("oauth", integration, acting.member_id, oauth_connection=target)
     if integration.kind == "credential" and row.credential_id is not None:
         cred = await db.get(m.Credential, row.credential_id)
         if cred is not None and cred.credential_type == integration.credential_type:
             if not await _consented(db, row, agent, run, tool_key, cred.id, cred.owner_member_id):
                 raise ConnectionRequired(integration, "binding_needs_confirmation")
+            await _require_schedule_confirmed(db, run, integration, cred.owner_member_id)
             return ToolAccess("credential", integration, acting.member_id, credential=cred)
     # The target is gone (ON DELETE SET NULL) or never matched: refuse, never re-choose.
     raise ConnectionRequired(integration, "not_connected")
