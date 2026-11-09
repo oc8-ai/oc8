@@ -48,6 +48,7 @@ from oc8.knowledge.tombstone import (
     tombstone_source,
     unlink_source_from_base,
 )
+from tests.audit.helpers import flush_audit
 from tests.conftest import AppSessionFactory
 from tests.knowledge.test_tombstone import (
     STUB,
@@ -141,6 +142,8 @@ async def test_every_path_takes_data_source_then_knowledge_base_then_the_audit_l
         stop = _trace(db, orders["sync"])
         try:
             await run_source_sync(db, tenant_id=tenant, data_source=ds, kb_id=kb.id)
+            # The chain is written at commit; do it here so the trace sees it.
+            await flush_audit(db)
         finally:
             stop()
 
@@ -165,6 +168,8 @@ async def test_every_path_takes_data_source_then_knowledge_base_then_the_audit_l
                 reduce_now=True,
                 now=now,
             )
+            # The chain is written at commit; do it here so the trace sees it.
+            await flush_audit(db)
         finally:
             stop()
 
@@ -191,6 +196,8 @@ async def test_every_path_takes_data_source_then_knowledge_base_then_the_audit_l
                 reduce_now=False,
                 now=now,
             )
+            # The chain is written at commit; do it here so the trace sees it.
+            await flush_audit(db)
         finally:
             stop()
 
@@ -205,6 +212,8 @@ async def test_every_path_takes_data_source_then_knowledge_base_then_the_audit_l
                 source_uri="test://c",
                 now=now,
             )
+            # The chain is written at commit; do it here so the trace sees it.
+            await flush_audit(db)
         finally:
             stop()
         assert restored == 1
@@ -233,6 +242,8 @@ async def test_every_path_takes_data_source_then_knowledge_base_then_the_audit_l
                 deleted_before=now + dt.timedelta(seconds=1),
                 now=now,
             )
+            # The chain is written at commit; do it here so the trace sees it.
+            await flush_audit(db)
         finally:
             stop()
 
@@ -263,6 +274,8 @@ async def test_every_path_takes_data_source_then_knowledge_base_then_the_audit_l
         stop = _trace(db, orders["held sync"])
         try:
             job = await run_source_sync(db, tenant_id=tenant, data_source=live, kb_id=kb4_id)
+            # The chain is written at commit; do it here so the trace sees it.
+            await flush_audit(db)
         finally:
             stop()
         assert (job.stats or {})["reconcile"] == "held_empty", job.stats
@@ -274,6 +287,9 @@ async def test_every_path_takes_data_source_then_knowledge_base_then_the_audit_l
         stop = _trace(db, orders["operator source delete"])
         try:
             await tombstone_source(db, tenant_id=tenant, data_source=source, now=now)
+            # Through a REAL commit: this is where production writes the chain,
+            # so at least one path's trace covers the commit-time lock.
+            await db.commit()
         finally:
             stop()
 
@@ -291,6 +307,8 @@ async def test_every_path_takes_data_source_then_knowledge_base_then_the_audit_l
         stop = _trace(db, orders["operator base delete"])
         try:
             await tombstone_base(db, tenant_id=tenant, kb=kb5, now=now)
+            # The chain is written at commit; do it here so the trace sees it.
+            await flush_audit(db)
         finally:
             stop()
         assert orders["operator base delete"][:2] == ["data_source", "knowledge_base"], orders[
@@ -313,6 +331,8 @@ async def test_every_path_takes_data_source_then_knowledge_base_then_the_audit_l
         stop = _trace(db, orders["operator unlink source from base"])
         try:
             await unlink_source_from_base(db, tenant_id=tenant, kb=kb7, data_source=ds7, now=now)
+            # The chain is written at commit; do it here so the trace sees it.
+            await flush_audit(db)
         finally:
             stop()
         assert orders["operator unlink source from base"][:2] == [
@@ -352,6 +372,8 @@ async def test_every_path_takes_data_source_then_knowledge_base_then_the_audit_l
                 fatal=None,
                 now=now,
             )
+            # The chain is written at commit; do it here so the trace sees it.
+            await flush_audit(db)
         finally:
             stop()
         assert outcome == "held_empty"
@@ -366,6 +388,8 @@ async def test_every_path_takes_data_source_then_knowledge_base_then_the_audit_l
         "operator document delete"
     ]
     assert orders["held sync"].index("ADVISORY") > orders["held sync"].index("knowledge_base")
+    # The path traced through a real commit() really took the audit lock there.
+    assert "ADVISORY" in orders["operator source delete"], orders["operator source delete"]
 
 
 async def test_a_sync_whose_bookkeeping_dies_still_keeps_the_documents_it_ingested(

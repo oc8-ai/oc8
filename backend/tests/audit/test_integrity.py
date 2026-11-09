@@ -6,10 +6,10 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
+from tests.audit.helpers import append_now
 from tests.conftest import AppSessionFactory
 
 from oc8.audit import integrity
-from oc8.audit.chain import append_event
 from oc8.audit.integrity import get_checkpoint, verify_full, verify_incremental
 
 pytestmark = pytest.mark.asyncio
@@ -17,7 +17,7 @@ pytestmark = pytest.mark.asyncio
 
 async def _emit(s: AsyncSession, tenant: uuid.UUID, n: int) -> None:
     for i in range(n):
-        await append_event(
+        await append_now(
             s,
             tenant_id=tenant,
             actor_type="system",
@@ -184,9 +184,7 @@ async def test_app_role_can_still_update_the_checkpoint(
 
     async with app_session(tenant) as s:
         await s.execute(
-            sa.text(
-                "UPDATE audit_chain_checkpoint SET verified_at = now() WHERE tenant_id = :t"
-            ),
+            sa.text("UPDATE audit_chain_checkpoint SET verified_at = now() WHERE tenant_id = :t"),
             {"t": str(tenant)},
         )
         cp = await get_checkpoint(s, tenant)
