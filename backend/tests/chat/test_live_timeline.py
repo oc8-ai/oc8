@@ -10,6 +10,8 @@ import uuid
 from typing import Any
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -19,6 +21,7 @@ from oc8.chat.live import (
     is_autonomous_run,
     is_colleague_run,
     live_timeline,
+    timeline_runs,
     trigger_names,
     trigger_of,
 )
@@ -543,3 +546,35 @@ async def test_the_several_people_marker_is_never_a_member(
         assert _run_ids(plain) == set()
         assert _run_ids(everything) == {mixed.id}
         assert not await may_watch_run(db, member=mallory, run_id=mixed.id)
+
+
+def test_her_runs_outside_chat_test_the_source_column_before_any_json() -> None:
+    """PostgreSQL evaluates an AND's arguments in order; the `context->>`
+    tests detoast every run's context, so the cheap column goes first."""
+    from oc8.chat.live import _hers_outside_chat
+
+    member = m.OrgMember(tenant_id=uuid.uuid4(), subject="alice")
+    sql = str(_hers_outside_chat(member).compile(dialect=postgresql.dialect()))
+    assert sql.index("agent_run.source") < sql.index("agent_run.context")
+
+
+async def test_the_live_timeline_walks_the_agent_created_index_and_drops_chat_runs_by_column(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, _alice, bob = await _world(db, tenant)
+        stmt = (
+            timeline_runs(agent=agent, member=bob, all_runs=False)
+            .order_by(m.AgentRun.created_at.desc(), m.AgentRun.id.desc())
+            .limit(51)
+        )
+        sql = str(
+            stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
+        )
+        await db.execute(text("SET LOCAL enable_seqscan = off"))
+        plan = "\n".join(row[0] for row in (await db.execute(text(f"EXPLAIN {sql}"))).all())
+    assert "ix_agent_run_agent_created" in plan
+    # Not-all-runs never reads a chat run's context: the column test is a
+    # top-level filter, ahead of the JSON arms.
+    assert "Filter: ((source <> 'chat'::text)" in plan

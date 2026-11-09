@@ -19,6 +19,7 @@ from typing import Final, Literal
 
 from sqlalchemy import (
     ColumnElement,
+    Select,
     String,
     and_,
     cast,
@@ -233,11 +234,14 @@ def _autonomous() -> ColumnElement[bool]:
 def _hers_outside_chat(member: m.OrgMember) -> ColumnElement[bool]:
     """A run started by her or on her behalf, not from a chat (her chat runs
     are her sessions' business, her live-session runs ARE the messages)."""
+    # The plain column first: PostgreSQL evaluates an AND's arguments in the
+    # order given, and every `context->>` test detoasts the run's (large)
+    # context. Chat runs -- most of a chat agent's runs -- stop here.
     return and_(
+        m.AgentRun.source != "chat",
+        _ctx_text("chat_session_id") == "",
         _person() == member.subject,
         _person() != literal(SEVERAL_PEOPLE),
-        _ctx_text("chat_session_id") == "",
-        m.AgentRun.source != "chat",
     )
 
 
@@ -252,6 +256,27 @@ def _colleagues(member: m.OrgMember) -> ColumnElement[bool]:
         or_(_person() != member.subject, _person() == literal(SEVERAL_PEOPLE)),
         not_(_ctx_text("chat_session_id").in_(own_sessions.scalar_subquery())),
     )
+
+
+def timeline_runs(
+    *, agent: m.Agent, member: m.OrgMember, all_runs: bool
+) -> Select[tuple[m.AgentRun]]:
+    """The agent's runs on `member`'s Live timeline, unordered and unbounded."""
+    stmt = select(m.AgentRun).where(
+        m.AgentRun.tenant_id == agent.tenant_id,
+        m.AgentRun.agent_id == agent.id,
+        or_(
+            _autonomous(),
+            _hers_outside_chat(member),
+            _colleagues(member) if all_runs else false(),
+        ),
+    )
+    if not all_runs:
+        # Implied by both remaining arms, said once at the top so a chat run
+        # is rejected on the column before any JSON is read. The walk itself
+        # is `ix_agent_run_agent_created` (agent_id, created_at, id).
+        stmt = stmt.where(m.AgentRun.source != "chat")
+    return stmt
 
 
 async def live_timeline(
@@ -274,15 +299,7 @@ async def live_timeline(
     msg_stmt = select(m.ChatMessage).where(
         m.ChatMessage.tenant_id == session.tenant_id, m.ChatMessage.session_id == session.id
     )
-    run_stmt = select(m.AgentRun).where(
-        m.AgentRun.tenant_id == agent.tenant_id,
-        m.AgentRun.agent_id == agent.id,
-        or_(
-            _autonomous(),
-            _hers_outside_chat(member),
-            _colleagues(member) if all_runs else false(),
-        ),
-    )
+    run_stmt = timeline_runs(agent=agent, member=member, all_runs=all_runs)
     if before is not None:
         if before_id is not None:
             msg_stmt = msg_stmt.where(
