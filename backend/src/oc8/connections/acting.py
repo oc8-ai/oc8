@@ -5,13 +5,20 @@ In this order: the person a delegation or wake-up carried
 (`context["on_behalf_of"]`); the chat session's member; the manual run's
 starter (`originating_operator`); the creator of the trigger that fired it.
 Nobody found is an answer, with a reason -- never a guess.
+
+A run started from another run (a delegation, a wake-up, a decision's
+follow-up) still carries that run's trigger and chat keys, for display, audit
+and the trigger's own rules. Where it must act for nobody it says so with
+`context["acting_person_withheld"]` (the reason), which wins over every other
+key: otherwise the trigger branch would fall back to the schedule's creator
+and run under an account the carrier deliberately withheld.
 """
 
 from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import Final
+from typing import Any, Final
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +28,9 @@ from oc8 import models as m
 NO_ACTING_PERSON: Final = "no_acting_person"
 SCHEDULE_WITHOUT_OWNER: Final = "schedule_without_owner"
 TRIGGER_WITHOUT_PERSON: Final = "trigger_without_person"
+_REASONS: Final = frozenset({NO_ACTING_PERSON, SCHEDULE_WITHOUT_OWNER, TRIGGER_WITHOUT_PERSON})
+
+ACTING_PERSON_WITHHELD: Final = "acting_person_withheld"
 
 
 @dataclass(frozen=True)
@@ -44,6 +54,15 @@ def _person(member_id: uuid.UUID | None) -> ActingPerson:
     )
 
 
+def carried_person(acting: ActingPerson) -> dict[str, Any]:
+    """The context keys that make a run started from another one act for
+    exactly the person that run acted for -- and for nobody when it acted for
+    nobody, whatever trigger or chat keys travel along with it."""
+    if acting.member_id is not None:
+        return {"on_behalf_of": str(acting.member_id)}
+    return {ACTING_PERSON_WITHHELD: acting.reason or NO_ACTING_PERSON}
+
+
 async def _active(
     db: AsyncSession, tenant_id: uuid.UUID, member_id: uuid.UUID | None
 ) -> uuid.UUID | None:
@@ -58,6 +77,9 @@ async def _active(
 async def resolve_acting_person(db: AsyncSession, run: m.AgentRun) -> ActingPerson:
     ctx = run.context or {}
     tenant_id = run.tenant_id
+    withheld = ctx.get(ACTING_PERSON_WITHHELD)
+    if withheld:
+        return ActingPerson(None, withheld if withheld in _REASONS else NO_ACTING_PERSON)
     carried = _uuid(ctx.get("on_behalf_of"))
     if carried is not None:
         return _person(await _active(db, tenant_id, carried))

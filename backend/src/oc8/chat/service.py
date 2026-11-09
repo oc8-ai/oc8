@@ -466,6 +466,7 @@ async def send_message(
             "chat_channel_external_id",
             "chat_session_id",
             "on_behalf_of",
+            "acting_person_withheld",
             "trigger_id",
             "task",
         }

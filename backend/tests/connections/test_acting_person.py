@@ -208,7 +208,7 @@ async def test_a_lead_wakes_up_for_the_same_person(app_session: AppSessionFactor
             output="done",
             succeeded=True,
             mcp_conn=None,
-            on_behalf_of=anna,
+            acting=ActingPerson(anna),
             trigger_id="t-1",
         )
         assert wake_id is not None
