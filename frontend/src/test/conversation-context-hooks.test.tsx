@@ -17,9 +17,11 @@ import {
   conversationKeys,
   useBrowseSource,
   useContextSearchResults,
+  useRunSteering,
   useSetPins,
   type ChatSessionDetailDTO,
 } from "@/lib/conversation-api";
+import { ApiError } from "@/lib/api";
 
 function wrapper(qc: QueryClient) {
   return ({ children }: { children: ReactNode }) => (
@@ -255,3 +257,24 @@ describe("useSetPins", () => {
   });
 });
 
+describe("useRunSteering", () => {
+  it.each([403, 404])("asks once and never retries a %s", async (status) => {
+    get.mockReset();
+    get.mockRejectedValue(new ApiError("refused", status));
+    // The app's default: three retries.
+    const qc = new QueryClient();
+    const { result } = renderHook(() => useRunSteering("r1"), { wrapper: wrapper(qc) });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks nothing for a run that is not steered, and shows what is cached", () => {
+    get.mockReset();
+    const qc = fresh();
+    const cached = { mayWrite: false, acceptsInputs: true, inputs: [] };
+    qc.setQueryData(["run-steering", "r1"], cached);
+    const { result } = renderHook(() => useRunSteering(null, "r1"), { wrapper: wrapper(qc) });
+    expect(result.current.data).toEqual(cached);
+    expect(get).not.toHaveBeenCalled();
+  });
+});

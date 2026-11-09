@@ -78,10 +78,19 @@ export function runInputError(error: unknown, t: Translate): string {
   );
 }
 
-/** The messages written to a run, each with its fate. */
-export function RunInputs({ runId, runState }: { runId: string; runState: string }) {
+/** The messages written to a run, each with its fate. Only the run being
+ *  steered asks the server (`enabled`); any other shows what is cached. */
+export function RunInputs({
+  runId,
+  runState,
+  enabled = true,
+}: {
+  runId: string;
+  runState: string;
+  enabled?: boolean;
+}) {
   const t = useT();
-  const { data } = useRunSteering(runId);
+  const { data } = useRunSteering(enabled ? runId : null, runId);
   const inputs = data?.inputs ?? [];
   if (inputs.length === 0) return null;
   return (

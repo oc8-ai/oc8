@@ -539,11 +539,17 @@ export function useLiveTimeline(agentId: string, allRuns: boolean) {
 
 export const runSteeringKey = (runId: string | null) => ["run-steering", runId ?? ""] as const;
 
-export function useRunSteering(runId: string | null) {
+/** What the reader may do with a running run, and what they wrote to it.
+ *  `runId` null asks nothing; `cachedId` then still reads what an earlier
+ *  fetch left for that run. A refusal (403/404: not the reader's to steer)
+ *  is final, never retried. */
+export function useRunSteering(runId: string | null, cachedId: string | null = runId) {
   return useQuery({
-    queryKey: runSteeringKey(runId),
+    queryKey: runSteeringKey(runId ?? cachedId),
     queryFn: () => api.get<RunSteeringDTO>(`/runs/${encodeURIComponent(runId ?? "")}/steering`),
     enabled: !!runId,
+    retry: (failures, error) =>
+      !(error instanceof ApiError && error.status >= 400 && error.status < 500) && failures < 3,
   });
 }
 
