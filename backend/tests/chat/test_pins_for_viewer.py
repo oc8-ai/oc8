@@ -92,6 +92,36 @@ async def test_refused_pins_name_only_what_the_client_sent(app_session: AppSessi
     ]
 
 
+async def test_stored_pins_are_kept_without_a_fresh_check(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        admin = m.OrgMember(tenant_id=tenant, subject="admin", subject_uuid=uuid.uuid4())
+        db.add(admin)
+        await db.flush()
+        viewer = await viewer_for_member(db, admin, token_role="org_admin")
+        gone, new = str(uuid.uuid4()), str(uuid.uuid4())
+        already = [{"kind": "knowledge_base", "id": gone, "label": "Board minutes"}]
+        kept = await authorise_pins(
+            db,
+            viewer=viewer,
+            refs=[{"kind": "knowledge_base", "id": gone}] * 2,
+            already=already,
+        )
+        with pytest.raises(PinRefused) as caught:
+            await authorise_pins(
+                db,
+                viewer=viewer,
+                refs=[
+                    {"kind": "knowledge_base", "id": gone},
+                    {"kind": "knowledge_base", "id": new},
+                ],
+                already=already,
+            )
+    # Kept once, as stored; only the new ref is refused.
+    assert kept == already
+    assert caught.value.refused == [{"kind": "knowledge_base", "id": new}]
+
+
 async def test_offboarding_removes_the_members_projects(app_session: AppSessionFactory) -> None:
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:

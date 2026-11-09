@@ -9,7 +9,8 @@ project is visible to its owner alone."""
 from __future__ import annotations
 
 import uuid
-from typing import Annotated, Final
+from collections.abc import Mapping, Sequence
+from typing import Annotated, Any, Final
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
@@ -67,14 +68,21 @@ _NOT_BROWSABLE = "This source can't be browsed — pin it as a whole."
 
 
 async def _authorised(
-    db: DbSession, viewer: Viewer, refs: list[ChatContextRefRequest]
+    db: DbSession,
+    viewer: Viewer,
+    refs: list[ChatContextRefRequest],
+    already: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
     """The refs to store, or a 422 naming each refused one by the id the
     client sent. A ref that does not exist is refused exactly like one the
-    caller may not see, so the answer confirms nothing across tenants."""
+    caller may not see, so the answer confirms nothing across tenants. Refs
+    in `already` (what is stored now) are kept without a fresh check."""
     try:
         return await authorise_pins(
-            db, viewer=viewer, refs=[{"kind": r.kind, "id": r.id} for r in refs]
+            db,
+            viewer=viewer,
+            refs=[{"kind": r.kind, "id": r.id} for r in refs],
+            already=list(already or []),
         )
     except PinRefused as exc:
         raise HTTPException(
@@ -98,7 +106,9 @@ async def put_pins(
 ) -> ChatSessionDTO:
     session = await session_owned_by_caller(session_id, db, actor)
     viewer = await actor_viewer(db, actor)
-    session.pinned_refs = await _authorised(db, viewer, body.refs)
+    session.pinned_refs = await _authorised(
+        db, viewer, body.refs, already=list(session.pinned_refs or [])
+    )
     return await _session_reply(db, viewer, session)
 
 
@@ -194,7 +204,9 @@ async def update_project(
     viewer = await actor_viewer(db, actor)
     sent = body.model_fields_set
     if "pinned_refs" in sent:
-        project.pinned_refs = await _authorised(db, viewer, body.pinned_refs)
+        project.pinned_refs = await _authorised(
+            db, viewer, body.pinned_refs, already=list(project.pinned_refs or [])
+        )
     if "instructions" in sent:
         project.instructions = body.instructions
     project.name = body.name

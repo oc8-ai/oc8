@@ -69,15 +69,36 @@ async def pinned_refs_for_viewer(
 
 
 async def authorise_pins(
-    db: AsyncSession, *, viewer: Viewer, refs: Sequence[Mapping[str, Any]]
+    db: AsyncSession,
+    *,
+    viewer: Viewer,
+    refs: Sequence[Mapping[str, Any]],
+    already: Sequence[Mapping[str, Any]] = (),
 ) -> list[dict[str, str]]:
     """The refs to store: canonical id and the row's own label, each kept once.
-    Raises `PinRefused` when any ref is not the viewer's to see."""
+    A ref already in `already` (the chat's or project's stored pins, matched by
+    kind and canonical id) is kept as stored without a fresh check: removing
+    one pin must never fail because another has since become unavailable, and
+    every stored pin is re-checked whenever it is read. Raises `PinRefused`
+    when any NEW ref is not the viewer's to see."""
+    previous: dict[tuple[str, str], dict[str, str]] = {}
+    for ref in already:
+        if isinstance(ref, Mapping):
+            kind, ref_id = _kind_and_id(ref)
+            previous.setdefault(
+                (kind, ref_id), {"kind": kind, "id": ref_id, "label": str(ref.get("label") or "")}
+            )
     stored: list[dict[str, str]] = []
     kept: set[tuple[str, str]] = set()
     refused: list[dict[str, str]] = []
     for ref in refs:
         kind, ref_id = _kind_and_id(ref)
+        known = previous.get((kind, ref_id))
+        if known is not None:
+            if (kind, ref_id) not in kept:
+                kept.add((kind, ref_id))
+                stored.append(dict(known))
+            continue
         resolved = await resolve_ref(db, viewer=viewer, kind=kind, ref_id=ref_id)
         if resolved is None:
             refused.append({"kind": kind, "id": ref_id})

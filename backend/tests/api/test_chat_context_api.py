@@ -455,3 +455,49 @@ async def test_project_changes_are_audited_without_their_instructions(
         ("chat.project.deleted", {"project_id": project["id"], "name": "Q4b"}),
     ]
     assert "SECRET" not in repr([r.resource for r in rows])
+
+
+async def test_unpinning_keeps_a_stored_pin_that_became_unavailable(
+    app_session: AppSessionFactory,
+) -> None:
+    """Removing one pin never fails because another can no longer be seen;
+    a NEW ref the caller may not see is still refused."""
+    tenant = uuid.uuid4()
+    agent_id, kb_id = await _agent_and_kb(app_session, tenant)
+    gone, never = str(uuid.uuid4()), str(uuid.uuid4())
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            h = _h(tenant, "admin", "org_admin")
+            sid = (
+                await c.post("/api/v1/chat/sessions", json={"agentId": str(agent_id)}, headers=h)
+            ).json()["id"]
+            async with app_session(tenant) as db:
+                session = await db.get(m.ChatSession, uuid.UUID(sid))
+                assert session is not None
+                session.pinned_refs = [
+                    {"kind": "knowledge_base", "id": str(kb_id), "label": "Prices"},
+                    {"kind": "knowledge_base", "id": gone, "label": "Board minutes"},
+                ]
+                await db.commit()
+            removed = await c.put(
+                f"/api/v1/chat/sessions/{sid}/pins",
+                json={"refs": [{"kind": "knowledge_base", "id": gone}]},
+                headers=h,
+            )
+            added = await c.put(
+                f"/api/v1/chat/sessions/{sid}/pins",
+                json={
+                    "refs": [
+                        {"kind": "knowledge_base", "id": gone},
+                        {"kind": "knowledge_base", "id": never},
+                    ]
+                },
+                headers=h,
+            )
+    assert removed.status_code == 200
+    assert removed.json()["pinnedRefs"] == [
+        {"kind": "knowledge_base", "id": gone, "label": "Board minutes", "available": False}
+    ]
+    assert added.status_code == 422
+    assert added.json()["detail"]["refused"] == [{"kind": "knowledge_base", "id": never}]
