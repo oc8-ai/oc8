@@ -354,6 +354,7 @@ async def _call_tool(
                 .where(
                     CopilotProposal.tenant_id == principal.tenant_id,
                     CopilotProposal.status == status_filter,
+                    CopilotProposal.kind == "operations",
                 )
                 .order_by(CopilotProposal.created_at.desc())
             )
@@ -367,7 +368,7 @@ async def _call_tool(
         if proposal_id is None:
             return _tool_result("proposalId is required", is_error=True)
         found = await db.get(CopilotProposal, proposal_id)
-        if found is None:
+        if found is None or found.kind != "operations":
             return _tool_result("proposal not found", is_error=True)
         return _tool_result(json.dumps(await _proposal_payload(db, found)))
 

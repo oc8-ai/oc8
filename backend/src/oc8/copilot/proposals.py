@@ -79,7 +79,7 @@ async def reject_proposal(
 ) -> CopilotProposal:
     """Reject a draft without calling any capability applier."""
     proposal = await db.get(CopilotProposal, proposal_id)
-    if proposal is None or proposal.status != "draft":
+    if proposal is None or proposal.status != "draft" or proposal.kind != "operations":
         raise ProposalNotRejectable()
     proposal.status = "rejected"
     proposal.applied_by = actor.subject
@@ -100,7 +100,7 @@ async def reject_proposal(
 
 async def apply_proposal(db: AsyncSession, proposal_id: uuid.UUID, actor: Principal) -> ApplyResult:
     proposal = await db.get(CopilotProposal, proposal_id)
-    if proposal is None or proposal.status != "draft":
+    if proposal is None or proposal.status != "draft" or proposal.kind != "operations":
         raise ProposalRejected()
     operations = (await db.execute(select(CopilotOperation).where(
         CopilotOperation.proposal_id == proposal.id).order_by(CopilotOperation.ordinal)
