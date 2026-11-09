@@ -1243,6 +1243,63 @@ class ChatSessionDTO(CamelModel):
     mode: str | None = None
 
 
+class BuilderChoiceDTO(CamelModel):
+    id: str
+    label: str
+
+
+class BuilderTriggerDTO(CamelModel):
+    kind: str  # cron | event
+    cron_expression: str | None = None
+    event_source: str | None = None
+    event_type: str | None = None
+    task_text: str = ""
+
+
+class BuilderLimitDTO(CamelModel):
+    connection_name: str
+    function: str
+    decision: str
+
+
+class BuilderAgentDTO(CamelModel):
+    id: str
+    name: str
+    status: str
+
+
+class AgentBuilderDTO(CamelModel):
+    """One "Agent anlegen" card (Copilot Agent Builder §3.3). The mission is
+    the member's own content in their own chat: the owner and the approver
+    deciding about exactly that text read it; any other reader gets it blank."""
+
+    id: str
+    status: str  # draft | awaiting_approval | applied | rejected | expired | superseded
+    session_id: str | None = None
+    department_id: str
+    department_name: str = ""
+    name: str
+    role_title: str = ""
+    mission: str = ""
+    model: BuilderChoiceDTO | None = None
+    skills: list[BuilderChoiceDTO] = []
+    triggers: list[BuilderTriggerDTO] = []
+    systems: list[str] = []
+    limits: list[BuilderLimitDTO] = []
+    expires_at: str | None = None
+    #: The caller may press "Anlegen" now.
+    may_create: bool = False
+    #: The caller may press "Zur Freigabe senden" now.
+    may_request: bool = False
+    #: The caller is not the owner (an approver or reviewer reading it).
+    read_only: bool = False
+    #: Why the last apply was refused (`agent_builder` code), and at which step.
+    refusal: str | None = None
+    failed_step: int | None = None
+    rejected_reason: str | None = None
+    agent: BuilderAgentDTO | None = None
+
+
 class ContextSearchItemDTO(CamelModel):
     """One `#` search hit. The member's own picker, not the model's context:
     restricted items may appear here."""
