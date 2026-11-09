@@ -1,5 +1,4 @@
 import { useMemo, useState } from "react";
-import { DiscussWithCopilot } from "@/components/conversation/discuss-with-copilot";
 import { toast } from "sonner";
 import {
   AlertTriangle,
@@ -25,6 +24,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { AgentAvatar } from "@/components/agent-avatar";
+import { DiscussWithCopilot } from "@/components/conversation/discuss-with-copilot";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   useAnswerClarification,

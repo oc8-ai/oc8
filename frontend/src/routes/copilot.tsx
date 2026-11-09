@@ -5,21 +5,22 @@ import { ChatSessionPicker } from "@/components/chat-window";
 import { Conversation } from "@/components/conversation";
 import { CopilotAvatar, CopilotPersonaHeader } from "@/components/copilot-persona";
 import { CopilotWorkPanel } from "@/components/copilot-work-panel";
+import { isPlainClick } from "@/components/conversation/object-links";
+import { parsePin, useOpenPinnedChat } from "@/components/conversation/open-pinned-chat";
+import { useObjectNavigation } from "@/components/conversation/use-object-navigation";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { ApiError } from "@/lib/api";
 import { mascotState } from "@/lib/copilot-status";
 import { useMay } from "@/lib/governance-hooks";
-import { isPlainClick } from "@/components/conversation/object-links";
-import { useObjectNavigation } from "@/components/conversation/use-object-navigation";
-import { parsePin, useOpenPinnedChat } from "@/components/conversation/open-pinned-chat";
 import { useChatSession } from "@/lib/conversation-api";
 import { useAgent } from "@/lib/hooks";
 import { useChatSessions } from "@/lib/hooks-chat";
 import { useCopilotProfile } from "@/lib/hooks-copilot";
-import { urlId } from "@/lib/ids";
 import { useT } from "@/lib/i18n";
+import { urlId } from "@/lib/ids";
 
 export interface CopilotSearch {
   /** A conversation to open -- where an answer's session chip
@@ -57,13 +58,11 @@ function CopilotRoute() {
       navKey={navKey}
       pin={pin}
       // So a reload does not create another chat.
-      onPinHandled={(sessionId) =>
-        void navigate({
-          to: "/copilot",
-          search: sessionId ? { session: sessionId } : {},
-          replace: true,
-        })
-      }
+      onPinHandled={(sessionId) => {
+        // A link that also named a chat keeps it when the pin is refused.
+        const keep = sessionId ?? session;
+        void navigate({ to: "/copilot", search: keep ? { session: keep } : {}, replace: true });
+      }}
     />
   );
 }
@@ -117,7 +116,11 @@ export function CopilotPage({
   // A linked conversation opens here only if it is the Copilot's own: known
   // from its session list, else from the session itself.
   const listed = !!initialSessionId && sessions.some((s) => s.id === initialSessionId);
-  const { data: linked } = useChatSession(initialSessionId && !listed ? initialSessionId : null);
+  const { data: linked, error: linkedError } = useChatSession(
+    initialSessionId && !listed ? initialSessionId : null,
+  );
+  // The chat is gone or not this member's (404): say so, then a plain chat.
+  const linkedGone = linkedError instanceof ApiError && linkedError.status === 404;
   const owner = listed ? agentId : (linked?.agentId ?? null);
   const ownLink = !!initialSessionId && !!agentId && owner === agentId;
   const foreignOwner = initialSessionId && owner && owner !== agentId ? owner : null;
@@ -131,6 +134,15 @@ export function CopilotPage({
   const [pinNote, setPinNote] = useState<string | null>(null);
   const pinStarted = useRef<string | null>(null);
   const mayUse = may("copilot:use");
+  // Once the member has left, a late reply must not select, note or navigate
+  // (a navigate would pull them back here).
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   useEffect(() => {
     if (!pin) {
       pinStarted.current = null;
@@ -151,6 +163,7 @@ export function CopilotPage({
     }
     openPinned(parsed).then(
       ({ sessionId: opened, pinned }) => {
+        if (!mounted.current) return;
         setSessionId(opened);
         setPinNote(
           pinned === "refused"
@@ -165,6 +178,7 @@ export function CopilotPage({
         onPinHandled?.(opened);
       },
       () => {
+        if (!mounted.current) return;
         setPinNote(
           t(
             "The new chat could not be created. Try again.",
@@ -275,6 +289,17 @@ export function CopilotPage({
           </CopilotPersonaHeader>
         </div>
         {foreignOwner && <ForeignSessionNotice agentId={foreignOwner} />}
+        {linkedGone && !pinNote && (
+          <p
+            role="status"
+            className="border-b border-border px-4 py-2 text-xs text-muted-foreground"
+          >
+            {t(
+              "That chat doesn't exist or isn't yours.",
+              "Diesen Chat gibt es nicht oder er gehört nicht dir.",
+            )}
+          </p>
+        )}
         {pinNote && (
           <p
             role="status"

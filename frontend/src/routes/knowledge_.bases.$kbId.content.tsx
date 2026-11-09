@@ -10,11 +10,11 @@
 // path), but registers the route's parent as root instead of `KnowledgeRoute`
 // -- verified against the generated `routeTree.gen.ts` (`getParentRoute: ()
 // => rootRouteImport`) before committing this file.
-import { DiscussWithCopilot } from "@/components/conversation/discuss-with-copilot";
 import { useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { ArrowLeft, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
 import { Panel } from "@/components/app-shell";
+import { DiscussWithCopilot } from "@/components/conversation/discuss-with-copilot";
 import { useKbDocuments, useKbChunks, useSimilarChunks } from "@/lib/hooks";
 import { ApiError } from "@/lib/api";
 import { useT } from "@/lib/i18n";

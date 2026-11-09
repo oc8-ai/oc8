@@ -1,5 +1,4 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { DiscussWithCopilot } from "@/components/conversation/discuss-with-copilot";
 import {
   ArrowLeft,
   AlertTriangle,
@@ -81,6 +80,7 @@ import {
 } from "@/lib/hooks";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { CredentialPicker } from "@/components/credential-picker";
+import { DiscussWithCopilot } from "@/components/conversation/discuss-with-copilot";
 import type { GuardrailValue } from "@/components/guardrail-preset-picker";
 import { ToolGuardrailTable, describeGuardrailSaveError } from "@/components/tool-guardrail-table";
 import {

@@ -7,6 +7,7 @@ const m = vi.hoisted(() => ({
   post: vi.fn(),
   put: vi.fn(),
   may: true,
+  linkedError: null as unknown,
 }));
 vi.mock("@/lib/api", async (orig) => ({
   ...(await orig<typeof import("@/lib/api")>()),
@@ -26,7 +27,9 @@ vi.mock("@tanstack/react-router", () => ({
   useRouterState: () => "k",
 }));
 vi.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => false }));
-vi.mock("@/lib/conversation-api", () => ({ useChatSession: () => ({ data: undefined }) }));
+vi.mock("@/lib/conversation-api", () => ({
+  useChatSession: () => ({ data: undefined, error: m.linkedError }),
+}));
 vi.mock("@/lib/hooks", () => ({ useAgent: () => ({ data: undefined }) }));
 vi.mock("@/lib/hooks-chat", async (orig) => ({
   ...(await orig<typeof import("@/lib/hooks-chat")>()),
@@ -60,7 +63,7 @@ import {
   parsePin,
   useOpenPinnedChat,
 } from "@/components/conversation/open-pinned-chat";
-import { CopilotPage } from "@/routes/copilot";
+import { CopilotPage, Route } from "@/routes/copilot";
 
 const UUID = "11111111-2222-3333-4444-555555555555";
 
@@ -72,6 +75,7 @@ beforeEach(() => {
   m.post.mockReset();
   m.put.mockReset();
   m.may = true;
+  m.linkedError = null;
 });
 
 describe("Discuss with Copilot", () => {
@@ -193,9 +197,42 @@ describe("/copilot?pin=", () => {
     expect(screen.getByRole("status")).toHaveTextContent(/can't pin that|kannst du nicht anheften/);
   });
 
+  it("does not select, note or navigate when the reply arrives after the page is gone", async () => {
+    let release: (v: unknown) => void = () => undefined;
+    m.post.mockReturnValue(new Promise((r) => (release = r)));
+    m.put.mockResolvedValue({});
+    const done = vi.fn();
+    const { unmount } = render(page(`run:${UUID}`, done));
+    await waitFor(() => expect(m.post).toHaveBeenCalled());
+    unmount();
+    await act(async () => release({ id: "s1", agentId: "assistant" }));
+    expect(done).not.toHaveBeenCalled();
+  });
+
+  it("says so when ?session= names a chat that is gone or not the member's", () => {
+    m.linkedError = new ApiError("not found", 404);
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <CopilotPage initialSessionId="s-x" />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(/gehört nicht dir|isn't yours/);
+    expect(screen.getByTestId("chat")).toHaveAttribute("data-session", "");
+  });
+
   it("does nothing for a member without copilot:use", () => {
     m.may = false;
     render(page(`run:${UUID}`));
     expect(m.post).not.toHaveBeenCalled();
+  });
+});
+
+describe("/copilot search validation", () => {
+  const validate = (Route as unknown as { validateSearch: (s: Record<string, unknown>) => unknown })
+    .validateSearch;
+  it("keeps a pin of at most 4200 characters and drops a longer one", () => {
+    const ok = `run:${"a".repeat(4196)}`;
+    expect(validate({ pin: ok })).toEqual({ pin: ok });
+    expect(validate({ pin: `${ok}a` })).toEqual({});
   });
 });
