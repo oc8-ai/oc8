@@ -700,8 +700,25 @@ def _active_skills_of(ctx: Mapping[str, Any], assigned: Sequence[LoadedSkill]) -
     return [s for s in assigned if str(s.skill_version_id) in active_ids]
 
 
+def _skill_snapshot(active_skills: Sequence[LoadedSkill]) -> dict[str, Any]:
+    """The active skills' guardrails, stored with a held call: the re-run is
+    decided with the thresholds in force when the call was made, whatever is
+    active on the leg that resumes it."""
+    return {
+        "skill_guards": [
+            {"gt": g.gt, "metric": g.metric}
+            for s in active_skills
+            for g in s.definition.guardrails
+            if g.type == "value_threshold" and g.then == "require_approval"
+        ],
+        "skill_tool_names": sorted(s.tool_name for s in active_skills),
+    }
+
+
 def _skill_guard(
-    active_skills: Sequence[LoadedSkill], value_spec: dict[str, Any] | None
+    active_skills: Sequence[LoadedSkill],
+    value_spec: dict[str, Any] | None,
+    stored: Mapping[str, Any] | None = None,
 ) -> tuple[tuple[float | None, ...], dict[str, Any] | None]:
     """The active skills' value thresholds, and the value spec that measures them.
 
@@ -710,18 +727,29 @@ def _skill_guard(
     merged into the connection's value spec here -- the same merge the
     in-process engine makes -- or the threshold could never see a value.
     """
-    guards = [
-        g
+    guards: list[tuple[float | None, str | None]] = [
+        (g.gt, g.metric)
         for s in active_skills
         for g in s.definition.guardrails
         if g.type == "value_threshold" and g.then == "require_approval"
     ]
-    metrics = [g.metric for g in guards if g.metric]
+    # `stored` (a held call's `_skill_snapshot`) adds the guardrails in force
+    # when the call was made.
+    for raw in (stored or {}).get("skill_guards") or []:
+        if isinstance(raw, dict):
+            gt = raw.get("gt")
+            guards.append(
+                (
+                    float(gt) if isinstance(gt, (int, float)) else None,
+                    str(raw["metric"]) if raw.get("metric") else None,
+                )
+            )
+    metrics = [metric for _gt, metric in guards if metric]
     spec = value_spec
     if metrics:
         spec = dict(value_spec or {})
         spec["direct_fields"] = [*(spec.get("direct_fields") or []), *metrics]
-    return tuple(g.gt for g in guards), spec
+    return tuple(gt for gt, _metric in guards), spec
 
 
 def _held_call_verdict(
@@ -735,6 +763,7 @@ def _held_call_verdict(
     advertised: str,
     arguments: dict[str, Any],
     active_skills: Sequence[LoadedSkill],
+    stored: Mapping[str, Any] | None = None,
 ) -> tuple[str, str]:
     """What happens to a held connection call now: ("run" | "refuse" | "park", why).
 
@@ -752,7 +781,9 @@ def _held_call_verdict(
     narrowing = pinned["narrowing"] or {}
     cfg = _mcp_params(conn)
     thresholds, value_spec = _skill_guard(
-        active_skills, cfg.get("value_spec") if isinstance(cfg.get("value_spec"), dict) else None
+        active_skills,
+        cfg.get("value_spec") if isinstance(cfg.get("value_spec"), dict) else None,
+        stored,
     )
     held = ToolCall(id="held", name=tool, arguments=arguments)
     decision = _authorize(
@@ -762,7 +793,8 @@ def _held_call_verdict(
         tool_policies=effective_tool_policies(frame, narrowing),
         connection_key=conn.name,
         tool_scopes=_manifest_scopes(conn),
-        skill_tool_names=frozenset(s.tool_name for s in active_skills),
+        skill_tool_names=frozenset(s.tool_name for s in active_skills)
+        | frozenset(str(n) for n in (stored or {}).get("skill_tool_names") or []),
         skill_thresholds=thresholds,
         value_spec=value_spec,
         guardrail_attribute_specs=_manifest_guardrail_attributes(conn),
@@ -894,6 +926,7 @@ async def _finish_elicitation(
             # The arguments that will actually be sent, answer included.
             arguments=arguments,
             active_skills=active_skills,
+            stored=pending,
         )
         if conn is not None and tool
         else ("refuse", "")
@@ -942,6 +975,8 @@ async def _finish_elicitation(
                 "advertised": advertised,
                 "arguments": arguments,
                 "question": exc.message,
+                "skill_guards": pending.get("skill_guards") or [],
+                "skill_tool_names": pending.get("skill_tool_names") or [],
             }
             transcript.append(
                 _from_message(
@@ -2644,6 +2679,7 @@ async def _dispatch_one_tool(
                         "advertised": body.name,
                         "arguments": dict(tc.arguments),
                         "question": exc.message,
+                        **_skill_snapshot(active_skills),
                     }
                 except Exception as exc:  # surface to the model
                     tool_error = classify_exception(

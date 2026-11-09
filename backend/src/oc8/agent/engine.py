@@ -17,7 +17,7 @@ import datetime as dt
 import json
 import logging
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -875,6 +875,21 @@ async def run_agent(
                     procedures=_active_procedures(active_skills),
                 )
 
+            def _skill_snapshot() -> dict[str, Any]:
+                """The active skills' guardrails, stored with a held call. A
+                resume leg starts with no active skills, and the answer may lift
+                the value over a threshold that was in force when the call was
+                made -- so the re-run is decided with these too."""
+                return {
+                    "skill_guards": [
+                        {"gt": g.gt, "metric": g.metric}
+                        for s in active_skills
+                        for g in s.definition.guardrails
+                        if g.type == "value_threshold" and g.then == "require_approval"
+                    ],
+                    "skill_tool_names": sorted(s.tool_name for s in active_skills),
+                }
+
             def _held_route(
                 server: Toolset | None, advertised: str
             ) -> tuple[
@@ -919,6 +934,7 @@ async def run_agent(
                 advertised: str,
                 arguments: dict[str, Any],
                 route: tuple[Any, ...],
+                stored: Mapping[str, Any],
             ) -> tuple[str, str]:
                 """("run" | "refuse" | "park", why) for an answered elicitation.
 
@@ -931,13 +947,23 @@ async def run_agent(
                 the answer counts only when the signatures are equal.
                 """
                 call_key, scopes, guardrails, per_value, spec, config, real = route
-                guards = [
-                    g
+                # This leg's active skills AND the ones stored with the call.
+                guards: list[tuple[float | None, str | None]] = [
+                    (g.gt, g.metric)
                     for s in active_skills
                     for g in s.definition.guardrails
                     if g.type == "value_threshold" and g.then == "require_approval"
                 ]
-                metrics = [g.metric for g in guards if g.metric]
+                for raw in stored.get("skill_guards") or []:
+                    if isinstance(raw, dict):
+                        gt = raw.get("gt")
+                        guards.append(
+                            (
+                                float(gt) if isinstance(gt, (int, float)) else None,
+                                str(raw["metric"]) if raw.get("metric") else None,
+                            )
+                        )
+                metrics = [metric for _gt, metric in guards if metric]
                 held_value_spec = per_value
                 if metrics:
                     held_value_spec = dict(per_value or {})
@@ -955,12 +981,13 @@ async def run_agent(
                     tool_policies=tool_policies,
                     connection_key=call_key,
                     tool_scopes=scopes,
-                    skill_tool_names=skill_tool_names,
+                    skill_tool_names=skill_tool_names
+                    | frozenset(str(n) for n in stored.get("skill_tool_names") or []),
                     value_spec=held_value_spec,
                     guardrail_attribute_specs=guardrails,
                     narrowing=pinned["narrowing"] or {},
                     is_team_lead=bool(pinned["is_team_lead"]),
-                    skill_thresholds=tuple(g.gt for g in guards),
+                    skill_thresholds=tuple(gt for gt, _metric in guards),
                     chat_mode=chat_mode,
                     # Always the connection's tool, whatever core tool shares
                     # its name.
@@ -1035,7 +1062,7 @@ async def run_agent(
                             )
                         )
                         parked_ctx = dict(parked.context or {})
-                        effect, why = _held_verdict(tool_name, arguments, held_route)
+                        effect, why = _held_verdict(tool_name, arguments, held_route, pending)
                         if effect == "park":
                             held_ar = await raise_approval(
                                 db,
@@ -1098,6 +1125,8 @@ async def run_agent(
                                     "tool": tool_name,
                                     "arguments": arguments,
                                     "question": exc.message,
+                                    "skill_guards": pending.get("skill_guards") or [],
+                                    "skill_tool_names": pending.get("skill_tool_names") or [],
                                 }
                                 parked.context = parked_ctx
                                 messages.append(
@@ -2542,6 +2571,7 @@ async def run_agent(
                                                     "tool": tc.name,
                                                     "arguments": dict(tc.arguments),
                                                     "question": exc.message,
+                                                    **_skill_snapshot(),
                                                 }
                                                 parked.context = parked_ctx
                                         task.state = "waiting_for_input"

@@ -3481,3 +3481,92 @@ async def test_tools_measures_an_active_skills_metric(
     assert code == 200, body
     assert body["status"] == "waiting_for_approval", body
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_held_call_keeps_the_guardrail_it_was_made_under(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The skill that was active when the call asked its question holds the
+    re-run too, whatever is active now: its guardrail is stored with the call."""
+    from oc8 import models as m
+
+    reached: list[dict[str, Any]] = []
+
+    async def fake_call(*args: Any, tool: str, arguments: dict[str, Any], **kw: Any) -> str:
+        reached.append(arguments)
+        return "created"
+
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        return CompletionResult(
+            text="ok", tool_calls=[], usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="stop", provider="ollama", model="m",
+        )
+
+    monkeypatch.setattr("oc8.agent.mcp_pool.call", fake_call)
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id = await _mcp_backed_run(db, tenant)
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {
+            **run.context,
+            "transcript": [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+            "pending_elicitation": {
+                "connection": "odoo",
+                "tool": "create_record",
+                "advertised": "create_record",
+                "arguments": {"model": "sale.order"},
+                "question": "How much?",
+                "skill_guards": [{"gt": 1000, "metric": "amount_total"}],
+                "skill_tool_names": ["skill_guarded"],
+            },
+            "clarifications": [{"question": "How much?", "answer": '{"amount_total": 5000}'}],
+        }
+        await db.flush()
+
+    body = await _post_step(tenant, agent_id, run_id)
+    assert reached == []
+    assert body.get("status_override") == "waiting_for_approval"
+
+
+@pytest.mark.asyncio
+async def test_a_parked_held_call_runs_exactly_once_after_its_approval(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end: the answered call parks, the operator approves the merged
+    call (as approval_resume records it), and the next legs run it once."""
+    from sqlalchemy import select
+
+    from oc8 import models as m
+    from oc8.runtime.approval_resume import resolve_tool_approval
+
+    reached, body, _ctx, approvals = await _resume_held_call(
+        app_session, monkeypatch, answer="ACME", autonomy="conservative"
+    )
+    assert reached == []
+    assert body.get("status_override") == "waiting_for_approval"
+    assert len(approvals) == 1
+    tenant = approvals[0].tenant_id
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        approval = await db.get(m.ApprovalRequest, approvals[0].id)
+        assert approval is not None
+        run = (
+            await db.execute(select(m.AgentRun).where(m.AgentRun.tenant_id == tenant))
+        ).scalar_one()
+        run.state = "waiting_for_approval"
+        await db.flush()
+        await resolve_tool_approval(db, approval=approval, decision="approve")
+        run = await db.get(m.AgentRun, run.id)
+        assert run is not None
+        run.state = "running"
+        agent_id, run_id = run.agent_id, run.id
+
+    await _post_step(tenant, agent_id, run_id)
+    await _post_step(tenant, agent_id, run_id)
+    assert reached == [{"model": "sale.order", "elicitation_answer": "ACME"}]

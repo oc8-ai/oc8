@@ -226,3 +226,109 @@ async def test_a_question_from_a_second_connection_is_held_under_that_connection
         await db.refresh(run)
         assert result.status == "waiting_for_input", result
         assert run.context["pending_elicitation"]["connection"] == "other"
+
+
+# ------------------------------------------------- end to end, across three legs
+
+
+async def test_a_held_call_keeps_its_skills_guardrail_and_runs_once_after_approval(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Leg 1: a skill with a value guardrail (> 100) is active; the write asks
+    a question. Leg 2 starts with no active skills -- the answer lifts the
+    value to 500, and the guardrail stored with the call still parks it for an
+    approval of the merged call. Leg 3: approved, exactly that call runs, once."""
+    from tests.agents.test_skill_invocation import (
+        SKILL_DEF,
+        _setup,
+        call_skill,
+        call_tool,
+        install,
+        stop,
+    )
+
+    class _AskingToolset:
+        def __init__(self) -> None:
+            self.tools = [
+                NeutralTool(
+                    name="fs_write",
+                    description="write a file",
+                    parameters={"type": "object", "properties": {}},
+                )
+            ]
+            self.ran: list[dict[str, Any]] = []
+            self.asked = False
+
+        async def call(self, name: str, arguments: dict[str, Any]) -> str:
+            if not self.asked:
+                self.asked = True
+                raise ElicitationNeeded("How much?")
+            self.ran.append(dict(arguments))
+            return "written"
+
+    install(monkeypatch, [call_skill(), call_tool("fs_write", value_eur=50), stop()])
+    toolset = _AskingToolset()
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, _skill, version = await _setup(db, tenant)
+        version.definition = {
+            **SKILL_DEF,
+            "guardrails": [
+                {
+                    "type": "value_threshold",
+                    "action": "send_action",
+                    "metric": "value_eur",
+                    "gt": 100,
+                    "then": "require_approval",
+                }
+            ],
+        }
+        dept = await db.get(m.Department, agent.department_id)
+        assert dept is not None
+        dept.frame = {
+            **dept.frame,
+            "tools": {
+                **dept.frame["tools"],
+                "coding": {"enabled": True, "read": True, "modify": True, "approval_eur": None},
+            },
+        }
+        run = m.AgentRun(tenant_id=tenant, agent_id=agent.id, state="running", context={})
+        db.add(run)
+        await db.flush()
+
+        first = await run_agent(
+            db, agent=agent, task_text="go", tenant_id=tenant, toolset=toolset, run_id=run.id
+        )
+        assert first.status == "waiting_for_input", first
+        await db.flush()
+        await db.refresh(run)
+        run.context = {
+            **run.context,
+            "clarifications": [{"question": "How much?", "answer": '{"value_eur": 500}'}],
+        }
+        await db.flush()
+
+        second = await run_agent(
+            db, agent=agent, task_text="go", tenant_id=tenant, toolset=toolset, run_id=run.id
+        )
+        assert second.status == "waiting_for_approval", second
+        assert toolset.ran == []
+        held_for = select(m.ApprovalRequest).where(m.ApprovalRequest.tenant_id == tenant)
+        approvals = (await db.execute(held_for)).scalars().all()
+        assert [a.payload["arguments"] for a in approvals] == [{"value_eur": 500}]
+
+        merged = call_sig(ToolCall(id="x", name="fs_write", arguments={"value_eur": 500}))
+        third = await run_agent(
+            db,
+            agent=agent,
+            task_text="go",
+            tenant_id=tenant,
+            toolset=toolset,
+            run_id=run.id,
+            pre_decided={merged: "approve"},
+        )
+        assert third.status == "done", third
+        assert toolset.ran == [{"value_eur": 500}]
+        await db.flush()
+        await db.refresh(run)
+        assert "pending_elicitation" not in run.context
