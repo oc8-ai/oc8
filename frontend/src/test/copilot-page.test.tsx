@@ -88,6 +88,9 @@ vi.mock("@/components/conversation/copilot-sidebar", () => ({
       <button type="button" onClick={() => onSelect("s-sidebar")}>
         sidebar pick
       </button>
+      <button type="button" onClick={() => onSelect(null)}>
+        new chat
+      </button>
     </nav>
   ),
 }));
@@ -158,8 +161,32 @@ describe("CopilotPage", () => {
     const { rerender } = render(ui("k1"));
     fireEvent.click(screen.getByRole("button", { name: "switch" }));
     expect(screen.getByTestId("chat")).toHaveAttribute("data-session", "s-8");
+    // The address follows the switch first, as the route does.
+    rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <CopilotPage initialSessionId="s-8" navKey="k1b" />
+      </QueryClientProvider>,
+    );
     rerender(ui("k2"));
     expect(screen.getByTestId("chat")).toHaveAttribute("data-session", "s-7");
+  });
+
+  it("keeps a new chat empty while the address still names the old one", () => {
+    // The router hands out the new navigation's key before its search, so for
+    // one render the page sees a fresh key with the chat it just left.
+    m.sessions = [{ id: "s-7", agentId: "agent-1" }];
+    const ui = (session: string | undefined, navKey: string) => (
+      <QueryClientProvider client={new QueryClient()}>
+        <CopilotPage initialSessionId={session ?? null} navKey={navKey} />
+      </QueryClientProvider>
+    );
+    const { rerender } = render(ui("s-7", "k1"));
+    expect(screen.getByTestId("chat")).toHaveAttribute("data-session", "s-7");
+    fireEvent.click(screen.getByRole("button", { name: "new chat" }));
+    rerender(ui("s-7", "k2"));
+    expect(screen.getByTestId("chat")).toHaveAttribute("data-session", "");
+    rerender(ui(undefined, "k2"));
+    expect(screen.getByTestId("chat")).toHaveAttribute("data-session", "");
   });
 
   it("desktop shows the persona header, the chat and the inline work panel", () => {
