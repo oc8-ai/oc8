@@ -16,8 +16,8 @@ sends your work back as a pull request that a maintainer reviews and merges.
 You don't need a development environment.
 
 The step-by-step partner flow, the review workflow and AI first drafts are in
-[Weblate setup](weblate.md#contributing-as-a-translation-partner), which
-also has the maintainer-side setup. Strings marked "Needs editing"
+[Translating on translate.oc8.ai](https://docs.oc8.ai/contributing/weblate).
+Strings marked "Needs editing"
 are not shipped until a reviewer confirms them. The rest of this
 page describes the underlying files and the pull request path, which stays
 available for developers.
