@@ -1,5 +1,17 @@
 msgid ""
-msgstr "Project-Id-Version: oc8\nPO-Revision-Date: 2026-11-10 18:55+0000\nLast-Translator: Erwin van der Ploeg <erwin@odooexperts.nl>\nLanguage-Team: Dutch <https://translate.oc8.ai/projects/oc8/core-ui/nl/>\nLanguage: nl\nMIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 8bit\nPlural-Forms: nplurals=2; plural=n != 1;\nX-Generator: Weblate 2026.11.1\nX-Native-Name: Nederlands\nX-Flag: 🇳🇱\n"
+msgstr ""
+"Project-Id-Version: oc8\n"
+"PO-Revision-Date: 2026-11-10 18:55+0000\n"
+"Last-Translator: Erwin van der Ploeg <erwin@odooexperts.nl>\n"
+"Language-Team: Dutch <https://translate.oc8.ai/projects/oc8/core-ui/nl/>\n"
+"Language: nl\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=n != 1;\n"
+"X-Generator: Weblate 2026.11.1\n"
+"X-Native-Name: Nederlands\n"
+"X-Flag: 🇳🇱\n"
 
 msgid " (opens in a new tab)"
 msgstr " (opent in een nieuw tabblad)"
@@ -6706,10 +6718,6 @@ msgstr "Niet geregistreerd"
 #, fuzzy
 msgid "Untested"
 msgstr "Niet getest"
-
-#, fuzzy
-msgid "Untitled chat"
-msgstr "Chat zonder titel"
 
 #, fuzzy
 msgid "Update"

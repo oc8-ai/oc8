@@ -6858,10 +6858,6 @@ msgid "Untested"
 msgstr "Sin probar"
 
 #, fuzzy
-msgid "Untitled chat"
-msgstr "Chat sin título"
-
-#, fuzzy
 msgid "Update"
 msgstr "Actualizar"
 

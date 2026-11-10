@@ -5140,9 +5140,6 @@ msgstr "Nicht registriert"
 msgid "Untested"
 msgstr "Ungetestet"
 
-msgid "Untitled chat"
-msgstr "Unbenannter Chat"
-
 msgid "Update"
 msgstr "Aktualisieren"
 
