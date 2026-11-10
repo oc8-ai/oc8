@@ -192,7 +192,11 @@ def main() -> None:
             # entry never landed (this process, or Redis, died between the
             # commit and the publish) is published again. The timer below
             # repeats it; this pass is what makes a restart the recovery.
-            from oc8.runtime.reconcile import close_abandoned_runs, recover_stranded_runs
+            from oc8.runtime.reconcile import (
+                close_abandoned_runs,
+                recover_stranded_runs,
+                release_stale_running_agents,
+            )
 
             await recover_stranded_runs()
 
@@ -210,6 +214,10 @@ def main() -> None:
                 # alive four hours later, each holding a (by then expired)
                 # run-scoped token and a gigabyte of memory on a laptop.
                 await close_abandoned_runs()
+                # An agent shown "running" whose run's process died before
+                # its commit: after the sweep above, which frees the agents of
+                # the runs it closes itself.
+                await release_stale_running_agents()
                 # The other end of the same gap: a run that is queued with
                 # nothing to start it. After the close above, so a run this
                 # tick freed an agent for is already a candidate.

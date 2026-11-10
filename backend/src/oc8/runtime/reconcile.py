@@ -243,9 +243,9 @@ async def recover_stranded_runs() -> list[uuid.UUID]:
                             )
                             .order_by(m.AgentRun.updated_at)
                             .limit(settings.stranded_run_batch_size)
-                            # Only the run row: the worker locks agent THEN run,
-                            # so taking the agent here too would invite a
-                            # deadlock.
+                            # Only the run row: the worker takes the agent's run
+                            # slot THEN the run row, so taking the agent here too
+                            # would only add a lock nobody needs.
                             .with_for_update(of=m.AgentRun, skip_locked=True)
                         )
                     )
@@ -287,14 +287,103 @@ async def recover_stranded_runs() -> list[uuid.UUID]:
     return recovered
 
 
+#: Run states during which an agent may rightly show "running" without a
+#: committed RUNNING run: a run parked on a question or an approval leaves it so.
+_HOLDS_RUNNING = (
+    RunState.RUNNING.value,
+    RunState.WAITING_FOR_INPUT.value,
+    RunState.WAITING_FOR_APPROVAL.value,
+)
+
+#: How long an agent must have shown "running" unchanged before the sweep looks
+#: at it. The run slot is what proves nobody is executing it; this only keeps
+#: the sweep away from a status that was written a moment ago.
+STALE_RUNNING_AFTER = dt.timedelta(seconds=2 * HEARTBEAT_SECONDS)
+
+
+async def release_stale_running_agents(*, now: dt.datetime | None = None) -> list[uuid.UUID]:
+    """Set back to idle every agent shown "running" that nothing is running.
+
+    The executor commits "running" in a transaction of its own
+    (`oc8.runtime.agent_status`), so a process that dies before the run's own
+    commit leaves the agent "running" while its run is `queued` again -- and if
+    the redelivered run then ends on an exit that leaves the status alone (a
+    paused agent's cancel drain), nothing ever corrects it.
+
+    An agent is left alone while any of these holds:
+
+    * a run of it is RUNNING or parked (`_HOLDS_RUNNING`), as committed;
+    * its run slot is taken -- an in-process run holds it for the whole run,
+      whose RUNNING transition is not committed until it ends, so this is the
+      only sign of it another session can see. Tried, never waited for;
+    * its status changed within `STALE_RUNNING_AFTER`;
+    * it is paused (`pause_reason`), or its row is locked (SKIP LOCKED).
+
+    Never raises: it runs on the worker's own timer."""
+    from oc8.runtime.agent_status import RUNNING, slot_key
+
+    cutoff = (now or dt.datetime.now(tz=dt.UTC)) - STALE_RUNNING_AFTER
+    released: list[uuid.UUID] = []
+    for tenant_id in await list_active_tenant_ids():
+        try:
+            async with tenant_session(tenant_id) as db:
+                candidates = (
+                    (
+                        await db.execute(
+                            select(m.Agent)
+                            .where(
+                                m.Agent.status == RUNNING,
+                                m.Agent.pause_reason.is_(None),
+                                m.Agent.updated_at < cutoff,
+                                ~exists().where(
+                                    m.AgentRun.agent_id == m.Agent.id,
+                                    m.AgentRun.state.in_(_HOLDS_RUNNING),
+                                ),
+                            )
+                            # The row first, then the slot -- and neither waited
+                            # for, so this sweep never queues behind a run.
+                            .with_for_update(skip_locked=True)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                for agent in candidates:
+                    free = (
+                        await db.execute(
+                            select(
+                                func.pg_try_advisory_xact_lock(
+                                    func.hashtextextended(slot_key(agent.id), 0)
+                                )
+                            )
+                        )
+                    ).scalar_one()
+                    if not free:
+                        continue
+                    agent.status = "idle"
+                    await publish_agent_status(agent)
+                    released.append(agent.id)
+        except Exception:
+            logger.exception("reconciler: running-agent sweep failed for tenant %s", tenant_id)
+    if released:
+        logger.warning(
+            "reconciler: %d agent(s) showed running with nothing running: %s",
+            len(released),
+            ", ".join(str(a) for a in released),
+        )
+    return released
+
+
 __all__ = [
     "ABANDONED_AFTER",
     "HEARTBEAT_SECONDS",
     "HELD_AGENT_STATUSES",
     "REASON",
+    "STALE_RUNNING_AFTER",
     "close_abandoned_runs",
     "heartbeat",
     "recover_stranded_runs",
+    "release_stale_running_agents",
 ]
 
 

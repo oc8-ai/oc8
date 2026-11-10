@@ -23,7 +23,14 @@ from oc8.db.session import tenant_session
 from oc8.observability import get_tracer, record_run_outcome
 from oc8.realtime.emit import publish_agent_status, record_activity
 from oc8.runtime.adapter import RuntimeAdapter
-from oc8.runtime.agent_status import mark_agent_running, settle_agent_status, take_run_slot
+from oc8.runtime.agent_status import (
+    RunningGuard,
+    expected_status,
+    mark_agent_running,
+    remember_claimed_status,
+    settle_agent_status,
+    take_run_slot,
+)
 from oc8.runtime.intake import publish_run
 from oc8.runtime.person import FOR_PERSON, SEVERAL_PEOPLE, person_behind
 from oc8.runtime.queue import RunMessage
@@ -759,7 +766,10 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
     with get_tracer().start_as_current_span("run.execute") as span:
         span.set_attribute("run_id", str(run_id))
         span.set_attribute("tenant_id", str(tenant_id))
-        async with tenant_session(tenant_id) as db:
+        # The guard is entered first, so it exits after the session has rolled
+        # back: "running" is committed on its own (`mark_agent_running`), and a
+        # run whose transaction never commits must not leave it behind.
+        async with RunningGuard(tenant_id) as running_guard, tenant_session(tenant_id) as db:
             repo = RunRepository(db)
             run = await repo.get(run_id)
             if run is None or run.state != RunState.QUEUED.value:
@@ -810,6 +820,9 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 logger.info("run %s finished in state %s", run_id, RunState.FAILED.value)
                 record_run_outcome(RunState.FAILED.value)
                 return
+            # The status this run may overwrite from here on: every later write
+            # is a compare-and-set against it (`oc8.runtime.agent_status`).
+            remember_claimed_status(db, agent)
 
             if agent.status == "pending_approval":
                 # Hire gate (§5.5 A4): a pending agent must not run via ANY enqueue
@@ -844,10 +857,10 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 # AND cancels its queued run; draining that run here must NOT un-freeze
                 # the agent (it would also orphan pause_reason="budget", poisoning the
                 # scope's idempotency check). An operator-cancelled run of a normal
-                # (unpaused) agent still frees it, as before.
-                if agent.pause_reason is None:
-                    agent.status = "idle"
-                    await publish_agent_status(agent)
+                # (unpaused) agent still frees it, as before. Compare-and-set, and
+                # never over a pause: the agent row is not locked, so a hard-stop
+                # may have paused it since the claim read it.
+                await settle_agent_status(db, agent, "idle")
                 await repo.transition(run, RunState.INTERRUPTED)
                 logger.info("run %s interrupted before start (cancelled while queued)", run_id)
                 record_run_outcome(RunState.INTERRUPTED.value)
@@ -862,9 +875,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                     run,
                     {"cancellation_kind": TENANT_INACTIVE_KIND, "output": TENANT_INACTIVE_OUTPUT},
                 )
-                if agent.pause_reason is None:
-                    agent.status = "idle"
-                    await publish_agent_status(agent)
+                await settle_agent_status(db, agent, "idle")
                 await repo.transition(run, RunState.INTERRUPTED)
                 await record_activity(
                     db,
@@ -921,8 +932,13 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             await repo.transition(run, RunState.RUNNING)
             # Reflect the in-flight run on the agent so the office view stays live
             # (the old inline endpoint did this; the durable path must too) --
-            # committed on its own, so this transaction never holds the row.
-            await mark_agent_running(tenant_id, agent)
+            # committed on its own, so this transaction never holds the row, and
+            # only over the status the claim read (never over a pause or a stop
+            # that landed since). From here a failure that rolls this
+            # transaction back puts the status back (`RunningGuard`).
+            claimed_status = expected_status(db, agent)
+            if await mark_agent_running(tenant_id, db, agent) and claimed_status is not None:
+                running_guard.arm(agent.id, claimed_status)
 
             pinned = await resolve_version(db, run, agent)
             # The chat's model choice (spec §2.3): resolve_version already fell
