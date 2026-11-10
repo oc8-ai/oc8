@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 
 from oc8 import __version__
 from oc8.config import Settings, get_settings
+from oc8.copilot.agent_templates import collect_edition_templates
 from oc8.db.engine import dispose_engine
 from oc8.edition import EditionExtension
 from oc8.edition.runtime import (
@@ -108,6 +109,8 @@ def create_app(
         version=__version__,
         lifespan=lifespan,
     )
+    # Agent ideas editions contribute (GET /copilot/agent-ideas reads them).
+    app.state.agent_templates = collect_edition_templates(edition_extensions)
 
     app.add_middleware(
         CORSMiddleware,

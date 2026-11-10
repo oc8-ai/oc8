@@ -23,6 +23,8 @@ export interface ChatModeDTO {
   summary: string;
   allowsTools: boolean;
   allowsWrites: boolean;
+  /** Stays on the chat until the member leaves it (Agent mode). */
+  sticky?: boolean;
 }
 
 export interface ChatCommand {
@@ -30,6 +32,8 @@ export interface ChatCommand {
   summary: string;
   /** Answered by the frontend; never sent as a message. */
   local: boolean;
+  /** A sticky mode: on its own it switches the chat instead of sending. */
+  sticky: boolean;
   /** Permission the caller must hold for this to be offered, or null. */
   requires: string | null;
 }
@@ -41,6 +45,7 @@ export const LOCAL_COMMANDS: ChatCommand[] = [
     key: "budget",
     summary: "Show spend so far and what is left.",
     local: true,
+    sticky: false,
     // GET /budgets/status is budget:view-gated -- offering this to somebody who
     // would be 403'd is the picker lying to them.
     requires: "budget:view",
@@ -66,6 +71,7 @@ export function chatCommands(
     key: mode.key,
     summary: mode.summary,
     local: false,
+    sticky: mode.sticky === true,
     requires: null,
   }));
   return [...remote, ...LOCAL_COMMANDS.filter((c) => !c.requires || can(c.requires))];
@@ -101,6 +107,11 @@ export function commandSummary(
       );
     case "budget":
       return t("Show spend so far and what is left.", "Zeigt die bisherigen Kosten und den Rest.");
+    case "agent":
+      return t(
+        "Set up a new agent together, step by step. Changes nothing until you confirm.",
+        "Legt mit dir Schritt für Schritt einen neuen Agenten an. Ändert nichts, bis du bestätigst.",
+      );
     default:
       return fallback;
   }
@@ -118,10 +129,10 @@ export function detectCommand(
 ): { command: ChatCommand; body: string } | null {
   const bare = BARE.exec(text);
   if (bare) {
-    // A bare word is only a command when it needs no body -- i.e. a local one.
-    // "/ask" on its own is a literal message, exactly as the backend reads it.
-    const local = commands.find((c) => c.key === bare[1] && c.local);
-    return local ? { command: local, body: "" } : null;
+    // A bare word is a command only when it needs no body: a local one, or a
+    // sticky mode, which switches the chat. "/ask" alone stays a message.
+    const known = commands.find((c) => c.key === bare[1] && (c.local || c.sticky));
+    return known ? { command: known, body: "" } : null;
   }
   const matched = WITH_BODY.exec(text);
   if (!matched) return null;

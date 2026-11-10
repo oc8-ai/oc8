@@ -44,7 +44,14 @@ from oc8.chat.context.manifest import (
     manifest_text,
 )
 from oc8.chat.context.registry import RESOLVERS
-from oc8.chat.modes import MODES, ChatMode, mode_directive, parse_command
+from oc8.chat.modes import (
+    ASSISTANT_ONLY_REFUSAL,
+    MODES,
+    ChatMode,
+    ModeNotAvailable,
+    mode_directive,
+    parse_command,
+)
 from oc8.chat.questions import (
     PLAIN_ID,
     Answer,
@@ -505,6 +512,11 @@ def _build_turn_context(
     return context
 
 
+async def _is_assistant(db: AsyncSession, session: m.ChatSession) -> bool:
+    agent = await db.get(m.Agent, session.agent_id)
+    return agent is not None and agent.is_tenant_assistant
+
+
 async def send_message(
     db: AsyncSession,
     *,
@@ -590,10 +602,35 @@ async def send_message(
     # unchanged with no mode, so a message that legitimately starts with a
     # slash is still sendable.
     if role == "followup":
-        # A follow-up's text is ours, not a member's command.
+        # A follow-up's text is ours, not a member's command, and it runs
+        # outside any sticky mode the member left on the chat.
         mode, body = None, message
     else:
         mode, body = parse_command(message)
+        if mode is not None and mode.assistant_only and not await _is_assistant(db, session):
+            # Agent mode is the Copilot's alone (its tools exist nowhere else).
+            # A sender at the web composer is told; any other door (a carried-
+            # over run input) gets what it wrote sent as plain text, the way an
+            # unknown command is a message.
+            if acting_member is not None:
+                raise ModeNotAvailable(ASSISTANT_ONLY_REFUSAL)
+            mode, body = None, message
+        # A sticky mode lives only on the web door (Ruling A7): the chip and
+        # its ✕ exist nowhere else, so a messenger turn neither inherits it
+        # (its sender could never leave it) nor sets it (`/agent` there is
+        # one turn).
+        if chat_channel is None:
+            if mode is not None and mode.sticky:
+                # `/agent ...` switches the chat, not just this turn.
+                session.mode = mode.key
+            elif mode is None and session.mode:
+                # Unknown keys resolve to None: a mode this release does not
+                # know must not narrow anything (same fail-open as
+                # mode_from_context).
+                mode = MODES.get(session.mode)
+                if mode is not None and mode.assistant_only:
+                    if not await _is_assistant(db, session):
+                        mode = None
     manifest = await _turn_manifest(
         db,
         session=session,
@@ -965,11 +1002,23 @@ async def record_assistant_reply(db: AsyncSession, *, run: m.AgentRun, output: s
     # persisted, and kept ahead of core's own suggestions part, never over it.
     raw_parts = (run.context or {}).get("parts")
     reply_parts: list[dict[str, Any]] = clean_parts(raw_parts)
+    # The builder card (Copilot Agent Builder §3.3): a core part, written only
+    # by the propose_agent tool, never accepted from an edition (CORE_PART_TYPES).
+    from oc8.copilot.tools import uuid_or_none
+
+    raw_builder = (run.context or {}).get("builder_proposal_id")
+    builder_id = uuid_or_none(raw_builder) if raw_builder else None
+    if builder_id is not None:
+        reply_parts.append({"type": "agent_builder", "proposalId": str(builder_id)})
     if suggestions:
         reply_parts.append({"type": "suggestions", "options": suggestions})
     consumed = {
         key: None
-        for key, raw in (("suggestions", raw_suggestions), ("parts", raw_parts))
+        for key, raw in (
+            ("suggestions", raw_suggestions),
+            ("parts", raw_parts),
+            ("builder_proposal_id", raw_builder),
+        )
         if raw is not None
     }
     if consumed:

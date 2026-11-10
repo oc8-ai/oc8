@@ -16,6 +16,7 @@ import {
   useRegenerate,
   useRunSteering,
   useSendRunInput,
+  useSetChatMode,
   useSetPins,
   useStopRun,
   useTurnRun,
@@ -45,13 +46,15 @@ import { Composer, type ComposerSubmit, type PlusMenuItem } from "./composer";
 import { ContextSearchDialog } from "./context-search";
 import { DataSourceBrowser } from "./data-source-browser";
 import { DecisionCard } from "./decision-card";
+import { AgentModeChip } from "./agent-mode-chip";
 import { PinnedBar } from "./pinned-bar";
-import { PromptStarters } from "./prompt-starters";
+import { PromptStarters, type PromptStarter } from "./prompt-starters";
 import { QuestionCard } from "./question-card";
 import { RunInputs, runInputError } from "./run-steering";
 import { SuggestionChips, type ReplyChip } from "./suggestion-chips";
 import type { AssistantTurnModel, ConversationVariant, TurnModel } from "./types";
 import { useTimelineRuns } from "./timeline-runs";
+import { AgentBuilderCard } from "./agent-builder-card";
 import { TurnApprovalCards } from "./turn-approval-cards";
 import { TURN_APPROVAL_CARDS } from "./turn-approval-registry";
 import { useConversation } from "./use-conversation";
@@ -158,7 +161,7 @@ export interface ConversationProps {
    *  anything in it can go out as the first message. */
   emptyState?: ReactNode | ((send: (text: string) => void) => ReactNode);
   /** Cards under the empty state; picking one sends its title. */
-  promptStarters?: { title: string; subtitle: string }[];
+  promptStarters?: PromptStarter[];
   draft?: string;
   onDraftChange?: (text: string) => void;
   agentItems?: SigilItem[];
@@ -187,6 +190,9 @@ export interface ConversationProps {
   hasOlder?: boolean;
   onLoadOlder?: () => void;
   loadingOlder?: boolean;
+  /** This is the Copilot's own chat: `/agent` (Agent mode) is offered. It is
+   *  the Assistant's alone -- the server refuses it in any other chat. */
+  agentMode?: boolean;
 }
 
 function TurnSkeletons() {
@@ -339,6 +345,53 @@ function ConversationBody(props: ConversationProps) {
     // The new chat being created under the pick keeps it.
     if (modelScope !== null) setHeldModel(undefined);
   }
+  // Agent mode (Copilot Agent Builder §2). A chat that does not exist yet holds
+  // the mode here and its first message carries "/agent", so no empty chat is
+  // created just to switch (Ruling 57's reasoning).
+  const setChatMode = useSetChatMode(props.sessionId);
+  const [heldMode, setHeldMode] = useState<string | null>(null);
+  const [modeScope, setModeScope] = useState(props.sessionId);
+  if (modeScope !== props.sessionId) {
+    setModeScope(props.sessionId);
+    // Once the chat exists the server is the truth.
+    setHeldMode(null);
+  }
+  // Never carry a refusal over to another chat (reset outside render).
+  const resetChatMode = setChatMode.reset;
+  useEffect(() => resetChatMode(), [props.sessionId, resetChatMode]);
+  const chatMode = props.sessionId ? (conv.session?.mode ?? null) : heldMode;
+  function enterMode(key: string) {
+    if (props.sessionId) setChatMode.mutate(key);
+    else setHeldMode(key);
+  }
+  function leaveMode() {
+    // Held, the mode is not on the server yet; once the chat exists (its first
+    // message carried "/agent") leaving must reach the server too.
+    if (props.sessionId) setChatMode.mutate(null);
+    else setHeldMode(null);
+  }
+  // The server may refuse a switch (e.g. out of /plan or /ask): its sentence is
+  // shown and the chat keeps the mode it had.
+  const modeError = setChatMode.error
+    ? setChatMode.error instanceof ApiError &&
+      setChatMode.error.message &&
+      !/^[[{]/.test(setChatMode.error.message)
+      ? setChatMode.error.message
+      : t("The mode could not be changed.", "Der Modus konnte nicht geändert werden.")
+    : null;
+  const modeAbove =
+    (chatMode === "agent" && !readOnly) || modeError ? (
+      <>
+        {chatMode === "agent" && !readOnly && (
+          <AgentModeChip onLeave={leaveMode} busy={setChatMode.isPending} />
+        )}
+        {modeError && (
+          <p role="alert" className="px-1 text-xs text-status-error">
+            {modeError}
+          </p>
+        )}
+      </>
+    ) : null;
   const firstMessage =
     !readOnly && (!props.sessionId || (!conv.isLoading && conv.turns.length === 0 && !busy));
   const lastUser = [...conv.turns].reverse().find((turn) => turn.kind === "user");
@@ -519,6 +572,7 @@ function ConversationBody(props: ConversationProps) {
           (prev) =>
             prev ?? {
               ...session,
+              mode: heldMode,
               modelOverrideId: null,
               kind: "chat",
               activeRuns: [],
@@ -580,13 +634,22 @@ function ConversationBody(props: ConversationProps) {
       return;
     }
     const body = {
-      message: submit.text,
+      message:
+        heldMode && !props.sessionId && !submit.text.startsWith("/")
+          ? `/${heldMode} ${submit.text}`
+          : submit.text,
       attachmentIds: submit.attachmentIds,
       contextRefs: submit.contextRefs.map(({ kind, id }) => ({ kind, id })),
     };
     let modelRefused = false;
     try {
       const sessionId = await ensureSession();
+      if (heldMode && !props.sessionId && submit.text.startsWith("/")) {
+        // No "/agent" prefix goes out, so the server's chat is not in the mode.
+        qc.setQueryData<ChatSessionDetailDTO>(conversationKeys.session(sessionId), (prev) =>
+          prev ? { ...prev, mode: null } : prev,
+        );
+      }
       await applyHeldModel(sessionId).catch((error: unknown) => {
         modelRefused = true;
         throw error;
@@ -789,6 +852,18 @@ function ConversationBody(props: ConversationProps) {
       turnRunId && Object.keys(TURN_APPROVAL_CARDS).length > 0 ? (
         <TurnApprovalCards runId={turnRunId} live={!!turn.liveRunId} />
       ) : null;
+    // The builder card (Copilot Agent Builder §3.3) rides on the answer that
+    // proposed it, as a core part; editions never render it (CORE_PART_TYPES).
+    const shown = turn.variants[turn.variants.length - 1];
+    const builderPart = shown?.parts?.find((p) => p.type === "agent_builder");
+    const builder =
+      typeof builderPart?.proposalId === "string" ? (
+        <AgentBuilderCard
+          proposalId={builderPart.proposalId}
+          readOnly={readOnly}
+          onPropose={sendText}
+        />
+      ) : null;
     const chips =
       turn === lastTurn && suggestions.length > 0 ? (
         <SuggestionChips
@@ -799,8 +874,9 @@ function ConversationBody(props: ConversationProps) {
       ) : null;
     return {
       cards:
-        approvals || own.cards || decisions ? (
+        builder || approvals || own.cards || decisions ? (
           <>
+            {builder}
             {approvals}
             {own.cards}
             {decisions}
@@ -1021,6 +1097,7 @@ function ConversationBody(props: ConversationProps) {
               : undefined
           }
           onLocalCommand={onLocalCommand}
+          onEnterMode={props.agentMode ? enterMode : undefined}
           placeholder={
             pending ? t("Or answer freely …", "Oder frei antworten …") : props.placeholder
           }
@@ -1050,8 +1127,9 @@ function ConversationBody(props: ConversationProps) {
               : undefined
           }
           above={
-            pinnedAbove || questionAbove || props.composerAbove ? (
+            modeAbove || pinnedAbove || questionAbove || props.composerAbove ? (
               <>
+                {modeAbove}
                 {pinnedAbove}
                 {questionAbove}
                 {props.composerAbove}

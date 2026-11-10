@@ -25,6 +25,7 @@ from oc8.api.v1 import (
     connections,
     contracts,
     copilot,
+    copilot_builder,
     copilot_member,
     credentials,
     dashboard,
@@ -109,6 +110,7 @@ api_router.include_router(handoffs.router, tags=["handoffs"])
 api_router.include_router(contracts.router, tags=["contracts"])
 api_router.include_router(copilot.router, tags=["copilot"])
 api_router.include_router(copilot_member.router, tags=["copilot"])
+api_router.include_router(copilot_builder.router, tags=["copilot"])
 api_router.include_router(flows.router, tags=["flows"])
 api_router.include_router(governance.router, tags=["governance"])
 api_router.include_router(triggers.router, tags=["triggers"])

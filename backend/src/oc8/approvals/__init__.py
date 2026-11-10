@@ -7,11 +7,13 @@ from oc8.approvals.service import (
     AlreadyDecided,
     ApprovalError,
     DecisionResult,
+    EffectRefused,
     NotYourDepartment,
     NotYourSayAtAll,
     UnknownDecision,
     UnknownOption,
     decide_approval,
+    expire_approval,
     raise_approval,
 )
 
@@ -21,11 +23,13 @@ __all__ = [
     "AlreadyDecided",
     "ApprovalError",
     "DecisionResult",
+    "EffectRefused",
     "NotYourDepartment",
     "NotYourSayAtAll",
     "UnknownDecision",
     "UnknownOption",
     "decide_approval",
+    "expire_approval",
     "raise_approval",
     "record_url_for_connection",
 ]

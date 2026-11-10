@@ -24,6 +24,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { AgentAvatar } from "@/components/agent-avatar";
+import { AgentBuilderCard } from "@/components/conversation/agent-builder-card";
 import { DiscussWithCopilot } from "@/components/conversation/discuss-with-copilot";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
@@ -36,6 +37,7 @@ import {
   type Approval,
   type Clarification,
 } from "@/lib/hooks";
+import { builderRefusalCode, builderRefusalText } from "@/lib/agent-builder-api";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -230,10 +232,13 @@ export function ApprovalsWidget({
       ]);
       setSelectedId(null);
     } catch (e) {
+      const code = builderRefusalCode(e);
       toast.error(
-        e instanceof Error
-          ? e.message
-          : t("Could not record the decision", "Entscheidung konnte nicht erfasst werden"),
+        code
+          ? builderRefusalText(code, null, t)
+          : e instanceof Error
+            ? e.message
+            : t("Could not record the decision", "Entscheidung konnte nicht erfasst werden"),
       );
     }
   }
@@ -683,10 +688,19 @@ export function ApprovalPane({
             </a>
           )}
         </section>
+        {approval.actionType === "copilot.agent_builder" && approval.proposalId && (
+          <section>
+            <AgentBuilderCard
+              proposalId={approval.proposalId}
+              readOnly
+              heading={t("What happens if you agree", "Was passiert, wenn du zustimmst")}
+            />
+          </section>
+        )}
 
         {(approval.toolName || options.length > 0) && (
           <section>
-            <div className="mb-2 text-[10px] uppercase tracking-widest text-muted-foreground">
+            <div className="mb-2 text-micro">
               {t("What happens if you agree", "Was passiert, wenn du zustimmst")}
             </div>
 

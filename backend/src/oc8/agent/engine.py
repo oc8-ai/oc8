@@ -28,6 +28,7 @@ from oc8 import models as m
 from oc8.agent import cache_flow
 from oc8.agent.control_tools import (
     CONTROL_TOOL_NAMES,
+    ENTER_AGENT_MODE,
     FIND_TOOLS,
     MAX_DELEGATION_DEPTH,  # re-exported for tests/coding/test_engine_delegation.py
     audit_edition_call,
@@ -120,7 +121,7 @@ from oc8.capas.claude_hooks.context import (
     task_created as claude_task_created,
 )
 from oc8.capas.discovery import resolve_tool_pack_connection
-from oc8.chat.modes import mode_from_context
+from oc8.chat.modes import AGENT, mode_from_context
 from oc8.coding.tools import CODING_FRAME_KEY, CODING_TOOL_RIGHTS, Toolset
 from oc8.config import get_settings
 from oc8.connections.access import ConnectionRequired
@@ -847,7 +848,7 @@ async def run_agent(
         startup_unavailable: list[dict[str, str]] = []
 
         async def loop(tools: list[NeutralTool], server: Toolset | None) -> RunResult:
-            nonlocal model_config, provider, model, model_locality
+            nonlocal model_config, provider, model, model_locality, chat_mode
             active_skills: list[LoadedSkill] = []
             # The edition tools this leg offers, computed once: the same offer
             # builds the tool list, feeds the PEP and gates the dispatch. The
@@ -2557,6 +2558,16 @@ async def run_agent(
                             edition_offer=edition,
                         )
                         if control is not None:
+                            if tc.name == ENTER_AGENT_MODE.name and not control.output.startswith(
+                                "ERROR"
+                            ):
+                                # Ruling A6: the rest of this leg runs in Agent
+                                # mode -- every later call is decided by it and
+                                # `_offered()` recomputes the list for the next
+                                # completion. The run's context already says so
+                                # for the next leg (and for the isolated runtimes,
+                                # which read it per call).
+                                chat_mode = AGENT
                             # A core-owned tool (memory/ask/delegate/skill). The
                             # dispatcher is shared with the isolated runtime and
                             # deliberately mutates nothing here -- it reports, we

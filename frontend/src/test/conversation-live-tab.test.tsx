@@ -192,6 +192,12 @@ describe("Live tab", () => {
     expect(sendInput).not.toHaveBeenCalled();
   });
 
+  it("never offers Agent mode: the live tab is not the Copilot's chat", () => {
+    state.runs = [run({ state: "done" })];
+    wrap(tab());
+    expect(conversationProps.last?.agentMode).toBeFalsy();
+  });
+
   it("offers All runs to a manager", () => {
     wrap(tab());
     fireEvent.click(screen.getByRole("switch", { name: /All runs/ }));

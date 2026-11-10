@@ -43,10 +43,16 @@ async def _chat_enabled_configs(db: AsyncSession, *, tenant_id: uuid.UUID) -> li
     return list(rows.scalars())
 
 
+async def chat_enabled_model_ids(db: AsyncSession, *, tenant_id: uuid.UUID) -> frozenset[uuid.UUID]:
+    """Ids of every chat-enabled model of the tenant (Ruling U1). The agent
+    builder offers and accepts only these."""
+    configs = await _chat_enabled_configs(db, tenant_id=tenant_id)
+    return frozenset(c.id for c in configs)
+
+
 async def allowed_model_ids(db: AsyncSession, *, agent: m.Agent) -> frozenset[uuid.UUID]:
     """Ids of every chat-enabled model of the agent's tenant."""
-    configs = await _chat_enabled_configs(db, tenant_id=agent.tenant_id)
-    return frozenset(c.id for c in configs)
+    return await chat_enabled_model_ids(db, tenant_id=agent.tenant_id)
 
 
 async def is_allowed_override(

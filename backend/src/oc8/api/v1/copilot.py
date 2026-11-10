@@ -84,6 +84,7 @@ async def list_proposals(
             .where(
                 CopilotProposal.tenant_id == principal.tenant_id,
                 CopilotProposal.status == status_filter,
+                CopilotProposal.kind == "operations",
             )
             .order_by(CopilotProposal.created_at.desc())
         )
@@ -95,7 +96,9 @@ async def list_proposals(
             dependencies=[Depends(require_permission(perm(COPILOT, VIEW)))])
 async def review(proposal_id: uuid.UUID, db: DbSession) -> dict[str, Any]:
     proposal = await db.get(CopilotProposal, proposal_id)
-    if proposal is None:
+    # A builder proposal is its owner's chat content, read through its own
+    # route (Ruling A10): here it does not exist.
+    if proposal is None or proposal.kind != "operations":
         raise HTTPException(status.HTTP_404_NOT_FOUND, "proposal not found")
     return await _response(db, proposal)
 

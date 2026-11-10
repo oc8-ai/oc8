@@ -29,6 +29,7 @@ _CONTROL_WRITE: frozenset[str] = frozenset(
         "run_shell",
         "run_program",
         "propose_change",
+        "propose_agent",
         "decide_approval",
     }
 )
@@ -51,6 +52,8 @@ _CONTROL_READ: frozenset[str] = frozenset(
         "agent_status",
         "budget_overview",
         "kpi_overview",
+        "builder_options",
+        "enter_agent_mode",
     }
 )
 

@@ -20,8 +20,9 @@ import { useMay } from "@/lib/governance-hooks";
 import { useChatSession } from "@/lib/conversation-api";
 import { useAgent } from "@/lib/hooks";
 import { useChatSessions } from "@/lib/hooks-chat";
+import { useAgentIdeas } from "@/lib/agent-builder-api";
 import { useCopilotProfile } from "@/lib/hooks-copilot";
-import { useT } from "@/lib/i18n";
+import { useLang, useT } from "@/lib/i18n";
 import { urlId } from "@/lib/ids";
 
 export interface CopilotSearch {
@@ -218,15 +219,28 @@ export function CopilotPage({
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const { data: current } = useChatSession(sessionId);
   const mobile = useIsMobile();
+  // Agent ideas for this tenant's systems first (Copilot Agent Builder §3.6),
+  // then the Copilot's own ways in.
+  const { lang } = useLang();
+  const { data: ideas = [] } = useAgentIdeas(may("copilot:use"));
   if (!may("copilot:use")) return null; // nav is the main gate; defense in depth
   const name = profile?.displayName ?? "Copilot";
-  const starters = copilotStarters(t);
+  const pick = (text: { en: string; de: string }) => (lang === "de" ? text.de : text.en);
+  const starters = [
+    ...ideas.map((idea) => ({
+      title: pick(idea.title),
+      subtitle: pick(idea.subtitle),
+      prompt: pick(idea.prompt),
+    })),
+    ...copilotStarters(t),
+  ];
   const chat = agentId ? (
     <Conversation
       agentId={agentId}
       sessionId={sessionId}
       onSessionChange={openSession}
       variant="full"
+      agentMode
       promptStarters={starters}
       emptyState={
         <div className="flex flex-col items-center gap-3 pt-12 pb-6 text-center">

@@ -29,6 +29,7 @@ vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => vi.fn(),
   useRouterState: () => "k",
 }));
+vi.mock("@/lib/agent-builder-api", () => ({ useAgentIdeas: () => ({ data: [] }) }));
 vi.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => false }));
 vi.mock("@/lib/conversation-api", () => ({
   useChatSession: () => ({ data: undefined, error: m.linkedError }),

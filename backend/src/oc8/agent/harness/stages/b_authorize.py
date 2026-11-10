@@ -13,6 +13,7 @@ from typing import Any
 
 from oc8 import models as m
 from oc8.agent.control_tools import (
+    BUILDER_TOOL_NAMES,
     CONTROL_TOOL_NAMES,
     COPILOT_TOOL_NAMES,
     DEPTH_LIMIT_REASON,
@@ -224,6 +225,13 @@ def authorize(
         # (oc8.copilot.tools) is the gate -- Copilot only, and scoped to the
         # member behind the task. Without this ALLOW every call would be
         # audited as a denial by the frame check below.
+        return Decision(Effect.ALLOW)
+    if tc.name in BUILDER_TOOL_NAMES and core_call:
+        # Belongs to no connection, like propose_change: the dispatch
+        # (oc8.copilot.builder_tools) is the gate -- Copilot only, web door,
+        # the session's own member. The mode check above already denied
+        # propose_agent outside Agent mode's exemption. A routed
+        # call of that name is a connection's tool and goes to the frame below.
         return Decision(Effect.ALLOW)
     if tc.name == "delegate_task":
         if not is_team_lead:

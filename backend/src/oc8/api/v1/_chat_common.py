@@ -47,6 +47,7 @@ def session_dto(
         task_id=str(session.task_id) if session.task_id else None,
         project_id=str(session.project_id) if session.project_id else None,
         pinned=bool(session.pinned),
+        mode=session.mode,
     )
 
 

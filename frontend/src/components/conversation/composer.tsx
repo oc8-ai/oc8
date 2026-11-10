@@ -71,6 +71,8 @@ export interface ComposerProps {
   /** ↑ in an empty composer. */
   onEditLast?: () => void;
   onLocalCommand?: (key: string) => void;
+  /** A bare sticky command ("/agent"): switch the chat, send nothing. */
+  onEnterMode?: (key: string) => void;
   placeholder?: string;
   modelValue: string | null;
   showModelPicker: boolean;
@@ -125,7 +127,9 @@ export function Composer(props: ComposerProps) {
   const t = useT();
   const can = useCan();
   const { data: modes } = useChatModes();
-  const commands = chatCommands(modes, can);
+  // A sticky mode is offered only where the conversation can enter it
+  // (Agent mode: the Copilot's chat alone).
+  const commands = chatCommands(modes, can).filter((c) => !c.sticky || !!props.onEnterMode);
   const readOnly = !!props.disabled;
   const composerActions = useChatSlot("composerActions");
   const editionPickers = useChatSlot("composerPickers");
@@ -245,9 +249,18 @@ export function Composer(props: ComposerProps) {
       setCaret(sigil.start);
       pickers.find((p) => `${EDITION_PREFIX}${p.id}` === item.id)?.onSelect(slotProps);
     } else if (sigil.kind === "/") {
-      const next = replaceSigil(props.draft, sigil, `/${item.id} `);
-      props.onDraftChange(next);
-      setCaret(item.id.length + 2);
+      const sticky = commands.find((c) => c.key === item.id && c.sticky);
+      if (sticky && props.onEnterMode) {
+        // "/agent" switches the chat; whatever the member types next is the
+        // first thing said in that mode.
+        props.onDraftChange(replaceSigil(props.draft, sigil, ""));
+        setCaret(sigil.start);
+        props.onEnterMode(sticky.key);
+      } else {
+        const next = replaceSigil(props.draft, sigil, `/${item.id} `);
+        props.onDraftChange(next);
+        setCaret(item.id.length + 2);
+      }
     } else if (sigil.kind === "@") {
       props.onAddressAgent?.(item.id);
       props.onDraftChange(replaceSigil(props.draft, sigil, ""));
@@ -370,6 +383,11 @@ export function Composer(props: ComposerProps) {
     const local = detectCommand(text, commands);
     if (local?.command.local) {
       props.onLocalCommand?.(local.command.key);
+      props.onDraftChange("");
+      return;
+    }
+    if (local?.command.sticky && !local.body) {
+      props.onEnterMode?.(local.command.key);
       props.onDraftChange("");
       return;
     }

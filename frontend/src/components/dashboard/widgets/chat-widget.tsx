@@ -110,6 +110,7 @@ function ChatWidgetPanel({
             sessionId={sessionId}
             onSessionChange={setSessionId}
             variant="compact"
+            agentMode
             draft={draft}
             onDraftChange={setDraft}
             placeholder={t("Ask your Copilot …", "Frag deinen Copilot …")}

@@ -28,7 +28,7 @@ from oc8.authz.permissions import AGENT, COPILOT, COPILOT_USE, MANAGE, RUN_START
 from oc8.authz.scope import HumanActor
 from oc8.chat.context.base import Viewer
 from oc8.chat.model_choice import is_allowed_override, model_options
-from oc8.chat.modes import MODES
+from oc8.chat.modes import ASSISTANT_ONLY_REFUSAL, MODES, ModeNotAvailable
 from oc8.chat.port import session_access
 from oc8.chat.questions import QuestionError
 from oc8.chat.reach import reachable_chat_agent
@@ -65,6 +65,7 @@ from oc8.schemas.requests import (
     RenameChatSessionRequest,
     SendChatMessageRequest,
     SetChatModelRequest,
+    SetChatModeRequest,
 )
 
 router = APIRouter()
@@ -184,6 +185,7 @@ async def get_chat_modes() -> list[ChatModeDTO]:
             summary=mode.summary,
             allows_tools=mode.allows_tools,
             allows_writes=mode.allows_writes,
+            sticky=mode.sticky,
         )
         for mode in MODES.values()
     ]
@@ -509,6 +511,34 @@ async def set_chat_model(
     return dto
 
 
+@router.put("/chat/sessions/{session_id}/mode", response_model=ChatSessionDTO)
+async def set_chat_mode(
+    session_id: uuid.UUID,
+    body: SetChatModeRequest,
+    db: DbSession,
+    actor: _ChatActor,
+) -> ChatSessionDTO:
+    """Keep a sticky mode on this chat (a bare `/agent`), or leave it (✕).
+    Owner-only like every other rearrangement of a chat; only a sticky mode
+    may be kept -- `/plan` stays a per-turn command."""
+    session = await session_owned_by_caller(session_id, db, actor)
+    if body.mode is not None:
+        mode = MODES.get(body.mode)
+        if mode is None or not mode.sticky:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, "this mode cannot be kept on a chat"
+            )
+        if mode.assistant_only:
+            agent = await db.get(m.Agent, session.agent_id)
+            if agent is None or not agent.is_tenant_assistant:
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, ASSISTANT_ONLY_REFUSAL)
+    session.mode = body.mode
+    await db.flush()
+    dto = await session_detail(db, viewer=await actor_viewer(db, actor), session=session)
+    await db.commit()
+    return dto
+
+
 @router.patch("/chat/sessions/{session_id}", response_model=ChatSessionDTO)
 async def rename_chat_session(
     request: Request,
@@ -570,24 +600,28 @@ async def post_message(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail=f"requires permission: {RUN_START}"
         )
-    user_message, run = await send_message(
-        db,
-        session=session,
-        tenant_id=actor.principal.tenant_id,
-        message=body.message,
-        attachment_ids=body.attachment_ids,
-        context_refs=[{"kind": ref.kind, "id": ref.id} for ref in body.context_refs],
-        originating_operator=actor.principal.subject,
-        # The token's role claim, recorded on the run: a member with no
-        # ASSIGNED role resolves to `permissions_for(token.role)` everywhere
-        # else in this system, and the run that answers this message has no
-        # token to read it from later. See `control_tools._acting_token_role`.
-        operator_role=actor.principal.role,
-        author_member_id=actor.member.id,
-        # The member behind THIS request's token, whose role is the one above:
-        # the turn's pinned context is resolved under their rights.
-        acting_member=actor.member,
-    )
+    try:
+        user_message, run = await send_message(
+            db,
+            session=session,
+            tenant_id=actor.principal.tenant_id,
+            message=body.message,
+            attachment_ids=body.attachment_ids,
+            context_refs=[{"kind": ref.kind, "id": ref.id} for ref in body.context_refs],
+            originating_operator=actor.principal.subject,
+            # The token's role claim, recorded on the run: a member with no
+            # ASSIGNED role resolves to `permissions_for(token.role)` everywhere
+            # else in this system, and the run that answers this message has no
+            # token to read it from later. See `control_tools._acting_token_role`.
+            operator_role=actor.principal.role,
+            author_member_id=actor.member.id,
+            # The member behind THIS request's token, whose role is the one above:
+            # the turn's pinned context is resolved under their rights.
+            acting_member=actor.member,
+        )
+    except ModeNotAvailable as exc:
+        # Nothing was written: the refusal comes before the turn exists.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     dto = await _message_dto(user_message, db, actor.principal.tenant_id)
     if run is not None:
         # NOT persisted -- user_message.run_id stays NULL in the database,

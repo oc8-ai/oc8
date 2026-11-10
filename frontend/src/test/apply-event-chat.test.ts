@@ -51,4 +51,12 @@ describe("chat live events", () => {
     expect(keys).not.toContain(JSON.stringify(["chat", "messages"]));
     expect(keys).not.toContain(JSON.stringify(["run", "r1"]));
   });
+
+  it("copilot.agent_builder refetches that proposal's card", () => {
+    const qc = new QueryClient();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    applyEvent(qc, event("copilot.agent_builder", { proposal_id: "p1", session_id: "s1" }));
+    const keys = spy.mock.calls.map((c) => JSON.stringify(c[0]?.queryKey));
+    expect(keys).toContain(JSON.stringify(["copilot", "builder", "p1"]));
+  });
 });
