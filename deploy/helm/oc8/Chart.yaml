@@ -2,8 +2,8 @@ apiVersion: v2
 name: oc8
 description: Self-hosted oc8 — AI agent platform (Community Edition)
 type: application
-version: 0.1.16
-appVersion: "0.1.16"
+version: 0.1.17
+appVersion: "0.1.17"
 kubeVersion: ">=1.24.0-0"
 home: https://oc8.ai
 sources:
