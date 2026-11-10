@@ -55,6 +55,26 @@ class ChatMode:
     instruction: str
     allows_tools: bool = True
     allows_writes: bool = True
+    #: Stays on the chat (`ChatSession.mode`) after the turn that set it, and
+    #: every later turn without a command of its own runs in it until the member
+    #: leaves it. Every other mode applies to one turn.
+    sticky: bool = False
+    #: Core tools this read-only mode does NOT withhold although they are in
+    #: `WRITING_CONTROL_TOOLS`. An exemption from the removal, never a grant:
+    #: the frame, the narrowing and the tool's own dispatch still decide.
+    permitted_writes: frozenset[str] = frozenset()
+    #: Only the tenant's Assistant (the Copilot) offers this mode: its tools
+    #: exist on no other agent. Anywhere else the command is refused where the
+    #: sender can be told (`ModeNotAvailable`) and is plain text otherwise.
+    assistant_only: bool = False
+
+
+class ModeNotAvailable(ValueError):
+    """A mode this chat does not offer (Agent mode outside the Copilot chat)."""
+
+
+#: The refusal's sentence: shown as-is by the composer, like every mode refusal.
+ASSISTANT_ONLY_REFUSAL = "agent mode is only available in the Copilot chat"
 
 
 ASK = ChatMode(
@@ -106,8 +126,35 @@ SUMMARISE = ChatMode(
     allows_writes=False,
 )
 
+AGENT = ChatMode(
+    key="agent",
+    summary="Set up a new agent together, step by step. Changes nothing until you confirm.",
+    instruction=(
+        "You are setting up one new agent with the person. Call builder_options "
+        "first: it lists the departments, connected systems, models and skills "
+        "they may use, with their ids. Ask only what you cannot infer, with "
+        "ask_user and structured questions (at most 6 per round, at most 3 "
+        "rounds in total): the department (pre-select their own), when the agent "
+        "works (on demand, a schedule, an event), which connected systems, and "
+        "what it must never do without approval. Propose everything else "
+        "yourself: name, role title, mission, model and skills. Then call "
+        "propose_agent once with the complete agent; the person sees it as a "
+        "card and nothing is created until they confirm there. If they ask for "
+        "changes, call propose_agent again with the revised agent -- it replaces "
+        "the previous one. If no connected system fits, say so plainly, point "
+        "them to the Knowledge page (/knowledge) where a system is connected, "
+        "and do not propose an agent that cannot work. Every other tool that "
+        "would change anything is withheld."
+    ),
+    allows_tools=True,
+    allows_writes=False,
+    sticky=True,
+    permitted_writes=frozenset({"ask_user", "propose_agent"}),
+    assistant_only=True,
+)
+
 #: Keyed by command word. Insertion order is picker order.
-MODES: dict[str, ChatMode] = {m.key: m for m in (ASK, PLAN, DO, SUMMARISE)}
+MODES: dict[str, ChatMode] = {m.key: m for m in (ASK, PLAN, DO, SUMMARISE, AGENT)}
 
 #: Core-owned tools that CHANGE something, and therefore have no business in a
 #: read-only mode. The connection tools are classified by the pack's own
@@ -121,6 +168,11 @@ MODES: dict[str, ChatMode] = {m.key: m for m in (ASK, PLAN, DO, SUMMARISE)}
 #: read_* family are absent -- they show, list or read and change nothing
 #: outside the run.
 #:
+#: `enter_agent_mode` is in the list too, although it touches no system: it
+#: switches the chat into Agent mode, which may propose an agent. A mode may
+#: only narrow, so a read-only turn (/plan) never enters another mode that
+#: could do more than it (Ruling A22).
+#:
 #: Every OTHER core tool counts as a read in a read-only mode (see
 #: `mode_refusal`): core tools carry no connection scopes, so `required_right`
 #: would otherwise fail them closed to "modify" and /plan could not look
@@ -131,6 +183,8 @@ WRITING_CONTROL_TOOLS: frozenset[str] = frozenset(
         "delegate_task",
         "write_output_file",
         "propose_change",
+        "propose_agent",
+        "enter_agent_mode",
         "decide_approval",
         "request_decision",
         "ask_user",
@@ -143,6 +197,12 @@ WRITING_CONTROL_TOOLS: frozenset[str] = frozenset(
         "cancel_followup",
     }
 )
+
+#: `Decision.reason_code` of a refusal that came from the turn's mode rather than
+#: from the frame. The control-tool dispatcher stops on it for EVERY core tool,
+#: reads included: under /ask a read is withheld too, and a reading control
+#: tool has no reason of its own to look at its decision.
+MODE_WITHHELD = "mode_withheld"
 
 #: A leading command word, lowercase, followed by whitespace and a body.
 #:
@@ -195,13 +255,38 @@ def mode_directive(mode: ChatMode) -> str:
 
 
 def mode_refusal(
-    mode: ChatMode | None, tool_name: str, *, tool_scopes: Mapping[str, Any] | None
+    mode: ChatMode | None,
+    tool_name: str,
+    *,
+    tool_scopes: Mapping[str, Any] | None,
+    connection_tool: bool = False,
+    core: bool = True,
 ) -> str | None:
     """Why this mode will not let this tool be called, or None.
 
     None means "no opinion here" -- never "allowed". The frame, the narrowing
     and the value threshold all still have their say afterwards; this only ever
     subtracts.
+
+    The two flags answer different questions, and a runtime caller passes
+    both explicitly -- neither implies the other:
+
+    * `connection_tool=True` says the call is NOT an edition call (the PEP
+      passes `not edition_call`; a connection listing passes True). A
+      registered edition tool is classified by its own `writes` flag unless
+      this is set: then an edition tool of the same name must not lend the
+      call a read classification it does not have. Left False, an edition
+      tool is classified by `writes` alone, whatever a connection's scopes
+      say about the name.
+    * `core=False` says the name is not the CORE tool of that name (a routed
+      `<connection>.todo_write`, or any non-core name -- every edition tool
+      included, since no edition name is a core name). A core name with
+      `core=False` is classified by its scopes, like any other connection
+      tool -- its bare name says nothing about whether it writes.
+
+    The defaults (`connection_tool=False`, `core=True`) fit a bare core-tool
+    name only, which is how the gateway's core branches and the isolated
+    shell's local tools ask.
     """
     if mode is None:
         return None
@@ -214,10 +299,34 @@ def mode_refusal(
         return None
     # Deferred: control_tools imports this module at load time.
     from oc8.agent.control_tools import CONTROL_TOOL_NAMES
+    from oc8.edition.tools import edition_tool_writes
 
-    if tool_name in WRITING_CONTROL_TOOLS:
+    # Not gated on `core`: an edition name is never a core name, so `core` is
+    # False for every edition call -- gating on it discarded the edition's own
+    # classification (read tools refused under /plan; a writing tool a
+    # connection's scopes list as read let through).
+    edition_writes = None if connection_tool else edition_tool_writes(tool_name)
+    if edition_writes is not None:
+        writes = edition_writes
+    elif (
+        tool_name in mode.permitted_writes
+        and tool_name in CONTROL_TOOL_NAMES
+        and core
+        # The connection's own scopes classify this name: its tool, not the core one.
+        and not any(
+            isinstance(names, list | tuple) and tool_name in names
+            for names in (tool_scopes or {}).values()
+        )
+    ):
+        # Exempt from this mode's removal (Agent mode keeps ask_user and
+        # propose_agent). Still "no opinion", never "allowed" -- and only for
+        # the core tool of that name (Ruling A8): an edition tool was
+        # classified above, and the agent's own connection tool of that name
+        # is not lent the exemption.
+        return None
+    elif tool_name in WRITING_CONTROL_TOOLS:
         writes = True
-    elif tool_name in CONTROL_TOOL_NAMES:
+    elif core and tool_name in CONTROL_TOOL_NAMES:
         # A core tool is classified by name, not by scopes -- it sits on no
         # connection, and the gateway asks with `tool_scopes=None`.
         writes = False

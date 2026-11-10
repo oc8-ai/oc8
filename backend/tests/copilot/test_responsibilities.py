@@ -16,6 +16,7 @@ from oc8.copilot.responsibilities import (
     open_responsibility,
     update_responsibility,
 )
+from tests.audit.helpers import flush_audit
 from tests.conftest import AppSessionFactory
 
 
@@ -71,6 +72,7 @@ async def test_open_writes_audit_event(app_session: AppSessionFactory) -> None:
     tenant, member, agent_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     async with app_session(tenant) as db:
         r = await _open(db, tenant, member, uuid.uuid4(), agent_id)
+        await flush_audit(db)  # staged audit events reach the chain at commit
         events = (
             (
                 await db.execute(

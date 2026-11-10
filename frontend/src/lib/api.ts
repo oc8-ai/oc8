@@ -250,6 +250,12 @@ export class ApiError extends Error {
   }
 }
 
+/** A query's `retry`: a refusal (4xx -- gone, not yours, invalid) is final;
+ *  only a server or network failure is tried again, up to three times. */
+export function retryUnlessRefused(failures: number, error: unknown): boolean {
+  return !(error instanceof ApiError && error.status >= 400 && error.status < 500) && failures < 3;
+}
+
 async function toError(res: Response): Promise<Error> {
   let detail: unknown;
   let body: unknown;
@@ -491,6 +497,53 @@ export interface FileAttachmentDTO {
  * the same instant it is picked, instead of after uploading all of it just
  * to be told 413. Never treat it as a security boundary. */
 export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
+/** The chat attachment types, mirroring `ALLOWED_CONTENT_TYPES` in
+ * `backend/src/oc8/storage/attachments.py` (minus `text/html`, which the
+ * composer does not offer). One list for the file picker's `accept` and for
+ * dropped and pasted files, so no path lets through what another refuses.
+ * Like the size cap, a convenience -- the server decides. */
+export const ATTACHMENT_CONTENT_TYPES = [
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "text/csv",
+  "text/plain",
+  "text/markdown",
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+] as const;
+
+export const ATTACHMENT_EXTENSIONS = [
+  ".pdf",
+  ".docx",
+  ".xlsx",
+  ".csv",
+  ".txt",
+  ".md",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".webp",
+] as const;
+
+/** For `<input type="file" accept>`. */
+export const ATTACHMENT_ACCEPT = [...ATTACHMENT_EXTENSIONS, ...ATTACHMENT_CONTENT_TYPES].join(",");
+
+/** Whether `file` is a type the chat accepts. A declared MIME type decides
+ * when there is one the browser knows; otherwise the extension does (some
+ * systems report `.md` or `.csv` with an empty or generic type). */
+export function isAllowedAttachment(file: { name: string; type: string }): boolean {
+  const type = file.type.toLowerCase();
+  if ((ATTACHMENT_CONTENT_TYPES as readonly string[]).includes(type)) return true;
+  if (type && type !== "application/octet-stream") return false;
+  const dot = file.name.lastIndexOf(".");
+  const ext = dot >= 0 ? file.name.slice(dot).toLowerCase() : "";
+  return (ATTACHMENT_EXTENSIONS as readonly string[]).includes(ext);
+}
 
 export async function uploadChatAttachment(
   sessionId: string,

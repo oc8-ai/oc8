@@ -60,6 +60,7 @@ import {
   composeFrontendEdition,
   editionBarePaths,
 } from "../edition/composition";
+import { ChatSlotProviders } from "../edition/slots";
 import { editionExtensions } from "@oc8/edition-entry";
 
 // An edition's onboarding screens are full-page like `/welcome`: no app shell.
@@ -292,10 +293,13 @@ function RootComponent() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <LiveUpdatesProvider>
-        <EditionCompositionProvider extensions={editionExtensions}>
-          <LanguageProvider>
-            <AuthGate>{gatedContent}</AuthGate>
+      {/* Around the live updates: their toasts speak the reader's language. */}
+      <LanguageProvider>
+        <LiveUpdatesProvider>
+          <EditionCompositionProvider extensions={editionExtensions}>
+            <AuthGate>
+              <ChatSlotProviders>{gatedContent}</ChatSlotProviders>
+            </AuthGate>
             {/*
               The ONE <Toaster/> in the app, deliberately a sibling of `gatedContent`
               rather than inside it. `sonner` seeds a freshly mounted <Toaster/> from
@@ -313,9 +317,9 @@ function RootComponent() {
             <div className={toasterTheme === "dark" ? "dark" : undefined}>
               <Toaster theme={toasterTheme} position="bottom-right" richColors closeButton />
             </div>
-          </LanguageProvider>
-        </EditionCompositionProvider>
-      </LiveUpdatesProvider>
+          </EditionCompositionProvider>
+        </LiveUpdatesProvider>
+      </LanguageProvider>
     </QueryClientProvider>
   );
 }

@@ -64,6 +64,11 @@ class EmbeddingUnavailable(RuntimeError):
     tenant, has no key, or has no embeddings endpoint."""
 
 
+class EmbeddingMustStayLocal(EmbeddingUnavailable):
+    """The content may only reach a local model, and the embedding model is a
+    cloud one: the caller can say why a knowledge base gave nothing."""
+
+
 class ClassificationViolation(RuntimeError):
     """Raised by ModelRouter.complete() when a request carrying
     restricted-classified content would dispatch to a non-local provider
@@ -332,7 +337,7 @@ class ModelRouter:
         from oc8.modelrouter.registry import resolve_provider
 
         if require_local:
-            raise EmbeddingUnavailable(
+            raise EmbeddingMustStayLocal(
                 f"embedding model {label!r} uses cloud provider {provider!r}, but this "
                 f"content must stay on a local model: {require_local}"
             )

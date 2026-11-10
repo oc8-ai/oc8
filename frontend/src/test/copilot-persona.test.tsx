@@ -26,6 +26,23 @@ describe("CopilotPersonaHeader", () => {
     expect(screen.getByText("Working on 2 things")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /pause/i })).toBeInTheDocument();
   });
+  it("gives the title room under 400px: the button labels are for screen readers only (E2E M)", () => {
+    vi.spyOn(hc, "useCopilotProfile").mockReturnValue({
+      data: {
+        displayName: "Copilot",
+        avatar: { shape: "round", color: "indigo" },
+        pausedAt: null,
+        status: "ready",
+        activeCount: 0,
+        agentId: "a",
+      },
+    } as never);
+    wrap(<CopilotPersonaHeader variant="page" onOpenProfile={vi.fn()} />);
+    for (const name of [/pause/i, /profile/i]) {
+      const button = screen.getByRole("button", { name });
+      expect(button.querySelector("span")?.className).toContain("max-[399px]:sr-only");
+    }
+  });
   it("offers resume when paused", () => {
     vi.spyOn(hc, "useCopilotProfile").mockReturnValue({
       data: {

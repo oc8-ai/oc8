@@ -1,5 +1,5 @@
 // The `/`, `@` and `#` affordances, shared by both composers (§5 of the AI
-// workplace design). Split out of chat-window.tsx/copilot-dock.tsx rather than
+// workplace design). Split out of the old chat window and dock rather than
 // implemented twice, because two composers that disagree about what `@` does
 // is exactly how a convention stops being one.
 //
@@ -14,6 +14,8 @@
 // The paperclip button in both composers stays, and is NOT a parallel menu with
 // overlapping actions: `#` points at knowledge oc8 already holds, the paperclip
 // uploads a file it does not. Nothing is reachable both ways.
+
+import type { LucideIcon } from "lucide-react";
 
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -74,6 +76,8 @@ export interface SigilItem {
    *  rather than hidden on purpose: "why can I not reach Finance?" is a
    *  question a person should be able to answer from the screen. */
   blocked?: string;
+  /** What kind of thing the row is (`#`: a knowledge base, an agent, ...). */
+  icon?: LucideIcon;
 }
 
 export function SigilPopover({
@@ -121,7 +125,12 @@ export function SigilPopover({
               item.blocked && "opacity-60",
             )}
           >
-            <span className="text-sm">{item.label}</span>
+            <span className="inline-flex items-center gap-1.5 text-sm">
+              {item.icon && (
+                <item.icon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+              )}
+              {item.label}
+            </span>
             {item.hint && <span className="text-[11px] text-muted-foreground">{item.hint}</span>}
             {item.blocked && <span className="text-[11px] text-amber-600">{item.blocked}</span>}
           </button>

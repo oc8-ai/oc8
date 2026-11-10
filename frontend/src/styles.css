@@ -334,6 +334,81 @@
   animation: bubble-in 0.35s ease-out both;
 }
 
+/* doc: DESIGN.md "micro" -- the one label style (11/14, 500, uppercase). */
+@utility text-micro {
+  font-size: 11px;
+  line-height: 14px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted-foreground);
+}
+
+@keyframes oc8-turn-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* doc: a new chat turn fades and rises over 150 ms (spec §2.2). */
+@utility turn-in {
+  animation: oc8-turn-in 150ms ease-out both;
+}
+
+@keyframes oc8-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
+/* doc: "Thinking…" while a model reasons -- the only looping animation in the
+   chat, and it runs only while the state lasts. */
+@utility text-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    var(--muted-foreground) 0%,
+    var(--foreground) 50%,
+    var(--muted-foreground) 100%
+  );
+  background-size: 200% 100%;
+  background-clip: text;
+  color: transparent;
+  animation: oc8-shimmer 1.6s linear infinite;
+}
+
+@keyframes oc8-caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* Set on the markdown root while an answer streams. The caret is the ::after
+   of the last block (inside the last item of a trailing list), so it sits
+   inline right after the last word and owns no box that could jump when it
+   goes away. A root with nothing in it yet shows the caret on its own. */
+@utility stream-caret {
+  & > :last-child:not(ul, ol, pre, table, hr)::after,
+  & > :is(ul, ol):last-child > li:last-child::after,
+  &:empty::after {
+    content: "";
+    display: inline-block;
+    width: 0.5ch;
+    height: 1em;
+    margin-left: 1px;
+    vertical-align: text-bottom;
+    background: var(--foreground);
+    animation: oc8-caret-blink 1s step-end infinite;
+  }
+}
+
 @keyframes room-pulse-teal {
   0%,
   100% {
@@ -593,13 +668,15 @@
   animation: oc8-docking-celebrate 800ms ease-in-out 2;
 }
 
+/* doc: DESIGN.md "Motion" -- one rule for the whole app, not one per component. */
 @media (prefers-reduced-motion: reduce) {
-  .oc8-docking-station *,
-  .oc8-docking-station *::before,
-  .oc8-docking-station *::after {
+  *,
+  *::before,
+  *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 
@@ -607,4 +684,15 @@
    --edition-accent-glow on :root; without one there is no glow, as before. */
 .edition-accent-focus:focus {
   box-shadow: 0 0 0 3px var(--edition-accent-glow, transparent);
+}
+
+/* doc: Shiki highlights code with both themes (defaultColor: false); the app's
+   `.dark` class on <html> picks which colour applies. */
+.shiki,
+.shiki span {
+  color: var(--shiki-light);
+}
+.dark .shiki,
+.dark .shiki span {
+  color: var(--shiki-dark);
 }

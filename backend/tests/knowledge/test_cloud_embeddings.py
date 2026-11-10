@@ -176,6 +176,106 @@ async def test_retrieval_warns_with_the_reason_when_embedding_is_unavailable(
     assert "nosuch" in record.getMessage() and "skipping" in record.getMessage()
 
 
+async def test_retrieval_names_a_cloud_embedded_base_a_local_agent_cannot_search(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A local-model agent's question stays local, so a base embedding with a
+    cloud model is skipped -- and named, so the member can be told (E2E H).
+    A base a cloud agent cannot embed for another reason is not named."""
+    provider = _Provider(monkeypatch)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        kb = await _setup(db, tenant)
+        broken = m.KnowledgeBase(tenant_id=tenant, name="Broken", embedding_model="nosuch/embed")
+        db.add(broken)
+        agents = []
+        for locality, provider_name in (("local", "ollama"), ("cloud", "anthropic")):
+            cfg = m.ModelConfig(
+                tenant_id=tenant, provider=provider_name, model="x", locality=locality
+            )
+            db.add(cfg)
+            await db.flush()
+            agent = m.Agent(
+                tenant_id=tenant, department_id=uuid.uuid4(), name=locality, model_config_id=cfg.id
+            )
+            db.add(agent)
+            await db.flush()
+            agents.append(agent)
+        local_agent, cloud_agent = agents
+        db.add(
+            m.KnowledgeGrant(
+                tenant_id=tenant, kb_id=kb.id, grantee_type="agent", grantee_id=local_agent.id
+            )
+        )
+        db.add(
+            m.KnowledgeGrant(
+                tenant_id=tenant, kb_id=broken.id, grantee_type="agent", grantee_id=cloud_agent.id
+            )
+        )
+        await db.flush()
+        skipped: list[str] = []
+        ctx, _ = await retrieve_kb_context(
+            db,
+            agent=local_agent,
+            tenant_id=tenant,
+            query_text="sky",
+            model_locality="local",
+            skipped_local=skipped,
+        )
+        assert ctx == ""
+        assert skipped == ["Handbook"]
+        assert not provider.calls, "the local question must not reach the cloud provider"
+
+        skipped = []
+        await retrieve_kb_context(
+            db, agent=cloud_agent, tenant_id=tenant, query_text="sky", skipped_local=skipped
+        )
+        assert skipped == []
+
+
+async def test_a_restricted_cloud_embedded_base_gives_a_cloud_agent_nothing(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The skip path returns none of the skipped base's text: a base that
+    turned restricted after it was embedded in the cloud is not searched at
+    all, and the question never reaches the cloud provider."""
+    provider = _Provider(monkeypatch)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        kb = await _setup(db, tenant)
+        await ingest_document(
+            db,
+            tenant_id=tenant,
+            kb_id=kb.id,
+            filename="a.txt",
+            content="salaries are secret",
+            content_type="text/plain",
+        )
+        kb.classification = "restricted"
+        cfg = m.ModelConfig(tenant_id=tenant, provider="anthropic", model="c", locality="cloud")
+        db.add(cfg)
+        await db.flush()
+        agent = m.Agent(
+            tenant_id=tenant, department_id=uuid.uuid4(), name="A", model_config_id=cfg.id
+        )
+        db.add(agent)
+        await db.flush()
+        db.add(
+            m.KnowledgeGrant(
+                tenant_id=tenant, kb_id=kb.id, grantee_type="agent", grantee_id=agent.id
+            )
+        )
+        await db.flush()
+        before = len(provider.calls)
+        skipped: list[str] = []
+        ctx, restricted = await retrieve_kb_context(
+            db, agent=agent, tenant_id=tenant, query_text="salaries", skipped_local=skipped
+        )
+    assert ctx == "" and not restricted
+    assert skipped == ["Handbook"]
+    assert len(provider.calls) == before
+
+
 async def test_reembed_fills_missing_vectors_and_is_idempotent(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

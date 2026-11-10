@@ -188,13 +188,20 @@ def main() -> None:
 
             await get_sandbox_driver().reap_orphans()
 
+            # Also before consuming: a run committed as queued whose stream
+            # entry never landed (this process, or Redis, died between the
+            # commit and the publish) is published again. The timer below
+            # repeats it; this pass is what makes a restart the recovery.
+            from oc8.runtime.reconcile import close_abandoned_runs, recover_stranded_runs
+
+            await recover_stranded_runs()
+
             # The sweeps below run on a timer rather than only at startup: a run
             # abandoned in hour two of a worker's life would otherwise stay open
             # until the next deploy. Only the run queue gets them -- an ingestion
             # job has no containers, no agent to free and no evidence on disk.
             from oc8.evidence.sweep import sweep_evidence
             from oc8.knowledge.reconcile import sweep_knowledge_deletions
-            from oc8.runtime.reconcile import close_abandoned_runs
 
             async def _housekeeping() -> None:
                 # BOTH sweeps on the timer, not one at startup and one on a
@@ -203,6 +210,10 @@ def main() -> None:
                 # alive four hours later, each holding a (by then expired)
                 # run-scoped token and a gigabyte of memory on a laptop.
                 await close_abandoned_runs()
+                # The other end of the same gap: a run that is queued with
+                # nothing to start it. After the close above, so a run this
+                # tick freed an agent for is already a candidate.
+                await recover_stranded_runs()
                 await get_sandbox_driver().reap_orphans()
                 # Third sweep, same timer: the evidence a finished run left on
                 # disk. Inert unless OC8_EVIDENCE_SWEEP_ENABLED is on. It lands

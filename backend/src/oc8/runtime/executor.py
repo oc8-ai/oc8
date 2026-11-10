@@ -13,18 +13,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agents.versioning import resolve_version
-from oc8.connections.acting import resolve_acting_person
+from oc8.connections.acting import (
+    NO_ACTING_PERSON,
+    ActingPerson,
+    carried_person,
+    resolve_acting_person,
+)
 from oc8.db.session import tenant_session
 from oc8.observability import get_tracer, record_run_outcome
 from oc8.realtime.emit import publish_agent_status, record_activity
 from oc8.runtime.adapter import RuntimeAdapter
 from oc8.runtime.intake import publish_run
+from oc8.runtime.person import FOR_PERSON, SEVERAL_PEOPLE, person_behind
 from oc8.runtime.queue import RunMessage
 from oc8.runtime.reconcile import ABANDONED_AFTER, heartbeat
 from oc8.runtime.registry import resolve_runtime
 from oc8.runtime.repository import RunRepository
 from oc8.runtime.run_context import merge_context
-from oc8.runtime.states import RunState
+from oc8.runtime.run_inputs import has_pending_run_inputs, lock_run_inputs
+from oc8.runtime.states import TERMINAL, RunState
 from oc8.runtime.workspace import sync_run_output
 from oc8.tenants.activity import TENANT_INACTIVE_KIND, TENANT_INACTIVE_OUTPUT, tenant_may_run
 
@@ -91,7 +98,32 @@ _CHAT_WAITING_FOR_APPROVAL = "This needs an approval before I can continue -- se
 #: `repr(exc)`: the exception text is already on the run (`context["error"]`)
 #: where an operator can read it, and a chat transcript is the one place it
 #: would be shown to whoever happens to be in the conversation.
-_CHAT_RUN_FAILED = "That didn't work out -- see the run in oc8 for what happened."
+_CHAT_RUN_FAILED = "That didn't work out \u2013 see the run in oc8 for what happened."
+
+
+def _chat_run_failed_answer(run_id: uuid.UUID) -> str:
+    """The same sentence for the chat transcript, with the run as an object
+    link (`oc8://run/<id>`) the web chat opens in place. Channels get the
+    plain `_CHAT_RUN_FAILED`: they cannot open an oc8 link."""
+    return f"That didn't work out \u2013 [see the run](oc8://run/{run_id}) for what happened."
+
+
+async def _answer_failed_chat_run(
+    db: AsyncSession, run: m.AgentRun, channel_replies: list[tuple[uuid.UUID, str, str, str]]
+) -> None:
+    """A chat turn that FAILED without an output of its own still answers: the
+    canned failure line in the transcript, the plain one to a channel sender,
+    and the unread follow-ups told they were not read. No-op for other runs."""
+    if run.source != "chat":
+        return
+    from oc8.chat.service import record_assistant_reply
+
+    await record_assistant_reply(db, run=run, output=_chat_run_failed_answer(run.id))
+    sender = await _current_chat_sender(db, run)
+    if sender is not None:
+        channel, external_id = sender
+        channel_replies.append((run.tenant_id, channel, external_id, _CHAT_RUN_FAILED))
+    await _tell_unread_inputs(db, run, channel_replies)
 
 
 async def _current_chat_sender(db: AsyncSession, run: m.AgentRun) -> tuple[str, str] | None:
@@ -111,6 +143,23 @@ async def _current_chat_sender(db: AsyncSession, run: m.AgentRun) -> tuple[str, 
         db, tenant_id=run.tenant_id, member_id=session.member_id, channel=sender[0]
     )
     return (sender[0], current) if current else None
+
+
+#: Told once to a messenger sender whose failed run never read what they
+#: wrote to it (Ruling 59): it is not carried over, so they must know.
+_UNREAD_AFTER_FAILURE = "Deine letzte Nachricht kam nicht mehr an – schick sie bitte nochmal."  # noqa: RUF001
+
+
+async def _tell_unread_inputs(
+    db: AsyncSession, run: m.AgentRun, channel_replies: list[tuple[uuid.UUID, str, str, str]]
+) -> None:
+    """A failed messenger turn with inputs it never read: say so, once, on the
+    run's channel (gated, like every reply). The inputs stay unread."""
+    sender = await _current_chat_sender(db, run)
+    if sender is None or not await has_pending_run_inputs(db, run_id=run.id):
+        return
+    channel, external_id = sender
+    channel_replies.append((run.tenant_id, channel, external_id, _UNREAD_AFTER_FAILURE))
 
 
 def _chat_channel_sender_of(run: m.AgentRun) -> tuple[str, str] | None:
@@ -238,14 +287,56 @@ async def agent_has_own_login_binding(db: AsyncSession, agent: m.Agent) -> bool:
     return bool(needs_login)
 
 
-async def _acting_member_id(db: AsyncSession, run: m.AgentRun) -> uuid.UUID | None:
+async def _person_of_task_runs(
+    db: AsyncSession, *, tenant_id: uuid.UUID, task_id: uuid.UUID
+) -> str | None:
+    """Whose work a task is: the person its runs name, or -- for a task from
+    before its root run carried one -- the live member in
+    `payload["requested_by_member_id"]`. Several different people give
+    `SEVERAL_PEOPLE`, never a guess; nobody gives `None`."""
+    people: set[str] = set()
+    rows = await db.execute(
+        select(m.AgentRun.context)
+        .where(m.AgentRun.tenant_id == tenant_id, m.AgentRun.task_id == task_id)
+        .order_by(m.AgentRun.created_at.desc())
+        .limit(50)
+    )
+    for (ctx,) in rows:
+        person = person_behind(ctx)
+        if person is not None:
+            people.add(person)
+    task = await db.get(m.Task, task_id)
+    raw = (task.payload or {}).get("requested_by_member_id") if task is not None else None
+    if raw:
+        try:
+            member_id = uuid.UUID(str(raw))
+        except ValueError:
+            member_id = None
+        if member_id is not None:
+            subject = (
+                await db.execute(
+                    select(m.OrgMember.subject).where(
+                        m.OrgMember.id == member_id,
+                        m.OrgMember.tenant_id == tenant_id,
+                        m.OrgMember.deleted_at.is_(None),
+                    )
+                )
+            ).scalar_one_or_none()
+            if subject:
+                people.add(subject)
+    if not people:
+        return None
+    return people.pop() if len(people) == 1 else SEVERAL_PEOPLE
+
+
+async def _acting_person(db: AsyncSession, run: m.AgentRun) -> ActingPerson:
     """The person a wake-up should keep acting for. A failed lookup must never
     stop a finished sub-run from waking its lead, so it only costs the person."""
     try:
-        return (await resolve_acting_person(db, run)).member_id
+        return await resolve_acting_person(db, run)
     except Exception:
         logger.exception("run %s: could not resolve the acting person", run.id)
-        return None
+        return ActingPerson(None, NO_ACTING_PERSON)
 
 
 async def _maybe_wake_parent(
@@ -266,8 +357,9 @@ async def _maybe_wake_parent(
     door: str | None = None,
     followup: dict[str, Any] | None = None,
     originating_operator: str | None = None,
-    on_behalf_of: uuid.UUID | None = None,
+    acting: ActingPerson | None = None,
     trigger_id: str | None = None,
+    for_person: str | None = None,
 ) -> uuid.UUID | None:
     """Create a follow-up run for the team lead that delegated this sub-run, so
     it can react to the outcome (§7). Returns the new run's id for the caller to
@@ -306,9 +398,11 @@ async def _maybe_wake_parent(
         "delegation_depth": delegation_depth,
     }
     # The lead's wake-up acts for the same person as the sub-run (connections
-    # design), whether or not the chain started in a chat.
-    if on_behalf_of is not None:
-        context["on_behalf_of"] = str(on_behalf_of)
+    # design), whether or not the chain started in a chat -- and for nobody
+    # when the sub-run acted for nobody, or the trigger and chat keys carried
+    # alongside would resolve someone the chain deliberately withheld.
+    if acting is not None:
+        context.update(carried_person(acting))
     if trigger_id:
         context["trigger_id"] = trigger_id
     # Two reasons the sub-run's connection is withheld from the lead's wake-up,
@@ -347,6 +441,15 @@ async def _maybe_wake_parent(
     # rather than being re-derived here, so a delegation chain several hops
     # deep keeps pointing at the SAME original conversation, on the SAME
     # channel, at every hop.
+    # Whose work this continues (Ruling 18): the finishing child's person, or
+    # else the lead's own run's. Marks the wake-up as that person's run on the
+    # Live timeline; grants nothing -- `originating_operator` is set only in
+    # the chat branch below, exactly as before.
+    person = person_behind(
+        {"originating_operator": originating_operator, FOR_PERSON: for_person}
+    ) or await _person_of_task_runs(db, tenant_id=tenant_id, task_id=parent.id)
+    if person is not None:
+        context[FOR_PERSON] = person
     wake_source = "chat" if chat_session_id else "delegation"
     if chat_session_id:
         context["chat_session_id"] = chat_session_id
@@ -661,6 +764,28 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             if run is None or run.state != RunState.QUEUED.value:
                 return
 
+            # Claim the run before ANY path below may end it. Agent row first,
+            # then the run row -- the order every writer here takes them (see
+            # the one-run-per-agent check further down for why the agent lock
+            # exists at all). Then the run is read again, under its own lock:
+            # two deliveries of ONE run (a republished stranded run whose first
+            # entry turned up after all, a reclaim racing the original) both
+            # read `queued` above, and the second waits on these locks for the
+            # first's commit. Unchecked, it went on to start the run a second
+            # time -- the busy check skips this run's own id -- or, on the early
+            # exits below (agent missing, hire gate, cancel drain, organisation
+            # inactive), recorded the same ending and activity event twice.
+            await db.execute(select(m.Agent.id).where(m.Agent.id == run.agent_id).with_for_update())
+            claimed = await db.get(m.AgentRun, run_id, with_for_update=True, populate_existing=True)
+            if claimed is None or claimed.state != RunState.QUEUED.value:
+                logger.info(
+                    "run %s is %s, taken by another delivery; leaving it",
+                    run_id,
+                    claimed.state if claimed is not None else "gone",
+                )
+                return
+            run = claimed
+
             span.set_attribute("agent_id", str(run.agent_id))
             agent = await db.get(m.Agent, run.agent_id)
             if agent is None:
@@ -764,7 +889,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             # reintroduced by the fix for it. The lock is released by the commit
             # that happens before the container runs, so it never spans the run
             # itself; after the transition, RUNNING is its own guard.
-            await db.execute(select(m.Agent.id).where(m.Agent.id == run.agent_id).with_for_update())
+            # (The agent row is already locked: see "Claim the run" above.)
             busy = (
                 await db.execute(
                     select(m.AgentRun.id)
@@ -792,6 +917,12 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             await publish_agent_status(agent)
 
             pinned = await resolve_version(db, run, agent)
+            # The chat's model choice (spec §2.3): resolve_version already fell
+            # back to the default if it is not a chat-enabled model; this writes
+            # the one audit line saying so.
+            from oc8.chat.model_choice import audit_model_override
+
+            await audit_model_override(db, run=run, agent=agent)
             choice = await _resolve_mcp_connection(
                 db,
                 agent=agent,
@@ -857,8 +988,12 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             task_images_raw = run.context.get("task_images", [])
             clarifications = run.context.get("clarifications", [])
             if clarifications:
-                lines = "\n".join(f"- Q: {c['question']} A: {c['answer']}" for c in clarifications)
-                task_text = f"{task_text}\n\nClarifications:\n{lines}"
+                from oc8.runtime.run_inputs import format_clarification_answers
+
+                task_text = (
+                    f"{task_text}\n\nClarifications:\n"
+                    f"{format_clarification_answers(clarifications)}"
+                )
 
             # Resume after a value-gated tool approval: replace the task with a
             # focused instruction to perform exactly the approved calls (and skip
@@ -880,9 +1015,10 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             originating_operator = run.context.get("originating_operator")
 
             stopped_by_gate = False
+            stopped_by_owner_change = False
 
             async def _cancel_check() -> bool:
-                nonlocal stopped_by_gate
+                nonlocal stopped_by_gate, stopped_by_owner_change
                 # Per-step cancel probe (§7.2). Reads the run_cancellation table --
                 # a row this transaction does NOT lock -- so under READ COMMITTED it
                 # sees the cancel endpoint's committed insert at the next step
@@ -896,6 +1032,13 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                     return True
                 if not await tenant_may_run(tenant_id):
                     stopped_by_gate = True
+                    return True
+                # Words the run already received, now under another person's
+                # account: stop rather than act on them (run_inputs).
+                from oc8.runtime.run_inputs import steering_went_stale
+
+                if await steering_went_stale(db, run):
+                    stopped_by_owner_change = True
                     return True
                 return False
 
@@ -996,14 +1139,17 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         door=(run.context or {}).get("door"),
                         followup=(run.context or {}).get("followup"),
                         originating_operator=(run.context or {}).get("originating_operator"),
-                        on_behalf_of=await _acting_member_id(db, run),
+                        acting=await _acting_person(db, run),
                         trigger_id=(run.context or {}).get("trigger_id"),
+                        for_person=(run.context or {}).get(FOR_PERSON),
                     )
                     if wake_id is not None:
                         pending_runs.append(wake_id)
                 except Exception:
                     logger.exception("run %s: failed to wake parent after sub-task failure", run_id)
                 await sync_run_output(db, tenant_id=tenant_id, run_id=run_id)
+                # As at every end: no input arrives until this commits.
+                await lock_run_inputs(db, tenant_id=tenant_id, run_id=run.id)
                 await repo.transition(run, RunState.FAILED)
                 await record_activity(
                     db,
@@ -1022,16 +1168,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 # user's message and nothing after it, on every surface, for
                 # ever. The generic status branch below has always recorded
                 # one; this one now does too.
-                if run.source == "chat":
-                    from oc8.chat.service import record_assistant_reply
-
-                    await record_assistant_reply(db, run=run, output=_CHAT_RUN_FAILED)
-                    failed_sender = await _current_chat_sender(db, run)
-                    if failed_sender is not None:
-                        failed_channel, failed_external_id = failed_sender
-                        channel_replies.append(
-                            (run.tenant_id, failed_channel, failed_external_id, _CHAT_RUN_FAILED)
-                        )
+                await _answer_failed_chat_run(db, run, channel_replies)
             else:
                 pending_runs.extend(result.pending_runs)
                 if result.status == "waiting_for_input":
@@ -1071,7 +1208,26 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         # here. (Unlike waiting_for_approval, the engine's
                         # ask_user path doesn't set agent.status itself either
                         # -- it's simply left as "running".)
-                        await request_clarification(db, run=run, question=result.output)
+                        from oc8.chat.questions import (
+                            QuestionError,
+                            format_for_messenger,
+                            questions_from_json,
+                        )
+
+                        try:
+                            parked_questions = (
+                                questions_from_json(result.pending_questions)
+                                if result.pending_questions
+                                else None
+                            )
+                        except QuestionError:
+                            # Validated when asked; a verdict that no longer
+                            # parses parks as the plain readable question.
+                            logger.warning("run %s: unreadable pending questions", run_id)
+                            parked_questions = None
+                        await request_clarification(
+                            db, run=run, question=result.output, questions=parked_questions
+                        )
                         from oc8.copilot.followups import load_responsibility_for_run
 
                         # Only the Copilot's own turns (source chat) wait on the
@@ -1095,12 +1251,17 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         parked_sender = await _current_chat_sender(db, run)
                         if parked_sender is not None:
                             parked_channel, parked_external_id = parked_sender
+                            # A door without buttons: structured questions go
+                            # out numbered, and the reply ("1,3") answers them
+                            # (channels/dispatch.py).
                             channel_replies.append(
                                 (
                                     run.tenant_id,
                                     parked_channel,
                                     parked_external_id,
-                                    _CHAT_NEEDS_INPUT,
+                                    format_for_messenger(parked_questions)
+                                    if parked_questions
+                                    else _CHAT_NEEDS_INPUT,
                                 )
                             )
                     except RepeatedClarification as exc:
@@ -1136,8 +1297,9 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                                 originating_operator=(run.context or {}).get(
                                     "originating_operator"
                                 ),
-                                on_behalf_of=await _acting_member_id(db, run),
+                                acting=await _acting_person(db, run),
                                 trigger_id=(run.context or {}).get("trigger_id"),
+                                for_person=(run.context or {}).get(FOR_PERSON),
                             )
                             if wake_id is not None:
                                 pending_runs.append(wake_id)
@@ -1146,6 +1308,8 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                                 "run %s: failed to wake parent after sub-task failure", run_id
                             )
                         await sync_run_output(db, tenant_id=tenant_id, run_id=run_id)
+                        # As at every end: no input arrives until this commits.
+                        await lock_run_inputs(db, tenant_id=tenant_id, run_id=run.id)
                         await repo.transition(run, RunState.FAILED)
                         await record_activity(
                             db,
@@ -1158,6 +1322,9 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         logger.warning("run %s marked FAILED: %s", run_id, run_error)
                         logger.info("run %s finished in state %s", run_id, RunState.FAILED.value)
                         record_run_outcome(RunState.FAILED.value)
+                        # Same gap the crash path had: without this the member's
+                        # answer stays the chat's last line for ever.
+                        await _answer_failed_chat_run(db, run, channel_replies)
                 else:
                     run.task_id = result.task_id
                     await merge_context(
@@ -1191,15 +1358,30 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         # An operator's run_cancellation row wins. Otherwise the
                         # gate stopped it: seen by _cancel_check in-process, or
                         # recorded on the run context by a container's /step.
+                        from oc8.runtime.run_inputs import (
+                            OWNERSHIP_CHANGED_KIND,
+                            OWNERSHIP_CHANGED_OUTPUT,
+                        )
+
                         kind = await _cancellation_kind(db, run_id)
                         if kind is None:
-                            gate_stopped = (
-                                stopped_by_gate
-                                or (run.context or {}).get("cancellation_kind")
-                                == TENANT_INACTIVE_KIND
-                            )
-                            kind = TENANT_INACTIVE_KIND if gate_stopped else "operator_interrupted"
+                            recorded = (run.context or {}).get("cancellation_kind")
+                            if stopped_by_gate or recorded == TENANT_INACTIVE_KIND:
+                                kind = TENANT_INACTIVE_KIND
+                            elif stopped_by_owner_change or recorded == OWNERSHIP_CHANGED_KIND:
+                                kind = OWNERSHIP_CHANGED_KIND
+                            else:
+                                kind = "operator_interrupted"
                         stop: dict[str, Any] = {"cancellation_kind": kind}
+                        if kind == OWNERSHIP_CHANGED_KIND:
+                            stop["output"] = OWNERSHIP_CHANGED_OUTPUT
+                            await record_activity(
+                                db,
+                                tenant_id=tenant_id,
+                                agent_id=agent.id,
+                                status="error",
+                                message=f"{agent.name}: {OWNERSHIP_CHANGED_OUTPUT}",
+                            )
                         if kind == TENANT_INACTIVE_KIND:
                             # The engine's interrupted result names the operator;
                             # this run was not stopped by one.
@@ -1241,12 +1423,33 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             door=(run.context or {}).get("door"),
                             followup=(run.context or {}).get("followup"),
                             originating_operator=(run.context or {}).get("originating_operator"),
-                            on_behalf_of=await _acting_member_id(db, run),
+                            acting=await _acting_person(db, run),
                             trigger_id=(run.context or {}).get("trigger_id"),
+                            for_person=(run.context or {}).get(FOR_PERSON),
                         )
                         if wake_id is not None:
                             pending_runs.append(wake_id)
                     await sync_run_output(db, tenant_id=tenant_id, run_id=run_id)
+                    carry_over = False
+                    if new_state in TERMINAL:
+                        from oc8.chat.carry_over import run_still_open
+
+                        # No input is written to this run from here until the
+                        # end below commits (`add_run_input` asks again under
+                        # this lock, taken after the tenant's audit lock --
+                        # Ruling 60): each is either read, carried over, or
+                        # refused to its writer -- never silently lost.
+                        await lock_run_inputs(db, tenant_id=tenant_id, run_id=run.id)
+                        # Ruling 59: what the person wrote and a DONE run never
+                        # read becomes the chat's next turn -- unless somebody
+                        # else ended the run meanwhile. Not for a stopped run
+                        # (stop means stop) nor a failed one (its failure is
+                        # the answer; the inputs stay "not read").
+                        carry_over = (
+                            new_state is RunState.DONE
+                            and run.source == "chat"
+                            and await run_still_open(db, run_id=run.id)
+                        )
                     await repo.transition(run, new_state)
                     logger.info("run %s finished in state %s", run_id, new_state.value)
                     record_run_outcome(new_state.value)
@@ -1274,6 +1477,17 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             channel_replies.append(
                                 (run.tenant_id, done_channel, done_external_id, result.output)
                             )
+                    if carry_over:
+                        from oc8.chat.carry_over import stage_carried_over_turn
+
+                        # After the answer is recorded, in this transaction
+                        # (Ruling 61): the turn, its run and the inputs' stamp
+                        # commit together; the run is published below.
+                        carried_run = await stage_carried_over_turn(db, run=run)
+                        if carried_run is not None:
+                            pending_runs.append(carried_run)
+                    if run.source == "chat" and new_state is RunState.FAILED:
+                        await _tell_unread_inputs(db, run, channel_replies)
                     if new_state is RunState.WAITING_FOR_APPROVAL:
                         # Same reason as the waiting_for_input park above: the
                         # run is suspended, not finished, so nothing else tells

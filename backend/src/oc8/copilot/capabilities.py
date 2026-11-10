@@ -55,7 +55,7 @@ from oc8.runtime.registry import (
     check_runtime_capabilities,
     resolve_runtime_plugin,
 )
-from oc8.triggers.service import create_trigger
+from oc8.triggers.service import InvalidTriggerConfig, create_trigger
 
 logger = logging.getLogger(__name__)
 
@@ -489,8 +489,11 @@ async def apply_operation(
     tenant_id: uuid.UUID,
     data: dict[str, Any],
     actor_member_id: uuid.UUID | None = None,
-) -> None:
-    """Apply exactly one validated operation through existing service boundaries."""
+) -> uuid.UUID | None:
+    """Apply exactly one validated operation through existing service boundaries.
+
+    Returns the new agent's id for `agent.create` (builder proposals map their
+    `ref` to it) and None for every other operation."""
     operation = parse_operations([data])[0]
     if isinstance(operation, MissionSet):
         agent = await db.get(m.Agent, operation.agentId)
@@ -500,7 +503,7 @@ async def apply_operation(
         agent.mission = operation.mission
         await db.flush()
         await _publish_copilot_change(db, agent, had_no_draft=had_no_draft, what="mission")
-        return
+        return None
     if isinstance(operation, TriggerCreate):
         events = await list_installed_automation_events(db)
         try:
@@ -525,7 +528,11 @@ async def apply_operation(
             # turns into a rejected proposal and a 409) rather than a new
             # error surface, and value-free like every other InvalidOperation.
             raise InvalidOperation() from exc
-        return
+        except InvalidTriggerConfig as exc:
+            # A bad cron expression or an undeclared event: this module's one
+            # value-free rejection, not a raw ValueError escaping the proposal.
+            raise InvalidOperation() from exc
+        return None
     if isinstance(operation, PluginEnable):
         await enable_plugin(
             db,
@@ -533,7 +540,7 @@ async def apply_operation(
             capa_id=operation.pluginId,
             granted_permissions=operation.grantedPermissions,
         )
-        return
+        return None
     if isinstance(operation, CapaInstall):
         found = find_plugin(operation.diskPluginId)
         if found is None:
@@ -542,7 +549,7 @@ async def apply_operation(
             await install_with_dependencies(db, tenant_id=tenant_id, found=found, origin="local")
         except PluginError as exc:
             raise InvalidOperation() from exc
-        return
+        return None
     if isinstance(operation, CapaDisable):
         try:
             await disable_plugin(
@@ -550,7 +557,7 @@ async def apply_operation(
             )
         except PluginError as exc:
             raise InvalidOperation() from exc
-        return
+        return None
     if isinstance(operation, CapaConfigure):
         plugin = await db.get(m.Capa, operation.capaId)
         if plugin is None or plugin.current_version_id is None:
@@ -594,7 +601,7 @@ async def apply_operation(
         if plain:
             installation.config = {**(installation.config or {}), **plain}
         await db.flush()
-        return
+        return None
     if isinstance(operation, DepartmentCreate):
         # Same defaults POST /departments uses (departments.py's
         # create_department): an empty tools frame plus the department-tier
@@ -613,7 +620,7 @@ async def apply_operation(
         )
         db.add(dept)
         await db.flush()
-        return
+        return None
     if isinstance(operation, DepartmentUpdate):
         dept = await db.get(m.Department, operation.departmentId)
         if dept is None or dept.deleted_at is not None:
@@ -625,7 +632,7 @@ async def apply_operation(
         if operation.icon is not None:
             dept.presentation = {**(dept.presentation or {}), "icon": operation.icon}
         await db.flush()
-        return
+        return None
     if isinstance(operation, DepartmentDelete):
         dept = await db.get(m.Department, operation.departmentId)
         if dept is None or dept.deleted_at is not None:
@@ -660,14 +667,14 @@ async def apply_operation(
                 else:
                     agent.deleted_at = now
         await db.flush()
-        return
+        return None
     if isinstance(operation, DepartmentRestore):
         dept = await db.get(m.Department, operation.departmentId)
         if dept is None or dept.deleted_at is None:
             raise InvalidOperation()
         dept.deleted_at = None
         await db.flush()
-        return
+        return None
     if isinstance(operation, AgentCreate):
         target_dept = await db.get(m.Department, operation.departmentId)
         if target_dept is None or target_dept.deleted_at is not None:
@@ -697,14 +704,14 @@ async def apply_operation(
         # path (api/v1/agents_write.py::create_agent): runs are pinned to a
         # version, and an agent without one would run off its live row.
         await publish_version(db, agent, note="created by the Copilot")
-        return
+        return agent.id
     if isinstance(operation, AgentRename):
         agent = await db.get(m.Agent, operation.agentId)
         if agent is None or agent.deleted_at is not None:
             raise InvalidOperation()
         agent.name = operation.name
         await db.flush()
-        return
+        return None
     if isinstance(operation, AgentLifecycleSet):
         agent = await db.get(m.Agent, operation.agentId)
         if agent is None or agent.deleted_at is not None:
@@ -713,7 +720,7 @@ async def apply_operation(
             raise InvalidOperation()
         agent.status = _LIFECYCLE[operation.action]
         await db.flush()
-        return
+        return None
     if isinstance(operation, AgentDelete):
         agent = await db.get(m.Agent, operation.agentId)
         if agent is None or agent.deleted_at is not None:
@@ -730,7 +737,7 @@ async def apply_operation(
         else:
             agent.deleted_at = dt.datetime.now(tz=dt.UTC)
         await db.flush()
-        return
+        return None
     if isinstance(operation, AgentRestore):
         agent = await db.get(m.Agent, operation.agentId)
         if agent is None or agent.deleted_at is None:
@@ -743,7 +750,7 @@ async def apply_operation(
             raise InvalidOperation() from exc
         agent.deleted_at = None
         await db.flush()
-        return
+        return None
     if isinstance(operation, AgentNarrowingSet):
         agent = await db.get(m.Agent, operation.agentId)
         if agent is None or agent.deleted_at is not None:
@@ -802,7 +809,7 @@ async def apply_operation(
         agent.narrowing = operation.narrowing
         await db.flush()
         await _publish_copilot_change(db, agent, had_no_draft=had_no_draft, what="tool access")
-        return
+        return None
     if isinstance(operation, AgentNarrowingReset):
         agent = await db.get(m.Agent, operation.agentId)
         if agent is None or agent.deleted_at is not None:
@@ -823,7 +830,7 @@ async def apply_operation(
         await _publish_copilot_change(
             db, agent, had_no_draft=had_no_draft, what="tool access reset"
         )
-        return
+        return None
     if isinstance(operation, AgentRuntimeAssign):
         agent = await db.get(m.Agent, operation.agentId)
         if agent is None or agent.deleted_at is not None:
@@ -842,7 +849,7 @@ async def apply_operation(
             raise InvalidOperation() from exc
         await db.flush()
         await _publish_copilot_change(db, agent, had_no_draft=had_no_draft, what="runtime")
-        return
+        return None
     if isinstance(operation, AgentModelSwitch):
         agent = await db.get(m.Agent, operation.agentId)
         if agent is None or agent.deleted_at is not None:
@@ -859,7 +866,7 @@ async def apply_operation(
         show_model(agent, mc)
         await db.flush()
         await _publish_copilot_change(db, agent, had_no_draft=had_no_draft, what="model")
-        return
+        return None
     if isinstance(operation, AgentSkillAssign):
         agent = await db.get(m.Agent, operation.agentId)
         if agent is None or agent.deleted_at is not None:
@@ -908,7 +915,7 @@ async def apply_operation(
             if not existing.enabled:
                 existing.enabled = True
                 await db.flush()
-            return
+            return None
         # Same row shape `assign_skill` (`api/v1/agents_write.py`, the
         # `db.add(m.SkillAssignment(...))` call around line 1087) inserts on
         # the fresh-assignment path: tenant_id/agent_id/skill_version_id plus
@@ -924,14 +931,15 @@ async def apply_operation(
             )
         )
         await db.flush()
-        return
+        return None
     if isinstance(operation, GuardrailSet):
         await _apply_guardrail_set(db, tenant_id=tenant_id, operation=operation)
-        return
+        return None
     # Integration prepare validates the opaque reference still identifies a
     # tenant-visible integration. It deliberately does not configure credentials.
     if await db.get(m.Integration, operation.integrationId) is None:
         raise InvalidOperation()
+    return None
 
 
 def _connection_tool_names(conn: m.McpConnection) -> frozenset[str]:

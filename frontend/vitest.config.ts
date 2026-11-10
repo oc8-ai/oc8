@@ -7,9 +7,17 @@
 // This file exists purely to make `bun run test:unit` runnable; it is not
 // tied to any particular test file or feature.
 import { defineConfig } from "vitest/config";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
+// The app's version, from package.json, for the sidebar footer
+// (src/lib/app-version.ts).
+const { version } = JSON.parse(
+  readFileSync(new URL("./package.json", import.meta.url), "utf8"),
+) as { version: string };
+
 export default defineConfig({
+  define: { "import.meta.env.VITE_APP_VERSION": JSON.stringify(version) },
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),

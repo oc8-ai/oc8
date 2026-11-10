@@ -403,7 +403,8 @@ async def test_door_and_reserved_extra_context(
         )
         assert web is not None and web.context["door"] == "web"
         assert web.context["originating_operator"] == "lisa@example.com"
-        assert web.context["keep"] == 1
+        # An allow-list (Ruling 55): an unknown key is dropped too.
+        assert "keep" not in web.context
         web.state = "done"
         await db.flush()
         _msg, tg = await send_message(
@@ -416,6 +417,61 @@ async def test_door_and_reserved_extra_context(
             chat_channel_external_id="1",
         )
         assert tg is not None and tg.context["door"] == "telegram"
+
+
+async def test_a_caller_cannot_inject_server_read_context_keys(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """`extra_context` is an allow-list (Ruling 55): keys the server reads
+    back onto the reply or into behaviour never get through it; `followup`
+    reaches a run only through `send_message(followup=)` on a follow-up
+    turn."""
+    from oc8.chat.service import send_message
+
+    injected: dict[str, object] = {
+        "task_images": [{"bucket_key": "other-tenant/x.png", "content_type": "image/png"}],
+        "chat_mode": "act",
+        "context_kb_ids": [str(uuid.uuid4())],
+        "delegation_depth": 0,
+        "contains_restricted": False,
+        "parts": [{"type": "document_ref", "id": "x"}],
+        "rendered_components": [{"component_key": "x", "props": {}}],
+        "pending_questions": [{"id": "q"}],
+        "followup": {"responsibility_id": str(uuid.uuid4())},
+    }
+    tenant, _member_id, session_id, _, _ = await _world(app_session)
+    async with app_session(tenant) as db:
+        session = await db.get(m.ChatSession, session_id)
+        assert session is not None
+        _msg, web = await send_message(
+            db,
+            session=session,
+            tenant_id=tenant,
+            message="hi",
+            originating_operator="lisa@example.com",
+            extra_context=injected,
+            followup={"responsibility_id": "ignored on a user turn"},
+        )
+        assert web is not None
+        for key in injected:
+            assert key not in web.context
+        web.state = "done"
+        await db.flush()
+        marker = {"responsibility_id": str(uuid.uuid4()), "trigger_id": str(uuid.uuid4())}
+        _msg, fu = await send_message(
+            db,
+            session=session,
+            tenant_id=tenant,
+            message="Follow-up",
+            originating_operator="lisa@example.com",
+            role="followup",
+            extra_context=injected,
+            followup=marker,
+        )
+        assert fu is not None
+        assert fu.context["followup"] == marker
+        for key in injected.keys() - {"followup"}:
+            assert key not in fu.context
 
 
 async def test_failed_vs_quiet_vs_reporting_followup_replies(

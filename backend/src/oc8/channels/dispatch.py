@@ -16,6 +16,7 @@ import logging
 import uuid
 from typing import Any
 
+from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -435,10 +436,17 @@ async def bind_from_free_text(
         await tell_sender(impl, text.external_id, REFUSED)
         return
     member = await db.get(m.OrgMember, bound.member_id)
-    if member is None or not await _member_has_permission(
-        db, member=member, permission=perm(COPILOT, MANAGE)
+    if (
+        member is None
+        or member.deleted_at is not None
+        or not await _member_has_permission(db, member=member, permission=perm(COPILOT, MANAGE))
     ):
         await tell_sender(impl, text.external_id, REFUSED)
+        return
+
+    if await _answer_parked_question(
+        db, impl, tenant_id=tenant_id, channel=channel, member=member, text=text
+    ):
         return
 
     assistant = await get_or_create_assistant(db, tenant_id=tenant_id)
@@ -452,13 +460,22 @@ async def bind_from_free_text(
             db, tenant_id=tenant_id, agent_id=assistant.id, member_id=member.id
         )
     )
+    if await _steer_running_turn(
+        db, impl, session=session, channel=channel, member=member, text=text
+    ):
+        return
     try:
         _msg, run = await send_message(
             db,
             session=session,
             tenant_id=tenant_id,
             message=text.text,
+            # Nobody acts for a messenger turn (its authority is the binding
+            # row), but it is the chat owner's turn (Ruling 58): stamped as
+            # `for_person`, which grants nothing, so the owner alone may
+            # steer and stop it -- here and in the web chat.
             originating_operator=None,
+            for_person=member.subject,
             chat_channel=channel,
             chat_channel_external_id=text.external_id,
         )
@@ -480,6 +497,246 @@ async def bind_from_free_text(
         await tell_sender(impl, text.external_id, _SECRET_REFUSAL)
         return
     await tell_sender_gated(impl, text.external_id, "Bin dran, melde mich gleich.")
+
+
+#: Sent when a message went to the sender's running answer (Ruling 52's
+#: "Geht an die laufende Antwort", on a messenger).
+_STEERED = "Hab ich – geht an die laufende Antwort."  # noqa: RUF001 -- German typography
+#: Sent when a stop word stopped the sender's running answer.
+_STOPPED = "Gestoppt."
+#: Sent when the running answer's runtime takes no messages: it can only be
+#: stopped, and a second run beside it would answer the same chat twice.
+_NOT_STEERABLE = (
+    "Die laufende Antwort nimmt keine Nachrichten an. Schreib „stop“, wenn du sie abbrechen willst."
+)
+
+#: Sent when the running answer already holds the most messages it may.
+_TOO_MANY_WAITING = (
+    "Es warten schon zu viele Nachrichten auf die laufende Antwort. Warte kurz oder schreib „stop“."
+)
+
+#: Sent when the text is longer than a running answer takes.
+_TOO_LONG = "Deine Nachricht ist zu lang für die laufende Antwort (höchstens 4.000 Zeichen)."
+#: Any other refusal of a message to the running answer.
+_NOT_TAKEN = "Das konnte ich nicht an die laufende Antwort geben. Versuch es noch einmal."
+
+
+def _input_refusal(exc: Any) -> str:
+    """What the sender is told when `add_run_input` refuses (`InputRefused.code`):
+    in German, like the rest of this door -- except the secret gate's own
+    sentence, which is the same at every door."""
+    from oc8.runtime.clarification import SECRET_REFUSAL
+
+    return {
+        "too_many": _TOO_MANY_WAITING,
+        "too_long": _TOO_LONG,
+        "secret": SECRET_REFUSAL,
+    }.get(exc.code, _NOT_TAKEN)
+
+
+#: States a run is still writing its answer in. A run parked on a question
+#: (`waiting_for_input`) is not: the question door answers it, and anything
+#: else the sender writes starts a new turn as before.
+_STEERABLE_STATES = ("queued", "running", "waiting_for_approval")
+
+
+async def _steer_running_turn(
+    db: AsyncSession,
+    impl: Any,
+    *,
+    session: m.ChatSession,
+    channel: str,
+    member: m.OrgMember,
+    text: ChannelFreeText,
+) -> bool:
+    """Free text while the sender's previous turn is still being answered goes
+    to THAT run (Ruling 52, as in the web composer); a stop word stops it.
+
+    Only the sender's own run (Ruling 58: the same "whose run" rule as Live,
+    watch and the web's steer, `whose_run`) in the chat this message would
+    otherwise go to. Returns True when the message was consumed; False lets it
+    start a new turn (nothing is running, or the run is somebody else's)."""
+    from sqlalchemy import select
+
+    from oc8.runtime.person import whose_run
+    from oc8.runtime.run_inputs import (
+        InputRefused,
+        add_run_input,
+        request_stop,
+        run_accepts_inputs,
+    )
+
+    run = (
+        await db.execute(
+            select(m.AgentRun)
+            .where(
+                m.AgentRun.tenant_id == session.tenant_id,
+                m.AgentRun.source == "chat",
+                m.AgentRun.context["chat_session_id"].astext == str(session.id),
+                m.AgentRun.state.in_(_STEERABLE_STATES),
+            )
+            .order_by(m.AgentRun.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if run is None or not (await whose_run(db, run)).is_own(member.subject):
+        return False
+    if text.text.strip().lower() in _ESCAPE_WORDS:
+        await request_stop(db, run=run, actor_member_id=member.id, principal=None, door=channel)
+        await db.commit()
+        await tell_sender_gated(impl, text.external_id, _STOPPED)
+        return True
+    if not await run_accepts_inputs(db, run):
+        await tell_sender_gated(impl, text.external_id, _NOT_STEERABLE)
+        return True
+    try:
+        await add_run_input(db, run=run, member=member, text=text.text)
+    except InputRefused as exc:
+        if exc.code == "finished":
+            # The run ended before the text got to it: it is a new turn after
+            # all. Nothing was written, but this transaction holds the
+            # tenant's audit and the run's input locks (`lock_run_inputs`):
+            # end it before the new turn, so `send_message` starts from a
+            # fresh one, and bind the tenant again for it. Commit, not
+            # rollback: whatever came before (nothing but reads today) stays,
+            # and loaded rows stay usable.
+            await db.commit()
+            await db.execute(
+                sql_text("SELECT set_config('app.tenant_id', :tid, true)"),
+                {"tid": str(session.tenant_id)},
+            )
+            return False
+        # Refused before anything was written; said in German, and the
+        # secret gate's own sentence as is, ungated, like the secret refusal
+        # of a new turn.
+        await tell_sender(impl, text.external_id, _input_refusal(exc))
+        return True
+    await db.commit()
+    await tell_sender_gated(impl, text.external_id, _STEERED)
+    return True
+
+
+#: Sent once a messenger reply has answered a parked question. German, like
+#: the door's other acknowledgement ("Bin dran, melde mich gleich.").
+_ANSWER_TAKEN = "Danke, ich mache weiter."
+
+#: A reply that means "not an answer -- let me say something else". It starts
+#: an ordinary turn; the question stays open in oc8.
+_ESCAPE_WORDS = frozenset({"abbrechen", "abbruch", "cancel", "stop", "/cancel", "/abbrechen"})
+
+
+async def _answer_parked_question(
+    db: AsyncSession,
+    impl: Any,
+    *,
+    tenant_id: uuid.UUID,
+    channel: str,
+    member: m.OrgMember,
+    text: ChannelFreeText,
+) -> bool:
+    """A reply to the numbered questions a chat run parked on (spec §4.1).
+
+    Only a STRUCTURED question sent to this channel is answered here -- that is
+    the one the sender was handed numbered options for (`executor.py`). A plain
+    question keeps its old door (the sender was told to answer in oc8), so free
+    text then starts a new turn as before. Only runs in the sender's OWN chat
+    sessions qualify: the run acts for them, nobody else answers it.
+
+    Returns True when the message was consumed (answered, or refused with the
+    questions repeated), False to let it start a new turn.
+    """
+    from sqlalchemy import select
+
+    from oc8.chat.questions import QuestionError, format_for_messenger, questions_from_json
+
+    if text.text.strip().lower() in _ESCAPE_WORDS:
+        return False
+    if outranks("internal", impl.capabilities().max_classification):
+        # The numbered questions were withheld on this channel (`_tell_channel`
+        # sends `_CONTENT_WITHHELD` instead), so the sender never saw what a
+        # "1,3" would pick: nothing here can be an answer to them.
+        return False
+    from oc8.chat.service import QuestionNotAnswerable, answer_parked_question
+    from oc8.runtime.clarification import AnswerRefused
+
+    own_sessions = [
+        str(sid)
+        for sid in (
+            await db.execute(
+                select(m.ChatSession.id).where(
+                    m.ChatSession.tenant_id == tenant_id, m.ChatSession.member_id == member.id
+                )
+            )
+        ).scalars()
+    ]
+    if not own_sessions:
+        return False
+    run = (
+        await db.execute(
+            select(m.AgentRun)
+            .where(
+                m.AgentRun.tenant_id == tenant_id,
+                m.AgentRun.source == "chat",
+                m.AgentRun.state == "waiting_for_input",
+                m.AgentRun.context["chat_channel"].astext == channel,
+                m.AgentRun.context.has_key("pending_questions"),
+                m.AgentRun.context["chat_session_id"].astext.in_(own_sessions),
+            )
+            .order_by(m.AgentRun.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if run is None:
+        return False
+    session = await db.get(m.ChatSession, uuid.UUID(str(run.context["chat_session_id"])))
+    clarification = (
+        await db.execute(
+            select(m.Clarification)
+            .where(m.Clarification.run_id == run.id, m.Clarification.status == "open")
+            .order_by(m.Clarification.created_at.desc())
+            .limit(1)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if session is None or clarification is None:
+        return False
+    questions = questions_from_json(run.context["pending_questions"])
+    try:
+        await answer_parked_question(
+            db,
+            session=session,
+            run=run,
+            clarification=clarification,
+            text=text.text,
+            answers=None,
+            member=member,
+            via=channel,
+            principal=None,
+        )
+    except AnswerRefused as exc:
+        # The secret gate every answer door shares: nothing was written, the
+        # question stays open. The sender is told why.
+        await tell_sender(impl, text.external_id, str(exc))
+        return True
+    except QuestionNotAnswerable:
+        # Raised before anything changed, and without a rollback: that would end
+        # the transaction-local tenant binding the new turn below still needs.
+        return False
+    except QuestionError as exc:
+        await db.rollback()
+        await tell_sender_gated(
+            impl, text.external_id, f"{exc}\n\n{format_for_messenger(questions)}"
+        )
+        return True
+    run_id = run.id
+    await db.commit()
+    # Published only after the commit: a stream entry whose run row is not yet
+    # visible is a run a worker picks up and cannot find.
+    from oc8.runtime.intake import publish_run
+
+    await publish_run(run_id=run_id, tenant_id=tenant_id)
+    await tell_sender(impl, text.external_id, _ANSWER_TAKEN)
+    return True
 
 
 async def process_inbound(

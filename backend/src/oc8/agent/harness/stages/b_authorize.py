@@ -13,13 +13,23 @@ from typing import Any
 
 from oc8 import models as m
 from oc8.agent.control_tools import (
+    BUILDER_TOOL_NAMES,
+    CONTROL_TOOL_NAMES,
     COPILOT_TOOL_NAMES,
     DEPTH_LIMIT_REASON,
     MAX_DELEGATION_DEPTH,
 )
 from oc8.agent.tool_semantics import extract_attributes, extract_value
-from oc8.authz.pdp import Decision, Effect, ToolPolicy, authorize_tool_call, required_right
-from oc8.chat.modes import ChatMode, mode_refusal
+from oc8.authz.pdp import (
+    NOT_THIS_CONNECTION,
+    Decision,
+    Effect,
+    ToolPolicy,
+    authorize_tool_call,
+    required_right,
+)
+from oc8.chat.modes import MODE_WITHHELD, ChatMode, mode_refusal
+from oc8.edition.tools import NO_EDITION_OFFER, EditionOffer
 from oc8.memory.policy import authorize_memory_write
 from oc8.memory.router import MAX_MEMORY_CONTENT_LENGTH
 from oc8.modelrouter import ToolCall
@@ -41,6 +51,8 @@ def authorize(
     narrowing: dict[str, Any] | None = None,
     is_team_lead: bool | None = None,
     chat_mode: ChatMode | None = None,
+    edition_offer: EditionOffer = NO_EDITION_OFFER,
+    routed: bool = False,
 ) -> Decision:
     """PEP for a tool call. Every connection tool is decided against the
     department frame (§5.3): which entry governs it is the connection key, and
@@ -68,7 +80,19 @@ def authorize(
     delegate_task and memory_write too -- not just the connection's own tools.
     It can only ever DENY: there is no branch where a mode turns a refusal into
     an allow, which is what makes "a mode is a narrowing" true rather than
-    aspirational."""
+    aspirational.
+
+    `edition_offer` is what the runtime offered of the edition tools on this
+    run (`oc8.edition.tools.edition_offer`). An unrouted call it claims is an
+    edition call: ALLOW only if it was offered, otherwise DENY as an unknown
+    tool -- a registered name is not a grant. Every runtime passes its offer;
+    the default claims every registered name and allows none.
+
+    `routed` says the model named this tool through a connection
+    (`<connection>.<tool>`), so `tc.name` is the CONNECTION's tool name. It may
+    match a core tool's name, and must not inherit that core tool's early
+    ALLOW: the call runs on the connection's server, so the frame decides it.
+    Nor is a routed call ever an edition call."""
     if narrowing is None:
         narrowing = agent.narrowing or {}
     if is_team_lead is None:
@@ -77,12 +101,57 @@ def authorize(
     # just the connection tools. Denying here also means the existing
     # append_event at all three call sites records it -- "denied because /plan"
     # is in the audit trail without a fourth writer.
-    refused = mode_refusal(chat_mode, tc.name, tool_scopes=tool_scopes)
+    core_call = is_core_call(tc.name, routed=routed)
+    # A routed name is the connection's own tool: never an edition call.
+    edition_call = not routed and edition_offer.claims(tc.name)
+    skill_call = tc.name in skill_tool_names and not routed and not edition_call
+    refused = mode_refusal(
+        chat_mode,
+        tc.name,
+        # Loading a skill only hands the model a procedure: a read. Without
+        # this, a skill no connection scope names failed closed to "modify",
+        # and /plan withheld every skill.
+        tool_scopes={"read": [tc.name]} if skill_call else tool_scopes,
+        connection_tool=not edition_call,
+        core=core_call,
+    )
     if refused is not None:
-        return Decision(Effect.DENY, refused)
-    if tc.name in skill_tool_names:
+        # Tagged, so the control-tool dispatcher can tell "this turn's mode
+        # withholds it" (stop, for every core tool) from the routine frame DENY
+        # a reading core tool runs under (see below).
+        return Decision(Effect.DENY, refused, reason_code=MODE_WITHHELD)
+    if edition_call:
+        # An edition tool belongs to no connection, like propose_change: the
+        # frame has nothing to decide it against. Its gates are the offer
+        # (entitlement, door, mode -- computed by the runtime), the mode check
+        # above, and the entitlement checked again at dispatch.
+        if edition_offer.offered(tc.name) is None:
+            return Decision(Effect.DENY, f"unknown tool {tc.name!r}")
         return Decision(Effect.ALLOW)
+    if skill_call:
+        return Decision(Effect.ALLOW)
+    if not core_call:
+        # A connection's tool, even if it shares a core tool's name: none of the
+        # name-based branches below may decide it.
+        return _frame_decision(
+            agent,
+            tc,
+            tool_policies=tool_policies,
+            connection_key=connection_key,
+            tool_scopes=tool_scopes,
+            skill_thresholds=skill_thresholds,
+            value_spec=value_spec,
+            guardrail_attribute_specs=guardrail_attribute_specs,
+        )
     if tc.name == "ask_user":
+        return Decision(Effect.ALLOW)
+    if tc.name in ("write_output_file", "request_decision"):
+        # Like ask_user: neither belongs to a connection, so the frame has
+        # nothing to decide them against. Falling through used to DENY them
+        # with "no grant for <connection>" -- which nothing enforced, so the
+        # file was written anyway, and the B risk gate behind an ALLOW was
+        # silently skipped. The dispatcher now stops every denied writing
+        # control tool, so these need a real verdict.
         return Decision(Effect.ALLOW)
     if tc.name == "read_resource":
         # Same read right as a read tool on the connection the call names.
@@ -112,6 +181,17 @@ def authorize(
         # dispatch, is then the only gate on this tool -- which is what it
         # should be for a tool that can only ever produce a draft a human has
         # to approve before anything changes.
+        return Decision(Effect.ALLOW)
+    if tc.name == "read_context":
+        # Belongs to no connection either: it reads what the member pinned,
+        # re-authorised for them and checked against the model inside the
+        # tool (control_tools._execute_read_context). Falling through would
+        # audit every read as a denial.
+        return Decision(Effect.ALLOW)
+    if tc.name == "suggest_replies":
+        # Belongs to no connection, like propose_change: it only stores chips
+        # on the answer, so the frame has nothing to decide it against and
+        # falling through would audit every call as a denial.
         return Decision(Effect.ALLOW)
     if tc.name == "decide_approval":
         # Like propose_change and ask_user: it belongs to no connection, so
@@ -146,6 +226,13 @@ def authorize(
         # member behind the task. Without this ALLOW every call would be
         # audited as a denial by the frame check below.
         return Decision(Effect.ALLOW)
+    if tc.name in BUILDER_TOOL_NAMES and core_call:
+        # Belongs to no connection, like propose_change: the dispatch
+        # (oc8.copilot.builder_tools) is the gate -- Copilot only, web door,
+        # the session's own member. The mode check above already denied
+        # propose_agent outside Agent mode's exemption. A routed
+        # call of that name is a connection's tool and goes to the frame below.
+        return Decision(Effect.ALLOW)
     if tc.name == "delegate_task":
         if not is_team_lead:
             return Decision(Effect.DENY, "only a team lead can delegate tasks")
@@ -171,6 +258,49 @@ def authorize(
         return authorize_memory_write(
             frame, narrowing, tier, personal_only=agent.is_tenant_assistant
         )
+    # A core tool with no branch above: the frame can only judge the run's
+    # bound connection, which this tool does not belong to. A DENY here is
+    # tagged so the dispatcher can tell it from every real refusal.
+    verdict = _frame_decision(
+        agent,
+        tc,
+        tool_policies=tool_policies,
+        connection_key=connection_key,
+        tool_scopes=tool_scopes,
+        skill_thresholds=skill_thresholds,
+        value_spec=value_spec,
+        guardrail_attribute_specs=guardrail_attribute_specs,
+    )
+    if verdict.effect is Effect.DENY:
+        return Decision(Effect.DENY, verdict.reason, reason_code=NOT_THIS_CONNECTION)
+    return verdict
+
+
+def is_core_call(name: str, *, routed: bool) -> bool:
+    """Whether a call is the CORE tool of that name, and may be decided as one.
+
+    Not when the route rewrote the name (the model named a connection's tool),
+    and never for a name that is no core tool at all -- a qualified
+    `<connection>.ask_user` included. Routes always qualify a connection tool
+    named like a core one (`build_routes`' `reserved`), so a bare core name
+    only ever reaches the core tool. The B risk gate asks the same question,
+    so it tiers the tool the PEP decided on.
+    """
+    return name in CONTROL_TOOL_NAMES and not routed
+
+
+def _frame_decision(
+    agent: m.Agent,
+    tc: ToolCall,
+    *,
+    tool_policies: Mapping[str, ToolPolicy],
+    connection_key: str | None,
+    tool_scopes: Mapping[str, Any] | None,
+    skill_thresholds: Sequence[float | None],
+    value_spec: dict[str, Any] | None,
+    guardrail_attribute_specs: Sequence[dict[str, Any]],
+) -> Decision:
+    """The department frame's verdict on a connection tool (§5.3)."""
     agent_threshold = (agent.presentation or {}).get("approval_value_eur")
     applicable_attributes = [
         spec

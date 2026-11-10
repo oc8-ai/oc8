@@ -8,10 +8,15 @@ import { useT } from "@/lib/i18n";
  *  agent's own narrowing withholds it. The link goes to that tab, for people
  *  who may change it. Shown next to ConnectionRequiredNotice. */
 export function ToolDeniedNotice({ value }: { value?: ToolDeniedInfo | null }) {
+  // Every chat turn mounts this; only a denial reads the caller's grants.
+  if (!value) return null;
+  return <ToolDeniedLine value={value} />;
+}
+
+function ToolDeniedLine({ value }: { value: ToolDeniedInfo }) {
   const t = useT();
   const may = useMay();
   const mayManageAgent = useMayManageAgent();
-  if (!value) return null;
   const system = value.label || value.connection;
   const agentScope = value.scope === "agent";
   let text: string;

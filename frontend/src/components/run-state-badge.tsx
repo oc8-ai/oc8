@@ -61,7 +61,7 @@ function useRunStateMeta(): (state: string) => { label: string; color: string } 
       case "failed":
         return { label: t("failed", "fehlgeschlagen"), color };
       case "interrupted":
-        return { label: t("interrupted", "abgebrochen"), color };
+        return { label: t("interrupted", "unterbrochen"), color };
       default:
         return { label: state, color };
     }

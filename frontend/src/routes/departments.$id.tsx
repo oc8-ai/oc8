@@ -62,6 +62,7 @@ import {
 } from "lucide-react";
 import { type Agent, type Supervisor, type Task, type TaskColumn } from "@/lib/mock-data";
 import { cn } from "@/lib/utils";
+import { urlId } from "@/lib/ids";
 import { useT } from "@/lib/i18n";
 
 const iconMap = {
@@ -105,7 +106,9 @@ const nowTime = () => {
 
 function DepartmentDetail() {
   const t = useT();
-  const { id } = Route.useParams();
+  // Not a UUID: nothing is fetched and the page says it wasn't found.
+  const { id: rawId } = Route.useParams();
+  const id = urlId(rawId) ?? "";
   // Real identity: the id in the URL is the backend's uuid7 (see
   // departments.index.tsx), so it's resolved via the real GET
   // /departments/{id} + /departments/{id}/agents endpoints — not the mock

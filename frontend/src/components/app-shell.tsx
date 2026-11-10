@@ -47,6 +47,7 @@ import { TonePill } from "@/components/run-state-badge";
 import { useCopilotProfile } from "@/lib/hooks-copilot";
 import { mascotState } from "@/lib/copilot-status";
 import { cn } from "@/lib/utils";
+import { APP_VERSION } from "@/lib/app-version";
 import { useAgents, useApprovals, useClarifications, useStanding } from "@/lib/hooks";
 import { useAssignedRoleName, useCallerCapabilities, useCan, useMay } from "@/lib/governance-hooks";
 import { useLang, useT } from "@/lib/i18n";
@@ -504,7 +505,7 @@ export function EditionCapabilityGate({ path, children }: { path: string; childr
     <div role="alert" className="mx-auto max-w-md py-16 text-center text-sm text-muted-foreground">
       {t(
         "This feature is not available for your organisation.",
-        "Diese Funktion ist für Ihre Organisation nicht verfügbar.",
+        "Diese Funktion ist für deine Organisation nicht verfügbar.",
       )}
     </div>
   );
@@ -939,7 +940,7 @@ export function AppShell() {
                 <span className="status-dot text-[color:var(--status-running)] bg-[color:var(--status-running)]" />
                 {t("All systems operational", "Alle Systeme betriebsbereit")}
               </span>
-              <span className="text-[10px]">v0.9</span>
+              {APP_VERSION && <span className="font-mono text-xs">v{APP_VERSION}</span>}
             </div>
           )}
         </div>

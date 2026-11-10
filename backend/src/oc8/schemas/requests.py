@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import AwareDatetime, ConfigDict, EmailStr, Field, field_validator
+from pydantic import (
+    AwareDatetime,
+    ConfigDict,
+    EmailStr,
+    Field,
+    StringConstraints,
+    field_validator,
+)
 
+from oc8.chat.context.manifest import MAX_MESSAGE_REFS, MAX_PINNED_REFS
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import WidgetInstanceDTO
 
@@ -32,27 +40,72 @@ class CreateChatSessionRequest(CamelModel):
 
 
 class ChatContextRefRequest(CamelModel):
-    """One thing the operator attached to a message with `#` (§5.2).
+    """One thing attached to a message with `#` or the + menu (§5.1).
 
-    `knowledge_base` is the only kind Phase 1 accepts. The label is NOT taken
-    from the client -- `chat.service` resolves it from the row, so a client
-    cannot make a turn's transcript claim it consulted something else.
+    Any kind the context registry knows; resolved and authorised server-side
+    against the sending member (`chat.context`), and an unknown kind or an id
+    the member may not see is dropped. The label is NOT taken from the client
+    -- it is read off the row, so a client cannot make a turn's transcript
+    claim it consulted something else (and an extra field is refused).
     """
 
-    kind: Literal["knowledge_base"]
-    id: uuid.UUID
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field(min_length=1, max_length=40)
+    #: A source file's id is `<source uuid>:<connector file id>`.
+    id: str = Field(min_length=1, max_length=400)
 
 
 class SendChatMessageRequest(CamelModel):
     message: str = Field(min_length=1, max_length=20_000)
     attachment_ids: list[uuid.UUID] = []
-    #: At most five: `#` is for pointing at a source, and a turn that names ten
-    #: of them is a search, not a reference.
-    context_refs: list[ChatContextRefRequest] = Field(default_factory=list, max_length=5)
+    #: `#` is for pointing at sources, and a turn that names more than this
+    #: is a search, not a reference.
+    context_refs: list[ChatContextRefRequest] = Field(
+        default_factory=list, max_length=MAX_MESSAGE_REFS
+    )
+
+
+class PinRefsRequest(CamelModel):
+    """Replace a chat's pinned context. Labels come from the rows, not the client."""
+
+    refs: list[ChatContextRefRequest] = Field(max_length=MAX_PINNED_REFS)
+
+
+class ChatProjectRequest(CamelModel):
+    name: str = Field(min_length=1, max_length=120)
+    instructions: str = Field(default="", max_length=8000)
+    pinned_refs: list[ChatContextRefRequest] = Field(
+        default_factory=list, max_length=MAX_PINNED_REFS
+    )
+
+
+class SetProjectRequest(CamelModel):
+    #: None takes the chat out of its project.
+    project_id: uuid.UUID | None
+
+
+class SetPinnedRequest(CamelModel):
+    pinned: bool
 
 
 class RenameChatSessionRequest(CamelModel):
     title: str = Field(min_length=1, max_length=200)
+
+
+class MessageFeedbackRequest(CamelModel):
+    rating: Literal["up", "down"]
+    note: str = Field(default="", max_length=500)
+
+
+class SetChatModelRequest(CamelModel):
+    #: None selects "Auto" (the agent's own model).
+    model_config_id: uuid.UUID | None = None
+
+
+class SetChatModeRequest(CamelModel):
+    #: A sticky mode's key, or None to leave the mode.
+    mode: str | None = Field(default=None, max_length=32)
 
 
 class CreateAgentRequest(CamelModel):
@@ -173,6 +226,8 @@ class ModelConfigWrite(CamelModel):
     #: model's existing raw params untouched on update; {} clears them.
     extra: dict[str, Any] | None = None
     used_by_copilot: bool | None = None
+    #: Whether members may pick this model in a chat. None leaves it unchanged.
+    chat_enabled: bool | None = None
     #: A specific Credential to bind to this ModelConfig (id as string). None
     #: leaves the tenant-wide "first credential of this provider's type"
     #: convention as the fallback (resolve_model_key/resolve_model_base_url).
@@ -704,6 +759,35 @@ class AnswerClarificationRequest(CamelModel):
     answer: str = Field(min_length=1)
 
 
+class ChatAnswerRequest(CamelModel):
+    """The member's answer to a question the chat's run parked on (spec §4.1).
+
+    `answers` is `{question id: [option keys] | free text}` for structured
+    questions; `text` is a written answer (a plain question, or a messenger-style
+    reply like `1,3`). One of the two -- checked in the route, since which one
+    fits depends on what was asked.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: At most `MAX_QUESTIONS` entries, each id and option key at most 64 chars,
+    #: at most `MAX_OPTIONS` keys per answer, a written answer at most 2000
+    #: chars. Ids and keys the question did not offer are refused in
+    #: `validate_answers`; these caps bound the request before it gets there.
+    answers: (
+        dict[
+            Annotated[str, StringConstraints(min_length=1, max_length=64)],
+            Annotated[
+                list[Annotated[str, StringConstraints(min_length=1, max_length=64)]],
+                Field(max_length=8),
+            ]
+            | Annotated[str, StringConstraints(max_length=2000)],
+        ]
+        | None
+    ) = Field(default=None, max_length=6)
+    text: str | None = Field(default=None, max_length=2000)
+
+
 class CreateTaskRequest(CamelModel):
     """A member putting new work directly on a department's team lead, from
     the My Work task board rather than a chat session.
@@ -834,6 +918,12 @@ class UpdateCopilotProfileRequest(CamelModel):
 class UpdateResponsibilityRequest(CamelModel):
     state: Literal["active", "paused", "done", "cancelled"]
     reason: str = ""
+
+
+class RunInputRequest(CamelModel):
+    """Mirrors `ck_run_input_text` (migration 0112) and MAX_INPUT_CHARS."""
+
+    text: str = Field(min_length=1, max_length=4000)
 
 
 class SetAgentToolAccessRequest(CamelModel):

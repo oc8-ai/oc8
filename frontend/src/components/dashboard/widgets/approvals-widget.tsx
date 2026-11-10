@@ -24,17 +24,20 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { AgentAvatar } from "@/components/agent-avatar";
+import { AgentBuilderCard } from "@/components/conversation/agent-builder-card";
+import { DiscussWithCopilot } from "@/components/conversation/discuss-with-copilot";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   useAnswerClarification,
   useApprovals,
   useClarifications,
   useDecideApproval,
+  mayActOn,
   useStanding,
   type Approval,
   type Clarification,
-  type Seat,
 } from "@/lib/hooks";
+import { builderRefusalCode, builderRefusalText } from "@/lib/agent-builder-api";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -108,26 +111,6 @@ function relativeAge(iso: string): string {
   const hrs = Math.round(mins / 60);
   if (hrs < 24) return `${hrs}h`;
   return `${Math.round(hrs / 24)}d`;
-}
-
-/** Whether the caller may act on a row, and the wire now says exactly.
- *
- * `decidesEverywhere` and not `unrestricted`. The two are different people and
- * the backend has always known it — `authz/scope.py` carries two flags and
- * documents at length why they must not become one — but `/me` sent only the
- * first, so this returned true for an `auditor`, who holds `approval:view_any`,
- * sees every department, and is 403'd by `require_departmental(approval:decide)`
- * on every click. The role's entire value is that its account cannot have caused
- * what it is auditing; offering it Approve was the screen contradicting that.
- *
- * Below that, authority is only the seats, so the seat role in that row's own
- * department is the whole answer: a `dept_viewer` reads the queue and may not
- * empty it, and hiding the buttons is the honest way to say so.
- */
-function mayActOn(seats: Seat[], decidesEverywhere: boolean, departmentId: string | null): boolean {
-  if (decidesEverywhere) return true;
-  if (!departmentId) return false;
-  return seats.some((s) => s.departmentId === departmentId && s.seatRole === "dept_approver");
 }
 
 type ViewOnlyBecause = "role" | "seat";
@@ -249,10 +232,13 @@ export function ApprovalsWidget({
       ]);
       setSelectedId(null);
     } catch (e) {
+      const code = builderRefusalCode(e);
       toast.error(
-        e instanceof Error
-          ? e.message
-          : t("Could not record the decision", "Entscheidung konnte nicht erfasst werden"),
+        code
+          ? builderRefusalText(code, null, t)
+          : e instanceof Error
+            ? e.message
+            : t("Could not record the decision", "Entscheidung konnte nicht erfasst werden"),
       );
     }
   }
@@ -676,6 +662,9 @@ export function ApprovalPane({
             )}
           </div>
           <h2 className="mt-2 font-serif text-2xl leading-tight">{approval.title}</h2>
+          <div className="mt-2">
+            <DiscussWithCopilot kind="approval" id={approval.id} label={approval.title} />
+          </div>
           {reasonSentence ? (
             <div className="mt-2 flex items-start gap-2 rounded-md border border-border bg-panel/60 px-3 py-2 text-sm leading-relaxed text-foreground/90">
               <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden />
@@ -699,10 +688,19 @@ export function ApprovalPane({
             </a>
           )}
         </section>
+        {approval.actionType === "copilot.agent_builder" && approval.proposalId && (
+          <section>
+            <AgentBuilderCard
+              proposalId={approval.proposalId}
+              readOnly
+              heading={t("What happens if you agree", "Was passiert, wenn du zustimmst")}
+            />
+          </section>
+        )}
 
         {(approval.toolName || options.length > 0) && (
           <section>
-            <div className="mb-2 text-[10px] uppercase tracking-widest text-muted-foreground">
+            <div className="mb-2 text-micro">
               {t("What happens if you agree", "Was passiert, wenn du zustimmst")}
             </div>
 

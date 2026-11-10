@@ -13,14 +13,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, stat
 from fastapi.responses import Response
 
 from oc8 import models as m
-from oc8.agents.repo import visible_agent
 from oc8.api.deps import DbSession, require_departmental
 from oc8.api.v1.chat import _owned_session
-from oc8.authz.authority import authority_for_principal, tenant_wide_read
+from oc8.authz.authority import authority_for_principal
 from oc8.authz.permissions import AGENT, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.schemas.dto import FileAttachmentDTO
 from oc8.storage import s3
+from oc8.storage.attachment_access import member_may_open_attachment
 from oc8.storage.attachments import (
     AttachmentTooLarge,
     UnsupportedContentType,
@@ -88,7 +88,11 @@ async def upload_chat_attachment(
 async def _owned_attachment(
     request: Request, db: DbSession, actor: HumanActor, attachment_id: uuid.UUID
 ) -> m.FileAttachment:
-    """Same ownership contract every other protected read enforces: either the
+    """The rule itself is `storage.attachment_access.member_may_open_attachment`,
+    shared with the chat context resolver so pinning and downloading a file
+    cannot disagree.
+
+    Same ownership contract every other protected read enforces: either the
     row does not exist, or it exists but this caller may not see it -- both
     404 identically, so a caller can never learn which is true.
 
@@ -108,39 +112,18 @@ async def _owned_attachment(
     `agent_run` (a file an agent produced during a run -- see
     `oc8.runtime.workspace`/`write_output_file`) shares the `agent_instructions`
     visibility check: `owner_id` is the `AgentRun.id`, resolved to its
-    `agent_id` first, then gated the same way.
+    `agent_id` first, then gated the same way -- AND by the run rule
+    (`resolve_run_reach` with `run:view`), because a run's output file is run
+    output: a seat that may see the agent but holds no `run:view` must not
+    download what `GET /runs/{id}` would refuse it.
     """
     row = await db.get(m.FileAttachment, attachment_id)
     if row is None or row.tenant_id != actor.principal.tenant_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "file not found")
-    if row.owner_type in ("agent_instructions", "agent_run"):
-        if row.owner_type == "agent_run":
-            run = await db.get(m.AgentRun, row.owner_id)
-            if run is None or run.tenant_id != actor.principal.tenant_id:
-                raise HTTPException(status.HTTP_404_NOT_FOUND, "file not found")
-            agent_id = run.agent_id
-        else:
-            agent_id = row.owner_id
-        authority = await authority_for_principal(request, db, actor.principal)
-        tenant_wide = tenant_wide_read(authority, perm(AGENT, VIEW))
-        agent = await visible_agent(
-            db, scope=actor.scope, tenant_wide=tenant_wide, agent_id=agent_id
-        )
-        if agent is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "file not found")
-        return row
-
-    from oc8.chat.service import get_session
-
-    session = await get_session(db, tenant_id=actor.principal.tenant_id, session_id=row.owner_id)
-    if session is None:
-        message = await db.get(m.ChatMessage, row.owner_id)
-        if message is None or message.tenant_id != actor.principal.tenant_id:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "file not found")
-        session = await get_session(
-            db, tenant_id=actor.principal.tenant_id, session_id=message.session_id
-        )
-    if session is None or session.member_id != actor.member.id:
+    authority = await authority_for_principal(request, db, actor.principal)
+    if not await member_may_open_attachment(
+        db, member=actor.member, authority=authority, scope=actor.scope, row=row
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "file not found")
     return row
 

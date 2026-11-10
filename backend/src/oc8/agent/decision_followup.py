@@ -21,8 +21,14 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.connections.acting import resolve_acting_person
+from oc8.connections.acting import (
+    NO_ACTING_PERSON,
+    ActingPerson,
+    carried_person,
+    resolve_acting_person,
+)
 from oc8.runtime.intake import enqueue_run
+from oc8.runtime.person import FOR_PERSON, present
 from oc8.tenants.activity import TenantInactive
 
 logger = logging.getLogger(__name__)
@@ -73,6 +79,14 @@ def instruction_for(approval: m.ApprovalRequest, *, decision: str, reason: str) 
     return "\n".join(lines)
 
 
+def _person_of_decision(approval: m.ApprovalRequest) -> dict[str, Any]:
+    """Whose work the follow-up continues (Ruling 18): a decision requested
+    from a person's run carries their `for_person`, which grants nothing but
+    keeps the run off everyone's Live timeline as an autonomous one."""
+    person = (approval.payload or {}).get(FOR_PERSON)
+    return {FOR_PERSON: str(person)} if present(person) else {}
+
+
 async def _carried_from_asking_run(
     db: AsyncSession, approval: m.ApprovalRequest, reason: str
 ) -> dict[str, Any]:
@@ -83,7 +97,10 @@ async def _carried_from_asking_run(
     The approver's free-text reason becomes the follow-up's overriding
     instruction, so it acts for that person only when they wrote it themselves
     or nobody wrote anything: someone else's words never run under their
-    account."""
+    account. The trigger still travels for display, audit and its own rules,
+    so withholding the person is explicit: without the marker the trigger
+    would resolve its creator, and a cron's follow-up would run the approver's
+    words under the schedule owner's account."""
     raw = (approval.payload or {}).get("run_id")
     try:
         asking = await db.get(m.AgentRun, uuid.UUID(str(raw))) if raw else None
@@ -91,12 +108,10 @@ async def _carried_from_asking_run(
         asking = None
     if asking is None or asking.tenant_id != approval.tenant_id:
         return {}
-    carried: dict[str, Any] = {}
     acting = await resolve_acting_person(db, asking)
-    if acting.member_id is not None and (
-        not reason.strip() or approval.decided_by == acting.member_id
-    ):
-        carried["on_behalf_of"] = str(acting.member_id)
+    if acting.member_id is not None and reason.strip() and approval.decided_by != acting.member_id:
+        acting = ActingPerson(None, NO_ACTING_PERSON)
+    carried: dict[str, Any] = carried_person(acting)
     ctx = asking.context if isinstance(asking.context, dict) else {}
     followup = ctx.get("followup")
     trigger_id = ctx.get("trigger_id") or (
@@ -131,6 +146,7 @@ async def carry_out_decision(
     context: dict[str, Any] = {
         "task": instruction_for(approval, decision=decision, reason=reason),
         **await _carried_from_asking_run(db, approval, reason),
+        **_person_of_decision(approval),
     }
     try:
         run, _published = await enqueue_run(

@@ -314,9 +314,7 @@ async def fire_followup(db: AsyncSession, trigger: m.Trigger, *, tenant_id: uuid
             chat_channel=channel,
             chat_channel_external_id=external_id,
             role="followup",
-            extra_context={
-                "followup": {"responsibility_id": str(r.id), "trigger_id": str(trigger.id)}
-            },
+            followup={"responsibility_id": str(r.id), "trigger_id": str(trigger.id)},
         )  # commits via enqueue_run
     except TenantInactive:
         # The organisation stopped being allowed to run between the check

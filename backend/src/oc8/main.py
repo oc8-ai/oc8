@@ -12,9 +12,14 @@ from fastapi.responses import JSONResponse
 
 from oc8 import __version__
 from oc8.config import Settings, get_settings
+from oc8.copilot.agent_templates import collect_edition_templates
 from oc8.db.engine import dispose_engine
 from oc8.edition import EditionExtension
-from oc8.edition.runtime import COMMUNITY_RUNTIME_COMPOSITION, EditionRuntimeComposition
+from oc8.edition.runtime import (
+    COMMUNITY_RUNTIME_COMPOSITION,
+    EditionRuntimeComposition,
+    RuntimeComposition,
+)
 from oc8.tenants.activity import TenantInactive
 
 logger = logging.getLogger(__name__)
@@ -87,11 +92,25 @@ def create_app(
     runtime_composition: EditionRuntimeComposition = COMMUNITY_RUNTIME_COMPOSITION,
 ) -> FastAPI:
     settings = settings or get_settings()
+    # Edition tools ride on the runtime composition so the request scope below
+    # activates them with the composition's per-tenant entitlements. Building
+    # it validates the names: a tool shadowing a control tool stops startup
+    # here. The worker must be given the same composition by the entry point.
+    edition_tools = [tool for ext in edition_extensions for tool in ext.tools()]
+    if edition_tools:
+        if not isinstance(runtime_composition, RuntimeComposition):
+            raise TypeError(
+                "edition extensions contribute tools, but the runtime composition "
+                f"{type(runtime_composition).__name__} cannot carry them"
+            )
+        runtime_composition = runtime_composition.with_tools(edition_tools)
     app = FastAPI(
         title="oc8 control plane",
         version=__version__,
         lifespan=lifespan,
     )
+    # Agent ideas editions contribute (GET /copilot/agent-ideas reads them).
+    app.state.agent_templates = collect_edition_templates(edition_extensions)
 
     app.add_middleware(
         CORSMiddleware,

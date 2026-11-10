@@ -27,3 +27,22 @@ def door_of(context: Mapping[str, Any] | None) -> Door:
     if ctx.get("chat_channel") and ctx.get("chat_channel_external_id"):
         return "telegram"
     return "web"
+
+
+def chat_door(source: str | None, context: Mapping[str, Any] | None) -> Door | None:
+    """The door a CHAT run was stamped with, or None.
+
+    For a gate that must fail closed (the edition offer hides a
+    door-restricted tool when the door is None). Only the stamp counts --
+    none of `door_of`'s fallbacks, which guess "web" for a run with nothing
+    and "telegram" for one that merely carries a `chat_channel`. A run that is
+    not `source="chat"` has no door even when it carries a stamp: a delegated
+    sub-run inherits its parent's `door` and channel (`_delegate`) but is
+    nobody's turn. An unrecognised stamp is None too.
+    """
+    if source != "chat" or not context:
+        return None
+    stamped = context.get("door")
+    if stamped in ("web", "followup", "telegram"):
+        return stamped  # type: ignore[no-any-return]
+    return None

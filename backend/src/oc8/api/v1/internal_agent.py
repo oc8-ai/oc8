@@ -17,11 +17,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import datetime as dt
 import json
 import logging
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -35,13 +36,17 @@ from oc8.agent import cache_flow, mcp_pool
 from oc8.agent.control_tools import (
     CONTROL_TOOL_NAMES,
     FIND_TOOLS,
+    ControlOutcome,
     execute_control_tool,
+    has_readable_context,
+    has_released_knowledge,
     offered_tools,
 )
 from oc8.agent.elicitation import ElicitationNeeded, arguments_with_answer
 from oc8.agent.engine import _max_steps
 from oc8.agent.harness import Harness, resolve_caps
 from oc8.agent.harness.calls import call_sig as _call_sig
+from oc8.agent.harness.pipeline import GateVerdict
 from oc8.agent.harness.procedures import (
     newly_satisfied_lines,
     procedure_haystack,
@@ -59,6 +64,7 @@ from oc8.agent.harness.stages.a_compaction import (
 from oc8.agent.harness.stages.a_masking import mask_observations
 from oc8.agent.harness.stages.b_approval import autonomy_of, strip_justification
 from oc8.agent.harness.stages.b_authorize import authorize as _authorize
+from oc8.agent.harness.stages.b_authorize import is_core_call
 from oc8.agent.harness.stages.b_blast_radius import check_blast_radius
 from oc8.agent.harness.stages.b_claims import claim_write
 from oc8.agent.harness.stages.b_clarify import (
@@ -109,12 +115,13 @@ from oc8.authz.pdp import (
     required_right,
 )
 from oc8.capas.discovery import resolve_tool_pack_connection
-from oc8.chat.modes import mode_from_context
+from oc8.chat.modes import ChatMode, mode_from_context, mode_refusal
 from oc8.config import get_settings
 from oc8.connections.access import ConnectionRequired
 from oc8.connections.runtime_env import McpLaunchEnv, run_mcp_env
 from oc8.connections.tool_denied import record_tool_denied, tool_denied
-from oc8.copilot.door import door_of
+from oc8.copilot.door import chat_door, door_of
+from oc8.edition.tools import edition_offer, registered_edition_tool
 from oc8.metering import record_usage
 from oc8.modelrouter import (
     NeutralMessage,
@@ -143,7 +150,7 @@ from oc8.realtime.emit import (
 )
 from oc8.runtime.approval_resume import pre_decided_map
 from oc8.runtime.registry import BUILTIN_ISOLATED_RUNTIME_REF
-from oc8.runtime.run_context import append_tool_call
+from oc8.runtime.run_context import append_tool_call, write_back_context
 from oc8.runtime.start_phase import START_PHASES, clear_start_phase
 from oc8.runtime.step_record import call_state_for, step_timing_dto
 from oc8.skills.runtime import LoadedSkill, instruction_block, load_assigned_skills
@@ -331,6 +338,206 @@ def _mcp_params(conn: m.McpConnection) -> dict[str, Any]:
     return cfg
 
 
+def _taken_tool_names(ctx: Mapping[str, Any], skills: Sequence[LoadedSkill]) -> set[str]:
+    """The names the agent's own tools hold on this run -- its MCP tools as
+    advertised and as really named, and its skill tools. An edition tool of
+    one of these names is never offered or dispatched."""
+    taken = {
+        str(raw["name"])
+        for raw in ctx.get("tool_schemas", [])
+        if isinstance(raw, dict) and raw.get("name")
+    }
+    routes = ctx.get("tool_routes")
+    if isinstance(routes, dict):
+        taken |= {str(name) for name in routes}
+        taken |= {
+            str(pair[1]) for pair in routes.values() if isinstance(pair, list) and len(pair) == 2
+        }
+    taken |= {s.tool_name for s in skills}
+    return taken
+
+
+#: The tools the isolated shell executes itself, before /tools ever sees them.
+_LOCAL_TOOLS = ("run_shell", "run_program")
+
+
+def _b_gate(
+    harness: Harness,
+    tc: ToolCall,
+    *,
+    advertised: str,
+    renamed: bool,
+    conn: m.McpConnection | None,
+    pinned: Mapping[str, Any],
+    active_skills: Sequence[LoadedSkill],
+    schemas: Any,
+) -> GateVerdict:
+    """The B risk gate's verdict on `tc` -- THE one computation of it.
+
+    /tools and every place that has to know the verdict before /tools runs
+    (local execution, a held call's re-run) call this, so the tier, config,
+    annotations and arguments the gate sees are always those of the call that
+    runs. `tc` carries the real tool name and the arguments as they will be
+    sent; `advertised` is the name the model saw (annotations are listed under
+    it); `renamed` says the route rewrote it to a connection's tool.
+    """
+    cfg = _mcp_params(conn) if conn is not None else {}
+    focus_spec = cfg.get("focus_spec") if isinstance(cfg.get("focus_spec"), dict) else None
+    schema = next(
+        (
+            raw
+            for raw in (schemas if isinstance(schemas, list) else [])
+            if isinstance(raw, dict) and raw.get("name") == advertised
+        ),
+        None,
+    )
+    annotations = schema.get("annotations") if schema is not None else None
+    tier = classify_tier(
+        tc.name,
+        scopes=_manifest_scopes(conn),
+        config=cfg,
+        annotations=annotations if isinstance(annotations, dict) else None,
+        arguments=tc.arguments,
+        core=is_core_call(tc.name, routed=renamed),
+    )
+    definition = pinned["definition"] if isinstance(pinned["definition"], dict) else {}
+    raw_grants = definition.get("b5_grants")
+    grants = raw_grants if isinstance(raw_grants, list) else []
+    return harness.gate(
+        tc,
+        tier=tier,
+        ledger=harness.state.ledger,
+        connection=conn.name if conn is not None else "oc8",
+        config=cfg,
+        autonomy=autonomy_of(definition),
+        granted=tier in grants,
+        record_label=describe_focus(tc.name, tc.arguments, focus_spec) or "",
+        identity=record_identity(tc.name, tc.arguments, focus_spec),
+        procedures=_active_procedures(list(active_skills)),
+    )
+
+
+def _local_refusal(tools: Sequence[NeutralTool], mode: ChatMode | None, name: str) -> str | None:
+    """Why the shell may not run this local tool at all this leg, or None.
+
+    The mode first: a read-only mode also withholds the tool from the offer,
+    and "/plan changes nothing" tells the model more than "not available"."""
+    refused = mode_refusal(mode, name, tool_scopes=None)
+    if refused is not None:
+        return refused
+    if name not in {t.name for t in tools}:
+        return f"{name} is not available on this runtime"
+    return None
+
+
+def _local_allowed(
+    tools: Sequence[NeutralTool],
+    mode: ChatMode | None,
+    *,
+    calls: Sequence[ToolCall],
+    harness: Harness,
+    conn: m.McpConnection | None,
+    pinned: Mapping[str, Any],
+    active_skills: Sequence[LoadedSkill],
+    ctx: Mapping[str, Any],
+) -> list[str]:
+    """Which local-execution tools the shell may run for this step.
+
+    The shell runs them BEFORE /tools decides, so this is /tools' verdict given
+    up front, on the very calls the shell is handed:
+
+    * offered this leg, and not withheld by the run's mode -- the frame has no
+      say, neither tool belongs to a connection (see `authorize`);
+    * and the B gate (`_b_gate`, the same computation /tools makes) allows
+      every call of that tool in this step -- or asks, and an operator already
+      approved that exact call. A gate that denies, or asks without an
+      approval, keeps the tool out: the shell posts the call unexecuted and
+      /tools refuses it or raises the approval before anything runs.
+
+    Keyed by tool name, because that is what the shell matches on -- so one
+    call of a tool that may not run keeps every call of it from running.
+    """
+    decided = pre_decided_map(ctx.get("resolved_tool_approvals", []) or [])
+    allowed: list[str] = []
+    for name in _LOCAL_TOOLS:
+        if _local_refusal(tools, mode, name) is not None:
+            continue
+        mine = [c for c in calls if c.name == name]
+        if not mine:
+            continue
+        ok = True
+        for c in mine:
+            sent = ToolCall(id=c.id, name=c.name, arguments=strip_justification(c.arguments)[0])
+            verdict = _b_gate(
+                harness,
+                sent,
+                advertised=c.name,
+                renamed=False,
+                conn=conn,
+                pinned=pinned,
+                active_skills=active_skills,
+                schemas=ctx.get("tool_schemas", []),
+            )
+            if verdict.effect == "allow":
+                continue
+            if verdict.effect == "ask" and decided.get(_call_sig(sent)) == "approve":
+                continue
+            ok = False
+        if ok:
+            allowed.append(name)
+    return allowed
+
+
+async def _answer_withheld_local_calls(
+    db: DbSession,
+    *,
+    run: m.AgentRun,
+    agent: m.Agent,
+    calls: Sequence[ToolCall],
+    tools: Sequence[NeutralTool],
+    mode: ChatMode | None,
+    transcript: list[dict[str, Any]],
+) -> set[str]:
+    """Refuse, here, every local call the shell may not run at all this leg.
+
+    A shell runs run_shell/run_program before /tools can decide, and an older
+    shell does not read `local_allowed`. So such a call is never handed to it:
+    its refusal goes into the transcript as the call's result -- directly
+    after the assistant message that asked for it -- and is audited as a
+    denial, exactly as /tools would have. Returns the ids answered.
+    """
+    answered: set[str] = set()
+    for call in calls:
+        if call.name not in _LOCAL_TOOLS:
+            continue
+        reason = _local_refusal(tools, mode, call.name)
+        if reason is None:
+            continue
+        transcript.append(
+            _from_message(
+                NeutralMessage(
+                    role="tool",
+                    content=f"ERROR: {reason}",
+                    tool_call_id=call.id,
+                    name=call.name,
+                )
+            )
+        )
+        await append_event(
+            db,
+            tenant_id=run.tenant_id,
+            actor_type="agent",
+            actor_id=agent.id,
+            category="tool_action",
+            action=f"tool.call:{call.name}",
+            resource={"tool": call.name, "arguments": call.arguments},
+            decision="deny",
+            reason=reason,
+        )
+        answered.add(call.id)
+    return answered
+
+
 def _routed_connection(
     conns: list[m.McpConnection],
     ctx: dict[str, Any],
@@ -446,7 +653,10 @@ async def _discover_connection_tools(
             resources.append({**item, "connection": name})
         for prompt_name in listed_prompts:
             prompts.append({"connection": name, "name": prompt_name})
-    routes = build_routes({name: [t.name for t in tools] for name, tools in discovered.items()})
+    routes = build_routes(
+        {name: [t.name for t in tools] for name, tools in discovered.items()},
+        reserved=CONTROL_TOOL_NAMES,
+    )
     by_real = {(route.connection, route.tool): advertised for advertised, route in routes.items()}
     schemas: list[dict[str, Any]] = []
     for conn_name, tools in discovered.items():
@@ -520,79 +730,363 @@ async def _mcp_env(
 # --------------------------------------------------------------------- step
 
 
+def _active_skills_of(ctx: Mapping[str, Any], assigned: Sequence[LoadedSkill]) -> list[LoadedSkill]:
+    """The run's active skills, as every /step and /tools reads them."""
+    active_ids = {str(s) for s in ctx.get("active_skill_ids", [])}
+    return [s for s in assigned if str(s.skill_version_id) in active_ids]
+
+
+def _skill_snapshot(active_skills: Sequence[LoadedSkill]) -> dict[str, Any]:
+    """The active skills' guardrails, stored with a held call: the re-run is
+    decided with the thresholds in force when the call was made, whatever is
+    active on the leg that resumes it."""
+    return {
+        "skill_guards": [
+            {"gt": g.gt, "metric": g.metric}
+            for s in active_skills
+            for g in s.definition.guardrails
+            if g.type == "value_threshold" and g.then == "require_approval"
+        ],
+        "skill_tool_names": sorted(s.tool_name for s in active_skills),
+    }
+
+
+def _skill_guard(
+    active_skills: Sequence[LoadedSkill],
+    value_spec: dict[str, Any] | None,
+    stored: Mapping[str, Any] | None = None,
+) -> tuple[tuple[float | None, ...], dict[str, Any] | None]:
+    """The active skills' value thresholds, and the value spec that measures them.
+
+    A skill's value_threshold guardrail names both its threshold and the
+    argument it measures (`metric`); that key is the skill's config, so it is
+    merged into the connection's value spec here -- the same merge the
+    in-process engine makes -- or the threshold could never see a value.
+    """
+    guards: list[tuple[float | None, str | None]] = [
+        (g.gt, g.metric)
+        for s in active_skills
+        for g in s.definition.guardrails
+        if g.type == "value_threshold" and g.then == "require_approval"
+    ]
+    # `stored` (a held call's `_skill_snapshot`) adds the guardrails in force
+    # when the call was made.
+    for raw in (stored or {}).get("skill_guards") or []:
+        if isinstance(raw, dict):
+            gt = raw.get("gt")
+            guards.append(
+                (
+                    float(gt) if isinstance(gt, (int, float)) else None,
+                    str(raw["metric"]) if raw.get("metric") else None,
+                )
+            )
+    metrics = [metric for _gt, metric in guards if metric]
+    spec = value_spec
+    if metrics:
+        spec = dict(value_spec or {})
+        spec["direct_fields"] = [*(spec.get("direct_fields") or []), *metrics]
+    return tuple(gt for gt, _metric in guards), spec
+
+
+def _held_call_verdict(
+    *,
+    agent: m.Agent,
+    dept: m.Department | None,
+    conn: m.McpConnection,
+    pinned: Mapping[str, Any],
+    ctx: Mapping[str, Any],
+    tool: str,
+    advertised: str,
+    arguments: dict[str, Any],
+    active_skills: Sequence[LoadedSkill],
+    stored: Mapping[str, Any] | None = None,
+) -> tuple[str, str]:
+    """What happens to a held connection call now: ("run" | "refuse" | "park", why).
+
+    An answered elicitation re-runs the call on a later /step. It runs NOW, so
+    it is decided now, as /tools would decide it, on exactly the `arguments`
+    that will be sent (the answer merged in): the PEP -- frame, narrowing, the
+    active skills' thresholds and the run's mode as they are at this moment --
+    then the B gate, tiered with the annotations /tools saw under `advertised`.
+
+    Either one holding it for a human parks it for an approval of THIS call. An
+    approval of the call as it was before the answer covers it only when the
+    answer left the arguments unchanged -- the signatures then match.
+    """
+    frame = dept.frame if dept is not None else {}
+    narrowing = pinned["narrowing"] or {}
+    cfg = _mcp_params(conn)
+    thresholds, value_spec = _skill_guard(
+        active_skills,
+        cfg.get("value_spec") if isinstance(cfg.get("value_spec"), dict) else None,
+        stored,
+    )
+    held = ToolCall(id="held", name=tool, arguments=arguments)
+    decision = _authorize(
+        agent,
+        held,
+        frame=frame,
+        tool_policies=effective_tool_policies(frame, narrowing),
+        connection_key=conn.name,
+        tool_scopes=_manifest_scopes(conn),
+        skill_tool_names=frozenset(s.tool_name for s in active_skills)
+        | frozenset(str(n) for n in (stored or {}).get("skill_tool_names") or []),
+        skill_thresholds=thresholds,
+        value_spec=value_spec,
+        guardrail_attribute_specs=_manifest_guardrail_attributes(conn),
+        narrowing=narrowing,
+        is_team_lead=bool(pinned["is_team_lead"]),
+        chat_mode=mode_from_context(ctx),
+        # Always the connection's tool, whatever core tool shares its name.
+        routed=True,
+    )
+    verdict = pre_decided_map(ctx.get("resolved_tool_approvals", []) or []).get(_call_sig(held))
+    if decision.effect is Effect.DENY:
+        return "refuse", decision.reason or "denied"
+    if verdict == "reject":
+        return "refuse", "operator rejected this action"
+    if decision.effect is Effect.REQUIRE_APPROVAL and verdict != "approve":
+        return "park", decision.reason or ""
+    gate = _b_gate(
+        Harness.from_run_context(dict(ctx)),
+        held,
+        advertised=advertised,
+        renamed=True,
+        conn=conn,
+        pinned=pinned,
+        active_skills=active_skills,
+        schemas=ctx.get("tool_schemas", []),
+    )
+    if gate.effect == "deny":
+        return "refuse", gate.reason or "denied"
+    if gate.effect == "ask" and verdict != "approve":
+        return "park", gate.preview or ""
+    return "run", ""
+
+
+async def _park_held_call(
+    db: DbSession,
+    *,
+    run: m.AgentRun,
+    agent: m.Agent,
+    ctx: dict[str, Any],
+    pending: Mapping[str, Any],
+    tool: str,
+    arguments: dict[str, Any],
+    reason: str,
+) -> None:
+    """Hold the answered call for a human, exactly as /tools holds a new write:
+    an approval of the MERGED call, and the run parked on it. The pending entry
+    keeps the merged arguments, so the approved call is the one that runs."""
+    ar = await raise_approval(
+        db,
+        tenant_id=run.tenant_id,
+        agent_id=agent.id,
+        task_id=run.task_id,
+        action_type="tool_send",
+        title=f"{agent.name} wants to call {tool}",
+        detail=reason,
+        payload={"tool": tool, "arguments": arguments, "justification": "", "preview": reason},
+    )
+    ctx["pending_elicitation"] = {**pending, "arguments": arguments, "merged": True}
+    ctx["isolated_result"] = {"status": "waiting_for_approval", "output": reason}
+    run.context = ctx
+    from oc8.realtime.bus import get_event_bus
+
+    await get_event_bus().publish_event(
+        run.tenant_id,
+        "approval.created",
+        {
+            "approval_id": str(ar.id),
+            "action_type": ar.action_type,
+            "status": ar.status,
+            "title": ar.title,
+            "detail": ar.detail,
+        },
+        source=f"oc8/approval/{ar.id}",
+    )
+
+
 async def _finish_elicitation(
     db: DbSession,
     run: m.AgentRun,
     dept: m.Department | None,
     ctx: dict[str, Any],
     transcript: list[dict[str, Any]],
-) -> None:
-    """Send the operator's answer back to the server and finish the same call."""
+    *,
+    agent: m.Agent,
+    pinned: Mapping[str, Any],
+    active_skills: Sequence[LoadedSkill],
+) -> tuple[str, str] | None:
+    """Send the operator's answer back to the server and finish the same call.
+
+    Returns `(status, text)` when this /step has to end suspended instead:
+    ("waiting_for_approval", reason) when the answered call is parked for an
+    approval (`_held_call_verdict`), ("waiting_for_input", question) when the
+    server asks again.
+    """
     pending = ctx.get("pending_elicitation")
     if not isinstance(pending, dict):
-        return
+        return None
     answers = [
         item
         for item in ctx.get("clarifications", [])
         if isinstance(item, dict) and item.get("answer")
     ]
     if not answers:
-        return
+        return None
     from oc8.api.mcp_gateway import _connections
 
     tool = str(pending.get("tool") or "")
     connection_name = str(pending.get("connection") or "")
-    arguments = arguments_with_answer(
-        dict(pending.get("arguments") or {}), str(answers[-1]["answer"])
+    advertised = str(pending.get("advertised") or tool)
+    # Already merged when it was parked for an approval of the merged call:
+    # merging the answer again would change nothing a JSON answer set, but an
+    # approval is matched on the exact arguments, so never touch them twice.
+    arguments = (
+        dict(pending.get("arguments") or {})
+        if pending.get("merged")
+        else arguments_with_answer(dict(pending.get("arguments") or {}), str(answers[-1]["answer"]))
     )
     conn = next(
         (item for item in await _connections(db, run, dept) if item.name == connection_name),
         None,
     )
+    effect, why = (
+        _held_call_verdict(
+            agent=agent,
+            dept=dept,
+            conn=conn,
+            pinned=pinned,
+            ctx=ctx,
+            tool=tool,
+            advertised=advertised,
+            # The arguments that will actually be sent, answer included.
+            arguments=arguments,
+            active_skills=active_skills,
+            stored=pending,
+        )
+        if conn is not None and tool
+        else ("refuse", "")
+    )
+    if conn is not None and tool:
+        # Audited like any call: the held re-run is a new one.
+        await append_event(
+            db,
+            tenant_id=run.tenant_id,
+            actor_type="agent",
+            actor_id=agent.id,
+            category="tool_action",
+            action=f"tool.call:{tool}",
+            resource={"tool": tool, "arguments": arguments},
+            decision={"run": "allow", "refuse": "deny", "park": "require_approval"}[effect],
+            reason=why or None,
+            originating_operator=ctx.get("originating_operator"),
+        )
+    if conn is not None and tool and effect == "park":
+        await _park_held_call(
+            db,
+            run=run,
+            agent=agent,
+            ctx=ctx,
+            pending=pending,
+            tool=tool,
+            arguments=arguments,
+            reason=why,
+        )
+        return "waiting_for_approval", why
+    refusal = why if effect == "refuse" else None
+    dispatched = False
     if conn is None or not tool:
         output = "ERROR: the connection that asked for this answer is no longer available"
+    elif refusal is not None:
+        output = f"ERROR: {refusal}"
     else:
-        try:
-            # `ctx` is written back whole below: the call to action goes in too.
-            launch = await _mcp_env(conn, db, run, tool=tool, ctx=ctx)
-            env = launch.env
-            cfg = _mcp_params(conn)
-            headers = resolve_auth_header(cfg, env)
-            command, args = wrap_with_requirements(cfg.get("command", ""), cfg.get("args", []), cfg)
-            output = await mcp_pool.call(
-                conn.id,
-                command=command,
-                args=args,
-                env=env,
-                tool=tool,
-                arguments=arguments,
-                transport=conn.transport,
-                server_url=conn.server_url or "",
-                headers=headers,
-                http_tools=list(cfg.get("http_tools", [])),
-                reusable=launch.reusable,
-            )
-        except ElicitationNeeded as exc:
-            output = exc.message
-            ctx["pending_elicitation"] = {
-                "connection": connection_name,
-                "tool": tool,
-                "arguments": arguments,
-                "question": exc.message,
-            }
-            transcript.append(
-                _from_message(
-                    NeutralMessage(
-                        role="user",
-                        content=f"The same call {tool} still needs an answer:\n{output}",
+        # The same replay-safety as /tools (B9), keyed on the merged call: an
+        # identical later call -- which the run-long approval would also let
+        # through -- gets this result back instead of acting twice, and so
+        # does a re-run after a crash before this request committed.
+        held_tc = ToolCall(id="held", name=tool, arguments=arguments)
+        held_writes = required_right(tool, _manifest_scopes(conn)) != "read"
+        schema = next(
+            (
+                raw
+                for raw in ctx.get("tool_schemas", []) or []
+                if isinstance(raw, dict) and raw.get("name") == advertised
+            ),
+            None,
+        )
+        notes = schema.get("annotations") if schema is not None else None
+        held_idempotent = isinstance(notes, dict) and notes.get("idempotentHint") is True
+        replayed = await replay_for(
+            db,
+            tenant_id=run.tenant_id,
+            task_id=run.task_id,
+            tc=held_tc,
+            writes=held_writes,
+            idempotent=held_idempotent,
+        )
+        if replayed is not None:
+            output = replayed
+        else:
+            dispatched = True
+            try:
+                # `ctx` is written back whole below: the call to action goes in too.
+                launch = await _mcp_env(conn, db, run, tool=tool, ctx=ctx)
+                env = launch.env
+                cfg = _mcp_params(conn)
+                headers = resolve_auth_header(cfg, env)
+                command, args = wrap_with_requirements(
+                    cfg.get("command", ""), cfg.get("args", []), cfg
+                )
+                output = await mcp_pool.call(
+                    conn.id,
+                    command=command,
+                    args=args,
+                    env=env,
+                    tool=tool,
+                    arguments=arguments,
+                    transport=conn.transport,
+                    server_url=conn.server_url or "",
+                    headers=headers,
+                    http_tools=list(cfg.get("http_tools", [])),
+                    reusable=launch.reusable,
+                )
+                await record_for(
+                    db,
+                    tenant_id=run.tenant_id,
+                    task_id=run.task_id,
+                    tc=held_tc,
+                    writes=held_writes,
+                    output=output,
+                    idempotent=held_idempotent,
+                )
+            except ElicitationNeeded as exc:
+                # Asked again: suspend for the operator, as the engine does and
+                # as /tools does on a first question -- not on to the model.
+                ctx["pending_elicitation"] = {
+                    "connection": connection_name,
+                    "tool": tool,
+                    "advertised": advertised,
+                    "arguments": arguments,
+                    "question": exc.message,
+                    "skill_guards": pending.get("skill_guards") or [],
+                    "skill_tool_names": pending.get("skill_tool_names") or [],
+                }
+                transcript.append(
+                    _from_message(
+                        NeutralMessage(
+                            role="user",
+                            content=f"The same call {tool} still needs an answer:\n{exc.message}",
+                        )
                     )
                 )
-            )
-            ctx["transcript"] = transcript
-            run.context = ctx
-            return
-        except Exception as exc:
-            output = f"ERROR: {exc}"
+                ctx["transcript"] = transcript
+                ctx["isolated_result"] = {"status": "waiting_for_input", "output": exc.message}
+                run.context = ctx
+                return "waiting_for_input", exc.message
+            except Exception as exc:
+                output = f"ERROR: {exc}"
     ctx.pop("pending_elicitation", None)
     transcript.append(
         _from_message(
@@ -602,8 +1096,23 @@ async def _finish_elicitation(
             )
         )
     )
+    # The held re-run in the run's timeline, like any call. Into `ctx` -- which
+    # /step writes back whole -- not appended in SQL, which that write-back
+    # would overwrite.
+    ctx["toolCalls"] = [
+        *(ctx.get("toolCalls") or []),
+        {
+            "tool": tool,
+            "arguments": arguments,
+            "result": output[:300],
+            "step": int(ctx.get("steps", 0)),
+            "connection": connection_name or None,
+            "state": call_state_for(output, dispatched=dispatched),
+        },
+    ]
     ctx["transcript"] = transcript
     run.context = ctx
+    return None
 
 
 class StepResult(BaseModel):
@@ -627,6 +1136,14 @@ class StepResult(BaseModel):
     #: when code_mode is off or the seed has not stored it. The shell writes
     #: the file once when present and missing on disk.
     sdk_py: str = ""
+    #: The local-execution tools (run_shell, run_program) the shell may run
+    #: in its container for THIS step's calls. The shell executes them BEFORE
+    #: posting to /tools, so /tools' PEP decision comes too late to stop the
+    #: command itself -- this is the PEP's answer given up front: offered this
+    #: leg, and not withheld by the turn's mode. Absent (an older backend) or
+    #: not naming the tool means "do not run it"; the shell then posts the call
+    #: without a result and gets the "was not executed locally" refusal.
+    local_allowed: list[str] = []
 
 
 @router.post(
@@ -674,11 +1191,29 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
             select(m.RunCancellation.cancellation_kind).where(m.RunCancellation.run_id == run_id)
         )
     ).scalar_one_or_none()
-    if operator_kind is not None or not await tenant_may_run(run.tenant_id):
+    from oc8.runtime.run_inputs import (
+        OWNERSHIP_CHANGED_KIND,
+        OWNERSHIP_CHANGED_OUTPUT,
+        steering_went_stale,
+    )
+
+    # Not an operator's either: the run came to act through someone else's
+    # account after it received a person's words (`steering_went_stale`).
+    stop_kind: str | None = None
+    if operator_kind is None:
+        if not await tenant_may_run(run.tenant_id):
+            stop_kind = TENANT_INACTIVE_KIND
+        elif await steering_went_stale(db, run):
+            stop_kind = OWNERSHIP_CHANGED_KIND
+    if operator_kind is not None or stop_kind is not None:
         ctx = dict(run.context)
-        if operator_kind is None:
-            ctx["cancellation_kind"] = TENANT_INACTIVE_KIND
-            reason = TENANT_INACTIVE_OUTPUT
+        if stop_kind is not None:
+            ctx["cancellation_kind"] = stop_kind
+            reason = (
+                TENANT_INACTIVE_OUTPUT
+                if stop_kind == TENANT_INACTIVE_KIND
+                else OWNERSHIP_CHANGED_OUTPUT
+            )
         else:
             reason = "Run cancelled by operator."
         closed_step_timing = None
@@ -739,7 +1274,22 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         return StepResult(done=True, text="Reached step limit.", status_override="done")
 
     transcript: list[dict[str, Any]] = list(ctx.get("transcript", []))
-    await _finish_elicitation(db, run, dept, ctx, transcript)
+    parked_reason = await _finish_elicitation(
+        db,
+        run,
+        dept,
+        ctx,
+        transcript,
+        agent=agent,
+        pinned=pinned,
+        active_skills=_active_skills_of(
+            ctx, await load_assigned_skills(db, agent=agent, tenant_id=run.tenant_id)
+        ),
+    )
+    if parked_reason is not None:
+        await db.commit()
+        suspended_as, said = parked_reason
+        return StepResult(done=True, text=said, status_override=suspended_as)
     tool_schemas_raw: list[dict[str, Any]] = list(ctx.get("tool_schemas", []))
 
     # Resolved BEFORE seeding, because the preamble's KB retrieval needs the
@@ -863,6 +1413,22 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
             ctx["unavailable_connections"] = unavailable
         ctx["tool_schemas"] = tool_schemas_raw
 
+    # Run inputs (spec §3.2), consumed in THIS request's transaction: the stamp
+    # commits together with the `ctx["transcript"]` that carries the message
+    # (the one commit at the bottom of the step loop), so a step that dies
+    # before it rolls both back and the input waits for the next /step.
+    from oc8.runtime.run_inputs import consume_run_inputs, format_input_message, step_hint
+
+    consumed_inputs = await consume_run_inputs(db, run_id=run.id, step=step_hint(ctx))
+    for item in consumed_inputs:
+        transcript.append(
+            _from_message(
+                NeutralMessage(
+                    role="user", content=format_input_message(item.author_name, item.text)
+                )
+            )
+        )
+
     mcp_tools = [
         NeutralTool(
             name=t["name"],
@@ -898,20 +1464,28 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         resolve_caps(model_config.params if model_config is not None else None),
         active_skills,
     )
+    edition = await edition_offer(
+        run.tenant_id,
+        door=chat_door(run.source, ctx),
+        taken=_taken_tool_names(ctx, assigned_skills),
+        chat_mode=mode_from_context(ctx),
+    )
     tools = offered_tools(
         agent,
         is_team_lead=bool(pinned["is_team_lead"]),
         assigned_skills=assigned_skills,
         active_skills=active_skills,
         mcp_tools=mcp_tools,
-        has_knowledge=has_knowledge,
+        has_knowledge=has_knowledge or has_released_knowledge(ctx),
         has_instruction_files=has_instruction_files,
         copilot_permissions=copilot_permissions,
+        has_context=has_readable_context(ctx),
         offer_write_output_file=offer_write_output_file,
         offer_run_shell=offer_write_output_file,
         offer_run_program=caps.code_mode,
         chat_mode=mode_from_context(ctx),
         copilot_door=door_of(ctx) if agent.is_tenant_assistant else None,
+        edition_tools=edition.neutral_tools(),
     )
     # Code mode (ruling 6): seed the generated SDK once tools are known so
     # every later /step can return it as sdk_py for the shell to write.
@@ -941,7 +1515,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
     required = [req.tool for skill in active_skills for req in skill.definition.requires_tools]
     resolved_tools, catalog = select_completion_tools(
         tools,
-        control_names=CONTROL_TOOL_NAMES,
+        control_names=CONTROL_TOOL_NAMES | edition.names,
         skill_names=skill_tool_names,
         mission=str(ctx.get("task", "")),
         skill_texts=[s.definition.instruction for s in active_skills],
@@ -1058,6 +1632,8 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
     # (`run.context = ctx; await db.commit()`), so publishing has to wait
     # until that commit actually lands, not at the moment finish_step runs.
     finished_step_timings: list[dict[str, Any]] = []
+    #: Ids of the calls /step answered itself (`_answer_withheld_local_calls`).
+    handed: set[str] = set()
 
     while True:
         ledger_hash = ledger_fingerprint(harness.state.ledger)
@@ -1266,12 +1842,34 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         if not result.tool_calls:
             note_tools(step_rec, 0)
             finished_step_timings.append(finish_step(step_rec))
+        else:
+            answered = await _answer_withheld_local_calls(
+                db,
+                run=run,
+                agent=agent,
+                calls=result.tool_calls,
+                tools=tools,
+                mode=mode_from_context(ctx),
+                transcript=transcript,
+            )
+            handed |= answered
+            if answered and len(answered) == len(result.tool_calls):
+                # Nothing left for the shell this turn: the model hears the
+                # refusal and decides again, within the step budget.
+                note_tools(step_rec, 0)
+                finished_step_timings.append(finish_step(step_rec))
+                if int(ctx["steps"]) < max_steps:
+                    continue
         break
 
     harness.store(ctx)
     ctx["transcript"] = transcript
     run.context = ctx
     await db.commit()
+    if consumed_inputs:
+        from oc8.runtime.run_inputs import publish_inputs_consumed
+
+        await publish_inputs_consumed(run.tenant_id, run_id=run.id, consumed=consumed_inputs)
     # Only now, after the commit that actually persists these entries in
     # `ctx["stepTimings"]`, tell an open tab about them -- publishing any
     # earlier (right when finish_step ran, above) could hand out a live
@@ -1316,7 +1914,11 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
     tool_tiers: dict[str, str] = {}
     if caps.parallel_tool_calls:
         for t in result.tool_calls:
-            if t.name in CONTROL_TOOL_NAMES or t.name in skill_tool_names:
+            if (
+                t.name in CONTROL_TOOL_NAMES
+                or t.name in skill_tool_names
+                or registered_edition_tool(t.name) is not None
+            ):
                 break
             pre_decision = _authorize(
                 agent,
@@ -1324,17 +1926,15 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
                 frame=frame,
                 skill_tool_names=skill_tool_names,
                 delegation_depth=int(ctx.get("delegation_depth", 0)),
-                skill_thresholds=tuple(
-                    g.gt
-                    for s in active_skills
-                    for g in s.definition.guardrails
-                    if g.type == "value_threshold" and g.then == "require_approval"
-                ),
+                skill_thresholds=_skill_guard(active_skills, value_spec)[0],
                 tool_policies=effective_tool_policies(frame, pinned["narrowing"] or {}),
                 connection_key=conn.name if conn is not None else None,
                 tool_scopes=scopes,
-                value_spec=value_spec,
+                value_spec=_skill_guard(active_skills, value_spec)[1],
                 guardrail_attribute_specs=guardrail_attribute_specs,
+                # A hint only, but it must agree with /tools: a call the mode
+                # withholds is not a batchable read.
+                chat_mode=mode_from_context(ctx),
             )
             if pre_decision.effect is not Effect.ALLOW:
                 break
@@ -1373,12 +1973,23 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
                 "tier": tool_tiers.get(t.id, "modify"),
             }
             for t in result.tool_calls
+            if t.id not in handed
         ],
         # Truncated even after the retry above -- never let the shell read
         # this as "done" (see engine.py's identical check for why).
         status_override="failed" if truncated_empty else None,
         parallel_tool_calls=caps.parallel_tool_calls,
         sdk_py=str(ctx.get("oc8_tools_py") or ""),
+        local_allowed=_local_allowed(
+            tools,
+            mode_from_context(ctx),
+            calls=[t for t in result.tool_calls if t.id not in handed],
+            harness=harness,
+            conn=conn,
+            pinned=pinned,
+            active_skills=active_skills,
+            ctx=ctx,
+        ),
     )
 
 
@@ -1457,7 +2068,11 @@ async def _precompute_leading_reads(
     for call in calls:
         if call.local_result is not None:
             break
-        if call.name in CONTROL_TOOL_NAMES or call.name in skill_tool_names:
+        if (
+            call.name in CONTROL_TOOL_NAMES
+            or call.name in skill_tool_names
+            or registered_edition_tool(call.name) is not None
+        ):
             break
         # A read that belongs to another system must not be prefetched on this
         # connection. Sequential dispatch routes it.
@@ -1466,6 +2081,10 @@ async def _precompute_leading_reads(
             pair = routes.get(call.name)
             if isinstance(pair, list) and len(pair) == 2 and str(pair[0]) != conn.name:
                 break
+            # Renamed by the route: it would be decided and sent under the
+            # advertised name here, but runs under its real one. Sequential.
+            if isinstance(pair, list) and len(pair) == 2 and str(pair[1]) != call.name:
+                break
         tc = ToolCall(id=call.id, name=call.name, arguments=dict(call.arguments))
         pre_decision = _authorize(
             agent,
@@ -1473,17 +2092,15 @@ async def _precompute_leading_reads(
             frame=frame,
             skill_tool_names=skill_tool_names,
             delegation_depth=int(ctx.get("delegation_depth", 0)),
-            skill_thresholds=tuple(
-                g.gt
-                for s in active_skills
-                for g in s.definition.guardrails
-                if g.type == "value_threshold" and g.then == "require_approval"
-            ),
+            skill_thresholds=_skill_guard(active_skills, value_spec)[0],
             tool_policies=effective_tool_policies(frame, pinned["narrowing"] or {}),
             connection_key=conn.name,
             tool_scopes=scopes,
-            value_spec=value_spec,
+            value_spec=_skill_guard(active_skills, value_spec)[1],
             guardrail_attribute_specs=guardrail_attribute_specs,
+            # Prefetched from the tool server before /tools decides: a call the
+            # mode withholds (/ask) must break the batch, never be fetched.
+            chat_mode=mode_from_context(ctx),
         )
         if pre_decision.effect is not Effect.ALLOW:
             break
@@ -1657,14 +2274,34 @@ async def _dispatch_one_tool(
     from oc8.api.mcp_gateway import _connections
 
     routed = _routed_connection(await _connections(db, run, dept), dict(run.context), tc.name)
+    #: The model named a connection's tool by a name the route rewrote
+    #: (`<connection>.ask_user` -> `ask_user`). It is that connection's tool even when
+    #: the real name matches a core one: it is decided by the frame, never by
+    #: the core tool's allowance, and it goes to the connection's server, never
+    #: to the core implementation of the same name.
+    renamed = False
     if routed is not None:
         conn, real_tool = routed
         if real_tool != tc.name:
             tc = ToolCall(id=tc.id, name=real_tool, arguments=tc.arguments)
+            renamed = True
 
     assigned_skills = await load_assigned_skills(db, agent=agent, tenant_id=run.tenant_id)
     skill_tool_names = frozenset(s.tool_name for s in assigned_skills)
-    is_control_call = tc.name in CONTROL_TOOL_NAMES or tc.name in skill_tool_names
+    # Recomputed per call from the run, exactly as the /step that offered the
+    # tools computed it: a call is checked against what this leg offered.
+    edition = await edition_offer(
+        run.tenant_id,
+        door=chat_door(run.source, run.context),
+        taken=_taken_tool_names(dict(run.context), assigned_skills),
+        chat_mode=mode_from_context(run.context),
+    )
+    # Never an edition call through a connection's route, and never the core
+    # tool (or a skill) of the same name when the route renamed the call.
+    is_edition_call = routed is None and edition.claims(tc.name)
+    is_control_call = is_edition_call or (
+        not renamed and (tc.name in CONTROL_TOOL_NAMES or tc.name in skill_tool_names)
+    )
     # A core-owned tool (remember/ask/delegate/invoke a skill) is executed by the
     # control plane itself and needs no MCP connection. Requiring one here made
     # every one of them unusable on a run without a connection.
@@ -1699,11 +2336,16 @@ async def _dispatch_one_tool(
 
     scopes = _manifest_scopes(conn)
     ctx = dict(run.context)
+    # What this request started from, deep: ctx's lists are edited in place.
+    # The write-back below sends only what the request itself changed, so a
+    # key a tool merges meanwhile (suggestions, parts, ...) survives it.
+    ctx_before = copy.deepcopy(ctx)
     harness = Harness.from_run_context(ctx)
     harness.state.step_no = int(ctx.get("steps", 0))
 
     active_ids = {str(s) for s in run.context.get("active_skill_ids", [])}
     active_skills = [s for s in assigned_skills if str(s.skill_version_id) in active_ids]
+    skill_thresholds, call_value_spec = _skill_guard(active_skills, value_spec)
 
     decision = _authorize(
         agent,
@@ -1715,20 +2357,18 @@ async def _dispatch_one_tool(
         # chain could run past MAX_DELEGATION_DEPTH.
         skill_tool_names=skill_tool_names,
         delegation_depth=int(run.context.get("delegation_depth", 0)),
-        skill_thresholds=tuple(
-            g.gt
-            for s in active_skills
-            for g in s.definition.guardrails
-            if g.type == "value_threshold" and g.then == "require_approval"
-        ),
+        skill_thresholds=skill_thresholds,
         tool_policies=effective_tool_policies(frame, pinned["narrowing"] or {}),
         connection_key=conn.name if conn is not None else None,
         tool_scopes=scopes,
-        value_spec=value_spec,
+        # The active skills' metrics merged in (`_skill_guard`), as the engine does.
+        value_spec=call_value_spec,
         narrowing=pinned["narrowing"] or {},
         is_team_lead=bool(pinned["is_team_lead"]),
         guardrail_attribute_specs=guardrail_attribute_specs,
         chat_mode=mode_from_context(run.context),
+        edition_offer=edition,
+        routed=renamed,
     )
     stripped, justification = strip_justification(tc.arguments)
     tc.arguments = stripped
@@ -1752,7 +2392,8 @@ async def _dispatch_one_tool(
         (
             raw
             for raw in ctx.get("tool_schemas", [])
-            if isinstance(raw, dict) and raw.get("name") == tc.name
+            # Listed under the name the model saw, which a route qualifies.
+            if isinstance(raw, dict) and raw.get("name") == body.name
         ),
         None,
     )
@@ -1762,28 +2403,21 @@ async def _dispatch_one_tool(
     gate_verdict = None
     tier = None
     if decision.effect is Effect.ALLOW:
-        tier = classify_tier(
-            tc.name,
-            scopes=scopes,
-            config=cfg,
-            annotations=typed_annotations,
-            arguments=tc.arguments,
-        )
-        definition = pinned["definition"] if isinstance(pinned["definition"], dict) else {}
-        raw_b5_grants = definition.get("b5_grants")
-        b5_grants = raw_b5_grants if isinstance(raw_b5_grants, list) else []
-        gate_verdict = harness.gate(
+        # The one gate computation (`_b_gate`), shared with /step's local
+        # verdict and a held call's re-run, so they can never disagree. A
+        # renamed call is the connection's: tiered by its scopes, never by a
+        # core tool's static tier.
+        gate_verdict = _b_gate(
+            harness,
             tc,
-            tier=tier,
-            ledger=harness.state.ledger,
-            connection=conn.name if conn is not None else "oc8",
-            config=cfg,
-            autonomy=autonomy_of(definition),
-            granted=tier in b5_grants,
-            record_label=describe_focus(tc.name, tc.arguments, focus_spec) or "",
-            identity=record_identity(tc.name, tc.arguments, focus_spec),
-            procedures=_active_procedures(active_skills),
+            advertised=body.name,
+            renamed=renamed,
+            conn=conn,
+            pinned=pinned,
+            active_skills=active_skills,
+            schemas=ctx.get("tool_schemas", []),
         )
+        tier = gate_verdict.tier
         if gate_verdict.effect == "ask":
             verdict = pre_decided_map(run.context.get("resolved_tool_approvals", [])).get(
                 _call_sig(tc)
@@ -1804,7 +2438,13 @@ async def _dispatch_one_tool(
         actor_id=agent.id,
         category="tool_action",
         action=f"tool.call:{tc.name}",
-        resource={"tool": tc.name, "arguments": tc.arguments},
+        # An edition call keeps its arguments out of the audit; its own
+        # `edition_tool.called` event is the record of it.
+        resource=(
+            {"tool": tc.name}
+            if edition.claims(tc.name)
+            else {"tool": tc.name, "arguments": tc.arguments}
+        ),
         decision=decision.effect.value,
         reason=decision.reason or None,
         originating_operator=run.context.get("originating_operator"),
@@ -1843,18 +2483,24 @@ async def _dispatch_one_tool(
         )
         # Record the suspend verdict so the isolated runtime maps the run to
         # waiting_for_approval after the container exits.
-        run.context = {
-            **ctx,
-            "isolated_result": {"status": "waiting_for_approval", "output": decision.reason or ""},
-        }
+        await write_back_context(
+            db,
+            run,
+            before=ctx_before,
+            after={
+                **ctx,
+                "isolated_result": {
+                    "status": "waiting_for_approval",
+                    "output": decision.reason or "",
+                },
+            },
+        )
         # The parked call itself, at parity with the in-process engine's own
         # require-approval append: without this the timeline of an isolated
         # run simply loses the step a human is being asked about, which is
-        # the one step they most need to see. Flush before the raw-SQL
-        # append -- append_tool_call's own _adopt() would otherwise read the
-        # row back before the isolated_result assignment above landed, and
-        # silently drop it from the ORM's view -- and commit ONCE after both,
-        # since a commit in between would unbind the tenant GUC.
+        # the one step they most need to see. The write-back above is one SQL
+        # statement already ordered before this append; commit ONCE after
+        # both, since a commit in between would unbind the tenant GUC.
         await db.flush()
         parked_call: dict[str, Any] = {
             "tool": tc.name,
@@ -2002,6 +2648,7 @@ async def _dispatch_one_tool(
         harness.store(ctx)
 
     suspend: str | None = None
+    pending_questions: list[dict[str, Any]] | None = None
 
     # A core-owned tool goes through the SAME dispatcher as the in-process engine
     # (oc8.agent.control_tools). It returns None for a connection tool, which then
@@ -2048,9 +2695,14 @@ async def _dispatch_one_tool(
             local_result=body.local_result,
             harness_state=harness.state,
             active_procedure_skills=[s for s in active_skills if s.definition.steps],
+            edition_offer=edition,
         )
-        if task is not None
-        else None
+        if task is not None and is_control_call
+        # Never on to the MCP server: an edition call with no task to run
+        # it against is refused here.
+        else (
+            ControlOutcome(output=f"ERROR: unknown tool {tc.name!r}") if is_edition_call else None
+        )
     )
 
     if control is not None:
@@ -2062,6 +2714,7 @@ async def _dispatch_one_tool(
                 message=control.output.removeprefix("ERROR: ").strip(),
             )
         suspend = control.suspend
+        pending_questions = control.questions
         if control.contains_restricted:
             # Read by every later /step's completion (see above): the router
             # then refuses a cloud model or fallback for this run.
@@ -2250,8 +2903,12 @@ async def _dispatch_one_tool(
                     ctx["pending_elicitation"] = {
                         "connection": conn.name,
                         "tool": tc.name,
+                        # The name the model saw: the re-run tiers the call with
+                        # the annotations listed under it, as /tools did.
+                        "advertised": body.name,
                         "arguments": dict(tc.arguments),
                         "question": exc.message,
+                        **_skill_snapshot(active_skills),
                     }
                 except Exception as exc:  # surface to the model
                     tool_error = classify_exception(
@@ -2319,7 +2976,8 @@ async def _dispatch_one_tool(
             record_decision(
                 harness.state.ledger,
                 tool=tc.name,
-                question=str(tc.arguments.get("question", "")),
+                # A structured ask has no `question`; its readable text is the output.
+                question=str(tc.arguments.get("question") or (output if pending_questions else "")),
                 step=harness.state.step_no,
             )
     after_sat = _satisfied_map(procs, harness)
@@ -2396,26 +3054,26 @@ async def _dispatch_one_tool(
         # The verdict the isolated runtime reads after the container exits, so the
         # executor opens the Clarification and parks the run (same shape as the
         # approval suspend above).
-        ctx["isolated_result"] = {"status": suspend, "output": output}
-    run.context = ctx
+        # The UNSTAMPED text: this becomes the Clarification's question (and the
+        # approval's reason), which a person reads -- the "[step N/max ...]"
+        # stamp is for the model's transcript only.
+        ctx["isolated_result"] = {"status": suspend, "output": _tool_call_output_for_state}
+        if suspend == "waiting_for_input" and pending_questions:
+            # A structured ask_user (spec §4.1): its questions ride beside the
+            # readable output, never inside it.
+            ctx["isolated_result"]["questions"] = pending_questions
+    await write_back_context(db, run, before=ctx_before, after=ctx)
 
     # Live Log parity with the in-process engine (agent/engine.py's
-    # _live_tool_call): the append must land after the whole-column
-    # `run.context = ctx` write above (that assignment is a snapshot taken
-    # at the top of this request, so an append made before it would just be
-    # clobbered) but MUST NOT be split across a separate commit -- `db` is a
-    # `tenant_session`, whose RLS-scoping `app.tenant_id` GUC is
-    # `SET LOCAL` (transaction-scoped, per db/session.py); a commit in
-    # between ends that transaction and drops the GUC, so the raw-SQL
-    # append below would run unbound and get RLS-rejected (see project
-    # note: "Tenant GUC dies at commit"). An explicit flush -- not a
-    # commit -- sends the pending ORM `context = ctx` UPDATE ahead of the
-    # raw-SQL append while staying in the same transaction; append_tool_call's
-    # own `_adopt()` overwrites this session's in-memory `run.context` with
-    # whatever it read back, so if that read happened before this write
-    # landed, the flush's changes would be silently lost from the ORM's view
-    # (even though the DB row itself would still be correct) -- one commit
-    # at the end covers both writes atomically, in the GUC's own transaction.
+    # _live_tool_call): the append lands after the context write-back above
+    # and MUST NOT be split from it by a commit -- `db` is a `tenant_session`,
+    # whose RLS-scoping `app.tenant_id` GUC is `SET LOCAL` (transaction-scoped,
+    # per db/session.py); a commit in between would drop the GUC and the
+    # raw-SQL append below would run unbound and get RLS-rejected (see project
+    # note: "Tenant GUC dies at commit"). The write-back is itself a single
+    # SQL statement, so both writes are ordered within the one transaction and
+    # one commit at the end covers both. The flush only sends whatever other
+    # ORM changes this request made.
     await db.flush()
     live_call: dict[str, Any] = {
         "tool": tc.name,

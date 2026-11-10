@@ -80,6 +80,7 @@ import {
 } from "@/lib/hooks";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { CredentialPicker } from "@/components/credential-picker";
+import { DiscussWithCopilot } from "@/components/conversation/discuss-with-copilot";
 import type { GuardrailValue } from "@/components/guardrail-preset-picker";
 import { ToolGuardrailTable, describeGuardrailSaveError } from "@/components/tool-guardrail-table";
 import {
@@ -117,13 +118,14 @@ import { type Skill } from "@/lib/skills";
 import { AgentPublishBar } from "@/components/agent-publish-bar";
 import { AgentVersionsTab } from "@/components/agent-versions-tab";
 import { AgentRuntimePanel } from "@/components/agent-runtime-panel";
-import { ChatWindow } from "@/components/chat-window";
+import { LiveTimeline } from "@/components/conversation/live-timeline";
+import { urlId } from "@/lib/ids";
 import { ComponentGrantPanel } from "@/components/component-grant-panel";
 import { InlineRename } from "@/components/inline-rename";
 import { AgentInstructionsPanel } from "@/components/agent-instructions-panel";
 import { KnowledgeAssignment } from "@/components/knowledge-assignment";
 import { MemoryPanel } from "@/components/memory-panel";
-import { RUN_COMPONENT_REGISTRY } from "@/components/run-record-card";
+import { RunComponents } from "@/components/run-record-card";
 import { RunFailureReason, RunModelSteps } from "@/components/run-reasoning";
 import { AgentToolAccessPanel } from "@/components/connections/agent-tool-access";
 import { ConnectionRequiredNotice } from "@/components/connections/connection-required-notice";
@@ -155,7 +157,20 @@ function mapAgentStatus(s: string): AgentStatus {
   return "paused";
 }
 
+export interface AgentSearch {
+  /** The tab to open; the old "chat" tab is now "live". */
+  tab?: TabId;
+  /** A run for the Live Log ("Technical view" on the Live tab). */
+  runId?: string;
+}
+
 export const Route = createFileRoute("/agents/$id")({
+  validateSearch: (search: Record<string, unknown>): AgentSearch => {
+    const raw = search.tab === "chat" ? "live" : search.tab;
+    const tab = TAB_IDS.find((id) => id === raw);
+    const runId = urlId(search.runId);
+    return { ...(tab ? { tab } : {}), ...(runId ? { runId } : {}) };
+  },
   component: AgentDetail,
   notFoundComponent: () => (
     <div className="p-8 text-center text-muted-foreground">Agent not found.</div>
@@ -167,7 +182,7 @@ const TAB_IDS = [
   "instructions",
   "guardrails",
   "livelog",
-  "chat",
+  "live",
   "files",
   "config",
   "skills",
@@ -177,19 +192,16 @@ const TAB_IDS = [
 ] as const;
 type TabId = (typeof TAB_IDS)[number];
 
-function initialTab(): TabId {
-  const wanted = new URLSearchParams(window.location.search).get("tab");
-  return (TAB_IDS as readonly string[]).includes(wanted ?? "") ? (wanted as TabId) : "overview";
-}
-
 function AgentDetail() {
   const t = useT();
-  const { id } = Route.useParams();
+  // Not a UUID: nothing is fetched and the page says the agent wasn't found.
+  const { id: rawId } = Route.useParams();
+  const id = urlId(rawId) ?? "";
   const { data: agent, isLoading } = useAgent(id);
   // Suppress toasts (Toast v2) for events about this agent while its Live Log
   // is open — the user is already watching it live.
   useEffect(() => {
-    setViewedAgent(id);
+    setViewedAgent(id || null);
     return () => setViewedAgent(null);
   }, [id]);
   // KB-assignment picker for this agent, not a paginated list view.
@@ -204,12 +216,30 @@ function AgentDetail() {
   // skill-assign button, and the model select.
   const mayManage = useMayManageAgent()(agent?.departmentId);
   const renameAgent = useRenameAgent();
-  // `?tab=` (e.g. a run's "check access" link) is read once on arrival.
-  const [tab, setTab] = useState<TabId>(initialTab);
+  const search = Route.useSearch();
+  const [tab, setTab] = useState<TabId>(search.tab ?? "overview");
   // Id of the most recently enqueued run for this agent (drives the Live Log
   // transcript below via useRun). Resets on page load — the user re-runs to
   // reattach to a fresh run; older runs remain visible in History.
-  const [runId, setRunId] = useState<string | null>(null);
+  const [runId, setRunId] = useState<string | null>(search.runId ?? null);
+  // A link into this page (the Live tab's "Technical view") picks the tab
+  // and the run, also when the page is already open.
+  useEffect(() => {
+    if (search.tab) setTab(search.tab);
+    if (search.runId) setRunId(search.runId);
+  }, [search.tab, search.runId]);
+  const navigate = useNavigate();
+  /** A tab click also goes into the address bar, so a stale ?tab= never
+   *  lingers and the same "Technical view" link works again. */
+  function selectTab(next: TabId) {
+    setTab(next);
+    void navigate({
+      to: "/agents/$id",
+      params: { id: rawId },
+      search: { tab: next },
+      replace: true,
+    });
+  }
   const [runPickerOpen, setRunPickerOpen] = useState(false);
   const [runTask, setRunTask] = useState("");
   // Which knowledge bases are enabled directly on this agent. Seeded from the
@@ -265,7 +295,7 @@ function AgentDetail() {
     { id: "instructions", label: t("Instructions", "Anweisungen") },
     { id: "guardrails", label: t("Tools & Access", "Tools & Zugriff") },
     { id: "livelog", label: t("Live Log", "Live-Log") },
-    { id: "chat", label: t("Chat", "Chat") },
+    { id: "live", label: t("Live", "Live") },
     { id: "files", label: t("Files", "Dateien") },
     { id: "config", label: t("Configuration", "Konfiguration") },
     { id: "skills", label: t("Skills", "Skills") },
@@ -360,6 +390,7 @@ function AgentDetail() {
           <div className="flex shrink-0 items-center gap-2">
             <HeaderStatusPill agentId={agent.id} status={status} runId={runId} />
             <DeleteAgentButton agent={agent} mayManage={mayManage} />
+            <DiscussWithCopilot kind="agent" id={agent.id} label={agent.name} />
             <button
               type="button"
               onClick={() => setRunPickerOpen(true)}
@@ -444,7 +475,7 @@ function AgentDetail() {
         {tabs.map((tb) => (
           <button
             key={tb.id}
-            onClick={() => setTab(tb.id)}
+            onClick={() => selectTab(tb.id)}
             className={cn(
               "-mb-px border-b-2 px-4 py-2 text-sm transition",
               tab === tb.id
@@ -471,11 +502,11 @@ function AgentDetail() {
         />
       )}
 
-      {tab === "chat" && (
-        <ChatWindow
+      {tab === "live" && (
+        <LiveTimeline
           key={agent.id}
           agentId={agent.id}
-          agentName={agent.name}
+          departmentId={agent.departmentId ?? null}
           promptStarters={agent.promptStarters ?? []}
         />
       )}
@@ -750,13 +781,13 @@ function AgentKnowledgeSection({
       {
         onSuccess: () => {
           setPickerOpen(false);
-          toast.success(t("Knowledge base assigned", "Wissensbasis zugewiesen"), {
+          toast.success(t("Knowledge base assigned", "Wissensdatenbank zugewiesen"), {
             description: `${kb.name} → ${agentName}`,
           });
         },
         onError: () =>
           toast.error(
-            t("Couldn't assign knowledge base", "Wissensbasis konnte nicht zugewiesen werden"),
+            t("Couldn't assign knowledge base", "Wissensdatenbank konnte nicht zugewiesen werden"),
             { description: kb.name },
           ),
       },
@@ -775,7 +806,7 @@ function AgentKnowledgeSection({
           disabled={!mayManage}
           className="inline-flex shrink-0 items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          <Plus className="h-4 w-4" /> {t("Assign knowledge base", "Wissensbasis zuweisen")}
+          <Plus className="h-4 w-4" /> {t("Assign knowledge base", "Wissensdatenbank zuweisen")}
         </button>
       </div>
       <KnowledgeAssignment
@@ -803,7 +834,7 @@ function AgentKnowledgeSection({
                   {t("Knowledge library", "Wissens-Bibliothek")}
                 </div>
                 <h2 className="font-serif text-xl">
-                  {t("Assign knowledge base", "Wissensbasis zuweisen")}
+                  {t("Assign knowledge base", "Wissensdatenbank zuweisen")}
                 </h2>
               </div>
               <button
@@ -819,7 +850,7 @@ function AgentKnowledgeSection({
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder={t("Search knowledge bases…", "Wissensbasen durchsuchen…")}
+                placeholder={t("Search knowledge bases…", "Wissensdatenbanken suchen…")}
                 className="w-full rounded-md border border-border bg-background/40 py-2 pl-8 pr-3 text-sm outline-none focus:border-primary/50"
               />
             </div>
@@ -829,11 +860,11 @@ function AgentKnowledgeSection({
                   {assignable.length === 0
                     ? t(
                         "All knowledge bases are already linked.",
-                        "Alle Wissensbasen sind bereits verknüpft.",
+                        "Alle Wissensdatenbanken sind bereits verknüpft.",
                       )
                     : t(
                         "No knowledge bases match your search.",
-                        "Keine Wissensbasen passen zur Suche.",
+                        "Keine Wissensdatenbanken passen zur Suche.",
                       )}
                 </div>
               )}
@@ -2389,7 +2420,7 @@ function WorkspaceFilesPanel({ agentId }: { agentId: string }) {
               <div className="py-10 text-center text-xs text-muted-foreground">
                 {t(
                   "No inline preview for this file type -- download it instead.",
-                  "Keine Inline-Vorschau für diesen Dateityp -- bitte herunterladen.",
+                  "Keine Inline-Vorschau für diesen Dateityp — lade die Datei herunter.",
                 )}
               </div>
             ) : (
@@ -2604,7 +2635,7 @@ export function LiveLog({
                 <StopCircle className="h-3.5 w-3.5" />
                 {alreadyRequestedCancel
                   ? t("Cancelling…", "Wird abgebrochen…")
-                  : t("Stop", "Abbrechen")}
+                  : t("Stop", "Stoppen")}
               </button>
             )}
             <RunPinnedVersion
@@ -2682,19 +2713,7 @@ function RunTranscript({ run, pending }: { run: RunDTO | undefined; pending: boo
       {run.transcript && run.transcript.length > 0 && (
         <LiveTranscriptPane transcript={run.transcript} live={!isTerminalRunState(run.state)} />
       )}
-      {run.components && run.components.length > 0 && (
-        <div className="space-y-2">
-          {run.components.map((c, i) => {
-            const Renderer = Object.prototype.hasOwnProperty.call(
-              RUN_COMPONENT_REGISTRY,
-              c.componentKey,
-            )
-              ? RUN_COMPONENT_REGISTRY[c.componentKey]
-              : undefined;
-            return Renderer ? <Renderer key={i} props={c.props} /> : null;
-          })}
-        </div>
-      )}
+      <RunComponents components={run.components} />
       {run.todos && run.todos.length > 0 && <RunTodoList todos={run.todos} />}
       <div className="max-h-[360px] min-h-[160px] overflow-auto rounded-md border border-border bg-background/60 p-3 font-mono text-[12px] leading-relaxed">
         {run.toolCalls.length === 0 ? (

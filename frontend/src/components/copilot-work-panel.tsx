@@ -13,10 +13,12 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { DiscussWithCopilot } from "@/components/conversation/discuss-with-copilot";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useCancelRun, type RunDTO } from "@/lib/hooks";
+import { stateLabel } from "@/lib/run-state";
 import {
   copilotKeys,
   useCopilotDelegations,
@@ -102,23 +104,6 @@ function cronWords(t: ReturnType<typeof useT>, cron: string, lang: string): stri
   return cron;
 }
 
-function stateLabel(t: ReturnType<typeof useT>, state: string): string {
-  switch (state) {
-    case "active":
-      return t("active", "aktiv");
-    case "waiting":
-      return t("waiting", "wartet");
-    case "paused":
-      return t("paused", "pausiert");
-    case "done":
-      return t("done", "erledigt");
-    case "cancelled":
-      return t("cancelled", "abgebrochen");
-    default:
-      return state;
-  }
-}
-
 function skipReasonLabel(t: ReturnType<typeof useT>, reason: string): string {
   switch (reason) {
     case "busy":
@@ -169,7 +154,7 @@ function ResponsibilityRow({ r }: { r: ResponsibilityDTO }) {
           {t("Updated", "Aktualisiert")} {updated}
         </p>
       )}
-      <div className="flex flex-wrap gap-1.5 pt-1">
+      <div className="flex flex-wrap items-center gap-1.5 pt-1">
         <Button
           size="sm"
           variant="outline"
@@ -210,6 +195,7 @@ function ResponsibilityRow({ r }: { r: ResponsibilityDTO }) {
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
+        <DiscussWithCopilot kind="responsibility" id={r.id} label={r.title} variant="link" />
       </div>
     </div>
   );

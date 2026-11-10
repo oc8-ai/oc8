@@ -1,6 +1,9 @@
 import { createContext, useContext, type ComponentType, type ReactNode } from "react";
+import { useCallerCapabilities } from "@/lib/governance-hooks";
 import type {
+  Capability,
   EditionBanner,
+  EditionChatContributions,
   EditionHomeSection,
   EditionNavigationItem,
   EditionOnboarding,
@@ -8,6 +11,21 @@ import type {
   EditionSidebarSlotProps,
   FrontendEditionExtension,
 } from "./contracts";
+
+export type ComposedChat = {
+  readonly [K in keyof EditionChatContributions]-?: NonNullable<EditionChatContributions[K]>;
+};
+
+const EMPTY_CHAT: ComposedChat = {
+  composerActions: [],
+  composerPickers: [],
+  messageParts: [],
+  messageActions: [],
+  chatSidebarSections: [],
+  chatHeaderActions: [],
+  sidePanels: [],
+  globalProviders: [],
+};
 
 export interface FrontendEditionComposition {
   readonly navigation: readonly EditionNavigationItem[];
@@ -19,6 +37,7 @@ export interface FrontendEditionComposition {
   readonly sidebarHeader: ComponentType<EditionSidebarSlotProps> | null;
   readonly sidebarFooter: ComponentType<EditionSidebarSlotProps> | null;
   readonly profileSections: readonly EditionProfileSection[];
+  readonly chat: ComposedChat;
   readonly homeSections: readonly EditionHomeSection[];
 }
 
@@ -76,6 +95,7 @@ const emptyComposition: FrontendEditionComposition = {
   sidebarHeader: null,
   sidebarFooter: null,
   profileSections: [],
+  chat: EMPTY_CHAT,
   homeSections: [],
 };
 
@@ -97,6 +117,17 @@ export function composeFrontendEdition(
   let sidebarFooter: ComponentType<EditionSidebarSlotProps> | null = null;
   const profileSectionIds = new Set<string>();
   const profileSections: EditionProfileSection[] = [];
+  const chat: { -readonly [K in keyof ComposedChat]: ComposedChat[K][number][] } = {
+    composerActions: [],
+    composerPickers: [],
+    messageParts: [],
+    messageActions: [],
+    chatSidebarSections: [],
+    chatHeaderActions: [],
+    sidePanels: [],
+    globalProviders: [],
+  };
+  const chatIds = new Set<string>();
   const homeSectionIds = new Set<string>();
   const homeSections: EditionHomeSection[] = [];
 
@@ -136,6 +167,14 @@ export function composeFrontendEdition(
       profileSectionIds.add(section.id);
       profileSections.push(section);
     }
+    for (const slot of Object.keys(chat) as (keyof ComposedChat)[]) {
+      for (const entry of extension.chat?.[slot] ?? []) {
+        const key = `${slot}:${entry.id}`;
+        if (chatIds.has(key)) throw new Error(`Duplicate chat slot entry: ${key}`);
+        chatIds.add(key);
+        (chat[slot] as unknown[]).push(entry);
+      }
+    }
     for (const section of extension.homeSections ?? []) {
       if (homeSectionIds.has(section.id))
         throw new Error(`Duplicate edition home section: ${section.id}`);
@@ -153,6 +192,7 @@ export function composeFrontendEdition(
     sidebarHeader,
     sidebarFooter,
     profileSections,
+    chat,
     homeSections,
   };
 }
@@ -205,4 +245,26 @@ export function EditionCompositionProvider({
 
 export function useFrontendEdition(): FrontendEditionComposition {
   return useContext(EditionCompositionContext);
+}
+
+/** Spec §6.2: does the caller hold this capability? Known capabilities decide;
+ *  while unknown (still loading), what a composed extension declares counts --
+ *  so Community (no extensions) holds nothing. */
+// eslint-disable-next-line react-refresh/only-export-components
+export function useHasCapability(cap: Capability): boolean {
+  const known = useCallerCapabilities();
+  const { capabilities } = useFrontendEdition();
+  return known !== null ? known.includes(cap) : capabilities.has(cap);
+}
+
+/** The entries of a chat slot whose `needs` the caller all holds. */
+// eslint-disable-next-line react-refresh/only-export-components
+export function useChatSlot<K extends keyof ComposedChat>(slot: K): ComposedChat[K] {
+  const known = useCallerCapabilities();
+  const composition = useFrontendEdition();
+  const holds = (cap: Capability) =>
+    known !== null ? known.includes(cap) : composition.capabilities.has(cap);
+  return composition.chat[slot].filter((entry) =>
+    (entry.needs ?? []).every(holds),
+  ) as ComposedChat[K];
 }

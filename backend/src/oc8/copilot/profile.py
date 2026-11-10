@@ -198,7 +198,9 @@ async def offboard_member(db: AsyncSession, *, tenant_id: uuid.UUID, member_id: 
             m.CopilotProfile.tenant_id == tenant_id, m.CopilotProfile.member_id == member_id
         )
     )
+    from oc8.chat.projects import delete_member_projects
     from oc8.copilot.notes import delete_member_notes
 
     await delete_member_notes(db, tenant_id=tenant_id, member_id=member_id)
+    await delete_member_projects(db, tenant_id=tenant_id, member_id=member_id)
     await db.flush()

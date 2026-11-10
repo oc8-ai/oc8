@@ -6,6 +6,7 @@ import json
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from asgi_lifespan import LifespanManager
@@ -1107,3 +1108,84 @@ async def test_review_of_a_missing_proposal_id_is_a_tool_error_not_a_500(
     body = r.json()["result"]
     assert body["isError"] is True
     assert "not found" in body["content"][0]["text"]
+
+
+async def _call_tool(
+    c: AsyncClient, token: str, name: str, arguments: dict[str, Any]
+) -> dict[str, Any]:
+    response = await c.post(
+        "/mcp/external",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": arguments},
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200, response.text
+    result: dict[str, Any] = response.json()["result"]
+    return result
+
+
+async def _builder_proposal(app_session: AppSessionFactory, tenant: uuid.UUID) -> str:
+    """A member's agent-builder draft (Ruling A10: fenced off every generic
+    proposal tool here)."""
+    from tests.copilot.builder_helpers import builder_office, propose_as_admin
+
+    async with app_session(tenant) as db:
+        office = await builder_office(db, tenant)
+        proposal = await propose_as_admin(db, office)
+        return str(proposal.id)
+
+
+async def test_list_proposals_leaves_builder_proposals_out(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant, token = await _admin_setup(app_session)
+    await _builder_proposal(app_session, tenant)
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            listed = await _call_tool(c, token, "copilot_list_proposals", {})
+    assert json.loads(listed["content"][0]["text"]) == []
+
+
+async def test_review_proposal_does_not_find_a_builder_proposal(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant, token = await _admin_setup(app_session)
+    builder_id = await _builder_proposal(app_session, tenant)
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            reviewed = await _call_tool(
+                c, token, "copilot_review_proposal", {"proposalId": builder_id}
+            )
+    assert reviewed["isError"] is True
+    assert reviewed["content"][0]["text"] == "proposal not found"
+
+
+@pytest.mark.parametrize(
+    ("tool", "refusal"),
+    [
+        ("copilot_apply_proposal", "copilot proposal cannot be applied"),
+        ("copilot_reject_proposal", "copilot proposal cannot be rejected"),
+    ],
+)
+async def test_apply_and_reject_proposal_refuse_a_builder_proposal(
+    app_session: AppSessionFactory, tool: str, refusal: str
+) -> None:
+    tenant, token = await _admin_setup(app_session)
+    builder_id = await _builder_proposal(app_session, tenant)
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            answered = await _call_tool(c, token, tool, {"proposalId": builder_id})
+    assert answered["isError"] is True
+    assert answered["content"][0]["text"] == refusal
+    async with app_session(tenant) as db:
+        from oc8.copilot.models import CopilotProposal
+
+        proposal = await db.get(CopilotProposal, uuid.UUID(builder_id))
+        assert proposal is not None and proposal.status == "draft"

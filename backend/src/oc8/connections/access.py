@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agents.versioning import snapshot_agent
-from oc8.connections.acting import ActingPerson, resolve_acting_person
+from oc8.connections.acting import ACTING_PERSON_WITHHELD, ActingPerson, resolve_acting_person
 from oc8.connections.integrations import (
     Integration,
     integration_enabled,
@@ -65,6 +65,13 @@ class ConnectionRequired(Exception):
                 f"connection_required: nobody is working with this run, "
                 f"so {what} cannot be chosen. "
                 "An administrator can give this agent a fixed access."
+            )
+        if self.reason == "personal_account_withheld":
+            return (
+                "connection_required: this run acts for nobody because the run it came from "
+                "withheld its person (for example a decision with someone else's instruction), "
+                f"so it may not use the personal {self.integration.label} account of this "
+                "agent's fixed access. Only an organisation account can be used here."
             )
         if self.reason == "needs_reauth":
             return (
@@ -365,6 +372,19 @@ async def _consented(
     return owner is None or await _trigger_owner_ok(db, run, owner)
 
 
+def _refuse_withheld_personal(
+    run: m.AgentRun, integration: Integration, owner: uuid.UUID | None
+) -> None:
+    """A run whose person was withheld (an approver's own words, and every
+    delegation or wake-up carried from it) acts for nobody on purpose: a fixed
+    binding must not hand it a member's own account through the back door.
+    An organisation account stays usable. A run that acts for nobody for
+    another reason (a schedule, a webhook) keeps the binding's consent rules."""
+    ctx = run.context if isinstance(run.context, dict) else {}
+    if owner is not None and ctx.get(ACTING_PERSON_WITHHELD):
+        raise ConnectionRequired(integration, "personal_account_withheld")
+
+
 async def _fixed(
     db: AsyncSession,
     row: m.AgentToolAccess,
@@ -377,6 +397,7 @@ async def _fixed(
     if integration.kind == "oauth" and row.oauth_connection_id is not None:
         target = await db.get(m.OAuthConnection, row.oauth_connection_id)
         if target is not None and target.provider == integration.provider:
+            _refuse_withheld_personal(run, integration, target.owner_member_id)
             if target.status != "active":
                 raise ConnectionRequired(integration, "needs_reauth")
             if not await _consented(
@@ -388,6 +409,7 @@ async def _fixed(
     if integration.kind == "credential" and row.credential_id is not None:
         cred = await db.get(m.Credential, row.credential_id)
         if cred is not None and cred.credential_type == integration.credential_type:
+            _refuse_withheld_personal(run, integration, cred.owner_member_id)
             if not await _consented(db, row, agent, run, tool_key, cred.id, cred.owner_member_id):
                 raise ConnectionRequired(integration, "binding_needs_confirmation")
             await _require_schedule_confirmed(db, run, integration, cred.owner_member_id)

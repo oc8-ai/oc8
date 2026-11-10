@@ -18,11 +18,14 @@ from oc8.api.v1 import (
     catalog,
     channels,
     chat,
+    chat_context,
+    chat_live,
     clarifications,
     components,
     connections,
     contracts,
     copilot,
+    copilot_builder,
     copilot_member,
     credentials,
     dashboard,
@@ -47,6 +50,7 @@ from oc8.api.v1 import (
     reports,
     roles,
     run,
+    run_inputs,
     runtimes,
     secrets,
     settings,
@@ -72,6 +76,7 @@ api_router.include_router(model_prices.router, tags=["catalog"])
 api_router.include_router(reconciliation.router, tags=["catalog"])
 api_router.include_router(channels.router, tags=["channels"])
 api_router.include_router(chat.router, tags=["chat"])
+api_router.include_router(chat_context.router, tags=["chat"])
 api_router.include_router(files.router, tags=["files"])
 api_router.include_router(skills_write.router, tags=["skills"])
 api_router.include_router(budgets.router, tags=["budgets"])
@@ -91,6 +96,8 @@ api_router.include_router(connections.router, tags=["connections"])
 api_router.include_router(capas.router, tags=["capas"])
 api_router.include_router(roles.router, tags=["roles"])
 api_router.include_router(run.router, tags=["run"])
+api_router.include_router(run_inputs.router, tags=["run"])
+api_router.include_router(chat_live.router, tags=["chat"])
 api_router.include_router(reports.router, tags=["reports"])
 api_router.include_router(runtimes.router, tags=["runtimes"])
 # internal_agent is deliberately NOT included here: the operator API refuses
@@ -103,6 +110,7 @@ api_router.include_router(handoffs.router, tags=["handoffs"])
 api_router.include_router(contracts.router, tags=["contracts"])
 api_router.include_router(copilot.router, tags=["copilot"])
 api_router.include_router(copilot_member.router, tags=["copilot"])
+api_router.include_router(copilot_builder.router, tags=["copilot"])
 api_router.include_router(flows.router, tags=["flows"])
 api_router.include_router(governance.router, tags=["governance"])
 api_router.include_router(triggers.router, tags=["triggers"])

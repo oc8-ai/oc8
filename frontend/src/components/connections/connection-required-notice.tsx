@@ -70,6 +70,17 @@ export function ConnectionRequiredNotice({
       target = agentId ? "agent" : null;
       linkLabel = t("Check access →", "Zugang prüfen →");
       break;
+    case "personal_account_withheld":
+      // A run that deliberately acts for nobody (e.g. a decision carrying
+      // someone else's instruction) may not use a member's own account,
+      // even through a fixed access. An organisation account would do.
+      text = t(
+        `This run acts for nobody, so it may not use the personal account in this agent's fixed access to ${value.label}.`,
+        `Dieser Lauf handelt für niemanden und darf daher das persönliche Konto aus dem festen Zugang dieses Agenten zu ${value.label} nicht nutzen.`,
+      );
+      target = agentId ? "agent" : null;
+      linkLabel = t("Check access →", "Zugang prüfen →");
+      break;
     case "not_configured":
       text = t(
         `No access to ${value.label} is set up yet.`,
@@ -95,7 +106,7 @@ export function ConnectionRequiredNotice({
         </Link>
       )}
       {target === "agent" && agentId && (
-        // The agent page reads `?tab=` once on arrival (agents.$id.tsx).
+        // The agent page reads `?tab=` on arrival (validateSearch, agents.$id.tsx).
         <Link
           to="/agents/$id"
           params={{ id: agentId }}

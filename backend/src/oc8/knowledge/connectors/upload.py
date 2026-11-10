@@ -6,7 +6,10 @@ from typing import Any
 
 from oc8.knowledge.connectors.base import (
     AuthContext,
+    BrowseEntry,
     Connector,
+    ConnectorError,
+    FetchedFile,
     RawDocument,
     SourceItemMeta,
     ValidationResult,
@@ -54,6 +57,57 @@ class UploadConnector:
             content=content,
             content_type=str(config["content_type"]),
             content_hash=hashlib.sha256(content.encode()).hexdigest(),
+        )
+
+    async def browse(
+        self, config: dict[str, Any], path: str, auth: AuthContext | None = None
+    ) -> list[BrowseEntry]:
+        """An upload source is a single file at its root."""
+        if path.strip("/"):
+            return []
+        content = str(config.get("content", ""))
+        filename = str(config.get("filename", ""))
+        if not filename:
+            return []
+        return [
+            BrowseEntry(
+                id=filename,
+                name=filename,
+                is_folder=False,
+                size=len(content.encode()),
+                content_type=str(config.get("content_type", "")) or None,
+            )
+        ]
+
+    async def in_scope(
+        self, config: dict[str, Any], file_id: str, auth: AuthContext | None = None
+    ) -> bool:
+        """An upload source exposes exactly its one file."""
+        filename = str(config.get("filename", ""))
+        return bool(filename) and file_id == filename
+
+    async def fetch_file(
+        self,
+        config: dict[str, Any],
+        file_id: str,
+        max_bytes: int,
+        auth: AuthContext | None = None,
+    ) -> FetchedFile:
+        filename = str(config.get("filename", ""))
+        if not filename or file_id != filename:
+            raise ConnectorError("no such file in this source")
+        content = str(config.get("content", ""))
+        # len(content) <= bytes, and >= bytes / 4: refuse before encoding.
+        if len(content) > max_bytes:
+            raise ConnectorError(f"file is too large to pin (limit {max_bytes} bytes)")
+        data = content.encode()
+        if len(data) > max_bytes:
+            raise ConnectorError(f"file is too large to pin (limit {max_bytes} bytes)")
+        return FetchedFile(
+            name=file_id,
+            content_type=str(config.get("content_type", "")) or "text/plain",
+            data=data,
+            text=content,
         )
 
 

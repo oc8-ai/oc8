@@ -178,6 +178,37 @@ class ApprovalDTO(CamelModel):
     reason_context: dict[str, Any] | None = None
     #: The record in the source system, when the held call names one.
     record_url: str | None = None
+    #: The builder proposal a `copilot.agent_builder` approval decides, so the
+    #: pane can show the same preview read-only. None for every other kind.
+    proposal_id: str | None = None
+
+
+class QuestionOptionDTO(CamelModel):
+    key: str
+    label: str
+    detail: str = ""
+
+
+class QuestionDTO(CamelModel):
+    """One structured `ask_user` question (spec §4.1)."""
+
+    id: str
+    prompt: str
+    kind: str  # single | multi | text
+    options: list[QuestionOptionDTO] = []
+    allow_other: bool = False
+    required: bool = True
+
+
+class PendingQuestionDTO(CamelModel):
+    """What the chat's active run is parked on, for the question card.
+
+    `questions` is empty for a plain question: `text` is then all there is."""
+
+    clarification_id: str
+    run_id: str
+    text: str
+    questions: list[QuestionDTO] = []
 
 
 class ClarificationDTO(CamelModel):
@@ -200,6 +231,9 @@ class ClarificationDTO(CamelModel):
     question: str
     status: str  # open | answered
     created_at: str = ""
+    #: The structured questions behind `question` (spec §4.1); empty for a
+    #: plain question.
+    questions: list[QuestionDTO] = []
 
 
 class TaskBoardRowDTO(CamelModel):
@@ -391,6 +425,8 @@ class ModelDTO(CamelModel):
     #: Free-form raw parameters forwarded verbatim; see ModelConfigWrite.extra.
     extra: dict[str, Any] | None = None
     used_by_copilot: bool = False
+    #: Whether members may pick this model in a chat (`oc8.chat.model_choice`).
+    chat_enabled: bool = True
     credential_id: str | None = None
     #: Set only when `status` is "error"/"unknown" -- the real reason from
     #: the last POST /models/{id}/test check (see catalog.py).
@@ -1176,12 +1212,143 @@ class RunSummaryDTO(CamelModel):
     failure_reason: str | None = None
 
 
+class ActiveRunDTO(CamelModel):
+    run_id: str
+    reply_to_id: str | None = None
+    state: str
+
+
+class ContextRefViewDTO(CamelModel):
+    """A pinned ref as the caller sees it now. `available` is False when the
+    caller can no longer see it; the label is then the one stored at pin time."""
+
+    kind: str
+    id: str
+    label: str
+    available: bool
+
+
 class ChatSessionDTO(CamelModel):
     id: str
     agent_id: str
     title: str
     created_at: str
     last_message_at: str | None = None
+    model_override_id: str | None = None
+    kind: str = "chat"
+    active_runs: list[ActiveRunDTO] = []
+    #: True when the caller sees this chat through a read-only share (C5).
+    read_only: bool = False
+    #: The question this chat's active run is parked on, if any (spec §4.1).
+    pending_question: PendingQuestionDTO | None = None
+    task_id: str | None = None
+    #: The chat's pinned context, re-checked for the caller. Filled on the
+    #: single-chat routes; the list leaves it empty.
+    pinned_refs: list[ContextRefViewDTO] = []
+    project_id: str | None = None
+    #: Pinned chats list first.
+    pinned: bool = False
+    #: The sticky mode this chat is in ("agent"), or None.
+    mode: str | None = None
+
+
+class BuilderChoiceDTO(CamelModel):
+    id: str
+    label: str
+
+
+class BuilderTriggerDTO(CamelModel):
+    kind: str  # cron | event
+    cron_expression: str | None = None
+    event_source: str | None = None
+    event_type: str | None = None
+    task_text: str = ""
+
+
+class BuilderLimitDTO(CamelModel):
+    connection_name: str
+    function: str
+    decision: str
+
+
+class BuilderAgentDTO(CamelModel):
+    id: str
+    name: str
+    status: str
+
+
+class AgentBuilderDTO(CamelModel):
+    """One "Agent anlegen" card (Copilot Agent Builder §3.3). The mission is
+    the member's own content in their own chat: the owner and the approver
+    deciding about exactly that text read it; any other reader gets it blank."""
+
+    id: str
+    status: str  # draft | awaiting_approval | applied | rejected | expired | superseded
+    session_id: str | None = None
+    department_id: str
+    department_name: str = ""
+    name: str
+    role_title: str = ""
+    mission: str = ""
+    model: BuilderChoiceDTO | None = None
+    skills: list[BuilderChoiceDTO] = []
+    triggers: list[BuilderTriggerDTO] = []
+    systems: list[str] = []
+    limits: list[BuilderLimitDTO] = []
+    expires_at: str | None = None
+    #: The caller may press "Anlegen" now.
+    may_create: bool = False
+    #: The caller may press "Zur Freigabe senden" now.
+    may_request: bool = False
+    #: The caller is not the owner (an approver or reviewer reading it).
+    read_only: bool = False
+    #: Why the last apply was refused (`agent_builder` code), and at which step.
+    refusal: str | None = None
+    failed_step: int | None = None
+    rejected_reason: str | None = None
+    agent: BuilderAgentDTO | None = None
+
+
+class ContextSearchItemDTO(CamelModel):
+    """One `#` search hit. The member's own picker, not the model's context:
+    restricted items may appear here."""
+
+    kind: str
+    id: str
+    label: str
+    hint: str | None = None
+    #: False for a data source that is not connected.
+    connected: bool = True
+
+
+class BrowseEntryDTO(CamelModel):
+    id: str
+    name: str
+    is_folder: bool
+    size: int | None = None
+    content_type: str | None = None
+
+
+class BrowseListingDTO(CamelModel):
+    entries: list[BrowseEntryDTO]
+    #: True when the source holds more entries than are listed.
+    truncated: bool
+
+
+class ChatProjectDTO(CamelModel):
+    id: str
+    name: str
+    instructions: str
+    pinned_refs: list[ContextRefViewDTO]
+    created_at: str
+
+
+class ChatModelOptionDTO(CamelModel):
+    id: str | None
+    label: str
+    provider: str
+    locality: str
+    is_default: bool
 
 
 class FileAttachmentDTO(CamelModel):
@@ -1213,6 +1380,8 @@ class ChatModeDTO(CamelModel):
     summary: str
     allows_tools: bool
     allows_writes: bool
+    #: Stays on the chat after the turn that set it (`PUT .../mode` keeps it).
+    sticky: bool = False
 
 
 class ChatMessageDTO(CamelModel):
@@ -1228,6 +1397,14 @@ class ChatMessageDTO(CamelModel):
     #: message. The composer renders it as a badge on the sent turn.
     mode: str | None = None
     context_refs: list[ChatContextRefDTO] = []
+    author_member_id: str | None = None
+    author_name: str | None = None
+    reply_to_id: str | None = None
+    #: Typed parts (e.g. `{"type": "answers", "questions": [...], "answers":
+    #: {...}}` for an answered question card). Null for plain-text turns.
+    parts: list[dict[str, Any]] | None = None
+    #: One-click replies from the `suggest_replies` part, derived for convenience.
+    suggestions: list[str] = []
 
 
 class ReportDTO(CamelModel):
@@ -1776,6 +1953,95 @@ class CopilotNoteDTO(CamelModel):
     created_at: datetime
 
 
+class RunInputDTO(CamelModel):
+    """A message written to a running run (spec §3.2)."""
+
+    id: str
+    text: str
+    author_name: str
+    created_at: str
+    consumed_at: str | None = None
+    consumed_step: int | None = None
+
+
+class RunSteeringDTO(CamelModel):
+    """What the composer under a running run may do: write to it (`may_write`
+    -- still running), and whether its runtime takes messages at all
+    (`accepts_inputs`; when not, the composer offers Stop instead)."""
+
+    may_write: bool
+    accepts_inputs: bool
+    inputs: list[RunInputDTO] = []
+
+
+class LiveTriggerDTO(CamelModel):
+    """The run's trigger line: `kind` is its source, `label` the name beside
+    it ("Delegated by <label>", "From <label>")."""
+
+    kind: str
+    label: str | None = None
+    #: A schedule's zone (IANA), so the client can say when it differs.
+    timezone: str | None = None
+
+
+class LiveRunDTO(CamelModel):
+    """A run on the Live timeline (spec §3.1). Deliberately no `task` and no
+    `context`: for a colleague's chat run that would be their message text.
+    For a colleague's run (under "All runs") `tool_calls`/`step_timings` are
+    cut to step labels (Ruling 15, `api/v1/chat_live.py`). Its `output`, the
+    final result, is kept and may quote their message -- deliberate: the spec
+    gives managers that run's result."""
+
+    id: str
+    state: str
+    source: str
+    created_at: str
+    trigger: LiveTriggerDTO
+    output: str | None = None
+    steps: int = 0
+    tool_calls: list[dict[str, Any]] = []
+    step_timings: list[dict[str, Any]] = []
+    started_by: str | None = None
+    #: A colleague's run under "All runs", cut to step labels (Ruling 15) --
+    #: the client shows it as labels only and never watches it live.
+    redacted: bool = False
+    #: The cards the run rendered (`context["rendered_components"]`), so they
+    #: outlive the live socket. Always empty for a `redacted` run.
+    rendered_components: list[RenderedComponentDTO] = []
+
+
+class LiveItemDTO(CamelModel):
+    kind: str
+    at: str
+    message: ChatMessageDTO | None = None
+    run: LiveRunDTO | None = None
+
+
+class LiveTimelineDTO(CamelModel):
+    """`next_before` is the cursor for the next older page, `None` at the
+    start of the timeline."""
+
+    session_id: str
+    items: list[LiveItemDTO]
+    next_before: str | None = None
+    may_view_all_runs: bool
+
+
 class CompleteOAuthDTO(CamelModel):
     connected: str
     connection: ConnectionDTO
+
+
+class LocalizedTextDTO(CamelModel):
+    en: str
+    de: str
+
+
+class AgentIdeaDTO(CamelModel):
+    """One agent idea for the empty Copilot chat. Both languages travel: the
+    texts are catalogue data, not UI strings the frontend's t() knows."""
+
+    key: str
+    title: LocalizedTextDTO
+    subtitle: LocalizedTextDTO
+    prompt: LocalizedTextDTO

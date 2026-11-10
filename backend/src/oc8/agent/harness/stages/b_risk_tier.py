@@ -29,6 +29,7 @@ _CONTROL_WRITE: frozenset[str] = frozenset(
         "run_shell",
         "run_program",
         "propose_change",
+        "propose_agent",
         "decide_approval",
     }
 )
@@ -51,6 +52,8 @@ _CONTROL_READ: frozenset[str] = frozenset(
         "agent_status",
         "budget_overview",
         "kpi_overview",
+        "builder_options",
+        "enter_agent_mode",
     }
 )
 
@@ -64,8 +67,8 @@ def _raise(current: RiskTier, floor: RiskTier) -> RiskTier:
     return floor if _RANK[floor] > _RANK[current] else current
 
 
-def _base_tier(tool: str, scopes: Mapping[str, Any] | list[Any] | None) -> RiskTier:
-    static = CONTROL_TOOL_TIERS.get(tool)
+def _base_tier(tool: str, scopes: Mapping[str, Any] | list[Any] | None, *, core: bool) -> RiskTier:
+    static = CONTROL_TOOL_TIERS.get(tool) if core else None
     if static is not None:
         return static
     return "read" if required_right(tool, scopes) == "read" else "write"
@@ -78,11 +81,16 @@ def classify_tier(
     config: dict[str, Any] | None,
     annotations: dict[str, Any] | None,
     arguments: dict[str, Any] | None = None,
+    core: bool = True,
 ) -> RiskTier:
-    """Classify one tool call. Higher sources never lower a tier."""
+    """Classify one tool call. Higher sources never lower a tier.
+
+    `core=False` says the name is a CONNECTION's tool even though it matches a
+    core one (`b_authorize.is_core_call`): it is tiered by its scopes, like any
+    other connection tool, never by the core tool's static tier."""
     from oc8.agent.outward import is_outward_skipped
 
-    tier = _base_tier(tool, scopes)
+    tier = _base_tier(tool, scopes, core=core)
 
     if annotations:
         if annotations.get("destructiveHint"):

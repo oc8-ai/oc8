@@ -11,6 +11,7 @@ from oc8.modelrouter.fallback import (
 )
 from oc8.modelrouter.router import (
     ClassificationViolation,
+    EmbeddingMustStayLocal,
     EmbeddingUnavailable,
     ModelRouter,
     get_model_router,
@@ -33,6 +34,7 @@ __all__ = [
     "CompletionChunk",
     "CompletionRequest",
     "CompletionResult",
+    "EmbeddingMustStayLocal",
     "EmbeddingUnavailable",
     "ModelRouter",
     "NeutralMessage",

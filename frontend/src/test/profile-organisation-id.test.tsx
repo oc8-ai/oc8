@@ -82,12 +82,12 @@ describe("Profile: organisation id", () => {
     expect(screen.queryByTestId("organisation-id")).toBeNull();
   });
 
-  it("speaks German with formal address", () => {
+  it("speaks German with du", () => {
     langRef.current = "de";
     wrap(<AccountPanel initialDisplayName="Ana" />);
 
     expect(screen.getByText(/Organisations-ID/)).toBeInTheDocument();
-    expect(screen.getByText("Bitte geben Sie sie bei Support-Anfragen an.")).toBeInTheDocument();
+    expect(screen.getByText("Gib sie bei Support-Anfragen an.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Organisations-ID kopieren" })).toBeInTheDocument();
   });
 });

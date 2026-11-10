@@ -6,6 +6,10 @@
 // it prevents is a NEW component reading `toolCalls` and putting a step into a
 // message list -- which no test of today's components can catch. Same shape as
 // the backend's own tests/architecture/test_import_boundaries.py.
+//
+// The one chat (spec 2026-11-08 §2.1) shows a turn's steps inline as one quiet
+// line each through `components/conversation/step-list.tsx`; no other
+// conversation file may read `toolCalls`.
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -16,18 +20,23 @@ const SRC = join(process.cwd(), "src");
 /** The only files allowed to read a run's tool-call records.
  *  - lib/run-steps.ts builds the view model,
  *  - components/run-step-timeline.tsx renders it,
- *  - components/copilot-run-activity.tsx + the two widgets mount it,
+ *  - the two widgets mount the shared timeline,
  *  - routes/agents.$id.tsx is the OPERATOR run drawer, a different surface
  *    with a different audience (see the spec's non-goals),
  *  - lib/live/apply-event.ts patches the cache,
- *  - lib/hooks*.ts declare the DTO field. */
+ *  - lib/hooks*.ts and lib/conversation-api.ts declare the DTO field,
+ *  - components/conversation/step-list.tsx is the one chat's inline steps,
+ *  - components/conversation/timeline-runs.ts hands a timeline run's steps
+ *    to step-list.tsx (the Live tab), the same cache entry the patchers fill. */
 const ALLOWED = new Set([
   "lib/run-steps.ts",
   "lib/hooks.ts",
   "lib/hooks-chat.ts",
+  "lib/conversation-api.ts",
   "lib/live/apply-event.ts",
   "components/run-step-timeline.tsx",
-  "components/copilot-run-activity.tsx",
+  "components/conversation/step-list.tsx",
+  "components/conversation/timeline-runs.ts",
   "components/dashboard/widgets/activity-widget.tsx",
   "components/dashboard/widgets/needs-me-widget.tsx",
   "routes/agents.$id.tsx",

@@ -351,6 +351,11 @@ class DockerIsolatedRuntime:
             agent_id=agent.id,
             status=status,
             output=str(result.get("output", "")),
+            # A structured ask_user's questions, in their own verdict field
+            # (internal_agent.py / mcp_gateway.py write it beside `output`).
+            pending_questions=(
+                list(result["questions"]) if isinstance(result.get("questions"), list) else None
+            ),
             steps=int((fresh.context.get("steps", 0)) if fresh is not None else 0),
             pending_runs=[uuid.UUID(str(r)) for r in pending_raw],
             rendered_components=list(rendered_components),
