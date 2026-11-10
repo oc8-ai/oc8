@@ -496,6 +496,10 @@ def _build_turn_context(
         context["chat_mode"] = mode.key
         context["task"] = task_text + "\n\n" + mode_directive(mode)
     kb_ids = [ref["id"] for ref in resolved_refs if ref.get("kind") == "knowledge_base"]
+    if manifest is not None:
+        # A data source attached to this message narrows to the bases it feeds,
+        # like a `#` knowledge base (`build_manifest` also releases them).
+        kb_ids += [kb for kb in manifest.message_kb_ids if kb not in kb_ids]
     if kb_ids:
         context["context_kb_ids"] = kb_ids
     if manifest is not None:
