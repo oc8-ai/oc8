@@ -42,7 +42,7 @@ from oc8.approvals import (
 from oc8.approvals.repo import load_for_actor, visible_approvals
 from oc8.audit import append_event
 from oc8.authz.authority import authority_for_member, tenant_wide_read
-from oc8.authz.pdp import Decision, Effect
+from oc8.authz.pdp import NOT_THIS_CONNECTION, Decision, Effect
 from oc8.authz.permissions import AGENT, APPROVAL, BUDGET, DEPARTMENT, STATISTICS, VIEW, perm
 from oc8.authz.scope import AgentActor, scope_for_member
 from oc8.capas.discovery import find_plugin
@@ -1895,12 +1895,12 @@ async def _delegate(
                 if executing_run.context.get(carried) is not None:
                     context[carried] = executing_run.context[carried]
             # The sub-run acts for the same person (connections design): a
-            # tool "in the user's context" must not lose them one hop down.
-            from oc8.connections.acting import resolve_acting_person
+            # tool "in the user's context" must not lose them one hop down --
+            # nor gain one: a run that acts for nobody hands that on, or the
+            # trigger carried below would resolve its creator.
+            from oc8.connections.acting import carried_person, resolve_acting_person
 
-            acting = await resolve_acting_person(db, executing_run)
-            if acting.member_id is not None:
-                context["on_behalf_of"] = str(acting.member_id)
+            context.update(carried_person(await resolve_acting_person(db, executing_run)))
             if executing_run.context.get("trigger_id"):
                 context["trigger_id"] = executing_run.context["trigger_id"]
     # Deferred import: oc8.runtime.executor reaches oc8.runtime.adapter, which
@@ -2431,6 +2431,25 @@ async def execute_control_tool(
             pinned=pinned,
         )
     skill_by_tool = {s.tool_name: s for s in assigned_skills}
+
+    # Every runtime dispatches here BEFORE its own DENY branch, and a non-None
+    # outcome skips that branch -- so a denial of a tool this dispatcher owns
+    # has to take effect HERE, or it is only ever recorded. Every denial stops,
+    # with one exception: a READING tool still runs under the routine frame
+    # DENY (`NOT_THIS_CONNECTION`) that `authorize` hands a core tool without a
+    # branch of its own -- that verdict is about the run's bound connection,
+    # which the tool does not belong to. A writing tool never runs under it,
+    # and a mode's refusal (`MODE_WITHHELD`) is never that code. delegate_task
+    # keeps its own DENY branch, which also reports the depth limit.
+    if (
+        decision.effect is Effect.DENY
+        and tc.name != DELEGATE_TASK.name
+        and (tc.name in CONTROL_TOOL_NAMES or tc.name in skill_by_tool)
+        and (
+            decision.reason_code != NOT_THIS_CONNECTION or tc.name in WRITING_CONTROL_TOOLS
+        )
+    ):
+        return ControlOutcome(output=f"ERROR: {decision.reason or 'denied'}")
 
     from oc8.copilot.tools import execute_copilot_tool
 

@@ -12,6 +12,7 @@ from oc8.tenants.provision import (
     list_tenants,
     slug_is_free,
 )
+from tests.audit.helpers import flush_audit
 from tests.tenants.conftest import OwnerSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -137,6 +138,7 @@ async def test_writes_a_tenant_created_audit_event(
 ) -> None:
     async with owner_session() as db:
         created = await create_tenant(db, slug=_slug(), name="A")
+        await flush_audit(db)  # staged audit events reach the chain at commit
         events = (
             (
                 await db.execute(

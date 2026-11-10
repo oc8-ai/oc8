@@ -28,7 +28,7 @@ from oc8.chat.live import (
     live_timeline,
     trigger_names,
 )
-from oc8.chat.reach import reachable_chat_agent
+from oc8.chat.reach import reachable_chat_agent, reaches_agent_runs
 from oc8.runtime.person import whose_runs
 from oc8.runtime.run_inputs import may_manage_agent
 from oc8.runtime.step_record import step_timing_dto
@@ -120,7 +120,13 @@ async def get_live(
     )
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
-    manages = await may_manage_agent(db, agent=agent, authority=authority, scope=actor.scope)
+    # Run reach (`run:view`, as on every run door): without it the timeline
+    # holds only the caller's own conversation, and "All runs" -- a run read
+    # of colleagues' runs -- is refused like a missing manager right.
+    reaches_runs = await reaches_agent_runs(db, authority=authority, scope=actor.scope, agent=agent)
+    manages = reaches_runs and await may_manage_agent(
+        db, agent=agent, authority=authority, scope=actor.scope
+    )
     if all_runs and not manages:
         raise HTTPException(status.HTTP_403_FORBIDDEN, _ALL_RUNS_REFUSED)
     before_at, before_id = _parse_cursor(before) if before else (None, None)
@@ -137,6 +143,7 @@ async def get_live(
         before_id=before_id,
         limit=limit + 1,
         all_runs=all_runs,
+        reaches_runs=reaches_runs,
     )
     has_more = len(items) > limit
     items = items[-limit:]

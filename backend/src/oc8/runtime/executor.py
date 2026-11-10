@@ -13,7 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agents.versioning import resolve_version
-from oc8.connections.acting import resolve_acting_person
+from oc8.connections.acting import (
+    NO_ACTING_PERSON,
+    ActingPerson,
+    carried_person,
+    resolve_acting_person,
+)
 from oc8.db.session import tenant_session
 from oc8.observability import get_tracer, record_run_outcome
 from oc8.realtime.emit import publish_agent_status, record_activity
@@ -324,14 +329,14 @@ async def _person_of_task_runs(
     return people.pop() if len(people) == 1 else SEVERAL_PEOPLE
 
 
-async def _acting_member_id(db: AsyncSession, run: m.AgentRun) -> uuid.UUID | None:
+async def _acting_person(db: AsyncSession, run: m.AgentRun) -> ActingPerson:
     """The person a wake-up should keep acting for. A failed lookup must never
     stop a finished sub-run from waking its lead, so it only costs the person."""
     try:
-        return (await resolve_acting_person(db, run)).member_id
+        return await resolve_acting_person(db, run)
     except Exception:
         logger.exception("run %s: could not resolve the acting person", run.id)
-        return None
+        return ActingPerson(None, NO_ACTING_PERSON)
 
 
 async def _maybe_wake_parent(
@@ -352,7 +357,7 @@ async def _maybe_wake_parent(
     door: str | None = None,
     followup: dict[str, Any] | None = None,
     originating_operator: str | None = None,
-    on_behalf_of: uuid.UUID | None = None,
+    acting: ActingPerson | None = None,
     trigger_id: str | None = None,
     for_person: str | None = None,
 ) -> uuid.UUID | None:
@@ -393,9 +398,11 @@ async def _maybe_wake_parent(
         "delegation_depth": delegation_depth,
     }
     # The lead's wake-up acts for the same person as the sub-run (connections
-    # design), whether or not the chain started in a chat.
-    if on_behalf_of is not None:
-        context["on_behalf_of"] = str(on_behalf_of)
+    # design), whether or not the chain started in a chat -- and for nobody
+    # when the sub-run acted for nobody, or the trigger and chat keys carried
+    # alongside would resolve someone the chain deliberately withheld.
+    if acting is not None:
+        context.update(carried_person(acting))
     if trigger_id:
         context["trigger_id"] = trigger_id
     # Two reasons the sub-run's connection is withheld from the lead's wake-up,
@@ -757,6 +764,28 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             if run is None or run.state != RunState.QUEUED.value:
                 return
 
+            # Claim the run before ANY path below may end it. Agent row first,
+            # then the run row -- the order every writer here takes them (see
+            # the one-run-per-agent check further down for why the agent lock
+            # exists at all). Then the run is read again, under its own lock:
+            # two deliveries of ONE run (a republished stranded run whose first
+            # entry turned up after all, a reclaim racing the original) both
+            # read `queued` above, and the second waits on these locks for the
+            # first's commit. Unchecked, it went on to start the run a second
+            # time -- the busy check skips this run's own id -- or, on the early
+            # exits below (agent missing, hire gate, cancel drain, organisation
+            # inactive), recorded the same ending and activity event twice.
+            await db.execute(select(m.Agent.id).where(m.Agent.id == run.agent_id).with_for_update())
+            claimed = await db.get(m.AgentRun, run_id, with_for_update=True, populate_existing=True)
+            if claimed is None or claimed.state != RunState.QUEUED.value:
+                logger.info(
+                    "run %s is %s, taken by another delivery; leaving it",
+                    run_id,
+                    claimed.state if claimed is not None else "gone",
+                )
+                return
+            run = claimed
+
             span.set_attribute("agent_id", str(run.agent_id))
             agent = await db.get(m.Agent, run.agent_id)
             if agent is None:
@@ -860,7 +889,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             # reintroduced by the fix for it. The lock is released by the commit
             # that happens before the container runs, so it never spans the run
             # itself; after the transition, RUNNING is its own guard.
-            await db.execute(select(m.Agent.id).where(m.Agent.id == run.agent_id).with_for_update())
+            # (The agent row is already locked: see "Claim the run" above.)
             busy = (
                 await db.execute(
                     select(m.AgentRun.id)
@@ -1110,7 +1139,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         door=(run.context or {}).get("door"),
                         followup=(run.context or {}).get("followup"),
                         originating_operator=(run.context or {}).get("originating_operator"),
-                        on_behalf_of=await _acting_member_id(db, run),
+                        acting=await _acting_person(db, run),
                         trigger_id=(run.context or {}).get("trigger_id"),
                         for_person=(run.context or {}).get(FOR_PERSON),
                     )
@@ -1268,7 +1297,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                                 originating_operator=(run.context or {}).get(
                                     "originating_operator"
                                 ),
-                                on_behalf_of=await _acting_member_id(db, run),
+                                acting=await _acting_person(db, run),
                                 trigger_id=(run.context or {}).get("trigger_id"),
                                 for_person=(run.context or {}).get(FOR_PERSON),
                             )
@@ -1394,7 +1423,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             door=(run.context or {}).get("door"),
                             followup=(run.context or {}).get("followup"),
                             originating_operator=(run.context or {}).get("originating_operator"),
-                            on_behalf_of=await _acting_member_id(db, run),
+                            acting=await _acting_person(db, run),
                             trigger_id=(run.context or {}).get("trigger_id"),
                             for_person=(run.context or {}).get(FOR_PERSON),
                         )

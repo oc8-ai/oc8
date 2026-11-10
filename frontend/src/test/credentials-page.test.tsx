@@ -35,6 +35,15 @@ vi.mock("@/lib/governance-hooks", async (importOriginal) => {
 
 import { OrganisationCredentials as CredentialsPage } from "@/components/connections/organisation-credentials";
 
+// The row's actions sit in an overflow menu; Radix opens it on pointerdown.
+function openActions() {
+  fireEvent.pointerDown(screen.getByRole("button", { name: "Actions for Prod S3" }), { button: 0 });
+}
+function choose(name: RegExp) {
+  openActions();
+  fireEvent.click(screen.getByRole("menuitem", { name }));
+}
+
 function renderPage(excludeTypes?: string[]) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -80,18 +89,15 @@ describe("Further credentials (organisation)", () => {
 
   it("test button calls useTestCredential", () => {
     renderPage();
-    fireEvent.click(screen.getByRole("button", { name: /test/i }));
+    choose(/^test$/i);
     expect(testCredentialMock).toHaveBeenCalledWith("c1", expect.anything());
   });
 
   it("delete asks for confirmation before calling useDeleteCredential", async () => {
     renderPage();
-    fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
+    choose(/^delete$/i);
     expect(deleteCredentialMock).not.toHaveBeenCalled();
-    // The confirm dialog's own action button shares the "Delete" label with
-    // the row's trigger button, so two matches exist once it's open.
-    const deleteButtons = screen.getAllByRole("button", { name: /^delete$/i });
-    fireEvent.click(deleteButtons[deleteButtons.length - 1]);
+    fireEvent.click(await screen.findByRole("button", { name: /^delete$/i }));
     await vi.waitFor(() =>
       expect(deleteCredentialMock).toHaveBeenCalledWith("c1", expect.anything()),
     );
@@ -99,8 +105,8 @@ describe("Further credentials (organisation)", () => {
 
   it("delete does nothing when the confirmation dialog is cancelled", async () => {
     renderPage();
-    fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
+    choose(/^delete$/i);
+    fireEvent.click(await screen.findByRole("button", { name: /^cancel$/i }));
     // Flush the confirm dialog's resolved promise before asserting a
     // negative -- there is nothing observable to `waitFor` on here.
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -109,7 +115,7 @@ describe("Further credentials (organisation)", () => {
 
   it("edit opens a prefilled dialog and saves the new name", () => {
     renderPage();
-    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+    choose(/^edit$/i);
     const nameInput = screen.getByDisplayValue("Prod S3");
     fireEvent.change(nameInput, { target: { value: "Prod S3 (renamed)" } });
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
@@ -140,7 +146,7 @@ describe("Further credentials (organisation)", () => {
       ],
     });
     renderPage();
-    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+    choose(/^edit$/i);
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
     expect(updateCredentialMock).toHaveBeenCalledWith(
       { credentialId: "c1", fieldValues: {} },
@@ -153,14 +159,15 @@ describe("Further credentials (organisation)", () => {
     renderPage();
     expect(screen.getByText("Prod S3")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /new credential/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /test/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /edit/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /delete/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /actions for/i })).not.toBeInTheDocument();
   });
 
-  it("is titled further credentials", () => {
+  it("is a titled section of flat rows, no table and no card", () => {
     renderPage();
-    expect(screen.getByRole("heading", { name: "Further credentials" })).toBeInTheDocument();
+    const section = screen.getByRole("region", { name: "Further credentials" });
+    expect(section.querySelector("table")).toBeNull();
+    expect(screen.getByRole("listitem")).toHaveTextContent("Prod S3");
+    expect(screen.getByRole("listitem")).toHaveTextContent("Never tested");
   });
 
   it("leaves out the types an integration already lists", () => {
@@ -203,7 +210,7 @@ describe("Further credentials (organisation)", () => {
         (_id: string, opts: { onError: (e: unknown) => void }) => opts.onError(raw),
       );
       renderPage();
-      fireEvent.click(screen.getByRole("button", { name: /test/i }));
+      choose(/^test$/i);
       expect(toastError).toHaveBeenCalledWith("The check failed. Please try again.");
     });
 
@@ -213,7 +220,7 @@ describe("Further credentials (organisation)", () => {
           opts.onSuccess({ ok: false }),
       );
       renderPage();
-      fireEvent.click(screen.getByRole("button", { name: /test/i }));
+      choose(/^test$/i);
       expect(toastSuccess).not.toHaveBeenCalled();
       expect(toastError).toHaveBeenCalledWith(
         "The connection did not work. Please check your entries and try again.",
@@ -225,9 +232,8 @@ describe("Further credentials (organisation)", () => {
         (_id: string, opts: { onError: (e: unknown) => void }) => opts.onError(raw),
       );
       renderPage();
-      fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
-      const buttons = screen.getAllByRole("button", { name: /^delete$/i });
-      fireEvent.click(buttons[buttons.length - 1]);
+      choose(/^delete$/i);
+      fireEvent.click(await screen.findByRole("button", { name: /^delete$/i }));
       await vi.waitFor(() => expect(toastError).toHaveBeenCalledWith("Could not delete."));
     });
 
@@ -237,7 +243,7 @@ describe("Further credentials (organisation)", () => {
           opts.onError(new ApiError("Forbidden: missing secret:manage on tenant 42", 403)),
       );
       renderPage();
-      fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+      choose(/^edit$/i);
       fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
       expect(toastError).toHaveBeenCalledWith("You are not allowed to do this.");
     });

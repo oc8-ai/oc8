@@ -596,9 +596,18 @@ async def test_a_run_output_file_follows_agent_visibility(
         await db.flush()
         seated = await viewer_for_member(db, emp.member, token_role="member")
         as_emp_with_seat = await resolve_ref(db, viewer=seated, kind="file", ref_id=ref_id)
+        # A run output is a run read: the seat reaches the agent, and run:view
+        # (an operator's, every agent's runs) reaches its runs.
+        as_operator = await resolve_ref(
+            db,
+            viewer=await viewer_for_member(db, emp.member, token_role="operator"),
+            kind="file",
+            ref_id=ref_id,
+        )
     assert as_admin is not None and as_admin[0].label == "report.md"
     assert as_emp_seated_elsewhere is None
-    assert as_emp_with_seat is not None
+    assert as_emp_with_seat is None
+    assert as_operator is not None
 
 
 # ------------------------------------------------------------------------ paging

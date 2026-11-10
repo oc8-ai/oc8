@@ -21,6 +21,7 @@ from oc8.runtime.registry import (
     assign_runtime,
 )
 from oc8.runtime.supervision_hook import NOOP_SUPERVISION_RUN_HOOK, use_supervision_runtime
+from tests.audit.helpers import flush_audit
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -72,6 +73,7 @@ async def test_assign_runtime_sets_ref_and_audits(app_session: AppSessionFactory
 
         assert agent.runtime_ref == str(capa_id)
 
+        await flush_audit(db)  # staged audit events reach the chain at commit
         events = (
             (
                 await db.execute(
@@ -110,6 +112,7 @@ async def test_assign_runtime_none_clears_ref_and_audits(app_session: AppSession
 
         assert agent.runtime_ref is None
 
+        await flush_audit(db)  # staged audit events reach the chain at commit
         events = (
             (
                 await db.execute(
@@ -241,6 +244,7 @@ async def test_assign_runtime_accepts_builtin_sentinels_and_audits(
         )
         assert agent.runtime_ref == BUILTIN_IN_PROCESS_RUNTIME_REF
 
+        await flush_audit(db)  # staged audit events reach the chain at commit
         events = (
             (
                 await db.execute(

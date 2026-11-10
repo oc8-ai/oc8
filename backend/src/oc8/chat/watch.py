@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.chat.audience import session_audience
-from oc8.chat.reach import member_can_reach_agent
+from oc8.chat.reach import member_can_reach_agent, member_reaches_agent_runs
 from oc8.runtime.person import whose_run
 
 
@@ -21,8 +21,9 @@ async def may_watch_run(
     token_role: str | None = None,
 ) -> bool:
     """A run the member started, or that runs on her behalf or through her
-    account (`whose_run`), an autonomous run
-    of the agent (it is on their Live timeline), or a chat run of a session
+    account (`whose_run`), an autonomous run of the agent while she also
+    reaches its runs (`run:view`, `member_reaches_agent_runs` -- it is then
+    on her Live timeline), or a chat run of a session
     they own (an edition's readers do NOT stream live) -- never a colleague's run otherwise, not
     even for a manager; in EVERY case only while they can still
     reach the run's agent. `token_role` is the member's own live
@@ -39,9 +40,14 @@ async def may_watch_run(
     if whose.is_own(member.subject):
         return True
     if whose.autonomous:
-        # The agent's own run: on the Live timeline of everyone who reaches
-        # the agent (spec §3.1), so its live events are theirs too.
-        return True
+        # The agent's own run: on the Live timeline of whoever reaches the
+        # agent AND its runs (spec §3.1, run reach), so its live events are
+        # theirs too. Re-asked on every recheck, so losing `run:view` stops
+        # the stream.
+        agent = await db.get(m.Agent, run.agent_id)
+        return agent is not None and await member_reaches_agent_runs(
+            db, member=member, agent=agent, token_role=token_role
+        )
     session_raw = context.get("chat_session_id")
     # Somebody else's run is watched live only from inside its own chat's
     # audience. Never by a manager: the live stream (token deltas, tool

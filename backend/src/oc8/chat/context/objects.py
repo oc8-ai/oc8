@@ -11,10 +11,11 @@ VIEWING member's authority:
   `load` keeps the parsed id and `authorize` does the scoped load.
 * run -- the Live tab's rule (`api/v1/chat_live.py`, `chat/live.py`,
   `chat/watch.py`, Rulings 15-18): the member must reach the run's agent
-  (`reachable_chat_agent`); her own runs, the agent's autonomous runs and the
-  runs of her own chats show in full; a colleague's run only to whoever may
-  manage the agent ("All runs"), and then REDACTED -- labels and state, never
-  the task, tool arguments or result.
+  (`reachable_chat_agent`); her own runs and the runs of her own chats show
+  in full; the agent's autonomous runs in full only within run reach
+  (`run:view`, `reaches_agent_runs`); a colleague's run only to whoever
+  reaches the agent's runs and may manage the agent ("All runs"), and then
+  REDACTED -- labels and state, never the task, tool arguments or result.
 * approval -- the approvals view (`GET /approvals`): `approval:view` held
   tenant-wide or in a seat, then `approvals.repo.load_for_actor`, the only
   legal load of an approval for a person.
@@ -50,7 +51,7 @@ from oc8.authz.scope import APPROVAL_VIEW, AgentActor
 from oc8.chat.context.base import ContextPage, Viewer
 from oc8.chat.context.registry import register
 from oc8.chat.context.sources import DEFAULT_CLASSIFICATION
-from oc8.chat.reach import reachable_chat_agent
+from oc8.chat.reach import reachable_chat_agent, reaches_agent_runs
 from oc8.copilot.redaction import redact_text
 from oc8.departments.repo import visible_department, visible_departments
 from oc8.runtime.person import whose_run
@@ -255,11 +256,17 @@ class RunResolver(_Summarized):
         if agent is None:
             return False
         whose = await whose_run(db, run)
-        if (
-            whose.is_own(viewer.member.subject)
-            or whose.autonomous
-            or await self._of_own_chat(db, viewer, run)
+        if whose.is_own(viewer.member.subject) or await self._of_own_chat(db, viewer, run):
+            obj.redacted = False
+            obj.authorized = True
+            return True
+        # Not her conversation: a run read, so run reach first (`run:view`,
+        # the run doors' rule), as on the Live timeline.
+        if not await reaches_agent_runs(
+            db, authority=viewer.authority, scope=viewer.scope, agent=agent
         ):
+            return False
+        if whose.autonomous:
             obj.redacted = False
             obj.authorized = True
             return True

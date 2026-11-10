@@ -30,7 +30,17 @@ from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from oc8.auth import get_identity_provider
-from oc8.authz.permissions import AUDITOR, MEMBER_ROLE, OPERATOR, ORG_ADMIN, RUN, VIEW, perm
+from oc8.authz.permissions import (
+    AUDITOR,
+    BUILTIN_ROLE_PERMISSIONS,
+    COPILOT_USE,
+    MEMBER_ROLE,
+    OPERATOR,
+    ORG_ADMIN,
+    RUN,
+    VIEW,
+    perm,
+)
 from oc8.main import create_app
 from tests.conftest import AppSessionFactory
 
@@ -156,3 +166,25 @@ def test_run_watch_answers_only_for_a_run_the_member_may_watch(
             ws.send_json({"type": "run.watch", "runId": "not-a-uuid"})
             ws.send_json({"type": "run.watch", "runId": str(run_ids["alice"])})
             assert ws.receive_json() == {"type": "run.watching", "runId": str(run_ids["alice"])}
+
+
+def test_run_view_without_a_tenant_wide_agent_read_is_refused_the_feed(
+    redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`GET /activity` narrows a caller who holds `run:view` but reads agents
+    only through seats to her departments. The socket is the whole tenant's
+    fan-out and cannot narrow, so it admits only an every-agent run reader
+    (`agents.repo.reads_every_run`) -- holding `run:view` alone is refused.
+
+    The role is the one the E2E hit: `member` with `run:view` and no
+    `agent:view`, recreated here for one test.
+    """
+    monkeypatch.setitem(
+        BUILTIN_ROLE_PERMISSIONS, MEMBER_ROLE, frozenset({COPILOT_USE, perm(RUN, VIEW)})
+    )
+    tenant = uuid.uuid4()
+    app = create_app()
+    with TestClient(app) as client:
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect(f"/api/v1/events/ws?token={_token(tenant, MEMBER_ROLE)}"):
+                pass

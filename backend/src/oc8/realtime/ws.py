@@ -12,6 +12,7 @@ from fastapi import APIRouter, WebSocket, status
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
+from oc8.agents.repo import reads_every_run
 from oc8.auth.provider import InvalidToken, get_identity_provider
 from oc8.authz.authority import resolve_authority
 from oc8.authz.permissions import RUN, VIEW, perm
@@ -38,9 +39,14 @@ router = APIRouter()
 #: no seat at all, so he 403'd at `/activity` and was simultaneously joined to the
 #: tenant-wide fan-out carrying its contents. Same rows, same permission.
 #:
-#: Not per-department rooms: that is §10 item 5 and slice 2. This makes the
-#: socket's audience exactly the HTTP route's, which is the claim §9 already
-#: makes ("this slice adds no leak") and did not hold for the socket.
+#: Not per-department rooms: that is §10 item 5 and slice 2. The fan-out is the
+#: WHOLE tenant's, unfiltered, while `GET /activity` now narrows to the agents
+#: whose runs the caller may see (`agents.repo.run_reach`). The socket cannot
+#: narrow, so it admits only the caller for whom that narrowing is a no-op: a
+#: tenant-wide read of BOTH `agent:view` and `run:view`
+#: (`agents.repo.reads_every_run`, i.e. `reach.every_agent`). Holding
+#: `run:view` alone is not enough -- that caller's HTTP feed is departmental,
+#: and a tenant-wide socket would hand him every other department's activity.
 _FEED_PERMISSION = perm(RUN, VIEW)
 
 
@@ -82,8 +88,9 @@ async def events_ws(websocket: WebSocket) -> None:
     # administrator demoted to a tenant-defined role holds `run:view` nowhere,
     # and a socket that kept asking the code table would have gone on streaming
     # him every run, approval and clarification in the company for as long as his
-    # tab stayed open. `run:view` is `NOT_YET_DELEGATABLE`, so no tenant-defined
-    # role can grant it back.
+    # tab stayed open. Admitted only as an every-agent run reader (see
+    # `_FEED_PERMISSION`): anybody narrower is narrowed over HTTP and cannot be
+    # here.
     #
     # Fail closed on a database error: this feed carries the same rows
     # `GET /activity` refuses, and during a blip that route answers nothing
@@ -105,7 +112,9 @@ async def events_ws(websocket: WebSocket) -> None:
         logger.exception("could not resolve the caller's authority for the realtime feed")
         await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
         return
-    feed = _FEED_PERMISSION in authority.tenant_wide
+    # The tenant-wide feed only for an every-agent run reader (see
+    # `_FEED_PERMISSION`): anybody narrower is narrowed over HTTP.
+    feed = reads_every_run(authority, _FEED_PERMISSION)
     # A member-only socket (spec §2.4) carries nothing but this member's own
     # events (`audience` envelopes) and the runs they were allowed to watch --
     # never the feed. Without a member row there is nothing it could carry, so

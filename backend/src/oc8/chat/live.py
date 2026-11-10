@@ -249,16 +249,20 @@ def _colleagues(member: m.OrgMember) -> ColumnElement[bool]:
 
 
 def timeline_runs(
-    *, agent: m.Agent, member: m.OrgMember, all_runs: bool
+    *, agent: m.Agent, member: m.OrgMember, all_runs: bool, reaches_runs: bool
 ) -> Select[tuple[m.AgentRun]]:
-    """The agent's runs on `member`'s Live timeline, unordered and unbounded."""
+    """The agent's runs on `member`'s Live timeline, unordered and unbounded.
+
+    `reaches_runs` is the caller's run reach on this agent (`run:view`,
+    `chat.reach.reaches_agent_runs`): without it only her own runs are
+    shown -- the agent's autonomous runs and a colleague's are run reads."""
     stmt = select(m.AgentRun).where(
         m.AgentRun.tenant_id == agent.tenant_id,
         m.AgentRun.agent_id == agent.id,
         or_(
-            _autonomous(),
+            _autonomous() if reaches_runs else false(),
             _hers_outside_chat(member),
-            _colleagues(member) if all_runs else false(),
+            _colleagues(member) if all_runs and reaches_runs else false(),
         ),
     )
     if not all_runs:
@@ -278,6 +282,7 @@ async def live_timeline(
     before: dt.datetime | None,
     limit: int,
     all_runs: bool,
+    reaches_runs: bool,
     before_id: uuid.UUID | None = None,
 ) -> list[LiveItem]:
     """The `limit` newest items older than the cursor, ascending.
@@ -285,11 +290,14 @@ async def live_timeline(
     Ordered by (created_at, id) across both kinds, so paging back with the
     oldest item's (`at`, `id`) as the cursor meets every item exactly once.
     A bare `before` (no id) is a plain time bound. `all_runs` is the caller's
-    already-checked manager right."""
+    already-checked manager right, `reaches_runs` its run reach
+    (`timeline_runs`)."""
     msg_stmt = select(m.ChatMessage).where(
         m.ChatMessage.tenant_id == session.tenant_id, m.ChatMessage.session_id == session.id
     )
-    run_stmt = timeline_runs(agent=agent, member=member, all_runs=all_runs)
+    run_stmt = timeline_runs(
+        agent=agent, member=member, all_runs=all_runs, reaches_runs=reaches_runs
+    )
     if before is not None:
         if before_id is not None:
             msg_stmt = msg_stmt.where(

@@ -346,3 +346,40 @@ async def test_my_own_runs_are_not_redacted_and_keep_their_cards(
     assert item["run"]["renderedComponents"] == [
         {"componentKey": "table", "props": {"title": "Inbox"}}
     ]
+
+
+async def test_the_agents_own_runs_need_run_reach(app_session: AppSessionFactory) -> None:
+    """A seat reaches the agent and its Live tab, but the agent's scheduled
+    runs are run reads (`run:view`, run reach): absent for a plain member with
+    a seat, shown to an auditor who reads every agent's runs."""
+    tenant = uuid.uuid4()
+    agent_id = await _agent(app_session, tenant)
+    _bob_run, _sub_run, cron_id = await _bobs_chat_and_a_schedule(app_session, tenant, agent_id)
+    async with app_session(tenant) as db:
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        sam = m.OrgMember(tenant_id=tenant, subject="sam", subject_uuid=uuid.uuid4())
+        db.add(sam)
+        await db.flush()
+        db.add(
+            m.OrgMemberDepartment(
+                tenant_id=tenant,
+                member_id=sam.id,
+                department_id=agent.department_id,
+                seat_role="dept_viewer",
+                agent_manage=True,
+            )
+        )
+    app = create_app()
+    url = f"/api/v1/agents/{agent_id}/live"
+    async with LifespanManager(app), _client(app) as c:
+        seated = await c.get(url, headers=_h(tenant, "sam", "member"))
+        assert seated.status_code == 200, seated.text
+        assert str(cron_id) not in _run_ids(seated.json())
+        # Managing the agent is not enough for "All runs" without run reach.
+        assert seated.json()["mayViewAllRuns"] is False
+        refused = await c.get(f"{url}?allRuns=true", headers=_h(tenant, "sam", "member"))
+        assert refused.status_code == 403
+        auditor = await c.get(url, headers=_h(tenant, "aud", "auditor"))
+        assert auditor.status_code == 200, auditor.text
+        assert str(cron_id) in _run_ids(auditor.json())

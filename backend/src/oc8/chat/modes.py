@@ -198,6 +198,12 @@ WRITING_CONTROL_TOOLS: frozenset[str] = frozenset(
     }
 )
 
+#: `Decision.reason_code` of a refusal that came from the turn's mode rather than
+#: from the frame. The control-tool dispatcher stops on it for EVERY core tool,
+#: reads included: under /ask a read is withheld too, and a reading control
+#: tool has no reason of its own to look at its decision.
+MODE_WITHHELD = "mode_withheld"
+
 #: A leading command word, lowercase, followed by whitespace and a body.
 #:
 #: The `\s+` is what keeps "/etc/passwd is world readable?" a question: after
@@ -254,6 +260,7 @@ def mode_refusal(
     *,
     tool_scopes: Mapping[str, Any] | None,
     connection_tool: bool = False,
+    core: bool = True,
 ) -> str | None:
     """Why this mode will not let this tool be called, or None.
 
@@ -261,10 +268,25 @@ def mode_refusal(
     and the value threshold all still have their say afterwards; this only ever
     subtracts.
 
-    A registered edition tool is classified by its own `writes` flag, unless
-    the caller knows the name is the agent's own connection tool
-    (`connection_tool=True`): then an edition tool of the same name must not
-    lend it a read classification it does not have.
+    The two flags answer different questions, and a runtime caller passes
+    both explicitly -- neither implies the other:
+
+    * `connection_tool=True` says the call is NOT an edition call (the PEP
+      passes `not edition_call`; a connection listing passes True). A
+      registered edition tool is classified by its own `writes` flag unless
+      this is set: then an edition tool of the same name must not lend the
+      call a read classification it does not have. Left False, an edition
+      tool is classified by `writes` alone, whatever a connection's scopes
+      say about the name.
+    * `core=False` says the name is not the CORE tool of that name (a routed
+      `<connection>.todo_write`, or any non-core name -- every edition tool
+      included, since no edition name is a core name). A core name with
+      `core=False` is classified by its scopes, like any other connection
+      tool -- its bare name says nothing about whether it writes.
+
+    The defaults (`connection_tool=False`, `core=True`) fit a bare core-tool
+    name only, which is how the gateway's core branches and the isolated
+    shell's local tools ask.
     """
     if mode is None:
         return None
@@ -279,6 +301,10 @@ def mode_refusal(
     from oc8.agent.control_tools import CONTROL_TOOL_NAMES
     from oc8.edition.tools import edition_tool_writes
 
+    # Not gated on `core`: an edition name is never a core name, so `core` is
+    # False for every edition call -- gating on it discarded the edition's own
+    # classification (read tools refused under /plan; a writing tool a
+    # connection's scopes list as read let through).
     edition_writes = None if connection_tool else edition_tool_writes(tool_name)
     if edition_writes is not None:
         writes = edition_writes
@@ -295,7 +321,7 @@ def mode_refusal(
         return None
     elif tool_name in WRITING_CONTROL_TOOLS:
         writes = True
-    elif tool_name in CONTROL_TOOL_NAMES:
+    elif core and tool_name in CONTROL_TOOL_NAMES:
         # A core tool is classified by name, not by scopes -- it sits on no
         # connection, and the gateway asks with `tool_scopes=None`.
         writes = False

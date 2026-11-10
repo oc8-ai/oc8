@@ -14,6 +14,7 @@ import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
+from tests.audit.helpers import flush_audit
 from tests.conftest import AppSessionFactory
 
 from oc8 import models as m
@@ -25,7 +26,7 @@ from oc8.agent.control_tools import (
 )
 from oc8.agent.harness.stages.b_authorize import authorize
 from oc8.authz.pdp import Decision, Effect
-from oc8.chat.modes import MODES, mode_refusal
+from oc8.chat.modes import MODE_WITHHELD, MODES, mode_refusal
 from oc8.chat.service import record_assistant_reply
 from oc8.copilot.door import chat_door
 from oc8.edition.runtime import RuntimeComposition
@@ -205,6 +206,64 @@ async def test_an_agent_tool_of_the_same_name_is_never_the_edition_tools() -> No
         assert decision.effect is Effect.DENY and "/plan" in (decision.reason or "")
 
 
+async def test_the_pep_lets_a_reading_edition_tool_through_plan() -> None:
+    # An edition name is never a core name, so the PEP's `core` is False for
+    # it: the mode check must still classify it by its own `writes` flag.
+    agent = m.Agent(tenant_id=uuid.uuid4(), department_id=uuid.uuid4(), name="A")
+    with use_edition_tools(ALL, _granted):
+        plan = MODES["plan"]
+        offer = await edition_offer(agent.tenant_id, door="web", chat_mode=plan)
+        decision = _authorize(agent, "read_document", offer, chat_mode=plan)
+        assert decision.effect is Effect.ALLOW, decision.reason
+
+
+async def test_a_writing_edition_tool_a_connection_lists_as_read_is_withheld_in_plan() -> None:
+    # The run's connection scopes happen to list the name as a read: they say
+    # nothing about the edition tool, which writes.
+    agent = m.Agent(tenant_id=uuid.uuid4(), department_id=uuid.uuid4(), name="A")
+    with use_edition_tools(ALL, _granted):
+        full = await edition_offer(agent.tenant_id, door="web")
+        decision = _authorize(
+            agent,
+            "create_document",
+            full,
+            chat_mode=MODES["plan"],
+            tool_scopes={"read": ["create_document"]},
+        )
+        assert decision.effect is Effect.DENY
+        assert decision.reason_code == MODE_WITHHELD
+
+
+async def test_ask_withholds_a_writing_edition_tool() -> None:
+    agent = m.Agent(tenant_id=uuid.uuid4(), department_id=uuid.uuid4(), name="A")
+    with use_edition_tools(ALL, _granted):
+        full = await edition_offer(agent.tenant_id, door="web")
+        decision = _authorize(agent, "create_document", full, chat_mode=MODES["ask"])
+        assert decision.effect is Effect.DENY
+        assert decision.reason_code == MODE_WITHHELD
+
+
+async def test_a_routed_name_of_an_edition_tool_is_decided_by_the_frame() -> None:
+    # `<conn>.read_document`: the connection's tool, never the edition's, even
+    # though the edition tool is offered -- so the (empty) frame decides it.
+    agent = m.Agent(tenant_id=uuid.uuid4(), department_id=uuid.uuid4(), name="A")
+    with use_edition_tools(ALL, _granted):
+        full = await edition_offer(agent.tenant_id, door="web")
+        for mode in (MODES["do"], MODES["plan"]):
+            decision = _authorize(
+                agent,
+                "read_document",
+                full,
+                chat_mode=mode,
+                routed=True,
+                connection_key="odoo",
+                tool_scopes={"read": ["read_document"]},
+            )
+            assert decision.effect is Effect.DENY
+            assert decision.reason_code != MODE_WITHHELD
+            assert "no grant for 'odoo'" in (decision.reason or "")
+
+
 # ----------------------------------------------------------- the dispatcher
 
 
@@ -259,6 +318,9 @@ async def _call(
 
 
 async def _audit(db: Any) -> list[m.AuditEvent]:
+    # Audit rows are written at commit (#82): write this session's staged
+    # ones first, so a read in the same transaction sees them.
+    await flush_audit(db)
     return list(
         (
             await db.execute(
@@ -471,6 +533,7 @@ async def _engine_run(
         await db.flush()
         with use_edition_tools([READ], entitlements):
             await run_agent(db, agent=agent, task_text="look it up", tenant_id=tenant)
+        await flush_audit(db)
         events = (
             (await db.execute(select(m.AuditEvent).where(m.AuditEvent.tenant_id == tenant)))
             .scalars()
@@ -606,6 +669,28 @@ async def test_the_gateway_refuses_a_writing_edition_tool_in_plan(
     assert RAN == []
 
 
+async def test_the_gateway_runs_a_reading_edition_tool_in_plan(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.api.test_mcp_gateway import _FakeMcp, _seed, _token
+
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant)
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {**run.context, "chat_mode": "plan"}
+        await db.flush()
+    token = _token(tenant, agent_id, run_id)
+    called = await _gateway_rpc(
+        _composition(_granted), token, "tools/call", {"name": "read_document", "arguments": {}}
+    )
+    assert called["result"]["isError"] is False, called
+    assert _fenced(called["result"]["content"][0]["text"]) == "The document says hello."
+    assert RAN == ["read_document"]
+
+
 # ------------------------------------------------- isolated control plane
 
 
@@ -658,6 +743,24 @@ async def test_the_isolated_control_plane_gates_edition_tools(
         assert row.context["parts"] == [{"type": "document_ref", "id": "d1"}]
         audit = await _audit(db)
     assert [a.resource["allowed"] for a in audit] == [False, True]
+
+
+async def test_the_isolated_control_plane_runs_a_reading_edition_tool_in_plan(
+    app_session: AppSessionFactory,
+) -> None:
+    from tests.api.test_internal_agent import _plain_agent_run
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, _task, run = await _plain_agent_run(db, tenant, chat_mode="plan")
+        agent_id, run_id = agent.id, run.id
+
+    ran = await _post_tool(_composition(_granted), tenant, agent_id, run_id, "read_document")
+    assert ran["status"] == "ok", ran
+    assert "The document says hello." in ran["output"]
+    refused = await _post_tool(_composition(_granted), tenant, agent_id, run_id, "create_document")
+    assert refused["status"] == "denied" and "/plan" in refused["output"]
+    assert RAN == ["read_document"]
 
 
 async def test_the_isolated_path_keeps_suggestions_and_parts_for_the_reply(

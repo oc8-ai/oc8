@@ -74,6 +74,7 @@ export interface ConnectionRequiredInfo {
     | "schedule_needs_confirmation"
     | "trigger_without_person"
     | "binding_needs_confirmation"
+    | "personal_account_withheld"
     | "not_configured";
 }
 

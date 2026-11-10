@@ -1,8 +1,16 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { Plug } from "lucide-react";
+import { Plus } from "lucide-react";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useConfirm } from "@/hooks/use-confirm";
 import {
   type Connection,
@@ -23,10 +31,15 @@ import { useMay } from "@/lib/governance-hooks";
 import { useEnablePlugin } from "@/lib/hooks";
 import { useLang, useT } from "@/lib/i18n";
 import { ConnectDialog } from "./connect-dialog";
+import { ConnectionRow, RowList, RowMenu } from "./connection-row";
 import { IntegrationIcon } from "./integration-icon";
+import { MemberConnections } from "./member-connections";
 import { OrganisationCredentials } from "./organisation-credentials";
 import { ReturnError } from "./return-error";
-import { checkErrorText, oneLineBenefit, providerName } from "./texts";
+import { checkErrorText, isBroken, providerName, shortDate } from "./texts";
+
+export const CONNECTIONS_TABS = ["mine", "organisation", "members"] as const;
+export type ConnectionsTab = (typeof CONNECTIONS_TABS)[number];
 
 export interface ConnectionsSearch {
   /** The OAuth callback's one-time id, exchanged via `POST /oauth/{provider}/complete`. */
@@ -34,6 +47,8 @@ export interface ConnectionsSearch {
   error?: string;
   provider?: string;
   connect?: string;
+  /** The administrator's open tab; "mine" when absent. */
+  tab?: ConnectionsTab;
 }
 
 interface DialogState {
@@ -48,18 +63,6 @@ type ReturnState =
   | { kind: "completing" }
   | { kind: "connected"; accountLabel: string }
   | { kind: "error"; code: string; adminConsentUrl: string | null };
-
-const SMALL =
-  "inline-flex min-h-11 items-center rounded-md border border-border px-3 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50";
-const PRIMARY =
-  "inline-flex min-h-11 items-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
-
-function since(iso: string, lang: string): string {
-  return new Date(iso).toLocaleDateString(lang === "de" ? "de-DE" : "en-GB", {
-    day: "numeric",
-    month: "short",
-  });
-}
 
 function initialReturn(search: ConnectionsSearch): ReturnState {
   if (search.error) return { kind: "error", code: search.error, adminConsentUrl: null };
@@ -82,9 +85,12 @@ function useNoReferrer() {
 export function ConnectionsPage({
   search,
   onConsumeSearch,
+  onTabChange,
 }: {
   search: ConnectionsSearch;
   onConsumeSearch: () => void;
+  /** Puts the chosen tab into the URL, so a link opens the same tab. */
+  onTabChange: (tab: ConnectionsTab) => void;
 }) {
   const t = useT();
   const { lang } = useLang();
@@ -164,11 +170,18 @@ export function ConnectionsPage({
   const integrationTypes = (integrations.data ?? []).flatMap((i) =>
     i.credentialType ? [i.credentialType] : [],
   );
-  const labelOf = (c: Connection) =>
-    (c.integration ? byName.get(c.integration)?.label : undefined) ||
-    providerName(c.provider) ||
-    c.credentialType ||
-    "";
+  const integrationList = integrations.data;
+  const labelOf = useCallback(
+    (c: Connection) =>
+      (c.integration ? integrationList?.find((i) => i.name === c.integration)?.label : undefined) ||
+      providerName(c.provider) ||
+      c.credentialType ||
+      "",
+    [integrationList],
+  );
+  const orgRows = org.data ?? [];
+  const memberRows = members.data ?? [];
+  const tab: ConnectionsTab = isAdmin ? (search.tab ?? "mine") : "mine";
 
   const revoke = async (c: Connection, who: string | null) => {
     const ok = await confirm({
@@ -235,237 +248,90 @@ export function ConnectionsPage({
   const open = (integration: string, owner: Owner, editCredentialId?: string) =>
     setDialog({ integration, owner, editCredentialId });
 
+  const mineList = (
+    <MineList
+      available={available}
+      notYetAvailable={isAdmin && mayEnable ? notYetAvailable : []}
+      mine={mine.data ?? []}
+      organisation={orgRows}
+      loading={integrations.isLoading}
+      isAdmin={isAdmin}
+      enabling={enable.isPending}
+      lang={lang}
+      onConnect={(name) => open(name, "me")}
+      onDisconnect={(c) => revoke(c, null)}
+      onMakeAvailable={makeAvailable}
+    />
+  );
+
   return (
     <div className="space-y-4">
       {returned.kind === "completing" && (
-        <Panel className="p-4 text-sm text-muted-foreground">
-          <p role="status">{t("Finishing the connection …", "Verbindung wird abgeschlossen …")}</p>
-        </Panel>
+        <p
+          role="status"
+          className="rounded-md border border-border px-4 py-3 text-sm text-muted-foreground"
+        >
+          {t("Finishing the connection …", "Verbindung wird abgeschlossen …")}
+        </p>
       )}
       {returned.kind === "connected" && (
-        <Panel className="p-4 text-sm">
-          <p role="status">
-            {t(`Connected as ${returned.accountLabel}.`, `Verbunden als ${returned.accountLabel}.`)}
-          </p>
-        </Panel>
+        <p role="status" className="rounded-md border border-border px-4 py-3 text-sm">
+          {t(`Connected as ${returned.accountLabel}.`, `Verbunden als ${returned.accountLabel}.`)}
+        </p>
       )}
       {returned.kind === "error" && (
-        <Panel className="p-4">
+        <div className="rounded-md border border-border px-4 py-3">
           <ReturnError
             code={returned.code}
             adminConsentUrl={returned.adminConsentUrl ?? consentUrl.data?.url ?? null}
           />
-        </Panel>
+        </div>
       )}
 
-      <Panel className="p-6">
-        <section aria-labelledby="connections-mine">
-          <div className="flex items-start gap-3">
-            <div className="grid h-9 w-9 place-items-center rounded-md bg-primary/15 text-primary">
-              <Plug className="size-4" />
-            </div>
-            <div>
-              <h2 id="connections-mine" className="font-serif text-lg">
-                {t("My connections", "Meine Verbindungen")}
-              </h2>
-              <p className="mt-1 text-sm text-muted-foreground">
-                {t(
-                  "Your own accounts, used when an agent works for you.",
-                  "Ihre eigenen Konten, die ein Agent nutzt, wenn er für Sie arbeitet.",
-                )}
-              </p>
-            </div>
-          </div>
-          {!integrations.isLoading && available.length === 0 ? (
-            <p className="mt-6 text-sm text-muted-foreground">
-              {isAdmin ? (
-                <Link to="/capas" className="underline">
-                  {t("Install an integration", "Integration installieren")}
-                </Link>
-              ) : (
-                t(
-                  "Your admin has not set up an integration yet.",
-                  "Ihr Admin hat noch keine Integration eingerichtet.",
-                )
-              )}
-            </p>
-          ) : (
-            <ul className="mt-6 grid gap-3 sm:grid-cols-2">
-              {available.map((integration) => (
-                <MyCard
-                  key={integration.name}
-                  integration={integration}
-                  mine={mine.data ?? []}
-                  onConnect={() => open(integration.name, "me")}
-                  onDisconnect={(c) => revoke(c, null)}
-                  lang={lang}
-                />
-              ))}
-            </ul>
-          )}
-        </section>
-      </Panel>
-
-      {isAdmin && (
-        <Panel className="p-6">
-          <section aria-labelledby="connections-org">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <h2 id="connections-org" className="font-serif text-lg">
-                {t("Organisation", "Organisation")}
-              </h2>
-              {available.length > 0 && (
-                <select
-                  aria-label={t("Add access", "Zugang hinzufügen")}
-                  className="min-h-11 rounded-md border border-border bg-background px-3 text-sm"
-                  value=""
-                  onChange={(event) =>
-                    event.target.value && open(event.target.value, "organisation")
-                  }
-                >
-                  <option value="">{t("Add access …", "Zugang hinzufügen …")}</option>
-                  {available.map((i) => (
-                    <option key={i.name} value={i.name}>
-                      {i.label}
-                    </option>
-                  ))}
-                </select>
-              )}
-            </div>
-            {mayEnable &&
-              notYetAvailable.map((i) => (
-                <div
-                  key={i.name}
-                  className="mt-3 flex flex-wrap items-center justify-between gap-2 text-sm"
-                >
-                  <span>
-                    {t(
-                      `${i.label} is installed but not available yet.`,
-                      `${i.label} ist installiert, aber noch nicht verfügbar.`,
-                    )}
-                  </span>
-                  <button
-                    type="button"
-                    className={SMALL}
-                    disabled={enable.isPending}
-                    aria-label={t(`Make ${i.label} available`, `${i.label} bereitstellen`)}
-                    onClick={() => makeAvailable(i)}
-                  >
-                    {t("Make available", "Bereitstellen")}
-                  </button>
-                </div>
-              ))}
-            {(org.data ?? []).length === 0 ? (
-              <p className="mt-4 text-sm text-muted-foreground">
-                {t("No organisation access yet.", "Noch kein Zugang der Organisation.")}
-              </p>
-            ) : (
-              <div className="mt-4 overflow-x-auto">
-                <table className="w-full text-sm">
-                  <tbody>
-                    {(org.data ?? []).map((c) => (
-                      <tr key={c.id} className="border-b border-border/50">
-                        <td className="py-3 pr-3">{labelOf(c)}</td>
-                        <td className="py-3 pr-3">{c.accountLabel}</td>
-                        <td className="py-3 pr-3 text-muted-foreground">{c.createdByName ?? ""}</td>
-                        <td className="py-3 pr-3 text-muted-foreground">
-                          {since(c.createdAt, lang)}
-                        </td>
-                        <td className="py-3 pr-3">
-                          <StatusBadge connection={c} />
-                        </td>
-                        <td className="py-3 text-right whitespace-nowrap">
-                          {c.kind === "credential" && (
-                            <>
-                              <button type="button" className={SMALL} onClick={() => runTest(c)}>
-                                {t("Test", "Testen")}
-                              </button>{" "}
-                              {c.integration && (
-                                <>
-                                  <button
-                                    type="button"
-                                    className={SMALL}
-                                    onClick={() =>
-                                      open(c.integration as string, "organisation", c.id)
-                                    }
-                                  >
-                                    {t("Edit", "Bearbeiten")}
-                                  </button>{" "}
-                                </>
-                              )}
-                            </>
-                          )}
-                          {c.kind === "oauth" && c.status === "needs_reauth" && c.integration && (
-                            <>
-                              <button
-                                type="button"
-                                className={SMALL}
-                                onClick={() => open(c.integration as string, "organisation")}
-                              >
-                                {t("Reconnect", "Erneut verbinden")}
-                              </button>{" "}
-                            </>
-                          )}
-                          <button type="button" className={SMALL} onClick={() => revoke(c, null)}>
-                            {t("Remove", "Entfernen")}
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-            <div className="mt-6">
+      {isAdmin ? (
+        <Tabs value={tab} onValueChange={(next) => onTabChange(next as ConnectionsTab)}>
+          <TabsList aria-label={t("Connections", "Verbindungen")}>
+            <TabsTrigger value="mine">{t("Mine", "Meine")}</TabsTrigger>
+            <TabsTrigger value="organisation">{t("Organisation", "Organisation")}</TabsTrigger>
+            <TabsTrigger value="members">
+              {t(`Members (${memberRows.length})`, `Mitglieder (${memberRows.length})`)}
+            </TabsTrigger>
+          </TabsList>
+          <TabsContent value="mine" className="mt-3">
+            <Panel className="px-4 py-1">{mineList}</Panel>
+          </TabsContent>
+          <TabsContent value="organisation" className="mt-3">
+            <Panel className="px-4 py-3">
+              <OrganisationAccesses
+                rows={orgRows}
+                available={available}
+                byName={byName}
+                labelOf={labelOf}
+                lang={lang}
+                onAdd={(name) => open(name, "organisation")}
+                onEdit={(c) => open(c.integration as string, "organisation", c.id)}
+                onReconnect={(c) => open(c.integration as string, "organisation")}
+                onTest={runTest}
+                onRemove={(c) => revoke(c, null)}
+              />
               <OrganisationCredentials excludeTypes={integrationTypes} />
-            </div>
-          </section>
-        </Panel>
-      )}
-
-      {isAdmin && (
-        <Panel className="p-6">
-          <section aria-labelledby="connections-members">
-            <h2 id="connections-members" className="font-serif text-lg">
-              {t("Members", "Mitglieder")}
-            </h2>
-            {(members.data ?? []).length === 0 ? (
-              <p className="mt-4 text-sm text-muted-foreground">
-                {t(
-                  "No member has connected an account yet.",
-                  "Noch kein Mitglied hat ein Konto verbunden.",
-                )}
-              </p>
-            ) : (
-              <div className="mt-4 overflow-x-auto">
-                <table className="w-full text-sm">
-                  <tbody>
-                    {(members.data ?? []).map((c) => (
-                      <tr key={c.id} className="border-b border-border/50">
-                        <td className="py-3 pr-3 font-medium">{c.ownerName}</td>
-                        <td className="py-3 pr-3">{labelOf(c)}</td>
-                        <td className="py-3 pr-3">{c.accountLabel}</td>
-                        <td className="py-3 pr-3 text-muted-foreground">
-                          {since(c.createdAt, lang)}
-                        </td>
-                        <td className="py-3 text-right">
-                          <button
-                            type="button"
-                            className={SMALL}
-                            onClick={() =>
-                              revoke(c, c.ownerName ?? t("This member", "Dieses Mitglied"))
-                            }
-                          >
-                            {t("Revoke", "Widerrufen")}
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </section>
-        </Panel>
+            </Panel>
+          </TabsContent>
+          <TabsContent value="members" className="mt-3">
+            <Panel className="px-4 py-3">
+              <MemberConnections
+                rows={memberRows}
+                labelOf={labelOf}
+                lang={lang}
+                onRevoke={(c) => revoke(c, c.ownerName ?? t("This member", "Dieses Mitglied"))}
+              />
+            </Panel>
+          </TabsContent>
+        </Tabs>
+      ) : (
+        <section aria-label={t("My connections", "Meine Verbindungen")}>
+          <Panel className="px-4 py-1">{mineList}</Panel>
+        </section>
       )}
 
       {dialog && (
@@ -482,85 +348,247 @@ export function ConnectionsPage({
   );
 }
 
-function StatusBadge({ connection }: { connection: Connection }) {
-  const t = useT();
-  if (connection.status === "needs_reauth" || connection.status === "failed") {
-    return (
-      <span className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-xs">
-        {connection.status === "failed"
-          ? t("Test failed", "Test fehlgeschlagen")
-          : t("Reconnect", "Erneut verbinden")}
-      </span>
-    );
-  }
-  if (connection.status === "untested") {
-    return (
-      <span className="text-xs text-muted-foreground">{t("Not tested", "Nicht getestet")}</span>
-    );
-  }
-  return <span className="text-xs text-muted-foreground">{t("Active", "Aktiv")}</span>;
+const WARN = "text-amber-600 dark:text-amber-400";
+
+/** Covered for everyone: a working organisation access to a login-based app. */
+function coveredByOrganisation(integration: Integration, organisation: readonly Connection[]) {
+  return (
+    integration.kind === "credential" &&
+    organisation.some((c) => c.integration === integration.name && !isBroken(c))
+  );
 }
 
-function MyCard({
-  integration,
+function MineList({
+  available,
+  notYetAvailable,
   mine,
+  organisation,
+  loading,
+  isAdmin,
+  enabling,
+  lang,
   onConnect,
   onDisconnect,
-  lang,
+  onMakeAvailable,
 }: {
-  integration: Integration;
+  available: Integration[];
+  notYetAvailable: Integration[];
   mine: Connection[];
-  onConnect: () => void;
-  onDisconnect: (c: Connection) => void;
+  organisation: Connection[];
+  loading: boolean;
+  isAdmin: boolean;
+  enabling: boolean;
   lang: string;
+  onConnect: (integration: string) => void;
+  onDisconnect: (c: Connection) => void;
+  onMakeAvailable: (i: Integration) => void;
 }) {
   const t = useT();
-  const { state, connections } = connectionStateOf(integration, mine);
-  const orange = state === "needs_reauth";
+  const nothing = !loading && available.length === 0;
   return (
-    <li
-      className={
-        orange
-          ? "rounded-lg border border-amber-500/40 bg-amber-500/10 p-4"
-          : "rounded-lg border border-border p-4"
-      }
-    >
-      <div className="flex items-center gap-2">
-        <IntegrationIcon integration={integration} size={24} />
-        <p className="font-medium">{integration.label}</p>
+    <>
+      {nothing && (
+        <p className="py-3 text-sm text-muted-foreground">
+          {isAdmin ? (
+            <Link to="/capas" className="underline">
+              {t("Install an integration", "Integration installieren")}
+            </Link>
+          ) : (
+            t(
+              "Your admin has not set up an integration yet.",
+              "Ihr Admin hat noch keine Integration eingerichtet.",
+            )
+          )}
+        </p>
+      )}
+      {(available.length > 0 || notYetAvailable.length > 0) && (
+        <RowList>
+          {available.flatMap((integration) => {
+            const icon = <IntegrationIcon integration={integration} size={20} />;
+            const { connections } = connectionStateOf(integration, mine);
+            if (connections.length === 0) {
+              const covered = coveredByOrganisation(integration, organisation);
+              return [
+                <ConnectionRow
+                  key={integration.name}
+                  icon={icon}
+                  title={integration.label}
+                  detail={
+                    covered
+                      ? t("Organisation access active", "Organisationszugang aktiv")
+                      : t("Not connected", "Nicht verbunden")
+                  }
+                >
+                  <Button
+                    size="sm"
+                    variant={covered ? "outline" : "default"}
+                    aria-label={t(`Connect ${integration.label}`, `${integration.label} verbinden`)}
+                    onClick={() => onConnect(integration.name)}
+                  >
+                    {t("Connect", "Verbinden")}
+                  </Button>
+                </ConnectionRow>,
+              ];
+            }
+            return connections.map((c) => {
+              const broken = isBroken(c);
+              return (
+                <ConnectionRow
+                  key={c.id}
+                  icon={icon}
+                  title={integration.label}
+                  warn={broken}
+                  detail={
+                    broken
+                      ? `${c.accountLabel} · ${t("Needs reconnecting", "Erneut verbinden nötig")}`
+                      : t(
+                          `${c.accountLabel} · since ${shortDate(c.createdAt, lang)}`,
+                          `${c.accountLabel} · seit ${shortDate(c.createdAt, lang)}`,
+                        )
+                  }
+                >
+                  {broken && (
+                    <Button size="sm" onClick={() => onConnect(integration.name)}>
+                      {t("Reconnect", "Erneut verbinden")}
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    variant={broken ? "ghost" : "outline"}
+                    aria-label={t(`Disconnect ${c.accountLabel}`, `${c.accountLabel} trennen`)}
+                    onClick={() => onDisconnect(c)}
+                  >
+                    {t("Disconnect", "Trennen")}
+                  </Button>
+                </ConnectionRow>
+              );
+            });
+          })}
+          {notYetAvailable.map((integration) => (
+            <ConnectionRow
+              key={integration.name}
+              icon={<IntegrationIcon integration={integration} size={20} />}
+              title={integration.label}
+              detail={t("Installed, not available yet", "Installiert, noch nicht verfügbar")}
+            >
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={enabling}
+                aria-label={t(
+                  `Make ${integration.label} available`,
+                  `${integration.label} bereitstellen`,
+                )}
+                onClick={() => onMakeAvailable(integration)}
+              >
+                {t("Make available", "Bereitstellen")}
+              </Button>
+            </ConnectionRow>
+          ))}
+        </RowList>
+      )}
+    </>
+  );
+}
+
+function statusText(c: Connection, t: (en: string, de: string) => string): string {
+  if (c.status === "failed") return t("Test failed", "Test fehlgeschlagen");
+  if (isBroken(c)) return t("Needs reconnecting", "Erneut verbinden nötig");
+  if (c.status === "untested") return t("Not tested", "Nicht getestet");
+  return t("Active", "Aktiv");
+}
+
+function OrganisationAccesses({
+  rows,
+  available,
+  byName,
+  labelOf,
+  lang,
+  onAdd,
+  onEdit,
+  onReconnect,
+  onTest,
+  onRemove,
+}: {
+  rows: Connection[];
+  available: Integration[];
+  byName: Map<string, Integration>;
+  labelOf: (c: Connection) => string;
+  lang: string;
+  onAdd: (integration: string) => void;
+  onEdit: (c: Connection) => void;
+  onReconnect: (c: Connection) => void;
+  onTest: (c: Connection) => void;
+  onRemove: (c: Connection) => void;
+}) {
+  const t = useT();
+  return (
+    <section aria-labelledby="connections-org-accesses">
+      <div className="flex items-center justify-between gap-3">
+        <h3 id="connections-org-accesses" className="text-sm font-medium">
+          {t("Organisation accesses", "Zugänge der Organisation")}
+        </h3>
+        {available.length > 0 && (
+          <DropdownMenu modal={false}>
+            <DropdownMenuTrigger asChild>
+              <Button size="sm">
+                <Plus />
+                {t("Add access", "Zugang hinzufügen")}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {available.map((i) => (
+                <DropdownMenuItem key={i.name} onSelect={() => onAdd(i.name)}>
+                  {i.label}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
       </div>
-      {state === "not_connected" && (
-        <>
-          <p className="mt-1 text-sm text-muted-foreground">{oneLineBenefit(integration, t)}</p>
-          <button
-            type="button"
-            className={`${PRIMARY} mt-3`}
-            aria-label={t(`Connect ${integration.label}`, `${integration.label} verbinden`)}
-            onClick={onConnect}
-          >
-            {t("Connect", "Verbinden")}
-          </button>
-        </>
+      {rows.length === 0 ? (
+        <p className="py-3 text-sm text-muted-foreground">
+          {t("No organisation access yet.", "Noch kein Zugang der Organisation.")}
+        </p>
+      ) : (
+        <RowList>
+          {rows.map((c) => {
+            const label = labelOf(c);
+            const integration = c.integration ? byName.get(c.integration) : undefined;
+            const items = [
+              ...(c.kind === "credential"
+                ? [{ label: t("Test", "Testen"), onSelect: () => onTest(c) }]
+                : []),
+              ...(c.kind === "credential" && c.integration
+                ? [{ label: t("Edit", "Bearbeiten"), onSelect: () => onEdit(c) }]
+                : []),
+              ...(c.kind === "oauth" && c.status === "needs_reauth" && c.integration
+                ? [{ label: t("Reconnect", "Erneut verbinden"), onSelect: () => onReconnect(c) }]
+                : []),
+              { label: t("Remove", "Entfernen"), destructive: true, onSelect: () => onRemove(c) },
+            ];
+            return (
+              <ConnectionRow
+                key={c.id}
+                icon={integration ? <IntegrationIcon integration={integration} size={20} /> : null}
+                title={label}
+                detail={[c.accountLabel, c.createdByName, shortDate(c.createdAt, lang)]
+                  .filter(Boolean)
+                  .join(" · ")}
+                aside={<span className={isBroken(c) ? WARN : undefined}>{statusText(c, t)}</span>}
+              >
+                <RowMenu
+                  label={t(
+                    `Actions for ${label} (${c.accountLabel})`,
+                    `Aktionen für ${label} (${c.accountLabel})`,
+                  )}
+                  items={items}
+                />
+              </ConnectionRow>
+            );
+          })}
+        </RowList>
       )}
-      {state !== "not_connected" &&
-        connections.map((c) => (
-          <div key={c.id} className="mt-2 flex items-center justify-between gap-2 text-sm">
-            <span className="min-w-0 break-words">
-              {t(
-                `Connected as ${c.accountLabel} · since ${since(c.createdAt, lang)}`,
-                `Verbunden als ${c.accountLabel} · seit ${since(c.createdAt, lang)}`,
-              )}
-            </span>
-            <button type="button" className={SMALL} onClick={() => onDisconnect(c)}>
-              {t("Disconnect", "Trennen")}
-            </button>
-          </div>
-        ))}
-      {orange && (
-        <button type="button" className={`${PRIMARY} mt-3`} onClick={onConnect}>
-          {t("Reconnect", "Erneut verbinden")}
-        </button>
-      )}
-    </li>
+    </section>
   );
 }

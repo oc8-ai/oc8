@@ -27,10 +27,11 @@ tombstoned now and reduced by the sweep only after a grace window, during which
 Every path that removes knowledge takes these in that order, and each object only
 counts the FIRST time it is acquired. `recompute_freshness` is where the middle
 two are ordered (`data_source` before `knowledge_base`, deliberately, because
-that is the order a sync already had), and `append_event` flushes before it takes
-`pg_advisory_xact_lock` so the audit lock cannot arrive before a caller's row
-work. `tests/knowledge/test_lock_order.py` traces the real statements of all six
-paths and fails the build if one inverts.
+that is the order a sync already had), and the audit chain is written at commit
+(`oc8.audit.chain`), which flushes before it takes `pg_advisory_xact_lock` so the
+audit lock cannot arrive before a caller's row work.
+`tests/knowledge/test_lock_order.py` traces the real statements of all six paths
+and fails the build if one inverts.
 
 It is written down because it was measured: `recompute_freshness` used to write
 `knowledge_base` first and `data_source` second, which gave every operator path
@@ -60,7 +61,7 @@ import hashlib
 import uuid
 from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import ColumnElement, delete, distinct, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -106,7 +107,19 @@ class Removal:
     chunks: int
     sha256: str | None
     sources: int = 0
-    audit_seq: int | None = None
+    # The ledger entry itself, not its seq: `append_event` writes the chain when
+    # the transaction COMMITS, so the seq does not exist yet when a removal
+    # returns. Every caller that reports the receipt commits first.
+    audit_event: m.AuditEvent | None = None
+
+    @property
+    def audit_seq(self) -> int | None:
+        if self.audit_event is None:
+            return None
+        seq = cast("int | None", self.audit_event.seq)
+        if seq is None:
+            raise RuntimeError("Removal.audit_seq is only known once the transaction has committed")
+        return seq
 
 
 def _digest(parts: Iterable[str]) -> str:
@@ -234,7 +247,7 @@ async def tombstone_document(
     }
     sha256: str | None = None
     chars = 0
-    audit_seq: int | None = None
+    audit_event: m.AuditEvent | None = None
 
     if reduce_now:
         # Over everything the UPDATE below is about to empty, not just the live
@@ -275,12 +288,9 @@ async def tombstone_document(
         # The ledger entry goes LAST, after the destruction and after the
         # counters, and it is still in this one transaction -- do NOT insert a
         # commit before it, which would leave a durable claim with the tenant GUC
-        # gone. `append_event` takes `pg_advisory_xact_lock(tenant)` and holds it
-        # until commit, so appending first made one DELETE of a source stall
-        # every other audited action in that tenant -- every tool call, every
-        # approval, every authz decision -- for the length of a scan over
-        # `kb_chunk`. §5.2 forbids that hazard by name for a superseded document;
-        # it is the same hazard here.
+        # gone. (The tenant's audit lock is taken when the transaction commits,
+        # not here -- see `oc8.audit.chain` -- so the position no longer decides
+        # how long that lock is held; the receipt's seq is read after commit.)
         event = await append_event(
             db,
             tenant_id=tenant_id,
@@ -301,11 +311,11 @@ async def tombstone_document(
             reason="operator deleted the document",
             principal=principal,
         )
-        audit_seq = event.seq
+        audit_event = event
 
     await db.flush()
     return Removal(
-        documents=1, chunks=len(chunks), sha256=sha256, sources=sources, audit_seq=audit_seq
+        documents=1, chunks=len(chunks), sha256=sha256, sources=sources, audit_event=audit_event
     )
 
 
@@ -401,8 +411,8 @@ async def restore_document(
         kb_id=kb_id,
         source_ids={ds_id for ds_id in latest if ds_id is not None},
     )
-    # Appended last: `append_event` holds the tenant's audit advisory lock until
-    # commit, and every audited action in the tenant queues behind it.
+    # Appended last, in this same transaction; the chain is written (and the
+    # tenant's audit lock taken) when it commits.
     await append_event(
         db,
         tenant_id=tenant_id,
@@ -518,11 +528,10 @@ async def reduce_document(
     if reason == SOURCE_ABSENT and source is not None:
         await _evict_from_cursor(db, source=source, source_uri=source_uri)
 
-    audit_seq: int | None = None
+    audit_event: m.AuditEvent | None = None
     if reason != SUPERSEDED:
         # Last, and inside this same transaction: the entry and the destruction
-        # commit together, and the tenant's audit advisory lock is held for as
-        # little of the transaction as possible.
+        # commit together (the chain itself is written at commit).
         event = await append_event(
             db,
             tenant_id=tenant_id,
@@ -543,14 +552,14 @@ async def reduce_document(
             decision="allow",
             reason=f"absent from every attested listing of this source since {since}",
         )
-        audit_seq = event.seq
+        audit_event = event
 
     # No `recompute_freshness` here on purpose: reduction changes no live row --
     # every chunk it touches was already tombstoned -- so the counts it would
     # recompute are exactly the ones the tombstone already wrote.
     await db.flush()
     return Removal(
-        documents=1, chunks=len(chunks), sha256=sha256, sources=sources, audit_seq=audit_seq
+        documents=1, chunks=len(chunks), sha256=sha256, sources=sources, audit_event=audit_event
     )
 
 
@@ -704,10 +713,8 @@ async def tombstone_source(
         # other source's `doc_count` changed.
         await recompute_freshness(db, tenant_id=tenant_id, kb_id=kb_id, source_ids={data_source.id})
     data_source.doc_count = 0
-    # Appended after the erasure and the counters, not before them: the entry
-    # takes `pg_advisory_xact_lock(tenant)` and holds it until commit, so
-    # appending first made one DELETE of a source stall every audited action in
-    # the tenant for the length of a scan over `kb_chunk`.
+    # Appended after the erasure and the counters, in the same transaction.
+    # The chain is written (and the tenant's audit lock taken) at commit.
     event = await append_event(
         db,
         tenant_id=tenant_id,
@@ -730,7 +737,7 @@ async def tombstone_source(
     )
     await db.flush()
     return Removal(
-        documents=len(hit.uris), chunks=hit.chunks, sha256=sha256, sources=1, audit_seq=event.seq
+        documents=len(hit.uris), chunks=hit.chunks, sha256=sha256, sources=1, audit_event=event
     )
 
 
@@ -796,7 +803,7 @@ async def tombstone_base(
         chunks=hit.chunks,
         sha256=sha256,
         sources=hit.sources,
-        audit_seq=event.seq,
+        audit_event=event,
     )
 
 
@@ -840,7 +847,7 @@ async def unlink_source_from_base(
         now=now,
     )
     if hit.chunks == 0:
-        return Removal(documents=0, chunks=0, sha256=None, sources=0, audit_seq=None)
+        return Removal(documents=0, chunks=0, sha256=None, sources=0)
 
     sha256 = _digest(hit.uris) if hit.uris else None
 
@@ -848,9 +855,8 @@ async def unlink_source_from_base(
     # base, and no other base this source feeds, were touched.
     await recompute_freshness(db, tenant_id=tenant_id, kb_id=kb.id, source_ids={data_source.id})
 
-    # Appended after the erasure and the counters, for the same reason as
-    # tombstone_source/tombstone_base: the entry holds the tenant's audit
-    # advisory lock until commit.
+    # Appended after the erasure and the counters, like
+    # tombstone_source/tombstone_base; the chain is written at commit.
     event = await append_event(
         db,
         tenant_id=tenant_id,
@@ -875,7 +881,7 @@ async def unlink_source_from_base(
         chunks=hit.chunks,
         sha256=sha256,
         sources=1,
-        audit_seq=event.seq,
+        audit_event=event,
     )
 
 

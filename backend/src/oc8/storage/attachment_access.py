@@ -8,8 +8,10 @@ Two terms, both required:
 * the door -- `agent:view` tenant-wide or in at least one seat, exactly what
   `require_departmental(perm(AGENT, VIEW))` admits on the files routes;
 * the row -- a chat file belongs to the OWNER of its session (the only member
-  who can upload into it); a run output or an instruction file to whoever may
-  see the agent it belongs to, through the scoped repository.
+  who can upload into it); an instruction file to whoever may see the agent
+  it belongs to, through the scoped repository; a run output to whoever may
+  see that agent AND reach its runs (`run:view`, `run_reach`) -- a run
+  output is a run read.
 
 A missing row, another tenant's row and a refused row all answer False, so a
 caller can never tell them apart.
@@ -23,9 +25,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.agents.repo import visible_agent
+from oc8.agents.repo import run_reach, run_reachable_agent, visible_agent
 from oc8.authz.authority import Authority, tenant_wide_read
-from oc8.authz.permissions import AGENT, VIEW, perm
+from oc8.authz.permissions import AGENT, RUN, VIEW, perm
 from oc8.authz.scope import DepartmentScope
 
 _AGENT_VIEW = perm(AGENT, VIEW)
@@ -90,6 +92,14 @@ async def member_may_open_attachment(
             tenant_wide=tenant_wide_read(authority, _AGENT_VIEW),
             agent_id=agent_id,
         )
-        return agent is not None
+        if agent is None:
+            return False
+        if row.owner_type == "agent_run":
+            reach = run_reach(authority=authority, scope=scope, permission=perm(RUN, VIEW))
+            reachable = await run_reachable_agent(
+                db, reach=reach, tenant_id=tenant_id, agent_id=agent_id
+            )
+            return reachable is not None
+        return True
     session = await chat_session_of(db, tenant_id=tenant_id, owner_id=row.owner_id)
     return session is not None and session.member_id == member.id

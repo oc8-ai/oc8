@@ -30,6 +30,7 @@ from oc8.runtime.run_inputs import (
     publish_inputs_consumed,
     step_hint,
 )
+from tests.audit.helpers import flush_audit
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -169,10 +170,24 @@ async def _sees(db: AsyncSession, run: m.AgentRun, member: m.OrgMember) -> tuple
         db, tenant_id=run.tenant_id, member_id=member.id, agent_id=agent.id
     )
     plain = await live_timeline(
-        db, member=member, agent=agent, session=live, before=None, limit=50, all_runs=False
+        db,
+        member=member,
+        agent=agent,
+        session=live,
+        before=None,
+        limit=50,
+        all_runs=False,
+        reaches_runs=True,
     )
     everything = await live_timeline(
-        db, member=member, agent=agent, session=live, before=None, limit=50, all_runs=True
+        db,
+        member=member,
+        agent=agent,
+        session=live,
+        before=None,
+        limit=50,
+        all_runs=True,
+        reaches_runs=True,
     )
     shown = run.id in {i.run.id for i in plain if i.run is not None}
     # Every run is on the manager's "All runs"; the question is how.
@@ -451,7 +466,22 @@ async def test_a_seat_with_agent_manage_steers_an_autonomous_run(
         agent, _, bob = await _world(db, tenant)
         await _seat(db, tenant, bob, agent, manage=True)
         run = await _run(db, tenant, agent, operator=None)
-        assert await _may(db, run, bob, "member") is True
+        # Steering the agent's own run is a run control, so it needs
+        # `run:control` in run reach as well: an operator holds it.
+        assert await _may(db, run, bob, "operator") is True
+
+
+async def test_managing_an_agent_without_run_control_does_not_steer_its_run(
+    app_session: AppSessionFactory,
+) -> None:
+    """A seat that manages the agent, held by a plain member: no `run:control`,
+    so the agent's own run is outside his run reach (`agents.repo.run_reach`)."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, _, bob = await _world(db, tenant)
+        await _seat(db, tenant, bob, agent, manage=True)
+        run = await _run(db, tenant, agent, operator=None)
+        assert await _may(db, run, bob, "member") is False
 
 
 async def test_an_operator_who_lost_the_agent_cannot_steer(
@@ -594,6 +624,8 @@ async def test_an_accepted_input_is_audited_without_its_text(
         agent, alice, _ = await _world(db, tenant)
         run = await _run(db, tenant, agent)
         row = await add_run_input(db, run=run, member=alice, text="secret plan")
+        # Audit rows are written at commit (#82): write the staged ones now.
+        await flush_audit(db)
         events = (
             (
                 await db.execute(

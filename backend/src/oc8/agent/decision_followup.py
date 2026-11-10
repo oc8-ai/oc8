@@ -21,7 +21,12 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.connections.acting import resolve_acting_person
+from oc8.connections.acting import (
+    NO_ACTING_PERSON,
+    ActingPerson,
+    carried_person,
+    resolve_acting_person,
+)
 from oc8.runtime.intake import enqueue_run
 from oc8.runtime.person import FOR_PERSON, present
 from oc8.tenants.activity import TenantInactive
@@ -92,7 +97,10 @@ async def _carried_from_asking_run(
     The approver's free-text reason becomes the follow-up's overriding
     instruction, so it acts for that person only when they wrote it themselves
     or nobody wrote anything: someone else's words never run under their
-    account."""
+    account. The trigger still travels for display, audit and its own rules,
+    so withholding the person is explicit: without the marker the trigger
+    would resolve its creator, and a cron's follow-up would run the approver's
+    words under the schedule owner's account."""
     raw = (approval.payload or {}).get("run_id")
     try:
         asking = await db.get(m.AgentRun, uuid.UUID(str(raw))) if raw else None
@@ -100,12 +108,10 @@ async def _carried_from_asking_run(
         asking = None
     if asking is None or asking.tenant_id != approval.tenant_id:
         return {}
-    carried: dict[str, Any] = {}
     acting = await resolve_acting_person(db, asking)
-    if acting.member_id is not None and (
-        not reason.strip() or approval.decided_by == acting.member_id
-    ):
-        carried["on_behalf_of"] = str(acting.member_id)
+    if acting.member_id is not None and reason.strip() and approval.decided_by != acting.member_id:
+        acting = ActingPerson(None, NO_ACTING_PERSON)
+    carried: dict[str, Any] = carried_person(acting)
     ctx = asking.context if isinstance(asking.context, dict) else {}
     followup = ctx.get("followup")
     trigger_id = ctx.get("trigger_id") or (
