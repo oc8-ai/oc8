@@ -15,10 +15,18 @@ describe("ThoughtDisclosure", () => {
     expect(screen.getByText("Check the ledger first.")).toBeInTheDocument();
   });
 
-  it("shimmers 'Thinking…' only while live", () => {
-    const { rerender } = render(<ThoughtDisclosure live text={null} seconds={null} />);
-    expect(screen.getByText("Thinking…")).toHaveClass("text-shimmer");
-    rerender(<ThoughtDisclosure live={false} text="done" seconds={2} />);
+  it("leaves 'Thinking …' to the presence line and offers live reasoning as 'Thoughts'", () => {
+    const { container, rerender } = render(<ThoughtDisclosure live text={null} seconds={null} />);
+
+    expect(container).toBeEmptyDOMElement();
+
+    rerender(<ThoughtDisclosure live text="Check the ledger." seconds={null} />);
+
+    expect(screen.getByRole("button", { name: "Thoughts" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    expect(screen.queryByText(/Thinking/)).toBeNull();
     expect(document.querySelector(".text-shimmer")).toBeNull();
   });
 
@@ -53,13 +61,13 @@ describe("ThoughtDisclosure", () => {
 });
 
 describe("StreamingText", () => {
-  it("shows a caret while streaming and removes it when done", () => {
+  it("shows the breathing tail while streaming and removes it when done", () => {
     const { rerender } = render(<StreamingText text="Hello" streaming />);
     const region = screen.getByText("Hello").closest("[aria-live]");
     expect(region).toHaveAttribute("aria-live", "polite");
     expect(region).toHaveAttribute("aria-busy", "true");
-    expect(screen.getByTestId("stream-caret")).toHaveClass("stream-caret");
+    expect(screen.getByTestId("stream-tail")).toHaveClass("stream-tail");
     rerender(<StreamingText text="Hello world" streaming={false} />);
-    expect(screen.queryByTestId("stream-caret")).toBeNull();
+    expect(screen.queryByTestId("stream-tail")).toBeNull();
   });
 });
