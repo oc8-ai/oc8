@@ -30,7 +30,12 @@ from oc8.authz.scope import AgentActor
 from oc8.chat.model_choice import chat_enabled_model_ids
 from oc8.chat.modes import AGENT, mode_directive, mode_from_context, mode_refusal
 from oc8.copilot.builder import create_builder_proposal, may_create_agent, usable_systems
-from oc8.copilot.builder_ops import BuilderInvalid
+from oc8.copilot.builder_ops import (
+    FLAT_FIELDS,
+    BuilderInvalid,
+    flat_department_id,
+    proposal_operations,
+)
 from oc8.copilot.door import door_of
 from oc8.copilot.tools import uuid_or_none
 from oc8.departments.repo import visible_departments
@@ -53,6 +58,9 @@ _REFUSALS: dict[str, str] = {
     "model_not_allowed": "pick a model from builder_options",
     "skill_not_allowed": "pick a skill from builder_options",
     "connection_not_allowed": "use only systems builder_options lists for that department",
+    "unknown_field": "use only these fields: " + ", ".join(sorted(FLAT_FIELDS)),
+    "mixed_shapes": "pass either the agent's fields or operations, not both",
+    "missing_agent": "give at least departmentId, name and mission",
     "awaiting_approval": (
         "the previous proposal is waiting for approval; tell the person to wait "
         "for the decision before changing it"
@@ -80,6 +88,19 @@ def _reads_every_department(authority: Authority) -> bool:
     """`tenant_wide` for the scoped department repository, as the Copilot's
     department_status tool derives it."""
     return tenant_wide_read(authority, perm(DEPARTMENT, VIEW))
+
+
+async def _department_frame(
+    db: AsyncSession, tenant_id: uuid.UUID, department_id: str | None
+) -> dict[str, Any] | None:
+    """The frame a flat proposal's systems keep their rights from. Only a
+    rights lookup: whether the member may use the department and its systems
+    is `create_builder_proposal`'s check, exactly as for explicit operations."""
+    dept_id = uuid_or_none(department_id)
+    dept = await db.get(m.Department, dept_id) if dept_id else None
+    if dept is None or dept.tenant_id != tenant_id or not isinstance(dept.frame, dict):
+        return None
+    return dept.frame
 
 
 async def builder_options_text(
@@ -212,9 +233,12 @@ async def execute_builder_tool(
         return ControlOutcome(
             output="ERROR: propose_agent works in Agent mode only; call enter_agent_mode first"
         )
-    operations = tc.arguments.get("operations") if isinstance(tc.arguments, dict) else None
     authority = await authority_for_member(db, actor.member, token_role=token_role)
     try:
+        operations = proposal_operations(
+            tc.arguments,
+            frame=await _department_frame(db, tenant_id, flat_department_id(tc.arguments)),
+        )
         # A savepoint: a refused proposal leaves nothing behind -- neither the
         # draft it would have superseded nor a lost race's half (Task 4).
         async with db.begin_nested():

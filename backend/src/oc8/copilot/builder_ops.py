@@ -157,3 +157,141 @@ def resolve_step(
         raise BuilderInvalid("unknown_ref")
     out["agentId"] = str(created)
     return out, None
+
+
+# -- The flat propose_agent shape ---------------------------------------------
+#
+# Small local models (qwen2.5:7b in the browser E2E) never produced a valid
+# ordered `operations` list with refs. They fill a flat record reliably, so
+# propose_agent also takes one agent's fields directly and this module expands
+# them into the very operations a capable model would write. The expansion
+# only rearranges what it was given: every value still goes through
+# `parse_builder_operations` and the same selection and secret checks.
+
+#: The one ref a flat proposal's operations use.
+NEW_REF: Final = "$new"
+#: What the flat shape takes; anything else is refused, never dropped.
+FLAT_FIELDS: Final = frozenset(
+    {
+        "departmentId",
+        "name",
+        "roleTitle",
+        "mission",
+        "modelId",
+        "skillIds",
+        "schedule",
+        "eventSource",
+        "eventType",
+        "taskText",
+        "systems",
+        "limits",
+    }
+)
+#: A flat limit's own keys; `system` is the guardrail's `connectionName`.
+_LIMIT_KEYS: Final = {"system": "connectionName"}
+
+
+def _given(value: object) -> bool:
+    """Small models send null, "" or [] for a field they mean to leave out."""
+    return value not in (None, "", [], {})
+
+
+def _listed(value: object) -> list[object]:
+    """A list field; one bare string is read as a list of one."""
+    if not _given(value):
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return list(value)
+    raise BuilderInvalid("invalid")
+
+
+def _system_policy(frame: Mapping[str, Any] | None, system: str) -> dict[str, Any]:
+    """The narrowing entry that lets the new agent use `system` as far as the
+    department's frame allows -- the frame's own rights, never more, so it can
+    not widen anything (`pdp.narrowing_within_frame`)."""
+    tools = (frame or {}).get("tools")
+    raw = tools.get(system) if isinstance(tools, dict) else None
+    policy = raw if isinstance(raw, dict) else {}
+    return {
+        "enabled": True,
+        "read": bool(policy.get("read")),
+        "modify": bool(policy.get("modify")),
+    }
+
+
+def flat_operations(
+    fields: Mapping[str, Any], *, frame: Mapping[str, Any] | None = None
+) -> list[dict[str, Any]]:
+    """The ordered builder operations one flat proposal stands for:
+    agent.create (ref "$new"), then the model, each skill, the schedule and/or
+    event trigger, the systems as one narrowing and each limit as a guardrail,
+    every one with agentRef "$new". `frame` is the chosen department's frame;
+    it only decides which rights a named system keeps."""
+    unknown = set(fields) - FLAT_FIELDS
+    if unknown:
+        raise BuilderInvalid("unknown_field")
+    create: dict[str, Any] = {"type": "agent.create", "ref": NEW_REF}
+    for key in ("departmentId", "name", "roleTitle", "mission"):
+        if key in fields and fields[key] is not None:
+            create[key] = fields[key]
+    ops: list[dict[str, Any]] = [create]
+
+    def follow(op_type: str, /, **data: Any) -> None:
+        ops.append({"type": op_type, "agentRef": NEW_REF, **data})
+
+    if _given(fields.get("modelId")):
+        follow("agent.model.switch", modelConfigId=fields["modelId"])
+    for skill in _listed(fields.get("skillIds")):
+        follow("agent.skill.assign", skillVersionId=skill)
+    task = fields.get("taskText") if _given(fields.get("taskText")) else fields.get("mission")
+    if _given(fields.get("schedule")):
+        follow("trigger.create", kind="cron", cronExpression=fields["schedule"], taskText=task)
+    if _given(fields.get("eventSource")) or _given(fields.get("eventType")):
+        follow(
+            "trigger.create",
+            kind="event",
+            eventSource=fields.get("eventSource"),
+            eventType=fields.get("eventType"),
+            taskText=task,
+        )
+    systems = _listed(fields.get("systems"))
+    if systems:
+        if not all(isinstance(s, str) for s in systems):
+            raise BuilderInvalid("invalid", len(ops))
+        tools = {str(s): _system_policy(frame, str(s)) for s in systems}
+        follow("agent.narrowing.set", narrowing={"tools": tools})
+    for limit in _listed(fields.get("limits")):
+        if not isinstance(limit, dict):
+            raise BuilderInvalid("invalid", len(ops))
+        follow(
+            "agent.guardrail.set",
+            **{_LIMIT_KEYS.get(str(key), str(key)): value for key, value in limit.items()},
+        )
+    return ops
+
+
+def proposal_operations(arguments: object, *, frame: Mapping[str, Any] | None = None) -> object:
+    """The operations one propose_agent call carries, in either shape: the
+    explicit `operations` list as given, or the flat fields expanded by
+    `flat_operations`. Both, or neither, is refused. The result is still
+    unvalidated -- `parse_builder_operations` judges it."""
+    if not isinstance(arguments, Mapping):
+        raise BuilderInvalid("invalid")
+    flat = {key: value for key, value in arguments.items() if key != "operations"}
+    if "operations" in arguments:
+        if any(_given(value) for value in flat.values()):
+            raise BuilderInvalid("mixed_shapes")
+        return arguments["operations"]
+    if not any(_given(value) for value in flat.values()):
+        raise BuilderInvalid("missing_agent")
+    return flat_operations(flat, frame=frame)
+
+
+def flat_department_id(arguments: object) -> str | None:
+    """The department a flat proposal names, to read its frame by."""
+    if isinstance(arguments, Mapping) and "operations" not in arguments:
+        value = arguments.get("departmentId")
+        return value if isinstance(value, str) else None
+    return None
