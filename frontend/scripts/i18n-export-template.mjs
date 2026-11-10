@@ -10,7 +10,7 @@
 //
 // `--template` writes `i18n/oc8.pot` instead: every msgid, all msgstrs
 // empty, a POT header. It is the "template for new translations" hosted
-// Weblate reads (docs/contributing/weblate.md); CI checks it is current.
+// Weblate reads; CI checks it is current.
 //
 // Safe to re-run as the UI evolves: existing translations in
 // `i18n/<locale>.po` are kept, new source strings appear with an empty
