@@ -170,13 +170,13 @@ from oc8.modelrouter.types import ImagePart, ModelParams, with_prompt_cache_key
 from oc8.observability import get_tracer, record_budget_exceeded, record_tool_call
 from oc8.realtime.emit import (
     note_focus,
-    publish_agent_status,
     publish_run_reasoning_delta,
     publish_run_step_timing,
     publish_run_token_delta,
     publish_run_tool_call,
     record_activity,
 )
+from oc8.runtime.agent_status import settle_agent_status
 from oc8.runtime.run_context import append_tool_call
 from oc8.runtime.step_record import call_state_for, step_timing_dto
 from oc8.runtime.supervision_hook import maybe_checkpoint, maybe_create_anchor
@@ -1194,8 +1194,9 @@ async def run_agent(
                                 source=f"oc8/approval/{held_ar.id}",
                             )
                             task.state = "waiting_for_approval"
-                            agent.status = "waiting_for_approval"
-                            await publish_agent_status(agent)
+                            # Not over a pause or stop somebody made during the run: the
+                            # executor no longer holds the agent row (oc8.runtime.agent_status).
+                            await settle_agent_status(db, agent, "waiting_for_approval")
                             return RunResult(
                                 task.id,
                                 agent.id,
@@ -2299,8 +2300,9 @@ async def run_agent(
                             tool_span.set_attribute("decision", decision.effect.value)
                         if decision.effect is Effect.REQUIRE_APPROVAL:
                             task.state = "waiting_for_approval"
-                            agent.status = "waiting_for_approval"
-                            await publish_agent_status(agent)
+                            # Not over a pause or stop somebody made during the run: the
+                            # executor no longer holds the agent row (oc8.runtime.agent_status).
+                            await settle_agent_status(db, agent, "waiting_for_approval")
                             if tc.name == "memory_write":
                                 record = await write_memory(
                                     db,
