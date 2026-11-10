@@ -114,6 +114,30 @@ kept, new English strings the UI has picked up since you last ran it
 appear with an empty `msgstr`, and strings no longer used anywhere are
 dropped. Fill in the new blanks and open a PR.
 
+## Edition catalogs
+
+An edition (Enterprise, say) translates the UI strings it adds with the same
+mechanism, not a parallel one. Its `EditionExtension.i18n_catalog_dirs()`
+returns the directories that hold its own `<locale>.po` files, and
+`GET /api/v1/i18n/core` merges them into the same per-locale catalog. Core
+always wins: a `msgid` that core's catalog for that locale carries,
+translated or not, is never taken from an edition, so an edition can add
+text but never change core's. Fuzzy and empty entries are skipped as they
+are for core, and the language's `X-Native-Name`/`X-Flag` come from core's
+file when it sets them, otherwise from the edition's. `create_app` refuses
+to start when a returned directory is missing or one of its files does not
+parse, and the error names the extension. An edition exports its strings with
+core's script, pointed at its own source tree:
+
+```sh
+node <core>/frontend/scripts/i18n-export-template.mjs --template \
+  --src <edition>/frontend/src --out <edition catalog dir> --name <edition>
+```
+
+`--name` sets the template's file name (`<edition>.pot`) and the
+`Project-Id-Version`. The same options work with a `<locale>` instead of
+`--template`. Without them the script behaves as described above.
+
 ## A rough edge worth knowing about
 
 Content-as-key means the exact same English string always resolves to

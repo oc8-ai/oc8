@@ -20,6 +20,7 @@ from oc8.edition.runtime import (
     EditionRuntimeComposition,
     RuntimeComposition,
 )
+from oc8.i18n.catalog import collect_edition_catalog_dirs
 from oc8.tenants.activity import TenantInactive
 
 logger = logging.getLogger(__name__)
@@ -111,6 +112,8 @@ def create_app(
     )
     # Agent ideas editions contribute (GET /copilot/agent-ideas reads them).
     app.state.agent_templates = collect_edition_templates(edition_extensions)
+    # UI catalogs editions ship (GET /i18n/core merges them under core's).
+    app.state.i18n_catalog_dirs = collect_edition_catalog_dirs(edition_extensions)
 
     app.add_middleware(
         CORSMiddleware,
