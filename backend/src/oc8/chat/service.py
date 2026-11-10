@@ -54,6 +54,7 @@ from oc8.chat.questions import (
     questions_to_json,
     render_answers_text,
 )
+from oc8.connections.acting import ACTING_PERSON_WITHHELD, SOMEONE_ELSES_WORDS
 from oc8.copilot.redaction import is_secret_request, redact_text
 from oc8.copilot.responsibilities import close_responsibility
 from oc8.knowledge.embedding_policy import strictest
@@ -725,6 +726,15 @@ async def send_message(
         followup=followup,
     )
     task_text = str(context["task"])
+    if originating_operator is not None:
+        owner = await db.get(m.OrgMember, session.member_id)
+        if owner is not None and owner.subject != originating_operator:
+            # Someone else writes into this member's chat (an oversight
+            # reply): the run acts for nobody, and says so, so that no fixed
+            # binding to the owner's own account carries these words out.
+            # Set here and not in `_extra_context`'s allow-list: a caller can
+            # never hand a turn this key.
+            context[ACTING_PERSON_WITHHELD] = SOMEONE_ELSES_WORDS
 
     # Open the session's Task HERE, on turn one, rather than letting the engine
     # open one implicitly when the run starts.

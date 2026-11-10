@@ -174,6 +174,28 @@ describe("ConnectionRequiredNotice", () => {
     );
   });
 
+  it("explains why a run acting for nobody may not use a personal fixed access", () => {
+    window.localStorage.setItem("oc8-lang", "de");
+    renderNotice(
+      {
+        integration: "microsoft365",
+        provider: "microsoft",
+        label: "Microsoft 365",
+        reason: "personal_account_withheld",
+      },
+      "a1",
+    );
+    expect(
+      screen.getByText(
+        "Dieser Lauf handelt für niemanden und darf daher das persönliche Konto aus dem festen Zugang dieses Agenten zu Microsoft 365 nicht nutzen.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Zugang prüfen →" })).toHaveAttribute(
+      "href",
+      "/agents/a1?tab=guardrails",
+    );
+  });
+
   it("renders nothing without a problem", () => {
     const { container } = renderNotice(null);
     expect(container).toBeEmptyDOMElement();
