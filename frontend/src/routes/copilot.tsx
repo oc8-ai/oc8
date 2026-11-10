@@ -134,7 +134,16 @@ export function CopilotPage({
   const owner = listed ? agentId : (linked?.agentId ?? null);
   const ownLink = !!initialSessionId && !!agentId && owner === agentId;
   const foreignOwner = initialSessionId && owner && owner !== agentId ? owner : null;
+  // The chat this page opened itself, until the address names it too. The
+  // router hands out a navigation's new key before its search, so for one
+  // render "Neuer Chat" looked like the old link followed again and reopened
+  // the chat just left.
+  const openedHere = useRef<string | null | undefined>(undefined);
   useEffect(() => {
+    if (openedHere.current !== undefined) {
+      if ((initialSessionId ?? null) !== openedHere.current) return;
+      openedHere.current = undefined;
+    }
     if (ownLink && initialSessionId) setSessionId(initialSessionId);
   }, [ownLink, initialSessionId, navKey]);
   // A `?pin=` link: one new chat per link, however often this effect runs
@@ -203,6 +212,7 @@ export function CopilotPage({
   const [panelOpen, setPanelOpen] = useState(true);
   const openSession = (id: string | null) => {
     setSessionId(id);
+    openedHere.current = id !== (initialSessionId ?? null) ? id : undefined;
     onSessionOpened?.(id);
   };
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
