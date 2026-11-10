@@ -309,12 +309,6 @@ class CreateGrantRequest(CamelModel):
     grantee_id: uuid.UUID
 
 
-class CreateComponentGrantRequest(CamelModel):
-    component_key: str
-    grantee_type: Literal["department", "agent"]
-    grantee_id: uuid.UUID
-
-
 class CreateSourceRequest(CamelModel):
     connector_type: str
     name: str

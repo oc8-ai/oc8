@@ -1020,47 +1020,6 @@ export function useCreateGrant() {
   });
 }
 
-export interface ComponentGrantDTO {
-  id: string;
-  componentKey: string;
-  granteeType: "department" | "agent";
-  granteeId: string;
-}
-
-const COMPONENT_GRANTS_KEY = ["componentGrants"] as const;
-
-// Unlike knowledge grants, component grants DO support revoke (DELETE
-// /components/grants/{id}) -- the catalogue is a short, fixed list (4 keys),
-// not a tenant-created resource, so "list once, filter client-side" is cheap
-// enough that a toggle (grant/revoke) is the natural UI instead of a
-// one-directional "assign" picker.
-export function useComponentGrants() {
-  return useQuery({
-    queryKey: COMPONENT_GRANTS_KEY,
-    queryFn: () => api.get<ComponentGrantDTO[]>("/components/grants"),
-  });
-}
-
-export function useCreateComponentGrant() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (body: {
-      componentKey: string;
-      granteeType: "department" | "agent";
-      granteeId: string;
-    }) => api.post<ComponentGrantDTO>("/components/grants", body),
-    onSuccess: () => qc.invalidateQueries({ queryKey: COMPONENT_GRANTS_KEY }),
-  });
-}
-
-export function useDeleteComponentGrant() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (grantId: string) => api.delete<void>(`/components/grants/${grantId}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: COMPONENT_GRANTS_KEY }),
-  });
-}
-
 export const useDataSources = (params: ListQueryParams = {}) =>
   useQuery({
     queryKey: [...keys.sources, params] as const,

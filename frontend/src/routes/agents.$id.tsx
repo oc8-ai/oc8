@@ -120,7 +120,6 @@ import { AgentVersionsTab } from "@/components/agent-versions-tab";
 import { AgentRuntimePanel } from "@/components/agent-runtime-panel";
 import { LiveTimeline } from "@/components/conversation/live-timeline";
 import { urlId } from "@/lib/ids";
-import { ComponentGrantPanel } from "@/components/component-grant-panel";
 import { InlineRename } from "@/components/inline-rename";
 import { AgentInstructionsPanel } from "@/components/agent-instructions-panel";
 import { KnowledgeAssignment } from "@/components/knowledge-assignment";
@@ -551,12 +550,6 @@ function AgentDetail() {
               deptEnabled={deptEnabled}
             />
           </div>
-          <ComponentGrantPanel
-            granteeType="agent"
-            granteeId={agent.id}
-            mayManage={mayManage}
-            departmentId={agent.departmentId}
-          />
         </div>
       )}
 

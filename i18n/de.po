@@ -955,9 +955,6 @@ msgstr "Erledige diese Live-Prüfungen, bevor du Pilotnutzer einlädst."
 msgid "Complexity router — picks among the tier models you configure (fast / balanced / strong)."
 msgstr "Komplexitäts-Router — wählt unter den konfigurierten Tier-Modellen (fast / balanced / strong)."
 
-msgid "Components"
-msgstr "Komponenten"
-
 msgid "Condense this conversation into a decision record."
 msgstr "Fasst dieses Gespräch zu einem Entscheidungsprotokoll zusammen."
 
@@ -1363,9 +1360,6 @@ msgstr "Agent konnte nicht gelöscht werden"
 msgid "Couldn't delete the file"
 msgstr "Datei konnte nicht gelöscht werden"
 
-msgid "Couldn't grant access"
-msgstr "Zugriff konnte nicht erteilt werden"
-
 msgid "Couldn't load attached files."
 msgstr "Angehängte Dateien konnten nicht geladen werden."
 
@@ -1398,9 +1392,6 @@ msgstr "Runtime konnte nicht zurückgesetzt werden"
 
 msgid "Couldn't revoke"
 msgstr "Konnte nicht entfernt werden"
-
-msgid "Couldn't revoke access"
-msgstr "Zugriff konnte nicht entzogen werden"
 
 msgid "Couldn't roll back"
 msgstr "Zurücksetzen fehlgeschlagen"
@@ -2364,9 +2355,6 @@ msgstr "Quellen in oc8 ingestieren"
 
 msgid "Inherited"
 msgstr "Geerbt"
-
-msgid "Inherited from department"
-msgstr "Von der Abteilung geerbt"
 
 msgid "Input"
 msgstr "Input"
@@ -5272,9 +5260,6 @@ msgstr "über Abteilungsleiter"
 msgid "Visibility"
 msgstr "Sichtbarkeit"
 
-msgid "visual output"
-msgstr "visuelle Ausgabe"
-
 msgid "waiting"
 msgstr "wartet"
 
@@ -5403,9 +5388,6 @@ msgstr "Wohin das Geld fließt"
 
 msgid "Where this person stands, and at which level."
 msgstr "Wo diese Person steht, und auf welcher Ebene."
-
-msgid "Which visual components (charts, tables, record cards) may be used when responding."
-msgstr "Welche visuellen Komponenten (Diagramme, Tabellen, Datensatz-Karten) bei Antworten verwendet werden dürfen."
 
 msgid "Who may do what — and why you were refused."
 msgstr "Wer was darf — und warum Sie abgewiesen wurden."

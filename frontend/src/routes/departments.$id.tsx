@@ -24,7 +24,6 @@ import { InlineRename } from "@/components/inline-rename";
 import { NewAgentDialog } from "@/components/new-agent-dialog";
 import { MemoryEditor } from "@/components/memory-editor";
 import { KnowledgeAssignment } from "@/components/knowledge-assignment";
-import { ComponentGrantPanel } from "@/components/component-grant-panel";
 import type { Condition, GuardrailValue } from "@/components/guardrail-preset-picker";
 import {
   ToolGuardrailTable,
@@ -560,8 +559,6 @@ function DepartmentDetail() {
             departmentId={dept.id}
             enabled={deptKbs}
           />
-
-          <ComponentGrantPanel granteeType="department" granteeId={dept.id} mayManage />
         </>
       )}
 
