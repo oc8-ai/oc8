@@ -180,8 +180,8 @@ def _pin_through(
 async def test_a_relative_redirect_stays_on_the_hostname_not_the_pinned_ip(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """https://www.opaas.cloud/ answers 301 "/de": the next hop must be
-    https://www.opaas.cloud/de, not https://<pinned ip>/de (no SNI on an IP,
+    """https://www.example.org/ answers 301 "/de": the next hop must be
+    https://www.example.org/de, not https://<pinned ip>/de (no SNI on an IP,
     so the TLS handshake fails)."""
     import oc8.knowledge.connectors.fetcher as f
 

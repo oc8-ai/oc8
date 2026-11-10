@@ -2778,6 +2778,15 @@ async def execute_control_tool(
         try:
             text, content_type = await safe_fetch(url)
         except ConnectorError as exc:
+            from oc8.net.outbound import OutboundBlocked
+
+            if isinstance(exc.__cause__, OutboundBlocked):
+                # The guard's text names the address the host resolved to;
+                # an internal one is not the model's (or a prompt's) business.
+                return ControlOutcome(
+                    output=f"ERROR: could not fetch {url!r}: the address is not reachable "
+                    "from oc8 (private or blocked network)"
+                )
             return ControlOutcome(output=f"ERROR: could not fetch {url!r}: {exc}")
         except Exception as exc:
             # A bad URL/network failure is the model's problem to react to, not a
