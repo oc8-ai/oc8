@@ -396,7 +396,9 @@ export function ApprovalsWidget({
       </div>
 
       <Dialog open={current !== null} onOpenChange={(open) => !open && setSelectedId(null)}>
-        <DialogContent className="max-w-2xl p-0">
+        {/* The dialog bounds its own height and lays its pane out as a column:
+            the pane's body scrolls, its decision bar stays below it. */}
+        <DialogContent className="flex max-h-[85dvh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
           <DialogHeader className="sr-only">
             <DialogTitle>
               {currentApproval?.title ?? currentClarification?.question ?? ""}
@@ -463,8 +465,11 @@ function Pill({
 // ------------------------------------------------------------------ the list
 // QueueRow, ApprovalPane, ArgumentValue, ClarificationPane are verbatim from
 // the old workspace.tsx (pre-rewrite lines 565-1019), with one change: each
-// pane's outer wrapper keeps `flex h-full flex-col` so it fills the Dialog
-// exactly as it filled the old inline Panel.
+// pane's outer wrapper is a `flex min-h-0 flex-1 flex-col` column that fills
+// the height-bounded Dialog: the body scrolls (`min-h-0 flex-1
+// overflow-y-auto`, padded at the bottom) and the decision bar is its own
+// row below it -- never `sticky` inside an unbounded box, where it floated
+// over the middle of the content.
 
 function QueueRow({
   row,
@@ -640,8 +645,8 @@ export function ApprovalPane({
   const reasonSentence = formatReasonContext(approval.reasonContext, t);
 
   return (
-    <div className="flex h-full max-h-[80vh] flex-col">
-      <div className="flex-1 space-y-6 overflow-y-auto px-6 py-5">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="min-h-0 flex-1 space-y-6 overflow-y-auto px-6 pb-8 pt-5">
         <section>
           <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
             <AgentAvatar seed={approval.agentId} size={20} ariaHidden />
@@ -814,7 +819,7 @@ export function ApprovalPane({
         )}
       </div>
 
-      <footer className="sticky bottom-0 flex flex-wrap items-center gap-2 border-t border-border bg-panel px-6 py-3">
+      <footer className="flex shrink-0 flex-wrap items-center gap-2 border-t border-border bg-panel px-6 py-3">
         {!mayAct ? (
           <p className="text-xs text-muted-foreground">
             {viewOnlyBecause === "role"
@@ -921,8 +926,8 @@ function ClarificationPane({
   const canSend = text.trim().length > 0;
 
   return (
-    <div className="flex h-full max-h-[80vh] flex-col">
-      <div className="flex-1 space-y-6 overflow-y-auto px-6 py-5">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="min-h-0 flex-1 space-y-6 overflow-y-auto px-6 pb-8 pt-5">
         <section>
           <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
             <AgentAvatar seed={clarification.agentId} size={20} ariaHidden />
@@ -962,7 +967,7 @@ function ClarificationPane({
         )}
       </div>
 
-      <footer className="sticky bottom-0 flex items-center justify-end gap-2 border-t border-border bg-panel px-6 py-3">
+      <footer className="flex shrink-0 items-center justify-end gap-2 border-t border-border bg-panel px-6 py-3">
         {!mayAct ? (
           <p className="mr-auto text-xs text-muted-foreground">
             {viewOnlyBecause === "role"
