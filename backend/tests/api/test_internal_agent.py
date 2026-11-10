@@ -2922,6 +2922,24 @@ async def test_tool_refuses_an_organisation_that_may_not_run(app_session: Any) -
 
 
 @pytest.mark.asyncio
+async def test_step_stops_an_organisation_that_may_not_run(app_session: Any) -> None:
+    """The /step cancel probe (shared with the MCP gateway, `run_stop`) ends the
+    run as interrupted and records the kind the executor resolves it with."""
+    from oc8 import models as m
+    from oc8.tenants.activity import TENANT_INACTIVE_KIND, TENANT_INACTIVE_OUTPUT
+
+    tenant, agent_id, run_id = await _inactive_run(app_session)
+    body = await _post_step(tenant, agent_id, run_id)
+    assert body["done"] is True
+    assert body["status_override"] == "interrupted"
+    assert body["text"] == TENANT_INACTIVE_OUTPUT
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        assert run.context["cancellation_kind"] == TENANT_INACTIVE_KIND
+
+
+@pytest.mark.asyncio
 async def test_tools_refuses_an_organisation_that_may_not_run(app_session: Any) -> None:
     from asgi_lifespan import LifespanManager
     from httpx import ASGITransport, AsyncClient

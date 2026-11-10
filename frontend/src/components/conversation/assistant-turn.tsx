@@ -22,6 +22,7 @@ import { sourcesOf, type RunActivityDTO } from "@/lib/hooks-chat";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
+import { isEmptyReply } from "./empty-reply";
 import { Sources } from "./sources";
 import { StepList } from "./step-list";
 import { StreamingText } from "./streaming-text";
@@ -114,6 +115,7 @@ export function AssistantTurn({
   const partRenderers = useChatSlot("messageParts");
   const editionSources = partRenderers.some((r) => r.type === "sources");
   const components = message ? message.renderedComponents : (run?.components ?? []);
+  const noAnswer = isEmptyReply(message) && !run?.connectionRequired && !run?.toolDenied;
 
   function copy() {
     if (!message) return;
@@ -172,6 +174,14 @@ export function AssistantTurn({
           document.getElementById(`source-${n}`)?.scrollIntoView({ block: "nearest" });
         }}
       />
+      {noAnswer && (
+        <p role="status" className="text-sm text-muted-foreground">
+          {t(
+            "The assistant returned no answer. Try again or rephrase.",
+            "Der Assistent hat keine Antwort geliefert. Versuch es nochmal oder formuliere anders.",
+          )}
+        </p>
+      )}
       {run?.state === "waiting_for_input" && showingLive && (
         <p className="text-xs text-status-warning" aria-live="polite">
           {t("Waiting for answers…", "Wartet auf Antworten …")}

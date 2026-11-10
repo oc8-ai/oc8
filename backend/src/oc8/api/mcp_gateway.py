@@ -92,6 +92,7 @@ from oc8.memory.policy import authorize_memory_write
 from oc8.modelrouter import ToolCall
 from oc8.realtime.emit import note_focus, record_activity
 from oc8.runtime.approval_resume import pre_decided_map
+from oc8.runtime.cancellation import run_stop
 from oc8.runtime.run_context import merge_context
 from oc8.skills.runtime import (
     LoadedSkill,
@@ -1299,6 +1300,28 @@ async def _call_tool(
     return _tool_result(fence(shorten_long_strings(output), source=f"{conn.name}:{tc.name}"))
 
 
+async def _stop_if_cancelled(db: DbSession, *, run: m.AgentRun) -> dict[str, Any] | None:
+    """The per-step cancel probe (§7.2) for a gateway-driven run, or None.
+
+    The same probe, in the same order, as the isolated `/step` (`run_stop`):
+    an operator's cancel, the tenant activity gate, then an ownership change
+    after an input was delivered. The call is refused as a tool error the
+    model can read, and a kind the executor cannot read off run_cancellation
+    is recorded on the run context exactly as `/step` records it. The run then
+    ends the way every gateway run ends: the runtime's poll loop asks the
+    executor's cancel probe, returns "interrupted", and the executor resolves
+    the cancellation kind from that record."""
+    stop = await run_stop(db, run)
+    if stop is None:
+        return None
+    if stop.context_patch:
+        await merge_context(db, run, stop.context_patch)
+        await db.commit()
+        await _rebind_tenant(db, run.tenant_id)
+    logger.info("run %s: tool call refused, the run is stopping (%s)", run.id, stop.kind)
+    return _tool_result(f"ERROR: {stop.reason} Do not call any more tools.", is_error=True)
+
+
 async def _with_run_inputs(
     db: DbSession, *, run: m.AgentRun, payload: dict[str, Any]
 ) -> dict[str, Any]:
@@ -1384,6 +1407,13 @@ async def mcp_endpoint(
         arguments = params.get("arguments") or {}
         if not isinstance(arguments, dict):
             return _error(rpc_id, _INVALID_REQUEST, "arguments must be an object")
+        # A runtime driven only through this gateway has no /step oc8 can
+        # answer with "stop", so its next tool call is where it is stopped:
+        # before the call runs and before any input rides along, so a stopping
+        # run neither acts nor takes words it will never act on.
+        stopped = await _stop_if_cancelled(db, run=run)
+        if stopped is not None:
+            return _result(rpc_id, stopped)
         try:
             payload = await _call_tool(
                 db,

@@ -144,7 +144,7 @@ async def _run(db: Any, office: BuilderOffice, **ctx: Any) -> tuple[m.AgentRun, 
 
 
 async def _call(
-    db: Any, office: BuilderOffice, run: m.AgentRun, task: m.Task, name: str, **args: Any
+    db: Any, office: BuilderOffice, run: m.AgentRun, task: m.Task, name: str, /, **args: Any
 ) -> Any:
     agent = await db.get(m.Agent, office.assistant_id)
     return await execute_builder_tool(
@@ -528,3 +528,92 @@ def test_a_connection_tool_named_like_a_builder_tool_gets_no_core_pass(
         routed=routed,
     )
     assert decision.effect is Effect.DENY
+
+
+def _flat(office: BuilderOffice, **overrides: Any) -> dict[str, Any]:
+    """`invoice_checker_ops` in propose_agent's flat shape."""
+    fields: dict[str, Any] = {
+        "departmentId": str(office.department_id),
+        "name": "Rechnungsprüfer",
+        "roleTitle": "Buchhaltung",
+        "mission": "Prüft jeden Morgen offene Rechnungen und meldet Auffälligkeiten.",
+        "modelId": str(office.model_id),
+        "skillIds": [str(office.skill_version_id)],
+        "schedule": "0 7 * * 1-5",
+        "taskText": "Prüfe die offenen Rechnungen.",
+    }
+    fields.update(overrides)
+    return fields
+
+
+async def _stored_steps(db: Any) -> list[dict[str, Any]]:
+    from oc8.copilot.builder import load_steps
+    from oc8.copilot.builder_ops import builder_operation_data
+
+    proposal = (
+        await db.execute(select(CopilotProposal).where(CopilotProposal.status == "draft"))
+    ).scalar_one()
+    return [builder_operation_data(s) for s in await load_steps(db, proposal)]
+
+
+@pytest.mark.asyncio
+async def test_a_flat_proposal_stores_what_the_explicit_one_does(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await builder_office(db, tenant)
+        run, task = await _run(db, office, chat_mode="agent")
+        explicit = await _call(
+            db, office, run, task, "propose_agent", operations=invoice_checker_ops(office)
+        )
+        assert not explicit.output.startswith("ERROR"), explicit.output
+        from_ops = await _stored_steps(db)
+        flat = await _call(db, office, run, task, "propose_agent", **_flat(office))
+        assert not flat.output.startswith("ERROR"), flat.output
+        assert await _stored_steps(db) == from_ops
+
+
+@pytest.mark.asyncio
+async def test_a_flat_proposal_keeps_the_frame_rights_of_its_systems(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await builder_office(db, tenant)
+        run, task = await _run(db, office, chat_mode="agent")
+        outcome = await _call(
+            db, office, run, task, "propose_agent", **_flat(office, systems=["odoo"])
+        )
+        assert not outcome.output.startswith("ERROR"), outcome.output
+        narrowing = (await _stored_steps(db))[-1]["narrowing"]
+        assert narrowing == {"tools": {"odoo": {"enabled": True, "read": True, "modify": True}}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("overrides", "code"),
+    [
+        ({"mission": "Nutze password=hunter2 für Odoo."}, "secret_value"),
+        ({"taskText": "Login mit api_key=sk-123456"}, "secret_value"),
+        ({"modelId": "DISABLED"}, "model_not_allowed"),
+        ({"systems": ["hubspot"]}, "connection_not_allowed"),
+        ({"departmentId": str(uuid.uuid4())}, "department_unknown"),
+        ({"model": "x"}, "unknown_field"),
+    ],
+)
+async def test_a_flat_proposal_is_checked_as_strictly(
+    app_session: AppSessionFactory, overrides: dict[str, Any], code: str
+) -> None:
+    """The secret gate and every selection check apply to the flat shape too."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await builder_office(db, tenant)
+        if overrides.get("modelId") == "DISABLED":
+            overrides = {"modelId": str(office.disabled_model_id)}
+        run, task = await _run(db, office, chat_mode="agent")
+        outcome = await _call(db, office, run, task, "propose_agent", **_flat(office, **overrides))
+        assert outcome is not None and outcome.output.startswith("ERROR")
+        assert f"({code}" in outcome.output, outcome.output
+        assert "hunter2" not in outcome.output and "sk-123456" not in outcome.output
+        assert (await db.execute(select(CopilotProposal))).scalars().all() == []
