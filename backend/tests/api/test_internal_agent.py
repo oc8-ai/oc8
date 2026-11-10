@@ -338,6 +338,9 @@ async def test_step_offers_the_same_tools_as_the_in_process_engine(
     assert "delegate_task" in offered_isolated, "a team lead must be able to delegate"
     assert any(n.startswith("skill_") for n in offered_isolated), "skills must be invocable"
     assert "write_output_file" in offered_isolated
+    # Components are on by default: no ComponentGrant row was seeded.
+    assert "render_component" in offered_isolated
+    assert "render_component" in offered_in_process
 
 
 @pytest.mark.asyncio
@@ -1780,7 +1783,6 @@ async def test_step_persists_and_reoffers_copilot_permissions_across_calls(
 async def test_the_internal_endpoint_publishes_a_rendered_component(
     app_session: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from oc8 import models as m
 
     published: list[tuple[str, dict[str, Any]]] = []
 
@@ -1795,14 +1797,6 @@ async def test_the_internal_endpoint_publishes_a_rendered_component(
     async with app_session(tenant) as db:  # type: ignore[operator]
         agent, _task, run = await _plain_agent_run(db, tenant)
         agent_id, run_id = agent.id, run.id
-        db.add(
-            m.ComponentGrant(
-                tenant_id=tenant,
-                component_key="record_card",
-                grantee_type="agent",
-                grantee_id=agent_id,
-            )
-        )
         await db.commit()
 
     code, body = await _post_tool(
@@ -1899,14 +1893,6 @@ async def test_the_internal_endpoint_makes_a_tool_call_live(
     async with app_session(tenant) as db:  # type: ignore[operator]
         agent, _task, run = await _plain_agent_run(db, tenant)
         agent_id, run_id = agent.id, run.id
-        db.add(
-            m.ComponentGrant(
-                tenant_id=tenant,
-                component_key="record_card",
-                grantee_type="agent",
-                grantee_id=agent_id,
-            )
-        )
         await db.commit()
 
     code, body = await _post_tool(

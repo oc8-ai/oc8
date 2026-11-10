@@ -659,15 +659,17 @@ RENDER_COMPONENT = NeutralTool(
         "against labels. Only use data you already obtained through a real "
         "tool call earlier in this conversation -- never invent or reuse "
         "stale values, and never claim you rendered a component or fetched "
-        "fresh data unless you actually did so this turn. `component_key` "
-        "must be one you have been granted -- if you are unsure, try "
-        "'record_card'."
+        "fresh data unless you actually did so this turn. Every layout listed "
+        "here is available to you."
     ),
     parameters={
         "type": "object",
         "properties": {
             "component_key": {
                 "type": "string",
+                # Components are presentation only and on for every agent, so
+                # the model is given the whole catalogue -- no grant to check.
+                "enum": list(COMPONENT_CATALOG),
                 "description": (
                     "Which layout to render: 'record_card', 'data_table', "
                     "'bar_chart', or 'line_chart'."
@@ -2119,22 +2121,6 @@ async def _auto_locality(db: AsyncSession, config: m.ModelConfig) -> str:
         if tier is None or tier.locality != "local":
             return "cloud"
     return "local"
-
-
-async def _has_component_grant(db: AsyncSession, *, agent: m.Agent, component_key: str) -> bool:
-    """Whether AGENT -- directly, or via its department -- has been granted
-    this component. Mirrors oc8.knowledge.retrieval.granted_kb_ids: the same
-    department/agent grant shape, keyed on a fixed catalogue string instead
-    of a tenant-created knowledge base id."""
-    result = await db.execute(
-        select(m.ComponentGrant.id)
-        .where(
-            m.ComponentGrant.component_key == component_key,
-            m.ComponentGrant.grantee_id.in_([agent.id, agent.department_id]),
-        )
-        .limit(1)
-    )
-    return result.scalar_one_or_none() is not None
 
 
 def _parse_iso(value: object) -> dt.datetime | None:
@@ -3764,10 +3750,6 @@ async def execute_control_tool(
         props_model = COMPONENT_CATALOG.get(component_key)
         if props_model is None:
             return ControlOutcome(output=f"ERROR: no such component '{component_key}'")
-        if not await _has_component_grant(db, agent=agent, component_key=component_key):
-            return ControlOutcome(
-                output=f"ERROR: you have not been granted the '{component_key}' component"
-            )
         raw_props = tc.arguments.get("props")
         if not isinstance(raw_props, dict):
             return ControlOutcome(output="ERROR: render_component requires a `props` object")

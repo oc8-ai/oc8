@@ -15,8 +15,10 @@ import pytest
 from sqlalchemy import select
 
 from oc8 import models as m
+from oc8.agent.components import COMPONENT_CATALOG
 from oc8.agent.control_tools import (
     CONTROL_TOOL_NAMES,
+    RENDER_COMPONENT,
     ControlOutcome,
     execute_control_tool,
     offered_tools,
@@ -216,14 +218,14 @@ def test_control_tool_names_matches_the_schemas() -> None:
 
 
 def test_render_component_is_offered_to_every_agent() -> None:
-    """Withholding it would not be a real gate -- the ComponentGrant check
-    inside execute_control_tool is the gate; offering only hides, and "a
-    grant that only hides is not a grant that holds" (see pdp.py)."""
-    names = [
-        t.name
-        for t in offered_tools(_agent(), assigned_skills=[], active_skills=[], mcp_tools=MCP_TOOLS)
-    ]
-    assert "render_component" in names
+    """Components are presentation only and on by default -- every agent,
+    the tenant Assistant included, is offered render_component."""
+    for agent in (_agent(), _agent(is_tenant_assistant=True)):
+        names = [
+            t.name
+            for t in offered_tools(agent, assigned_skills=[], active_skills=[], mcp_tools=MCP_TOOLS)
+        ]
+        assert "render_component" in names
 
 
 def test_search_knowledge_is_withheld_without_a_knowledge_base_grant() -> None:
@@ -1252,8 +1254,34 @@ async def test_in_process_skill_instruction_lands_after_the_tool_result(
     assert "system" not in roles[i + 1 :], f"no message may be inserted, got {roles}"
 
 
+_MINIMAL_PROPS: dict[str, dict[str, Any]] = {
+    "record_card": {"title": "x"},
+    "data_table": {"title": "x", "columns": [{"key": "a", "label": "A"}], "rows": [{"a": "1"}]},
+    "bar_chart": {"title": "x", "labels": ["a"], "series": [{"name": "s", "values": [1.0]}]},
+    "line_chart": {"title": "x", "labels": ["a"], "series": [{"name": "s", "values": [1.0]}]},
+}
+
+
+def test_every_catalogue_component_has_minimal_props_in_this_test() -> None:
+    """Keeps the parametrised test below honest as the catalogue grows."""
+    assert set(_MINIMAL_PROPS) == set(COMPONENT_CATALOG)
+
+
+def test_render_component_names_every_catalogue_component_to_the_model() -> None:
+    """Components are on by default, so the model is told the full catalogue --
+    no "one you have been granted" hedge that made models give up on them."""
+    schema = RENDER_COMPONENT.parameters["properties"]["component_key"]
+    assert schema["enum"] == list(COMPONENT_CATALOG)
+    assert "granted" not in RENDER_COMPONENT.description
+    for key in COMPONENT_CATALOG:
+        assert key in RENDER_COMPONENT.description
+
+
 @pytest.mark.asyncio
-async def test_render_component_is_refused_without_a_grant(app_session: Any) -> None:
+@pytest.mark.parametrize("component_key", sorted(_MINIMAL_PROPS))
+async def test_render_component_needs_no_grant(app_session: Any, component_key: str) -> None:
+    """Components are presentation only and on by default: an agent with no
+    ComponentGrant row at all renders every catalogue layout."""
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent, task = await _dept_agent_task(db, tenant)
@@ -1265,7 +1293,7 @@ async def test_render_component_is_refused_without_a_grant(app_session: Any) -> 
             tc=ToolCall(
                 id="c1",
                 name="render_component",
-                arguments={"component_key": "record_card", "props": {"title": "x"}},
+                arguments={"component_key": component_key, "props": _MINIMAL_PROPS[component_key]},
             ),
             decision=Decision(Effect.ALLOW),
             assigned_skills=[],
@@ -1274,8 +1302,9 @@ async def test_render_component_is_refused_without_a_grant(app_session: Any) -> 
             originating_operator=None,
         )
         assert outcome is not None
-    assert outcome.output.startswith("ERROR:")
-    assert outcome.rendered_component is None
+    assert not outcome.output.startswith("ERROR"), outcome.output
+    assert outcome.rendered_component is not None
+    assert outcome.rendered_component["component_key"] == component_key
 
 
 @pytest.mark.asyncio
@@ -1283,14 +1312,6 @@ async def test_render_component_rejects_an_unknown_component_key(app_session: An
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent, task = await _dept_agent_task(db, tenant)
-        db.add(
-            m.ComponentGrant(
-                tenant_id=tenant,
-                component_key="record_card",
-                grantee_type="agent",
-                grantee_id=agent.id,
-            )
-        )
         await db.flush()
         outcome = await execute_control_tool(
             db,
@@ -1317,14 +1338,6 @@ async def test_render_component_rejects_invalid_props(app_session: Any) -> None:
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent, task = await _dept_agent_task(db, tenant)
-        db.add(
-            m.ComponentGrant(
-                tenant_id=tenant,
-                component_key="record_card",
-                grantee_type="agent",
-                grantee_id=agent.id,
-            )
-        )
         await db.flush()
         outcome = await execute_control_tool(
             db,
@@ -1347,18 +1360,10 @@ async def test_render_component_rejects_invalid_props(app_session: Any) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_granted_agent_can_render_a_record_card(app_session: Any) -> None:
+async def test_an_agent_without_any_grant_renders_a_record_card(app_session: Any) -> None:
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent, task = await _dept_agent_task(db, tenant)
-        db.add(
-            m.ComponentGrant(
-                tenant_id=tenant,
-                component_key="record_card",
-                grantee_type="agent",
-                grantee_id=agent.id,
-            )
-        )
         await db.flush()
         outcome = await execute_control_tool(
             db,
@@ -1391,40 +1396,6 @@ async def test_a_granted_agent_can_render_a_record_card(app_session: Any) -> Non
             "link_url": None,
         },
     }
-
-
-@pytest.mark.asyncio
-async def test_a_department_wide_grant_covers_every_agent_in_it(app_session: Any) -> None:
-    tenant = uuid.uuid4()
-    async with app_session(tenant) as db:
-        agent, task = await _dept_agent_task(db, tenant)
-        db.add(
-            m.ComponentGrant(
-                tenant_id=tenant,
-                component_key="record_card",
-                grantee_type="department",
-                grantee_id=agent.department_id,
-            )
-        )
-        await db.flush()
-        outcome = await execute_control_tool(
-            db,
-            tenant_id=tenant,
-            agent=agent,
-            task=task,
-            tc=ToolCall(
-                id="c1",
-                name="render_component",
-                arguments={"component_key": "record_card", "props": {"title": "x"}},
-            ),
-            decision=Decision(Effect.ALLOW),
-            assigned_skills=[],
-            active_skills=[],
-            mcp_conn=None,
-            originating_operator=None,
-        )
-        assert outcome is not None
-    assert not outcome.output.startswith("ERROR")
 
 
 @pytest.mark.asyncio
@@ -1485,14 +1456,6 @@ async def test_run_agent_publishes_a_rendered_component(
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent, _task = await _dept_agent_task(db, tenant)
-        db.add(
-            m.ComponentGrant(
-                tenant_id=tenant,
-                component_key="record_card",
-                grantee_type="agent",
-                grantee_id=agent.id,
-            )
-        )
         run = m.AgentRun(tenant_id=tenant, agent_id=agent.id, state="running", context={})
         db.add(run)
         await db.flush()
@@ -1642,14 +1605,6 @@ async def test_run_agent_returns_rendered_components_durably(
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent, _task = await _dept_agent_task(db, tenant)
-        db.add(
-            m.ComponentGrant(
-                tenant_id=tenant,
-                component_key="record_card",
-                grantee_type="agent",
-                grantee_id=agent.id,
-            )
-        )
         run = m.AgentRun(tenant_id=tenant, agent_id=agent.id, state="running", context={})
         db.add(run)
         await db.flush()
@@ -1669,52 +1624,6 @@ async def test_run_agent_returns_rendered_components_durably(
             },
         },
     ]
-
-
-@pytest.mark.asyncio
-async def test_a_direct_and_a_department_grant_can_coexist(app_session: Any) -> None:
-    """ComponentGrant's own UniqueConstraint allows one row per grantee_type,
-    so an agent can legitimately hold BOTH a direct grant and a department-wide
-    grant for the same component_key at once -- this must not crash the grant
-    check with MultipleResultsFound."""
-    tenant = uuid.uuid4()
-    async with app_session(tenant) as db:
-        agent, task = await _dept_agent_task(db, tenant)
-        db.add(
-            m.ComponentGrant(
-                tenant_id=tenant,
-                component_key="record_card",
-                grantee_type="agent",
-                grantee_id=agent.id,
-            )
-        )
-        db.add(
-            m.ComponentGrant(
-                tenant_id=tenant,
-                component_key="record_card",
-                grantee_type="department",
-                grantee_id=agent.department_id,
-            )
-        )
-        await db.flush()
-        outcome = await execute_control_tool(
-            db,
-            tenant_id=tenant,
-            agent=agent,
-            task=task,
-            tc=ToolCall(
-                id="c1",
-                name="render_component",
-                arguments={"component_key": "record_card", "props": {"title": "x"}},
-            ),
-            decision=Decision(Effect.ALLOW),
-            assigned_skills=[],
-            active_skills=[],
-            mcp_conn=None,
-            originating_operator=None,
-        )
-        assert outcome is not None
-    assert not outcome.output.startswith("ERROR")
 
 
 # ------------------------------------------ the Assistant's propose_change seam
