@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from sqlalchemy import event as sa_event
@@ -373,6 +373,28 @@ async def publish_chat_message_created(
     async def _publish() -> None:
         await get_event_bus().publish_member_event(
             tenant_id, audience, "chat.message_created", data, source=source
+        )
+
+    publish_after_commit(db, _publish)
+
+
+def publish_chat_session_updated(
+    db: AsyncSession, *, session: m.ChatSession, audience: Sequence[uuid.UUID]
+) -> None:
+    """`{session_id}` to `audience` once `db` commits: the chat's own fields
+    (its title) changed, so its row in every list is refetched. Ids only, like
+    `chat.message_created`; the audience is resolved by the caller while the
+    RLS tenant binding still holds."""
+    if not audience:
+        return
+    tenant_id = session.tenant_id
+    members = list(audience)
+    data = {"session_id": str(session.id)}
+    source = f"oc8/chat/{session.id}"
+
+    async def _publish() -> None:
+        await get_event_bus().publish_member_event(
+            tenant_id, members, "chat.session_updated", data, source=source
         )
 
     publish_after_commit(db, _publish)

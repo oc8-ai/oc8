@@ -464,6 +464,27 @@ async def _load_capable(
     return capable
 
 
+async def cheapest_connected_tier(
+    db: AsyncSession, auto_cfg: m.ModelConfig, *, tenant_id: uuid.UUID
+) -> m.ModelConfig | None:
+    """The lowest tier (``fast`` first) of an Auto config that can be called
+    right now, or None. For small housekeeping calls -- a chat's title -- that
+    need no complexity estimate, no latch and no routing-decision log."""
+    try:
+        tiers = tier_map(auto_cfg)
+    except AutoRouterError:
+        return None
+    capable = await _load_capable(
+        db,
+        tiers,
+        tenant_id=tenant_id,
+        needs_vision=False,
+        approx_tokens=0,
+        require_local=False,
+    )
+    return next((capable[name] for name in TIER_ORDER if name in capable), None)
+
+
 async def resolve_auto_config(
     db: AsyncSession,
     auto_cfg: m.ModelConfig,

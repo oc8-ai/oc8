@@ -764,6 +764,10 @@ async def test_rename_session_persists_the_new_title(app_session: AppSessionFact
             )
             renamed = next(s for s in list_r.json() if s["id"] == session_id)
             assert renamed["title"] == "VPN Tickets"
+    # A name the member chose is theirs: no generated title replaces it.
+    async with app_session(tenant) as db:
+        row = await db.get(m.ChatSession, uuid.UUID(session_id))
+        assert row is not None and row.title_source == "user"
 
 
 async def test_rename_a_foreign_session_is_refused(app_session: AppSessionFactory) -> None:

@@ -24,6 +24,10 @@ class ChatSession(Base, PkMixin, TenantMixin, TimestampMixin):
     __tablename__ = "chat_session"
     __table_args__ = (
         CheckConstraint("kind IN ('chat','live')", name="ck_chat_session_kind"),
+        CheckConstraint(
+            "title_source IS NULL OR title_source IN ('auto','user')",
+            name="ck_chat_session_title_source",
+        ),
         Index(
             "uq_chat_session_live",
             "tenant_id",
@@ -37,6 +41,11 @@ class ChatSession(Base, PkMixin, TenantMixin, TimestampMixin):
     agent_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
     member_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
     title: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    #: Where `title` came from: NULL while there is none, "auto" once one was
+    #: generated from the first message (`oc8.chat.titles`), "user" once the
+    #: member named the chat. A generated title only ever replaces NULL, so a
+    #: member's own name is never overwritten (migration 0115).
+    title_source: Mapped[str | None] = mapped_column(Text)
     last_message_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
     # The one Task every turn in this session shares (opened by the first
     # message) -- so a chat session is one item on the department board, not

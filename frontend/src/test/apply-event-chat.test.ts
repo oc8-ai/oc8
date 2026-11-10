@@ -26,6 +26,16 @@ describe("chat live events", () => {
     expect(keys).toContain(JSON.stringify(["chat", "sessions"]));
   });
 
+  it("chat.session_updated refetches the chat lists and that chat, not its transcript", () => {
+    const qc = new QueryClient();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    applyEvent(qc, event("chat.session_updated", { session_id: "s1" }));
+    const keys = spy.mock.calls.map((c) => JSON.stringify(c[0]?.queryKey));
+    expect(keys).toContain(JSON.stringify(["chat", "sessions"]));
+    expect(keys).toContain(JSON.stringify(["chat", "session", "s1"]));
+    expect(keys).not.toContain(JSON.stringify(["chat", "messages", "s1"]));
+  });
+
   it("a terminal run.status refreshes chat transcripts", () => {
     const qc = new QueryClient();
     const spy = vi.spyOn(qc, "invalidateQueries");

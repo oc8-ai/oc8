@@ -61,12 +61,13 @@ from oc8.chat.questions import (
     questions_to_json,
     render_answers_text,
 )
+from oc8.chat.titles import schedule_auto_title
 from oc8.connections.acting import ACTING_PERSON_WITHHELD, SOMEONE_ELSES_WORDS
 from oc8.copilot.redaction import is_secret_request, redact_text
 from oc8.copilot.responsibilities import close_responsibility
 from oc8.knowledge.embedding_policy import strictest
 from oc8.realtime.bus import get_event_bus
-from oc8.realtime.emit import publish_chat_message_created
+from oc8.realtime.emit import publish_chat_message_created, publish_chat_session_updated
 from oc8.runtime.clarification import resolve_clarification
 from oc8.runtime.fencing import fence, one_line
 from oc8.runtime.intake import enqueue_run
@@ -142,8 +143,13 @@ async def list_sessions(
 
 
 async def rename_session(db: AsyncSession, *, session: m.ChatSession, title: str) -> None:
+    """The member names the chat. Marked as theirs, so a generated title
+    (`chat.titles`) never replaces it -- not even one still being generated."""
     session.title = title
+    session.title_source = "user"
     await db.flush()
+    audience = await session_audience_or_nobody(db, session=session)
+    publish_chat_session_updated(db, session=session, audience=audience)
 
 
 async def delete_session(db: AsyncSession, *, tenant_id: uuid.UUID, session: m.ChatSession) -> None:
@@ -516,6 +522,19 @@ def _build_turn_context(
     return context
 
 
+def _title_seed(session: m.ChatSession, history: list[m.ChatMessage], body: str) -> str | None:
+    """The text a chat with no name yet is named after: its first user message
+    with any words in it (this one, in a new chat), or None when the chat is
+    named already -- by the member or by an earlier title -- or is not an
+    ordinary chat. Checked again, atomically, when the title is written."""
+    if session.kind != "chat" or session.title or session.title_source is not None:
+        return None
+    for text_ in [msg.content for msg in history if msg.role == "user"] + [body]:
+        if text_ and text_.strip():
+            return text_
+    return None
+
+
 async def _is_assistant(db: AsyncSession, session: m.ChatSession) -> bool:
     agent = await db.get(m.Agent, session.agent_id)
     return agent is not None and agent.is_tenant_assistant
@@ -803,6 +822,9 @@ async def send_message(
         session.task_id = task.id
         await db.flush()
 
+    # Read before `enqueue_run` commits: what the chat should be named after,
+    # if it has no name yet -- its first message with any words in it.
+    title_seed = _title_seed(session, history, body) if role == "user" else None
     # Resolved before `enqueue_run` commits, while the RLS binding still holds.
     audience = await session_audience_or_nobody(
         db, session=session, acting_subject=originating_operator, acting_role=operator_role
@@ -837,6 +859,10 @@ async def send_message(
         },
         source=f"oc8/chat/{session.id}",
     )
+    if title_seed is not None:
+        # In the background, on its own session: the answer never waits for
+        # the title. The refused-secret path above returned before this.
+        schedule_auto_title(tenant_id=tenant_id, session_id=session.id, message=title_seed)
     if role == "followup":
         # Linked so a quiet outcome can take its own prompt back out of the
         # transcript (record_assistant_reply). A user turn's run_id stays NULL.

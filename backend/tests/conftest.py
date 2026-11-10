@@ -189,6 +189,15 @@ def _reset_tenant_activity_gate() -> Iterator[None]:
     set_tenant_activity_gate(None)
 
 
+@pytest.fixture(autouse=True)
+def _no_background_chat_titles(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A chat's first message starts naming it in the background
+    (`oc8.chat.titles`). In tests nothing runs behind a test's back -- a
+    model call, a session outliving the test's loop -- so the job is dropped
+    unless a test swaps in its own `_spawn` and runs it."""
+    monkeypatch.setattr("oc8.chat.titles._spawn", lambda job: None)
+
+
 class _NoRunStateStorage:
     """Object storage as run state sees it in a test without MinIO: every
     call fails at once, as an unreachable store would after its retries."""
