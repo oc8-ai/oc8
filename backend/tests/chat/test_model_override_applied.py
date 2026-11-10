@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.agents.versioning import pinned_model_config_id, resolve_version
 from oc8.chat.model_choice import audit_model_override
+from tests.audit.helpers import flush_audit
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -49,6 +50,8 @@ async def _seed(
 
 
 async def _rejections(db: AsyncSession) -> int:
+    # Written at commit (#82): write this session's staged events first.
+    await flush_audit(db)
     rows = await db.execute(
         select(m.AuditEvent).where(m.AuditEvent.action == "chat.model_override_rejected")
     )

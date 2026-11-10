@@ -127,6 +127,11 @@ async def _run(db: object, tenant: uuid.UUID, agent: uuid.UUID, task: str) -> uu
     )
     db.add(run)  # type: ignore[attr-defined]
     await db.flush()  # type: ignore[attr-defined]
+    # The open question the run waits on: /answer resolves an open
+    # Clarification row, not just the run state.
+    db.add(  # type: ignore[attr-defined]
+        m.Clarification(tenant_id=tenant, run_id=run.id, agent_id=agent, question="Which customer?")
+    )
     db.add(  # type: ignore[attr-defined]
         m.ActivityEvent(tenant_id=tenant, agent_id=agent, message=f"activity: {task}")
     )

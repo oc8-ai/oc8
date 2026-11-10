@@ -14,6 +14,7 @@ import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
+from tests.audit.helpers import flush_audit
 from tests.conftest import AppSessionFactory
 
 from oc8 import models as m
@@ -317,6 +318,9 @@ async def _call(
 
 
 async def _audit(db: Any) -> list[m.AuditEvent]:
+    # Audit rows are written at commit (#82): write this session's staged
+    # ones first, so a read in the same transaction sees them.
+    await flush_audit(db)
     return list(
         (
             await db.execute(
@@ -529,6 +533,7 @@ async def _engine_run(
         await db.flush()
         with use_edition_tools([READ], entitlements):
             await run_agent(db, agent=agent, task_text="look it up", tenant_id=tenant)
+        await flush_audit(db)
         events = (
             (await db.execute(select(m.AuditEvent).where(m.AuditEvent.tenant_id == tenant)))
             .scalars()

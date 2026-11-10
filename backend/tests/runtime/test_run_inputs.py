@@ -30,6 +30,7 @@ from oc8.runtime.run_inputs import (
     publish_inputs_consumed,
     step_hint,
 )
+from tests.audit.helpers import flush_audit
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -623,6 +624,8 @@ async def test_an_accepted_input_is_audited_without_its_text(
         agent, alice, _ = await _world(db, tenant)
         run = await _run(db, tenant, agent)
         row = await add_run_input(db, run=run, member=alice, text="secret plan")
+        # Audit rows are written at commit (#82): write the staged ones now.
+        await flush_audit(db)
         events = (
             (
                 await db.execute(
