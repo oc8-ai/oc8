@@ -1234,10 +1234,6 @@ msgid "Collaboration"
 msgstr "Samenwerking"
 
 #, fuzzy
-msgid "Collapse"
-msgstr "Inklappen"
-
-#, fuzzy
 msgid "Collapse sidebar"
 msgstr "Zijbalk inklappen"
 
@@ -1416,10 +1412,6 @@ msgstr "Ga verder met het configureren van de geselecteerde index."
 #, fuzzy
 msgid "Continue to export"
 msgstr "Export voortzetten"
-
-#, fuzzy
-msgid "Control Panel"
-msgstr "Configuratiescherm"
 
 #, fuzzy
 msgid "Copied"
