@@ -778,30 +778,153 @@ BUILDER_OPTIONS = NeutralTool(
     parameters={"type": "object", "properties": {}},
 )
 
+_ID = {"type": "string"}
+_NEW_REF = {"type": "string", "enum": ["$new"]}
+_TEXT = {"type": "string", "maxLength": 10_000}
+_GUARDRAIL_DECISION = {
+    "type": "string",
+    "enum": ["self_sufficient", "with_limits", "approval_required", "not_allowed"],
+    "description": (
+        "self_sufficient: on its own; approval_required: a person approves each "
+        "call; not_allowed: never; with_limits: on its own until a condition hits"
+    ),
+}
+_GUARDRAIL_CONDITIONS = {
+    "type": "array",
+    "maxItems": 20,
+    "description": "Only with decision with_limits.",
+    "items": {
+        "type": "object",
+        "properties": {
+            "attribute": {"type": "string"},
+            "datatype": {"type": "string", "enum": ["number", "string", "boolean", "enum"]},
+            "operator": {
+                "type": "string",
+                "enum": [">", ">=", "<", "<=", "==", "!=", "in", "not_in"],
+            },
+            "value": {"description": "Typed to match the attribute."},
+            "then": {"type": "string", "enum": ["require_approval", "deny"]},
+        },
+        "required": ["attribute", "datatype", "operator", "value", "then"],
+        "additionalProperties": False,
+    },
+}
+
+#: One step of the explicit form. Deliberately not a oneOf per operation type:
+#: no tool schema in this repository uses oneOf/anyOf, Ollama forwards nested
+#: schemas only as an opaque blob, and small models fill one record with a
+#: `type` enum far more reliably than they pick a branch. Which fields belong
+#: to which type is in each field's description; `parse_builder_operations`
+#: and the closed operation models enforce it exactly.
+_BUILDER_OPERATION = {
+    "type": "object",
+    "properties": {
+        "type": {
+            "type": "string",
+            "enum": [
+                "agent.create",
+                "agent.mission.set",
+                "agent.model.switch",
+                "agent.skill.assign",
+                "trigger.create",
+                "agent.guardrail.set",
+                "agent.narrowing.set",
+            ],
+        },
+        "ref": {**_NEW_REF, "description": 'agent.create only: always "$new".'},
+        "agentRef": {**_NEW_REF, "description": 'Every step after agent.create: "$new".'},
+        "departmentId": {**_ID, "description": "agent.create: id from builder_options."},
+        "name": {"type": "string", "maxLength": 200, "description": "agent.create."},
+        "roleTitle": {"type": "string", "maxLength": 200, "description": "agent.create."},
+        "mission": {**_TEXT, "description": "agent.create or agent.mission.set."},
+        "modelConfigId": {**_ID, "description": "agent.model.switch: id from builder_options."},
+        "skillVersionId": {**_ID, "description": "agent.skill.assign: id from builder_options."},
+        "kind": {"type": "string", "enum": ["cron", "event"], "description": "trigger.create."},
+        "taskText": {**_TEXT, "description": "trigger.create: what each run does."},
+        "cronExpression": {"type": "string", "description": "trigger.create with kind cron."},
+        "eventSource": {"type": "string", "description": "trigger.create with kind event."},
+        "eventType": {"type": "string", "description": "trigger.create with kind event."},
+        "connectionName": {
+            "type": "string",
+            "description": "agent.guardrail.set: a system builder_options lists.",
+        },
+        "function": {"type": "string", "description": "agent.guardrail.set: the tool name."},
+        "decision": {**_GUARDRAIL_DECISION, "description": "agent.guardrail.set."},
+        "conditions": _GUARDRAIL_CONDITIONS,
+        "narrowing": {
+            "type": "object",
+            "description": 'agent.narrowing.set: {"tools": {"<system>": {...}}}.',
+        },
+    },
+    "required": ["type"],
+    "additionalProperties": False,
+}
+
 PROPOSE_AGENT = NeutralTool(
     name="propose_agent",
     description=(
         "Propose ONE new agent as a card the person confirms -- you never create "
-        "it yourself. `operations` is an ordered list: first agent.create with "
-        'ref "$new" (departmentId, name, roleTitle, mission), then any of '
-        "agent.model.switch (modelConfigId), agent.skill.assign (skillVersionId), "
-        "trigger.create (kind 'cron' with cronExpression, or 'event' with "
-        "eventSource and eventType; taskText), agent.guardrail.set "
-        "(connectionName, function, decision), agent.narrowing.set (narrowing), "
-        'each with agentRef "$new" and never an agentId. Use only ids from '
-        "builder_options. Calling it again replaces your previous proposal in "
-        "this conversation."
+        "it yourself. Pass the agent's fields directly: departmentId, name, "
+        "roleTitle, mission, and optionally modelId, skillIds, schedule (a cron "
+        "expression), eventSource/eventType, taskText, systems and limits. Use "
+        "only ids and systems from builder_options. Calling it again replaces "
+        "your previous proposal in this conversation. (Instead of the fields you "
+        'may pass `operations`: agent.create with ref "$new" first, then each '
+        'setting with agentRef "$new" -- never both forms in one call.)'
     ),
     parameters={
         "type": "object",
         "properties": {
+            "departmentId": {**_ID, "description": "The department id from builder_options."},
+            "name": {"type": "string", "maxLength": 200, "description": "The agent's name."},
+            "roleTitle": {"type": "string", "maxLength": 200, "description": "e.g. Accounting"},
+            "mission": {**_TEXT, "description": "What the agent does, in a few sentences."},
+            "modelId": {**_ID, "description": "A modelConfigId from builder_options."},
+            "skillIds": {
+                "type": "array",
+                "maxItems": 16,
+                "items": _ID,
+                "description": "skillVersionIds from builder_options.",
+            },
+            "schedule": {
+                "type": "string",
+                "description": "When it runs on its own, as a cron expression, e.g. 0 7 * * 1-5.",
+            },
+            "eventSource": {"type": "string", "description": "Runs when this source reports"},
+            "eventType": {"type": "string", "description": "...this event type."},
+            "taskText": {
+                **_TEXT,
+                "description": "What each scheduled or event run does; defaults to the mission.",
+            },
+            "systems": {
+                "type": "array",
+                "maxItems": 16,
+                "items": {"type": "string"},
+                "description": "Connected systems it uses, by the names builder_options lists.",
+            },
+            "limits": {
+                "type": "array",
+                "maxItems": 16,
+                "description": "What it may do only with approval, or never.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "system": {"type": "string", "description": "A system it uses."},
+                        "function": {"type": "string", "description": "The tool name."},
+                        "decision": _GUARDRAIL_DECISION,
+                        "conditions": _GUARDRAIL_CONDITIONS,
+                    },
+                    "required": ["system", "function", "decision"],
+                    "additionalProperties": False,
+                },
+            },
             "operations": {
                 "type": "array",
                 "maxItems": 24,
-                "items": {"type": "object"},
-            }
+                "description": "Only instead of the fields above.",
+                "items": _BUILDER_OPERATION,
+            },
         },
-        "required": ["operations"],
     },
 )
 
