@@ -154,14 +154,11 @@ This is the flow partners follow. Share it as-is.
    isn't listed.
 4. Translate or review strings. The **Needs editing** filter lists strings
    that still want a human check, such as AI drafts (see below).
-5. Save. Strings marked **Needs editing** are *not* kept out of the
-   shipped catalogue: Weblate stores them in the `.po` file with the gettext
-   `fuzzy` flag, and `backend/src/oc8/i18n/catalog.py` does not look at that
-   flag. It loads every entry with a non-empty `msgstr`, fuzzy or not, so
-   once the pull request is merged users of that language see the draft.
-   Only empty strings fall back to English. Treat "Needs editing" as a
-   review marker, not a gate, and don't merge drafts you aren't willing to
-   ship.
+5. Save. Strings marked **Needs editing** (the gettext `fuzzy` flag) are
+   **not** shipped: `backend/src/oc8/i18n/catalog.py` skips fuzzy entries
+   like it skips empty ones, so users see the English text until a reviewer
+   confirms the translation and the flag is cleared. Once cleared, the
+   string ships with the next merged pull request.
 6. A maintainer merges the Weblate pull request into `dev`, and the language
    ships with the next release. A backend restart picks up a new or changed
    `.po` file; the frontend needs no rebuild.
@@ -213,10 +210,8 @@ add-on on the component, with the same mode, so new strings arrive as
 "Needs editing" drafts.
 
 **Rule:** AI drafts are always "Needs editing", never approved, and a human
-partner validates them. Never use a mode that saves them as final
-translations. Because the backend serves fuzzy entries (see step 5 above), a
-draft that is merged unreviewed is shown to users, so review before the pull
-request is merged.
+partner validates them. Never use a mode that saves them as final translations. Needs-editing drafts
+are not shipped: they fall back to English until a reviewer confirms them.
 
 The `nl` and `es` drafts were seeded this way, as needs-editing drafts.
 

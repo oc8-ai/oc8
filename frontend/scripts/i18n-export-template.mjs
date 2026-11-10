@@ -84,10 +84,11 @@ function collectSourceStrings(root) {
 // general-purpose gettext parser. Multi-line/comment/obsolete-entry syntax
 // is never produced by the writer below, so it never needs to be read back.
 function readExistingPo(filePath) {
-  if (!fs.existsSync(filePath)) return { metadata: {}, entries: new Map() };
+  if (!fs.existsSync(filePath)) return { metadata: {}, entries: new Map(), fuzzy: new Set() };
   const text = fs.readFileSync(filePath, "utf8");
   const metadata = {};
   const entries = new Map();
+  const fuzzy = new Set();
   const blocks = text.split(/\n\n+/);
   for (const block of blocks) {
     const msgidMatch = block.match(/^msgid "((?:[^"\\]|\\.)*)"/m);
@@ -103,8 +104,11 @@ function readExistingPo(filePath) {
       continue;
     }
     entries.set(msgid, unescapePo(msgstrMatch[1]));
+    // Weblate's "Needs editing" is the gettext `#, fuzzy` flag. Keep it, or a
+    // draft would silently become a shipped translation on the next export.
+    if (/^#,.*\bfuzzy\b/m.test(block)) fuzzy.add(msgid);
   }
-  return { metadata, entries };
+  return { metadata, entries, fuzzy };
 }
 
 function escapePo(s) {
@@ -115,7 +119,7 @@ function unescapePo(s) {
   return s.replace(/\\n/g, "\n").replace(/\\t/g, "\t").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
 }
 
-function writePo(filePath, metadata, entries) {
+function writePo(filePath, metadata, entries, fuzzy = new Set()) {
   const header =
     `msgid ""\nmsgstr ""\n` +
     Object.entries(metadata)
@@ -124,7 +128,10 @@ function writePo(filePath, metadata, entries) {
     "\n";
   const sorted = [...entries.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   const body = sorted
-    .map(([msgid, msgstr]) => `msgid "${escapePo(msgid)}"\nmsgstr "${escapePo(msgstr)}"\n`)
+    .map(
+      ([msgid, msgstr]) =>
+        `${fuzzy.has(msgid) ? "#, fuzzy\n" : ""}msgid "${escapePo(msgid)}"\nmsgstr "${escapePo(msgstr)}"\n`,
+    )
     .join("\n");
   fs.writeFileSync(filePath, header + body);
 }
@@ -155,7 +162,7 @@ if (TEMPLATE_MODE) {
 }
 
 const filePath = path.join(I18N_ROOT, `${locale}.po`);
-const { metadata: existingMetadata, entries: existingEntries } = readExistingPo(filePath);
+const { metadata: existingMetadata, entries: existingEntries, fuzzy: existingFuzzy } = readExistingPo(filePath);
 
 const metadata = {
   "Project-Id-Version": "oc8",
@@ -170,9 +177,11 @@ let added = 0;
 let kept = 0;
 let removed = 0;
 const nextEntries = new Map();
+const nextFuzzy = new Set();
 for (const msgid of sourceStrings) {
   if (existingEntries.has(msgid)) {
     nextEntries.set(msgid, existingEntries.get(msgid));
+    if (existingFuzzy.has(msgid)) nextFuzzy.add(msgid);
     kept++;
   } else {
     nextEntries.set(msgid, "");
@@ -182,7 +191,7 @@ for (const msgid of sourceStrings) {
 removed = existingEntries.size - kept;
 
 fs.mkdirSync(I18N_ROOT, { recursive: true });
-writePo(filePath, metadata, nextEntries);
+writePo(filePath, metadata, nextEntries, nextFuzzy);
 
 console.log(`wrote ${path.relative(process.cwd(), filePath)}`);
 console.log(

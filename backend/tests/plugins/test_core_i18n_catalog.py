@@ -67,3 +67,18 @@ def test_load_core_catalogs_is_cached_until_invalidated(tmp_path: Path) -> None:
     assert load_core_catalogs(str(tmp_path)) is first
     invalidate_core_catalog_cache()
     assert load_core_catalogs(str(tmp_path))["fr"].translations == {"Save": "Changed"}
+
+
+def test_load_core_catalogs_omits_fuzzy_entries(tmp_path: Path) -> None:
+    invalidate_core_catalog_cache()
+    _write_po(
+        tmp_path,
+        "nl",
+        'msgid "Save"\nmsgstr "Opslaan"\n'
+        "\n"
+        "#, fuzzy\n"
+        'msgid "Cancel"\nmsgstr "Annuleer (concept)"\n'
+        "\n"
+        'msgid "Delete"\nmsgstr ""\n',
+    )
+    assert load_core_catalogs(str(tmp_path))["nl"].translations == {"Save": "Opslaan"}
