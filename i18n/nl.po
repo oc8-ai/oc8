@@ -10,6 +10,8 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=2; plural=n != 1;\n"
 "X-Generator: Weblate 2026.11.1\n"
+"X-Native-Name: Nederlands\n"
+"X-Flag: 🇳🇱\n"
 
 #, fuzzy
 msgid " (opens in a new tab)"
