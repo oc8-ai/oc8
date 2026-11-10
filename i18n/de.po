@@ -508,6 +508,11 @@ msgstr "Um eine Entscheidung gebeten"
 msgid "Asked you"
 msgstr "Hat gefragt"
 
+#, fuzzy
+#| msgid "Checking a colleague"
+msgid "Asking a colleague …"
+msgstr "Prüft einen Kollegen"
+
 msgid "Asking a question"
 msgstr "Stellt eine Frage"
 
@@ -852,6 +857,11 @@ msgstr "Prüft die Zahlen"
 
 msgid "Checking what needs a decision"
 msgstr "Prüft, was zu entscheiden ist"
+
+#, fuzzy
+#| msgid "waiting for approval"
+msgid "Checking your approvals …"
+msgstr "wartet auf Freigabe"
 
 msgid "Choose a company, or create a safely isolated one for local testing."
 msgstr "Wähle eine Firma oder lege eine isolierte Testfirma an."
@@ -2638,6 +2648,11 @@ msgstr "Sucht nach einem Werkzeug"
 msgid "Looking through its notes"
 msgstr "Sieht seine Notizen durch"
 
+#, fuzzy
+#| msgid "Looking through its notes"
+msgid "Looking through its notes …"
+msgstr "Sieht seine Notizen durch"
+
 msgid "Made a note"
 msgstr "Notiz gemacht"
 
@@ -3658,6 +3673,11 @@ msgstr "E-Mails in Outlook lesen, sortieren und senden"
 msgid "Reading a resource"
 msgstr "Liest eine Ressource"
 
+#, fuzzy
+#| msgid "Read a web page"
+msgid "Reading a web page …"
+msgstr "Webseite gelesen"
+
 msgid "Reading archive…"
 msgstr "Archiv wird gelesen…"
 
@@ -4106,6 +4126,16 @@ msgid "Searched the knowledge base"
 msgstr "Wissensdatenbank durchsucht"
 
 msgid "Searching the knowledge base"
+msgstr "Durchsucht die Wissensdatenbank"
+
+#, fuzzy
+#| msgid "Searching the knowledge base"
+msgid "Searching the knowledge base …"
+msgstr "Durchsucht die Wissensdatenbank"
+
+#, fuzzy
+#| msgid "Searching the knowledge base"
+msgid "Searching the web …"
 msgstr "Durchsucht die Wissensdatenbank"
 
 msgid "Seat added"
@@ -4792,6 +4822,11 @@ msgstr "Diese fünf Rollen liefert das Produkt mit, damit keine Autorisierung da
 msgid "They will disappear from the users list and will not be able to sign in. Unused invite and reset links are spent so they cannot come back through an old mail."
 msgstr "Sie verschwinden aus der Benutzerliste und können sich nicht mehr anmelden. Ungenutzte Einladungs- und Reset-Links werden ungültig, damit sie nicht über eine alte Mail zurückkommen."
 
+#, fuzzy
+#| msgid "Thinking…"
+msgid "Thinking …"
+msgstr "Denkt nach …"
+
 msgid "Thinking…"
 msgstr "Denkt nach …"
 
@@ -4973,6 +5008,11 @@ msgid "This widget could not be displayed."
 msgstr "Dieses Widget konnte nicht angezeigt werden."
 
 msgid "Thought"
+msgstr "Nachgedacht"
+
+#, fuzzy
+#| msgid "Thought"
+msgid "Thoughts"
 msgstr "Nachgedacht"
 
 msgid "Throttle"

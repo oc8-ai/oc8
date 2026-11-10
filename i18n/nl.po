@@ -544,6 +544,10 @@ msgid "Asked you"
 msgstr "Heeft jou gevraagd"
 
 #, fuzzy
+msgid "Asking a colleague …"
+msgstr "Collega controleren"
+
+#, fuzzy
 msgid "Asking a question"
 msgstr "Een vraag stellen"
 
@@ -1002,6 +1006,10 @@ msgstr "Cijfers controleren"
 #, fuzzy
 msgid "Checking what needs a decision"
 msgstr "Controleren wat een beslissing nodig heeft"
+
+#, fuzzy
+msgid "Checking your approvals …"
+msgstr "wacht op goedkeuring"
 
 #, fuzzy
 msgid "Choose a company, or create a safely isolated one for local testing."
@@ -3384,6 +3392,10 @@ msgid "Looking through its notes"
 msgstr "Doorzoekt zijn notities"
 
 #, fuzzy
+msgid "Looking through its notes …"
+msgstr "Doorzoekt zijn notities"
+
+#, fuzzy
 msgid "Made a note"
 msgstr "Maakte een notitie"
 
@@ -4744,6 +4756,10 @@ msgid "Reading a resource"
 msgstr "Resource lezen"
 
 #, fuzzy
+msgid "Reading a web page …"
+msgstr "Webpagina gelezen"
+
+#, fuzzy
 msgid "Reading archive…"
 msgstr "Archief lezen…"
 
@@ -5341,6 +5357,14 @@ msgstr "De kennisbank doorzocht"
 
 #, fuzzy
 msgid "Searching the knowledge base"
+msgstr "De kennisbank doorzoeken"
+
+#, fuzzy
+msgid "Searching the knowledge base …"
+msgstr "De kennisbank doorzoeken"
+
+#, fuzzy
+msgid "Searching the web …"
 msgstr "De kennisbank doorzoeken"
 
 #, fuzzy
@@ -6256,6 +6280,10 @@ msgid "They will disappear from the users list and will not be able to sign in. 
 msgstr "Ze verdwijnen uit de gebruikerslijst en kunnen niet meer inloggen. Ongebruikte uitnodigings- en resetlinks worden ingetrokken, dus ze kunnen niet terugkomen via oude mail."
 
 #, fuzzy
+msgid "Thinking …"
+msgstr "Denken…"
+
+#, fuzzy
 msgid "Thinking…"
 msgstr "Denken…"
 
@@ -6497,6 +6525,10 @@ msgstr "Deze widget kon niet worden weergegeven."
 
 #, fuzzy
 msgid "Thought"
+msgstr "Gedacht"
+
+#, fuzzy
+msgid "Thoughts"
 msgstr "Gedacht"
 
 #, fuzzy

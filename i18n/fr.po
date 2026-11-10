@@ -682,6 +682,10 @@ msgid "Asked you"
 msgstr "Vous a posé la question"
 
 #, fuzzy
+msgid "Asking a colleague …"
+msgstr "Consulte un collègue"
+
+#, fuzzy
 msgid "Asking a question"
 msgstr "Pose une question"
 
@@ -1140,6 +1144,10 @@ msgstr "Vérifie les chiffres"
 #, fuzzy
 msgid "Checking what needs a decision"
 msgstr "Vérifie ce qui nécessite une décision"
+
+#, fuzzy
+msgid "Checking your approvals …"
+msgstr "en attente d'approbation"
 
 #, fuzzy
 msgid "Choose a company, or create a safely isolated one for local testing."
@@ -3522,6 +3530,10 @@ msgid "Looking through its notes"
 msgstr "Parcourt ses notes"
 
 #, fuzzy
+msgid "Looking through its notes …"
+msgstr "Parcourt ses notes"
+
+#, fuzzy
 msgid "Made a note"
 msgstr "A pris une note"
 
@@ -4882,6 +4894,10 @@ msgid "Reading a resource"
 msgstr "Lit la ressource"
 
 #, fuzzy
+msgid "Reading a web page …"
+msgstr "Lire la page web"
+
+#, fuzzy
 msgid "Reading archive…"
 msgstr "Lecture de l'archive…"
 
@@ -5479,6 +5495,14 @@ msgstr "A interrogé la base de connaissances"
 
 #, fuzzy
 msgid "Searching the knowledge base"
+msgstr "Interroge la base de connaissances"
+
+#, fuzzy
+msgid "Searching the knowledge base …"
+msgstr "Interroge la base de connaissances"
+
+#, fuzzy
+msgid "Searching the web …"
 msgstr "Interroge la base de connaissances"
 
 #, fuzzy
@@ -6394,6 +6418,10 @@ msgid "They will disappear from the users list and will not be able to sign in. 
 msgstr "Ils disparaîtront de la liste des utilisateurs et ne pourront plus se connecter. Les liens d'invitation et de réinitialisation non utilisés sont invalidés et ne peuvent donc plus revenir par d'anciens e-mails."
 
 #, fuzzy
+msgid "Thinking …"
+msgstr "Réflexion…"
+
+#, fuzzy
 msgid "Thinking…"
 msgstr "Réflexion…"
 
@@ -6635,6 +6663,10 @@ msgstr "Ce widget n'a pas pu être affiché."
 
 #, fuzzy
 msgid "Thought"
+msgstr "Réflexion"
+
+#, fuzzy
+msgid "Thoughts"
 msgstr "Réflexion"
 
 #, fuzzy
