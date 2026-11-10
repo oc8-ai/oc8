@@ -1,5 +1,15 @@
 msgid ""
-msgstr "Project-Id-Version: oc8\nMIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 8bit\nLanguage: fr\nLast-Translator: oc8 Admin <jm@oc8.ai>\nLanguage-Team: French <https://translate.oc8.ai/projects/oc8/core-ui/fr/>\nPlural-Forms: nplurals=2; plural=n > 1;\nPO-Revision-Date: 2026-11-10 14:08+0000\nX-Generator: Weblate 2026.11.1\n"
+msgstr ""
+"Project-Id-Version: oc8\n"
+"PO-Revision-Date: 2026-11-10 14:08+0000\n"
+"Last-Translator: oc8 Admin <jm@oc8.ai>\n"
+"Language-Team: French <https://translate.oc8.ai/projects/oc8/core-ui/fr/>\n"
+"Language: fr\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=n > 1;\n"
+"X-Generator: Weblate 2026.11.1\n"
 
 #, fuzzy
 msgid " (opens in a new tab)"
@@ -1266,10 +1276,6 @@ msgid "Complexity router — picks among the tier models you configure (fast / b
 msgstr "Routeur de complexité : choisit parmi les modèles de niveaux que vous configurez (rapide / équilibré / puissant)."
 
 #, fuzzy
-msgid "Components"
-msgstr "Composants"
-
-#, fuzzy
 msgid "Condense this conversation into a decision record."
 msgstr "Condenser la conversation en un compte rendu de décision."
 
@@ -1810,10 +1816,6 @@ msgid "Couldn't delete the file"
 msgstr "Impossible de supprimer le fichier"
 
 #, fuzzy
-msgid "Couldn't grant access"
-msgstr "Impossible d'accorder l'accès"
-
-#, fuzzy
 msgid "Couldn't load attached files."
 msgstr "Impossible de charger les fichiers joints."
 
@@ -1856,10 +1858,6 @@ msgstr "Impossible de réinitialiser le runtime"
 #, fuzzy
 msgid "Couldn't revoke"
 msgstr "Impossible de révoquer"
-
-#, fuzzy
-msgid "Couldn't revoke access"
-msgstr "Impossible de révoquer l'accès"
 
 #, fuzzy
 msgid "Couldn't roll back"
@@ -3144,10 +3142,6 @@ msgstr "Ingérer des sources dans oc8"
 #, fuzzy
 msgid "Inherited"
 msgstr "Hérité"
-
-#, fuzzy
-msgid "Inherited from department"
-msgstr "Département hérité"
 
 #, fuzzy
 msgid "Input"
@@ -7022,10 +7016,6 @@ msgid "Visibility"
 msgstr "Visibilité"
 
 #, fuzzy
-msgid "visual output"
-msgstr "sortie visuelle"
-
-#, fuzzy
 msgid "waiting"
 msgstr "en attente"
 
@@ -7196,10 +7186,6 @@ msgstr "Où va l'argent"
 #, fuzzy
 msgid "Where this person stands, and at which level."
 msgstr "Où en est la personne, et à quel niveau."
-
-#, fuzzy
-msgid "Which visual components (charts, tables, record cards) may be used when responding."
-msgstr "Quels composants visuels (graphiques, tableaux, fiches d'enregistrement) peuvent être utilisés dans les réponses."
 
 #, fuzzy
 msgid "Who may do what — and why you were refused."
