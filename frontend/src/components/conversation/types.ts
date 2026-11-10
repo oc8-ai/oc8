@@ -17,6 +17,9 @@ export interface AssistantTurnModel {
   variants: ChatMessageDTO[];
   /** A run still answering this turn, shown after the finished variants. */
   liveRunId: string | null;
+  /** A message just sent, before its run is known: the turn waits for the
+   *  answer (the breathing mark) without a run to read. */
+  pending?: boolean;
 }
 
 export type TurnModel = UserTurnModel | AssistantTurnModel;

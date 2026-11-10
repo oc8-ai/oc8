@@ -453,14 +453,12 @@
   }
 }
 
-@keyframes oc8-word-in {
+@keyframes oc8-fresh-in {
   from {
     opacity: 0;
-    filter: blur(2px);
   }
   to {
     opacity: 1;
-    filter: none;
   }
 }
 
@@ -468,8 +466,9 @@
    breathing dot in the brand colour with a soft glow -- is the ::after of the
    last block (inside the last item of a trailing list), so it sits inline
    right after the last word and owns no box that could jump when it goes
-   away. New words (`.stream-word`, wrapped only while streaming) fade in
-   over 160 ms: opacity and blur only, never layout. Reduced motion: a still
+   away. The words revealed last (`.stream-fresh`, one span per reveal, see
+   stream-words.ts) fade in over 120 ms: opacity only, never layout, no blur
+   (a filter repaints the whole run each frame). Reduced motion: a still
    dot and words that simply appear. */
 @utility stream-tail {
   & > :last-child:not(ul, ol, pre, table, hr)::after,
@@ -488,8 +487,8 @@
       animation: none;
     }
   }
-  & .stream-word {
-    animation: oc8-word-in 160ms ease-out both;
+  & .stream-fresh {
+    animation: oc8-fresh-in 120ms ease-out both;
     @media (prefers-reduced-motion: reduce) {
       animation: none;
     }
@@ -626,7 +625,8 @@
 }
 
 .oc8-docking-station__ambient {
-  background-image: linear-gradient(oklch(1 0 0 / 0.05) 1px, transparent 1px),
+  background-image:
+    linear-gradient(oklch(1 0 0 / 0.05) 1px, transparent 1px),
     linear-gradient(90deg, oklch(1 0 0 / 0.05) 1px, transparent 1px);
   background-size: 2.5rem 2.5rem;
   inset: 0;

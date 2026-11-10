@@ -7,13 +7,14 @@
 // citations and resolved `oc8://` object chips; anything else is plain text.
 // Images are https only and load only when the member clicks to load them.
 
-import { useEffect, useState, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Check, Copy, ExternalLink, Image as ImageIcon } from "lucide-react";
 
 import { isPlainClick, objectHref, parseObjectUrl } from "@/components/conversation/object-links";
-import { rehypeStreamWords } from "@/components/stream-words";
+import { commonPrefixLength, splitBlocks, stabilizeTail } from "@/components/markdown-stream";
+import { rehypeStreamFresh } from "@/components/stream-words";
 import type { ChatSourceDTO } from "@/lib/hooks-chat";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -172,7 +173,34 @@ function withCitations(text: string, count: number): string {
     .join("");
 }
 
-const STREAMING_REHYPE = [rehypeStreamWords];
+const REMARK = [remarkGfm];
+const URL_AS_IS = (url: string) => url;
+
+/** One top-level block. Memoised: a finished block is parsed once and its
+ *  nodes stay mounted while the answer goes on below it. */
+const MarkdownBlock = memo(function MarkdownBlock({
+  markdown,
+  components,
+  freshFrom,
+}: {
+  markdown: string;
+  components: Components;
+  /** Only on the block still being written: where its new words start. */
+  freshFrom?: number;
+}) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={REMARK}
+      rehypePlugins={
+        freshFrom === undefined ? undefined : [[rehypeStreamFresh, { from: freshFrom }]]
+      }
+      components={components}
+      urlTransform={URL_AS_IS}
+    >
+      {markdown}
+    </ReactMarkdown>
+  );
+});
 
 export function ChatMarkdown({
   text,
@@ -189,80 +217,130 @@ export function ChatMarkdown({
   /** Opens an object chip's in-app route without a page load. Without it a
    *  chip is a plain link. */
   onObjectClick?: (href: string) => void;
-  /** While the answer streams: a breathing dot inline after the last word and
-   *  new words fading in (`stream-tail`). */
+  /** While the answer streams: a breathing dot inline after the last word,
+   *  the newest words fading in, and the unfinished end rendered as it will
+   *  look once finished (`stabilizeTail`). */
   streaming?: boolean;
 }) {
   const t = useT();
-  const components: Components = {
-    pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
-    a: ({ href, children }) => {
-      const cite = /^#cite-(\d+)$/.exec(href ?? "");
-      if (cite) {
-        const n = Number(cite[1]);
-        const title = sources.find((s) => s.n === n)?.title ?? "";
-        return (
-          <sup>
-            <button
-              type="button"
-              onClick={() => onCitation?.(n)}
-              aria-label={t(`Source ${n}: ${title}`, `Quelle ${n}: ${title}`)}
+  // The renderers read the newest callbacks and sources through a ref, so
+  // the components stay the same object between renders and finished blocks
+  // are not re-rendered for a new arrow function.
+  const latest = useRef({ sources, onCitation, onObjectClick });
+  latest.current = { sources, onCitation, onObjectClick };
+  const sourcesKey = sources.map((s) => `${s.n}:${s.title}`).join("|");
+  const components = useMemo<Components>(
+    () => ({
+      pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
+      // The fresh span (rehypeStreamFresh) is keyed by where it starts, so
+      // each reveal mounts a new one and its fade plays once.
+      span: ({ node: _node, ...props }) => {
+        const freshKey = (props as Record<string, unknown>)["data-fresh"];
+        return typeof freshKey === "string" ? (
+          <span key={freshKey} {...props} />
+        ) : (
+          <span {...props} />
+        );
+      },
+      a: ({ href, children }) => {
+        const cite = /^#cite-(\d+)$/.exec(href ?? "");
+        if (cite) {
+          const n = Number(cite[1]);
+          const title = latest.current.sources.find((s) => s.n === n)?.title ?? "";
+          return (
+            <sup>
+              <button
+                type="button"
+                onClick={() => latest.current.onCitation?.(n)}
+                aria-label={t(`Source ${n}: ${title}`, `Quelle ${n}: ${title}`)}
+                className={cn(
+                  "rounded-md px-0.5 font-mono text-xs text-primary hover:underline",
+                  FOCUS,
+                )}
+              >
+                [{n}]
+              </button>
+            </sup>
+          );
+        }
+        const object = href ? parseObjectUrl(href) : null;
+        if (object) {
+          const target = objectHref(object.kind, object.id);
+          if (!target) return <span>{children}</span>;
+          return (
+            <a
+              href={target}
+              onClick={(e) => {
+                const open = latest.current.onObjectClick;
+                if (!open || !isPlainClick(e)) return;
+                e.preventDefault();
+                open(target);
+              }}
               className={cn(
-                "rounded-md px-0.5 font-mono text-xs text-primary hover:underline",
+                "inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 text-xs text-foreground no-underline hover:bg-muted/70",
                 FOCUS,
               )}
             >
-              [{n}]
-            </button>
-          </sup>
-        );
-      }
-      const object = href ? parseObjectUrl(href) : null;
-      if (object) {
-        const target = objectHref(object.kind, object.id);
-        if (!target) return <span>{children}</span>;
+              {children}
+            </a>
+          );
+        }
+        if (!isHttp(href)) return <span>{children}</span>;
         return (
           <a
-            href={target}
-            onClick={(e) => {
-              if (!onObjectClick || !isPlainClick(e)) return;
-              e.preventDefault();
-              onObjectClick(target);
-            }}
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
             className={cn(
-              "inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 text-xs text-foreground no-underline hover:bg-muted/70",
+              // Inline, so a long URL wraps instead of widening the column.
+              "inline rounded-md text-primary underline",
               FOCUS,
             )}
           >
             {children}
+            <ExternalLink className="ml-0.5 inline size-3.5 align-text-bottom" aria-hidden />
+            <span className="sr-only">{t(" (opens in a new tab)", " (öffnet in neuem Tab)")}</span>
           </a>
         );
-      }
-      if (!isHttp(href)) return <span>{children}</span>;
-      return (
-        <a
-          href={href}
-          target="_blank"
-          rel="noopener noreferrer"
-          className={cn(
-            // Inline, so a long URL wraps instead of widening the column.
-            "inline rounded-md text-primary underline",
-            FOCUS,
-          )}
-        >
-          {children}
-          <ExternalLink className="ml-0.5 inline size-3.5 align-text-bottom" aria-hidden />
-          <span className="sr-only">{t(" (opens in a new tab)", " (öffnet in neuem Tab)")}</span>
-        </a>
-      );
-    },
-    img: ({ src, alt }) =>
-      typeof src === "string" && src.startsWith("https://") ? (
-        <ExternalImage src={src} alt={alt ?? ""} />
-      ) : (
-        <span className="text-muted-foreground">{alt}</span>
-      ),
-  };
+      },
+      img: ({ src, alt }) =>
+        typeof src === "string" && src.startsWith("https://") ? (
+          <ExternalImage src={src} alt={alt ?? ""} />
+        ) : (
+          <span className="text-muted-foreground">{alt}</span>
+        ),
+    }),
+    // The renderers read sources through `latest`, but a citation's label
+    // names its source: new sources must re-render the blocks.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [t, sourcesKey],
+  );
+
+  const count = sources.length;
+  const blocks = useMemo(() => splitBlocks(text), [text]);
+  const last = blocks.length - 1;
+  const tail =
+    last >= 0 ? withCitations(streaming ? stabilizeTail(blocks[last]) : blocks[last], count) : "";
+  // Where the newest words of the last block start, against what the last
+  // commit showed. Read from a ref the effect below writes after commit, so
+  // a second render of the same props (StrictMode) gets the same answer.
+  const shown = useRef<{ index: number; markdown: string; from: number }>({
+    index: -1,
+    markdown: "",
+    from: 0,
+  });
+  const prev = shown.current;
+  const freshFrom = !streaming
+    ? undefined
+    : prev.index === last
+      ? prev.markdown === tail
+        ? prev.from
+        : commonPrefixLength(prev.markdown, tail)
+      : 0;
+  useEffect(() => {
+    shown.current = { index: last, markdown: tail, from: freshFrom ?? tail.length };
+  }, [last, tail, freshFrom]);
+
   return (
     <div
       data-testid={streaming ? "stream-tail" : undefined}
@@ -272,14 +350,13 @@ export function ChatMarkdown({
         className,
       )}
     >
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={streaming ? STREAMING_REHYPE : undefined}
-        components={components}
-        urlTransform={(url) => url}
-      >
-        {withCitations(text, sources.length)}
-      </ReactMarkdown>
+      {blocks.map((block, i) =>
+        i === last ? (
+          <MarkdownBlock key={i} markdown={tail} components={components} freshFrom={freshFrom} />
+        ) : (
+          <MarkdownBlock key={i} markdown={withCitations(block, count)} components={components} />
+        ),
+      )}
     </div>
   );
 }

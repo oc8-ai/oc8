@@ -21,6 +21,7 @@ import {
   type RunActivityDTO,
 } from "@/lib/hooks-chat";
 import type { RunComponentDTO } from "@/lib/hooks";
+import { runLiveAnswerKey, runLiveStateKey, type RunLiveState } from "@/lib/live/apply-event";
 
 export interface ActiveRunDTO {
   runId: string;
@@ -161,13 +162,47 @@ export function useMessageFeedback(sessionId: string | null) {
 
 /** One turn's run: the same ["run", runId] entry the live patchers write to.
  *  A finished run never changes again, so it is fetched once. */
+/** A fetched turn run with what only the live events know laid over it:
+ *  the answer's fragments (the GET never carries them, and some may have
+ *  landed before the run was cached) and the state the last run.status
+ *  announced (an in-process run commits RUNNING only when it ends). A run
+ *  that has ended is taken as fetched: its persisted output is complete. */
+export function mergeTurnRun(
+  fresh: RunActivityDTO,
+  previous: RunActivityDTO | undefined,
+  buffered: string | undefined,
+  live: RunLiveState | undefined,
+): RunActivityDTO {
+  if (TURN_TERMINAL.has(fresh.state)) return fresh;
+  let merged = fresh;
+  const liveAnswer = previous?.liveAnswer || buffered;
+  if (liveAnswer) merged = { ...merged, liveAnswer };
+  if (previous?.liveReasoning) merged = { ...merged, liveReasoning: previous.liveReasoning };
+  if (live && live.state !== fresh.state) {
+    merged = { ...merged, state: live.state, phase: live.phase ?? fresh.phase };
+  }
+  return merged;
+}
+
+const TURN_TERMINAL = new Set(["done", "failed", "interrupted"]);
+
 export function useTurnRun(sessionId: string | null, runId: string | null) {
   return useQuery({
     queryKey: ["run", runId ?? ""],
-    queryFn: () =>
-      api.get<RunActivityDTO>(
+    queryFn: async ({ client }) => {
+      const fresh = await api.get<RunActivityDTO>(
         `/chat/sessions/${encodeURIComponent(sessionId ?? "")}/runs/${encodeURIComponent(runId ?? "")}`,
-      ),
+      );
+      // Read after the fetch, so fragments that arrived while it was in
+      // flight are kept.
+      const id = runId ?? "";
+      return mergeTurnRun(
+        fresh,
+        client.getQueryData<RunActivityDTO>(["run", id]),
+        client.getQueryData<string>(runLiveAnswerKey(id)),
+        client.getQueryData<RunLiveState>(runLiveStateKey(id)),
+      );
+    },
     enabled: !!sessionId && !!runId,
     staleTime: Infinity,
   });

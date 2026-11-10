@@ -103,6 +103,47 @@ function timeOf(at: string): number {
   return Number.isNaN(ms) ? Number.POSITIVE_INFINITY : ms;
 }
 
+/** A message on its way: shown at once as the user's turn with the answer
+ *  waiting below it (the breathing mark), until the server's own rows take
+ *  over. Those keep the same React keys (`aliases`), so nothing remounts and
+ *  the mark does not restart when the run becomes known. */
+interface Outbox {
+  id: string;
+  /** The chat it was sent in; null until a new chat has been created. */
+  sessionId: string | null;
+  text: string;
+  at: string;
+  contextRefs: { kind: string; id: string; label: string }[];
+  /** The newest message when it was sent: the first user turn after it is
+   *  this one, even if a live refetch brings it before the send returns. */
+  afterId: string | null;
+  /** The stored message, once the send has returned. */
+  messageId: string | null;
+  /** False when the server stored the message but started no run. */
+  expectRun: boolean;
+}
+
+let outboxSeq = 0;
+
+/** The stored message an outbox entry became, once the transcript has it. */
+function landedMessageId(
+  outbox: Outbox,
+  messages: ChatMessageDTO[],
+  memberId: string | null,
+): string | null {
+  if (outbox.messageId) {
+    return messages.some((m) => m.id === outbox.messageId) ? outbox.messageId : null;
+  }
+  const start = outbox.afterId ? messages.findIndex((m) => m.id === outbox.afterId) + 1 : 0;
+  if (outbox.afterId && start === 0) return null;
+  const mine = messages
+    .slice(start)
+    .find(
+      (m) => m.role === "user" && (!memberId || !m.authorMemberId || m.authorMemberId === memberId),
+    );
+  return mine?.id ?? null;
+}
+
 type Translate = (en: string, de?: string) => string;
 
 /** A message that did not go out: what to say, and what "Send again" resends
@@ -222,6 +263,9 @@ function ConversationBody(props: ConversationProps) {
   const { data: me } = useAuth();
   const { lang } = useLang();
   const conv = useConversation(props.sessionId);
+  const [outbox, setOutbox] = useState<Outbox | null>(null);
+  // Stored message id -> the outbox id its turn was first shown under.
+  const [aliases, setAliases] = useState<Record<string, string>>({});
   // A run that is already a chat turn (its answer, or a run still writing
   // one) is shown there, never a second time as a timeline run.
   const turnRunIds = new Set<string>();
@@ -246,6 +290,67 @@ function ConversationBody(props: ConversationProps) {
     ...turnRows(conv.turns),
     ...extraRuns.map((extra): Row => ({ at: extra.at, kind: "run", extra })),
   ].sort((a, b) => timeOf(a.at) - timeOf(b.at));
+  // The message on its way, until the transcript has it and its answer.
+  const sending = outbox && outbox.sessionId === (props.sessionId ?? null) ? outbox : null;
+  const landedId = sending ? landedMessageId(sending, conv.messages, me?.memberId ?? null) : null;
+  const sentLanded = landedId !== null;
+  const answerLanded =
+    landedId !== null &&
+    conv.turns.some((turn) => turn.kind === "assistant" && turn.replyToId === landedId);
+  const keyAliases = sending && landedId ? { ...aliases, [landedId]: sending.id } : aliases;
+  if (sending && !sentLanded) {
+    rows.push({
+      at: sending.at,
+      kind: "turn",
+      turn: {
+        kind: "user",
+        key: sending.id,
+        message: {
+          id: sending.id,
+          sessionId: props.sessionId ?? "",
+          role: "user",
+          content: sending.text,
+          runId: null,
+          renderedComponents: [],
+          createdAt: sending.at,
+          attachments: [],
+          mode: null,
+          contextRefs: sending.contextRefs,
+          authorMemberId: me?.memberId ?? null,
+          authorName: null,
+          replyToId: null,
+        },
+      },
+    });
+  }
+  if (sending && !answerLanded && (sending.expectRun || !sentLanded)) {
+    rows.push({
+      at: sending.at,
+      kind: "turn",
+      turn: {
+        kind: "assistant",
+        key: `answer-${sending.id}`,
+        replyToId: landedId,
+        variants: [],
+        liveRunId: null,
+        pending: true,
+      },
+    });
+  }
+  // Done once the send has returned (its key alias is stored) and the
+  // transcript shows the message and, if one was started, its answer.
+  const outboxDone = !!sending?.messageId && sentLanded && (answerLanded || !sending.expectRun);
+  useEffect(() => {
+    if (outboxDone) setOutbox(null);
+  }, [outboxDone]);
+  /** A row's React key: a turn first shown from the outbox keeps its key. */
+  function rowKey(row: Row): string {
+    if (row.kind === "run") return `extra-${row.extra.run.id}`;
+    const turn = row.turn;
+    if (turn.kind === "user") return keyAliases[turn.key] ?? turn.key;
+    const alias = turn.replyToId ? keyAliases[turn.replyToId] : undefined;
+    return alias && turn.key === `answer-${turn.replyToId}` ? `answer-${alias}` : turn.key;
+  }
   const [ownDraft, setOwnDraft] = useState("");
   const draft = props.draft ?? ownDraft;
   const setDraft = props.onDraftChange ?? setOwnDraft;
@@ -271,7 +376,7 @@ function ConversationBody(props: ConversationProps) {
   // Any new row re-checks the bottom; an older page landing on top moves
   // only a reader already there (the anchoring below keeps everyone else).
   const newest = rows[rows.length - 1];
-  const newestKey = newest ? (newest.kind === "turn" ? newest.turn.key : newest.extra.run.id) : "";
+  const newestKey = newest ? rowKey(newest) : "";
   const { ref, contentRef, atBottom, scrollToBottom, followFromHere } = useScrollAnchor(
     `${newestKey}:${rows.length}:${conv.liveRunIds.join()}:${sendError?.text ?? ""}`,
     props.sessionId,
@@ -584,6 +689,10 @@ function ConversationBody(props: ConversationProps) {
               pinned: session.pinned ?? false,
             },
         );
+        // The message on its way belongs to the chat just made.
+        setOutbox((prev) =>
+          prev && prev.sessionId === null ? { ...prev, sessionId: session.id } : prev,
+        );
         props.onSessionChange(session.id);
         return session.id;
       },
@@ -633,6 +742,18 @@ function ConversationBody(props: ConversationProps) {
       }
       return;
     }
+    outboxSeq += 1;
+    const outboxId = `outbox-${outboxSeq}`;
+    setOutbox({
+      id: outboxId,
+      sessionId: props.sessionId ?? null,
+      text: submit.text,
+      at: new Date().toISOString(),
+      contextRefs: submit.contextRefs.map(({ kind, id, label }) => ({ kind, id, label })),
+      afterId: conv.messages[conv.messages.length - 1]?.id ?? null,
+      messageId: null,
+      expectRun: true,
+    });
     const body = {
       message:
         heldMode && !props.sessionId && !submit.text.startsWith("/")
@@ -667,6 +788,12 @@ function ConversationBody(props: ConversationProps) {
           appendMessage(prev, message),
         );
       }
+      setAliases((prev) => ({ ...prev, [message.id]: outboxId }));
+      setOutbox((prev) =>
+        prev?.id === outboxId
+          ? { ...prev, messageId: message.id, expectRun: !!message.runId }
+          : prev,
+      );
       if (message.runId) {
         const run = { runId: message.runId, replyToId: message.id, state: "queued" };
         qc.setQueryData<ChatSessionDetailDTO>(conversationKeys.session(sessionId), (prev) =>
@@ -676,6 +803,7 @@ function ConversationBody(props: ConversationProps) {
         );
       }
     } catch (error) {
+      setOutbox((prev) => (prev?.id === outboxId ? null : prev));
       if (fromComposer) setDraft(submit.text);
       // What was picked for this message stays picked for the next try.
       if (fromComposer) setRefs(submit.contextRefs);
@@ -972,7 +1100,7 @@ function ConversationBody(props: ConversationProps) {
             </>
           ) : (
             rows.map((row, i) => (
-              <Fragment key={row.kind === "turn" ? row.turn.key : `extra-${row.extra.run.id}`}>
+              <Fragment key={rowKey(row)}>
                 {props.daySeparators && localDay(row.at) !== localDay(rows[i - 1]?.at ?? "") && (
                   <div
                     role="separator"
