@@ -13,7 +13,6 @@ from fastapi import HTTPException
 from sqlalchemy import select, text
 from starlette.requests import Request
 
-from tests.audit.helpers import flush_audit
 from oc8 import models as m
 from oc8.api.deps import authorize_agent_write
 from oc8.auth import Principal
@@ -29,6 +28,7 @@ from oc8.copilot.capabilities import apply_operation
 from oc8.copilot.models import CopilotOperation, CopilotProposal
 from oc8.copilot.proposals import ProposalNotRejectable, ProposalRejected, apply_proposal
 from oc8.copilot.proposals import reject_proposal as reject_generic
+from tests.audit.helpers import flush_audit
 from tests.conftest import AppSessionFactory
 from tests.copilot.builder_helpers import (
     BuilderOffice,

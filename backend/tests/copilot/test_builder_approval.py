@@ -14,7 +14,6 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tests.audit.helpers import flush_audit
 from oc8 import models as m
 from oc8.approvals import (
     AlreadyDecided,
@@ -30,6 +29,7 @@ from oc8.authz.scope import DepartmentScope, HumanActor, scope_for_member
 from oc8.copilot.builder import create_builder_proposal, request_builder_approval
 from oc8.copilot.builder_ops import BuilderInvalid
 from oc8.copilot.models import CopilotProposal
+from tests.audit.helpers import flush_audit
 from tests.conftest import AppSessionFactory
 from tests.copilot.builder_helpers import BuilderOffice, builder_office, invoice_checker_ops
 from tests.copilot.helpers import Seat, copilot_seat

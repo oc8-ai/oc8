@@ -9,7 +9,6 @@ from typing import Any
 import pytest
 from sqlalchemy import select
 
-from tests.audit.helpers import flush_audit
 from oc8 import models as m
 from oc8.agent.control_tools import offered_tools
 from oc8.agent.engine import _authorize, run_agent
@@ -20,6 +19,7 @@ from oc8.copilot.builder_tools import execute_builder_tool
 from oc8.copilot.models import CopilotProposal
 from oc8.edition.tools import clean_parts
 from oc8.modelrouter import CompletionResult, NeutralTool, ToolCall, Usage, chunk_from_result
+from tests.audit.helpers import flush_audit
 from tests.conftest import AppSessionFactory
 from tests.copilot.builder_helpers import (
     BuilderOffice,
