@@ -8,9 +8,10 @@ The repository stays the single source of truth. Weblate reads the gettext
 files from GitHub and sends translations back as pull requests against
 `dev`. There is no second repository.
 
-oc8 runs its own Weblate instance. Below, `<weblate-url>` stands for its
-address (planned: `https://translate.oc8.ai`). Deploying the instance itself
-is out of scope here; it lives outside this repository.
+oc8 runs its own Weblate instance at **https://translate.oc8.ai** (project
+slug `oc8`, component `core-ui`). Deploying the instance itself is out of
+scope here; the operator guide lives in
+[github.com/oc8-ai/translate](https://github.com/oc8-ai/translate).
 
 ## What the repository provides
 
@@ -31,8 +32,16 @@ and open pull requests. Configure it in the instance's environment:
 ```sh
 WEBLATE_GITHUB_USERNAME=<bot account>
 WEBLATE_GITHUB_TOKEN=<token>
+WEBLATE_GITHUB_HOST=api.github.com
 ```
 
+`WEBLATE_GITHUB_HOST=api.github.com` is required alongside the username and
+token; without it Weblate doesn't use the GitHub API for pull requests.
+
+The token is a **classic** personal access token with the scopes
+**`public_repo`** and **`workflow`**. `workflow` is needed because the bot's
+fork receives upstream commits that touch `.github/workflows`, and GitHub
+rejects a push containing such changes unless the token carries that scope.
 The bot needs no write access to `oc8-ai/oc8`.
 
 ## 2. Create the project and the "Core UI" component
@@ -43,7 +52,7 @@ settings:
 | Setting | Value |
 | --- | --- |
 | Component name | `Core UI` |
-| Version control system | Git, or GitHub (see step 3) |
+| Version control system | GitHub pull request |
 | Source code repository | `https://github.com/oc8-ai/oc8.git` |
 | Repository branch | `dev` |
 | File format | gettext PO file |
@@ -52,6 +61,10 @@ settings:
 | Template for new translations | `i18n/oc8.pot` |
 | Adding new translation | Create new language file |
 | Language code style | POSIX style using underscore as a separator (`pt_BR`) |
+| Translation file line wrapping | No wrapping (otherwise Weblate rewraps `de.po`) |
+| Location comments | Off (no `#:` source references) |
+| Remove obsolete entries | On |
+| Component license | `LGPL-3.0-or-later` |
 
 ### Locale naming
 
@@ -65,8 +78,9 @@ one spelling per language. Mixing them creates two files.
 
 On the component, set:
 
-- Push method: **GitHub pull request**
-- Push branch: empty (Weblate pushes to its own fork)
+- Version control system: **GitHub pull request**
+- Push branch: `translations`. It must differ from `dev`, the repository
+  branch, or Weblate has nothing to open a pull request from.
 - Target branch: `dev` (the component's repository branch)
 - Commit message: `chore(i18n): update {{ language_name }} translations from Weblate`
 
@@ -129,12 +143,86 @@ part of this component. Each can become an additional Weblate component
 later (same settings, different repository path and mask). Nothing is set up
 for them yet.
 
-## How a partner contributes
+## Contributing as a translation partner
 
-1. Sign up on `<weblate-url>`.
-2. Open the oc8 project and the "Core UI" component.
-3. Pick a language, or add one that isn't listed.
-4. Translate. Strings left empty fall back to English.
-5. A maintainer reviews and merges the resulting pull request into `dev`.
-6. A backend restart picks up the new or changed `.po` file; the frontend
-   needs no rebuild.
+This is the flow partners follow. Share it as-is.
+
+1. Sign up at https://translate.oc8.ai (registration is open) and confirm
+   the email address.
+2. Open the project **oc8**, then the component **Core UI**.
+3. Pick your language, or choose **Start new translation** to add one that
+   isn't listed.
+4. Translate or review strings. The **Needs editing** filter lists strings
+   that still want a human check, such as AI drafts (see below).
+5. Save. Strings marked **Needs editing** are *not* kept out of the
+   shipped catalogue: Weblate stores them in the `.po` file with the gettext
+   `fuzzy` flag, and `backend/src/oc8/i18n/catalog.py` does not look at that
+   flag. It loads every entry with a non-empty `msgstr`, fuzzy or not, so
+   once the pull request is merged users of that language see the draft.
+   Only empty strings fall back to English. Treat "Needs editing" as a
+   review marker, not a gate, and don't merge drafts you aren't willing to
+   ship.
+6. A maintainer merges the Weblate pull request into `dev`, and the language
+   ships with the next release. A backend restart picks up a new or changed
+   `.po` file; the frontend needs no rebuild.
+
+### Optional review workflow
+
+By default any registered user can translate directly. For a stricter
+process, enable **Enable reviews** in the project's settings (Workflow).
+Strings then move from "Translated" to "Approved" once a reviewer accepts
+them. Approval is tracked in Weblate; the catalogue the backend serves
+doesn't distinguish approved from unapproved strings.
+
+Review rights come from the **Reviewers** access-control group; Weblate also
+creates per-language team groups. Permissions differ by role:
+
+- Users without review rights can still leave **suggestions**. A suggestion
+  doesn't change the `.po` file until someone with translate rights accepts
+  it. Users with translate rights save **direct translations**, which are
+  committed.
+- A partner becomes reviewer for their language when a maintainer adds them
+  to the reviewer group for that language (or to the project-wide
+  **Reviewers** group) in the Weblate administration. Ask in the pull
+  request or via a maintainer.
+
+## AI first drafts (optional)
+
+A new language doesn't have to start from an empty file. Weblate has built-in
+machine translation services, in current versions among them OpenAI, Azure
+OpenAI, DeepL, Google, LibreTranslate and **Anthropic** (documented at
+[Weblate's machine translation page](https://docs.weblate.org/en/latest/admin/machine.html);
+the instance runs Weblate 2026.11.1, which includes it). The instance has no
+API endpoint that lists the configured services, so check
+**Administration → Machine translation** in the UI.
+
+Configure a service in one of two places, each with an API key:
+
+- Site-wide: **Administration → Machine translation**.
+- Per project: **Project → Settings → Automatic suggestions**.
+
+To fill a language, open the translation and use **Operations → Automatic
+translation**:
+
+- Mode: **Add as translation needing edit**.
+- Filter: untranslated strings.
+- Source: the machine translation service you configured.
+
+To get drafts for strings added later, enable the **Automatic translation**
+add-on on the component, with the same mode, so new strings arrive as
+"Needs editing" drafts.
+
+**Rule:** AI drafts are always "Needs editing", never approved, and a human
+partner validates them. Never use a mode that saves them as final
+translations. Because the backend serves fuzzy entries (see step 5 above), a
+draft that is merged unreviewed is shown to users, so review before the pull
+request is merged.
+
+The `nl` and `es` drafts were seeded this way, as needs-editing drafts.
+
+## Enterprise edition strings
+
+*Planned.* Enterprise UI strings live in the private enterprise repository
+and aren't translated through the public project yet. The planned approach
+is a separate private Weblate project, readable only by contracted
+partners. Nothing is set up, and there is no committed date.

@@ -8,12 +8,17 @@ this page is specifically about `<repo root>/i18n/`.
 
 ## Recommended: translate on Weblate
 
-For translators, the easiest path is oc8's Weblate instance. Sign up, open
-the oc8 project, pick or add a language and translate in the browser. Weblate
+For translators, the easiest path is oc8's Weblate instance at
+https://translate.oc8.ai. Sign up (registration is open), open the oc8
+project and its Core UI component, pick or add a language and translate in
+the browser. Weblate
 sends your work back as a pull request that a maintainer reviews and merges.
 You don't need a development environment.
 
-The maintainer-side setup is in [Weblate setup](weblate.md). The rest of this
+The step-by-step partner flow, the review workflow and AI first drafts are in
+[Weblate setup](weblate.md#contributing-as-a-translation-partner), which
+also has the maintainer-side setup. Note that strings marked "Needs editing"
+are still served to users once merged. The rest of this
 page describes the underlying files and the pull request path, which stays
 available for developers.
 
