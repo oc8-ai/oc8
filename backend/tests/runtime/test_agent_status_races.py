@@ -261,3 +261,29 @@ async def test_the_reconciler_leaves_a_live_or_parked_run_alone(
         runtime.release.set()
         await asyncio.wait_for(turn, timeout=30)
     assert (await _agent(app_session, tenant, agent_id)).status == "idle"
+
+
+async def test_the_reconciler_rechecks_runs_once_it_holds_the_slot(
+    app_session: AppSessionFactory, pg_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An isolated run commits RUNNING and releases its slot between the sweep's
+    select and its slot try: the sweep must see that run, not reset its agent."""
+    import psycopg
+
+    import oc8.runtime.agent_status as agent_status
+
+    tenant = uuid.uuid4()
+    agent_id, (run_id,) = await _office_with_queued_runs(app_session, tenant, 1)
+    await _stale_running(app_session, tenant, agent_id)
+    real_key = agent_status.slot_key
+
+    def key(agent: uuid.UUID) -> str:
+        # Asked right after the candidate select: the isolated run commits
+        # RUNNING now, on a connection of its own.
+        with psycopg.connect(pg_url.replace("+psycopg", ""), autocommit=True) as conn:
+            conn.execute("UPDATE agent_run SET state = 'running' WHERE id = %s", (run_id,))
+        return real_key(agent)
+
+    monkeypatch.setattr(agent_status, "slot_key", key)
+    assert agent_id not in await release_stale_running_agents()
+    assert (await _agent(app_session, tenant, agent_id)).status == "running"

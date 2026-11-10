@@ -59,15 +59,17 @@ import datetime as dt
 import logging
 import uuid
 from collections.abc import AsyncIterator
+from functools import partial
 
 from sqlalchemy import exists, func, or_, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from oc8 import models as m
 from oc8.config import get_settings
 from oc8.db.session import tenant_session
 from oc8.observability import record_run_outcome
-from oc8.realtime.emit import publish_agent_status
+from oc8.realtime.emit import publish_after_commit, publish_agent_status
 from oc8.runtime.queue import get_run_queue
 from oc8.runtime.repository import RunRepository
 from oc8.runtime.run_context import merge_context
@@ -140,8 +142,9 @@ async def close_abandoned_runs(
                     if agent is not None and agent.status == "running":
                         # Freeing the agent is the point: while it reads as busy
                         # the office view lies, and a lead may hold work back.
+                        # Announced once this commits, never for a rolled-back write.
                         agent.status = "idle"
-                        await publish_agent_status(agent)
+                        publish_after_commit(db, partial(publish_agent_status, agent))
                     await repo.transition(run, RunState.FAILED)
                     record_run_outcome(RunState.FAILED.value)
                     closed.append(run.id)
@@ -301,6 +304,22 @@ _HOLDS_RUNNING = (
 STALE_RUNNING_AFTER = dt.timedelta(seconds=2 * HEARTBEAT_SECONDS)
 
 
+async def _holds_running(db: AsyncSession, agent_id: uuid.UUID) -> bool:
+    """Whether a run of `agent_id` is RUNNING or parked, as committed now."""
+    return bool(
+        (
+            await db.execute(
+                select(
+                    exists().where(
+                        m.AgentRun.agent_id == agent_id,
+                        m.AgentRun.state.in_(_HOLDS_RUNNING),
+                    )
+                )
+            )
+        ).scalar_one()
+    )
+
+
 async def release_stale_running_agents(*, now: dt.datetime | None = None) -> list[uuid.UUID]:
     """Set back to idle every agent shown "running" that nothing is running.
 
@@ -360,8 +379,15 @@ async def release_stale_running_agents(*, now: dt.datetime | None = None) -> lis
                     ).scalar_one()
                     if not free:
                         continue
+                    # Asked again, now that the slot is ours: an isolated run
+                    # commits RUNNING and releases the slot before its container
+                    # starts, and may have done both since the select above.
+                    # A fresh statement sees that commit; the slot keeps the
+                    # next one out until this transaction ends.
+                    if await _holds_running(db, agent.id):
+                        continue
                     agent.status = "idle"
-                    await publish_agent_status(agent)
+                    publish_after_commit(db, partial(publish_agent_status, agent))
                     released.append(agent.id)
         except Exception:
             logger.exception("reconciler: running-agent sweep failed for tenant %s", tenant_id)
