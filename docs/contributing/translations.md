@@ -6,21 +6,55 @@ a *capa's* fields and labels instead, see that capa's own `i18n/` folder
 and [Developer → Packaging](../developer/packaging-and-distribution.md);
 this page is specifically about `<repo root>/i18n/`.
 
-## Recommended: translate on Weblate
+## Two ways to contribute
 
-For translators, the easiest path is oc8's Weblate instance at
-https://translate.oc8.ai. Sign up (registration is open), open the oc8
-project and its Core UI component, pick or add a language and translate in
-the browser. Weblate
-sends your work back as a pull request that a maintainer reviews and merges.
-You don't need a development environment.
+| | In the browser on translate.oc8.ai | With Git and a pull request |
+|---|---|---|
+| For | Translators and partners | Developers |
+| You need | A free account | A fork, Node.js and a `.po` editor |
+| Your work reaches oc8 | Weblate opens the pull request for you | You open the pull request |
 
-The step-by-step partner flow, the review workflow and AI first drafts are in
-[Weblate setup](weblate.md#contributing-as-a-translation-partner), which
-also has the maintainer-side setup. Strings marked "Needs editing"
-are not shipped until a reviewer confirms them. The rest of this
-page describes the underlying files and the pull request path, which stays
-available for developers.
+Both end in the same place: a reviewed change to `i18n/<locale>.po` on
+`dev`, shipped with the next release.
+
+## Option 1: translate in the browser (translate.oc8.ai)
+
+1. **Sign up** at [translate.oc8.ai](https://translate.oc8.ai) and confirm
+   the email Weblate sends you. Registration is open.
+2. **Open the project:** *Projects → oc8 → Core UI*.
+3. **Pick your language.** If it is listed, click it. If not, choose
+   *Start new translation*, select the language and confirm — Weblate
+   creates the file for you.
+4. **Translate.** Click *Translate* and work through the strings. Each one
+   shows the English source, nearby strings and, where available, glossary
+   terms and suggestions. Keep placeholders such as `{name}` or `{count}`
+   exactly as they are, and don't translate product names (oc8, Copilot,
+   Odoo, …).
+5. **Review drafts.** Some languages (French, Dutch, Spanish) start with a
+   first draft marked *Needs editing*. Use the filter *Strings needing
+   action → Needs editing*, correct each draft and save it; saving clears
+   the mark. Drafts that are still marked are **not** shipped — users see
+   the English text until someone confirms the translation.
+6. **Not sure?** Leave a comment on the string instead of guessing, or
+   add a *suggestion* for someone else to accept.
+7. **That's it.** Weblate collects the changes and opens a pull request
+   against `oc8-ai/oc8`. A maintainer reviews and merges it; your language
+   ships with the next oc8 release.
+
+Want to look after a language as its reviewer, or get a draft for a new
+language? Ask in the pull request or contact the maintainers. The
+maintainer-side setup (bot account, review workflow, AI drafts) is in
+[Weblate setup](weblate.md#contributing-as-a-translation-partner).
+
+## Option 2: translate with Git and a pull request
+
+For developers who prefer working in the repository. The steps are under
+[Adding a new language](#adding-a-new-language) and
+[Updating an existing language](#updating-an-existing-language) below:
+export the catalog, translate it in any `.po` editor (for example
+Poedit), restart the backend to check it, and open a pull request against
+`dev`. If a language is already maintained on translate.oc8.ai, use the
+browser instead so the two don't overwrite each other.
 
 ## How it works
 
@@ -50,8 +84,7 @@ such literal and is *entirely* sourced from its `.po` file.
 
 ## Adding a new language
 
-Developers can also add a language by hand (translators should prefer
-Weblate, see above).
+Option 2, step by step (translators: see [Option 1](#option-1-translate-in-the-browser-translateoc8ai)).
 
 1. From `frontend/`, run:
 
