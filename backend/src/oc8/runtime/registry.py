@@ -236,7 +236,10 @@ async def resolve_runtime(
     a run already in flight -- including a run re-executed on resume. `None`
     is a real value ("never set"), which is why "not given" is the separate
     `LIVE_ROW` sentinel; only a caller with no run behind it (the evidence
-    sweep) reads the live row."""
+    sweep) reads the live row.
+
+    With no runtime set, the tenant Assistant runs in-process; every other
+    agent follows the deployment's `agent_isolation` setting."""
     ref = agent.runtime_ref if isinstance(runtime_ref, _LiveRow) else runtime_ref
     # An explicit built-in choice wins outright, overriding the tenant-wide
     # agent_isolation setting below -- that's the whole point of making the
@@ -251,6 +254,13 @@ async def resolve_runtime(
     # set at all), when isolation is enabled for the deployment (§8.5), a
     # first_party agent runs in a per-agent container instead of in-process --
     # exactly today's behavior, untouched by the two branches above.
+    if not ref and agent.is_tenant_assistant:
+        # The tenant Assistant with no runtime of its own runs in-process,
+        # whatever `agent_isolation` says. Its model calls and every tool it
+        # has already run control-plane side; a sandbox would only add a pod
+        # per chat turn (seconds warm, minutes on a cold node pool) for a
+        # shell it is never offered (`offered_tools`).
+        return Oc8AgentRuntime()
     resolved = await resolve_runtime_plugin(db, tenant_id=tenant_id, agent=agent, runtime_ref=ref)
     if resolved is None:
         from oc8.config import get_settings

@@ -1321,7 +1321,10 @@ def offered_tools(
     ]
     if offer_write_output_file:
         offered.append(WRITE_OUTPUT_FILE)
-    if offer_run_shell:
+    # Never the tenant Assistant's, on any runtime: its remit is read-only +
+    # delegate_task + propose_change + decide_approval (assistant.py), and an
+    # unoffered local tool is refused by the shell gate (`_local_refusal`).
+    if offer_run_shell and not agent.is_tenant_assistant:
         offered.append(RUN_SHELL)
         if offer_run_program:
             offered.append(RUN_PROGRAM)
