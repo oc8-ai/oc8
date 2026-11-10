@@ -185,3 +185,24 @@ async def test_errors_when_no_local_result_is_given(app_session: Any) -> None:
         )
     assert outcome is not None
     assert outcome.output.startswith("ERROR")
+
+
+@pytest.mark.parametrize("offer_run_shell", [False, True])
+def test_never_offered_to_the_tenant_assistant(offer_run_shell: bool) -> None:
+    """The Assistant's remit is read-only + delegate + propose + approve: no
+    shell and no program on any runtime, not even when pinned to isolated."""
+    assistant = _agent()
+    assistant.is_tenant_assistant = True
+    names = [
+        t.name
+        for t in offered_tools(
+            assistant,
+            assigned_skills=[],
+            active_skills=[],
+            mcp_tools=MCP_TOOLS,
+            offer_run_shell=offer_run_shell,
+            offer_run_program=True,
+        )
+    ]
+    assert RUN_SHELL.name not in names
+    assert "run_program" not in names

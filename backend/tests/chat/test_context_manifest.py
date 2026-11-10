@@ -596,3 +596,111 @@ async def test_extra_context_is_an_allow_list(
     assert run is not None
     assert run.context["regenerated"] is True
     assert "task_images" not in run.context and "anything" not in run.context
+
+
+async def _fed_source(
+    db: AsyncSession, tenant: uuid.UUID, *, name: str = "Website"
+) -> tuple[m.DataSource, m.KnowledgeBase]:
+    source = m.DataSource(tenant_id=tenant, name=name, connector_type="website", config={})
+    db.add(source)
+    await db.flush()
+    fed = m.KnowledgeBase(
+        tenant_id=tenant, name="Site", embedding_model="x", source_ids=[str(source.id)]
+    )
+    other = m.KnowledgeBase(tenant_id=tenant, name="Other", embedding_model="x")
+    db.add_all([fed, other])
+    await db.flush()
+    return source, fed
+
+
+async def test_a_message_data_source_searches_the_bases_it_feeds(
+    app_session: AppSessionFactory,
+) -> None:
+    """A data source attached to one message is treated like an attached
+    knowledge base: the bases it feeds are searched this turn, and the model
+    is told to use search_knowledge for it -- not dropped silently."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        _agent, member, session = await _chat(db, tenant)
+        source, fed = await _fed_source(db, tenant, name="Website - https://www.example.test")
+        viewer = await viewer_for_member(db, member, token_role="org_admin")
+        manifest = await build_manifest(
+            db,
+            viewer=viewer,
+            message_refs=[{"kind": "data_source", "id": str(source.id)}],
+            session=session,
+        )
+    assert [e["scope"] for e in manifest.entries] == ["message"]
+    assert manifest.released_kb_ids == [str(fed.id)]
+    assert manifest.message_kb_ids == [str(fed.id)]
+    text = manifest_text(manifest)
+    assert "search_knowledge" in text
+    assert _fenced_everywhere(text, "https://www.example.test")
+    assert "search_knowledge" not in manifest_text(manifest, tools=False)
+
+
+async def test_a_message_data_source_the_member_may_not_see_is_dropped(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        _agent, member, session = await _chat(db, tenant, subject="emp")
+        source, _fed = await _fed_source(db, tenant)
+        viewer = await viewer_for_member(db, member, token_role="member")
+        manifest = await build_manifest(
+            db,
+            viewer=viewer,
+            message_refs=[{"kind": "data_source", "id": str(source.id)}],
+            session=session,
+        )
+    assert manifest.entries == []
+    assert manifest.released_kb_ids == []
+    assert manifest.message_kb_ids == []
+
+
+async def test_send_message_searches_a_message_data_source(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        _agent, member, session = await _chat(db, tenant)
+        source, fed = await _fed_source(db, tenant, name="Website - https://www.example.test")
+        msg, run = await send_message(
+            db,
+            session=session,
+            tenant_id=tenant,
+            message="what does the website say?",
+            context_refs=[{"kind": "data_source", "id": str(source.id)}],
+            originating_operator="admin",
+            operator_role="org_admin",
+            acting_member=member,
+        )
+    assert msg.context_refs == [{"kind": "data_source", "id": str(source.id), "label": source.name}]
+    assert run is not None
+    assert run.context["released_kb_ids"] == [str(fed.id)]
+    assert run.context["context_kb_ids"] == [str(fed.id)]
+    assert "search_knowledge" in run.context["task"]
+    assert "https://www.example.test" in run.context["task"]
+
+
+def test_a_release_by_a_message_source_alone_is_not_called_pinned() -> None:
+    manifest = Manifest(
+        entries=[
+            {
+                "ref_id": "data_source:1",
+                "kind": "data_source",
+                "id": "1",
+                "label": "Website",
+                "readable": False,
+                "size": None,
+                "classification": "internal",
+                "scope": "message",
+            }
+        ],
+        released_kb_ids=["kb"],
+        message_kb_ids=["kb"],
+        message_sources=[("data_source:1", True)],
+    )
+    text = manifest_text(manifest)
+    assert "Knowledge the operator pinned" not in text
+    assert "Website" in text and "search_knowledge" in text

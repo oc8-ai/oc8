@@ -177,11 +177,21 @@ class PinnedTransport(httpx.AsyncBaseTransport):
         self._inner = inner or httpx.AsyncHTTPTransport()
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        # Send a pinned copy and leave the caller's request alone: httpx keeps
+        # that object as response.request and resolves a relative redirect
+        # ("Location: /de") against it. Rewriting it in place made the next hop
+        # https://<ip>/de, which has no SNI and fails the TLS handshake.
         host = request.url.host
-        request.headers["Host"] = host if request.url.port is None else f"{host}:{request.url.port}"
-        request.extensions = {**request.extensions, "sni_hostname": host}
-        request.url = request.url.copy_with(host=self._ip)
-        return await self._inner.handle_async_request(request)
+        headers = httpx.Headers(request.headers)
+        headers["Host"] = host if request.url.port is None else f"{host}:{request.url.port}"
+        pinned = httpx.Request(
+            request.method,
+            request.url.copy_with(host=self._ip),
+            headers=headers,
+            stream=request.stream,
+            extensions={**request.extensions, "sni_hostname": host},
+        )
+        return await self._inner.handle_async_request(pinned)
 
     async def aclose(self) -> None:
         await self._inner.aclose()

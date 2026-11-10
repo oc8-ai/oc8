@@ -35,6 +35,21 @@ async def safe_fetch_bytes(
     the same block-list, because a public host that answers with a redirect to
     169.254.169.254 is the whole reason the guard exists.
     """
+    try:
+        return await _fetch_bytes(
+            url, max_bytes=max_bytes, max_redirects=max_redirects, timeout=timeout
+        )
+    except httpx.HTTPError as exc:
+        raise ConnectorError(f"could not fetch {url!r}: {exc}") from exc
+
+
+async def _fetch_bytes(
+    url: str,
+    *,
+    max_bytes: int,
+    max_redirects: int,
+    timeout: float,  # noqa: ASYNC109
+) -> bytes:
     current = url
     for _ in range(max_redirects + 1):
         ip = _guard(current)
@@ -70,6 +85,23 @@ async def safe_fetch(
     max_bytes: int = 5_000_000,
     max_redirects: int = 3,
     timeout: float = 10.0,  # noqa: ASYNC109 -- public kwarg per the connector interface, not a cancel scope
+) -> tuple[str, str]:
+    """Fetch a page; a network or TLS failure is a ConnectorError, so a caller
+    that skips unreachable pages (a website sync) does not abort instead."""
+    try:
+        return await _fetch_text(
+            url, max_bytes=max_bytes, max_redirects=max_redirects, timeout=timeout
+        )
+    except httpx.HTTPError as exc:
+        raise ConnectorError(f"could not fetch {url!r}: {exc}") from exc
+
+
+async def _fetch_text(
+    url: str,
+    *,
+    max_bytes: int,
+    max_redirects: int,
+    timeout: float,  # noqa: ASYNC109
 ) -> tuple[str, str]:
     current = url
     for _ in range(max_redirects + 1):
