@@ -13,7 +13,7 @@ vi.mock("@/lib/conversation-api", async (orig) => ({
   useMessageFeedback: () => ({ mutate: vi.fn() }),
 }));
 
-import { AssistantTurn } from "@/components/conversation/assistant-turn";
+import { AssistantTurn, PRESENCE_MIN_MS } from "@/components/conversation/assistant-turn";
 import { presenceLabel } from "@/components/conversation/presence-label";
 import { StreamingText } from "@/components/conversation/streaming-text";
 import { ThinkingPresence } from "@/components/conversation/thinking-presence";
@@ -70,12 +70,17 @@ describe("ThinkingPresence in a turn", () => {
     expect(presence).toHaveTextContent("Thinking …");
     expect(screen.getByTestId("presence-mark")).toHaveAttribute("aria-hidden", "true");
     // No empty caret beside it: the markdown root draws nothing yet.
-    expect(document.querySelector(".stream-word")).toBeNull();
+    expect(document.querySelector(".stream-fresh")).toBeNull();
 
+    vi.useFakeTimers();
     rerender(turn({ ...RUN, liveAnswer: "Hello" }, client));
-
+    // It stays its minimum (no flash), then the words take over.
+    expect(screen.getByTestId("thinking-presence")).toBeInTheDocument();
+    act(() => {
+      vi.advanceTimersByTime(PRESENCE_MIN_MS);
+    });
     expect(screen.queryByTestId("thinking-presence")).toBeNull();
-    expect(screen.getByTestId("stream-tail")).toHaveTextContent("Hello");
+    expect(screen.getByTestId("stream-tail")).toBeInTheDocument();
   });
 
   it("is not shown while the run waits on a person, nor once it ended", () => {
@@ -236,18 +241,16 @@ describe("the streaming tail", () => {
     expect(css).not.toContain("step-end infinite");
   });
 
-  it("fades new words in while streaming and leaves plain text when done", () => {
+  it("fades the newest words in while streaming and leaves plain text when done", () => {
     const { container, rerender } = render(<StreamingText text="Two words" streaming />);
-    const words = container.querySelectorAll(".stream-word");
-    expect([...words].map((w) => w.textContent)).toEqual(["Two", "words"]);
+    expect(container.querySelector(".stream-fresh")).toHaveTextContent("Two words");
     expect(screen.getByTestId("stream-tail")).toHaveClass("stream-tail");
-
-    rerender(<StreamingText text={"Two words and more"} streaming />);
-    // The words already on screen keep their node -- they do not fade again.
-    expect(container.querySelectorAll(".stream-word")[0]).toBe(words[0]);
+    const paragraph = container.querySelector("p");
 
     rerender(<StreamingText text={"Two words and more"} streaming={false} />);
-    expect(container.querySelector(".stream-word")).toBeNull();
+    // The paragraph keeps its node; nothing is left to fade.
+    expect(container.querySelector("p")).toBe(paragraph);
+    expect(container.querySelector(".stream-fresh")).toBeNull();
     expect(container.querySelector(".stream-tail")).toBeNull();
     expect(screen.getByText("Two words and more")).toBeInTheDocument();
   });
@@ -255,6 +258,6 @@ describe("the streaming tail", () => {
   it("leaves code untouched", () => {
     const { container } = render(<StreamingText text={"Run `npm ci` now"} streaming />);
     expect(container.querySelector("code")?.textContent).toBe("npm ci");
-    expect(container.querySelector("code .stream-word")).toBeNull();
+    expect(container.querySelector("code .stream-fresh")).toBeNull();
   });
 });

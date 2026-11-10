@@ -56,6 +56,15 @@ export function runLiveStateKey(runId: string): unknown[] {
   return ["run-live-state", runId];
 }
 
+// The answer's fragments as they streamed, kept apart from the run like
+// runLiveStateKey: a fragment can land before the run's first GET has
+// answered (an in-process run starts streaming within a second), and the
+// run's own cache entry does not exist yet to take it. useTurnRun lays this
+// over its fetch, so the answer never starts mid-sentence.
+export function runLiveAnswerKey(runId: string): unknown[] {
+  return ["run-live-answer", runId];
+}
+
 type Patcher = (qc: QueryClient, data: Record<string, unknown>) => void;
 
 const patchers: Record<string, Patcher> = {
@@ -217,6 +226,7 @@ const patchers: Record<string, Patcher> = {
     const runId = d.run_id as string | undefined;
     const text = d.text as string | undefined;
     if (!runId || !text) return;
+    qc.setQueryData<string>(runLiveAnswerKey(runId), (prev) => (prev ?? "") + text);
     qc.setQueryData(["run", runId], (prev: unknown) =>
       prev
         ? {

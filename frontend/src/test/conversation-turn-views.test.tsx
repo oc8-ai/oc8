@@ -219,7 +219,7 @@ describe("turn view fixes", () => {
   const a1 = { ...base, id: "a1", content: "First answer" };
   const a2 = { ...base, id: "a2", content: "Second answer" };
 
-  it("follows a new answer after Regenerate even when paged to an older one", () => {
+  it("follows a new answer after Regenerate even when paged to an older one", async () => {
     const { rerender } = wrap(
       <AssistantTurn
         sessionId="s"
@@ -255,9 +255,10 @@ describe("turn view fixes", () => {
         />
       </QueryClientProvider>,
     );
-    // While streaming, each word is its own fading span: match the paragraph.
+    // While streaming, the newest words are their own fading span and are
+    // revealed at a steady pace: match the paragraph once it is all there.
     expect(
-      screen.getByText((_, el) => el?.tagName === "P" && el.textContent === "Fresh take"),
+      await screen.findByText((_, el) => el?.tagName === "P" && el.textContent === "Fresh take"),
     ).toBeInTheDocument();
   });
 

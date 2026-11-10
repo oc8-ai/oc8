@@ -29,12 +29,16 @@ import { StreamingText } from "./streaming-text";
 import { ThinkingPresence } from "./thinking-presence";
 import { ThoughtDisclosure, thoughtOf } from "./thought-disclosure";
 import type { AssistantTurnModel } from "./types";
+import { useMinVisible } from "./use-min-visible";
 import { useObjectNavigation } from "./use-object-navigation";
 
 const TERMINAL = new Set(["done", "failed", "interrupted"]);
 /** A run in these states is waiting on a person, not working: the turn shows
  *  the question or the approval, never "Thinking …". */
 const WAITING_ON_PERSON = new Set(["waiting_for_input", "waiting_for_approval"]);
+/** The breathing mark stays at least this long once shown, so an answer
+ *  whose first word comes right away does not flash it for a frame. */
+export const PRESENCE_MIN_MS = 400;
 
 function ActionButton({
   label,
@@ -94,7 +98,7 @@ export function AssistantTurn({
     setPicked(null);
   }, [total, turn.liveRunId]);
   const index = picked === null ? total - 1 : Math.min(picked, total - 1);
-  const showingLive = turn.liveRunId !== null && index === turn.variants.length;
+  const showingLive = !!turn.pending || (turn.liveRunId !== null && index === turn.variants.length);
   const message = showingLive ? null : (turn.variants[index] ?? null);
   const runId = showingLive ? turn.liveRunId : (message?.runId ?? null);
   const { data: fetchedRun } = useTurnRun(suppliedRun ? null : sessionId, runId);
@@ -112,6 +116,9 @@ export function AssistantTurn({
     showingLive &&
     !answer &&
     (!run || (!TERMINAL.has(run.state) && !WAITING_ON_PERSON.has(run.state)));
+  const presence = useMinVisible(awaitingFirstWord, PRESENCE_MIN_MS);
+  // The first words wait while the mark finishes its minimum, then catch up.
+  const holdText = presence && !awaitingFirstWord;
   // Copied and rated belong to the answer on screen, not to the turn.
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [ratings, setRatings] = useState<Record<string, "up" | "down">>({});
@@ -173,10 +180,10 @@ export function AssistantTurn({
       {/* Before the first word: the breathing mark and what the run is doing
           now -- "Thinking …", the current step, or an isolated run's
           workspace start. Gone the moment text arrives. */}
-      {awaitingFirstWord && <ThinkingPresence run={run ?? null} />}
+      {presence && <ThinkingPresence run={run ?? null} />}
       <StreamingText
-        text={answer}
-        streaming={live}
+        text={holdText ? "" : answer}
+        streaming={live || holdText}
         sources={sources}
         onObjectClick={openObject}
         onCitation={(n) => {
