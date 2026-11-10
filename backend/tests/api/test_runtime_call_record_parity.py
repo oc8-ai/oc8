@@ -67,12 +67,13 @@ def test_both_runtimes_have_the_same_number_of_record_sites() -> None:
     """Not a blind equality: the in-process engine has one more record site
     than the isolated runtime, and that asymmetry is real and justified, not
     drift. The engine has a plugin-hook (PreToolUse) blocking path with its
-    own dedicated append -- blocked-by-hook, parked-for-approval, and the
-    shared append, three sites. `internal_agent.py` has no PreToolUse/plugin
-    hook dispatch at all (`grep -n PreToolUse src/oc8/api/v1/internal_agent.py`
-    finds nothing), so it only ever has parked-for-approval and the shared
-    append, two sites. If a THIRD site ever appears in the isolated runtime,
-    or the engine's count changes, this should be re-examined rather than
+    own dedicated append; `internal_agent.py` has no PreToolUse/plugin hook
+    dispatch at all (`grep -n PreToolUse src/oc8/api/v1/internal_agent.py`
+    finds nothing). Every other site exists in both: parked-for-approval, the
+    shared append, and the held re-run of a call an operator's answer or an
+    approval released (`engine.py`'s held block, `internal_agent.py`'s
+    `_finish_elicitation`). So four sites in the engine, three in the isolated
+    runtime. If either count changes, this should be re-examined rather than
     the numbers bumped blindly."""
-    assert len(_call_record_literals(_ENGINE)) == 3
-    assert len(_call_record_literals(_ISOLATED)) == 2
+    assert len(_call_record_literals(_ENGINE)) == 4
+    assert len(_call_record_literals(_ISOLATED)) == 3

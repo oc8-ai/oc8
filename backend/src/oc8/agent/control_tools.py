@@ -1383,12 +1383,12 @@ async def _delegate(
                 if executing_run.context.get(carried) is not None:
                     context[carried] = executing_run.context[carried]
             # The sub-run acts for the same person (connections design): a
-            # tool "in the user's context" must not lose them one hop down.
-            from oc8.connections.acting import resolve_acting_person
+            # tool "in the user's context" must not lose them one hop down --
+            # nor gain one: a run that acts for nobody hands that on, or the
+            # trigger carried below would resolve its creator.
+            from oc8.connections.acting import carried_person, resolve_acting_person
 
-            acting = await resolve_acting_person(db, executing_run)
-            if acting.member_id is not None:
-                context["on_behalf_of"] = str(acting.member_id)
+            context.update(carried_person(await resolve_acting_person(db, executing_run)))
             if executing_run.context.get("trigger_id"):
                 context["trigger_id"] = executing_run.context["trigger_id"]
     # Deferred import: oc8.runtime.executor reaches oc8.runtime.adapter, which
