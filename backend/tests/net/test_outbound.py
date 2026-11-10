@@ -135,3 +135,19 @@ def test_a_bare_host_is_resolved_and_judged_like_a_url(monkeypatch: pytest.Monke
         guard_outbound_host("db.internal", resolver=lambda h: ["10.0.0.9"])
     _allow(monkeypatch, "db.internal")
     assert guard_outbound_host("db.internal", resolver=lambda h: ["10.0.0.9"]) == "10.0.0.9"
+
+
+async def test_pinned_transport_leaves_the_callers_request_alone() -> None:
+    """The pinned address must not leak back into the request httpx keeps:
+    a relative redirect is resolved against response.request."""
+
+    class Stub(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            return httpx.Response(301, headers={"location": "/de"}, request=request)
+
+    transport = PinnedTransport("93.184.216.34", inner=Stub())
+    async with httpx.AsyncClient(transport=transport) as client:
+        resp = await client.get("https://www.example.test/")
+    assert resp.request.url.host == "www.example.test"
+    assert resp.next_request is not None
+    assert str(resp.next_request.url) == "https://www.example.test/de"

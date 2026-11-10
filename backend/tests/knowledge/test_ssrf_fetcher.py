@@ -147,3 +147,132 @@ async def test_each_hop_connects_to_the_address_its_guard_checked(
     await f.safe_fetch("http://example.test/")
     assert isinstance(pinned[0], PinnedTransport)
     assert pinned[0]._ip == "93.184.216.34"
+
+
+def _pin_through(
+    monkeypatch: pytest.MonkeyPatch, handler: object, dns: dict[str, str]
+) -> list[str]:
+    """Route every pinned connection to `handler` and resolve names from `dns`;
+    return the URLs the guard was asked about, in order."""
+    import oc8.knowledge.connectors.fetcher as f
+    from oc8.net.outbound import PinnedTransport
+
+    def resolve(host: str) -> list[str]:
+        return [dns.get(host, host)]
+
+    monkeypatch.setattr(f, "_resolve_ips", resolve)
+    guarded: list[str] = []
+    real_guard = f._guard
+
+    def tracking_guard(url: str) -> str | None:
+        guarded.append(url)
+        return real_guard(url)
+
+    monkeypatch.setattr(f, "_guard", tracking_guard)
+    monkeypatch.setattr(
+        f,
+        "PinnedTransport",
+        lambda ip: PinnedTransport(ip, inner=httpx.MockTransport(handler)),  # type: ignore[arg-type]
+    )
+    return guarded
+
+
+async def test_a_relative_redirect_stays_on_the_hostname_not_the_pinned_ip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """https://www.opaas.cloud/ answers 301 "/de": the next hop must be
+    https://www.opaas.cloud/de, not https://<pinned ip>/de (no SNI on an IP,
+    so the TLS handshake fails)."""
+    import oc8.knowledge.connectors.fetcher as f
+
+    hops: list[tuple[str, str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        hops.append((request.url.host, request.headers["Host"], request.extensions["sni_hostname"]))
+        if request.url.path == "/":
+            return httpx.Response(301, headers={"location": "/de"})
+        return httpx.Response(200, text="hallo", headers={"content-type": "text/html"})
+
+    guarded = _pin_through(monkeypatch, handler, {"www.example.test": "93.184.216.34"})
+    text, _ = await f.safe_fetch("https://www.example.test/")
+    assert text == "hallo"
+    assert guarded == ["https://www.example.test/", "https://www.example.test/de"]
+    assert hops == [
+        ("93.184.216.34", "www.example.test", "www.example.test"),
+        ("93.184.216.34", "www.example.test", "www.example.test"),
+    ]
+
+
+async def test_bytes_relative_redirect_stays_on_the_hostname(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import oc8.knowledge.connectors.fetcher as f
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/archive":
+            return httpx.Response(302, headers={"location": "/archive.tar.gz"})
+        return httpx.Response(200, content=b"\x1f\x8b")
+
+    guarded = _pin_through(monkeypatch, handler, {"code.example.test": "93.184.216.34"})
+    assert await f.safe_fetch_bytes("https://code.example.test/archive") == b"\x1f\x8b"
+    assert guarded[-1] == "https://code.example.test/archive.tar.gz"
+
+
+async def test_an_absolute_redirect_to_a_private_host_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import oc8.knowledge.connectors.fetcher as f
+
+    reached: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        reached.append(request.headers["Host"])
+        return httpx.Response(301, headers={"location": "http://internal.example.test/admin"})
+
+    guarded = _pin_through(
+        monkeypatch,
+        handler,
+        {"www.example.test": "93.184.216.34", "internal.example.test": "10.0.0.5"},
+    )
+    with pytest.raises(ConnectorError):
+        await f.safe_fetch("https://www.example.test/")
+    assert guarded[-1] == "http://internal.example.test/admin"
+    assert reached == ["www.example.test"]
+
+
+async def test_a_network_failure_is_a_connector_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A TLS or connect failure must surface as ConnectorError so a website
+    sync skips the page instead of aborting."""
+    import oc8.knowledge.connectors.fetcher as f
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("[SSL: SSLV3_ALERT_HANDSHAKE_FAILURE]", request=request)
+
+    _pin_through(monkeypatch, handler, {"www.example.test": "93.184.216.34"})
+    with pytest.raises(ConnectorError):
+        await f.safe_fetch("https://www.example.test/")
+    with pytest.raises(ConnectorError):
+        await f.safe_fetch_bytes("https://www.example.test/")
+
+
+async def test_website_sync_skips_a_page_that_fails_to_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from oc8.knowledge.connectors import website
+
+    async def fake_fetch(url: str) -> tuple[str, str]:
+        if url.endswith("/broken"):
+            raise httpx.ConnectError("boom")
+        return '<a href="/broken">x</a><a href="/ok">y</a>', "text/html"
+
+    monkeypatch.setattr(website, "safe_fetch", fake_fetch)
+    docs = [
+        d
+        async for d in website.WebsiteConnector().fetch(
+            {"url": "https://www.example.test/", "maxPages": 5}, None
+        )
+    ]
+    assert [d.source_uri for d in docs] == [
+        "https://www.example.test/",
+        "https://www.example.test/ok",
+    ]
