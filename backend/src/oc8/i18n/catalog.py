@@ -33,8 +33,10 @@ class CoreCatalog:
     #: `X-Flag` header, e.g. "🇫🇷". Empty string when absent -- the frontend
     #: renders no flag rather than a placeholder.
     flag: str
-    #: `{msgid: msgstr}`. Untranslated entries (empty `msgstr`) are omitted,
-    #: same as capas -- a lookup miss falls back to the English source.
+    #: `{msgid: msgstr}`. Untranslated entries (empty `msgstr`) and `fuzzy`
+    #: ones (Weblate's "Needs editing", e.g. unreviewed AI drafts) are
+    #: omitted, like `msgfmt` does -- a lookup miss falls back to the English
+    #: source.
     translations: dict[str, str]
 
 
@@ -68,7 +70,9 @@ def load_core_catalogs(root: str | None = None) -> dict[str, CoreCatalog]:
                 locale=locale,
                 native_name=po.metadata.get("X-Native-Name", locale),
                 flag=po.metadata.get("X-Flag", ""),
-                translations={entry.msgid: entry.msgstr for entry in po if entry.msgstr},
+                translations={
+                    entry.msgid: entry.msgstr for entry in po if entry.msgstr and not entry.fuzzy
+                },
             )
 
     _cache[resolved_root] = (now, out)
