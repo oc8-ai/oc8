@@ -4301,6 +4301,9 @@ msgstr ""
 msgid "Show work panel"
 msgstr ""
 
+msgid "Show work panel ({count} items)"
+msgstr ""
+
 msgid "Showed a summary"
 msgstr ""
 
