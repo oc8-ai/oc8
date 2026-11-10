@@ -9,19 +9,19 @@ const HINTS: Record<string, Record<string, Hint>> = {
   odoo_login: {
     url: {
       en: "The address you open Odoo with, e.g. https://firma.odoo.com.",
-      de: "Die Adresse, mit der Sie Odoo öffnen, z. B. https://firma.odoo.com.",
+      de: "Die Adresse, mit der du Odoo öffnest, z. B. https://firma.odoo.com.",
     },
     database: {
       en: "Odoo: Settings → (at the bottom) About → database name. On odoo.com it is usually your subdomain.",
-      de: "Odoo: Einstellungen → (ganz unten) Über → Datenbankname. Bei odoo.com meist Ihre Subdomain.",
+      de: "Odoo: Einstellungen → (ganz unten) Über → Datenbankname. Bei odoo.com meist deine Subdomain.",
     },
     username: {
       en: "The e-mail address you sign in to Odoo with.",
-      de: "Die E-Mail-Adresse, mit der Sie sich bei Odoo anmelden.",
+      de: "Die E-Mail-Adresse, mit der du dich bei Odoo anmeldest.",
     },
     password: {
       en: "Odoo: your avatar (top right) → My Profile → Account Security → New API Key.",
-      de: "Odoo: Ihr Avatar (oben rechts) → Mein Profil → Kontosicherheit → Neuer API-Schlüssel.",
+      de: "Odoo: Dein Avatar (oben rechts) → Mein Profil → Kontosicherheit → Neuer API-Schlüssel.",
     },
   },
   hubspot_login: {
@@ -33,11 +33,11 @@ const HINTS: Record<string, Record<string, Hint>> = {
   jira_login: {
     url: {
       en: "The address of your Jira site, e.g. https://firma.atlassian.net.",
-      de: "Die Adresse Ihrer Jira-Seite, z. B. https://firma.atlassian.net.",
+      de: "Die Adresse deiner Jira-Seite, z. B. https://firma.atlassian.net.",
     },
     username: {
       en: "The e-mail address of your Atlassian account.",
-      de: "Die E-Mail-Adresse Ihres Atlassian-Kontos.",
+      de: "Die E-Mail-Adresse deines Atlassian-Kontos.",
     },
     api_token: {
       en: "id.atlassian.com → Security → API tokens → Create API token → copy it.",

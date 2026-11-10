@@ -143,7 +143,7 @@ describe("presenceLabel", () => {
       "Sucht im Wissen …",
     );
     expect(presenceLabel(withCall({ tool: "list_pending_approvals" }), de).text).toBe(
-      "Prüft Ihre Freigaben …",
+      "Prüft deine Freigaben …",
     );
     expect(
       presenceLabel(withCall({ tool: "delegate_task", arguments: { agent_id: "x" } }), de).text,

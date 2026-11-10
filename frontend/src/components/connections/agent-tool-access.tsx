@@ -114,7 +114,7 @@ function AccessRow({
       toast.error(
         t(
           "The access could not be saved. Please try again.",
-          "Der Zugang konnte nicht gespeichert werden. Bitte versuchen Sie es erneut.",
+          "Der Zugang konnte nicht gespeichert werden. Bitte versuch es erneut.",
         ),
       );
     }
@@ -123,10 +123,10 @@ function AccessRow({
 
   const shareOwn = async (option: AccessOption) => {
     const ok = await confirm({
-      title: t("Share your account with this agent?", "Ihr Konto für diesen Agenten freigeben?"),
+      title: t("Share your account with this agent?", "Dein Konto für diesen Agenten freigeben?"),
       description: t(
         `When colleagues work with this agent, it uses your account ${option.label} for them.`,
-        `Wenn Kolleginnen und Kollegen mit diesem Agenten arbeiten, nutzt er dafür Ihr Konto ${option.label}.`,
+        `Wenn Kolleginnen und Kollegen mit diesem Agenten arbeiten, nutzt er dafür dein Konto ${option.label}.`,
       ),
       confirmLabel: t("Share account", "Konto freigeben"),
       cancelLabel: t("Cancel", "Abbrechen"),
@@ -150,7 +150,7 @@ function AccessRow({
     if (o.kind === "user") return t("In the user's context", "Im Kontext des Nutzers");
     if (o.owner === "organisation")
       return t(`Organisation: ${o.label}`, `Organisation: ${o.label}`);
-    if (o.owner === "me") return t(`Your account: ${o.label}`, `Ihr Konto: ${o.label}`);
+    if (o.owner === "me") return t(`Your account: ${o.label}`, `Dein Konto: ${o.label}`);
     return t(`Account of ${o.ownerName}: ${o.label}`, `Konto von ${o.ownerName}: ${o.label}`);
   };
   const defaultLabel =
@@ -236,7 +236,7 @@ function AccessRow({
               {disabled
                 ? t(
                     "You cannot edit this agent. Please ask an administrator or someone who may edit the agent.",
-                    "Sie können diesen Agenten nicht bearbeiten. Bitte wenden Sie sich an eine Administratorin bzw. einen Administrator oder an jemanden, der den Agenten bearbeiten darf.",
+                    "Du kannst diesen Agenten nicht bearbeiten. Bitte wende dich an eine Administratorin bzw. einen Administrator oder an jemanden, der den Agenten bearbeiten darf.",
                   )
                 : t(
                     "The account's owner or an administrator can confirm it.",

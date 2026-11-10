@@ -56,7 +56,7 @@ describe("ConnectionRequiredNotice", () => {
     });
     expect(
       await screen.findByText(
-        "Für diese Aufgabe braucht der Agent Zugriff auf Ihr Microsoft-Konto.",
+        "Für diese Aufgabe braucht der Agent Zugriff auf dein Microsoft-Konto.",
       ),
     ).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Jetzt verbinden →" })).toHaveAttribute(
@@ -88,7 +88,7 @@ describe("ConnectionRequiredNotice", () => {
       reason: "schedule_without_owner",
     });
     expect(
-      screen.getByText("Dieser Zeitplan hat keinen Besitzer. Bitte speichern Sie ihn einmal neu."),
+      screen.getByText("Dieser Zeitplan hat keinen Besitzer. Bitte speicher ihn einmal neu."),
     ).toBeInTheDocument();
   });
 
@@ -101,7 +101,7 @@ describe("ConnectionRequiredNotice", () => {
       reason: "needs_reauth",
     });
     expect(
-      screen.getByText("Die Verbindung zu Ihrem Google-Konto ist abgelaufen."),
+      screen.getByText("Die Verbindung zu deinem Google-Konto ist abgelaufen."),
     ).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Jetzt erneut verbinden →" })).toHaveAttribute(
       "href",
@@ -210,7 +210,7 @@ describe("ConnectionRequiredNotice", () => {
     });
     expect(
       await screen.findByText(
-        "Der Agent wurde geändert. Bitte öffnen und speichern Sie den Zeitplan erneut, damit er wieder in Ihrem Namen arbeitet.",
+        "Der Agent wurde geändert. Bitte öffne und speicher den Zeitplan erneut, damit er wieder in deinem Namen arbeitet.",
       ),
     ).toBeInTheDocument();
     expect(screen.queryByRole("link")).toBeNull();

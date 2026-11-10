@@ -167,7 +167,7 @@ describe("returnErrorText", () => {
       const de = returnErrorText(code, (_e, d) => d);
       expect(en.length).toBeGreaterThan(10);
       expect(de.length).toBeGreaterThan(10);
-      expect(de).not.toMatch(/\b(du|dein)\b/i);
+      expect(de).not.toMatch(/\b(Sie|Ihr|Ihre|Ihren|Ihrem|Ihrer|Ihnen)\b/);
     }
     expect(returnErrorText("access_denied", (e) => e)).not.toBe(
       returnErrorText("tenant_mismatch", (e) => e),

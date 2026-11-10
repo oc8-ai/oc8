@@ -98,7 +98,7 @@ function TenantPicker({
           <p className="mt-1 text-sm text-muted-foreground">
             {t(
               "Choose a company, or create a safely isolated one for local testing.",
-              "Wählen Sie eine Firma oder legen Sie eine isolierte Testfirma an.",
+              "Wähle eine Firma oder lege eine isolierte Testfirma an.",
             )}
           </p>
         </div>
@@ -226,7 +226,7 @@ function PersonaPicker({ tenant, onBack }: { tenant: DevTenant; onBack: () => vo
           <p className="mt-2 text-sm text-muted-foreground">
             {t(
               "Nobody has signed in to this company yet — use quick access below.",
-              "In dieser Firma hat sich noch niemand angemeldet — nutzen Sie den Schnellzugriff unten.",
+              "In dieser Firma hat sich noch niemand angemeldet — nutze den Schnellzugriff unten.",
             )}
           </p>
         )}

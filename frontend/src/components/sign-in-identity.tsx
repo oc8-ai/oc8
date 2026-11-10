@@ -108,7 +108,7 @@ export function ExternalSignInHint({
       <span className="text-xs text-muted-foreground">
         {t(
           "Managed by your identity provider; not editable here.",
-          "Wird von Ihrem Identity-Provider verwaltet; hier nicht bearbeitbar.",
+          "Wird von deinem Identity-Provider verwaltet; hier nicht bearbeitbar.",
         )}
       </span>
     );

@@ -19,7 +19,7 @@ export function TriggerOwner({ agentId, trigger }: { agentId: string; trigger: T
     toast.error(
       t(
         "The setting could not be saved. Please try again.",
-        "Die Einstellung konnte nicht gespeichert werden. Bitte versuchen Sie es erneut.",
+        "Die Einstellung konnte nicht gespeichert werden. Bitte versuch es erneut.",
       ),
     );
   const toggle = (next: boolean) =>
@@ -69,7 +69,7 @@ export function TriggerOwner({ agentId, trigger }: { agentId: string; trigger: T
           <p>
             {t(
               "This schedule has no owner. Please save it once again.",
-              "Dieser Zeitplan hat keinen Besitzer. Bitte speichern Sie ihn einmal neu.",
+              "Dieser Zeitplan hat keinen Besitzer. Bitte speicher ihn einmal neu.",
             )}
           </p>
         )

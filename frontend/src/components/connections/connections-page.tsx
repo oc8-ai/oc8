@@ -208,7 +208,7 @@ export function ConnectionsPage({
       toast.error(
         t(
           "That did not work. Please try again.",
-          "Das hat nicht geklappt. Bitte versuchen Sie es erneut.",
+          "Das hat nicht geklappt. Bitte versuch es erneut.",
         ),
       );
     }
@@ -223,7 +223,7 @@ export function ConnectionsPage({
       toast.error(
         t(
           "The test failed. Please try again.",
-          "Der Test ist fehlgeschlagen. Bitte versuchen Sie es erneut.",
+          "Der Test ist fehlgeschlagen. Bitte versuch es erneut.",
         ),
       );
     }
@@ -239,7 +239,7 @@ export function ConnectionsPage({
           ? err.message
           : t(
               "That did not work. Please try again.",
-              "Das hat nicht geklappt. Bitte versuchen Sie es erneut.",
+              "Das hat nicht geklappt. Bitte versuch es erneut.",
             ),
       );
     }
@@ -488,18 +488,18 @@ function MoreIntegrationsHint({ mayInstall }: { mayInstall: boolean }) {
   const t = useT();
   return (
     <p className="py-3 text-xs text-muted-foreground">
-      {t("Don't see your app?", "Ihre App ist nicht dabei?")}{" "}
+      {t("Don't see your app?", "Deine App ist nicht dabei?")}{" "}
       {mayInstall ? (
         <Link to="/capas" className="underline underline-offset-2 hover:text-foreground">
           {t(
             "Find more integrations under Capas →",
-            "Weitere Integrationen finden Sie unter Capas →",
+            "Weitere Integrationen findest du unter Capas →",
           )}
         </Link>
       ) : (
         t(
           "Ask your admin to install it under Capas.",
-          "Bitten Sie Ihren Admin, sie unter Capas zu installieren.",
+          "Bitte deinen Admin, sie unter Capas zu installieren.",
         )
       )}
     </p>

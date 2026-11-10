@@ -352,7 +352,7 @@ describe("ConnectionsPage", () => {
     renderPage({ pending: "p-1", provider: "microsoft" });
     expect(await screen.findByDisplayValue(/adminconsent\?client_id=y/)).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "Ihr IT-Administrator muss diese Verbindung zuerst freigeben",
+      "Dein IT-Administrator muss diese Verbindung zuerst freigeben",
     );
   });
 
@@ -371,7 +371,7 @@ describe("ConnectionsPage", () => {
 
   it("explains an error the return reported", () => {
     renderPage({ error: "access_denied", provider: "google" });
-    expect(screen.getByRole("alert")).toHaveTextContent("Sie haben die Anmeldung abgebrochen");
+    expect(screen.getByRole("alert")).toHaveTextContent("Du hast die Anmeldung abgebrochen");
   });
 
   it("sends no referrer while the page is open", () => {
@@ -393,7 +393,7 @@ describe("ConnectionsPage", () => {
     renderPage();
     expect(
       await screen.findByText(
-        "Ihre App ist nicht dabei? Bitten Sie Ihren Admin, sie unter Capas zu installieren.",
+        "Deine App ist nicht dabei? Bitte deinen Admin, sie unter Capas zu installieren.",
       ),
     ).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Capas/ })).toBeNull();
@@ -404,17 +404,17 @@ describe("ConnectionsPage", () => {
     integrations.mockReturnValue({ data: [], isLoading: false });
     renderPage();
     const link = await screen.findByRole("link", {
-      name: "Weitere Integrationen finden Sie unter Capas →",
+      name: "Weitere Integrationen findest du unter Capas →",
     });
     expect(link).toHaveAttribute("href", "/capas");
-    expect(screen.getByText(/Ihre App ist nicht dabei\?/)).toBeInTheDocument();
+    expect(screen.getByText(/Deine App ist nicht dabei\?/)).toBeInTheDocument();
   });
 
   it("adds a quiet line below the list for a member", () => {
     renderPage();
     expect(
       screen.getByText(
-        "Ihre App ist nicht dabei? Bitten Sie Ihren Admin, sie unter Capas zu installieren.",
+        "Deine App ist nicht dabei? Bitte deinen Admin, sie unter Capas zu installieren.",
       ),
     ).toBeInTheDocument();
     expect(screen.getByText("Microsoft 365")).toBeInTheDocument();
@@ -434,7 +434,7 @@ describe("ConnectionsPage", () => {
     may.mockImplementation((p: string) => p === "integration:manage" || p === "plugin:manage");
     renderPage({ tab: "organisation" });
     expect(
-      screen.getByRole("link", { name: "Weitere Integrationen finden Sie unter Capas →" }),
+      screen.getByRole("link", { name: "Weitere Integrationen findest du unter Capas →" }),
     ).toHaveAttribute("href", "/capas");
   });
 
@@ -448,7 +448,7 @@ describe("ConnectionsPage", () => {
   it("shows the reported error and posts nothing when the return carries both", () => {
     renderPage({ pending: "p-1", provider: "microsoft", error: "access_denied" });
     expect(complete).not.toHaveBeenCalled();
-    expect(screen.getByRole("alert")).toHaveTextContent("Sie haben die Anmeldung abgebrochen");
+    expect(screen.getByRole("alert")).toHaveTextContent("Du hast die Anmeldung abgebrochen");
   });
 
   it("follows a call to action while the page is already open, once per request", () => {
@@ -471,7 +471,7 @@ describe("ConnectionsPage", () => {
     integrations.mockReturnValue({ data: [], isLoading: false });
     renderPage();
     const link = screen.getByRole("link", {
-      name: "Weitere Integrationen finden Sie unter Capas →",
+      name: "Weitere Integrationen findest du unter Capas →",
     });
     expect(link).toHaveAttribute("href", "/capas");
     expect(link).toHaveAttribute("data-router-link");

@@ -123,12 +123,12 @@ function IntegrityBanner() {
       : isTruncation
         ? t(
             `${missingEn}. Last verified position: seq ${brokenSeq}. Re-verifying will not clear this — the missing entries have to be restored from a backup. Treat this as a security event and escalate.`,
-            `${missingDe}. Zuletzt geprüfte Position: lfd. Nr. ${brokenSeq}. Eine erneute Prüfung ändert daran nichts — die fehlenden Einträge müssen aus einer Sicherung wiederhergestellt werden. Behandeln Sie dies als Sicherheitsvorfall und eskalieren Sie.`,
+            `${missingDe}. Zuletzt geprüfte Position: lfd. Nr. ${brokenSeq}. Eine erneute Prüfung ändert daran nichts — die fehlenden Einträge müssen aus einer Sicherung wiederhergestellt werden. Behandle dies als Sicherheitsvorfall und eskaliere.`,
           )
         : isMacDowngrade
           ? t(
               "Re-checking alone will not clear this. If tamper-proofing was only just switched on for this deployment, an administrator has to run the one-off `oc8 audit-adopt-checkpoints` command to seal the existing logs, and then a full check here. If it was already switched on, the seal was removed or the entries were rewritten — treat this as a security event and escalate.",
-              "Eine erneute Prüfung allein ändert daran nichts. Falls der Manipulationsschutz für diese Installation gerade erst aktiviert wurde, muss eine Administratorin den einmaligen Befehl `oc8 audit-adopt-checkpoints` ausführen, um die vorhandenen Protokolle zu versiegeln, und danach hier eine vollständige Prüfung starten. War er bereits aktiv, wurde das Siegel entfernt oder die Einträge wurden umgeschrieben — behandeln Sie dies als Sicherheitsvorfall und eskalieren Sie.",
+              "Eine erneute Prüfung allein ändert daran nichts. Falls der Manipulationsschutz für diese Installation gerade erst aktiviert wurde, muss eine Administratorin den einmaligen Befehl `oc8 audit-adopt-checkpoints` ausführen, um die vorhandenen Protokolle zu versiegeln, und danach hier eine vollständige Prüfung starten. War er bereits aktiv, wurde das Siegel entfernt oder die Einträge wurden umgeschrieben — behandle dies als Sicherheitsvorfall und eskaliere.",
             )
           : t(
               `Entry seq ${brokenSeq} is the first that no longer hashes correctly. A full check re-verifies the whole chain, so it is the way to confirm a legitimate restore.`,
@@ -278,7 +278,7 @@ function AuditPage() {
               {errDetail ??
                 t(
                   "You may not have permission to view this page, or the server could not be reached.",
-                  "Möglicherweise fehlt Ihnen die Berechtigung für diese Seite, oder der Server war nicht erreichbar.",
+                  "Möglicherweise fehlt dir die Berechtigung für diese Seite, oder der Server war nicht erreichbar.",
                 )}
             </p>
           </div>

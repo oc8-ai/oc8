@@ -245,7 +245,7 @@ export function StatisticsPage() {
             {capRejected
               ? t(
                   "This filter produces too many results. Narrow the date range, choose a coarser grouping, or filter by an agent or department.",
-                  "Dieser Filter liefert zu viele Ergebnisse. Grenzen Sie den Zeitraum ein, wählen Sie eine gröbere Gruppierung oder filtern Sie nach Agent oder Abteilung.",
+                  "Dieser Filter liefert zu viele Ergebnisse. Grenze den Zeitraum ein, wähle eine gröbere Gruppierung oder filtere nach Agent oder Abteilung.",
                 )
               : t("Statistics could not be loaded.", "Statistiken konnten nicht geladen werden.")}
           </p>

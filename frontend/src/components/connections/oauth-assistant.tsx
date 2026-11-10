@@ -40,7 +40,7 @@ export function OAuthAssistant({
             )
           : t(
               `oc8 can then work with your ${name} account:`,
-              `oc8 kann danach mit Ihrem ${name}-Konto arbeiten:`,
+              `oc8 kann danach mit deinem ${name}-Konto arbeiten:`,
             )}
       </p>
       <ul className="space-y-2 rounded-lg border border-border bg-muted/40 p-3 text-sm">
@@ -56,7 +56,7 @@ export function OAuthAssistant({
       <p className="text-xs text-muted-foreground">
         {t(
           `Your password stays with ${name}. You can disconnect at any time.`,
-          `Ihr Passwort bleibt bei ${name}. Sie können die Verbindung jederzeit trennen.`,
+          `Dein Passwort bleibt bei ${name}. Du kannst die Verbindung jederzeit trennen.`,
         )}
       </p>
       <button type="button" onClick={signIn} disabled={start.isPending} className={BUTTON}>

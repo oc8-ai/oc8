@@ -480,7 +480,7 @@ export function AgentInstructionsPanel({
             "Für aufgabenspezifische Anweisungen nutze stattdessen Skills — dieses Feld ist nur die Basis-Mission des Agenten.",
           )}
           {!mayManage &&
-            ` ${t("Your role does not include agent:manage, so this field is read-only for you.", "Ihre Rolle enthält agent:manage nicht, deshalb ist dieses Feld für Sie schreibgeschützt.")}`}
+            ` ${t("Your role does not include agent:manage, so this field is read-only for you.", "Deine Rolle enthält agent:manage nicht, deshalb ist dieses Feld für dich schreibgeschützt.")}`}
         </p>
 
         <div className="mt-6 border-t border-border pt-4">
