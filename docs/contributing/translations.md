@@ -6,6 +6,17 @@ a *capa's* fields and labels instead, see that capa's own `i18n/` folder
 and [Developer → Packaging](../developer/packaging-and-distribution.md);
 this page is specifically about `<repo root>/i18n/`.
 
+## Recommended: translate on Weblate
+
+For translators, the easiest path is oc8's Weblate instance. Sign up, open
+the oc8 project, pick or add a language and translate in the browser. Weblate
+sends your work back as a pull request that a maintainer reviews and merges.
+You don't need a development environment.
+
+The maintainer-side setup is in [Weblate setup](weblate.md). The rest of this
+page describes the underlying files and the pull request path, which stays
+available for developers.
+
 ## How it works
 
 One gettext `.po` catalog per language, at `<repo root>/i18n/<locale>.po`
@@ -34,14 +45,18 @@ such literal and is *entirely* sourced from its `.po` file.
 
 ## Adding a new language
 
+Developers can also add a language by hand (translators should prefer
+Weblate, see above).
+
 1. From `frontend/`, run:
 
    ```sh
    npm run i18n:export -- <locale>
    ```
 
-   `<locale>` is a short code like `fr`, `es`, or `pt-BR` — it becomes the
-   filename. This scans every `t("English", …)` call in the frontend and
+   `<locale>` is a short code like `fr`, `es`, or `pt_BR` — it becomes the
+   filename. Use the underscore form (`pt_BR`) so the file matches what
+   Weblate creates. This scans every `t("English", …)` call in the frontend and
    writes `i18n/<locale>.po` with one empty `msgstr` per string.
 
 2. Open `i18n/<locale>.po`. Fill in the header:
@@ -68,6 +83,18 @@ such literal and is *entirely* sourced from its `.po` file.
    [Opening a pull request](index.md#opening-a-pull-request)). No other
    file needs to change — that's the whole point of the catalog being
    data, not code.
+
+## The template
+
+`i18n/oc8.pot` lists every English string with empty translations. It is what
+Weblate offers for new languages. Regenerate it after you add or change a
+`t("English", …)` string:
+
+```sh
+npm run i18n:template
+```
+
+CI fails a change to `frontend/src` if the committed template is out of date.
 
 ## Updating an existing language
 
