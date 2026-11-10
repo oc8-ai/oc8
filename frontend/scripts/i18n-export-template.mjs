@@ -6,6 +6,11 @@
 //
 // Usage:
 //   node scripts/i18n-export-template.mjs <locale>
+//   node scripts/i18n-export-template.mjs --template
+//
+// `--template` writes `i18n/oc8.pot` instead: every msgid, all msgstrs
+// empty, a POT header. It is the "template for new translations" hosted
+// Weblate reads (docs/contributing/weblate.md); CI checks it is current.
 //
 // Safe to re-run as the UI evolves: existing translations in
 // `i18n/<locale>.po` are kept, new source strings appear with an empty
@@ -21,10 +26,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FRONTEND_SRC = path.join(__dirname, "..", "src");
 const I18N_ROOT = path.join(__dirname, "..", "..", "i18n");
 
+const TEMPLATE_MODE = process.argv[2] === "--template";
 const locale = process.argv[2];
-if (!locale || !/^[a-z]{2}(-[A-Z]{2})?$/.test(locale)) {
-  console.error("usage: node scripts/i18n-export-template.mjs <locale>");
-  console.error('  <locale> is a short code like "fr" or "pt-BR", used as the filename.');
+if (!TEMPLATE_MODE && (!locale || !/^[a-z]{2}([-_][A-Z]{2})?$/.test(locale))) {
+  console.error("usage: node scripts/i18n-export-template.mjs <locale> | --template");
+  console.error(
+    '  <locale> is a short code like "fr" or "pt_BR" (Weblate\'s style; "pt-BR" also works), used as the filename.',
+  );
   process.exit(1);
 }
 
@@ -122,6 +130,30 @@ function writePo(filePath, metadata, entries) {
 }
 
 const sourceStrings = collectSourceStrings(FRONTEND_SRC);
+
+if (TEMPLATE_MODE) {
+  // Deterministic on purpose (no timestamps): CI regenerates this file and
+  // fails on any diff.
+  const potPath = path.join(I18N_ROOT, "oc8.pot");
+  const header =
+    `msgid ""\nmsgstr ""\n` +
+    [
+      "Project-Id-Version: oc8",
+      "MIME-Version: 1.0",
+      "Content-Type: text/plain; charset=UTF-8",
+      "Content-Transfer-Encoding: 8bit",
+    ]
+      .map((l) => `"${l}\\n"\n`)
+      .join("") +
+    "\n";
+  const sorted = [...sourceStrings].sort((a, b) => a.localeCompare(b));
+  const body = sorted.map((msgid) => `msgid "${escapePo(msgid)}"\nmsgstr ""\n`).join("\n");
+  fs.mkdirSync(I18N_ROOT, { recursive: true });
+  fs.writeFileSync(potPath, header + body);
+  console.log(`wrote ${path.relative(process.cwd(), potPath)} (${sorted.length} strings)`);
+  process.exit(0);
+}
+
 const filePath = path.join(I18N_ROOT, `${locale}.po`);
 const { metadata: existingMetadata, entries: existingEntries } = readExistingPo(filePath);
 
@@ -153,7 +185,9 @@ fs.mkdirSync(I18N_ROOT, { recursive: true });
 writePo(filePath, metadata, nextEntries);
 
 console.log(`wrote ${path.relative(process.cwd(), filePath)}`);
-console.log(`  ${kept} translated, ${added} new (empty msgstr), ${removed} no longer used (dropped)`);
+console.log(
+  `  ${kept} translated, ${added} new (empty msgstr), ${removed} no longer used (dropped)`,
+);
 if (metadata["X-Native-Name"] === locale || !metadata["X-Flag"]) {
   console.log(
     `  fill in X-Native-Name/X-Flag at the top of the file, then translate every empty msgstr`,
