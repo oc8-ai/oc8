@@ -5168,9 +5168,6 @@ msgstr ""
 msgid "Untested"
 msgstr ""
 
-msgid "Untitled chat"
-msgstr ""
-
 msgid "Update"
 msgstr ""
 

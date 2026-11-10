@@ -22,6 +22,7 @@ import {
 import { mostRecentSession } from "@/lib/chat-sessions";
 import { useChatSessions } from "@/lib/hooks-chat";
 import { useLiveConnectionStatus } from "@/lib/live/provider";
+import { ChatTitleText } from "@/components/conversation/chat-title";
 import { SessionPicker } from "@/components/conversation/session-picker";
 
 // Set by DoneStep right before the full-page navigation into "/" that follows
@@ -42,13 +43,13 @@ function proposalFailedText(de: boolean): string {
 }
 
 // The tab bar's fallback label for a tab whose session doesn't exist yet
-// (a brand new blank tab) or whose session exists but has no title yet (the
-// same "no title" state SessionPicker itself falls back on, worded the
-// same way, deliberately NOT "New chat" -- that copy is reserved for the
-// header's own "reset to a blank tab" button, and re-using it here would
-// make a tab pill and that button indistinguishable by accessible name).
+// (a brand new blank tab) or whose session has no title yet -- it gets one
+// named after its first message in the background (backend
+// `oc8.chat.titles`), so until then it is the new chat it is, worded the way
+// SessionPicker words it. The pill's accessible name stays apart from the
+// header's own "New chat" button: the pill is "New chat tab".
 function untitledChatText(de: boolean): string {
-  return de ? "Unbenannter Chat" : "Untitled chat";
+  return de ? "Neuer Chat" : "New chat";
 }
 
 // A proposal the Assistant drafted, with the two buttons that answer it.
@@ -470,7 +471,7 @@ function CopilotDockPanel() {
                     aria-label={de ? `${title} – Tab` : `${title} tab`}
                     className="max-w-[120px] overflow-hidden text-ellipsis whitespace-nowrap px-1 py-1"
                   >
-                    {title}
+                    <ChatTitleText title={title} />
                   </button>
                   <button
                     type="button"

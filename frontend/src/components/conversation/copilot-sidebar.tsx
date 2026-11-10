@@ -54,6 +54,9 @@ import {
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
+import { ChatTitleText } from "./chat-title";
+import { useNewChatLabel } from "./new-chat-label";
+
 import { ProjectSheet } from "./project-sheet";
 
 export interface SessionGroups {
@@ -123,9 +126,10 @@ function Row({
   actions: RowActions;
 }) {
   const t = useT();
-  const title = s.title || t("Untitled chat", "Unbenannter Chat");
+  const newChat = useNewChatLabel();
+  const title = s.title || newChat;
   const [editing, setEditing] = useState(false);
-  const [value, setValue] = useState(title);
+  const [value, setValue] = useState(s.title);
   // Escape ends the edit, and the blur that follows must not save it.
   const cancelled = useRef(false);
   // The menu is closing: the field opens once its focus return is done.
@@ -144,7 +148,7 @@ function Row({
 
   function commit() {
     const next = value.trim();
-    if (!cancelled.current && next && next !== title) actions.rename(s, next);
+    if (!cancelled.current && next && next !== s.title) actions.rename(s, next);
     setEditing(false);
   }
 
@@ -155,6 +159,7 @@ function Row({
           autoFocus
           aria-label={t("Chat name", "Chat-Name")}
           value={value}
+          placeholder={newChat}
           maxLength={200}
           onChange={(e) => setValue(e.target.value)}
           onFocus={(e) => e.currentTarget.select()}
@@ -187,7 +192,7 @@ function Row({
           aria-current={active ? "true" : undefined}
           className="min-h-9 max-sm:min-h-11 min-w-0 flex-1 truncate rounded-md px-2 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          {title}
+          <ChatTitleText title={title} />
         </button>
         <DropdownMenu>
           <DropdownMenuTrigger
@@ -204,7 +209,7 @@ function Row({
               renameNext.current = false;
               e.preventDefault();
               cancelled.current = false;
-              setValue(title);
+              setValue(s.title);
               setEditing(true);
             }}
           >
@@ -332,6 +337,7 @@ export function CopilotSidebar({
   onToggle,
 }: SidebarProps) {
   const t = useT();
+  const newChatLabel = useNewChatLabel();
   const projectsHeadingId = useId();
   const narrow = useIsNarrow();
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -386,7 +392,7 @@ export function CopilotSidebar({
   const [actionError, setActionError] = useState<string | null>(null);
 
   async function removeSession(s: ChatSessionDTO) {
-    const title = s.title || t("Untitled chat", "Unbenannter Chat");
+    const title = s.title || newChatLabel;
     const ok = await confirm({
       title: t("Delete chat?", "Chat löschen?"),
       description: t(

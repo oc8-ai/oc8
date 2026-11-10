@@ -25,6 +25,9 @@ import { useConfirm } from "@/hooks/use-confirm";
 import { useDeleteChatSession, useRenameChatSession, type ChatSessionDTO } from "@/lib/hooks-chat";
 import { useT } from "@/lib/i18n";
 
+import { ChatTitleText } from "./chat-title";
+import { useNewChatLabel } from "./new-chat-label";
+
 // A real menu (Radix dropdown semantics): every chat is a radio item, so the
 // arrow keys move between them, Enter or Space opens one and Esc closes the
 // menu back to its trigger. Rename and delete act on the open chat, from two
@@ -52,12 +55,14 @@ export function SessionPicker({
   const [renameError, setRenameError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
-  const untitled = t("Untitled chat", "Unbenannter Chat");
+  // A chat without a title yet is waiting for the one named after its first
+  // message, so it reads as new rather than as nameless.
+  const untitled = useNewChatLabel();
   const current = sessions.find((s) => s.id === sessionId);
 
   function startRename(s: ChatSessionDTO) {
     setRenameError(null);
-    setTitle(s.title || untitled);
+    setTitle(s.title);
     setRenaming(s);
   }
 
@@ -118,10 +123,11 @@ export function SessionPicker({
           aria-label={t("Switch chat", "Chat wechseln")}
           className="inline-flex h-9 max-w-[220px] items-center gap-1 rounded-md border border-border bg-background px-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
         >
-          {/* No chat selected is a new one, not an untitled one. */}
-          <span className="truncate">
-            {current ? current.title || untitled : t("New chat", "Neuer Chat")}
-          </span>
+          {/* No chat selected is a new one, and so is one still untitled. */}
+          <ChatTitleText
+            className="truncate"
+            title={current ? current.title || untitled : untitled}
+          />
           <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-72 p-1">
@@ -135,7 +141,7 @@ export function SessionPicker({
                   title={label}
                   className="min-h-11 gap-1.5"
                 >
-                  <span className="min-w-0 flex-1 truncate">{label}</span>
+                  <ChatTitleText className="min-w-0 flex-1 truncate" title={label} />
                   <span className="shrink-0 text-xs text-muted-foreground">
                     {new Date(s.createdAt).toLocaleDateString()}
                   </span>
@@ -175,6 +181,7 @@ export function SessionPicker({
             <Input
               autoFocus
               value={title}
+              placeholder={untitled}
               aria-label={t("Chat title", "Chat-Titel")}
               onChange={(e) => setTitle(e.target.value)}
             />

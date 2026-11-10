@@ -321,6 +321,16 @@ const patchers: Record<string, Patcher> = {
     qc.invalidateQueries({ queryKey: ["chat", "session", sessionId] });
     qc.invalidateQueries({ queryKey: ["chat", "sessions"] });
   },
+  // A chat's own fields changed -- its title, generated after the first
+  // message or renamed in another tab (backend realtime/emit.py
+  // publish_chat_session_updated). Ids only: refetch the lists and the chat,
+  // not its transcript, which did not change.
+  "chat.session_updated": (qc, d) => {
+    const sessionId = d.session_id as string | undefined;
+    if (!sessionId) return;
+    qc.invalidateQueries({ queryKey: ["chat", "session", sessionId] });
+    qc.invalidateQueries({ queryKey: ["chat", "sessions"] });
+  },
 };
 
 // backend agent.status -> mock UI AgentStatus (running|warning|error|paused|waiting_for_task)
