@@ -311,7 +311,12 @@ def mode_refusal(
     elif (
         tool_name in mode.permitted_writes
         and tool_name in CONTROL_TOOL_NAMES
-        and not connection_tool
+        and core
+        # The connection's own scopes classify this name: its tool, not the core one.
+        and not any(
+            isinstance(names, list | tuple) and tool_name in names
+            for names in (tool_scopes or {}).values()
+        )
     ):
         # Exempt from this mode's removal (Agent mode keeps ask_user and
         # propose_agent). Still "no opinion", never "allowed" -- and only for

@@ -14,6 +14,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tests.audit.helpers import flush_audit
 from oc8 import models as m
 from oc8.approvals import (
     AlreadyDecided,
@@ -145,6 +146,7 @@ async def test_a_request_lands_in_the_target_departments_queue(
         # messenger), and the request is audited with both ids (Ruling A13).
         mission = invoice_checker_ops(office)[0]["mission"]
         assert mission not in f"{approval.title} {approval.detail} {approval.payload}"
+        await flush_audit(db)
         audit = (
             await db.execute(
                 select(m.AuditEvent).where(m.AuditEvent.action == "agent_builder.requested")
@@ -220,6 +222,7 @@ async def test_the_lead_approves_and_both_people_are_in_the_audit(
             assert proposal.status == "applied" and proposal.applied_by == "lead"
             agent = await db.get(m.Agent, uuid.UUID(proposal.result["agentId"]))
             assert agent is not None and agent.department_id == office.department_id
+            await flush_audit(db)
             audit = (
                 await db.execute(
                     select(m.AuditEvent).where(m.AuditEvent.action == "agent_builder.applied")

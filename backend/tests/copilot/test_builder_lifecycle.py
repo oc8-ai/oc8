@@ -13,6 +13,7 @@ from fastapi import HTTPException
 from sqlalchemy import select, text
 from starlette.requests import Request
 
+from tests.audit.helpers import flush_audit
 from oc8 import models as m
 from oc8.api.deps import authorize_agent_write
 from oc8.auth import Principal
@@ -299,6 +300,7 @@ async def test_apply_creates_the_whole_agent_once(app_session: AppSessionFactory
         )
         assert len(triggers) == 1 and triggers[0].cron_expression == "0 7 * * 1-5"
         assert proposal.status == "applied" and proposal.result["agentId"] == str(agent_id)
+        await flush_audit(db)
         audit = (
             await db.execute(
                 select(m.AuditEvent).where(m.AuditEvent.action == "agent_builder.applied")

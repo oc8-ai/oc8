@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from sqlalchemy import select
 
+from tests.audit.helpers import flush_audit
 from oc8 import models as m
 from oc8.agent.control_tools import offered_tools
 from oc8.agent.engine import _authorize, run_agent
@@ -479,6 +480,7 @@ async def test_writes_are_withheld_for_the_rest_of_the_leg_that_entered_agent_mo
             originating_operator=office.admin.subject,
         )
         proposals = (await db.execute(select(CopilotProposal))).scalars().all()
+        await flush_audit(db)
         audited = await db.execute(
             select(m.AuditEvent.action, m.AuditEvent.decision).where(
                 m.AuditEvent.category == "tool_action"
