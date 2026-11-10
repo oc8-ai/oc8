@@ -56,7 +56,45 @@ describe("SessionPicker", () => {
     expect(items).toHaveLength(2);
     expect(items[0]).toHaveTextContent("VPN Tickets");
     expect(items[0]).toHaveAttribute("aria-checked", "true");
-    expect(items[1]).toHaveTextContent("Untitled chat");
+    // A chat still waiting for its generated title reads as a new one.
+    expect(items[1]).toHaveTextContent("New chat");
+    expect(items[1]).not.toHaveTextContent("Untitled");
+  });
+
+  it("names an untitled open chat New chat on the trigger", () => {
+    renderPicker("s2");
+    expect(screen.getByRole("button", { name: "Switch chat" })).toHaveTextContent("New chat");
+  });
+
+  it("renaming an untitled chat starts empty, and saving nothing renames nothing", async () => {
+    renderPicker("s2");
+    openPicker();
+    fireEvent.click(screen.getByRole("menuitem", { name: /Rename this chat/ }));
+    const input = await screen.findByRole("textbox", { name: "Chat title" });
+    expect(input).toHaveValue("");
+    expect(input).toHaveAttribute("placeholder", "New chat");
+    fireEvent.click(screen.getByRole("button", { name: "Save title" }));
+    expect(renameMock).not.toHaveBeenCalled();
+  });
+
+  it("fades a title in when it arrives live, not on first paint", () => {
+    const { rerender } = render(
+      <SessionPicker sessions={sessions} sessionId="s2" onSelect={vi.fn()} />,
+    );
+    const trigger = screen.getByRole("button", { name: "Switch chat" });
+    expect(trigger.querySelector("[data-title-changed]")).toBeNull();
+    const titled = [
+      (sessions as unknown as Array<Record<string, unknown>>)[0],
+      {
+        id: "s2",
+        agentId: "agent-1",
+        title: "Urlaubsplanung Juni",
+        createdAt: "2026-08-26T00:00:00Z",
+      },
+    ] as never;
+    rerender(<SessionPicker sessions={titled} sessionId="s2" onSelect={vi.fn()} />);
+    expect(trigger).toHaveTextContent("Urlaubsplanung Juni");
+    expect(trigger.querySelector("[data-title-changed]")).not.toBeNull();
   });
 
   it("works by keyboard: open with Enter, arrows move, Enter opens a chat", async () => {

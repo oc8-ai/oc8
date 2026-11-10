@@ -353,6 +353,32 @@ describe("Copilot sidebar", () => {
     expect(screen.getByRole("textbox", { name: "Name" })).toBeInTheDocument();
   });
 
+  it("names a chat still waiting for its title New chat, and fades the title in live", () => {
+    m.sessions = [session("", { id: "n", title: "" })];
+    const { rerender } = mount();
+    const list = screen.getByRole("list", { name: "Today" });
+    const row = within(list).getByRole("button", { name: "New chat" });
+    expect(row).not.toHaveTextContent("Untitled");
+    // First paint does not animate: only a title that arrives later does.
+    expect(row.querySelector("[data-title-changed]")).toBeNull();
+    m.sessions = [session("Urlaubsplanung Juni", { id: "n" })];
+    rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <EditionCompositionProvider extensions={[]}>
+          <CopilotSidebar
+            agentId="x"
+            sessionId={null}
+            onSelect={vi.fn()}
+            collapsed={false}
+            onToggle={vi.fn()}
+          />
+        </EditionCompositionProvider>
+      </QueryClientProvider>,
+    );
+    const titled = within(list).getByRole("button", { name: "Urlaubsplanung Juni" });
+    expect(titled.querySelector("[data-title-changed]")).not.toBeNull();
+  });
+
   it("collapses with aria-expanded on the toggle", () => {
     const onToggle = vi.fn();
     const { rerender } = mount({ onToggle });

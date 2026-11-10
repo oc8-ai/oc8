@@ -510,7 +510,7 @@ describe("CopilotDock", () => {
     renderDock();
     openDock();
     expect(screen.getByTestId("conversation")).toHaveAttribute("data-session", "s1");
-    fireEvent.click(screen.getByRole("button", { name: /new chat/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^new chat$/i }));
     // Back to a blank chat that creates its session on the first send, not
     // clobbered by the bootstrap effect that auto-selects the existing one.
     expect(screen.getByTestId("conversation")).toHaveAttribute("data-session", "");
@@ -526,7 +526,7 @@ describe("CopilotDock", () => {
       "data-session",
       "created-assistant-1",
     );
-    fireEvent.click(screen.getByRole("button", { name: /new chat/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^new chat$/i }));
     expect(screen.getByTestId("conversation")).toHaveAttribute("data-session", "");
     expect(document.querySelectorAll("[data-copilot-tab]")).toHaveLength(1);
   });
@@ -569,9 +569,9 @@ describe("CopilotDock", () => {
     });
 
     // Both tabs are still session-less, so both pills fall back to the same
-    // "untitled" label -- index into DOM order (tab creation order) rather
+    // "New chat" label -- index into DOM order (tab creation order) rather
     // than by name to tell them apart.
-    const tabButtons = screen.getAllByRole("button", { name: /untitled chat tab/i });
+    const tabButtons = screen.getAllByRole("button", { name: /^new chat tab$/i });
     expect(tabButtons).toHaveLength(2);
 
     fireEvent.click(tabButtons[0]);
@@ -635,14 +635,14 @@ describe("CopilotDock", () => {
     // Tab 1 (bootstrapped, blank). Open two more.
     fireEvent.click(screen.getByRole("button", { name: /^new tab$/i }));
     fireEvent.click(screen.getByRole("button", { name: /^new tab$/i }));
-    let tabButtons = screen.getAllByRole("button", { name: /untitled chat tab/i });
+    let tabButtons = screen.getAllByRole("button", { name: /^new chat tab$/i });
     expect(tabButtons).toHaveLength(3);
 
     // Tab 3 is active; close it via its own "close" button.
-    const closeButtons = screen.getAllByRole("button", { name: /^close untitled chat$/i });
+    const closeButtons = screen.getAllByRole("button", { name: /^close new chat$/i });
     fireEvent.click(closeButtons[closeButtons.length - 1]);
 
-    tabButtons = screen.getAllByRole("button", { name: /untitled chat tab/i });
+    tabButtons = screen.getAllByRole("button", { name: /^new chat tab$/i });
     expect(tabButtons).toHaveLength(2);
     // The previous tab (tab 2) is now the active one -- its composer is the
     // one rendered.
@@ -664,7 +664,7 @@ describe("CopilotDock", () => {
     const { unmount } = renderDock();
     openDock();
     fireEvent.click(screen.getByRole("button", { name: /^new tab$/i }));
-    expect(screen.getAllByRole("button", { name: /frage tab|untitled chat tab/i })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: /frage tab|^new chat tab$/i })).toHaveLength(2);
 
     unmount();
 
@@ -672,7 +672,7 @@ describe("CopilotDock", () => {
 
     renderDock();
     openDock();
-    expect(screen.getAllByRole("button", { name: /frage tab|untitled chat tab/i })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: /frage tab|^new chat tab$/i })).toHaveLength(2);
   });
 
   it("does not clobber a real member's persisted tabs while useAuth is still resolving", () => {
