@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import datetime as dt
 import json
 import logging
@@ -35,7 +36,10 @@ from oc8.agent import cache_flow, mcp_pool
 from oc8.agent.control_tools import (
     CONTROL_TOOL_NAMES,
     FIND_TOOLS,
+    ControlOutcome,
     execute_control_tool,
+    has_readable_context,
+    has_released_knowledge,
     offered_tools,
 )
 from oc8.agent.elicitation import ElicitationNeeded, arguments_with_answer
@@ -115,7 +119,8 @@ from oc8.chat.modes import ChatMode, mode_from_context, mode_refusal
 from oc8.config import get_settings
 from oc8.connections.access import ConnectionRequired
 from oc8.connections.runtime_env import McpLaunchEnv, run_mcp_env
-from oc8.copilot.door import door_of
+from oc8.copilot.door import chat_door, door_of
+from oc8.edition.tools import edition_offer, registered_edition_tool
 from oc8.metering import record_usage
 from oc8.modelrouter import (
     NeutralMessage,
@@ -144,7 +149,7 @@ from oc8.realtime.emit import (
 )
 from oc8.runtime.approval_resume import pre_decided_map
 from oc8.runtime.registry import BUILTIN_ISOLATED_RUNTIME_REF
-from oc8.runtime.run_context import append_tool_call
+from oc8.runtime.run_context import append_tool_call, write_back_context
 from oc8.runtime.step_record import call_state_for, step_timing_dto
 from oc8.skills.runtime import LoadedSkill, instruction_block, load_assigned_skills
 from oc8.storage import s3
@@ -329,6 +334,25 @@ async def _load(
 def _mcp_params(conn: m.McpConnection) -> dict[str, Any]:
     cfg = conn.config if isinstance(conn.config, dict) else {}
     return cfg
+
+
+def _taken_tool_names(ctx: Mapping[str, Any], skills: Sequence[LoadedSkill]) -> set[str]:
+    """The names the agent's own tools hold on this run -- its MCP tools as
+    advertised and as really named, and its skill tools. An edition tool of
+    one of these names is never offered or dispatched."""
+    taken = {
+        str(raw["name"])
+        for raw in ctx.get("tool_schemas", [])
+        if isinstance(raw, dict) and raw.get("name")
+    }
+    routes = ctx.get("tool_routes")
+    if isinstance(routes, dict):
+        taken |= {str(name) for name in routes}
+        taken |= {
+            str(pair[1]) for pair in routes.values() if isinstance(pair, list) and len(pair) == 2
+        }
+    taken |= {s.tool_name for s in skills}
+    return taken
 
 
 #: The tools the isolated shell executes itself, before /tools ever sees them.
@@ -1162,11 +1186,29 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
             select(m.RunCancellation.cancellation_kind).where(m.RunCancellation.run_id == run_id)
         )
     ).scalar_one_or_none()
-    if operator_kind is not None or not await tenant_may_run(run.tenant_id):
+    from oc8.runtime.run_inputs import (
+        OWNERSHIP_CHANGED_KIND,
+        OWNERSHIP_CHANGED_OUTPUT,
+        steering_went_stale,
+    )
+
+    # Not an operator's either: the run came to act through someone else's
+    # account after it received a person's words (`steering_went_stale`).
+    stop_kind: str | None = None
+    if operator_kind is None:
+        if not await tenant_may_run(run.tenant_id):
+            stop_kind = TENANT_INACTIVE_KIND
+        elif await steering_went_stale(db, run):
+            stop_kind = OWNERSHIP_CHANGED_KIND
+    if operator_kind is not None or stop_kind is not None:
         ctx = dict(run.context)
-        if operator_kind is None:
-            ctx["cancellation_kind"] = TENANT_INACTIVE_KIND
-            reason = TENANT_INACTIVE_OUTPUT
+        if stop_kind is not None:
+            ctx["cancellation_kind"] = stop_kind
+            reason = (
+                TENANT_INACTIVE_OUTPUT
+                if stop_kind == TENANT_INACTIVE_KIND
+                else OWNERSHIP_CHANGED_OUTPUT
+            )
         else:
             reason = "Run cancelled by operator."
         closed_step_timing = None
@@ -1366,6 +1408,22 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
             ctx["unavailable_connections"] = unavailable
         ctx["tool_schemas"] = tool_schemas_raw
 
+    # Run inputs (spec §3.2), consumed in THIS request's transaction: the stamp
+    # commits together with the `ctx["transcript"]` that carries the message
+    # (the one commit at the bottom of the step loop), so a step that dies
+    # before it rolls both back and the input waits for the next /step.
+    from oc8.runtime.run_inputs import consume_run_inputs, format_input_message, step_hint
+
+    consumed_inputs = await consume_run_inputs(db, run_id=run.id, step=step_hint(ctx))
+    for item in consumed_inputs:
+        transcript.append(
+            _from_message(
+                NeutralMessage(
+                    role="user", content=format_input_message(item.author_name, item.text)
+                )
+            )
+        )
+
     mcp_tools = [
         NeutralTool(
             name=t["name"],
@@ -1401,20 +1459,28 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         resolve_caps(model_config.params if model_config is not None else None),
         active_skills,
     )
+    edition = await edition_offer(
+        run.tenant_id,
+        door=chat_door(run.source, ctx),
+        taken=_taken_tool_names(ctx, assigned_skills),
+        chat_mode=mode_from_context(ctx),
+    )
     tools = offered_tools(
         agent,
         is_team_lead=bool(pinned["is_team_lead"]),
         assigned_skills=assigned_skills,
         active_skills=active_skills,
         mcp_tools=mcp_tools,
-        has_knowledge=has_knowledge,
+        has_knowledge=has_knowledge or has_released_knowledge(ctx),
         has_instruction_files=has_instruction_files,
         copilot_permissions=copilot_permissions,
+        has_context=has_readable_context(ctx),
         offer_write_output_file=offer_write_output_file,
         offer_run_shell=offer_write_output_file,
         offer_run_program=caps.code_mode,
         chat_mode=mode_from_context(ctx),
         copilot_door=door_of(ctx) if agent.is_tenant_assistant else None,
+        edition_tools=edition.neutral_tools(),
     )
     # Code mode (ruling 6): seed the generated SDK once tools are known so
     # every later /step can return it as sdk_py for the shell to write.
@@ -1444,7 +1510,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
     required = [req.tool for skill in active_skills for req in skill.definition.requires_tools]
     resolved_tools, catalog = select_completion_tools(
         tools,
-        control_names=CONTROL_TOOL_NAMES,
+        control_names=CONTROL_TOOL_NAMES | edition.names,
         skill_names=skill_tool_names,
         mission=str(ctx.get("task", "")),
         skill_texts=[s.definition.instruction for s in active_skills],
@@ -1795,6 +1861,10 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
     ctx["transcript"] = transcript
     run.context = ctx
     await db.commit()
+    if consumed_inputs:
+        from oc8.runtime.run_inputs import publish_inputs_consumed
+
+        await publish_inputs_consumed(run.tenant_id, run_id=run.id, consumed=consumed_inputs)
     # Only now, after the commit that actually persists these entries in
     # `ctx["stepTimings"]`, tell an open tab about them -- publishing any
     # earlier (right when finish_step ran, above) could hand out a live
@@ -1839,7 +1909,11 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
     tool_tiers: dict[str, str] = {}
     if caps.parallel_tool_calls:
         for t in result.tool_calls:
-            if t.name in CONTROL_TOOL_NAMES or t.name in skill_tool_names:
+            if (
+                t.name in CONTROL_TOOL_NAMES
+                or t.name in skill_tool_names
+                or registered_edition_tool(t.name) is not None
+            ):
                 break
             pre_decision = _authorize(
                 agent,
@@ -1989,7 +2063,11 @@ async def _precompute_leading_reads(
     for call in calls:
         if call.local_result is not None:
             break
-        if call.name in CONTROL_TOOL_NAMES or call.name in skill_tool_names:
+        if (
+            call.name in CONTROL_TOOL_NAMES
+            or call.name in skill_tool_names
+            or registered_edition_tool(call.name) is not None
+        ):
             break
         # A read that belongs to another system must not be prefetched on this
         # connection. Sequential dispatch routes it.
@@ -2205,7 +2283,20 @@ async def _dispatch_one_tool(
 
     assigned_skills = await load_assigned_skills(db, agent=agent, tenant_id=run.tenant_id)
     skill_tool_names = frozenset(s.tool_name for s in assigned_skills)
-    is_control_call = not renamed and (tc.name in CONTROL_TOOL_NAMES or tc.name in skill_tool_names)
+    # Recomputed per call from the run, exactly as the /step that offered the
+    # tools computed it: a call is checked against what this leg offered.
+    edition = await edition_offer(
+        run.tenant_id,
+        door=chat_door(run.source, run.context),
+        taken=_taken_tool_names(dict(run.context), assigned_skills),
+        chat_mode=mode_from_context(run.context),
+    )
+    # Never an edition call through a connection's route, and never the core
+    # tool (or a skill) of the same name when the route renamed the call.
+    is_edition_call = routed is None and edition.claims(tc.name)
+    is_control_call = is_edition_call or (
+        not renamed and (tc.name in CONTROL_TOOL_NAMES or tc.name in skill_tool_names)
+    )
     # A core-owned tool (remember/ask/delegate/invoke a skill) is executed by the
     # control plane itself and needs no MCP connection. Requiring one here made
     # every one of them unusable on a run without a connection.
@@ -2240,6 +2331,10 @@ async def _dispatch_one_tool(
 
     scopes = _manifest_scopes(conn)
     ctx = dict(run.context)
+    # What this request started from, deep: ctx's lists are edited in place.
+    # The write-back below sends only what the request itself changed, so a
+    # key a tool merges meanwhile (suggestions, parts, ...) survives it.
+    ctx_before = copy.deepcopy(ctx)
     harness = Harness.from_run_context(ctx)
     harness.state.step_no = int(ctx.get("steps", 0))
 
@@ -2267,6 +2362,7 @@ async def _dispatch_one_tool(
         is_team_lead=bool(pinned["is_team_lead"]),
         guardrail_attribute_specs=guardrail_attribute_specs,
         chat_mode=mode_from_context(run.context),
+        edition_offer=edition,
         routed=renamed,
     )
     stripped, justification = strip_justification(tc.arguments)
@@ -2337,7 +2433,13 @@ async def _dispatch_one_tool(
         actor_id=agent.id,
         category="tool_action",
         action=f"tool.call:{tc.name}",
-        resource={"tool": tc.name, "arguments": tc.arguments},
+        # An edition call keeps its arguments out of the audit; its own
+        # `edition_tool.called` event is the record of it.
+        resource=(
+            {"tool": tc.name}
+            if edition.claims(tc.name)
+            else {"tool": tc.name, "arguments": tc.arguments}
+        ),
         decision=decision.effect.value,
         reason=decision.reason or None,
         originating_operator=run.context.get("originating_operator"),
@@ -2376,18 +2478,24 @@ async def _dispatch_one_tool(
         )
         # Record the suspend verdict so the isolated runtime maps the run to
         # waiting_for_approval after the container exits.
-        run.context = {
-            **ctx,
-            "isolated_result": {"status": "waiting_for_approval", "output": decision.reason or ""},
-        }
+        await write_back_context(
+            db,
+            run,
+            before=ctx_before,
+            after={
+                **ctx,
+                "isolated_result": {
+                    "status": "waiting_for_approval",
+                    "output": decision.reason or "",
+                },
+            },
+        )
         # The parked call itself, at parity with the in-process engine's own
         # require-approval append: without this the timeline of an isolated
         # run simply loses the step a human is being asked about, which is
-        # the one step they most need to see. Flush before the raw-SQL
-        # append -- append_tool_call's own _adopt() would otherwise read the
-        # row back before the isolated_result assignment above landed, and
-        # silently drop it from the ORM's view -- and commit ONCE after both,
-        # since a commit in between would unbind the tenant GUC.
+        # the one step they most need to see. The write-back above is one SQL
+        # statement already ordered before this append; commit ONCE after
+        # both, since a commit in between would unbind the tenant GUC.
         await db.flush()
         parked_call: dict[str, Any] = {
             "tool": tc.name,
@@ -2535,6 +2643,7 @@ async def _dispatch_one_tool(
         harness.store(ctx)
 
     suspend: str | None = None
+    pending_questions: list[dict[str, Any]] | None = None
 
     # A core-owned tool goes through the SAME dispatcher as the in-process engine
     # (oc8.agent.control_tools). It returns None for a connection tool, which then
@@ -2578,9 +2687,14 @@ async def _dispatch_one_tool(
             local_result=body.local_result,
             harness_state=harness.state,
             active_procedure_skills=[s for s in active_skills if s.definition.steps],
+            edition_offer=edition,
         )
         if task is not None and is_control_call
-        else None
+        # Never on to the MCP server: an edition call with no task to run
+        # it against is refused here.
+        else (
+            ControlOutcome(output=f"ERROR: unknown tool {tc.name!r}") if is_edition_call else None
+        )
     )
 
     if control is not None:
@@ -2592,6 +2706,7 @@ async def _dispatch_one_tool(
                 message=control.output.removeprefix("ERROR: ").strip(),
             )
         suspend = control.suspend
+        pending_questions = control.questions
         if control.contains_restricted:
             # Read by every later /step's completion (see above): the router
             # then refuses a cloud model or fallback for this run.
@@ -2845,7 +2960,8 @@ async def _dispatch_one_tool(
             record_decision(
                 harness.state.ledger,
                 tool=tc.name,
-                question=str(tc.arguments.get("question", "")),
+                # A structured ask has no `question`; its readable text is the output.
+                question=str(tc.arguments.get("question") or (output if pending_questions else "")),
                 step=harness.state.step_no,
             )
     after_sat = _satisfied_map(procs, harness)
@@ -2922,26 +3038,26 @@ async def _dispatch_one_tool(
         # The verdict the isolated runtime reads after the container exits, so the
         # executor opens the Clarification and parks the run (same shape as the
         # approval suspend above).
-        ctx["isolated_result"] = {"status": suspend, "output": output}
-    run.context = ctx
+        # The UNSTAMPED text: this becomes the Clarification's question (and the
+        # approval's reason), which a person reads -- the "[step N/max ...]"
+        # stamp is for the model's transcript only.
+        ctx["isolated_result"] = {"status": suspend, "output": _tool_call_output_for_state}
+        if suspend == "waiting_for_input" and pending_questions:
+            # A structured ask_user (spec §4.1): its questions ride beside the
+            # readable output, never inside it.
+            ctx["isolated_result"]["questions"] = pending_questions
+    await write_back_context(db, run, before=ctx_before, after=ctx)
 
     # Live Log parity with the in-process engine (agent/engine.py's
-    # _live_tool_call): the append must land after the whole-column
-    # `run.context = ctx` write above (that assignment is a snapshot taken
-    # at the top of this request, so an append made before it would just be
-    # clobbered) but MUST NOT be split across a separate commit -- `db` is a
-    # `tenant_session`, whose RLS-scoping `app.tenant_id` GUC is
-    # `SET LOCAL` (transaction-scoped, per db/session.py); a commit in
-    # between ends that transaction and drops the GUC, so the raw-SQL
-    # append below would run unbound and get RLS-rejected (see project
-    # note: "Tenant GUC dies at commit"). An explicit flush -- not a
-    # commit -- sends the pending ORM `context = ctx` UPDATE ahead of the
-    # raw-SQL append while staying in the same transaction; append_tool_call's
-    # own `_adopt()` overwrites this session's in-memory `run.context` with
-    # whatever it read back, so if that read happened before this write
-    # landed, the flush's changes would be silently lost from the ORM's view
-    # (even though the DB row itself would still be correct) -- one commit
-    # at the end covers both writes atomically, in the GUC's own transaction.
+    # _live_tool_call): the append lands after the context write-back above
+    # and MUST NOT be split from it by a commit -- `db` is a `tenant_session`,
+    # whose RLS-scoping `app.tenant_id` GUC is `SET LOCAL` (transaction-scoped,
+    # per db/session.py); a commit in between would drop the GUC and the
+    # raw-SQL append below would run unbound and get RLS-rejected (see project
+    # note: "Tenant GUC dies at commit"). The write-back is itself a single
+    # SQL statement, so both writes are ordered within the one transaction and
+    # one commit at the end covers both. The flush only sends whatever other
+    # ORM changes this request made.
     await db.flush()
     live_call: dict[str, Any] = {
         "tool": tc.name,

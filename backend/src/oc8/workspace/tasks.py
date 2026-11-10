@@ -36,13 +36,15 @@ import datetime as dt
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select, text
 
 from oc8.models.core import Agent, Department
+from oc8.models.identity import OrgMember
 from oc8.models.ops import Task
 from oc8.runtime.intake import enqueue_run
+from oc8.runtime.person import FOR_PERSON
 from oc8.tenants.activity import TenantInactive, tenant_may_run
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -202,6 +204,16 @@ async def create_task(
     db.add(task)
     await db.flush()
 
+    # Whose work this is (Ruling 18): carried through delegation and the lead's
+    # wake-ups, so the chain stays the member's run on everyone's Live
+    # timeline. Not `originating_operator` -- this grants nothing.
+    #
+    # The member asked for it: a tool "in the user's context" acts for them
+    # (`on_behalf_of`, connections design).
+    context: dict[str, Any] = {"task": instructions, "on_behalf_of": str(member_id)}
+    requester = await db.get(OrgMember, member_id)
+    if requester is not None and requester.tenant_id == tenant_id and requester.subject:
+        context[FOR_PERSON] = requester.subject
     # `task_id` travels with the run at creation for the same reason
     # `route_to_team_lead` passes it: without it the engine opens a task of its
     # own when the run starts, and the board shows the same request twice.
@@ -209,9 +221,7 @@ async def create_task(
         db,
         tenant_id=tenant_id,
         agent_id=lead.id,
-        # The member asked for it: a tool "in the user's context" acts for
-        # them (connections design).
-        context={"task": instructions, "on_behalf_of": str(member_id)},
+        context=context,
         source="manual",
         idempotency_key=f"member-task:{task.id}",
         task_id=task.id,

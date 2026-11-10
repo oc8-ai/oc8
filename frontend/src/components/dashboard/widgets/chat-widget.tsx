@@ -1,13 +1,16 @@
-// One grid tile bound to its own chat session -- unlike the floating dock's
-// tabs, a grid tile never unmounts while the page is open, so `active` is
-// always true and draft text is scoped to this component's own state
-// rather than lifted to a shared tabs manager.
+// One grid tile bound to its own chat session. It mounts the same
+// `Conversation` as the Copilot page and the dock (spec §2.1); draft text is
+// scoped to this component's own state rather than a shared tabs manager.
 import { useState } from "react";
+import { urlId } from "@/lib/ids";
 import { Plus, WifiOff } from "lucide-react";
-import { CopilotChatTab, PendingProposals } from "@/components/copilot-dock";
-import { ChatSessionPicker } from "@/components/chat-window";
+import { Conversation } from "@/components/conversation";
+import { copilotStarters } from "@/components/conversation/copilot-starters";
+import { PendingProposals } from "@/components/copilot-dock";
+import { SessionPicker } from "@/components/conversation/session-picker";
 import { useCan } from "@/lib/governance-hooks";
 import { useAssistant } from "@/lib/hooks";
+import { mostRecentSession } from "@/lib/chat-sessions";
 import { useChatSessions } from "@/lib/hooks-chat";
 import { useLiveConnectionStatus } from "@/lib/live/provider";
 import { useT } from "@/lib/i18n";
@@ -58,7 +61,13 @@ function ChatWidgetPanel({
   const assistantAgentId = assistant?.agentId;
   const { data: sessions } = useChatSessions(assistantAgentId);
   const liveConnectionStatus = useLiveConnectionStatus();
-  const sessionId = typeof config.sessionId === "string" ? config.sessionId : null;
+  // Stored with the dashboard and put into API paths: only a UUID is taken.
+  // A widget never pointed at a chat opens the most recent one; "New chat"
+  // stores null, which stays a new chat.
+  const sessionId =
+    config.sessionId === undefined
+      ? (mostRecentSession(sessions)?.id ?? null)
+      : (urlId(config.sessionId) ?? null);
 
   function setSessionId(id: string | null) {
     onConfigChange({ ...config, sessionId: id });
@@ -73,22 +82,17 @@ function ChatWidgetPanel({
             onClick={() => setSessionId(null)}
             aria-label={t("New chat", "Neuer Chat")}
             title={t("New chat", "Neuer Chat")}
-            className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground transition hover:bg-muted/40 hover:text-foreground"
+            className="grid size-9 shrink-0 place-items-center rounded-md text-muted-foreground transition hover:bg-muted/40 hover:text-foreground"
           >
             <Plus className="h-4 w-4" />
           </button>
         )}
         {assistantAgentId && sessions && sessions.length > 0 && (
-          <ChatSessionPicker
-            agentId={assistantAgentId}
-            sessions={sessions}
-            sessionId={sessionId}
-            onSelect={setSessionId}
-          />
+          <SessionPicker sessions={sessions} sessionId={sessionId} onSelect={setSessionId} />
         )}
       </div>
       {liveConnectionStatus === "disconnected" && (
-        <div className="flex items-center gap-1.5 border-b border-amber-500/30 bg-amber-500/10 px-3 py-1 text-xs text-amber-700 dark:text-amber-400">
+        <div className="flex items-center gap-1.5 border-b border-status-warning/30 bg-status-warning/10 px-3 py-1 text-xs text-status-warning">
           <WifiOff className="h-3.5 w-3.5" />
           <span>
             {t(
@@ -100,19 +104,26 @@ function ChatWidgetPanel({
       )}
       <PendingProposals de={de} />
       <div className="flex flex-1 flex-col overflow-hidden">
-        <CopilotChatTab
-          active
-          sessionId={sessionId}
-          onSessionChange={setSessionId}
-          agentId={assistantAgentId}
-          isAssistant
-          agents={[]}
-          departments={[]}
-          mayStartRuns={false}
-          onAddressAgent={() => {}}
-          draft={draft}
-          onDraftChange={setDraft}
-        />
+        {assistantAgentId && (
+          <Conversation
+            agentId={assistantAgentId}
+            sessionId={sessionId}
+            onSessionChange={setSessionId}
+            variant="compact"
+            draft={draft}
+            onDraftChange={setDraft}
+            placeholder={t("Ask your Copilot …", "Frag deinen Copilot …")}
+            emptyState={
+              <p className="py-4 text-sm text-muted-foreground">
+                {t(
+                  "No chat here yet. Ask your Copilot something, or start with one of these.",
+                  "Hier gibt es noch keinen Chat. Frag deinen Copilot etwas oder fang mit einem davon an.",
+                )}
+              </p>
+            }
+            promptStarters={copilotStarters(t)}
+          />
+        )}
       </div>
     </div>
   );

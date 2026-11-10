@@ -106,7 +106,7 @@ export function ConnectionRequiredNotice({
         </Link>
       )}
       {target === "agent" && agentId && (
-        // The agent page reads `?tab=` once on arrival (agents.$id.tsx).
+        // The agent page reads `?tab=` on arrival (validateSearch, agents.$id.tsx).
         <Link
           to="/agents/$id"
           params={{ id: agentId }}

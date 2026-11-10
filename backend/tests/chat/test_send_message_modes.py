@@ -62,11 +62,17 @@ async def test_the_session_still_shares_one_task(
     async with app_session(tenant) as db:
         session = await _session(db, tenant)
         _m1, run1 = await send_message(
-            db, session=session, tenant_id=tenant, message="/ask what is open?",
+            db,
+            session=session,
+            tenant_id=tenant,
+            message="/ask what is open?",
             originating_operator="op",
         )
         _m2, run2 = await send_message(
-            db, session=session, tenant_id=tenant, message="/do close them",
+            db,
+            session=session,
+            tenant_id=tenant,
+            message="/do close them",
             originating_operator="op",
         )
         assert run1 is not None and run2 is not None
@@ -78,7 +84,10 @@ async def test_plain_text_records_no_mode(app_session: AppSessionFactory, redis_
     async with app_session(tenant) as db:
         session = await _session(db, tenant)
         msg, run = await send_message(
-            db, session=session, tenant_id=tenant, message="wie viele Tickets sind offen?",
+            db,
+            session=session,
+            tenant_id=tenant,
+            message="wie viele Tickets sind offen?",
             originating_operator="op",
         )
         assert msg.mode is None
@@ -94,7 +103,10 @@ async def test_a_message_that_only_looks_like_a_command_is_sent_intact(
     async with app_session(tenant) as db:
         session = await _session(db, tenant)
         msg, _run = await send_message(
-            db, session=session, tenant_id=tenant, message="/etc/passwd is world readable?",
+            db,
+            session=session,
+            tenant_id=tenant,
+            message="/etc/passwd is world readable?",
             originating_operator="op",
         )
         assert msg.mode is None
@@ -116,6 +128,8 @@ async def test_a_knowledge_base_reference_is_resolved_labelled_and_narrows_the_t
             tenant_id=tenant,
             message="what is the standard discount?",
             context_refs=[{"kind": "knowledge_base", "id": str(kb.id)}],
+            operator_role="org_admin",
+            acting_member=await db.get(m.OrgMember, session.member_id),
             originating_operator="op",
         )
         assert msg.context_refs == [
@@ -144,6 +158,8 @@ async def test_an_ask_turn_is_not_told_to_call_a_tool_it_does_not_have(
             tenant_id=tenant,
             message="/ask what is the standard discount?",
             context_refs=[{"kind": "knowledge_base", "id": str(kb.id)}],
+            operator_role="org_admin",
+            acting_member=await db.get(m.OrgMember, session.member_id),
             originating_operator="op",
         )
         assert run is not None
@@ -165,6 +181,8 @@ async def test_a_reference_to_something_that_does_not_exist_is_dropped(
             tenant_id=tenant,
             message="what is the standard discount?",
             context_refs=[{"kind": "knowledge_base", "id": str(uuid.uuid4())}],
+            operator_role="org_admin",
+            acting_member=await db.get(m.OrgMember, session.member_id),
             originating_operator="op",
         )
         assert msg.context_refs == []
@@ -184,6 +202,8 @@ async def test_a_reference_of_an_unknown_kind_is_dropped(
             tenant_id=tenant,
             message="x",
             context_refs=[{"kind": "odoo_record", "id": "42"}],
+            operator_role="org_admin",
+            acting_member=await db.get(m.OrgMember, session.member_id),
             originating_operator="op",
         )
         assert msg.context_refs == []

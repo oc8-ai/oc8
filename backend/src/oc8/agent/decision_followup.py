@@ -28,6 +28,7 @@ from oc8.connections.acting import (
     resolve_acting_person,
 )
 from oc8.runtime.intake import enqueue_run
+from oc8.runtime.person import FOR_PERSON, present
 from oc8.tenants.activity import TenantInactive
 
 logger = logging.getLogger(__name__)
@@ -76,6 +77,14 @@ def instruction_for(approval: m.ApprovalRequest, *, decision: str, reason: str) 
         "Wiederhole keine Schritte, die du damals schon erledigt hattest.",
     ]
     return "\n".join(lines)
+
+
+def _person_of_decision(approval: m.ApprovalRequest) -> dict[str, Any]:
+    """Whose work the follow-up continues (Ruling 18): a decision requested
+    from a person's run carries their `for_person`, which grants nothing but
+    keeps the run off everyone's Live timeline as an autonomous one."""
+    person = (approval.payload or {}).get(FOR_PERSON)
+    return {FOR_PERSON: str(person)} if present(person) else {}
 
 
 async def _carried_from_asking_run(
@@ -137,6 +146,7 @@ async def carry_out_decision(
     context: dict[str, Any] = {
         "task": instruction_for(approval, decision=decision, reason=reason),
         **await _carried_from_asking_run(db, approval, reason),
+        **_person_of_decision(approval),
     }
     try:
         run, _published = await enqueue_run(

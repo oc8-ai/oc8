@@ -20,6 +20,14 @@ export const liveQueryKeys: readonly unknown[][] = [
   ["copilot", "followups"],
   ["copilot", "delegations"],
   ["copilot", "notes"],
+  // The chat no longer polls: a turn whose "chat.message_created" arrived
+  // while the socket was down only shows up through this resync.
+  ["chat", "messages"],
+  ["chat", "session"],
+  ["chat", "sessions"],
+  // The Live tab: runs that started or ended, inputs a run read, while down.
+  ["chat", "live"],
+  ["run-steering"],
 ];
 
 export interface McpTestLogLine {
@@ -84,6 +92,17 @@ const patchers: Record<string, Patcher> = {
     // old useRun poll's terminal-state agents invalidation)
     if (d.state === "done" || d.state === "failed" || d.state === "interrupted") {
       qc.invalidateQueries({ queryKey: ["agents"] });
+      // The answer lands as a chat message in the same commit that ends the
+      // run; chat.message_created normally says so, this is the backstop.
+      qc.invalidateQueries({ queryKey: ["chat", "session"] });
+      qc.invalidateQueries({ queryKey: ["chat", "messages"] });
+      // The server may have withheld this run's deltas while a watch's access
+      // re-check was failing (backend realtime/manager.py), so what streamed in
+      // can be short. The persisted run is complete once it has ended.
+      if (runId) qc.invalidateQueries({ queryKey: ["run", runId] });
+      // The Live tab's timeline carries the run's final output and state.
+      qc.invalidateQueries({ queryKey: ["chat", "live"] });
+      if (runId) qc.invalidateQueries({ queryKey: ["run-steering", runId] });
     }
     // A run parking on a question is the only signal that a clarification
     // appeared — there is no `clarification.created` event. Narrowed to that one
@@ -91,6 +110,9 @@ const patchers: Record<string, Patcher> = {
     // the workspace queue on all of them would be a request per step.
     if (d.state === "waiting_for_input") {
       qc.invalidateQueries({ queryKey: ["clarifications"] });
+      // The chat's session detail carries the parked question (pendingQuestion)
+      // its QuestionCard shows above the composer.
+      qc.invalidateQueries({ queryKey: ["chat", "session"] });
     }
   },
   // Incremental container stdout, fired by the three containerized runtimes
@@ -233,6 +255,12 @@ const patchers: Record<string, Patcher> = {
       prev ? { ...(prev as object), todos } : prev,
     );
   },
+  // A message written to a running run was read at step N (backend
+  // runtime/run_inputs.py publish_inputs_consumed).
+  "run.input_consumed": (qc, d) => {
+    const runId = d.run_id as string | undefined;
+    if (runId) qc.invalidateQueries({ queryKey: ["run-steering", runId] });
+  },
   "agent.status": (qc, d) => {
     const agentId = d.agent_id as string | undefined;
     const status = d.status as string | undefined;
@@ -275,6 +303,17 @@ const patchers: Record<string, Patcher> = {
     qc.invalidateQueries({ queryKey: ["copilot", "profile"] });
   },
   "copilot.followup": (qc) => qc.invalidateQueries({ queryKey: ["copilot", "followups"] }),
+  // A new turn in a chat this browser's member may open (backend
+  // realtime/emit.py publish_chat_message_created). Ids only, delivered per
+  // member: refetch rather than patch, so the message arrives with its
+  // attachments and author resolved exactly as GET returns them.
+  "chat.message_created": (qc, d) => {
+    const sessionId = d.session_id as string | undefined;
+    if (!sessionId) return;
+    qc.invalidateQueries({ queryKey: ["chat", "messages", sessionId] });
+    qc.invalidateQueries({ queryKey: ["chat", "session", sessionId] });
+    qc.invalidateQueries({ queryKey: ["chat", "sessions"] });
+  },
 };
 
 // backend agent.status -> mock UI AgentStatus (running|warning|error|paused|waiting_for_task)

@@ -165,3 +165,18 @@ export function buildRunSteps(input: RunStepsInput): RunSteps {
     live: !TERMINAL_RUN_STATES.includes(input.state),
   };
 }
+
+/** The line a `search_knowledge` result starts with when a knowledge base
+ *  could not be searched: the question had to stay on a local model and the
+ *  base embeds with a cloud one. Never names the base -- the result reaches
+ *  the model. Written as `SKIPPED_LOCAL_LINE` in
+ *  backend/src/oc8/agent/control_tools.py -- the two change together. */
+const SKIPPED_LOCAL_LINE = "[Skipped: a knowledge base \u2013 needs a local embedding model]";
+
+/** Whether a run's searches skipped a knowledge base for needing a local
+ *  embedding model. */
+export function skippedLocalKnowledge(rows: readonly RunStepRow[]): boolean {
+  return rows.some(
+    (row) => row.tool === "search_knowledge" && (row.result ?? "").startsWith(SKIPPED_LOCAL_LINE),
+  );
+}

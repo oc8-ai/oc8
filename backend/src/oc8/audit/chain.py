@@ -267,6 +267,24 @@ def _write_staged(session: Session) -> None:
     pending.clear()
 
 
+async def lock_tenant_audit(session: AsyncSession, tenant_id: uuid.UUID) -> None:
+    """Take the tenant's audit-chain lock now, until commit; reentrant within
+    one transaction. Flushes first, like the commit-time write.
+
+    `append_event` no longer takes this lock: the chain write takes it at
+    commit (`_write_staged`), after every other lock the transaction holds. So
+    "run_input lock, then audit lock at commit" is already one global order.
+    `oc8.runtime.run_inputs.lock_run_inputs` still takes this one FIRST (Ruling
+    60): every transaction that takes a run_input lock goes through that
+    function, so the order there is audit -> run_input -> (audit again at
+    commit, reentrant) and no transaction can hold run_input while waiting for
+    a holder of the audit lock that waits for run_input. It costs holding the
+    tenant's audit lock for the short end-of-run and input-write transactions.
+    """
+    await session.flush()
+    await session.execute(_LOCK_SQL, {"tenant": str(tenant_id)})
+
+
 class AuditChainPoisoned(Exception):
     """A root commit was attempted after an audit chain write in the same
     transaction failed. Roll the transaction back."""

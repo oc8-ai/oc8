@@ -314,9 +314,32 @@ async def test_tools_list_hides_what_the_frame_forbids(
         "memory_write",
         "ask_user",
         "render_component",
+        "suggest_replies",
     }
     assert [n for n in names if n not in core] == ["search_records"], names
     assert core <= set(names)
+
+
+async def test_tools_list_offers_read_context_to_a_turn_with_readable_pins(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An isolated runtime reaches what the member pinned the same way the
+    in-process engine does (offered_tools' has_context)."""
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant)
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {
+            **run.context,
+            "context_manifest": [{"ref_id": "file:1", "kind": "file", "readable": True}],
+        }
+        await db.commit()
+
+    code, body = await _rpc(_token(tenant, agent_id, run_id), "tools/list")
+    assert code == 200, body
+    assert "read_context" in [t["name"] for t in body["result"]["tools"]]
 
 
 # ------------------------------------------------ a connection whose env expires
@@ -2255,3 +2278,64 @@ async def test_restricted_knowledge_fetched_through_the_gateway_marks_the_run(
         run = await db.get(m.AgentRun, run_id)
         assert run is not None
         assert run.context.get("contains_restricted") is True
+
+
+_STRUCTURED_ASK = {
+    "questions": [
+        {
+            "id": "r",
+            "prompt": "Region?",
+            "kind": "single",
+            "options": [{"key": "eu", "label": "EU"}, {"key": "us", "label": "US"}],
+        }
+    ]
+}
+
+
+async def test_a_structured_ask_parks_with_its_questions_beside_the_text(
+    app_session: AppSessionFactory,
+) -> None:
+    """Spec §4.1 through the CLI runtimes' door: the readable question is the
+    verdict's output, the validated questions travel in their own field."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant)
+
+    code, body = await _rpc(
+        _token(tenant, agent_id, run_id),
+        "tools/call",
+        {"name": "ask_user", "arguments": _STRUCTURED_ASK},
+    )
+    assert code == 200, body
+    assert body["result"]["isError"] is True
+
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        verdict = run.context["isolated_result"]
+        assert verdict["status"] == "waiting_for_input"
+        assert verdict["output"] == "Region?\n- EU\n- US"
+        assert verdict["questions"][0]["id"] == "r"
+
+
+async def test_a_malformed_structured_ask_is_a_model_error_not_a_park(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant)
+
+    too_many = {"questions": [{"id": f"q{i}", "prompt": "x", "kind": "text"} for i in range(7)]}
+    code, body = await _rpc(
+        _token(tenant, agent_id, run_id),
+        "tools/call",
+        {"name": "ask_user", "arguments": too_many},
+    )
+    assert code == 200, body
+    assert body["result"]["isError"] is True
+    assert "at most 6" in body["result"]["content"][0]["text"]
+
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        assert "isolated_result" not in run.context

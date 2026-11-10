@@ -1,5 +1,5 @@
 // One run's steps, in order, in business language. The only timeline: the
-// chat mounts it (copilot-run-activity.tsx), the My Work activity widget
+// chat mounts it (conversation/live-timeline.tsx), the My Work activity widget
 // mounts it, and the needs-me queue mounts it inside a row.
 //
 // INVARIANT (workplace design §3.2, this spec §2.4): a step never renders

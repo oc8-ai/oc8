@@ -46,6 +46,7 @@ async def test_transition_publishes_run_status(
         assert env["type"] == "run.status"
         assert env["data"]["state"] == "running"
         assert env["data"]["run_id"] == str(run.id)
+        assert env["data"]["source"] == run.source
     finally:
         await pubsub.aclose()  # type: ignore[no-untyped-call]
         await sub.aclose()

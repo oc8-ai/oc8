@@ -147,8 +147,8 @@ function controlToolLabel(tool: string, running: boolean, t: Translate): string 
         : t("Asked for a decision", "Um eine Entscheidung gebeten");
     case "search_knowledge":
       return running
-        ? t("Searching the knowledge base", "Durchsucht die Wissensbasis")
-        : t("Searched the knowledge base", "Wissensbasis durchsucht");
+        ? t("Searching the knowledge base", "Durchsucht die Wissensdatenbank")
+        : t("Searched the knowledge base", "Wissensdatenbank durchsucht");
     case "fetch_url":
       return running
         ? t("Opening a web page", "Öffnet eine Webseite")

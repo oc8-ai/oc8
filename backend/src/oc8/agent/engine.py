@@ -30,7 +30,10 @@ from oc8.agent.control_tools import (
     CONTROL_TOOL_NAMES,
     FIND_TOOLS,
     MAX_DELEGATION_DEPTH,  # re-exported for tests/coding/test_engine_delegation.py
+    audit_edition_call,
     execute_control_tool,
+    has_readable_context,
+    has_released_knowledge,
     offered_tools,
 )
 from oc8.agent.elicitation import ElicitationNeeded, arguments_with_answer
@@ -126,8 +129,9 @@ from oc8.connections.runtime_env import (
     require_enabled,
     run_mcp_env,
 )
-from oc8.copilot.door import door_of
+from oc8.copilot.door import chat_door, door_of
 from oc8.copilot.notes import member_behind_run_task
+from oc8.edition.tools import edition_offer
 from oc8.hooks.bus import dispatch_filter
 from oc8.hooks.executor import InProcessExecutor
 from oc8.hooks.types import HookCtx
@@ -269,6 +273,10 @@ class RunResult:
     # One latency record per model step (see harness.step_timing). Empty on
     # runs that never entered the step loop (e.g. budget gate).
     step_timings: list[dict[str, Any]] = field(default_factory=list)
+    # A structured ask_user's validated questions (`oc8.chat.questions`), for
+    # the executor to park beside the readable `output`. None for a plain ask
+    # and for every other status.
+    pending_questions: list[dict[str, Any]] | None = None
 
 
 def _json_chunks(text: str) -> list[str]:
@@ -739,6 +747,19 @@ async def run_agent(
             pinned=pinned,
         )
         messages: list[NeutralMessage] = list(preamble.messages)
+        if run_id is not None:
+            # Inputs an earlier leg of this run already received: a leg starts
+            # from a fresh conversation, and the stamped rows are the durable
+            # copy of those messages (spec §3.2, take_run_inputs).
+            from oc8.runtime.run_inputs import delivered_run_inputs, format_input_message
+
+            for earlier in await delivered_run_inputs(db, run_id=run_id):
+                messages.append(
+                    NeutralMessage(
+                        role="user",
+                        content=format_input_message(earlier.author_name, earlier.text),
+                    )
+                )
         assigned_skills = preamble.assigned_skills
         skill_tool_names = preamble.skill_tool_names
         contains_restricted = preamble.contains_restricted
@@ -828,6 +849,19 @@ async def run_agent(
         async def loop(tools: list[NeutralTool], server: Toolset | None) -> RunResult:
             nonlocal model_config, provider, model, model_locality
             active_skills: list[LoadedSkill] = []
+            # The edition tools this leg offers, computed once: the same offer
+            # builds the tool list, feeds the PEP and gates the dispatch. The
+            # agent's own names (MCP tools, advertised and real; skill tools)
+            # are taken -- an edition tool never shadows one.
+            taken = {t.name for t in tools} | set(skill_tool_names)
+            if isinstance(server, RoutedToolset):
+                taken |= {found.tool for t in tools if (found := server.route(t.name)) is not None}
+            edition = await edition_offer(
+                tenant_id,
+                door=chat_door(run_row.source, run_row.context) if run_row is not None else None,
+                taken=taken,
+                chat_mode=chat_mode,
+            )
 
             def _mark_restricted() -> None:
                 # One-way: restricted text is in the transcript from here on, so
@@ -846,9 +880,13 @@ async def run_agent(
                     assigned_skills=assigned_skills,
                     active_skills=active_skills,
                     mcp_tools=tools,
-                    has_knowledge=has_knowledge,
+                    has_knowledge=has_knowledge
+                    or has_released_knowledge(run_row.context if run_row is not None else None),
                     has_instruction_files=has_instruction_files,
                     copilot_permissions=copilot_permissions,
+                    has_context=has_readable_context(
+                        run_row.context if run_row is not None else None
+                    ),
                     # The in-process engine is the one runtime with no
                     # /workspace mount of its own -- see offered_tools' docstring.
                     offer_write_output_file=True,
@@ -858,6 +896,7 @@ async def run_agent(
                         if agent.is_tenant_assistant and run_row is not None
                         else None
                     ),
+                    edition_tools=edition.neutral_tools(),
                 )
 
             # Per-run harness state (spec §3.3): the repeat-call tracker and the
@@ -1319,6 +1358,31 @@ async def run_agent(
                             status="info",
                             message=f"💬 Operator: {operator_msg}",
                         )
+                # Run inputs (spec §3.2): written by the person the run acts for,
+                # or a manager for an autonomous run; consumed once, in order,
+                # here at the step boundary -- in their own short transaction,
+                # never this run-long one (see take_run_inputs for why that
+                # loses nothing if this step dies after it).
+                if run_id is not None:
+                    from oc8.runtime.run_inputs import (
+                        format_input_message,
+                        publish_inputs_consumed,
+                        take_run_inputs,
+                    )
+
+                    consumed_inputs = await take_run_inputs(
+                        tenant_id, run_id=run_id, step=harness.state.step_no, probe=db
+                    )
+                    for item in consumed_inputs:
+                        messages.append(
+                            NeutralMessage(
+                                role="user",
+                                content=format_input_message(item.author_name, item.text),
+                            )
+                        )
+                    await publish_inputs_consumed(
+                        tenant_id, run_id=run_id, consumed=consumed_inputs
+                    )
 
                 ledger_hash = ledger_fingerprint(harness.state.ledger)
                 if ledger_hash != harness.state.ledger_sent_hash:
@@ -1349,7 +1413,9 @@ async def run_agent(
                 ]
                 resolved_tools, catalog = select_completion_tools(
                     resolved_tools,
-                    control_names=CONTROL_TOOL_NAMES,
+                    # Edition tools are core-owned too: kept inline, never
+                    # deferred to the find_tools catalog.
+                    control_names=CONTROL_TOOL_NAMES | edition.names,
                     skill_names=skill_tool_names,
                     mission=task_text,
                     skill_texts=[s.definition.instruction for s in active_skills],
@@ -1910,7 +1976,7 @@ async def run_agent(
                 ):
                     read_batch: list[ToolCall] = []
                     for _pre_tc in result.tool_calls:
-                        if _pre_tc.name in CONTROL_TOOL_NAMES:
+                        if _pre_tc.name in CONTROL_TOOL_NAMES or edition.claims(_pre_tc.name):
                             break
                         pre_decision = _authorize(
                             agent,
@@ -1929,6 +1995,7 @@ async def run_agent(
                                 for g in s.definition.guardrails
                                 if g.type == "value_threshold" and g.then == "require_approval"
                             ),
+                            edition_offer=edition,
                             # The pre-pass calls the tool server before the
                             # per-call PEP: a read the mode withholds (/ask)
                             # must break the batch, not be fetched and dropped.
@@ -2071,6 +2138,7 @@ async def run_agent(
                             if g.type == "value_threshold" and g.then == "require_approval"
                         ),
                         chat_mode=chat_mode,
+                        edition_offer=edition,
                         # Renamed by the route: the model named a connection's
                         # tool (`<connection>.ask_user`). execute_control_tool below
                         # sees the advertised name and leaves it to the
@@ -2105,7 +2173,13 @@ async def run_agent(
                             actor_id=agent.id,
                             category="tool_action",
                             action=f"tool.call:{tc.name}",
-                            resource={"tool": tc.name, "arguments": tc.arguments},
+                            # An edition call keeps its arguments out of the audit; its own
+                            # `edition_tool.called` event is the record of it.
+                            resource=(
+                                {"tool": tc.name}
+                                if edition.claims(tc.name)
+                                else {"tool": tc.name, "arguments": tc.arguments}
+                            ),
                             decision=decision.effect.value,
                             reason=decision.reason or None,
                             originating_operator=originating_operator,
@@ -2122,6 +2196,18 @@ async def run_agent(
                         )
                         if pre_hook.blocked:
                             output = f"ERROR: {pre_hook.reason or 'blocked by plugin hook'}"
+                            if edition.claims(tc.name):
+                                # Never dispatched, but still a call: audited
+                                # like every other refused edition call.
+                                await audit_edition_call(
+                                    db,
+                                    tenant_id=tenant_id,
+                                    agent=agent,
+                                    tool=tc.name,
+                                    run_id=run_id,
+                                    refusal=pre_hook.reason or "blocked by plugin hook",
+                                    originating_operator=originating_operator,
+                                )
                             tool_trace.append(
                                 {
                                     "tool": tc.name,
@@ -2468,6 +2554,7 @@ async def run_agent(
                             active_procedure_skills=[
                                 s for s in active_skills if s.definition.steps
                             ],
+                            edition_offer=edition,
                         )
                         if control is not None:
                             # A core-owned tool (memory/ask/delegate/skill). The
@@ -2532,7 +2619,12 @@ async def run_agent(
                                 record_decision(
                                     harness.state.ledger,
                                     tool=tc.name,
-                                    question=str(tc.arguments.get("question", "")),
+                                    # A structured ask has no `question`; its
+                                    # readable text is the outcome itself.
+                                    question=str(
+                                        tc.arguments.get("question")
+                                        or (control.output if control.questions else "")
+                                    ),
                                     step=harness.state.step_no,
                                 )
                             if control.suspend == "waiting_for_input":
@@ -2555,6 +2647,7 @@ async def run_agent(
                                     rendered_components,
                                     todos,
                                     step_timings,
+                                    pending_questions=control.questions,
                                 )
                         elif decision.effect is Effect.DENY or server is None:
                             reason = decision.reason or "no tool server available"

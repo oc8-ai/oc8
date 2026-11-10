@@ -123,16 +123,24 @@ export function CopilotPersonaHeader({
             disabled={pause.isPending || resume.isPending}
             className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition hover:text-foreground disabled:opacity-50"
           >
-            {paused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
-            {paused ? t("Resume", "Fortsetzen") : t("Pause", "Pausieren")}
+            {paused ? (
+              <Play className="h-3.5 w-3.5" aria-hidden />
+            ) : (
+              <Pause className="h-3.5 w-3.5" aria-hidden />
+            )}
+            {/* Under 400px the title needs the room: the label stays for a
+                screen reader only. */}
+            <span className="max-[399px]:sr-only">
+              {paused ? t("Resume", "Fortsetzen") : t("Pause", "Pausieren")}
+            </span>
           </button>
           <button
             type="button"
             onClick={onOpenProfile}
             className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition hover:text-foreground"
           >
-            <UserRound className="h-3.5 w-3.5" />
-            {t("Profile", "Profil")}
+            <UserRound className="h-3.5 w-3.5" aria-hidden />
+            <span className="max-[399px]:sr-only">{t("Profile", "Profil")}</span>
           </button>
         </>
       )}

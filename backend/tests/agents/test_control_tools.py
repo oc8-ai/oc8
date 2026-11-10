@@ -183,10 +183,13 @@ def test_control_tool_names_matches_the_schemas() -> None:
         "schedule_followup",
         "cancel_followup",
         "memory_write",
+        "suggest_replies",
+        "read_resource",
         "ask_user",
         "delegate_task",
         "request_decision",
         "search_knowledge",
+        "read_context",
         "search_memory",
         "render_component",
         "propose_change",
@@ -1136,6 +1139,9 @@ def test_each_control_tool_declares_its_required_arguments(name: str) -> None:
         "agent_status",
         "budget_overview",
         "kpi_overview",
+        # `question` OR `questions` (spec §4.1) -- a JSON-schema "one of these"
+        # many providers reject, so the handler enforces it instead.
+        "ask_user",
     }
     if name not in optional_tools:
         assert schema.parameters["required"]

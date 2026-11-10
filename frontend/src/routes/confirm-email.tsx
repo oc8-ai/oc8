@@ -3,18 +3,20 @@ import { useEffect, useState } from "react";
 import { PublicAuthLayout } from "@/components/public-auth-layout";
 import { useT } from "@/lib/i18n";
 import { publicPost } from "@/lib/api";
+import { spendOnce, urlToken, useUrlToken } from "@/lib/url-token";
 
 export const Route = createFileRoute("/confirm-email")({
   component: ConfirmEmailPage,
   validateSearch: (search: Record<string, unknown>): { token: string } => ({
-    token: typeof search.token === "string" ? search.token : "",
+    token: urlToken(search.token),
   }),
 });
 
 export function ConfirmEmailPage() {
   const t = useT();
   const navigate = useNavigate();
-  const { token } = Route.useSearch();
+  // Read once, then taken out of the address bar (it is a secret).
+  const token = useUrlToken(Route.useSearch().token);
   const [status, setStatus] = useState<"pending" | "done" | "error">("pending");
 
   useEffect(() => {
@@ -23,7 +25,7 @@ export function ConfirmEmailPage() {
       return;
     }
     let cancelled = false;
-    publicPost("/auth/email/confirm", { token })
+    spendOnce(`confirm:${token}`, () => publicPost("/auth/email/confirm", { token }))
       .then(() => {
         if (!cancelled) setStatus("done");
       })

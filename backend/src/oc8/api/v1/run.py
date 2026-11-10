@@ -21,10 +21,12 @@ from oc8.agents.repo import (
 )
 from oc8.agents.versioning import pinned_version_no
 from oc8.api.deps import DbSession, require_departmental
-from oc8.audit import append_event
 from oc8.authz.permissions import RUN, RUN_CONTROL, RUN_START, VIEW, perm
 from oc8.authz.scope import HumanActor
-from oc8.runtime.clarification import resolve_clarification
+from oc8.chat.questions import QuestionError
+from oc8.chat.service import record_answer_turn
+from oc8.runtime.cancellation import record_operator_cancel
+from oc8.runtime.clarification import AnswerRefused, resolve_clarification
 from oc8.runtime.intake import enqueue_run, publish_run
 from oc8.runtime.states import TERMINAL, RunState
 from oc8.runtime.step_record import step_timing_dto
@@ -428,21 +430,59 @@ async def answer_run(
     actor: _RunController,
 ) -> RunDTO:
     principal = actor.principal
+    # Run reach first: a run of an agent the caller may not reach is the same
+    # 404 as no run at all, before any lock or answer is looked at.
     reach = await resolve_run_reach(request, db, actor, RUN_CONTROL)
     run_row = await _reachable_run(db, reach, actor, run_id)
-    if run_row.state != RunState.WAITING_FOR_INPUT.value:
+    # The same lock the inbox and chat doors take, on the CLARIFICATION rows
+    # (never the run, which a running executor holds): two answers to the same
+    # question serialise, and the second finds it already answered.
+    open_rows = list(
+        (
+            await db.execute(
+                select(m.Clarification)
+                .where(m.Clarification.run_id == run_row.id, m.Clarification.status == "open")
+                .order_by(m.Clarification.created_at.desc())
+                .execution_options(populate_existing=True)
+                .with_for_update()
+            )
+        ).scalars()
+    )
+    await db.refresh(run_row)
+    if run_row.state != RunState.WAITING_FOR_INPUT.value or not open_rows:
         raise HTTPException(status.HTTP_409_CONFLICT, "run is not waiting for input")
     # Record the answer, fold it into the run context, and re-queue the
     # already-existing run (not a new one, so publish_run, not enqueue_run).
-    await resolve_clarification(db, run=run_row, answer=body.answer)
-    # No further DB query after commit (the transaction-local tenant binding
-    # ends), so the DTO is built BEFORE it: the flush expires the server-side
-    # `updated_at`, and reading it after the commit raised MissingGreenlet.
-    await db.flush()
+    pending = (run_row.context or {}).get("pending_questions")
+    try:
+        structured = await resolve_clarification(db, run=run_row, answer=body.answer)
+    except AnswerRefused as exc:
+        # The secret gate every answer door shares: nothing was written.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    except QuestionError as exc:
+        # Structured questions (spec §4.1): the written answer must fit them.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    # A chat run's question answered here still shows in its chat (spec §4.1).
+    await record_answer_turn(
+        db,
+        run=run_row,
+        question=open_rows[0].question,
+        pending=pending,
+        structured=structured,
+        text=body.answer,
+        author_member_id=None,
+        acting_subject=principal.subject,
+        acting_role=principal.role,
+    )
+    # Built BEFORE the commit: the commit expires the row, and reading it
+    # afterwards is IO outside the request's greenlet (MissingGreenlet) -- and
+    # would run without the transaction-local tenant binding anyway.
+    # `updated_at` is server-set on the flush, so reload it first.
     await db.refresh(run_row)
     dto = run_to_dto(run_row)
+    run_id = run_row.id
     await db.commit()
-    await publish_run(run_id=run_row.id, tenant_id=principal.tenant_id)
+    await publish_run(run_id=run_id, tenant_id=principal.tenant_id)
     return dto
 
 
@@ -513,34 +553,8 @@ async def cancel_run(
     if current in TERMINAL:
         raise HTTPException(status.HTTP_409_CONFLICT, f"run already {current.value}")
 
-    # Record the cancel on an UNLOCKED row. NEVER write agent_run here: a running
-    # executor holds that row's lock for the whole run, so a write would block
-    # until the run ends. The executor is the sole agent_run.state mutator and
-    # honors this row -- skipping a queued run before start, or stopping a running
-    # run at its next step boundary. Idempotent: a second cancel adds no row.
-    existing = (
-        await db.execute(select(m.RunCancellation).where(m.RunCancellation.run_id == run_id))
-    ).scalar_one_or_none()
-    if existing is None:
-        db.add(
-            m.RunCancellation(
-                tenant_id=principal.tenant_id,
-                run_id=run_id,
-                requested_at=dt.datetime.now(tz=dt.UTC),
-                cancellation_kind="operator_interrupted",
-            )
-        )
-
-    await append_event(
-        db,
-        tenant_id=principal.tenant_id,
-        actor_type="operator",
-        actor_id=None,
-        category="run",
-        action="run.cancel",
-        resource={"run_id": str(run_id), "was_state": current.value},
-        decision="allow",
-        principal=principal,
-    )
+    # The same unlocked run_cancellation row the chat's Stop writes; see
+    # oc8.runtime.cancellation.
+    await record_operator_cancel(db, run=run_row, principal=principal, actor_id=None)
     await db.commit()
     return run_to_dto(run_row)

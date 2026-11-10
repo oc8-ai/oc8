@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { PublicAuthLayout } from "@/components/public-auth-layout";
 import { useT } from "@/lib/i18n";
 import { publicPost } from "@/lib/api";
+import { urlToken, useUrlToken } from "@/lib/url-token";
 
 export const Route = createFileRoute("/reset-password")({
   component: ResetPasswordPage,
@@ -11,14 +12,15 @@ export const Route = createFileRoute("/reset-password")({
   // else, so a stale or tampered link cannot smuggle extra state in
   // through the URL.
   validateSearch: (search: Record<string, unknown>): { token: string } => ({
-    token: typeof search.token === "string" ? search.token : "",
+    token: urlToken(search.token),
   }),
 });
 
 export function ResetPasswordPage() {
   const t = useT();
   const navigate = useNavigate();
-  const { token } = Route.useSearch();
+  // Read once, then taken out of the address bar (it is a secret).
+  const token = useUrlToken(Route.useSearch().token);
   const [newPassword, setNewPassword] = useState("");
   const [busy, setBusy] = useState(false);
 

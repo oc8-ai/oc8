@@ -1,11 +1,11 @@
 // Direct 1:1 chat with a single agent (oc8.chat.service on the backend).
 // Every message is a real AgentRun under the hood, so guardrails/approvals
 // apply exactly as they do to an autonomous run -- this file only has to
-// manage the session/message list and the "is the agent still thinking"
-// poll, not any of that.
+// manage the session/message list, not any of that. Live updates arrive on
+// the socket (lib/live/apply-event.ts); nothing here polls.
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, uploadChatAttachment, type FileAttachmentDTO } from "@/lib/api";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { api, retryUnlessRefused, uploadChatAttachment, type FileAttachmentDTO } from "@/lib/api";
 import type { ConnectionRequiredInfo } from "@/lib/connections";
 import type { LiveReasoning, RunComponentDTO } from "@/lib/hooks";
 
@@ -17,6 +17,10 @@ export interface ChatSessionDTO {
   title: string;
   createdAt: string;
   lastMessageAt: string | null;
+  // Pinned chats are listed first by `GET /chat/sessions`; pick a default with
+  // `mostRecentSession` (lib/chat-sessions.ts), not the list's first entry.
+  pinned?: boolean;
+  projectId?: string | null;
 }
 
 export interface ChatContextRefDTO {
@@ -39,16 +43,59 @@ export interface ChatMessageDTO {
   // itself is not part of `content` (the backend strips it).
   mode: string | null;
   contextRefs: ChatContextRefDTO[];
+  // The member who wrote a human turn (null for assistant turns and old rows).
+  authorMemberId: string | null;
+  authorName: string | null;
+  // For an assistant turn: the user turn it answers. Regenerated answers share it.
+  replyToId: string | null;
+  // C2: one-click replies the model offered with suggest_replies.
+  suggestions?: string[];
+  // Typed parts an edition tool returned (spec §6.2), e.g.
+  // {type: "sources", items: ChatSourceDTO[]} -- stored and delivered unchanged.
+  parts?: Record<string, unknown>[];
 }
 
-const keys = {
+export interface ChatSourceDTO {
+  n: number;
+  title: string;
+  url: string;
+  favicon: string | null;
+  snippet: string;
+  kind: "web" | "knowledge";
+}
+
+/** The items of a message's `sources` part, if an edition tool added one. */
+export function sourcesOf(message: ChatMessageDTO | null | undefined): ChatSourceDTO[] {
+  const part = (message?.parts ?? []).find((p) => p.type === "sources");
+  return Array.isArray(part?.items) ? (part.items as ChatSourceDTO[]) : [];
+}
+
+/** The `answers` part of a user turn that answered an agent's questions
+ *  (spec §4.1). Its questions are stored unchanged, so in snake_case; only
+ *  the fields the summary reads are typed. */
+export interface ChatAnswersPart {
+  questions: Array<{ id: string; prompt: string; options: Array<{ key: string; label: string }> }>;
+  answers: Record<string, string[] | string>;
+}
+
+export function answersOf(message: ChatMessageDTO | null | undefined): ChatAnswersPart | null {
+  const part = (message?.parts ?? []).find((p) => p.type === "answers");
+  if (!part || !Array.isArray(part.questions) || typeof part.answers !== "object" || !part.answers)
+    return null;
+  return {
+    questions: part.questions as ChatAnswersPart["questions"],
+    answers: part.answers as ChatAnswersPart["answers"],
+  };
+}
+
+export const chatKeys = {
   sessions: (agentId?: string) => ["chat", "sessions", agentId ?? "all"] as const,
   messages: (sessionId: string) => ["chat", "messages", sessionId] as const,
 };
 
 export function useChatSessions(agentId?: string) {
   return useQuery({
-    queryKey: keys.sessions(agentId),
+    queryKey: chatKeys.sessions(agentId),
     queryFn: () =>
       api.get<ChatSessionDTO[]>(`/chat/sessions${agentId ? `?agentId=${agentId}` : ""}`),
   });
@@ -59,52 +106,83 @@ export function useCreateChatSession() {
   return useMutation({
     mutationFn: (agentId: string) => api.post<ChatSessionDTO>("/chat/sessions", { agentId }),
     onSuccess: (session) => {
-      qc.invalidateQueries({ queryKey: keys.sessions(session.agentId) });
-      qc.invalidateQueries({ queryKey: keys.sessions() });
+      qc.invalidateQueries({ queryKey: chatKeys.sessions(session.agentId) });
+      qc.invalidateQueries({ queryKey: chatKeys.sessions() });
     },
   });
 }
 
-// Polls only while the transcript's last turn is the user's own -- i.e. the
-// run answering it hasn't reached a terminal state yet. There is no WS event
-// dedicated to chat (a run's "run.status" event doesn't know it's answering
-// a chat session), so this is the whole "is the agent still typing" signal.
-// Stops the moment an assistant turn lands, same shape as
-// knowledge-connector-hooks.ts's useIngestionJob poll-or-stop.
+// No polling (spec §2.1): new turns arrive as "chat.message_created" on the
+// live socket (lib/live/apply-event.ts), and a terminal "run.status" refetches
+// as a backstop.
 export function useChatMessages(sessionId: string | null) {
   return useQuery({
-    queryKey: keys.messages(sessionId ?? ""),
-    queryFn: () => api.get<ChatMessageDTO[]>(`/chat/sessions/${sessionId}/messages`),
+    queryKey: chatKeys.messages(sessionId ?? ""),
+    queryFn: () =>
+      api.get<ChatMessageDTO[]>(`/chat/sessions/${encodeURIComponent(sessionId ?? "")}/messages`),
     enabled: !!sessionId,
-    refetchInterval: (query) => {
-      const data = query.state.data as ChatMessageDTO[] | undefined;
-      if (!data || data.length === 0) return false;
-      return data[data.length - 1].role === "user" ? 2000 : false;
-    },
+    retry: retryUnlessRefused,
   });
 }
 
-export function useRenameChatSession(agentId: string) {
+/** Newest activity first, pinned chats before the rest: the order of
+ *  `GET /chat/sessions`, kept when a write changes one row in the cache. */
+function inListOrder(sessions: ChatSessionDTO[]): ChatSessionDTO[] {
+  return [...sessions].sort(
+    (a, b) =>
+      Number(!!b.pinned) - Number(!!a.pinned) ||
+      (b.lastMessageAt ?? "").localeCompare(a.lastMessageAt ?? ""),
+  );
+}
+
+/** A write's reply (the session as the server now has it) written into every
+ *  cached session list and the session itself: no refetch of the whole list. */
+export function writeSessionToCache(qc: QueryClient, session: ChatSessionDTO) {
+  const { id, title, lastMessageAt, pinned, projectId } = session;
+  qc.setQueriesData<ChatSessionDTO[]>({ queryKey: ["chat", "sessions"] }, (prev) =>
+    prev?.some((s) => s.id === id)
+      ? inListOrder(
+          prev.map((s) => (s.id === id ? { ...s, title, lastMessageAt, pinned, projectId } : s)),
+        )
+      : prev,
+  );
+  qc.setQueryData<ChatSessionDTO>(["chat", "session", id], (prev) =>
+    prev ? { ...prev, title, lastMessageAt, pinned, projectId } : prev,
+  );
+}
+
+export function useRenameChatSession() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ sessionId, title }: { sessionId: string; title: string }) =>
-      api.patch<ChatSessionDTO>(`/chat/sessions/${sessionId}`, { title }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: keys.sessions(agentId) });
-      qc.invalidateQueries({ queryKey: keys.sessions() });
+      api.patch<ChatSessionDTO>(`/chat/sessions/${encodeURIComponent(sessionId)}`, { title }),
+    onSuccess: (session) => writeSessionToCache(qc, session),
+  });
+}
+
+export function useDeleteChatSession() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (sessionId: string) =>
+      api.delete<void>(`/chat/sessions/${encodeURIComponent(sessionId)}`),
+    onSuccess: (_void, sessionId) => {
+      qc.setQueriesData<ChatSessionDTO[]>({ queryKey: ["chat", "sessions"] }, (prev) =>
+        prev?.filter((s) => s.id !== sessionId),
+      );
+      qc.removeQueries({ queryKey: ["chat", "session", sessionId] });
+      qc.removeQueries({ queryKey: chatKeys.messages(sessionId) });
     },
   });
 }
 
-export function useDeleteChatSession(agentId: string) {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (sessionId: string) => api.delete<void>(`/chat/sessions/${sessionId}`),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: keys.sessions(agentId) });
-      qc.invalidateQueries({ queryKey: keys.sessions() });
-    },
-  });
+/** `prev` with `message` at the end, never twice: the POST reply and the
+ *  refetch a live "chat.message_created" starts race to the same cache. */
+export function appendMessage(
+  prev: ChatMessageDTO[] | undefined,
+  message: ChatMessageDTO,
+): ChatMessageDTO[] {
+  if (prev?.some((m) => m.id === message.id)) return prev;
+  return [...(prev ?? []), message];
 }
 
 export function useSendChatMessage(sessionId: string) {
@@ -119,17 +197,17 @@ export function useSendChatMessage(sessionId: string) {
       attachmentIds?: string[];
       contextRefs?: { kind: string; id: string }[];
     }) =>
-      api.post<ChatMessageDTO>(`/chat/sessions/${sessionId}/messages`, {
+      api.post<ChatMessageDTO>(`/chat/sessions/${encodeURIComponent(sessionId)}/messages`, {
         message,
         attachmentIds,
         contextRefs,
       }),
     onSuccess: (message) => {
-      qc.setQueryData<ChatMessageDTO[]>(keys.messages(sessionId), (prev) => [
-        ...(prev ?? []),
-        message,
-      ]);
-      qc.invalidateQueries({ queryKey: keys.sessions(message.sessionId) });
+      qc.setQueryData<ChatMessageDTO[]>(chatKeys.messages(sessionId), (prev) =>
+        appendMessage(prev, message),
+      );
+      // Every cached session list (its order follows the newest message).
+      qc.invalidateQueries({ queryKey: ["chat", "sessions"] });
     },
   });
 }
@@ -139,7 +217,7 @@ export function useSendChatMessage(sessionId: string) {
 // until the message that names it in `attachmentIds` is actually sent, at
 // which point `chat/service.py::send_message` re-points `owner_id` to the
 // new `ChatMessage`. Nothing here removes an attachment the caller uploaded
-// and then never sent -- see chat-window.tsx's pending-chip removal.
+// and then never sent -- see the Conversation composer's pending-chip removal.
 export function useUploadChatAttachment(sessionId: string) {
   return useMutation({
     mutationFn: (file: File) => uploadChatAttachment(sessionId, file),
@@ -165,6 +243,8 @@ export interface RunActivityDTO {
   taskId: string | null;
   question: string | null;
   renderedComponents: RunComponentDTO[];
+  // filled by the run.component_rendered live patcher
+  components?: RunComponentDTO[];
   // Not part of the GET /runs/{id} response -- only ever appears once the
   // "run.token_delta" WS patcher (live/apply-event.ts) has concatenated at
   // least one fragment onto this cache entry. Absent (not "") until then.
@@ -172,22 +252,4 @@ export interface RunActivityDTO {
   // Same WS-only rule, from "run.reasoning_delta": the reasoning of the step
   // in progress.
   liveReasoning?: LiveReasoning;
-}
-
-// Seeds the exact ["run", runId] cache entry the WS patchers in
-// live/apply-event.ts already write to (run.status/output_delta/
-// component_rendered/token_delta) -- those patchers only ever UPDATE an
-// existing entry (`prev ? {...} : prev`), they never create one, so this
-// hook's own fetch is what makes a freshly opened tab's live-activity strip
-// receive those patches at all instead of silently discarding them.
-export function useCopilotRunActivity(sessionId: string | null, runId: string | null) {
-  return useQuery({
-    queryKey: ["run", runId ?? ""],
-    queryFn: () => api.get<RunActivityDTO>(`/chat/sessions/${sessionId}/runs/${runId}`),
-    enabled: !!sessionId && !!runId,
-    // A terminal run's state does not change again; a poll interval would
-    // just be wasted requests once the WS has already delivered every event
-    // an open tab will ever see for this run.
-    staleTime: Infinity,
-  });
 }

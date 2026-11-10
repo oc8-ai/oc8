@@ -538,14 +538,51 @@ async def test_ask_user_suspends_the_run_for_a_clarification(app_session: object
     )
     assert code == 200, body
     assert body["status"] == "waiting_for_input"
-    assert body["output"] == "Welches Konto soll ich nehmen?"
+    # The model's copy carries the harness's "[step N/max ...]" stamp ...
+    assert body["output"].endswith("Welches Konto soll ich nehmen?")
 
     async with app_session(tenant) as db:  # type: ignore[operator]
         run = await db.get(m.AgentRun, run_id)
         assert run is not None
         # The verdict the runtime reads after the container exits.
         assert run.context["isolated_result"]["status"] == "waiting_for_input"
+        # ... the verdict a person reads as the question does not.
         assert run.context["isolated_result"]["output"] == "Welches Konto soll ich nehmen?"
+
+
+@pytest.mark.asyncio
+async def test_a_structured_ask_suspends_with_its_questions_beside_the_text(
+    app_session: object,
+) -> None:
+    from oc8 import models as m
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent, _task, run = await _plain_agent_run(db, tenant)
+        agent_id, run_id = agent.id, run.id
+
+    ask = {
+        "questions": [
+            {
+                "id": "r",
+                "prompt": "Region?",
+                "kind": "single",
+                "options": [{"key": "eu", "label": "EU"}],
+            }
+        ]
+    }
+    code, body = await _post_tool(tenant, agent_id, run_id, "ask_user", ask)
+    assert code == 200, body
+    assert body["status"] == "waiting_for_input"
+
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        verdict = run.context["isolated_result"]
+        # Unstamped: this text becomes the Clarification a person reads.
+        assert verdict["output"] == "Region?\n- EU"
+        assert "[step" not in verdict["output"]
+        assert verdict["questions"][0]["id"] == "r"
 
 
 @pytest.mark.asyncio
@@ -558,7 +595,8 @@ async def test_an_empty_question_does_not_suspend_the_run(app_session: object) -
     code, body = await _post_tool(tenant, agent_id, run_id, "ask_user", {"question": "  "})
     assert code == 200, body
     assert body["status"] == "ok"
-    assert body["output"].startswith("ERROR:")
+    # Stamped for the model ("[step N/max ...] ERROR from oc8 (ask_user): ...").
+    assert "ERROR" in body["output"] and "non-empty question" in body["output"]
 
 
 @pytest.mark.asyncio

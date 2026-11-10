@@ -287,6 +287,51 @@ def test_the_role_and_member_routes_declare_a_permission() -> None:
     )
 
 
+#: oc8 Chat routes and the ONE permission each declares. Every chat route
+#: resolves its actor through `require_departmental(perm(AGENT, VIEW),
+#: or_tenant_wide=COPILOT_USE)` and then narrows by ownership; the run-steering
+#: routes gate on the run's own authority instead (`oc8.runtime.run_inputs`).
+_CHAT_ROUTES: dict[tuple[str, str], str] = {
+    ("GET", "/api/v1/chat/sessions/{}"): "agent:view",
+    ("GET", "/api/v1/chat/sessions/{}/models"): "agent:view",
+    ("GET", "/api/v1/chat/agents/{}/models"): "agent:view",
+    ("PUT", "/api/v1/chat/sessions/{}/model"): "agent:view",
+    ("POST", "/api/v1/chat/sessions/{}/messages/{}/regenerate"): "agent:view",
+    ("POST", "/api/v1/chat/sessions/{}/messages/{}/feedback"): "agent:view",
+    ("POST", "/api/v1/chat/sessions/{}/questions/{}/answer"): "agent:view",
+    ("GET", "/api/v1/runs/{}/steering"): "agent:view",
+    ("POST", "/api/v1/runs/{}/inputs"): "agent:view",
+    ("POST", "/api/v1/runs/{}/stop"): "agent:view",
+    ("GET", "/api/v1/agents/{}/live"): "agent:view",
+    ("PUT", "/api/v1/chat/sessions/{}/pins"): "agent:view",
+    ("PUT", "/api/v1/chat/sessions/{}/project"): "agent:view",
+    ("PUT", "/api/v1/chat/sessions/{}/pinned"): "agent:view",
+    ("GET", "/api/v1/chat/projects"): "agent:view",
+    ("POST", "/api/v1/chat/projects"): "agent:view",
+    ("PATCH", "/api/v1/chat/projects/{}"): "agent:view",
+    ("DELETE", "/api/v1/chat/projects/{}"): "agent:view",
+    ("GET", "/api/v1/chat/context/search"): "agent:view",
+    # Browsing a source is reading knowledge: the same `knowledge:view` the
+    # `data_source` resolver admits on (Ruling 27), on top of the chat door.
+    ("GET", "/api/v1/chat/data-sources/{}/browse"): "knowledge:view",
+}
+
+
+def test_the_chat_routes_declare_their_permission() -> None:
+    declared: dict[tuple[str, str], set[str]] = {}
+    for row in _api_routes():
+        key_path = _normalised(row["path"])
+        for method in row["methods"]:
+            if (method, key_path) in _CHAT_ROUTES:
+                declared[(method, key_path)] = {
+                    detail for kind, detail in row["guards"] if kind == "permission"
+                }
+    missing = sorted(set(_CHAT_ROUTES) - set(declared))
+    assert not missing, f"chat routes not mounted: {missing}"
+    wrong = {k: sorted(v) for k, v in declared.items() if _CHAT_ROUTES[k] not in v}
+    assert not wrong, f"chat routes with the wrong permission: {wrong}"
+
+
 def test_the_permission_catalogue_is_reachable_by_whoever_is_composing_a_role() -> None:
     """It is `unguarded()`, and the reason has to be the real one.
 

@@ -1,18 +1,103 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { ChevronDown, ChevronRight, X } from "lucide-react";
 import { useState } from "react";
 import { Panel } from "@/components/app-shell";
-import { useActivity, useAgents } from "@/lib/hooks";
+import { ChatMarkdown } from "@/components/chat-markdown";
+import { RunFailureReason } from "@/components/run-reasoning";
+import { RunStepTimeline } from "@/components/run-step-timeline";
+import { useActivity, useAgents, useRun } from "@/lib/hooks";
+import { urlId } from "@/lib/ids";
+import { RUN_STATE_COLOR, stateLabel } from "@/lib/run-state";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 
+export interface ActivitySearch {
+  /** A run to open on top of the feed -- where an answer's run chip
+   *  ("oc8://run/<id>") lands. */
+  run?: string;
+}
+
 export const Route = createFileRoute("/activity")({
-  component: ActivityPage,
+  validateSearch: (search: Record<string, unknown>): ActivitySearch => {
+    const run = urlId(search.run);
+    return run ? { run } : {};
+  },
+  component: ActivityRoute,
 });
+
+function ActivityRoute() {
+  const { run } = Route.useSearch();
+  const navigate = useNavigate();
+  return (
+    <ActivityPage
+      runId={run ?? null}
+      onCloseRun={() => void navigate({ to: "/activity", search: {} })}
+    />
+  );
+}
+
+/** One run, opened from a link: who ran it, how it ended, its answer and its
+ *  steps. */
+function RunFocus({
+  runId,
+  agentName,
+  onClose,
+}: {
+  runId: string;
+  agentName: (agentId: string) => string | undefined;
+  onClose?: () => void;
+}) {
+  const t = useT();
+  const { data: run, isError } = useRun(runId);
+  return (
+    <Panel>
+      <section aria-label={t("Run details", "Laufdetails")} className="space-y-3 p-4">
+        <div className="flex items-center gap-2 text-sm">
+          <span className="font-medium">
+            {run ? (agentName(run.agentId) ?? t("Agent", "Agent")) : t("Agent run", "Lauf")}
+          </span>
+          {run && (
+            <span
+              className="rounded-full px-2 py-0.5 text-xs"
+              style={{ color: RUN_STATE_COLOR[run.state] }}
+            >
+              {stateLabel(t, run.state)}
+            </span>
+          )}
+          <span className="truncate font-mono text-xs text-muted-foreground">{runId}</span>
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label={t("Close run", "Lauf schließen")}
+              className="ml-auto grid size-11 place-items-center rounded-md text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:size-9"
+            >
+              <X className="size-4" aria-hidden />
+            </button>
+          )}
+        </div>
+        {isError && (
+          <p className="text-xs text-muted-foreground">
+            {t("This run could not be loaded.", "Dieser Lauf konnte nicht geladen werden.")}
+          </p>
+        )}
+        {run?.state === "failed" && <RunFailureReason reason={run.failureReason ?? run.output} />}
+        {run?.output && run.state !== "failed" && <ChatMarkdown text={run.output} />}
+        {run && <RunStepTimeline run={run} defaultOpen />}
+      </section>
+    </Panel>
+  );
+}
 
 const statuses = ["All", "success", "warning", "error", "info"] as const;
 
-function ActivityPage() {
+export function ActivityPage({
+  runId = null,
+  onCloseRun,
+}: {
+  runId?: string | null;
+  onCloseRun?: () => void;
+} = {}) {
   const t = useT();
   const { data: activity = [] } = useActivity();
   // Filter dropdown over every agent, not a paginated list view.
@@ -28,8 +113,18 @@ function ActivityPage() {
 
   return (
     <div className="space-y-4">
+      {runId && (
+        <RunFocus
+          key={runId}
+          runId={runId}
+          agentName={(id) => agents.find((a) => a.id === id)?.name}
+          onClose={onCloseRun}
+        />
+      )}
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-xs uppercase tracking-wider text-muted-foreground">{t("Filter:", "Filter:")}</span>
+        <span className="text-xs uppercase tracking-wider text-muted-foreground">
+          {t("Filter:", "Filter:")}
+        </span>
         <select
           value={agent}
           onChange={(e) => setAgent(e.target.value)}
@@ -133,7 +228,10 @@ function ActivityPage() {
                       </a>
                     ) : (
                       (it.detail ??
-                        t("No further details for this entry.", "Keine weiteren Details zu diesem Eintrag."))
+                      t(
+                        "No further details for this entry.",
+                        "Keine weiteren Details zu diesem Eintrag.",
+                      ))
                     )}
                   </div>
                 )}

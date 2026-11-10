@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
@@ -36,11 +37,14 @@ from oc8.agent.control_tools import (
     CONTROL_TOOL_NAMES,
     DELEGATE_TASK,
     MEMORY_WRITE,
+    READ_CONTEXT,
     RENDER_COMPONENT,
     REQUEST_DECISION,
     SEARCH_KNOWLEDGE,
     SEARCH_MEMORY,
+    SUGGEST_REPLIES,
     execute_control_tool,
+    has_readable_context,
 )
 from oc8.agent.engine import _authorize, _call_sig
 from oc8.agent.mcp_client import resolve_auth_header
@@ -81,11 +85,19 @@ from oc8.capas.discovery import resolve_tool_pack_connection
 from oc8.chat.modes import mode_from_context, mode_refusal
 from oc8.connections.access import ConnectionRequired
 from oc8.connections.runtime_env import McpLaunchEnv, integration_connections, run_mcp_env
+from oc8.copilot.door import chat_door
+from oc8.edition.tools import EditionOffer, edition_offer
 from oc8.memory.policy import authorize_memory_write
+from oc8.modelrouter import ToolCall
 from oc8.realtime.emit import note_focus, record_activity
 from oc8.runtime.approval_resume import pre_decided_map
 from oc8.runtime.run_context import merge_context
-from oc8.skills.runtime import instruction_block, load_assigned_skills, skill_tool_schemas
+from oc8.skills.runtime import (
+    LoadedSkill,
+    instruction_block,
+    load_assigned_skills,
+    skill_tool_schemas,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -337,6 +349,20 @@ async def _env(
 # ------------------------------------------------------------------ tools/list
 
 
+async def _edition_offer(
+    run: m.AgentRun, routes: Mapping[str, Route], skills: Sequence[LoadedSkill]
+) -> EditionOffer:
+    """The run's edition offer. The agent's own names are taken: every MCP
+    route, advertised and real, and every skill tool."""
+    taken = set(routes) | {r.tool for r in routes.values()} | {s.tool_name for s in skills}
+    return await edition_offer(
+        run.tenant_id,
+        door=chat_door(run.source, run.context),
+        taken=taken,
+        chat_mode=mode_from_context(run.context),
+    )
+
+
 async def _list_tools(
     db: DbSession,
     *,
@@ -430,7 +456,10 @@ async def _list_tools(
             and policy.has_right(required_right(t.name, scopes))
             # Scopes are known HERE (unlike in offered_tools), so a read-only
             # mode's writing tools are withheld rather than offered-then-denied.
-            and mode_refusal(chat_mode, t.name, tool_scopes=scopes) is None
+            and mode_refusal(
+                chat_mode, t.name, tool_scopes=scopes, connection_tool=True, core=False
+            )
+            is None
         ]
 
     # Built from what the agent may ACTUALLY use: a tool the frame withholds on
@@ -471,7 +500,12 @@ async def _list_tools(
         SEARCH_MEMORY,
         MEMORY_WRITE,
         RENDER_COMPONENT,
+        SUGGEST_REPLIES,
     ]
+    # A read of what the member pinned to this chat turn -- only when the
+    # turn's manifest lists something readable (offered_tools' has_context).
+    if has_readable_context(run.context):
+        core.append(READ_CONTEXT)
     # Withheld from the tenant Assistant specifically, mirroring
     # control_tools.offered_tools' own reasoning: a park only WORKS if
     # something can answer it, and Telegram free text -- one of the
@@ -500,6 +534,20 @@ async def _list_tools(
             }
         )
 
+    # The edition tools this tenant is entitled to on this door, in this mode
+    # -- never one that would shadow the agent's own tools. _call_tool
+    # recomputes the same offer and refuses whatever is not on it.
+    assigned = await load_assigned_skills(db, agent=agent, tenant_id=run.tenant_id)
+    edition = await _edition_offer(run, routes, assigned)
+    for edition_tool in edition.neutral_tools():
+        out.append(
+            {
+                "name": edition_tool.name,
+                "description": edition_tool.description,
+                "inputSchema": edition_tool.parameters or {"type": "object", "properties": {}},
+            }
+        )
+
     # The agent's own skills, on the same footing as the connection's tools.
     # Skills activate ON DEMAND -- the preamble hands out a catalogue and tells
     # the agent to call the named tool to load the procedure -- so a skill that
@@ -507,9 +555,7 @@ async def _list_tools(
     # the rules inside it never apply to anything. Observed live: the helpdesk
     # agent promised a customer a refund its own skill forbids, with
     # `active_skill_ids` empty because there had been nothing to call.
-    for schema in skill_tool_schemas(
-        await load_assigned_skills(db, agent=agent, tenant_id=run.tenant_id)
-    ):
+    for schema in skill_tool_schemas(assigned):
         out.append(
             {
                 "name": schema.name,
@@ -595,6 +641,47 @@ async def _stop_for_blast_radius(
     return _tool_result(blast_refusal(touched, limit), is_error=True)
 
 
+async def _run_task(db: DbSession, run: m.AgentRun, *, no_task: str) -> m.Task | dict[str, Any]:
+    """The task a core or edition tool runs against, or the tool result that
+    refuses the call (`no_task` when the run has none)."""
+    if run.task_id is None:
+        return _tool_result(no_task, is_error=True)
+    task = await db.get(m.Task, run.task_id)
+    if task is None:
+        return _tool_result("ERROR: task not found", is_error=True)
+    return task
+
+
+def _authorize_unbound(
+    agent: m.Agent,
+    tc: ToolCall,
+    *,
+    run: m.AgentRun,
+    frame: dict[str, Any],
+    narrowing: dict[str, Any],
+    pinned: Mapping[str, Any],
+    skill_tool_names: frozenset[str],
+    edition: EditionOffer,
+) -> Decision:
+    """The PEP for a tool that belongs to no connection (delegate_task, an
+    edition tool): no scopes and no connection key -- the checks that matter
+    for it (self, real id, depth; the edition offer) are inside _authorize."""
+    return _authorize(
+        agent,
+        tc,
+        frame=frame,
+        skill_tool_names=skill_tool_names,
+        delegation_depth=int(run.context.get("delegation_depth", 0)),
+        tool_policies=effective_tool_policies(frame, narrowing),
+        narrowing=narrowing,
+        is_team_lead=bool(pinned["is_team_lead"]),
+        tool_scopes=None,
+        connection_key=None,
+        chat_mode=mode_from_context(run.context),
+        edition_offer=edition,
+    )
+
+
 async def _call_tool(
     db: DbSession,
     *,
@@ -617,13 +704,16 @@ async def _call_tool(
     # reaches a person -- belongs to that connection and to no other, which is
     # exactly what a single per-run connection could not express.
     conn: m.McpConnection | None = None
+    routes: dict[str, Route] = {}
+    route: Route | None = None
     #: The route rewrote the name (`<connection>.ask_user` -> `ask_user`): the model
     #: named a CONNECTION's tool, whatever core tool shares its real name. It
     #: skips every core branch below and is decided by the frame like any
     #: other tool of that connection -- never by the core tool's allowance.
     routed = False
     if conns:
-        route = resolve(name, await _routes(db, run, agent, dept, conns))
+        routes = await _routes(db, run, agent, dept, conns)
+        route = resolve(name, routes)
         if route is not None:
             conn = next((c for c in conns if c.name == route.connection), None)
             routed = route.tool != name
@@ -642,6 +732,7 @@ async def _call_tool(
     skill_tool_names = frozenset(s.tool_name for s in assigned)
     active_ids = {str(s) for s in run.context.get("active_skill_ids", [])}
     active = [s for s in assigned if str(s.skill_version_id) in active_ids]
+    edition = await _edition_offer(run, routes, assigned)
 
     core_call = not routed and (name in CONTROL_TOOL_NAMES or name in skill_tool_names)
     if core_call:
@@ -694,9 +785,25 @@ async def _call_tool(
         )
 
     if core_call and name == ASK_USER.name:
-        question = str(arguments.get("question", "")).strip()
-        if not question:
-            return _tool_result("ERROR: ask_user requires a non-empty question", is_error=True)
+        from oc8.chat.questions import (
+            QuestionError,
+            is_plain,
+            parse_questions,
+            questions_to_json,
+            render_questions_text,
+        )
+
+        try:
+            questions = parse_questions(arguments)
+        except QuestionError as exc:
+            # Same guard as control_tools.py: a malformed or empty question is a
+            # model error, never a park a human would stare at.
+            return _tool_result(f"ERROR: {exc}", is_error=True)
+        question = render_questions_text(questions)
+        parked: dict[str, Any] = {"status": "waiting_for_input", "output": question}
+        if not is_plain(questions):
+            # Structured questions (spec §4.1) ride beside the readable text.
+            parked["questions"] = questions_to_json(questions)
         # ONLY the park marker -- structurally identical to the
         # REQUIRE_APPROVAL branch below (write the marker, commit, rebind,
         # publish, return a readable "parked, do not retry" error) and, like
@@ -728,7 +835,7 @@ async def _call_tool(
         await merge_context(
             db,
             run,
-            {"isolated_result": {"status": "waiting_for_input", "output": question}},
+            {"isolated_result": parked},
         )
         await db.commit()
         await _rebind_tenant(db, run.tenant_id)
@@ -745,22 +852,21 @@ async def _call_tool(
         MEMORY_WRITE.name,
         DELEGATE_TASK.name,
         RENDER_COMPONENT.name,
+        SUGGEST_REPLIES.name,
+        READ_CONTEXT.name,
     ):
-        if run.task_id is None:
-            return _tool_result(
-                "ERROR: this run has no task to attach a decision to", is_error=True
-            )
-        task = await db.get(m.Task, run.task_id)
-        if task is None:
-            return _tool_result("ERROR: task not found", is_error=True)
-        from oc8.modelrouter import ToolCall as _ToolCall
+        task = await _run_task(
+            db, run, no_task="ERROR: this run has no task to attach a decision to"
+        )
+        if not isinstance(task, m.Task):
+            return task
 
         # Reading and asking change nothing outside oc8, so they are allowed
         # outright -- knowledge and memory carry their own grant checks inside.
         # WRITING memory does not: the tier policy is the whole protection there
         # (§10.1), so it is evaluated properly rather than waved through, and a
         # company-tier write comes back as REQUIRE_APPROVAL.
-        core_tc = _ToolCall(id=str(uuid.uuid4()), name=name, arguments=arguments)
+        core_tc = ToolCall(id=str(uuid.uuid4()), name=name, arguments=arguments)
         if name == MEMORY_WRITE.name:
             core_decision = authorize_memory_write(
                 frame,
@@ -772,22 +878,15 @@ async def _call_tool(
             # Not waved through: _authorize is where "not yourself", "a real
             # agent id" and the depth limit live, and the limit is the only thing
             # standing between a lead and a delegation loop.
-            core_decision = _authorize(
+            core_decision = _authorize_unbound(
                 agent,
                 core_tc,
+                run=run,
                 frame=frame,
-                skill_tool_names=skill_tool_names,
-                delegation_depth=int(run.context.get("delegation_depth", 0)),
-                skill_thresholds=(),
-                tool_policies=effective_tool_policies(frame, narrowing),
                 narrowing=narrowing,
-                is_team_lead=bool(pinned["is_team_lead"]),
-                # A core tool belongs to no connection, so it has neither scopes
-                # nor a connection key -- the checks that matter for it (self,
-                # real id, depth) are inside _authorize.
-                tool_scopes=None,
-                connection_key=None,
-                chat_mode=mode_from_context(run.context),
+                pinned=pinned,
+                skill_tool_names=skill_tool_names,
+                edition=edition,
             )
         else:
             mode_denial = mode_refusal(mode_from_context(run.context), name, tool_scopes=None)
@@ -851,6 +950,46 @@ async def _call_tool(
             )
         return _tool_result(outcome.output, is_error=outcome.output.startswith("ERROR"))
 
+    if route is None and edition.claims(name):
+        # An edition tool: decided by the PEP against this run's offer, then
+        # gated again (offer, entitlement, tenant) and audited by the
+        # dispatcher. Never routed to a connection.
+        edition_task = await _run_task(db, run, no_task=f"ERROR: unknown tool {name!r}")
+        if not isinstance(edition_task, m.Task):
+            return edition_task
+        edition_tc = ToolCall(id=str(uuid.uuid4()), name=name, arguments=arguments)
+        edition_decision = _authorize_unbound(
+            agent,
+            edition_tc,
+            run=run,
+            frame=frame,
+            narrowing=narrowing,
+            pinned=pinned,
+            skill_tool_names=skill_tool_names,
+            edition=edition,
+        )
+        edition_outcome = await execute_control_tool(
+            db,
+            tenant_id=run.tenant_id,
+            agent=agent,
+            task=edition_task,
+            tc=edition_tc,
+            decision=edition_decision,
+            assigned_skills=assigned,
+            active_skills=active,
+            mcp_conn=None,
+            originating_operator=run.context.get("originating_operator"),
+            run_id=run.id,
+            pinned=pinned,
+            edition_offer=edition,
+        )
+        assert edition_outcome is not None
+        if edition_outcome.contains_restricted:
+            await merge_context(db, run, {"contains_restricted": True})
+        return _tool_result(
+            edition_outcome.output, is_error=edition_outcome.output.startswith("ERROR")
+        )
+
     if core_call and name in CONTROL_TOOL_NAMES:
         # Every member of CONTROL_TOOL_NAMES is intercepted by name above --
         # REQUEST_DECISION/SEARCH_KNOWLEDGE/SEARCH_MEMORY/MEMORY_WRITE/
@@ -865,8 +1004,6 @@ async def _call_tool(
         return _tool_result(
             f"ERROR: '{name}' is not available through the tool gateway", is_error=True
         )
-
-    from oc8.modelrouter import ToolCall
 
     tc = ToolCall(id=str(uuid.uuid4()), name=name, arguments=arguments)
     decision = _authorize(
@@ -889,6 +1026,7 @@ async def _call_tool(
         value_spec=value_spec,
         guardrail_attribute_specs=_manifest_guardrail_attributes(conn),
         chat_mode=mode_from_context(run.context),
+        edition_offer=edition,
         routed=routed,
     )
     # Honour an operator's earlier decision on this exact call (resume).
@@ -1156,6 +1294,43 @@ async def _call_tool(
     return _tool_result(fence(shorten_long_strings(output), source=f"{conn.name}:{tc.name}"))
 
 
+async def _with_run_inputs(
+    db: DbSession, *, run: m.AgentRun, payload: dict[str, Any]
+) -> dict[str, Any]:
+    """An external runtime has no step loop oc8 can reach into, so a message
+    written to its run rides on the next tool result (spec §3.2).
+
+    Stamped and committed before the result leaves: the tool call has already
+    committed its own work above, and this request's transaction is short, so
+    the consumer lock is held only for this. Delivered at most once -- a
+    result lost on the wire after the commit takes its inputs with it, the
+    same as the tool output it carries."""
+    from oc8.runtime.run_inputs import (
+        consume_run_inputs,
+        format_input_message,
+        has_pending_run_inputs,
+        publish_inputs_consumed,
+        step_hint,
+    )
+
+    # `_call_tool` may have committed, which drops the transaction-local GUC;
+    # re-pinning it first is what lets the probe see the rows at all (RLS
+    # fails closed). The probe is a plain read: the common tool result, with
+    # nothing waiting, takes no consumer lock and locks no rows.
+    await _rebind_tenant(db, run.tenant_id)
+    if not await has_pending_run_inputs(db, run_id=run.id):
+        return payload
+    consumed = await consume_run_inputs(db, run_id=run.id, step=step_hint(run.context or {}))
+    if not consumed:
+        return payload
+    await db.commit()
+    await publish_inputs_consumed(run.tenant_id, run_id=run.id, consumed=consumed)
+    extra = [
+        {"type": "text", "text": format_input_message(c.author_name, c.text)} for c in consumed
+    ]
+    return {**payload, "content": [*payload.get("content", []), *extra]}
+
+
 # --------------------------------------------------------------------- route
 
 
@@ -1218,6 +1393,7 @@ async def mcp_endpoint(
             raise
         except Exception as exc:
             return _error(rpc_id, _INTERNAL_ERROR, str(exc))
+        payload = await _with_run_inputs(db, run=run, payload=payload)
         return _result(rpc_id, payload)
 
     return _error(rpc_id, _METHOD_NOT_FOUND, f"unknown method: {method}")

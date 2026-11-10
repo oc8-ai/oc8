@@ -48,8 +48,13 @@ def test_exported_tables_excludes_the_denylist() -> None:
     # stays INCLUDED too -- unlike push_subscription/secret/tenant_dek, its
     # token_hash carries no instance-bound key material, just sha256 of a
     # random secret the member already holds, so it still validates
-    # correctly after a restore into another instance.
-    assert len(exported) == 57
+    # correctly after a restore into another instance; chat_project (a
+    # member's named group of chat sessions) and run_input (a message queued
+    # for a running agent), added by this branch's migrations (0111-0113), stay INCLUDED --
+    # both are portable company data with no instance-bound key material.
+    # The count is a tripwire for a new table, not a statement about this list:
+    # it also covers the tables earlier migrations added since the last update.
+    assert len(exported) == 63
 
 
 def test_table_by_name_returns_a_real_table() -> None:

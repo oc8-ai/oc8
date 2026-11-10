@@ -1,5 +1,7 @@
 import type { LucideIcon } from "lucide-react";
-import type { ComponentType } from "react";
+import type { ComponentType, ReactNode } from "react";
+
+import type { ChatMessageDTO } from "@/lib/hooks-chat";
 
 /**
  * Build-time contribution from a trusted product edition. This is deliberately
@@ -23,6 +25,79 @@ export interface FrontendEditionExtension {
   readonly profileSections?: readonly EditionProfileSection[];
   /** Cards an edition shows at the top of the home page, in extension order. */
   readonly homeSections?: readonly EditionHomeSection[];
+  /** Chat slots (spec §6.2). Each entry may name the capabilities it needs. */
+  readonly chat?: EditionChatContributions;
+}
+
+export type Capability = string;
+
+interface ChatSlotEntry {
+  readonly id: string;
+  /** Capabilities the caller must all hold for the entry to render. */
+  readonly needs?: readonly Capability[];
+}
+
+export interface ComposerSlotProps {
+  readonly sessionId: string | null;
+  /** The chat is a read-only share: an extension must not write. */
+  readonly readOnly: boolean;
+  readonly insert: (text: string) => void;
+  readonly openSidePanel: (id: string) => void;
+}
+
+export interface ComposerActionEntry extends ChatSlotEntry {
+  readonly component: ComponentType<ComposerSlotProps>;
+}
+
+export interface ComposerPickerEntry extends ChatSlotEntry {
+  readonly label: LocalizedLabel;
+  readonly icon: LucideIcon;
+  /** Also offered under `/` as a local command of this name. */
+  readonly command?: string;
+  readonly onSelect: (ctx: ComposerSlotProps) => void;
+}
+
+/** Renders one typed message part. Core part types (`answers`, `suggestions`)
+ *  are never handed to an extension. `part` is untrusted data. */
+export interface MessagePartRenderer extends ChatSlotEntry {
+  readonly type: string;
+  readonly component: ComponentType<{ part: Record<string, unknown>; message: ChatMessageDTO }>;
+}
+
+export interface MessageActionEntry extends ChatSlotEntry {
+  readonly component: ComponentType<{
+    message: ChatMessageDTO;
+    sessionId: string | null;
+    readOnly: boolean;
+  }>;
+}
+
+export interface ChatSidebarSectionEntry extends ChatSlotEntry {
+  readonly component: ComponentType<{ agentId: string; onOpenSession: (id: string) => void }>;
+}
+
+export interface ChatHeaderActionEntry extends ChatSlotEntry {
+  readonly component: ComponentType<{ sessionId: string | null; readOnly: boolean }>;
+}
+
+export interface SidePanelEntry extends ChatSlotEntry {
+  readonly component: ComponentType<{ sessionId: string | null; onClose: () => void }>;
+  readonly title: LocalizedLabel;
+}
+
+export interface GlobalProviderEntry extends ChatSlotEntry {
+  readonly component: ComponentType<{ children: ReactNode }>;
+}
+
+export interface EditionChatContributions {
+  readonly composerActions?: readonly ComposerActionEntry[];
+  readonly composerPickers?: readonly ComposerPickerEntry[];
+  readonly messageParts?: readonly MessagePartRenderer[];
+  readonly messageActions?: readonly MessageActionEntry[];
+  readonly chatSidebarSections?: readonly ChatSidebarSectionEntry[];
+  readonly chatHeaderActions?: readonly ChatHeaderActionEntry[];
+  readonly sidePanels?: readonly SidePanelEntry[];
+  readonly globalProviders?: readonly GlobalProviderEntry[];
 }
 
 /** An edition's own first-run screens. Both render without the app shell. */

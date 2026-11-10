@@ -18,6 +18,7 @@ import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
+import { Switch } from "@/components/ui/switch";
 import { ChatGptSubscriptionPicker } from "@/components/chatgpt-subscription-picker";
 import { CredentialPicker } from "@/components/credential-picker";
 import {
@@ -145,6 +146,73 @@ export function SubscriptionRiskBadge() {
     >
       {t("Personal · manual only", "Persönlich · nur manuell")}
     </span>
+  );
+}
+
+/** The one line that explains the Chat column, said once above the table;
+ *  every row's switch points to it. */
+const CHAT_HINT_ID = "models-chat-hint";
+
+/**
+ * Whether members may pick this model in a chat. Saves on toggle; shows the
+ * new state at once and goes back to the saved one if the save fails.
+ */
+export function ChatAvailabilitySwitch({
+  model,
+  mayManage,
+}: {
+  model: ModelDTO;
+  mayManage: boolean;
+}) {
+  const t = useT();
+  const updateModel = useUpdateModel();
+  const saved = model.chatEnabled ?? true;
+  const [pending, setPending] = useState<boolean | null>(null);
+  const [failed, setFailed] = useState(false);
+  const checked = pending ?? saved;
+
+  const handleChange = async (next: boolean) => {
+    setPending(next);
+    setFailed(false);
+    try {
+      await updateModel.mutateAsync({
+        id: model.id,
+        provider: model.provider,
+        model: model.model,
+        locality: model.locality,
+        chatEnabled: next,
+      });
+      setPending(null);
+    } catch {
+      setPending(null);
+      setFailed(true);
+    }
+  };
+
+  // The saved value caught up with what was toggled: drop the local copy.
+  if (pending !== null && pending === saved) setPending(null);
+
+  return (
+    <div>
+      <label className="inline-flex items-center gap-2 text-sm">
+        <Switch
+          checked={checked}
+          disabled={!mayManage}
+          onCheckedChange={(next) => void handleChange(next)}
+          aria-label={t("Available in chat", "Im Chat verfügbar")}
+          aria-describedby={CHAT_HINT_ID}
+        />
+        <span>{t("Available in chat", "Im Chat verfügbar")}</span>
+      </label>
+      {failed && (
+        <p role="alert" className="mt-1 text-xs text-status-error">
+          {t(
+            "Could not save. Try again.",
+            "Konnte nicht gespeichert werden. Versuch es noch einmal.",
+          )}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -360,6 +428,15 @@ export function ModelsPage() {
             )}
           </div>
         </div>
+        <p
+          id={CHAT_HINT_ID}
+          className="border-b border-border px-5 py-2 text-xs text-muted-foreground"
+        >
+          {t(
+            "Chat: members can pick a model that is available in chat. Agents keep their own default model.",
+            "Chat: Mitglieder können ein im Chat verfügbares Modell auswählen. Agenten behalten ihr eigenes Standardmodell.",
+          )}
+        </p>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -370,13 +447,14 @@ export function ModelsPage() {
                 <th className="px-5 py-3 font-medium">{t("Latency", "Latenz")}</th>
                 <th className="px-5 py-3 font-medium">{t("Cost", "Kosten")}</th>
                 <th className="px-5 py-3 font-medium">{t("Assigned to", "Zugewiesen an")}</th>
+                <th className="px-5 py-3 font-medium">{t("Chat", "Chat")}</th>
                 <th className="px-5 py-3 font-medium text-right">{t("Actions", "Aktionen")}</th>
               </tr>
             </thead>
             <tbody>
               {models.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-5 py-8 text-center text-sm text-muted-foreground">
+                  <td colSpan={8} className="px-5 py-8 text-center text-sm text-muted-foreground">
                     {t("No models configured yet.", "Noch keine Modelle konfiguriert.")}
                   </td>
                 </tr>
@@ -470,6 +548,13 @@ export function ModelsPage() {
                           );
                         })}
                       </div>
+                    </td>
+                    <td className="px-5 py-4">
+                      {isAutoProvider(m.provider) ? (
+                        <span className="text-xs text-muted-foreground">—</span>
+                      ) : (
+                        <ChatAvailabilitySwitch model={m} mayManage={mayManage} />
+                      )}
                     </td>
                     <td className="px-5 py-4 text-right">
                       {mayManage && (

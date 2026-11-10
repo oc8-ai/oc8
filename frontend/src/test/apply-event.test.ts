@@ -326,6 +326,8 @@ describe("run.status and copilot profile/delegations", () => {
 
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["copilot", "profile"] });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["copilot", "delegations"] });
+    // The chat's question card reads pendingQuestion from the session detail.
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["chat", "session"] });
   });
 });
 

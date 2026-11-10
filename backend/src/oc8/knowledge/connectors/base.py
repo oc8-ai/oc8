@@ -163,3 +163,68 @@ class AttestingConnector(Protocol):
     async def attest_listing(
         self, config: dict[str, Any], auth: AuthContext | None = None
     ) -> SourceListing: ...
+
+
+@dataclass(frozen=True)
+class BrowseEntry:
+    id: str
+    name: str
+    is_folder: bool
+    size: int | None = None
+    content_type: str | None = None
+
+
+@dataclass(frozen=True)
+class FetchedFile:
+    name: str
+    content_type: str
+    data: bytes
+    #: Extracted text -- what read_context pages through.
+    text: str
+
+
+class BrowsingConnector(Protocol):
+    """The OPTIONAL browsing half of the seam (oc8 Chat spec §5.4), resolved by
+    `getattr` exactly like `AttestingConnector`: a source without it can still
+    be pinned as a whole. Capas implement it; core names no vendor.
+
+    `fetch_file` and not `fetch`: `Connector.fetch` already streams every
+    document for ingestion.
+
+    Implementations must treat `path` and `file_id` as untrusted input. Core
+    only rejects literal `..` segments and control characters, so a connector
+    that decodes ids (URL-encoding, base64, ...) decodes them itself and
+    re-checks the DECODED value (this is what catches `%2e%2e`). They must never
+    put config values or credentials in an error message.
+
+    `fetch_file` must refuse (raise `ConnectorError`) or stop reading once the
+    file exceeds `max_bytes`; core re-checks as defence in depth. Both `data`
+    and `text` must be at most `max_bytes` (UTF-8 for `text`). A non-text file
+    decodes `text` with `errors="replace"` or raises `ConnectorError`.
+
+    `in_scope` is a HARD requirement for any connector that implements
+    `fetch_file`: it answers whether `file_id` lies inside what THIS source's
+    `config` exposes (its configured folder, drive, site, ...) -- not merely
+    whether the credential can open it. A credential usually reaches far more
+    than the source was set up to share, and a pinned file id is untrusted
+    input, so without this check pinning would be a way to read anything the
+    connection can reach. Core calls it before every `fetch_file` and when a
+    file is pinned, and fails closed: a connector without `in_scope`, one that
+    raises, or one that answers anything but `True` fetches nothing. When the
+    connector cannot tell cheaply, it must answer `False`."""
+
+    async def browse(
+        self, config: dict[str, Any], path: str, auth: AuthContext | None = None
+    ) -> list[BrowseEntry]: ...
+
+    async def fetch_file(
+        self,
+        config: dict[str, Any],
+        file_id: str,
+        max_bytes: int,
+        auth: AuthContext | None = None,
+    ) -> FetchedFile: ...
+
+    async def in_scope(
+        self, config: dict[str, Any], file_id: str, auth: AuthContext | None = None
+    ) -> bool: ...

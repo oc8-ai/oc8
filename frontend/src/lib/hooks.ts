@@ -43,6 +43,7 @@ import type {
   Task,
 } from "@/lib/mock-data";
 import type { Skill } from "@/lib/skills";
+import type { QuestionDTO } from "@/lib/conversation-api";
 import { useLang } from "@/lib/i18n";
 import {
   localizeActivity,
@@ -145,6 +146,8 @@ export interface Clarification {
   question: string;
   status: string;
   createdAt: string;
+  /** The structured questions behind `question`; empty for a plain one. */
+  questions?: QuestionDTO[];
 }
 
 /** One card on the My Work task board -- across every department the caller
@@ -272,6 +275,9 @@ export interface ModelDTO {
   // these, the provider does. null/undefined means "none set".
   extra?: Record<string, unknown> | null;
   usedByCopilot: boolean;
+  // Whether members may pick this model in a chat. Absent on an older
+  // backend, where every model was pickable.
+  chatEnabled?: boolean;
   supportsVision?: boolean;
   credentialId: string | null;
   healthError: string | null;
@@ -322,6 +328,7 @@ export interface ModelWriteBody {
   effort?: string;
   extra?: Record<string, unknown>;
   usedByCopilot?: boolean;
+  chatEnabled?: boolean;
   supportsVision?: boolean;
   credentialId?: string | null;
   autoTiers?: Record<string, string> | null;
@@ -536,8 +543,9 @@ export const useDepartment = (id: string) => {
   const { lang } = useLang();
   return useQuery({
     queryKey: ["departments", id],
-    queryFn: () => api.get<Department>(`/departments/${id}`),
+    queryFn: () => api.get<Department>(`/departments/${encodeURIComponent(id)}`),
     select: (d) => localizeDepartment(d, lang),
+    enabled: !!id,
   });
 };
 
@@ -603,11 +611,12 @@ export const useDepartmentBoard = (id: string, limit = 25) => {
   const { lang } = useLang();
   return useQuery({
     queryKey: [...keys.board(id), limit],
-    queryFn: () => api.get<Board>(`/departments/${id}/board?limit=${limit}`),
+    queryFn: () => api.get<Board>(`/departments/${encodeURIComponent(id)}/board?limit=${limit}`),
     select: (board) => ({
       ...board,
       tasks: board.tasks.map((t) => localizeTask(t, lang)),
     }),
+    enabled: !!id,
   });
 };
 
@@ -623,7 +632,7 @@ export interface DepartmentToolsDTO {
 export function useDepartmentTools(id: string) {
   return useQuery({
     queryKey: ["departments", id, "tools"],
-    queryFn: () => api.get<DepartmentToolsDTO>(`/departments/${id}/tools`),
+    queryFn: () => api.get<DepartmentToolsDTO>(`/departments/${encodeURIComponent(id)}/tools`),
     enabled: !!id,
     // A short staleTime, not zero: `useSetDepartmentTools` already
     // invalidates this exact key on every successful save, so a save made
@@ -638,7 +647,7 @@ export function useSetDepartmentTools(id: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (tools: Record<string, Record<string, unknown>>) =>
-      api.put<DepartmentToolsDTO>(`/departments/${id}/tools`, { tools }),
+      api.put<DepartmentToolsDTO>(`/departments/${encodeURIComponent(id)}/tools`, { tools }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["departments", id, "tools"] }),
   });
 }
@@ -646,7 +655,7 @@ export function useSetDepartmentTools(id: string) {
 export const useDepartmentAgents = (id: string) =>
   useQuery({
     queryKey: ["departments", id, "agents"],
-    queryFn: () => api.get<Agent[]>(`/departments/${id}/agents`),
+    queryFn: () => api.get<Agent[]>(`/departments/${encodeURIComponent(id)}/agents`),
     enabled: !!id,
   });
 
@@ -730,6 +739,30 @@ export function useStanding(): {
     displayName: data?.displayName || data?.subject || "",
     role: data?.role ?? "",
   };
+}
+
+/** Whether the caller may act on a row, and the wire now says exactly.
+ *
+ * `decidesEverywhere` and not `unrestricted`. The two are different people and
+ * the backend has always known it — `authz/scope.py` carries two flags and
+ * documents at length why they must not become one — but `/me` sent only the
+ * first, so this returned true for an `auditor`, who holds `approval:view_any`,
+ * sees every department, and is 403'd by `require_departmental(approval:decide)`
+ * on every click. The role's entire value is that its account cannot have caused
+ * what it is auditing; offering it Approve was the screen contradicting that.
+ *
+ * Below that, authority is only the seats, so the seat role in that row's own
+ * department is the whole answer: a `dept_viewer` reads the queue and may not
+ * empty it, and hiding the buttons is the honest way to say so.
+ */
+export function mayActOn(
+  seats: Seat[],
+  decidesEverywhere: boolean,
+  departmentId: string | null,
+): boolean {
+  if (decidesEverywhere) return true;
+  if (!departmentId) return false;
+  return seats.some((s) => s.departmentId === departmentId && s.seatRole === "dept_approver");
 }
 
 export function useOrganizationSettings() {
@@ -913,7 +946,7 @@ export function useUpdateKnowledgeBase() {
       name?: string;
       description?: string;
       embeddingModel?: string;
-    }) => api.patch<KnowledgeBase>(`/knowledge/bases/${kbId}`, body),
+    }) => api.patch<KnowledgeBase>(`/knowledge/bases/${encodeURIComponent(kbId)}`, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.bases }),
   });
 }
@@ -926,7 +959,9 @@ export function useDeleteKnowledgeBase() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (kbId: string) =>
-      api.delete<{ kbId: string; documents: number; chunks: number }>(`/knowledge/bases/${kbId}`),
+      api.delete<{ kbId: string; documents: number; chunks: number }>(
+        `/knowledge/bases/${encodeURIComponent(kbId)}`,
+      ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.bases });
       qc.invalidateQueries({ queryKey: keys.sources });
@@ -951,7 +986,7 @@ export function useUnlinkSourceFromBase() {
         chunks: number;
         sha256: string | null;
         auditSeq: number | null;
-      }>(`/knowledge/bases/${kbId}/sources/${sourceId}`),
+      }>(`/knowledge/bases/${encodeURIComponent(kbId)}/sources/${encodeURIComponent(sourceId)}`),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.bases });
       qc.invalidateQueries({ queryKey: keys.sources });
@@ -1038,7 +1073,9 @@ export const useKbDocuments = (kbId: string, opts: { includeDeleted?: boolean } 
     queryFn: () => {
       const q = new URLSearchParams();
       if (opts.includeDeleted) q.set("includeDeleted", "true");
-      return api.get<KnowledgeDocument[]>(`/knowledge/bases/${kbId}/documents?${q.toString()}`);
+      return api.get<KnowledgeDocument[]>(
+        `/knowledge/bases/${encodeURIComponent(kbId)}/documents?${q.toString()}`,
+      );
     },
     enabled: Boolean(kbId),
   });
@@ -1061,7 +1098,9 @@ export const useKbChunks = (kbId: string, params: KbChunkQueryParams = {}) =>
       if (params.sourceUri) q.set("sourceUri", params.sourceUri);
       q.set("limit", String(pageSize));
       q.set("offset", String(((params.page ?? 1) - 1) * pageSize));
-      return api.get<Page<KbChunk>>(`/knowledge/bases/${kbId}/chunks?${q.toString()}`);
+      return api.get<Page<KbChunk>>(
+        `/knowledge/bases/${encodeURIComponent(kbId)}/chunks?${q.toString()}`,
+      );
     },
     enabled: Boolean(kbId),
   });
@@ -1071,7 +1110,10 @@ export const useKbChunks = (kbId: string, params: KbChunkQueryParams = {}) =>
 export const useSimilarChunks = (kbId: string, chunkId: string | null) =>
   useQuery({
     queryKey: ["similarChunks", kbId, chunkId] as const,
-    queryFn: () => api.get<SimilarChunk[]>(`/knowledge/bases/${kbId}/chunks/${chunkId}/similar`),
+    queryFn: () =>
+      api.get<SimilarChunk[]>(
+        `/knowledge/bases/${encodeURIComponent(kbId)}/chunks/${encodeURIComponent(chunkId ?? "")}/similar`,
+      ),
     enabled: Boolean(kbId) && Boolean(chunkId),
   });
 
@@ -1091,12 +1133,15 @@ export const useActivity = (opts: { agentId?: string; limit?: number } = {}) => 
   });
 };
 
-export const useApprovals = (status = "pending") => {
+/** `enabled: false` sends nothing: for a surface that only shows approvals to
+ *  a caller holding `approval:view` (the chat), not the inbox itself. */
+export const useApprovals = (status = "pending", options: { enabled?: boolean } = {}) => {
   const { lang } = useLang();
   return useQuery({
     queryKey: keys.approvals(status),
     queryFn: () => api.get<Approval[]>(`/approvals?status=${status}`),
     select: (rows) => rows.map((r) => localizeLabeled(r, lang)),
+    enabled: options.enabled ?? true,
   });
 };
 
@@ -1106,7 +1151,7 @@ export const useApprovals = (status = "pending") => {
  * quietly returning the open ones, so there is no parameter here to get wrong.
  *
  * `refetchInterval` defaults to off (the sidebar badge only needs it on
- * navigation/focus) — chat-window.tsx passes one while a session's run is
+ * navigation/focus) — the Conversation composer passes one while a session's run is
  * outstanding, so a question that opens mid-chat surfaces without a reload.
  */
 export const useClarifications = (refetchInterval: number | false = false) =>
@@ -1233,7 +1278,8 @@ export function useCreateDepartment() {
 export function useDeleteDepartment() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.delete<{ outcome: string }>(`/departments/${id}`),
+    mutationFn: (id: string) =>
+      api.delete<{ outcome: string }>(`/departments/${encodeURIComponent(id)}`),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.departments });
       qc.invalidateQueries({ queryKey: keys.agents });
@@ -1246,7 +1292,8 @@ export function useDeleteDepartment() {
 export function useRestoreDepartment() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.post<Department>(`/departments/${id}/restore`),
+    mutationFn: (id: string) =>
+      api.post<Department>(`/departments/${encodeURIComponent(id)}/restore`),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.departments }),
   });
 }
@@ -1259,7 +1306,7 @@ export function useUpdateDepartment(id: string) {
       goal?: string;
       icon?: string;
       promptCachingEnabled?: boolean;
-    }) => api.patch<Department>(`/departments/${id}`, body),
+    }) => api.patch<Department>(`/departments/${encodeURIComponent(id)}`, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.departments }),
   });
 }
@@ -1563,7 +1610,8 @@ export function useAgentMemory(agentId: string) {
 export function useDeleteAgentMemory(agentId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (recordId: string) => api.delete<void>(`/agents/${agentId}/memory/${recordId}`),
+    mutationFn: (recordId: string) =>
+      api.delete<void>(`/agents/${agentId}/memory/${encodeURIComponent(recordId)}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["agents", agentId, "memory"] }),
   });
 }
@@ -1571,7 +1619,8 @@ export function useDeleteAgentMemory(agentId: string) {
 export function useDepartmentMemory(departmentId: string) {
   return useQuery({
     queryKey: ["departments", departmentId, "memory"],
-    queryFn: () => api.get<MemoryList>(`/departments/${departmentId}/memory`),
+    queryFn: () => api.get<MemoryList>(`/departments/${encodeURIComponent(departmentId)}/memory`),
+    enabled: !!departmentId,
   });
 }
 
@@ -1579,7 +1628,9 @@ export function useDeleteDepartmentMemory(departmentId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (recordId: string) =>
-      api.delete<void>(`/departments/${departmentId}/memory/${recordId}`),
+      api.delete<void>(
+        `/departments/${encodeURIComponent(departmentId)}/memory/${encodeURIComponent(recordId)}`,
+      ),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["departments", departmentId, "memory"] }),
   });
 }
@@ -1722,7 +1773,7 @@ export function useRun(runId: string | null) {
   return useQuery({
     queryKey: ["run", runId],
     queryFn: async ({ client }) => {
-      const fresh = await api.get<RunDTO>(`/runs/${runId}`);
+      const fresh = await api.get<RunDTO>(`/runs/${encodeURIComponent(runId ?? "")}`);
       // Read after the fetch so fragments that arrived while it was in
       // flight stay in the string.
       const previous = client.getQueryData<RunDTO>(["run", runId]);
@@ -2030,7 +2081,10 @@ export function useEmitEvent() {
       eventType: string;
       payload: Record<string, unknown>;
     }) =>
-      api.post<{ handoffs: string[] }>(`/departments/${departmentId}/emit`, { eventType, payload }),
+      api.post<{ handoffs: string[] }>(`/departments/${encodeURIComponent(departmentId)}/emit`, {
+        eventType,
+        payload,
+      }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["handoffs"] }),
   });
 }
@@ -2168,7 +2222,8 @@ export interface DepartmentContractsDTO {
 export function useDepartmentContracts(departmentId: string) {
   return useQuery({
     queryKey: ["department-contracts", departmentId],
-    queryFn: () => api.get<DepartmentContractsDTO>(`/departments/${departmentId}/contracts`),
+    queryFn: () =>
+      api.get<DepartmentContractsDTO>(`/departments/${encodeURIComponent(departmentId)}/contracts`),
     enabled: !!departmentId,
   });
 }
@@ -2177,7 +2232,10 @@ export function useSetDepartmentContracts(departmentId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: DepartmentContractsDTO) =>
-      api.put<DepartmentContractsDTO>(`/departments/${departmentId}/contracts`, body),
+      api.put<DepartmentContractsDTO>(
+        `/departments/${encodeURIComponent(departmentId)}/contracts`,
+        body,
+      ),
     onSuccess: (data) => {
       qc.setQueryData(["department-contracts", departmentId], data);
     },
@@ -3098,7 +3156,7 @@ export function useDepartmentKpis(departmentId: string, params?: KPIFilterParams
     queryKey: ["departments", departmentId, "kpis", params] as const,
     queryFn: () =>
       api.get<KPIData>(
-        `/departments/${departmentId}/kpis${buildQuery(params as Record<string, unknown>)}`,
+        `/departments/${encodeURIComponent(departmentId)}/kpis${buildQuery(params as Record<string, unknown>)}`,
       ),
     enabled: !!departmentId,
   });

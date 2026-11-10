@@ -28,6 +28,7 @@ from oc8.authz.pdp import (
     required_right,
 )
 from oc8.chat.modes import MODE_WITHHELD, ChatMode, mode_refusal
+from oc8.edition.tools import NO_EDITION_OFFER, EditionOffer
 from oc8.memory.policy import authorize_memory_write
 from oc8.memory.router import MAX_MEMORY_CONTENT_LENGTH
 from oc8.modelrouter import ToolCall
@@ -49,6 +50,7 @@ def authorize(
     narrowing: dict[str, Any] | None = None,
     is_team_lead: bool | None = None,
     chat_mode: ChatMode | None = None,
+    edition_offer: EditionOffer = NO_EDITION_OFFER,
     routed: bool = False,
 ) -> Decision:
     """PEP for a tool call. Every connection tool is decided against the
@@ -79,10 +81,17 @@ def authorize(
     an allow, which is what makes "a mode is a narrowing" true rather than
     aspirational.
 
+    `edition_offer` is what the runtime offered of the edition tools on this
+    run (`oc8.edition.tools.edition_offer`). An unrouted call it claims is an
+    edition call: ALLOW only if it was offered, otherwise DENY as an unknown
+    tool -- a registered name is not a grant. Every runtime passes its offer;
+    the default claims every registered name and allows none.
+
     `routed` says the model named this tool through a connection
     (`<connection>.<tool>`), so `tc.name` is the CONNECTION's tool name. It may
     match a core tool's name, and must not inherit that core tool's early
-    ALLOW: the call runs on the connection's server, so the frame decides it."""
+    ALLOW: the call runs on the connection's server, so the frame decides it.
+    Nor is a routed call ever an edition call."""
     if narrowing is None:
         narrowing = agent.narrowing or {}
     if is_team_lead is None:
@@ -92,7 +101,9 @@ def authorize(
     # append_event at all three call sites records it -- "denied because /plan"
     # is in the audit trail without a fourth writer.
     core_call = is_core_call(tc.name, routed=routed)
-    skill_call = tc.name in skill_tool_names and not routed
+    # A routed name is the connection's own tool: never an edition call.
+    edition_call = not routed and edition_offer.claims(tc.name)
+    skill_call = tc.name in skill_tool_names and not routed and not edition_call
     refused = mode_refusal(
         chat_mode,
         tc.name,
@@ -100,6 +111,7 @@ def authorize(
         # this, a skill no connection scope names failed closed to "modify",
         # and /plan withheld every skill.
         tool_scopes={"read": [tc.name]} if skill_call else tool_scopes,
+        connection_tool=not edition_call,
         core=core_call,
     )
     if refused is not None:
@@ -107,6 +119,14 @@ def authorize(
         # withholds it" (stop, for every core tool) from the routine frame DENY
         # a reading core tool runs under (see below).
         return Decision(Effect.DENY, refused, reason_code=MODE_WITHHELD)
+    if edition_call:
+        # An edition tool belongs to no connection, like propose_change: the
+        # frame has nothing to decide it against. Its gates are the offer
+        # (entitlement, door, mode -- computed by the runtime), the mode check
+        # above, and the entitlement checked again at dispatch.
+        if edition_offer.offered(tc.name) is None:
+            return Decision(Effect.DENY, f"unknown tool {tc.name!r}")
+        return Decision(Effect.ALLOW)
     if skill_call:
         return Decision(Effect.ALLOW)
     if not core_call:
@@ -160,6 +180,17 @@ def authorize(
         # dispatch, is then the only gate on this tool -- which is what it
         # should be for a tool that can only ever produce a draft a human has
         # to approve before anything changes.
+        return Decision(Effect.ALLOW)
+    if tc.name == "read_context":
+        # Belongs to no connection either: it reads what the member pinned,
+        # re-authorised for them and checked against the model inside the
+        # tool (control_tools._execute_read_context). Falling through would
+        # audit every read as a denial.
+        return Decision(Effect.ALLOW)
+    if tc.name == "suggest_replies":
+        # Belongs to no connection, like propose_change: it only stores chips
+        # on the answer, so the frame has nothing to decide it against and
+        # falling through would audit every call as a denial.
         return Decision(Effect.ALLOW)
     if tc.name == "decide_approval":
         # Like propose_change and ask_user: it belongs to no connection, so

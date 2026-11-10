@@ -30,7 +30,7 @@ from oc8.knowledge.embedding_policy import (
 )
 from oc8.knowledge.vector_indexes.base import VectorIndexError
 from oc8.knowledge.vector_indexes.registry import INTERNAL_INDEX_TYPE, resolve_vector_index
-from oc8.modelrouter import EmbeddingUnavailable, get_model_router
+from oc8.modelrouter import EmbeddingMustStayLocal, EmbeddingUnavailable, get_model_router
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +94,7 @@ async def _embed_for_kb(
     kb: m.KnowledgeBase,
     query_text: str,
     local_agent: bool,
+    skipped_local: list[str] | None = None,
 ) -> list[float] | None:
     """Query embedding with the KB's own model, through the tenant's own
     provider credentials. Skip this KB on failure -- at WARNING with the
@@ -114,6 +115,10 @@ async def _embed_for_kb(
             require_local=require_local,
         )
     except EmbeddingUnavailable as exc:
+        # A base whose cloud embedding the question may not reach: the caller
+        # tells the member, who otherwise sees the base as merely empty.
+        if isinstance(exc, EmbeddingMustStayLocal) and skipped_local is not None:
+            skipped_local.append(kb.name)
         logger.warning(
             "embedding unavailable for kb %s model %s, skipping: %s",
             kb.id,
@@ -236,6 +241,8 @@ async def retrieve_kb_context(
     model_locality: str = "cloud",
     token_budget: int = KB_TOKEN_BUDGET,
     only_kb_ids: frozenset[uuid.UUID] | None = None,
+    released_kb_ids: frozenset[uuid.UUID] | None = None,
+    skipped_local: list[str] | None = None,
 ) -> tuple[str, bool]:
     """Returns (context, contains_restricted). `contains_restricted` is true
     when any returned text is restricted or from a local-only base: text that
@@ -251,12 +258,28 @@ async def retrieve_kb_context(
     read narrows the search to nothing and returns "", rather than reading it
     or quietly falling back to everything. Same monotonic "can only tighten"
     rule the frame algebra uses -- None means no narrowing at all, which is
-    every pre-existing caller."""
+    every pre-existing caller.
+
+    `released_kb_ids` are the bases the member pinned to the chat or its
+    project (oc8 Chat §5.5, `chat.context.manifest`): THEIR release, made under
+    their own `knowledge:view`, so these are searched whether or not the agent
+    holds a grant, IN ADDITION to the agent's own grants (narrowed by
+    `only_kb_ids` when given). The caller re-checks the member's right to
+    each one first. Classification and the model's locality still filter
+    every hit below.
+
+    `skipped_local`, when given, receives the name of every base that was not
+    searched because the question must stay local and the base embeds with a
+    cloud model."""
     kb_ids = await granted_kb_ids(db, agent=agent)
     if only_kb_ids is not None:
         # Intersection, never replacement. A `#` reference cannot reach a base
         # the agent has no grant to.
         kb_ids = {kb_id for kb_id in kb_ids if kb_id in only_kb_ids}
+    if released_kb_ids:
+        # In addition to the grants (Ruling 34): pinning never makes the agent
+        # know less. Only a `#` on the message narrows, and only the grants.
+        kb_ids = set(kb_ids) | set(released_kb_ids)
     if not kb_ids:
         return "", False
 
@@ -280,7 +303,12 @@ async def retrieve_kb_context(
     all_hits: list[_Hit] = []
     for kb in bases:
         query_embedding = await _embed_for_kb(
-            db, tenant_id=tenant_id, kb=kb, query_text=query_text, local_agent=local_agent
+            db,
+            tenant_id=tenant_id,
+            kb=kb,
+            query_text=query_text,
+            local_agent=local_agent,
+            skipped_local=skipped_local,
         )
         if query_embedding is None:
             continue

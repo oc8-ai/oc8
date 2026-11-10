@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 
 from oc8 import models as m
-from oc8.agent.control_tools import SEARCH_KNOWLEDGE, execute_control_tool
+from oc8.agent.control_tools import SEARCH_KNOWLEDGE, SKIPPED_LOCAL_LINE, execute_control_tool
 from oc8.authz.pdp import Decision, Effect
 from oc8.modelrouter import ToolCall
 from tests.audit.helpers import flush_audit
@@ -79,6 +79,43 @@ async def test_the_agent_gets_what_the_knowledge_base_holds(
     # The agent's OWN question is what gets searched -- not the task text, which
     # for a scheduled agent says only "check the inbox".
     assert retrieve.seen["query_text"] == "Erstattungsfrist"
+
+
+async def test_a_base_skipped_for_needing_a_local_embedding_is_said_but_never_named(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The member is told once, in the tool result the chat shows under the
+    answer's steps (E2E H), whether or not anything was found. The result
+    reaches the model, which may be a cloud one: a skipped base -- here a
+    restricted one -- is never named in it."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, task = await _agent_and_task(db, tenant)
+
+        async def fake_retrieve(*a: Any, **kw: Any) -> tuple[str, bool]:
+            kw["skipped_local"].extend(["Geheime Gehaltsliste", "Sales KB"])
+            return "Erstattungen: 14 Tage.", False
+
+        monkeypatch.setattr("oc8.agent.control_tools.retrieve_kb_context", fake_retrieve)
+        outcome = await execute_control_tool(
+            db,
+            tenant_id=tenant,
+            agent=agent,
+            task=task,
+            tc=ToolCall(id="c1", name=SEARCH_KNOWLEDGE.name, arguments={"query": "Frist"}),
+            decision=Decision(Effect.ALLOW),
+            assigned_skills=[],
+            active_skills=[],
+            mcp_conn=None,
+            originating_operator=None,
+        )
+    assert outcome is not None
+    assert "14 Tage" in outcome.output
+    assert "Geheime Gehaltsliste" not in outcome.output
+    assert "Sales KB" not in outcome.output
+    assert outcome.output.count(SKIPPED_LOCAL_LINE) == 1
+    # First: a step's stored result is cut at 300 characters.
+    assert outcome.output.startswith(SKIPPED_LOCAL_LINE)
 
 
 async def test_nothing_found_is_said_plainly(

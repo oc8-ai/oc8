@@ -1630,7 +1630,7 @@ wheels = [
 
 [[package]]
 name = "oc8"
-version = "0.1.17"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },

@@ -20,10 +20,12 @@ This column predates that pattern and is read by too many callers to move now.
 
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping
 from typing import Any
 
-from sqlalchemy import bindparam, text
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import Text, bindparam, text
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
@@ -78,6 +80,40 @@ async def merge_context(db: AsyncSession, run: AgentRun, patch: dict[str, Any]) 
     return _adopt(run, stored)
 
 
+_WRITE_BACK = text(
+    "UPDATE agent_run SET context = (context - CAST(:removed AS text[])) || :patch "
+    "WHERE id = :id RETURNING context"
+).bindparams(bindparam("patch", type_=JSONB), bindparam("removed", type_=ARRAY(Text)))
+
+
+async def write_back_context(
+    db: AsyncSession,
+    run: AgentRun,
+    *,
+    before: Mapping[str, Any],
+    after: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Write back what a request changed in its own copy of the context.
+
+    `before` is the (deep-copied) context the request started from, `after`
+    its edited copy. Only the keys it changed or removed are written, in one
+    statement, so whatever else wrote the row meanwhile -- a tool's
+    `merge_context` during the same request (`suggestions`, `parts`, ...), or
+    another writer altogether -- survives. A key both changed is the
+    request's: it is the last writer, exactly as before.
+    """
+    patch = {
+        key: value for key, value in after.items() if key not in before or before[key] != value
+    }
+    removed = [key for key in before if key not in after]
+    if not patch and not removed:
+        return dict(run.context or {})
+    stored = (
+        await db.execute(_WRITE_BACK, {"patch": patch, "removed": removed, "id": run.id})
+    ).scalar_one()
+    return _adopt(run, stored)
+
+
 async def append_resolved_approval(
     db: AsyncSession, run: AgentRun, entry: dict[str, Any]
 ) -> dict[str, Any]:
@@ -105,3 +141,21 @@ async def append_tool_call(
     """
     stored = (await db.execute(_APPEND_TOOL_CALL, {"entry": [entry], "id": run.id})).scalar_one()
     return _adopt(run, stored)
+
+
+# C0/C1 controls plus line/paragraph separators and bidi overrides/isolates,
+# which could visually reorder a chip.
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069]+")
+
+
+def clean_suggestions(raw: list[Any]) -> list[str]:
+    """Model-written, untrusted: control characters out, trimmed, empties
+    dropped, non-strings skipped, 120 characters each, three at most."""
+    out: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        chip = _CONTROL_CHARS.sub(" ", item).strip()[:120].strip()
+        if chip:
+            out.append(chip)
+    return out[:3]
