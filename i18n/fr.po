@@ -1,0 +1,5624 @@
+msgid ""
+msgstr "Project-Id-Version: oc8\nMIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 8bit\nLanguage: fr\nLast-Translator: Automatically generated\nLanguage-Team: none\nPlural-Forms: nplurals=2; plural=n > 1;\n"
+
+msgid " (opens in a new tab)"
+msgstr ""
+
+msgid " of "
+msgstr ""
+
+msgid "— no agent"
+msgstr ""
+
+msgid "— none —"
+msgstr ""
+
+msgid "— required to reject"
+msgstr ""
+
+msgid "(empty)"
+msgstr ""
+
+msgid "(optional)"
+msgstr ""
+
+msgid "(requires settings:manage)"
+msgstr ""
+
+msgid "/do carry out the plan above"
+msgstr ""
+
+msgid "/summarise this conversation"
+msgstr ""
+
+msgid "1 unpublished change"
+msgstr ""
+
+msgid "2FA enabled. Please sign in again."
+msgstr ""
+
+msgid "A background agent finished its run."
+msgstr ""
+
+msgid "A background agent's run failed."
+msgstr ""
+
+msgid "A background agent's run was interrupted."
+msgstr ""
+
+msgid "A Capa is anything installable in oc8 — an agent template, an MCP tool pack, a guardrail set, a department template, a runtime, or a bundle of several."
+msgstr ""
+
+msgid "A decision was made."
+msgstr ""
+
+msgid "a former member"
+msgstr ""
+
+msgid "A knowledge base can't be searched with this model – it needs a local embedding model."
+msgstr ""
+
+msgid "A message to the running answer is text only. Remove the attachments, or send them once it's done."
+msgstr ""
+
+msgid "A reset email was sent to them"
+msgstr ""
+
+msgid "A role is a name and a set of rights — nothing else. It applies company-wide: WHERE somebody works is decided by their seat in a department, not by their role. A change here takes effect on every holder’s next request, with the token they are already carrying."
+msgstr ""
+
+msgid "A rollback publishes a new version rather than reactivating the old one, so the history stays in order."
+msgstr ""
+
+msgid "A run is parked and nobody was asked"
+msgstr ""
+
+msgid "A seat is granted per department by an administrator and takes effect on your next request — no new sign-in."
+msgstr ""
+
+msgid "A skill is no longer available."
+msgstr ""
+
+msgid "A system is no longer connected or not released for this department."
+msgstr ""
+
+msgid "A template only — it ticks boxes now and is not stored. There is no inheritance."
+msgstr ""
+
+msgid "A virtual router that picks among your connected models by task complexity."
+msgstr ""
+
+msgid "Accept"
+msgstr ""
+
+msgid "Accept this suggestion to make it a live rule."
+msgstr ""
+
+msgid "Access"
+msgstr ""
+
+msgid "Access & roles"
+msgstr ""
+
+msgid "access and tools"
+msgstr ""
+
+msgid "Access saved."
+msgstr ""
+
+msgid "Account"
+msgstr ""
+
+msgid "Account created successfully"
+msgstr ""
+
+msgid "Action"
+msgstr ""
+
+msgid "Action on threshold"
+msgstr ""
+
+msgid "Actions"
+msgstr ""
+
+msgid "Activation failed."
+msgstr ""
+
+msgid "active"
+msgstr ""
+
+msgid "Active"
+msgstr ""
+
+msgid "Active agents"
+msgstr ""
+
+msgid "Active credential"
+msgstr ""
+
+msgid "Activity"
+msgstr ""
+
+msgid "Activity feed"
+msgstr ""
+
+msgid "Actor type"
+msgstr ""
+
+msgid "Add"
+msgstr ""
+
+msgid "Add a model configuration"
+msgstr ""
+
+msgid "Add access"
+msgstr ""
+
+msgid "Add another provider"
+msgstr ""
+
+msgid "Add at least one concrete model first, then configure Auto tiers."
+msgstr ""
+
+msgid "Add Auto router"
+msgstr ""
+
+msgid "Add connection"
+msgstr ""
+
+msgid "Add context"
+msgstr ""
+
+msgid "Add custom MCP server"
+msgstr ""
+
+msgid "Add existing source…"
+msgstr ""
+
+msgid "Add files or context"
+msgstr ""
+
+msgid "Add limit"
+msgstr ""
+
+msgid "Add model"
+msgstr ""
+
+msgid "Add model provider"
+msgstr ""
+
+msgid "Add parameter"
+msgstr ""
+
+msgid "Add seat"
+msgstr ""
+
+msgid "Add tool"
+msgstr ""
+
+msgid "Add widget"
+msgstr ""
+
+msgid "Add…"
+msgstr ""
+
+msgid "Admin"
+msgstr ""
+
+msgid "Admin API key"
+msgstr ""
+
+msgid "Administrator"
+msgstr ""
+
+msgid "Advanced: exact role override"
+msgstr ""
+
+msgid "Advanced: sign in as a specific subject/role"
+msgstr ""
+
+msgid "Advanced/Raw parameters (optional)"
+msgstr ""
+
+msgid "After a cheap answer, escalate once if a self-check looks uncertain."
+msgstr ""
+
+msgid "After publishing"
+msgstr ""
+
+msgid "agent"
+msgstr ""
+
+msgid "Agent"
+msgstr ""
+
+msgid "agent → supervisor (thinking oversight)"
+msgstr ""
+
+msgid "Agent archived"
+msgstr ""
+
+msgid "Agent assignments"
+msgstr ""
+
+msgid "Agent created"
+msgstr ""
+
+msgid "Agent deleted"
+msgstr ""
+
+msgid "agent identity"
+msgstr ""
+
+msgid "Agent not found, or you don't have access."
+msgstr ""
+
+msgid "Agent restored"
+msgstr ""
+
+msgid "Agent roles"
+msgstr ""
+
+msgid "Agent run"
+msgstr ""
+
+msgid "Agent run failed"
+msgstr ""
+
+msgid "Agent run finished"
+msgstr ""
+
+msgid "Agent run interrupted"
+msgstr ""
+
+msgid "agent's suggestion"
+msgstr ""
+
+msgid "agents"
+msgstr ""
+
+msgid "Agents"
+msgstr ""
+
+msgid "Alerts"
+msgstr ""
+
+msgid "All"
+msgstr ""
+
+msgid "All actions (base rights)"
+msgstr ""
+
+msgid "All agents"
+msgstr ""
+
+msgid "All agents, roles, and responsibilities."
+msgstr ""
+
+msgid "All apps"
+msgstr ""
+
+msgid "all departments"
+msgstr ""
+
+msgid "All departments"
+msgstr ""
+
+msgid "All knowledge bases are already linked."
+msgstr ""
+
+msgid "All runs"
+msgstr ""
+
+msgid "All skills already assigned."
+msgstr ""
+
+msgid "All sources"
+msgstr ""
+
+msgid "All systems operational"
+msgstr ""
+
+msgid "allowed"
+msgstr ""
+
+msgid "Allowed"
+msgstr ""
+
+msgid "Allowed origins (optional, comma-separated)"
+msgstr ""
+
+msgid "Already answered"
+msgstr ""
+
+msgid "Already assigned"
+msgstr ""
+
+msgid "Already running"
+msgstr ""
+
+msgid "Also require approval for a specific tool (optional)"
+msgstr ""
+
+msgid "Amount"
+msgstr ""
+
+msgid "Amount (USD)"
+msgstr ""
+
+msgid "An agent is waiting for your decision."
+msgstr ""
+
+msgid "An answer is sent as text only. Remove the attachments, or send them after answering."
+msgstr ""
+
+msgid "An answer is still being written. Try again once it's done."
+msgstr ""
+
+msgid "Analytics"
+msgstr ""
+
+msgid "another agent"
+msgstr ""
+
+msgid "Answer"
+msgstr ""
+
+msgid "Answer from what you already know. No tools, no systems touched."
+msgstr ""
+
+msgid "Answer in your own words"
+msgstr ""
+
+msgid "Answer it"
+msgstr ""
+
+msgid "Answer sent"
+msgstr ""
+
+msgid "Answered as a new message"
+msgstr ""
+
+msgid "Answered from the department cache, not a fresh model call"
+msgstr ""
+
+msgid "Answers to the questions"
+msgstr ""
+
+msgid "Any origin"
+msgstr ""
+
+msgid "Any status"
+msgstr ""
+
+msgid "Any system that can send a JSON POST can trigger this agent — no signature or per-source setup needed. The URL itself is the secret, so it isn't shown to anyone who isn't looking at this page."
+msgstr ""
+
+msgid "Any trust level"
+msgstr ""
+
+msgid "API key deleted"
+msgstr ""
+
+msgid "API keys"
+msgstr ""
+
+msgid "App"
+msgstr ""
+
+msgid "Apply"
+msgstr ""
+
+msgid "Apply this rule to the draft below (doesn't save yet)"
+msgstr ""
+
+msgid "approval"
+msgstr ""
+
+msgid "Approval"
+msgstr ""
+
+msgid "Approval action suggestions"
+msgstr ""
+
+msgid "Approval channels"
+msgstr ""
+
+msgid "approval for"
+msgstr ""
+
+msgid "Approval for:"
+msgstr ""
+
+msgid "Approval granted"
+msgstr ""
+
+msgid "Approval link for your IT administrator"
+msgstr ""
+
+msgid "Approval needed for"
+msgstr ""
+
+msgid "Approval needed for:"
+msgstr ""
+
+msgid "Approval needed from (€, optional)"
+msgstr ""
+
+msgid "Approval rejected"
+msgstr ""
+
+msgid "approval required"
+msgstr ""
+
+msgid "Approval required"
+msgstr ""
+
+msgid "Approval wait"
+msgstr ""
+
+msgid "approvals"
+msgstr ""
+
+msgid "Approvals"
+msgstr ""
+
+msgid "Approvals and questions"
+msgstr ""
+
+msgid "Approve"
+msgstr ""
+
+msgid "Approve this?"
+msgstr ""
+
+msgid "Approved"
+msgstr ""
+
+msgid "Archive file"
+msgstr ""
+
+msgid "Archived"
+msgstr ""
+
+msgid "Ask an administrator to add you — your queue appears the moment they do."
+msgstr ""
+
+msgid "Ask an administrator to install or enable new Capas."
+msgstr ""
+
+msgid "Ask anything …"
+msgstr ""
+
+msgid "Ask your admin to install it under Capas."
+msgstr ""
+
+msgid "Ask your Copilot …"
+msgstr ""
+
+msgid "Asked for a decision"
+msgstr ""
+
+msgid "Asked you"
+msgstr ""
+
+msgid "Asking a question"
+msgstr ""
+
+msgid "Asking for a decision"
+msgstr ""
+
+msgid "asks first"
+msgstr ""
+
+msgid "Assign"
+msgstr ""
+
+msgid "Assign knowledge base"
+msgstr ""
+
+msgid "Assign skill"
+msgstr ""
+
+msgid "Assign supervisor"
+msgstr ""
+
+msgid "Assign to agent"
+msgstr ""
+
+msgid "assigned"
+msgstr ""
+
+msgid "Assigned LLM"
+msgstr ""
+
+msgid "Assigned skills"
+msgstr ""
+
+msgid "Assigned to"
+msgstr ""
+
+msgid "Assigned to agents"
+msgstr ""
+
+msgid "Assigning…"
+msgstr ""
+
+msgid "Assignment cleared — that person’s token decides again."
+msgstr ""
+
+msgid "At least 8 characters"
+msgstr ""
+
+msgid "Attach a file"
+msgstr ""
+
+msgid "Attach context"
+msgstr ""
+
+msgid "Attach file"
+msgstr ""
+
+msgid "Attach it to your next message. You can pin it to the chat from there."
+msgstr ""
+
+msgid "Attached files"
+msgstr ""
+
+msgid "Attachments are limited to 25 MB."
+msgstr ""
+
+msgid "Audit"
+msgstr ""
+
+msgid "Auditor"
+msgstr ""
+
+msgid "Author"
+msgstr ""
+
+msgid "Auto"
+msgstr ""
+
+msgid "Auto (department lead)"
+msgstr ""
+
+msgid "Auto router"
+msgstr ""
+
+msgid "Auto router added"
+msgstr ""
+
+msgid "Auto router updated"
+msgstr ""
+
+msgid "Automatic discovery isn't available for this provider — enter the model tag manually."
+msgstr ""
+
+msgid "Available"
+msgstr ""
+
+msgid "Available in chat"
+msgstr ""
+
+msgid "Available in:"
+msgstr ""
+
+msgid "Available models"
+msgstr ""
+
+msgid "Avg. duration"
+msgstr ""
+
+msgid "Avg. tool call"
+msgstr ""
+
+msgid "Awaiting Approval"
+msgstr ""
+
+msgid "Back"
+msgstr ""
+
+msgid "Back to agents"
+msgstr ""
+
+msgid "Back to knowledge"
+msgstr ""
+
+msgid "Back to office"
+msgstr ""
+
+msgid "Back to users"
+msgstr ""
+
+msgid "Back to your profile"
+msgstr ""
+
+msgid "Backlog"
+msgstr ""
+
+msgid "Backup and restore"
+msgstr ""
+
+msgid "Backup downloaded"
+msgstr ""
+
+msgid "Bad answer"
+msgstr ""
+
+msgid "Bar"
+msgstr ""
+
+msgid "Basic details of your workspace."
+msgstr ""
+
+msgid "Basics"
+msgstr ""
+
+msgid "Between 1 and 100. Lowering it keeps existing follow-ups but blocks new ones above the limit."
+msgstr ""
+
+msgid "Binding revoked"
+msgstr ""
+
+msgid "Blank fields inherit this agent's assigned model's own setting."
+msgstr ""
+
+msgid "Blend the heuristic with learned preference examples from past runs."
+msgstr ""
+
+msgid "Block"
+msgstr ""
+
+msgid "Block — hard stop"
+msgstr ""
+
+msgid "Browse content →"
+msgstr ""
+
+msgid "Budget"
+msgstr ""
+
+msgid "Budget is running low"
+msgstr ""
+
+msgid "Budget per skill"
+msgstr ""
+
+msgid "Building archive…"
+msgstr ""
+
+msgid "Building preview…"
+msgstr ""
+
+msgid "By Agent"
+msgstr ""
+
+msgid "By Department"
+msgstr ""
+
+msgid "By provider"
+msgstr ""
+
+msgid "By spend"
+msgstr ""
+
+msgid "cached"
+msgstr ""
+
+msgid "Called with no arguments."
+msgstr ""
+
+msgid "Cancel"
+msgstr ""
+
+msgid "Cancel requested"
+msgstr ""
+
+msgid "Cancel responsibility"
+msgstr ""
+
+msgid "Cancel this responsibility?"
+msgstr ""
+
+msgid "cancelled"
+msgstr ""
+
+msgid "Cancelling…"
+msgstr ""
+
+msgid "Cannot be changed later, and cannot be the name of a built-in role."
+msgstr ""
+
+msgid "Capa exported"
+msgstr ""
+
+msgid "Capa name"
+msgstr ""
+
+msgid "Capas"
+msgstr ""
+
+msgid "Carry out this plan"
+msgstr ""
+
+msgid "Carry out what was agreed, under the usual guardrails."
+msgstr ""
+
+msgid "Cascade verify"
+msgstr ""
+
+msgid "Category"
+msgstr ""
+
+msgid "Change"
+msgstr ""
+
+msgid "Change color"
+msgstr ""
+
+msgid "Change company"
+msgstr ""
+
+msgid "Change email"
+msgstr ""
+
+msgid "Change email or password"
+msgstr ""
+
+msgid "Change index type"
+msgstr ""
+
+msgid "Change key"
+msgstr ""
+
+msgid "Change language"
+msgstr ""
+
+msgid "Change password"
+msgstr ""
+
+msgid "Change runtime"
+msgstr ""
+
+msgid "Changing the model takes effect for the next run. Manage model configurations under Models."
+msgstr ""
+
+msgid "chat"
+msgstr ""
+
+msgid "Chat"
+msgstr ""
+
+msgid "Chat name"
+msgstr ""
+
+msgid "Chat title"
+msgstr ""
+
+msgid "Chat: members can pick a model that is available in chat. Agents keep their own default model."
+msgstr ""
+
+msgid "ChatGPT account"
+msgstr ""
+
+msgid "Chats"
+msgstr ""
+
+msgid "Chats in a project follow its instructions and see its pinned context."
+msgstr ""
+
+msgid "Check a box to allow/deny it right away; ✓ interprets a Definition text into a structured rule you then Accept or Discard. Either way, use the panel's Save button to store your changes."
+msgstr ""
+
+msgid "Check access →"
+msgstr ""
+
+msgid "Check connection"
+msgstr ""
+
+msgid "Checked a colleague"
+msgstr ""
+
+msgid "Checked the budget"
+msgstr ""
+
+msgid "Checked the department"
+msgstr ""
+
+msgid "Checked the numbers"
+msgstr ""
+
+msgid "Checked what needs a decision"
+msgstr ""
+
+msgid "Checking a colleague"
+msgstr ""
+
+msgid "Checking the budget"
+msgstr ""
+
+msgid "Checking the department"
+msgstr ""
+
+msgid "Checking the numbers"
+msgstr ""
+
+msgid "Checking what needs a decision"
+msgstr ""
+
+msgid "Choose a company, or create a safely isolated one for local testing."
+msgstr ""
+
+msgid "Choose a department."
+msgstr ""
+
+msgid "Choose a starting layout"
+msgstr ""
+
+msgid "Choose an agent…"
+msgstr ""
+
+msgid "Choose from a data source"
+msgstr ""
+
+msgid "Choose from available models"
+msgstr ""
+
+msgid "Choose from data source ›"
+msgstr ""
+
+msgid "Choose the model it thinks with and, if more than one is installed, the runtime it works in."
+msgstr ""
+
+msgid "Chunks · "
+msgstr ""
+
+msgid "Chunks · all documents"
+msgstr ""
+
+msgid "Chunks · search results"
+msgstr ""
+
+msgid "Cited sources"
+msgstr ""
+
+msgid "Clear the assignment — their token decides again"
+msgstr ""
+
+msgid "Click Export to download the ZIP file."
+msgstr ""
+
+msgid "Click to review"
+msgstr ""
+
+msgid "Close"
+msgstr ""
+
+msgid "Close budget"
+msgstr ""
+
+msgid "Close questions"
+msgstr ""
+
+msgid "Close run"
+msgstr ""
+
+msgid "Cloud"
+msgstr ""
+
+msgid "Cloud or local — 3 quick steps"
+msgstr ""
+
+msgid "Code"
+msgstr ""
+
+msgid "Collaboration"
+msgstr ""
+
+msgid "Collapse"
+msgstr ""
+
+msgid "Collapse sidebar"
+msgstr ""
+
+msgid "commands"
+msgstr ""
+
+msgid "Commands"
+msgstr ""
+
+msgid "Company"
+msgstr ""
+
+msgid "Company / workspace name"
+msgstr ""
+
+msgid "Company name"
+msgstr ""
+
+msgid "Company-wide"
+msgstr ""
+
+msgid "Compare"
+msgstr ""
+
+msgid "Complete these live checks before inviting pilot users."
+msgstr ""
+
+msgid "Complexity router — picks among the tier models you configure (fast / balanced / strong)."
+msgstr ""
+
+msgid "Components"
+msgstr ""
+
+msgid "Condense this conversation into a decision record."
+msgstr ""
+
+msgid "Configuration"
+msgstr ""
+
+msgid "Configure"
+msgstr ""
+
+msgid "Configure or ask oc8…"
+msgstr ""
+
+msgid "configured"
+msgstr ""
+
+msgid "Confirm"
+msgstr ""
+
+msgid "Confirm Password"
+msgstr ""
+
+msgid "Confirm rollback"
+msgstr ""
+
+msgid "Confirming…"
+msgstr ""
+
+msgid "Connect"
+msgstr ""
+
+msgid "Connect a provider"
+msgstr ""
+
+msgid "Connect admin key for cost validation (optional)"
+msgstr ""
+
+msgid "Connect an account to use it in oc8."
+msgstr ""
+
+msgid "Connect another provider"
+msgstr ""
+
+msgid "Connect existing vector index"
+msgstr ""
+
+msgid "Connect model"
+msgstr ""
+
+msgid "Connect now →"
+msgstr ""
+
+msgid "Connected"
+msgstr ""
+
+msgid "Connected LLMs"
+msgstr ""
+
+msgid "Connected systems"
+msgstr ""
+
+msgid "Connected via a personal ChatGPT subscription — scheduled/automated runs are blocked server-side."
+msgstr ""
+
+msgid "Connecting could not start. Please try again."
+msgstr ""
+
+msgid "Connecting did not work. Please try again."
+msgstr ""
+
+msgid "Connecting…"
+msgstr ""
+
+msgid "Connection"
+msgstr ""
+
+msgid "Connection checked: it works."
+msgstr ""
+
+msgid "Connection error"
+msgstr ""
+
+msgid "Connection log"
+msgstr ""
+
+msgid "Connection works."
+msgstr ""
+
+msgid "Connections"
+msgstr ""
+
+msgid "context"
+msgstr ""
+
+msgid "Continue"
+msgstr ""
+
+msgid "Continue in Copilot"
+msgstr ""
+
+msgid "Continue to configure the selected index."
+msgstr ""
+
+msgid "Continue to export"
+msgstr ""
+
+msgid "Control Panel"
+msgstr ""
+
+msgid "Copied"
+msgstr ""
+
+msgid "Copilot"
+msgstr ""
+
+msgid "Copilot settings updated"
+msgstr ""
+
+msgid "Copy"
+msgstr ""
+
+msgid "Copy answer"
+msgstr ""
+
+msgid "Copy code"
+msgstr ""
+
+msgid "Copy link"
+msgstr ""
+
+msgid "Copy organisation ID"
+msgstr ""
+
+msgid "Copy this key now — it will not be shown again."
+msgstr ""
+
+msgid "Copy user ID"
+msgstr ""
+
+msgid "Cost"
+msgstr ""
+
+msgid "Cost Center"
+msgstr ""
+
+msgid "Cost per agent"
+msgstr ""
+
+msgid "Cost this month?"
+msgstr ""
+
+msgid "Cost-limit preview"
+msgstr ""
+
+msgid "Costs"
+msgstr ""
+
+msgid "Could not add price"
+msgstr ""
+
+msgid "Could not add seat."
+msgstr ""
+
+msgid "Could not add source."
+msgstr ""
+
+msgid "Could not assign"
+msgstr ""
+
+msgid "Could not assign role."
+msgstr ""
+
+msgid "could not be checked — the tamper-proofing key is unavailable"
+msgstr ""
+
+msgid "Could not build the archive."
+msgstr ""
+
+msgid "Could not change your email."
+msgstr ""
+
+msgid "Could not change your password."
+msgstr ""
+
+msgid "Could not connect model"
+msgstr ""
+
+msgid "Could not connect tool"
+msgstr ""
+
+msgid "Could not copy."
+msgstr ""
+
+msgid "Could not create a reset link."
+msgstr ""
+
+msgid "Could not create agent"
+msgstr ""
+
+msgid "Could not create API key."
+msgstr ""
+
+msgid "Could not create credential"
+msgstr ""
+
+msgid "Could not create department"
+msgstr ""
+
+msgid "Could not create the skill."
+msgstr ""
+
+msgid "Could not create the task"
+msgstr ""
+
+msgid "Could not create user. Try again."
+msgstr ""
+
+msgid "Could not delete — it may be assigned to agents."
+msgstr ""
+
+msgid "Could not delete the department."
+msgstr ""
+
+msgid "Could not delete the key."
+msgstr ""
+
+msgid "Could not delete the knowledge base."
+msgstr ""
+
+msgid "Could not delete the source."
+msgstr ""
+
+msgid "Could not delete this user."
+msgstr ""
+
+msgid "Could not delete."
+msgstr ""
+
+msgid "Could not disable."
+msgstr ""
+
+msgid "Could not fetch model list"
+msgstr ""
+
+msgid "Could not finish onboarding"
+msgstr ""
+
+msgid "Could not link this credential"
+msgstr ""
+
+msgid "Could not load file preview."
+msgstr ""
+
+msgid "Could not load organization settings."
+msgstr ""
+
+msgid "Could not load the audit log."
+msgstr ""
+
+msgid "Could not load this department's existing tools, so it isn't safe to continue -- saving now could delete tools it already has."
+msgstr ""
+
+msgid "Could not load this department's tools, so guardrails can't be edited safely here."
+msgstr ""
+
+msgid "Could not read that source"
+msgstr ""
+
+msgid "Could not read the archive."
+msgstr ""
+
+msgid "Could not read the plugin folder."
+msgstr ""
+
+msgid "Could not record the decision"
+msgstr ""
+
+msgid "Could not refresh"
+msgstr ""
+
+msgid "Could not regenerate backup codes."
+msgstr ""
+
+msgid "Could not remove price"
+msgstr ""
+
+msgid "Could not remove seat."
+msgstr ""
+
+msgid "Could not remove source."
+msgstr ""
+
+msgid "Could not resolve this connection, so it isn't safe to continue -- saving now could write guardrails under the wrong key."
+msgstr ""
+
+msgid "Could not restore the agent."
+msgstr ""
+
+msgid "Could not restore the department."
+msgstr ""
+
+msgid "Could not restore the skill."
+msgstr ""
+
+msgid "Could not run the test"
+msgstr ""
+
+msgid "Could not save budget"
+msgstr ""
+
+msgid "Could not save changes."
+msgstr ""
+
+msgid "Could not save department"
+msgstr ""
+
+msgid "Could not save guardrails"
+msgstr ""
+
+msgid "Could not save key"
+msgstr ""
+
+msgid "Could not save price"
+msgstr ""
+
+msgid "Could not save prompt caching setting"
+msgstr ""
+
+msgid "Could not save settings."
+msgstr ""
+
+msgid "Could not save the preset."
+msgstr ""
+
+msgid "Could not save workspace name"
+msgstr ""
+
+msgid "Could not save your dashboard layout"
+msgstr ""
+
+msgid "Could not save."
+msgstr ""
+
+msgid "Could not save. Try again."
+msgstr ""
+
+msgid "Could not send the answer"
+msgstr ""
+
+msgid "Could not set password."
+msgstr ""
+
+msgid "Could not skip setup"
+msgstr ""
+
+msgid "Could not start enrollment."
+msgstr ""
+
+msgid "Could not start the sign-in."
+msgstr ""
+
+msgid "Could not start the test"
+msgstr ""
+
+msgid "Could not sync a source"
+msgstr ""
+
+msgid "Could not update seat."
+msgstr ""
+
+msgid "Could not update the Copilot settings."
+msgstr ""
+
+msgid "Could not update the key."
+msgstr ""
+
+msgid "Could not update the mail server."
+msgstr ""
+
+msgid "Could not update your name."
+msgstr ""
+
+msgid "Couldn't assign knowledge base"
+msgstr ""
+
+msgid "Couldn't assign skill"
+msgstr ""
+
+msgid "Couldn't cancel run"
+msgstr ""
+
+msgid "Couldn't create a link code"
+msgstr ""
+
+msgid "Couldn't create webhook"
+msgstr ""
+
+msgid "Couldn't delete memory"
+msgstr ""
+
+msgid "Couldn't delete the agent"
+msgstr ""
+
+msgid "Couldn't delete the file"
+msgstr ""
+
+msgid "Couldn't grant access"
+msgstr ""
+
+msgid "Couldn't load attached files."
+msgstr ""
+
+msgid "Couldn't load runtime information."
+msgstr ""
+
+msgid "Couldn't load the run history."
+msgstr ""
+
+msgid "Couldn't publish"
+msgstr ""
+
+msgid "Couldn't reach the copilot"
+msgstr ""
+
+msgid "Couldn't remove skill"
+msgstr ""
+
+msgid "Couldn't remove webhook"
+msgstr ""
+
+msgid "Couldn't rename the agent"
+msgstr ""
+
+msgid "Couldn't rename the department"
+msgstr ""
+
+msgid "Couldn't reset runtime"
+msgstr ""
+
+msgid "Couldn't revoke"
+msgstr ""
+
+msgid "Couldn't revoke access"
+msgstr ""
+
+msgid "Couldn't roll back"
+msgstr ""
+
+msgid "Couldn't save guardrails"
+msgstr ""
+
+msgid "Couldn't save instructions"
+msgstr ""
+
+msgid "Couldn't send answer"
+msgstr ""
+
+msgid "Couldn't start run"
+msgstr ""
+
+msgid "Couldn't understand that guardrail — try phrasing it differently."
+msgstr ""
+
+msgid "Couldn't update runtime"
+msgstr ""
+
+msgid "Couldn't update schedule"
+msgstr ""
+
+msgid "Couldn't upload the file"
+msgstr ""
+
+msgid "Create"
+msgstr ""
+
+msgid "Create a local company"
+msgstr ""
+
+msgid "Create a new agent"
+msgstr ""
+
+msgid "Create a room for a new team. You can assign agents later."
+msgstr ""
+
+msgid "Create Account"
+msgstr ""
+
+msgid "Create Admin Account"
+msgstr ""
+
+msgid "Create agent"
+msgstr ""
+
+msgid "Create company"
+msgstr ""
+
+msgid "Create limit"
+msgstr ""
+
+msgid "Create new"
+msgstr ""
+
+msgid "Create project"
+msgstr ""
+
+msgid "Create role"
+msgstr ""
+
+msgid "Create task"
+msgstr ""
+
+msgid "Create the first role"
+msgstr ""
+
+msgid "Create this agent"
+msgstr ""
+
+msgid "Create user"
+msgstr ""
+
+msgid "Create webhook URL"
+msgstr ""
+
+msgid "Created"
+msgstr ""
+
+msgid "Creating…"
+msgstr ""
+
+msgid "Credential"
+msgstr ""
+
+msgid "Credential created"
+msgstr ""
+
+msgid "Credential updated"
+msgstr ""
+
+msgid "Credential works"
+msgstr ""
+
+msgid "Credentials"
+msgstr ""
+
+msgid "Credentials restored:"
+msgstr ""
+
+msgid "Cross-department handoffs — contracts, gates, provenance."
+msgstr ""
+
+msgid "CSV downloaded to your device."
+msgstr ""
+
+msgid "Current password"
+msgstr ""
+
+msgid "Currently"
+msgstr ""
+
+msgid "Currently in this company → in the archive"
+msgstr ""
+
+msgid "Custom MCP capa"
+msgstr ""
+
+msgid "Daily"
+msgstr ""
+
+msgid "daily {time}"
+msgstr ""
+
+msgid "Daily role audit — compare actions vs. role scope"
+msgstr ""
+
+msgid "Data source"
+msgstr ""
+
+msgid "Data source deleted"
+msgstr ""
+
+msgid "Data source updated"
+msgstr ""
+
+msgid "Data Sources"
+msgstr ""
+
+msgid "Data sources (optional)"
+msgstr ""
+
+msgid "Day"
+msgstr ""
+
+msgid "Decide it"
+msgstr ""
+
+msgid "Decided"
+msgstr ""
+
+msgid "Decided a request"
+msgstr ""
+
+msgid "Decided by you"
+msgstr ""
+
+msgid "Deciding a request"
+msgstr ""
+
+msgid "decision"
+msgstr ""
+
+msgid "Decision"
+msgstr ""
+
+msgid "Decisions and questions waiting on you."
+msgstr ""
+
+msgid "default"
+msgstr ""
+
+msgid "Default"
+msgstr ""
+
+msgid "Default: in the user's context"
+msgstr ""
+
+msgid "Default: the organisation's access"
+msgstr ""
+
+msgid "Defined in code — not editable"
+msgstr ""
+
+msgid "Definition"
+msgstr ""
+
+msgid "Delegated"
+msgstr ""
+
+msgid "Delegated to the team"
+msgstr ""
+
+msgid "delegation"
+msgstr ""
+
+msgid "Delete"
+msgstr ""
+
+msgid "Delete agent"
+msgstr ""
+
+msgid "Delete chat?"
+msgstr ""
+
+msgid "Delete connection"
+msgstr ""
+
+msgid "Delete connection?"
+msgstr ""
+
+msgid "Delete credential?"
+msgstr ""
+
+msgid "Delete data source?"
+msgstr ""
+
+msgid "Delete department"
+msgstr ""
+
+msgid "Delete file"
+msgstr ""
+
+msgid "Delete knowledge base?"
+msgstr ""
+
+msgid "Delete limit"
+msgstr ""
+
+msgid "Delete model?"
+msgstr ""
+
+msgid "Delete preset"
+msgstr ""
+
+msgid "Delete project"
+msgstr ""
+
+msgid "Delete project?"
+msgstr ""
+
+msgid "Delete this agent?"
+msgstr ""
+
+msgid "Delete this chat…"
+msgstr ""
+
+msgid "Delete this file?"
+msgstr ""
+
+msgid "Delete this memory"
+msgstr ""
+
+msgid "Delete this preset?"
+msgstr ""
+
+msgid "Delete this user?"
+msgstr ""
+
+msgid "Delete user"
+msgstr ""
+
+msgid "Delete…"
+msgstr ""
+
+msgid "Deleted"
+msgstr ""
+
+msgid "Deleting…"
+msgstr ""
+
+msgid "Delta"
+msgstr ""
+
+msgid "Department"
+msgstr ""
+
+msgid "Department allows (ceiling)"
+msgstr ""
+
+msgid "Department archived"
+msgstr ""
+
+msgid "Department deleted"
+msgstr ""
+
+msgid "Department knowledge"
+msgstr ""
+
+msgid "Department lead"
+msgstr ""
+
+msgid "Department name"
+msgstr ""
+
+msgid "Department not found, or you don't have access."
+msgstr ""
+
+msgid "Department restored"
+msgstr ""
+
+msgid "Department seats"
+msgstr ""
+
+msgid "departments"
+msgstr ""
+
+msgid "Departments"
+msgstr ""
+
+msgid "departments · jointly coordinated"
+msgstr ""
+
+msgid "Describe roughly what this agent should do"
+msgstr ""
+
+msgid "Describe step by step what the skill should do…"
+msgstr ""
+
+msgid "Description"
+msgstr ""
+
+msgid "Details"
+msgstr ""
+
+msgid "Development only. A person's authority comes from their seats and any tenant role assigned to them, never from this screen."
+msgstr ""
+
+msgid "Development only. Production instances are set up once through POST /auth/setup, not this picker."
+msgstr ""
+
+msgid "Deviations"
+msgstr ""
+
+msgid "Did something"
+msgstr ""
+
+msgid "Diff"
+msgstr ""
+
+msgid "Disable"
+msgstr ""
+
+msgid "Disabled"
+msgstr ""
+
+msgid "Discard"
+msgstr ""
+
+msgid "Disconnect"
+msgstr ""
+
+msgid "Disconnect?"
+msgstr ""
+
+msgid "Discovered tools"
+msgstr ""
+
+msgid "Discuss with Copilot"
+msgstr ""
+
+msgid "Dismiss"
+msgstr ""
+
+msgid "Display name"
+msgstr ""
+
+msgid "Display Name"
+msgstr ""
+
+msgid "Display name (optional)"
+msgstr ""
+
+msgid "Do a first test run and tell me briefly what you did."
+msgstr ""
+
+msgid "Documents"
+msgstr ""
+
+msgid "Don't see your app?"
+msgstr ""
+
+msgid "done"
+msgstr ""
+
+msgid "Done"
+msgstr ""
+
+msgid "Done."
+msgstr ""
+
+msgid "Download"
+msgstr ""
+
+msgid "Download a fresh backup above first — restoring is irreversible, and this is the recovery path if it goes wrong."
+msgstr ""
+
+msgid "Download backup"
+msgstr ""
+
+msgid "Download failed."
+msgstr ""
+
+msgid "Downloads every agent, department, run history and knowledge item this company holds as one file."
+msgstr ""
+
+msgid "Draft with copilot"
+msgstr ""
+
+msgid "Drift guard — pause on off-role actions"
+msgstr ""
+
+msgid "Duration"
+msgstr ""
+
+msgid "E-mail, calendar and files"
+msgstr ""
+
+msgid "e.g. \"Handles first-level IT support tickets, replies to users, escalates hardware issues.\""
+msgstr ""
+
+msgid "e.g. Claude Desktop"
+msgstr ""
+
+msgid "e.g. Close deals"
+msgstr ""
+
+msgid "e.g. Customer service, research, marketing …"
+msgstr ""
+
+msgid "e.g. delete_record"
+msgstr ""
+
+msgid "e.g. discount too high for this customer"
+msgstr ""
+
+msgid "e.g. Invoice Review"
+msgstr ""
+
+msgid "e.g. Legal & Compliance"
+msgstr ""
+
+msgid "e.g. Nova, Atlas, Miro …"
+msgstr ""
+
+msgid "e.g. Review contracts on time"
+msgstr ""
+
+msgid "e.g. Sales sign-off"
+msgstr ""
+
+msgid "Each code works once. Store them somewhere safe — you will not see them again."
+msgstr ""
+
+msgid "Each person changes their email and password in their own account."
+msgstr ""
+
+msgid "Edit"
+msgstr ""
+
+msgid "Edit and resend"
+msgstr ""
+
+msgid "Edit Auto router"
+msgstr ""
+
+msgid "Edit credential"
+msgstr ""
+
+msgid "Edit data source"
+msgstr ""
+
+msgid "Edit model"
+msgstr ""
+
+msgid "Edit project"
+msgstr ""
+
+msgid "Edit skill"
+msgstr ""
+
+msgid "Efficiency"
+msgstr ""
+
+msgid "Efficiency / load"
+msgstr ""
+
+msgid "Effort"
+msgstr ""
+
+msgid "Effort (optional)"
+msgstr ""
+
+msgid "Email"
+msgstr ""
+
+msgid "Email updated"
+msgstr ""
+
+msgid "Embedding model"
+msgstr ""
+
+msgid "Employee"
+msgstr ""
+
+msgid "Empty"
+msgstr ""
+
+msgid "Empty means no limit. A number here, or a context window recorded on the model, is what makes size a verdict at all."
+msgstr ""
+
+msgid "en"
+msgstr ""
+
+msgid "Enable"
+msgstr ""
+
+msgid "Enable a vector-index capa (Qdrant, pgvector) first."
+msgstr ""
+
+msgid "Enabled"
+msgstr ""
+
+msgid "Enabling…"
+msgstr ""
+
+msgid "End schedule"
+msgstr ""
+
+msgid "Ends"
+msgstr ""
+
+msgid "Enforced by the platform — a hard limit pauses new tasks with budget_exceeded."
+msgstr ""
+
+msgid "Enrol somebody by their sign-in identity. They can also be added automatically the first time they sign in — this just lets you set them up (and assign a role) ahead of time."
+msgstr ""
+
+msgid "Enter a sign-in email or username."
+msgstr ""
+
+msgid "Enter manually"
+msgstr ""
+
+msgid "Enter manually instead"
+msgstr ""
+
+msgid "Enter room"
+msgstr ""
+
+msgid "Enter the 6-digit code"
+msgstr ""
+
+msgid "Enter this code on that page:"
+msgstr ""
+
+msgid "Enter valid, non-negative prices."
+msgstr ""
+
+msgid "Enter your authentication code"
+msgstr ""
+
+msgid "Enter your credentials to continue."
+msgstr ""
+
+msgid "Enter your office"
+msgstr ""
+
+msgid "Entering…"
+msgstr ""
+
+msgid "Entries are missing from this log."
+msgstr ""
+
+msgid "error"
+msgstr ""
+
+msgid "Error"
+msgstr ""
+
+msgid "Est. cost / 1k req"
+msgstr ""
+
+msgid "Estimate assumes ~1,500 input + 500 output tokens per request. Cost totals per agent and department use these prices."
+msgstr ""
+
+msgid "event"
+msgstr ""
+
+msgid "Event"
+msgstr ""
+
+msgid "Every action, every timestamp."
+msgstr ""
+
+msgid "Every day at {time}"
+msgstr ""
+
+msgid "Every department"
+msgstr ""
+
+msgid "Every department — decisions and questions waiting on a person."
+msgstr ""
+
+msgid "Every export, with or without a passphrase, carries every member's password hash. With a passphrase, the file also carries every provider credential and OAuth token this company holds, encrypted under it — anyone with the file AND the passphrase holds those credentials too. The passphrase cannot be recovered if lost; losing it only costs the secrets, everything else still restores."
+msgstr ""
+
+msgid "Every installable capability — connectors, tools, guardrails, templates."
+msgstr ""
+
+msgid "Every save is kept — nothing is pruned."
+msgstr ""
+
+msgid "Execution"
+msgstr ""
+
+msgid "execution environment"
+msgstr ""
+
+msgid "Expand sidebar"
+msgstr ""
+
+msgid "Expired"
+msgstr ""
+
+msgid "Expires"
+msgstr ""
+
+msgid "Expires (optional)"
+msgstr ""
+
+msgid "explicit"
+msgstr ""
+
+msgid "Export"
+msgstr ""
+
+msgid "Export as Capa"
+msgstr ""
+
+msgid "Export CSV"
+msgstr ""
+
+msgid "Export failed"
+msgstr ""
+
+msgid "Export your whole company to one file, or replace it in place from a previously exported file."
+msgstr ""
+
+msgid "Exporting…"
+msgstr ""
+
+msgid "failed"
+msgstr ""
+
+msgid "Fetch again"
+msgstr ""
+
+msgid "Fetch available models"
+msgstr ""
+
+msgid "Fetching models…"
+msgstr ""
+
+msgid "Field"
+msgstr ""
+
+msgid "File"
+msgstr ""
+
+msgid "File deleted"
+msgstr ""
+
+msgid "File in a source"
+msgstr ""
+
+msgid "File is too large"
+msgstr ""
+
+msgid "File truncated for display."
+msgstr ""
+
+msgid "Files"
+msgstr ""
+
+msgid "Files can be attached once the question is answered."
+msgstr ""
+
+msgid "Fill in provider, model pattern, and valid prices."
+msgstr ""
+
+msgid "Filter"
+msgstr ""
+
+msgid "Filter:"
+msgstr ""
+
+msgid "Find more integrations under Capas →"
+msgstr ""
+
+msgid "Find similar"
+msgstr ""
+
+msgid "Finishing the connection …"
+msgstr ""
+
+msgid "First seen"
+msgstr ""
+
+msgid "fits"
+msgstr ""
+
+msgid "Floor 1 · Live operations"
+msgstr ""
+
+msgid "Flows"
+msgstr ""
+
+msgid "Folders"
+msgstr ""
+
+msgid "For personal notes, open an agent and switch to the \"Memory\" tab."
+msgstr ""
+
+msgid "For scheduled runs the account of the person who created the schedule is used."
+msgstr ""
+
+msgid "For task-specific instructions, assign a skill instead — this field is only the agent's base mission."
+msgstr ""
+
+msgid "For the organisation"
+msgstr ""
+
+msgid "For the whole team"
+msgstr ""
+
+msgid "Forgot password?"
+msgstr ""
+
+msgid "Forwarded verbatim to the provider after every named field above -- for knobs oc8 has no dedicated field for (e.g. OpenRouter's provider/top_p). Not validated here; the provider decides what it accepts."
+msgstr ""
+
+msgid "Framework default"
+msgstr ""
+
+msgid "From"
+msgstr ""
+
+msgid "From (UTC)"
+msgstr ""
+
+msgid "From a chat"
+msgstr ""
+
+msgid "From store"
+msgstr ""
+
+msgid "from the department"
+msgstr ""
+
+msgid "from their sign-in"
+msgstr ""
+
+msgid "Full access to every screen and department. Off means a standard user, limited to their department seats."
+msgstr ""
+
+msgid "Full check"
+msgstr ""
+
+msgid "Function"
+msgstr ""
+
+msgid "Further credentials"
+msgstr ""
+
+msgid "General"
+msgstr ""
+
+msgid "Generate"
+msgstr ""
+
+msgid "Generating…"
+msgstr ""
+
+msgid "Get notified even when this tab isn't open."
+msgstr ""
+
+msgid "Git repository or archive"
+msgstr ""
+
+msgid "Give a reason first — a rejection with none is a dead end for the agent that has to act on it"
+msgstr ""
+
+msgid "Go to my work"
+msgstr ""
+
+msgid "Goal"
+msgstr ""
+
+msgid "Goal / OKR"
+msgstr ""
+
+msgid "Goes to the running answer"
+msgstr ""
+
+msgid "Good answer"
+msgstr ""
+
+msgid "Granted company-wide access"
+msgstr ""
+
+msgid "grants nothing"
+msgstr ""
+
+msgid "Group by"
+msgstr ""
+
+msgid "Guardrails"
+msgstr ""
+
+msgid "Guardrails (one per line)"
+msgstr ""
+
+msgid "Guardrails saved"
+msgstr ""
+
+msgid "Guided setup"
+msgstr ""
+
+msgid "Handed to another agent"
+msgstr ""
+
+msgid "Handed work to a colleague"
+msgstr ""
+
+msgid "Handing work to a colleague"
+msgstr ""
+
+msgid "handoff"
+msgstr ""
+
+msgid "Handoff updated"
+msgstr ""
+
+msgid "Handoffs"
+msgstr ""
+
+msgid "hard"
+msgstr ""
+
+msgid "Hard limit exceeded"
+msgstr ""
+
+msgid "Hard limit exceeded — new tasks are paused."
+msgstr ""
+
+msgid "Held by"
+msgstr ""
+
+msgid "hide"
+msgstr ""
+
+msgid "Hide chats"
+msgstr ""
+
+msgid "Hide the text"
+msgstr ""
+
+msgid "Hide work panel"
+msgstr ""
+
+msgid "Hire agent"
+msgstr ""
+
+msgid "Hire an agent into it from the Agents page."
+msgstr ""
+
+msgid "History"
+msgstr ""
+
+msgid "How many tool-using steps this agent may take in one run before it stops. Blank inherits the framework default (currently high, not unlimited -- budget/token metering only checks once per run)."
+msgstr ""
+
+msgid "How much an agent on this model may write per turn, before oc8 cuts it off. Leave blank for the server default (4096, or OC8_DEFAULT_MAX_TOKENS). Raise this for reasoning-heavy models on large tasks — hidden reasoning tokens count against this budget too."
+msgstr ""
+
+msgid "How should I work on chats in this project?"
+msgstr ""
+
+msgid "How should this base get content?"
+msgstr ""
+
+msgid "Human oversight"
+msgstr ""
+
+msgid "human reviewer"
+msgstr ""
+
+msgid "Human reviewer"
+msgstr ""
+
+msgid "I check it and tell you when it matters"
+msgstr ""
+
+msgid "I'm {name}. Tell me what to keep an eye on and I'll take it from there."
+msgstr ""
+
+msgid "I've saved it"
+msgstr ""
+
+msgid "I've saved these"
+msgstr ""
+
+msgid "Icon"
+msgstr ""
+
+msgid "If that email exists and a mail server is configured, a reset link was sent."
+msgstr ""
+
+msgid "If this archive was taken on a different oc8 instance, restoring it also replaces every member and role this company has with the source instance's — including your own membership. Because those rows carry sign-in identities from the source instance's own login provider, this can remove your own access to this company."
+msgstr ""
+
+msgid "Import"
+msgstr ""
+
+msgid "Import failed"
+msgstr ""
+
+msgid "Import from a source"
+msgstr ""
+
+msgid "Import from source"
+msgstr ""
+
+msgid "Importing…"
+msgstr ""
+
+msgid "In archive"
+msgstr ""
+
+msgid "In Progress"
+msgstr ""
+
+msgid "In the user's context"
+msgstr ""
+
+msgid "Included automatically: modifying requires read access."
+msgstr ""
+
+msgid "Index type"
+msgstr ""
+
+msgid "info"
+msgstr ""
+
+msgid "Ingest sources into oc8"
+msgstr ""
+
+msgid "Inherited"
+msgstr ""
+
+msgid "Inherited from department"
+msgstr ""
+
+msgid "Input"
+msgstr ""
+
+msgid "Input / 1M"
+msgstr ""
+
+msgid "Input tokens"
+msgstr ""
+
+msgid "Insert into editor"
+msgstr ""
+
+msgid "Install"
+msgstr ""
+
+msgid "Installation failed."
+msgstr ""
+
+msgid "Installed"
+msgstr ""
+
+msgid "Installed, not available yet"
+msgstr ""
+
+msgid "Installing…"
+msgstr ""
+
+msgid "Instance already initialized. Please log in."
+msgstr ""
+
+msgid "Instance not yet initialized. Please complete setup."
+msgstr ""
+
+msgid "Instructions"
+msgstr ""
+
+msgid "Instructions saved"
+msgstr ""
+
+msgid "interrupted"
+msgstr ""
+
+msgid "Invalid"
+msgstr ""
+
+msgid "Invalid code"
+msgstr ""
+
+msgid "Invite"
+msgstr ""
+
+msgid "its model configuration"
+msgstr ""
+
+msgid "Its runs then use the creator's personal accounts. Anyone who can reach this trigger can start them."
+msgstr ""
+
+msgid "Its scheduled follow-ups are switched off too."
+msgstr ""
+
+msgid "Judge against this department's model"
+msgstr ""
+
+msgid "Judging against your number for this look only — nothing is saved."
+msgstr ""
+
+msgid "Keep an eye on something for me"
+msgstr ""
+
+msgid "Keep it"
+msgstr ""
+
+msgid "key"
+msgstr ""
+
+msgid "Knowledge"
+msgstr ""
+
+msgid "Knowledge base"
+msgstr ""
+
+msgid "Knowledge base assigned"
+msgstr ""
+
+msgid "Knowledge base deleted"
+msgstr ""
+
+msgid "Knowledge base updated"
+msgstr ""
+
+msgid "Knowledge bases"
+msgstr ""
+
+msgid "Knowledge Bases"
+msgstr ""
+
+msgid "Knowledge library"
+msgstr ""
+
+msgid "Language switched to"
+msgstr ""
+
+msgid "Last 30 days — validation only"
+msgstr ""
+
+msgid "Last action"
+msgstr ""
+
+msgid "Last run"
+msgstr ""
+
+msgid "Latency"
+msgstr ""
+
+msgid "Latest"
+msgstr ""
+
+msgid "Lead → Team"
+msgstr ""
+
+msgid "Leave agent mode"
+msgstr ""
+
+msgid "Leave blank to keep unchanged"
+msgstr ""
+
+msgid "Leave empty to allow any origin."
+msgstr ""
+
+msgid "Leave empty to never expire."
+msgstr ""
+
+msgid "Leave empty to set up later"
+msgstr ""
+
+msgid "Leave unassigned"
+msgstr ""
+
+msgid "Let the copilot draft this from a rough description"
+msgstr ""
+
+msgid "Let the copilot read this agent's instructions and suggest guardrails"
+msgstr ""
+
+msgid "Lets an external tool call oc8's Copilot over MCP as you, with your own permissions."
+msgstr ""
+
+msgid "Lets them sign in immediately. Min. 8 characters."
+msgstr ""
+
+msgid "Limit"
+msgstr ""
+
+msgid "Limit created"
+msgstr ""
+
+msgid "Limit removed"
+msgstr ""
+
+msgid "Limits"
+msgstr ""
+
+msgid "Line"
+msgstr ""
+
+msgid "Link your own Telegram or WhatsApp so approvals reach you there. This is separate from a capa's admin setup (bot token) — this step binds YOUR chat."
+msgstr ""
+
+msgid "Linked in this tenant"
+msgstr ""
+
+msgid "Live"
+msgstr ""
+
+msgid "Live Log"
+msgstr ""
+
+msgid "Live Log · current run"
+msgstr ""
+
+msgid "LLM"
+msgstr ""
+
+msgid "LLM providers, costs, and assignments."
+msgstr ""
+
+msgid "Load"
+msgstr ""
+
+msgid "Load into the editor"
+msgstr ""
+
+msgid "Load more"
+msgstr ""
+
+msgid "Load older versions"
+msgstr ""
+
+msgid "Loading"
+msgstr ""
+
+msgid "Loading agent…"
+msgstr ""
+
+msgid "Loading available tools…"
+msgstr ""
+
+msgid "Loading department…"
+msgstr ""
+
+msgid "Loading files…"
+msgstr ""
+
+msgid "Loading guardrails…"
+msgstr ""
+
+msgid "Loading providers…"
+msgstr ""
+
+msgid "Loading roles…"
+msgstr ""
+
+msgid "Loading run…"
+msgstr ""
+
+msgid "Loading runs…"
+msgstr ""
+
+msgid "Loading the permission model…"
+msgstr ""
+
+msgid "Loading the rights…"
+msgstr ""
+
+msgid "Loading the role…"
+msgstr ""
+
+msgid "Loading the steps…"
+msgstr ""
+
+msgid "Loading users…"
+msgstr ""
+
+msgid "Loading your department…"
+msgstr ""
+
+msgid "Loading…"
+msgstr ""
+
+msgid "local"
+msgstr ""
+
+msgid "Local"
+msgstr ""
+
+msgid "Local library"
+msgstr ""
+
+msgid "Locality"
+msgstr ""
+
+msgid "Log the complexity choice but always run balanced (or latched) until you trust the policy."
+msgstr ""
+
+msgid "Logged in successfully"
+msgstr ""
+
+msgid "Login"
+msgstr ""
+
+msgid "Login failed"
+msgstr ""
+
+msgid "Look"
+msgstr ""
+
+msgid "Looked for a tool"
+msgstr ""
+
+msgid "Looked through its notes"
+msgstr ""
+
+msgid "Looking for a tool"
+msgstr ""
+
+msgid "Looking through its notes"
+msgstr ""
+
+msgid "Made a note"
+msgstr ""
+
+msgid "Made a standard user"
+msgstr ""
+
+msgid "Made an administrator"
+msgstr ""
+
+msgid "Mail server"
+msgstr ""
+
+msgid "Mail server credentials"
+msgstr ""
+
+msgid "Mail server disabled"
+msgstr ""
+
+msgid "Mail server updated"
+msgstr ""
+
+msgid "Make available"
+msgstr ""
+
+msgid "Making a note"
+msgstr ""
+
+msgid "Manage user roles for your organization."
+msgstr ""
+
+msgid "Managed by your identity provider; not editable here."
+msgstr ""
+
+msgid "Manages agents"
+msgstr ""
+
+msgid "manual"
+msgstr ""
+
+msgid "Map each complexity tier to an existing model config. At least one is required."
+msgstr ""
+
+msgid "Max output tokens (optional)"
+msgstr ""
+
+msgid "Max steps must be a positive whole number"
+msgstr ""
+
+msgid "Max steps per run"
+msgstr ""
+
+msgid "Max tokens"
+msgstr ""
+
+msgid "Max tokens must be a positive number"
+msgstr ""
+
+msgid "Max tokens must be a positive whole number"
+msgstr ""
+
+msgid "Max. active follow-ups per person"
+msgstr ""
+
+msgid "MCP Connections"
+msgstr ""
+
+msgid "memories"
+msgstr ""
+
+msgid "Memory"
+msgstr ""
+
+msgid "Memory deleted"
+msgstr ""
+
+msgid "Message"
+msgstr ""
+
+msgid "Messages to this run"
+msgstr ""
+
+msgid "metered by the platform"
+msgstr ""
+
+msgid "Mine"
+msgstr ""
+
+msgid "Mission"
+msgstr ""
+
+msgid "Model"
+msgstr ""
+
+msgid "Model (LLM)"
+msgstr ""
+
+msgid "model pattern"
+msgstr ""
+
+msgid "Model price added"
+msgstr ""
+
+msgid "Model pricing"
+msgstr ""
+
+msgid "Model tag"
+msgstr ""
+
+msgid "Model updated"
+msgstr ""
+
+msgid "models"
+msgstr ""
+
+msgid "Models"
+msgstr ""
+
+msgid "Models are now available for agents."
+msgstr ""
+
+msgid "Models from connected providers appear here automatically."
+msgstr ""
+
+msgid "modifies"
+msgstr ""
+
+msgid "Modify"
+msgstr ""
+
+msgid "Month"
+msgstr ""
+
+msgid "Monthly"
+msgstr ""
+
+msgid "More entries exist – search more specifically"
+msgstr ""
+
+msgid "More info"
+msgstr ""
+
+msgid "More runtimes appear here once installed as plugins."
+msgstr ""
+
+msgid "Move holders to"
+msgstr ""
+
+msgid "Move holders to…"
+msgstr ""
+
+msgid "Move to project"
+msgstr ""
+
+msgid "Multi-stage flows across departments with live validation."
+msgstr ""
+
+msgid "Must exactly match a tool this connection exposes -- pick from the suggestions."
+msgstr ""
+
+msgid "Must match the remote collection"
+msgstr ""
+
+msgid "My connections"
+msgstr ""
+
+msgid "My Copilot"
+msgstr ""
+
+msgid "My work"
+msgstr ""
+
+msgid "Name"
+msgstr ""
+
+msgid "Name & description"
+msgstr ""
+
+msgid "name + rights"
+msgstr ""
+
+msgid "Name updated"
+msgstr ""
+
+msgid "Name your workspace"
+msgstr ""
+
+msgid "Narrowed"
+msgstr ""
+
+msgid "Needs reconnecting"
+msgstr ""
+
+msgid "Needs your decision"
+msgstr ""
+
+msgid "never"
+msgstr ""
+
+msgid "Never expires"
+msgstr ""
+
+msgid "Never published"
+msgstr ""
+
+msgid "Never tested"
+msgstr ""
+
+msgid "Never tested — click Test to check."
+msgstr ""
+
+msgid "Never used"
+msgstr ""
+
+msgid "never verified"
+msgstr ""
+
+msgid "Never without approval"
+msgstr ""
+
+msgid "New agent"
+msgstr ""
+
+msgid "New approval requested"
+msgstr ""
+
+msgid "New chat"
+msgstr ""
+
+msgid "New cost limit"
+msgstr ""
+
+msgid "New credential"
+msgstr ""
+
+msgid "New department"
+msgstr ""
+
+msgid "New email"
+msgstr ""
+
+msgid "New guardrail"
+msgstr ""
+
+msgid "New key"
+msgstr ""
+
+msgid "New model"
+msgstr ""
+
+msgid "New password"
+msgstr ""
+
+msgid "New password (min. 8 characters)"
+msgstr ""
+
+msgid "New project"
+msgstr ""
+
+msgid "New role"
+msgstr ""
+
+msgid "New run"
+msgstr ""
+
+msgid "New runs of this agent will use this configuration. Runs already in flight keep the one they started on."
+msgstr ""
+
+msgid "New skill"
+msgstr ""
+
+msgid "New tab"
+msgstr ""
+
+msgid "New task"
+msgstr ""
+
+msgid "New user"
+msgstr ""
+
+msgid "Newer"
+msgstr ""
+
+msgid "Next"
+msgstr ""
+
+msgid "Next answer"
+msgstr ""
+
+msgid "Next page"
+msgstr ""
+
+msgid "Next question"
+msgstr ""
+
+msgid "Next run"
+msgstr ""
+
+msgid "Next step"
+msgstr ""
+
+msgid "No activity yet for this agent."
+msgstr ""
+
+msgid "No agents match your filters."
+msgstr ""
+
+msgid "No agents outside a selected department."
+msgstr ""
+
+msgid "No API keys yet."
+msgstr ""
+
+msgid "No approval-channel capa is installed and enabled yet."
+msgstr ""
+
+msgid "No audit events for this filter."
+msgstr ""
+
+msgid "No budget — nothing is refused for its size"
+msgstr ""
+
+msgid "No Capas installed yet."
+msgstr ""
+
+msgid "No channel is linked yet."
+msgstr ""
+
+msgid "No chat here yet. Ask your Copilot something, or start with one of these."
+msgstr ""
+
+msgid "No chats in this project yet."
+msgstr ""
+
+msgid "No chats yet. Start one with New chat."
+msgstr ""
+
+msgid "No chunks found."
+msgstr ""
+
+msgid "No connected data sources yet — create one first from the Sources tab, or skip this step."
+msgstr ""
+
+msgid "No connection matches."
+msgstr ""
+
+msgid "No credential selected yet — pick or create one, or the platform's shared key is used if available."
+msgstr ""
+
+msgid "No credentials yet."
+msgstr ""
+
+msgid "No data for this filter."
+msgstr ""
+
+msgid "No data source you can open matches that."
+msgstr ""
+
+msgid "No department"
+msgstr ""
+
+msgid "No department (strict default)"
+msgstr ""
+
+msgid "No department seats yet."
+msgstr ""
+
+msgid "No departments available"
+msgstr ""
+
+msgid "No departments match your filters."
+msgstr ""
+
+msgid "No departments yet."
+msgstr ""
+
+msgid "No description."
+msgstr ""
+
+msgid "No differences."
+msgstr ""
+
+msgid "No documents yet."
+msgstr ""
+
+msgid "No files attached yet."
+msgstr ""
+
+msgid "No follow-ups are scheduled."
+msgstr ""
+
+msgid "No further details for this entry."
+msgstr ""
+
+msgid "No grouping"
+msgstr ""
+
+msgid "No inline preview for this file type -- download it instead."
+msgstr ""
+
+msgid "no key"
+msgstr ""
+
+msgid "No knowledge bases match your search."
+msgstr ""
+
+msgid "No limits set yet. Add one to protect your budget."
+msgstr ""
+
+msgid "No locally authored skills to export."
+msgstr ""
+
+msgid "No mail server is configured for this instance, so the invite could not be emailed. Copy this link and send it to the new user yourself — it lets them set their own password."
+msgstr ""
+
+msgid "No mail server is configured for this instance, so the reset could not be emailed. Copy this link and send it to them yourself — it lets them set a new password."
+msgstr ""
+
+msgid "No MCP connections yet."
+msgstr ""
+
+msgid "No member has connected an account yet."
+msgstr ""
+
+msgid "No model connected yet — connect a provider now to give this agent something to think with."
+msgstr ""
+
+msgid "No model connected yet — connect one now to give this agent something to think with."
+msgstr ""
+
+msgid "No models configured yet."
+msgstr ""
+
+msgid "No new answer was started. Try again."
+msgstr ""
+
+msgid "no note"
+msgstr ""
+
+msgid "No organisation access yet."
+msgstr ""
+
+msgid "No providers configured yet. Start with the wizard."
+msgstr ""
+
+msgid "No reason was recorded."
+msgstr ""
+
+msgid "No recent activity"
+msgstr ""
+
+msgid "no report yet"
+msgstr ""
+
+msgid "No results"
+msgstr ""
+
+msgid "no role, no seat"
+msgstr ""
+
+msgid "No run in progress. Start one with “Run now”, or wait for the schedule."
+msgstr ""
+
+msgid "No run is behind this one."
+msgstr ""
+
+msgid "No runtimes are available right now."
+msgstr ""
+
+msgid "No similar chunks for this one yet."
+msgstr ""
+
+msgid "No SKILL.md found there. This importer reads Claude Code skills."
+msgstr ""
+
+msgid "No skills assigned yet. Click ‘Assign skill’ to compose this agent."
+msgstr ""
+
+msgid "No skills match your filters."
+msgstr ""
+
+msgid "No skills match your search."
+msgstr ""
+
+msgid "No sources linked yet."
+msgstr ""
+
+msgid "No tasks yet — start one below."
+msgstr ""
+
+msgid "No tool calls yet."
+msgstr ""
+
+msgid "No tools enabled yet."
+msgstr ""
+
+msgid "No tools match your search."
+msgstr ""
+
+msgid "No tools yet — add one directly for this agent, or grant it to the whole department first."
+msgstr ""
+
+msgid "No usage metered yet for this tenant."
+msgstr ""
+
+msgid "No usage recorded yet."
+msgstr ""
+
+msgid "No users found. Users appear here after they sign in."
+msgstr ""
+
+msgid "no version"
+msgstr ""
+
+msgid "Nobody has signed in to this company yet — use quick access below."
+msgstr ""
+
+msgid "Nobody holds this role yet."
+msgstr ""
+
+msgid "Nobody left to assign. People appear here after they have signed in once."
+msgstr ""
+
+msgid "None (disable)"
+msgstr ""
+
+msgid "not allowed"
+msgstr ""
+
+msgid "Not allowed"
+msgstr ""
+
+msgid "Not available: "
+msgstr ""
+
+msgid "Not connected"
+msgstr ""
+
+msgid "Not delivered: this run now acts for someone else"
+msgstr ""
+
+msgid "Not enabled"
+msgstr ""
+
+msgid "not for people"
+msgstr ""
+
+msgid "Not part of any backup:"
+msgstr ""
+
+msgid "Not refreshed yet — click Refresh to fetch provider-reported cost."
+msgstr ""
+
+msgid "Not restored:"
+msgstr ""
+
+msgid "not set"
+msgstr ""
+
+msgid "not set up"
+msgstr ""
+
+msgid "Not tested"
+msgstr ""
+
+msgid "Note"
+msgstr ""
+
+msgid "Note (optional)"
+msgstr ""
+
+msgid "Notes"
+msgstr ""
+
+msgid "Notes your Copilot keeps about you. Only you can see them."
+msgstr ""
+
+msgid "Nothing has changed since the running version."
+msgstr ""
+
+msgid "Nothing in progress right now."
+msgstr ""
+
+msgid "Nothing is imported until you choose. The source is fetched, not trusted."
+msgstr ""
+
+msgid "Nothing is waiting for you."
+msgstr ""
+
+msgid "Nothing matches that."
+msgstr ""
+
+msgid "Nothing new on disk. Drop a folder containing a plugin.toml into the plugins directory, then reload."
+msgstr ""
+
+msgid "Nothing on either side."
+msgstr ""
+
+msgid "Nothing under this filter. Your other departments still have work."
+msgstr ""
+
+msgid "Nothing you can open matches that."
+msgstr ""
+
+msgid "Notifications"
+msgstr ""
+
+msgid "Notifications enabled"
+msgstr ""
+
+msgid "Notifications were blocked in the browser."
+msgstr ""
+
+msgid "Notify"
+msgstr ""
+
+msgid "Notify — alert only"
+msgstr ""
+
+msgid "Observe reasoning traces"
+msgstr ""
+
+msgid "oc8 calculated"
+msgstr ""
+
+msgid "oc8 object"
+msgstr ""
+
+msgid "Office"
+msgstr ""
+
+msgid "OK"
+msgstr ""
+
+msgid "Older"
+msgstr ""
+
+msgid "On demand"
+msgstr ""
+
+msgid "on its own"
+msgstr ""
+
+msgid "once"
+msgstr ""
+
+msgid "Once"
+msgstr ""
+
+msgid "One sentence"
+msgstr ""
+
+msgid "Only for me"
+msgstr ""
+
+msgid "Only on-prem models are offered: this deployment routes every embedding through the local Ollama instance, so a cloud model would fail the moment a document is ingested."
+msgstr ""
+
+msgid "Only these surfaces (optional)"
+msgstr ""
+
+msgid "Only visible to you"
+msgstr ""
+
+msgid "Only:"
+msgstr ""
+
+msgid "Open"
+msgstr ""
+
+msgid "Open approvals"
+msgstr ""
+
+msgid "Open guardrails →"
+msgstr ""
+
+msgid "Open my work"
+msgstr ""
+
+msgid "Open record"
+msgstr ""
+
+msgid "Open responsibilities and follow-ups"
+msgstr ""
+
+msgid "Open the agent"
+msgstr ""
+
+msgid "Open the record"
+msgstr ""
+
+msgid "Opening a file"
+msgstr ""
+
+msgid "Opening a web page"
+msgstr ""
+
+msgid "Operator"
+msgstr ""
+
+msgid "optional, e.g. up to 100 units on its own, above that approval"
+msgstr ""
+
+msgid "Or answer freely …"
+msgstr ""
+
+msgid "Or enter manually:"
+msgstr ""
+
+msgid "Or send them a link to set their own password. The mail is tried first; if no mail server is configured, you get a copyable link instead."
+msgstr ""
+
+msgid "Organisation"
+msgstr ""
+
+msgid "Organisation access active"
+msgstr ""
+
+msgid "Organisation accesses"
+msgstr ""
+
+msgid "Organisation ID"
+msgstr ""
+
+msgid "Organization"
+msgstr ""
+
+msgid "Organization updated"
+msgstr ""
+
+msgid "Other answer"
+msgstr ""
+
+msgid "Outbound mail — password reset, email confirmation — is sent through this credential."
+msgstr ""
+
+msgid "Output"
+msgstr ""
+
+msgid "Output / 1M"
+msgstr ""
+
+msgid "Output tokens"
+msgstr ""
+
+msgid "Over the budget: it stays in the transcript for the whole run. You can still import it — raise the budget above, or take it knowingly."
+msgstr ""
+
+msgid "Oversight rules — reasoning & behavior"
+msgstr ""
+
+msgid "Overview"
+msgstr ""
+
+msgid "Page "
+msgstr ""
+
+msgid "Passphrase"
+msgstr ""
+
+msgid "Passphrase (optional)"
+msgstr ""
+
+msgid "Password"
+msgstr ""
+
+msgid "Password (optional)"
+msgstr ""
+
+msgid "Password changed"
+msgstr ""
+
+msgid "Password must be at least 8 characters."
+msgstr ""
+
+msgid "Password reset. Please sign in."
+msgstr ""
+
+msgid "Password set"
+msgstr ""
+
+msgid "Passwords do not match"
+msgstr ""
+
+msgid "Paste this into the external system's webhook / automation config — e.g. Odoo's Automation Rules → Send Webhook Notification."
+msgstr ""
+
+msgid "Pause"
+msgstr ""
+
+msgid "paused"
+msgstr ""
+
+msgid "Paused"
+msgstr ""
+
+msgid "People"
+msgstr ""
+
+msgid "per-agent, optional"
+msgstr ""
+
+msgid "Period"
+msgstr ""
+
+msgid "Permanently remove this department and every agent in it."
+msgstr ""
+
+msgid "Permission"
+msgstr ""
+
+msgid "Person"
+msgstr ""
+
+msgid "Personal · manual only"
+msgstr ""
+
+msgid "phase"
+msgstr ""
+
+msgid "Pick a file to attach to your next message."
+msgstr ""
+
+msgid "Pick a preset or define an exact schedule / cron expression."
+msgstr ""
+
+msgid "Pick any already-connected sources to sync into this base once it's created. You can add or remove sources later too."
+msgstr ""
+
+msgid "Pick at least one model"
+msgstr ""
+
+msgid "Pick at least one tier model (fast, balanced, or strong)"
+msgstr ""
+
+msgid "Pie"
+msgstr ""
+
+msgid "Pilot setup"
+msgstr ""
+
+msgid "Pin"
+msgstr ""
+
+msgid "Pin context"
+msgstr ""
+
+msgid "Pin to this chat"
+msgstr ""
+
+msgid "Pin whole source"
+msgstr ""
+
+msgid "Pinned"
+msgstr ""
+
+msgid "Plan appointments in Google Calendar"
+msgstr ""
+
+msgid "Plan appointments in your calendar"
+msgstr ""
+
+msgid "Please check your entries."
+msgstr ""
+
+msgid "Please include it when you contact support."
+msgstr ""
+
+msgid "Plugin setup failed."
+msgstr ""
+
+msgid "Preference router"
+msgstr ""
+
+msgid "Preparing a proposal"
+msgstr ""
+
+msgid "Preparing a summary"
+msgstr ""
+
+msgid "Preparing the workspace"
+msgstr ""
+
+msgid "Preset saved"
+msgstr ""
+
+msgid "Prevents agent-driven drift: the supervisor watches reasoning and behavior. Approvals stay off-agent with a human-in-the-loop."
+msgstr ""
+
+msgid "Preview"
+msgstr ""
+
+msgid "Preview unavailable"
+msgstr ""
+
+msgid "Previous"
+msgstr ""
+
+msgid "Previous 7 days"
+msgstr ""
+
+msgid "Previous answer"
+msgstr ""
+
+msgid "Previous page"
+msgstr ""
+
+msgid "Previous question"
+msgstr ""
+
+msgid "Price updated"
+msgstr ""
+
+msgid "Profile"
+msgstr ""
+
+msgid "Projects"
+msgstr ""
+
+msgid "Prompt / logic"
+msgstr ""
+
+msgid "Prompt caching"
+msgstr ""
+
+msgid "Proposal"
+msgstr ""
+
+msgid "Propose again"
+msgstr ""
+
+msgid "Proposed a change"
+msgstr ""
+
+msgid "provider"
+msgstr ""
+
+msgid "Provider"
+msgstr ""
+
+msgid "Provider and model tag are required"
+msgstr ""
+
+msgid "Provider is required"
+msgstr ""
+
+msgid "Provider reported"
+msgstr ""
+
+msgid "Provider returned no models"
+msgstr ""
+
+msgid "Provider-reported cost"
+msgstr ""
+
+msgid "Publish"
+msgstr ""
+
+msgid "Published"
+msgstr ""
+
+msgid "Published configuration · newest first"
+msgstr ""
+
+msgid "Push notifications aren't configured on this server yet."
+msgstr ""
+
+msgid "Push notifications for new approvals"
+msgstr ""
+
+msgid "QR code"
+msgstr ""
+
+msgid "Questions"
+msgstr ""
+
+msgid "queued"
+msgstr ""
+
+msgid "Quick access — built-in roles"
+msgstr ""
+
+msgid "Quick check only covers entries since the last checkpoint; full check re-verifies the entire chain from the beginning."
+msgstr ""
+
+msgid "Ran a command"
+msgstr ""
+
+msgid "Ran a program"
+msgstr ""
+
+msgid "Re-checking alone will not clear this. If tamper-proofing was only just switched on for this deployment, an administrator has to run the one-off `oc8 audit-adopt-checkpoints` command to seal the existing logs, and then a full check here. If it was already switched on, the seal was removed or the entries were rewritten — treat this as a security event and escalate."
+msgstr ""
+
+msgid "Re-sync"
+msgstr ""
+
+msgid "Read"
+msgstr ""
+
+msgid "Read a file"
+msgstr ""
+
+msgid "Read a resource"
+msgstr ""
+
+msgid "Read a web page"
+msgstr ""
+
+msgid "Read its instructions"
+msgstr ""
+
+msgid "Read the text before importing"
+msgstr ""
+
+msgid "Read, sort and send your e-mail in Outlook"
+msgstr ""
+
+msgid "Reading a resource"
+msgstr ""
+
+msgid "Reading archive…"
+msgstr ""
+
+msgid "Reading its instructions"
+msgstr ""
+
+msgid "Reading…"
+msgstr ""
+
+msgid "Ready"
+msgstr ""
+
+msgid "Real server connections agents can use as tools — separate from the catalog above."
+msgstr ""
+
+msgid "Reason"
+msgstr ""
+
+msgid "Reasoning effort forwarded as-is to providers that support it (currently Anthropic). Leave blank to omit. Not validated here — the provider decides which values it accepts."
+msgstr ""
+
+msgid "reasoning engine"
+msgstr ""
+
+msgid "Recent"
+msgstr ""
+
+msgid "Recommended"
+msgstr ""
+
+msgid "Recommended by this capa"
+msgstr ""
+
+msgid "Reconciliation refreshed"
+msgstr ""
+
+msgid "Reconnect"
+msgstr ""
+
+msgid "Reconnect now →"
+msgstr ""
+
+msgid "Reconnecting -- new messages may be delayed."
+msgstr ""
+
+msgid "Recorded — but the agent's run could not be resumed, so the action never ran"
+msgstr ""
+
+msgid "Recorded — the run was already gone, so there was nothing to stop"
+msgstr ""
+
+msgid "Recorded (live)"
+msgstr ""
+
+msgid "Recorded a completed step"
+msgstr ""
+
+msgid "Recorded spend"
+msgstr ""
+
+msgid "recorded to date"
+msgstr ""
+
+msgid "Recorded usage"
+msgstr ""
+
+msgid "Recording a completed step"
+msgstr ""
+
+msgid "recurring"
+msgstr ""
+
+msgid "Redirecting…"
+msgstr ""
+
+msgid "Reference material this agent can read on demand — never injected into every run automatically."
+msgstr ""
+
+msgid "Refresh"
+msgstr ""
+
+msgid "Regenerate answer"
+msgstr ""
+
+msgid "Regenerate backup codes"
+msgstr ""
+
+msgid "Region"
+msgstr ""
+
+msgid "Registers a model config agents can be assigned to."
+msgstr ""
+
+msgid "Reject"
+msgstr ""
+
+msgid "Rejected"
+msgstr ""
+
+msgid "Remove"
+msgstr ""
+
+msgid "Remove from project"
+msgstr ""
+
+msgid "Remove parameter"
+msgstr ""
+
+msgid "Remove pricing?"
+msgstr ""
+
+msgid "Remove provider"
+msgstr ""
+
+msgid "Remove provider?"
+msgstr ""
+
+msgid "Remove seat"
+msgstr ""
+
+msgid "Remove source?"
+msgstr ""
+
+msgid "Remove user"
+msgstr ""
+
+msgid "Remove webhook"
+msgstr ""
+
+msgid "Remove widget"
+msgstr ""
+
+msgid "Removed account, please choose again"
+msgstr ""
+
+msgid "Rename"
+msgstr ""
+
+msgid "Rename agent"
+msgstr ""
+
+msgid "Rename chat"
+msgstr ""
+
+msgid "Rename department"
+msgstr ""
+
+msgid "Rename this chat…"
+msgstr ""
+
+msgid "Repeat your password"
+msgstr ""
+
+msgid "Replaced by a newer proposal"
+msgstr ""
+
+msgid "Replaced by a newer proposal meanwhile."
+msgstr ""
+
+msgid "Report exported"
+msgstr ""
+
+msgid "Reporting hierarchy"
+msgstr ""
+
+msgid "Reports"
+msgstr ""
+
+msgid "Required tools (MCP)"
+msgstr ""
+
+msgid "Resetting…"
+msgstr ""
+
+msgid "Response time"
+msgstr ""
+
+msgid "Responsibility"
+msgstr ""
+
+msgid "Responsible"
+msgstr ""
+
+msgid "Restore"
+msgstr ""
+
+msgid "Restore company from backup"
+msgstr ""
+
+msgid "Restore complete"
+msgstr ""
+
+msgid "Restore complete."
+msgstr ""
+
+msgid "Restore failed."
+msgstr ""
+
+msgid "Restoring…"
+msgstr ""
+
+msgid "Results"
+msgstr ""
+
+msgid "Resume"
+msgstr ""
+
+msgid "Retry"
+msgstr ""
+
+msgid "Reusable capabilities agents can be composed from."
+msgstr ""
+
+msgid "Review"
+msgstr ""
+
+msgid "Revoke"
+msgstr ""
+
+msgid "Revoke this connection?"
+msgstr ""
+
+msgid "Revoked company-wide access"
+msgstr ""
+
+msgid "Rights"
+msgstr ""
+
+msgid "Role"
+msgstr ""
+
+msgid "Role created."
+msgstr ""
+
+msgid "Role deleted."
+msgstr ""
+
+msgid "Role updated"
+msgstr ""
+
+msgid "role:view"
+msgstr ""
+
+msgid "Roles of this company"
+msgstr ""
+
+msgid "Roll back"
+msgstr ""
+
+msgid "rooms"
+msgstr ""
+
+msgid "Routes each turn to a configured tier model"
+msgstr ""
+
+msgid "run"
+msgstr ""
+
+msgid "Run"
+msgstr ""
+
+msgid "Run details"
+msgstr ""
+
+msgid "Run history"
+msgstr ""
+
+msgid "Run not found."
+msgstr ""
+
+msgid "Run now"
+msgstr ""
+
+msgid "Run on behalf of the creator"
+msgstr ""
+
+msgid "running"
+msgstr ""
+
+msgid "Running a command"
+msgstr ""
+
+msgid "Running a program"
+msgstr ""
+
+msgid "Running now"
+msgstr ""
+
+msgid "Running…"
+msgstr ""
+
+msgid "Runs"
+msgstr ""
+
+msgid "Runs, durations, and waiting time across the tenant."
+msgstr ""
+
+msgid "Runs, last 30 days"
+msgstr ""
+
+msgid "Runtime"
+msgstr ""
+
+msgid "Runtime reset to the built-in default"
+msgstr ""
+
+msgid "Runtime updated"
+msgstr ""
+
+msgid "Same as department"
+msgstr ""
+
+msgid "Sampling overrides"
+msgstr ""
+
+msgid "Sampling settings saved"
+msgstr ""
+
+msgid "Save"
+msgstr ""
+
+msgid "Save as preset"
+msgstr ""
+
+msgid "Save changes"
+msgstr ""
+
+msgid "Save current layout as preset"
+msgstr ""
+
+msgid "Save sampling settings"
+msgstr ""
+
+msgid "Save the schedule again"
+msgstr ""
+
+msgid "Save title"
+msgstr ""
+
+msgid "Save your backup codes"
+msgstr ""
+
+msgid "Saved"
+msgstr ""
+
+msgid "Saved by caching:"
+msgstr ""
+
+msgid "Saved presets"
+msgstr ""
+
+msgid "Saving failed. Please try again."
+msgstr ""
+
+msgid "Saving…"
+msgstr ""
+
+msgid "Scan with your authenticator app"
+msgstr ""
+
+msgid "schedule"
+msgstr ""
+
+msgid "Schedule"
+msgstr ""
+
+msgid "Schedule / trigger"
+msgstr ""
+
+msgid "Schedule updated"
+msgstr ""
+
+msgid "Scheduled"
+msgstr ""
+
+msgid "Scope"
+msgstr ""
+
+msgid "Search"
+msgstr ""
+
+msgid "Search agents, departments, runs…"
+msgstr ""
+
+msgid "Search agents…"
+msgstr ""
+
+msgid "Search an existing Qdrant or pgvector collection — query-only, no copy into oc8."
+msgstr ""
+
+msgid "Search by name or sign-in"
+msgstr ""
+
+msgid "Search Capas…"
+msgstr ""
+
+msgid "Search data sources…"
+msgstr ""
+
+msgid "Search departments, agents, skills…"
+msgstr ""
+
+msgid "Search departments…"
+msgstr ""
+
+msgid "Search knowledge bases…"
+msgstr ""
+
+msgid "Search knowledge, files, agents …"
+msgstr ""
+
+msgid "Search members…"
+msgstr ""
+
+msgid "Search people"
+msgstr ""
+
+msgid "Search person or account"
+msgstr ""
+
+msgid "Search person or account …"
+msgstr ""
+
+msgid "Search skills, tools, capabilities…"
+msgstr ""
+
+msgid "Search skills…"
+msgstr ""
+
+msgid "Search sources"
+msgstr ""
+
+msgid "Search sources …"
+msgstr ""
+
+msgid "Search this knowledge base…"
+msgstr ""
+
+msgid "Search tools…"
+msgstr ""
+
+msgid "Search…"
+msgstr ""
+
+msgid "Searched the knowledge base"
+msgstr ""
+
+msgid "Searching the knowledge base"
+msgstr ""
+
+msgid "Seat added"
+msgstr ""
+
+msgid "Seat removed"
+msgstr ""
+
+msgid "Seat role"
+msgstr ""
+
+msgid "Seat updated"
+msgstr ""
+
+msgid "Sees and decides in every department, including ones created later."
+msgstr ""
+
+msgid "Select a ChatGPT account…"
+msgstr ""
+
+msgid "Select a credential…"
+msgstr ""
+
+msgid "Select a file to view its contents."
+msgstr ""
+
+msgid "Select a model"
+msgstr ""
+
+msgid "Select a model…"
+msgstr ""
+
+msgid "select all"
+msgstr ""
+
+msgid "select none"
+msgstr ""
+
+msgid "Select what to import"
+msgstr ""
+
+msgid "Select…"
+msgstr ""
+
+msgid "Self-sufficient"
+msgstr ""
+
+msgid "Send"
+msgstr ""
+
+msgid "Send again"
+msgstr ""
+
+msgid "Send answer"
+msgstr ""
+
+msgid "Send answers"
+msgstr ""
+
+msgid "Send e-mail from Gmail"
+msgstr ""
+
+msgid "Send for approval"
+msgstr ""
+
+msgid "Send reset link"
+msgstr ""
+
+msgid "Sending…"
+msgstr ""
+
+msgid "Sensitivity"
+msgstr ""
+
+msgid "Sent as the answer – attachments only afterwards."
+msgstr ""
+
+msgid "Set a new password so this person can sign in. There is no way to view their current password."
+msgstr ""
+
+msgid "Set anyway"
+msgstr ""
+
+msgid "Set automatically from the selected model"
+msgstr ""
+
+msgid "Set new password"
+msgstr ""
+
+msgid "Set password"
+msgstr ""
+
+msgid "Set up a new agent together, step by step. Changes nothing until you confirm."
+msgstr ""
+
+msgid "Set up now →"
+msgstr ""
+
+msgid "Set up your first administrator account to get started."
+msgstr ""
+
+msgid "Setting up an agent"
+msgstr ""
+
+msgid "Setting…"
+msgstr ""
+
+msgid "Settings"
+msgstr ""
+
+msgid "Setup failed"
+msgstr ""
+
+msgid "Shadow only"
+msgstr ""
+
+msgid "Share"
+msgstr ""
+
+msgid "Share account"
+msgstr ""
+
+msgid "Share this invite link"
+msgstr ""
+
+msgid "Share this reset link"
+msgstr ""
+
+msgid "Share your account with this agent?"
+msgstr ""
+
+msgid "Shared memory & private stores."
+msgstr ""
+
+msgid "Shared with the team"
+msgstr ""
+
+msgid "Short summary — otherwise the instructions are used"
+msgstr ""
+
+msgid "Shortened — only the first part of a result is kept."
+msgstr ""
+
+msgid "show"
+msgstr ""
+
+msgid "Show archived"
+msgstr ""
+
+msgid "Show chats"
+msgstr ""
+
+msgid "Show disabled"
+msgstr ""
+
+msgid "Show earlier"
+msgstr ""
+
+msgid "Show older"
+msgstr ""
+
+msgid "Show questions"
+msgstr ""
+
+msgid "Show spend so far and what is left."
+msgstr ""
+
+msgid "Show the rights a role may not hold, and why"
+msgstr ""
+
+msgid "Show work panel"
+msgstr ""
+
+msgid "Showed a summary"
+msgstr ""
+
+msgid "Sign in"
+msgstr ""
+
+msgid "Sign In"
+msgstr ""
+
+msgid "Sign in as…"
+msgstr ""
+
+msgid "Sign in first — a model on this provider needs its own ChatGPT account and has no shared-key fallback."
+msgstr ""
+
+msgid "Sign in with ChatGPT"
+msgstr ""
+
+msgid "Sign out"
+msgstr ""
+
+msgid "Sign-in email"
+msgstr ""
+
+msgid "Sign-in failed. Try again."
+msgstr ""
+
+msgid "Sign-in identity updated"
+msgstr ""
+
+msgid "Signing in…"
+msgstr ""
+
+msgid "Similar chunks"
+msgstr ""
+
+msgid "Since"
+msgstr ""
+
+msgid "Since creation"
+msgstr ""
+
+msgid "Skill assigned"
+msgstr ""
+
+msgid "Skill created"
+msgstr ""
+
+msgid "Skill library"
+msgstr ""
+
+msgid "Skill removed"
+msgstr ""
+
+msgid "Skill restored"
+msgstr ""
+
+msgid "Skill updated"
+msgstr ""
+
+msgid "Skills"
+msgstr ""
+
+msgid "skills found"
+msgstr ""
+
+msgid "Skip for now"
+msgstr ""
+
+msgid "Skipped: Copilot was paused"
+msgstr ""
+
+msgid "Skipped: no permission to use the Copilot"
+msgstr ""
+
+msgid "Skipped: the chat session is gone"
+msgstr ""
+
+msgid "Skipped: the member no longer exists"
+msgstr ""
+
+msgid "Skipped: the organisation is not active"
+msgstr ""
+
+msgid "Skipped: the responsibility is not active"
+msgstr ""
+
+msgid "Skipped: you were mid-conversation"
+msgstr ""
+
+msgid "soft"
+msgstr ""
+
+msgid "Soft-delete this person. They leave the users list and cannot sign in."
+msgstr ""
+
+msgid "Somebody already decided this."
+msgstr ""
+
+msgid "Somebody holds this role. Choose where they go first."
+msgstr ""
+
+msgid "something"
+msgstr ""
+
+msgid "Something went wrong"
+msgstr ""
+
+msgid "Something went wrong."
+msgstr ""
+
+msgid "Source not available"
+msgstr ""
+
+msgid "Source removed"
+msgstr ""
+
+msgid "Source: "
+msgstr ""
+
+msgid "Sources"
+msgstr ""
+
+msgid "Spend distribution"
+msgstr ""
+
+msgid "staff"
+msgstr ""
+
+msgid "Standalone agents"
+msgstr ""
+
+msgid "standing system prompt"
+msgstr ""
+
+msgid "Start from"
+msgstr ""
+
+msgid "Started by hand"
+msgstr ""
+
+msgid "Statistics"
+msgstr ""
+
+msgid "Statistics could not be loaded."
+msgstr ""
+
+msgid "Status"
+msgstr ""
+
+msgid "Step detail is not available for this run."
+msgstr ""
+
+msgid "Steps"
+msgstr ""
+
+msgid "Stop"
+msgstr ""
+
+msgid "Stop run"
+msgstr ""
+
+msgid "Stop the agent's running run at its next step"
+msgstr ""
+
+msgid "Stop the answer"
+msgstr ""
+
+msgid "Stop this run"
+msgstr ""
+
+msgid "Stopping work does not undo actions already taken."
+msgstr ""
+
+msgid "Storage, mail server and model keys, for any Capa or data source that needs one."
+msgstr ""
+
+msgid "Store a provider credential"
+msgstr ""
+
+msgid "subject"
+msgstr ""
+
+msgid "success"
+msgstr ""
+
+msgid "Suggest from instructions"
+msgstr ""
+
+msgid "Suggested replies"
+msgstr ""
+
+msgid "Summarise this"
+msgstr ""
+
+msgid "Summary"
+msgstr ""
+
+msgid "supervises →"
+msgstr ""
+
+msgid "Supervisor updated"
+msgstr ""
+
+msgid "Switch"
+msgstr ""
+
+msgid "Switch chat"
+msgstr ""
+
+msgid "Switch layout"
+msgstr ""
+
+msgid "Switch layout?"
+msgstr ""
+
+msgid "Switch to dark mode"
+msgstr ""
+
+msgid "Switch to light mode"
+msgstr ""
+
+msgid "Sync"
+msgstr ""
+
+msgid "Sync connected sources or upload documents into this base."
+msgstr ""
+
+msgid "Sync failed"
+msgstr ""
+
+msgid "Sync started"
+msgstr ""
+
+msgid "Syncing…"
+msgstr ""
+
+msgid "System"
+msgstr ""
+
+msgid "Table"
+msgstr ""
+
+msgid "Tamper-evident record of every decision."
+msgstr ""
+
+msgid "Target"
+msgstr ""
+
+msgid "Task (optional)"
+msgstr ""
+
+msgid "Task board"
+msgstr ""
+
+msgid "Task created"
+msgstr ""
+
+msgid "Task distribution"
+msgstr ""
+
+msgid "tasks"
+msgstr ""
+
+msgid "Team lead"
+msgstr ""
+
+msgid "Team lead · oversight"
+msgstr ""
+
+msgid "Team roster"
+msgstr ""
+
+msgid "Team shared"
+msgstr ""
+
+msgid "Teams, goals, and workload at a glance."
+msgstr ""
+
+msgid "Technical view"
+msgstr ""
+
+msgid "Temperature"
+msgstr ""
+
+msgid "Temperature must be a number"
+msgstr ""
+
+msgid "Tenant"
+msgstr ""
+
+msgid "Tenant-wide"
+msgstr ""
+
+msgid "Test"
+msgstr ""
+
+msgid "Test an MCP connection"
+msgstr ""
+
+msgid "Test connection"
+msgstr ""
+
+msgid "Test failed"
+msgstr ""
+
+msgid "Test now"
+msgstr ""
+
+msgid "Testing…"
+msgstr ""
+
+msgid "That chat doesn't exist or isn't yours."
+msgstr ""
+
+msgid "That department no longer exists."
+msgstr ""
+
+msgid "That did not work. Please try again."
+msgstr ""
+
+msgid "That link did not name an object I can pin, so this is a new chat."
+msgstr ""
+
+msgid "That model isn't available for this chat. Pick another one."
+msgstr ""
+
+msgid "That name is already taken."
+msgstr ""
+
+msgid "The access could not be saved. Please try again."
+msgstr ""
+
+msgid "The account's owner or an administrator can confirm it."
+msgstr ""
+
+msgid "The agent changed since this access was confirmed. Runs that need it fail until it is confirmed again."
+msgstr ""
+
+msgid "The agent is waiting for your input."
+msgstr ""
+
+msgid "The agent isn't reachable right now. Your message wasn't sent – try again in a moment."
+msgstr ""
+
+msgid "The agent was not created. Try again."
+msgstr ""
+
+msgid "The answer was not stopped. Try again."
+msgstr ""
+
+msgid "The assistant returned no answer. Try again or rephrase."
+msgstr ""
+
+msgid "The chat was not changed. Try again."
+msgstr ""
+
+msgid "The chat was not deleted. Try again."
+msgstr ""
+
+msgid "The chat was not moved. Try again."
+msgstr ""
+
+msgid "The chat was not renamed. Try again."
+msgstr ""
+
+msgid "The check failed. Please try again."
+msgstr ""
+
+msgid "The code expired before it was confirmed. Start again to get a new one."
+msgstr ""
+
+msgid "The configuration version this run is pinned to"
+msgstr ""
+
+msgid "The connection did not work. Please check your entries and try again."
+msgstr ""
+
+msgid "The copilot found nothing in the instructions to restrict here."
+msgstr ""
+
+msgid "The day somebody should only sign off offers: fork a built-in role, untick everything but four boxes, name it, assign it."
+msgstr ""
+
+msgid "The decision was not saved. Try again."
+msgstr ""
+
+msgid "The embedding model used for queries must be the same family (and dimension) that built the remote collection — otherwise search returns noise."
+msgstr ""
+
+msgid "The folder could not be loaded. Try again."
+msgstr ""
+
+msgid "The guided setup configures the tenant you are signed into. New tenants are deliberately provisioned by the administrator CLI so the application role never receives cross-tenant write authority."
+msgstr ""
+
+msgid "The integrations could not be loaded. Please try again later."
+msgstr ""
+
+msgid "the ladder"
+msgstr ""
+
+msgid "The last sync failed."
+msgstr ""
+
+msgid "The link doesn't fill the code in for you — type or paste it yourself."
+msgstr ""
+
+msgid "The mode could not be changed."
+msgstr ""
+
+msgid "The model couldn't be changed. Try again."
+msgstr ""
+
+msgid "The model is no longer available in the chat."
+msgstr ""
+
+msgid "The model you picked isn't available for this chat. Your message wasn't sent – pick another model or send with Auto."
+msgstr ""
+
+msgid "The name stays taken after a delete — it is never handed to a different role."
+msgstr ""
+
+msgid "The new chat could not be created. Try again."
+msgstr ""
+
+msgid "The object was not pinned. Try pinning it from the + menu."
+msgstr ""
+
+msgid "The office floor is for administrators. What is waiting on you — decisions and questions from your department's agents — is on your own page."
+msgstr ""
+
+msgid "The org_admin role is not set up for this tenant."
+msgstr ""
+
+msgid "The permission model could not be loaded."
+msgstr ""
+
+msgid "The permissions were not granted. Please sign in again and allow access."
+msgstr ""
+
+msgid "The project could not be saved. Check the name and try again."
+msgstr ""
+
+msgid "The project was not deleted. Try again."
+msgstr ""
+
+msgid "The provider needs you to sign in again. Please try once more."
+msgstr ""
+
+msgid "The role list could not be loaded."
+msgstr ""
+
+msgid "The run finished before it read this"
+msgstr ""
+
+msgid "The run has already finished."
+msgstr ""
+
+msgid "The run was not stopped. Try again."
+msgstr ""
+
+msgid "The run will stop at its next step boundary."
+msgstr ""
+
+msgid "The schedule has ended"
+msgstr ""
+
+msgid "The server cannot be reached. Please check the address."
+msgstr ""
+
+msgid "The setting could not be saved. Please try again."
+msgstr ""
+
+msgid "The source did not answer. Try again."
+msgstr ""
+
+msgid "The status of an agent handoff changed."
+msgstr ""
+
+msgid "The task board could not be loaded"
+msgstr ""
+
+msgid "The team lead observes reasoning traces and daily behavior to prevent role drift — separate from human-in-the-loop approvals, which stay off-agent."
+msgstr ""
+
+msgid "The test failed. Please try again."
+msgstr ""
+
+msgid "The text contains a credential. Remove it and set it up under Credentials."
+msgstr ""
+
+msgid "The timeline didn't load. Reload the page to try again."
+msgstr ""
+
+msgid "The update changed the setup form -- click Enable to review and confirm it."
+msgstr ""
+
+msgid "The user list could not be loaded."
+msgstr ""
+
+msgid "The username or API key is not correct."
+msgstr ""
+
+msgid "These describe what an AGENT may do in your systems. They are never given to a person, and they can only ever subtract: what an agent actually does is this, intersected with its department’s frame and with its own narrowing."
+msgstr ""
+
+msgid "These five roles ship with the product, so no request’s authorization depends on a database row existing. They cannot be changed here — a role of your own, above, is how you say something they do not."
+msgstr ""
+
+msgid "They will disappear from the users list and will not be able to sign in. Unused invite and reset links are spent so they cannot come back through an old mail."
+msgstr ""
+
+msgid "Thinking…"
+msgstr ""
+
+msgid "This access already exists."
+msgstr ""
+
+msgid "This access is not confirmed yet. Runs that need it fail until it is confirmed."
+msgstr ""
+
+msgid "This account belongs to a different organisation than the one connected before. Please sign in with the right account."
+msgstr ""
+
+msgid "This account is already connected by someone else."
+msgstr ""
+
+msgid "This action is blocked by an OC8 security policy."
+msgstr ""
+
+msgid "This agent has no published versions yet."
+msgstr ""
+
+msgid "This agent has not produced any files yet."
+msgstr ""
+
+msgid "This agent has not run yet. Its runs will appear here."
+msgstr ""
+
+msgid "This agent hasn't written any memories yet."
+msgstr ""
+
+msgid "This agent only"
+msgstr ""
+
+msgid "This agent was already created."
+msgstr ""
+
+msgid "This archive cannot be restored:"
+msgstr ""
+
+msgid "This archive carries provider credentials and OAuth tokens, encrypted under this passphrase. Enter it exactly as set at export time — a wrong passphrase fails the whole restore before anything is touched."
+msgstr ""
+
+msgid "This base already has ingested content, so its embedding model can't change -- old and new chunks would no longer be comparable. Delete and recreate the base to use a different model."
+msgstr ""
+
+msgid "This browser does not support push notifications."
+msgstr ""
+
+msgid "This cannot be undone."
+msgstr ""
+
+msgid "This chat belongs to "
+msgstr ""
+
+msgid "This chat no longer exists. Start a new one."
+msgstr ""
+
+msgid "This company has not defined any roles of its own. As long as everybody may do everything, you do not need any."
+msgstr ""
+
+msgid "This connection is not set up yet. Please contact your administrator."
+msgstr ""
+
+msgid "This deletes every agent, run and knowledge item this company currently has and replaces them with the contents of the uploaded file. It cannot be undone."
+msgstr ""
+
+msgid "This department has no team lead to receive the task."
+msgstr ""
+
+msgid "This feature is not available for your organisation."
+msgstr ""
+
+msgid "This filter produces too many results. Narrow the date range, choose a coarser grouping, or filter by an agent or department."
+msgstr ""
+
+msgid "This folder can't be opened. Go back and pick another."
+msgstr ""
+
+msgid "This folder is empty."
+msgstr ""
+
+msgid "This function is read-only in the plugin's manifest; it has no modify action."
+msgstr ""
+
+msgid "This integration is not available yet."
+msgstr ""
+
+msgid "This is where this agent works. Ask it something, or wait for its next run."
+msgstr ""
+
+msgid "This is where this agent works. Its runs and your messages show up here — write to start."
+msgstr ""
+
+msgid "this knowledge base"
+msgstr ""
+
+msgid "This knowledge base doesn't exist, or the link is broken. Pick one from the knowledge page."
+msgstr ""
+
+msgid "This legacy preview is read-only. The live token budgets above are the only enforced budget controls until a cost-limit API exists."
+msgstr ""
+
+msgid "This link is invalid or has expired."
+msgstr ""
+
+msgid "This log's tamper-proof seal is missing or does not match."
+msgstr ""
+
+msgid "This member"
+msgstr ""
+
+msgid "This model can see images (vision)"
+msgstr ""
+
+msgid "This proposal has expired."
+msgstr ""
+
+msgid "This proposal is no longer open."
+msgstr ""
+
+msgid "This provider needs a completion key before its agents can run."
+msgstr ""
+
+msgid "This question needs an answer."
+msgstr ""
+
+msgid "This replaces your current arrangement. You can switch back at any time."
+msgstr ""
+
+msgid "this run"
+msgstr ""
+
+msgid "This run could not be loaded."
+msgstr ""
+
+msgid "This run doesn't take messages — you can stop it."
+msgstr ""
+
+msgid "This run failed."
+msgstr ""
+
+msgid "This run has no acting person, so the agent cannot pick an account. Give the agent a fixed access."
+msgstr ""
+
+msgid "This runtime can't be used here:"
+msgstr ""
+
+msgid "This runtime is no longer available."
+msgstr ""
+
+msgid "This schedule has no owner. Please save it once again."
+msgstr ""
+
+msgid "This skill has no published version yet, so there is nothing to assign."
+msgstr ""
+
+msgid "This source can't be browsed — pin it as a whole."
+msgstr ""
+
+msgid "This source is no longer available to you. Go back and pick another."
+msgstr ""
+
+msgid "This step used its whole answer budget."
+msgstr ""
+
+msgid "This tool needs a login before it can be enabled."
+msgstr ""
+
+msgid "This trigger has no owner."
+msgstr ""
+
+msgid "This trigger may use its creator's account only if the creator allows it in the trigger's settings."
+msgstr ""
+
+msgid "This webhook has no owner."
+msgstr ""
+
+msgid "This widget could not be displayed."
+msgstr ""
+
+msgid "Thought"
+msgstr ""
+
+msgid "Throttle"
+msgstr ""
+
+msgid "Throttle — slow requests"
+msgstr ""
+
+msgid "Tier"
+msgstr ""
+
+msgid "Tier models"
+msgstr ""
+
+msgid "tight"
+msgstr ""
+
+msgid "tile"
+msgstr ""
+
+msgid "tiles"
+msgstr ""
+
+msgid "Time"
+msgstr ""
+
+msgid "Timezone"
+msgstr ""
+
+msgid "Title"
+msgstr ""
+
+msgid "To"
+msgstr ""
+
+msgid "To (UTC)"
+msgstr ""
+
+msgid "To adjust it, just keep typing what should be different."
+msgstr ""
+
+msgid "To the running run · taken into account at the next step"
+msgstr ""
+
+msgid "Today"
+msgstr ""
+
+msgid "Todos"
+msgstr ""
+
+msgid "Token Budgets (live)"
+msgstr ""
+
+msgid "Token spend across agents and departments — metered by the platform."
+msgstr ""
+
+msgid "Token spend across agents and departments."
+msgstr ""
+
+msgid "tokens"
+msgstr ""
+
+msgid "Tokens"
+msgstr ""
+
+msgid "tokens per skill"
+msgstr ""
+
+msgid "too big"
+msgstr ""
+
+msgid "Too many messages are waiting for this run. Wait until it has read them."
+msgstr ""
+
+msgid "Tool"
+msgstr ""
+
+msgid "tool access and guardrails"
+msgstr ""
+
+msgid "Tools"
+msgstr ""
+
+msgid "Tools (comma-separated)"
+msgstr ""
+
+msgid "Tools & Access"
+msgstr ""
+
+msgid "Tools & Guardrails"
+msgstr ""
+
+msgid "Top agents"
+msgstr ""
+
+msgid "Total duration"
+msgstr ""
+
+msgid "Total skills"
+msgstr ""
+
+msgid "Total spend"
+msgstr ""
+
+msgid "Total tokens"
+msgstr ""
+
+msgid "Try again"
+msgstr ""
+
+msgid "Try again in a moment."
+msgstr ""
+
+msgid "Turn off"
+msgstr ""
+
+msgid "Turn on"
+msgstr ""
+
+msgid "Two-factor authentication"
+msgstr ""
+
+msgid "Two-factor authentication enabled"
+msgstr ""
+
+msgid "Type"
+msgstr ""
+
+msgid "Type this company's name to confirm"
+msgstr ""
+
+msgid "Type your answer…"
+msgstr ""
+
+msgid "Unassign this provider's models from every agent before removing it."
+msgstr ""
+
+msgid "unassigned"
+msgstr ""
+
+msgid "Unassigned"
+msgstr ""
+
+msgid "unassigned agent"
+msgstr ""
+
+msgid "Unknown"
+msgstr ""
+
+msgid "Unknown widget type"
+msgstr ""
+
+msgid "Unnamed department"
+msgstr ""
+
+msgid "Unpin"
+msgstr ""
+
+msgid "Unpublished changes"
+msgstr ""
+
+msgid "Unregistered"
+msgstr ""
+
+msgid "Untested"
+msgstr ""
+
+msgid "Untitled chat"
+msgstr ""
+
+msgid "Update"
+msgstr ""
+
+msgid "Update pending"
+msgstr ""
+
+msgid "Updated"
+msgstr ""
+
+msgid "Updated its plan"
+msgstr ""
+
+msgid "Updating its plan"
+msgstr ""
+
+msgid "Updating…"
+msgstr ""
+
+msgid "Upload file"
+msgstr ""
+
+msgid "Uploading …"
+msgstr ""
+
+msgid "Uploading…"
+msgstr ""
+
+msgid "Usage (est.)"
+msgstr ""
+
+msgid "Usage below is an estimate from the editable pricing model (see Models), not the platform's recorded spend — see the Overview/By Agent/By Department tabs for metered figures."
+msgstr ""
+
+msgid "USD per 1M tokens — editable"
+msgstr ""
+
+msgid "USD per 1M tokens — managed by your platform operator"
+msgstr ""
+
+msgid "Use sign-in default"
+msgstr ""
+
+msgid "Use the built-in default"
+msgstr ""
+
+msgid "use the department's"
+msgstr ""
+
+msgid "Use this model for the Copilot"
+msgstr ""
+
+msgid "Use your authenticator app, or a backup code."
+msgstr ""
+
+msgid "Used by"
+msgstr ""
+
+msgid "used this month"
+msgstr ""
+
+msgid "User created"
+msgstr ""
+
+msgid "User created — an invite was emailed to them"
+msgstr ""
+
+msgid "User deleted"
+msgstr ""
+
+msgid "User ID"
+msgstr ""
+
+msgid "User not found."
+msgstr ""
+
+msgid "Users"
+msgstr ""
+
+msgid "Uses your personal subscription — agents on it can only be started manually."
+msgstr ""
+
+msgid "value"
+msgstr ""
+
+msgid "Verification failed"
+msgstr ""
+
+msgid "Verify"
+msgstr ""
+
+msgid "Verify now"
+msgstr ""
+
+msgid "Verifying…"
+msgstr ""
+
+msgid "Version"
+msgstr ""
+
+msgid "Version loaded — click Save to restore it"
+msgstr ""
+
+msgid "Versions"
+msgstr ""
+
+msgid "via department lead"
+msgstr ""
+
+msgid "Visibility"
+msgstr ""
+
+msgid "visual output"
+msgstr ""
+
+msgid "waiting"
+msgstr ""
+
+msgid "Waiting"
+msgstr ""
+
+msgid "Waiting for answers…"
+msgstr ""
+
+msgid "waiting for approval"
+msgstr ""
+
+msgid "Waiting for approval"
+msgstr ""
+
+msgid "Waiting for confirmation…"
+msgstr ""
+
+msgid "Waiting for hiring approval"
+msgstr ""
+
+msgid "waiting for input"
+msgstr ""
+
+msgid "waiting for task"
+msgstr ""
+
+msgid "Waiting for task"
+msgstr ""
+
+msgid "Waiting for the next step"
+msgstr ""
+
+msgid "Waiting for you"
+msgstr ""
+
+msgid "Waiting on your answer"
+msgstr ""
+
+msgid "warning"
+msgstr ""
+
+msgid "We could not tell which account you signed in with. Please try again."
+msgstr ""
+
+msgid "webhook"
+msgstr ""
+
+msgid "Webhook"
+msgstr ""
+
+msgid "Webhook created"
+msgstr ""
+
+msgid "Webhook removed"
+msgstr ""
+
+msgid "Week"
+msgstr ""
+
+msgid "weekdays {time}"
+msgstr ""
+
+msgid "Weekdays at {time}"
+msgstr ""
+
+msgid "Weekly on {day} at {time}"
+msgstr ""
+
+msgid "Weekly oversight report"
+msgstr ""
+
+msgid "What are you working on for me?"
+msgstr ""
+
+msgid "What came back"
+msgstr ""
+
+msgid "What does it do?"
+msgstr ""
+
+msgid "What happens if you agree"
+msgstr ""
+
+msgid "What is waiting for my approval?"
+msgstr ""
+
+msgid "What is waiting on me?"
+msgstr ""
+
+msgid "What may I do?"
+msgstr ""
+
+msgid "What needs approval?"
+msgstr ""
+
+msgid "What powers this agent?"
+msgstr ""
+
+msgid "What should the team lead do?"
+msgstr ""
+
+msgid "What should this agent do? Sent with every run."
+msgstr ""
+
+msgid "What should this agent do? This becomes its standing instructions — you can refine them later on the agent's own page."
+msgstr ""
+
+msgid "What this role is for"
+msgstr ""
+
+msgid "When it works"
+msgstr ""
+
+msgid "when this agent runs"
+msgstr ""
+
+msgid "When two agents in this department ask the model the same thing, serve the cached answer instead of asking again."
+msgstr ""
+
+msgid "Where do I find this?"
+msgstr ""
+
+msgid "Where the money goes"
+msgstr ""
+
+msgid "Where this person stands, and at which level."
+msgstr ""
+
+msgid "Which visual components (charts, tables, record cards) may be used when responding."
+msgstr ""
+
+msgid "Who may do what — and why you were refused."
+msgstr ""
+
+msgid "Who watches the thinking of"
+msgstr ""
+
+msgid "Whose access is this?"
+msgstr ""
+
+msgid "Why this change, for whoever reads the history"
+msgstr ""
+
+msgid "With limits"
+msgstr ""
+
+msgid "With recommendation"
+msgstr ""
+
+msgid "within limits"
+msgstr ""
+
+msgid "Work"
+msgstr ""
+
+msgid "Work out the steps and show them. Changes nothing."
+msgstr ""
+
+msgid "Work with files in OneDrive and SharePoint"
+msgstr ""
+
+msgid "Work with the files it creates in Google Drive"
+msgstr ""
+
+msgid "Working on {n} things"
+msgstr ""
+
+msgid "Working on 1 thing"
+msgstr ""
+
+msgid "Working…"
+msgstr ""
+
+msgid "Workspace starting"
+msgstr ""
+
+msgid "Writing a file"
+msgstr ""
+
+msgid "Wrote a file"
+msgstr ""
+
+msgid "Yes, approve"
+msgstr ""
+
+msgid "you"
+msgstr ""
+
+msgid "You are not allowed to connect this account for the organisation."
+msgstr ""
+
+msgid "You are not allowed to do this."
+msgstr ""
+
+msgid "You are not assigned to a department"
+msgstr ""
+
+msgid "You can attach up to 10 items."
+msgstr ""
+
+msgid "You can read every department, but decide in none — your role is read-only."
+msgstr ""
+
+msgid "You can read every department's questions, but answer none — your role is read-only."
+msgstr ""
+
+msgid "You can read this decision, but you cannot make it. Somebody who approves in this department decides."
+msgstr ""
+
+msgid "You can read this one, but not decide it — your seat in this department is view-only."
+msgstr ""
+
+msgid "You can read this question, but not answer it — your seat in this department is view-only."
+msgstr ""
+
+msgid "You can rearrange, resize, or remove any tile afterwards."
+msgstr ""
+
+msgid "You can't pin that"
+msgstr ""
+
+msgid "You cancelled the sign-in. Nothing was connected."
+msgstr ""
+
+msgid "You cannot edit this agent. Please ask an administrator or someone who may edit the agent."
+msgstr ""
+
+msgid "you define these"
+msgstr ""
+
+msgid "You don't have access to Copilot chat."
+msgstr ""
+
+msgid "You don't have permission to view this content."
+msgstr ""
+
+msgid "You hold no seat in any department."
+msgstr ""
+
+msgid "You may not decide this."
+msgstr ""
+
+msgid "You may not have permission to view this page, or the server could not be reached."
+msgstr ""
+
+msgid "You may not see all runs of this agent. Switch All runs off to see yours."
+msgstr ""
+
+msgid "You may not start runs for another agent."
+msgstr ""
+
+msgid "You may not write to this agent."
+msgstr ""
+
+msgid "You need access to knowledge to browse sources."
+msgstr ""
+
+msgid "Your access"
+msgstr ""
+
+msgid "Your account in this organisation no longer exists."
+msgstr ""
+
+msgid "Your accounts and the organisation's accesses that agents work with."
+msgstr ""
+
+msgid "Your answer"
+msgstr ""
+
+msgid "Your answer was not sent. Try again."
+msgstr ""
+
+msgid "Your assigned role could not be read from the database just now. What follows is what your token carries; an assignment on top of it would not be shown. Nothing was changed."
+msgstr ""
+
+msgid "Your chats by date and project"
+msgstr ""
+
+msgid "Your company"
+msgstr ""
+
+msgid "Your company as a living floor — each department a room."
+msgstr ""
+
+msgid "Your dashboard could not be loaded."
+msgstr ""
+
+msgid "Your email"
+msgstr ""
+
+msgid "Your email has been updated."
+msgstr ""
+
+msgid "Your files could not be uploaded. Try again."
+msgstr ""
+
+msgid "Your IT administrator must approve this connection first. Please send them the link below."
+msgstr ""
+
+msgid "Your message"
+msgstr ""
+
+msgid "Your message is too long (at most 4,000 characters)."
+msgstr ""
+
+msgid "Your message was not sent. Try again."
+msgstr ""
+
+msgid "Your model providers. Add more via the wizard — cloud accounts or local servers."
+msgstr ""
+
+msgid "Your name"
+msgstr ""
+
+msgid "Your office is open!"
+msgstr ""
+
+msgid "Your own answer replaces the ticked options."
+msgstr ""
+
+msgid "Your password"
+msgstr ""
+
+msgid "Your pins were not saved. Try again."
+msgstr ""
+
+msgid "Your queue could not be loaded"
+msgstr ""
+
+msgid "Your rating was not saved. Try again."
+msgstr ""
+
+msgid "Your role does not include agent:manage, so this assignment is read-only for you."
+msgstr ""
+
+msgid "Your role does not include agent:manage, so this field is read-only for you."
+msgstr ""
+
+msgid "Your role does not include member:manage, so you cannot manage users."
+msgstr ""
+
+msgid "Your role does not include member:manage, so you cannot manage users. Ask your administrator for access."
+msgstr ""
+
+msgid "Your role does not include role:view, so which roles this company has invented and who holds them is not shown to you. What you yourself may do is at the top of this page and needs no permission at all."
+msgstr ""
+
+msgid "Your seats"
+msgstr ""
+
+msgid "Your work is next door"
+msgstr ""
