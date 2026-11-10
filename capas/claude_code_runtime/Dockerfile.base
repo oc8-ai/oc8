@@ -24,7 +24,12 @@ ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python \
 RUN uv python install 3.12 \
     && ln -s "$(uv python find 3.12)" /usr/local/bin/python3 \
     && ln -s /usr/local/bin/python3 /usr/local/bin/python
-RUN uv pip install --python 3.12 --system --break-system-packages playwright pillow pandas reportlab \
+# libatomic1: the node binary bundled in the playwright wheel links libatomic.so.1,
+# which node:22-bookworm-slim does not ship. playwright is pinned so a new release
+# cannot change the bundled node (or the Chromium build) under us unnoticed.
+RUN apt-get update && apt-get install -y --no-install-recommends libatomic1 \
+    && rm -rf /var/lib/apt/lists/*
+RUN uv pip install --python 3.12 --system --break-system-packages playwright==1.64.1 pillow pandas reportlab \
     && python3 -m playwright install --with-deps chromium \
     && chmod -R a+rX /opt/uv /opt/ms-playwright
 # NO `useradd`, and NO `USER` here. Three build/runtime failures live in what
