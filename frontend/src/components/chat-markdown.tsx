@@ -13,6 +13,7 @@ import remarkGfm from "remark-gfm";
 import { Check, Copy, ExternalLink, Image as ImageIcon } from "lucide-react";
 
 import { isPlainClick, objectHref, parseObjectUrl } from "@/components/conversation/object-links";
+import { rehypeStreamWords } from "@/components/stream-words";
 import type { ChatSourceDTO } from "@/lib/hooks-chat";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -171,6 +172,8 @@ function withCitations(text: string, count: number): string {
     .join("");
 }
 
+const STREAMING_REHYPE = [rehypeStreamWords];
+
 export function ChatMarkdown({
   text,
   className,
@@ -186,7 +189,8 @@ export function ChatMarkdown({
   /** Opens an object chip's in-app route without a page load. Without it a
    *  chip is a plain link. */
   onObjectClick?: (href: string) => void;
-  /** Draws the streaming caret inline after the last word (`stream-caret`). */
+  /** While the answer streams: a breathing dot inline after the last word and
+   *  new words fading in (`stream-tail`). */
   streaming?: boolean;
 }) {
   const t = useT();
@@ -261,15 +265,16 @@ export function ChatMarkdown({
   };
   return (
     <div
-      data-testid={streaming ? "stream-caret" : undefined}
+      data-testid={streaming ? "stream-tail" : undefined}
       className={cn(
-        streaming && "stream-caret",
+        streaming && "stream-tail",
         "min-w-0 space-y-2 text-sm leading-relaxed text-foreground [overflow-wrap:anywhere] [&_code]:rounded-md [&_code]:bg-muted [&_code]:px-1 [&_code]:font-mono [&_code]:text-xs [&_h1]:text-base [&_h1]:font-semibold [&_h2]:text-base [&_h2]:font-semibold [&_h3]:text-sm [&_h3]:font-semibold [&_li]:ml-4 [&_ol]:list-decimal [&_ol]:space-y-0.5 [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:space-y-0.5 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_table]:block [&_table]:w-full [&_table]:overflow-x-auto [&_table]:border-collapse [&_th]:border [&_th]:border-border [&_th]:px-2 [&_th]:py-1 [&_th]:text-left [&_th]:font-medium [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1",
         className,
       )}
     >
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        rehypePlugins={streaming ? STREAMING_REHYPE : undefined}
         components={components}
         urlTransform={(url) => url}
       >

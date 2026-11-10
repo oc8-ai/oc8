@@ -27,7 +27,10 @@ const SRC = join(process.cwd(), "src");
  *  - lib/hooks*.ts and lib/conversation-api.ts declare the DTO field,
  *  - components/conversation/step-list.tsx is the one chat's inline steps,
  *  - components/conversation/timeline-runs.ts hands a timeline run's steps
- *    to step-list.tsx (the Live tab), the same cache entry the patchers fill. */
+ *    to step-list.tsx (the Live tab), the same cache entry the patchers fill,
+ *  - components/conversation/presence-label.ts reads only the NEWEST call to
+ *    word the one "waiting for an answer" line ("Reading example.com …");
+ *    it renders no step, and the line is gone once the answer starts. */
 const ALLOWED = new Set([
   "lib/run-steps.ts",
   "lib/hooks.ts",
@@ -37,6 +40,7 @@ const ALLOWED = new Set([
   "components/run-step-timeline.tsx",
   "components/conversation/step-list.tsx",
   "components/conversation/timeline-runs.ts",
+  "components/conversation/presence-label.ts",
   "components/dashboard/widgets/activity-widget.tsx",
   "components/dashboard/widgets/needs-me-widget.tsx",
   "routes/agents.$id.tsx",

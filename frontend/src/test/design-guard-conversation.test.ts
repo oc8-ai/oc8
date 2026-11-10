@@ -47,7 +47,13 @@ describe("DESIGN.md guard for components/conversation", () => {
 
   it("declares the chat utilities and one global reduced-motion rule", () => {
     const css = readFileSync(STYLES, "utf8");
-    for (const utility of ["text-micro", "turn-in", "text-shimmer", "stream-caret"]) {
+    for (const utility of [
+      "text-micro",
+      "turn-in",
+      "text-shimmer",
+      "stream-tail",
+      "presence-mark",
+    ]) {
       expect(css).toContain(`@utility ${utility}`);
     }
     expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)\s*\{\s*\*,/);

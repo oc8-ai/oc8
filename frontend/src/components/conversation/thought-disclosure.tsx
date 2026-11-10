@@ -1,5 +1,6 @@
-// The model's reasoning for a turn: "Thinking…" while it reasons, then a
-// collapsed "Thought · 4 s" the user can open. Collapsed by default (spec
+// The model's reasoning for a turn: a collapsed "Thoughts" while it reasons
+// (ThinkingPresence says "Thinking …" beside it, so this never repeats it),
+// then "Thought · 4 s" the user can open. Collapsed by default (spec
 // invariant) -- reasoning never pushes the answer down unasked.
 import { useState } from "react";
 import { ChevronRight } from "lucide-react";
@@ -43,9 +44,9 @@ export function ThoughtDisclosure({
 }) {
   const t = useT();
   const [open, setOpen] = useState(false);
-  if (!live && !text) return null;
+  if (!text) return null;
   const label = live
-    ? t("Thinking…", "Denkt nach …")
+    ? t("Thoughts", "Gedanken")
     : seconds !== null
       ? t(`Thought · ${seconds} s`, `Nachgedacht · ${seconds} s`)
       : t("Thought", "Nachgedacht");
@@ -62,7 +63,7 @@ export function ThoughtDisclosure({
           className={cn("size-3.5 transition-transform duration-150", open && "rotate-90")}
           aria-hidden
         />
-        <span className={cn(live && "text-shimmer")}>{label}</span>
+        <span>{label}</span>
       </button>
       {open && text && (
         <p className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap border-l border-border pl-3 text-xs text-muted-foreground">

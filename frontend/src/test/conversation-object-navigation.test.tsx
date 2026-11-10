@@ -92,15 +92,15 @@ describe("object chips", () => {
 describe("the streaming caret", () => {
   it("is drawn by the markdown root after its last word, not as a block of its own", () => {
     const { container, rerender } = render(<StreamingText text={"One\n\nTwo words"} streaming />);
-    const host = screen.getByTestId("stream-caret");
-    expect(host).toHaveClass("stream-caret");
+    const host = screen.getByTestId("stream-tail");
+    expect(host).toHaveClass("stream-tail");
     // The caret host is the markdown root itself: its last child is the last
     // paragraph, so the ::after lands inline after "words".
     expect(host.lastElementChild?.textContent).toBe("Two words");
-    expect(container.querySelectorAll("[data-testid='stream-caret']")).toHaveLength(1);
+    expect(container.querySelectorAll("[data-testid='stream-tail']")).toHaveLength(1);
     rerender(<StreamingText text={"One\n\nTwo words"} streaming={false} />);
-    expect(screen.queryByTestId("stream-caret")).toBeNull();
-    expect(container.querySelector(".stream-caret")).toBeNull();
+    expect(screen.queryByTestId("stream-tail")).toBeNull();
+    expect(container.querySelector(".stream-tail")).toBeNull();
   });
 });
 

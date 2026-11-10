@@ -369,8 +369,8 @@
   }
 }
 
-/* doc: "Thinking…" while a model reasons -- the only looping animation in the
-   chat, and it runs only while the state lasts. */
+/* doc: a text shimmer for a state that lasts -- it runs only while the state
+   does. */
 @utility text-shimmer {
   background-image: linear-gradient(
     90deg,
@@ -384,28 +384,115 @@
   animation: oc8-shimmer 1.6s linear infinite;
 }
 
-@keyframes oc8-caret-blink {
+@keyframes oc8-breathe {
+  0%,
+  100% {
+    opacity: 0.7;
+    transform: scale(0.9);
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--primary) 0%, transparent);
+  }
   50% {
+    opacity: 1;
+    transform: scale(1.05);
+    box-shadow: 0 0 12px 1px color-mix(in oklab, var(--primary) 35%, transparent);
+  }
+}
+
+/* doc: the Copilot mark while a turn waits for its first word -- breathes
+   (0.9 -> 1.05, soft glow) on a 1.6 s loop, and only while the wait lasts.
+   Under reduced motion it stands still at full size. */
+@utility presence-mark {
+  animation: oc8-breathe 1.6s ease-in-out infinite;
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
+}
+
+@keyframes oc8-presence-in {
+  from {
+    opacity: 0;
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    filter: none;
+  }
+}
+
+@keyframes oc8-presence-out {
+  from {
+    opacity: 1;
+  }
+  to {
     opacity: 0;
   }
 }
 
-/* Set on the markdown root while an answer streams. The caret is the ::after
-   of the last block (inside the last item of a trailing list), so it sits
-   inline right after the last word and owns no box that could jump when it
-   goes away. A root with nothing in it yet shows the caret on its own. */
-@utility stream-caret {
+/* doc: the waiting line's words crossfade over 200 ms when they change; the
+   two labels share one grid cell, so nothing moves. */
+@utility presence-in {
+  animation: oc8-presence-in 200ms ease-out both;
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
+}
+
+@utility presence-out {
+  animation: oc8-presence-out 200ms ease-in both;
+}
+
+@keyframes oc8-tail-breathe {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.75);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes oc8-word-in {
+  from {
+    opacity: 0;
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    filter: none;
+  }
+}
+
+/* Set on the markdown root while an answer streams. The tail -- a small
+   breathing dot in the brand colour with a soft glow -- is the ::after of the
+   last block (inside the last item of a trailing list), so it sits inline
+   right after the last word and owns no box that could jump when it goes
+   away. New words (`.stream-word`, wrapped only while streaming) fade in
+   over 160 ms: opacity and blur only, never layout. Reduced motion: a still
+   dot and words that simply appear. */
+@utility stream-tail {
   & > :last-child:not(ul, ol, pre, table, hr)::after,
-  & > :is(ul, ol):last-child > li:last-child::after,
-  &:empty::after {
+  & > :is(ul, ol):last-child > li:last-child::after {
     content: "";
     display: inline-block;
-    width: 0.5ch;
-    height: 1em;
-    margin-left: 1px;
-    vertical-align: text-bottom;
-    background: var(--foreground);
-    animation: oc8-caret-blink 1s step-end infinite;
+    width: 0.45em;
+    height: 0.45em;
+    margin-left: 0.3em;
+    vertical-align: 0.1em;
+    border-radius: 9999px;
+    background: var(--primary);
+    box-shadow: 0 0 6px 1px color-mix(in oklab, var(--primary) 40%, transparent);
+    animation: oc8-tail-breathe 1.6s ease-in-out infinite;
+    @media (prefers-reduced-motion: reduce) {
+      animation: none;
+    }
+  }
+  & .stream-word {
+    animation: oc8-word-in 160ms ease-out both;
+    @media (prefers-reduced-motion: reduce) {
+      animation: none;
+    }
   }
 }
 

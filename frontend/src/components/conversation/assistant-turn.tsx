@@ -1,5 +1,6 @@
 // No bubble, full column width. Top to bottom: thought, steps, the answer
-// with a caret, cards, sources, then actions (spec §2.1).
+// (before its first word, the breathing presence line; while it streams, a
+// soft dot after the last word), cards, sources, then actions (spec §2.1).
 import { useEffect, useState, type ReactNode } from "react";
 import {
   Check,
@@ -16,7 +17,6 @@ import { MessageActions, MessageParts } from "@/edition/slots";
 import { RunComponents } from "@/components/run-record-card";
 import { ConnectionRequiredNotice } from "@/components/connections/connection-required-notice";
 import { ToolDeniedNotice } from "@/components/connections/tool-denied-notice";
-import { RunStartPhase } from "@/components/run-start-phase";
 import { useMessageFeedback, useTurnRun } from "@/lib/conversation-api";
 import { sourcesOf, type RunActivityDTO } from "@/lib/hooks-chat";
 import { useT } from "@/lib/i18n";
@@ -26,11 +26,15 @@ import { isEmptyReply } from "./empty-reply";
 import { Sources } from "./sources";
 import { StepList } from "./step-list";
 import { StreamingText } from "./streaming-text";
+import { ThinkingPresence } from "./thinking-presence";
 import { ThoughtDisclosure, thoughtOf } from "./thought-disclosure";
 import type { AssistantTurnModel } from "./types";
 import { useObjectNavigation } from "./use-object-navigation";
 
 const TERMINAL = new Set(["done", "failed", "interrupted"]);
+/** A run in these states is waiting on a person, not working: the turn shows
+ *  the question or the approval, never "Thinking …". */
+const WAITING_ON_PERSON = new Set(["waiting_for_input", "waiting_for_approval"]);
 
 function ActionButton({
   label,
@@ -102,6 +106,12 @@ export function AssistantTurn({
     ? message.content
     : run?.liveAnswer || (run && TERMINAL.has(run.state) ? (run.output ?? "") : "");
   const thought = run ? thoughtOf(run) : { text: null, seconds: null };
+  // The live turn before its first word -- including the moment before its
+  // run has loaded and an isolated run's workspace start.
+  const awaitingFirstWord =
+    showingLive &&
+    !answer &&
+    (!run || (!TERMINAL.has(run.state) && !WAITING_ON_PERSON.has(run.state)));
   // Copied and rated belong to the answer on screen, not to the turn.
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [ratings, setRatings] = useState<Record<string, "up" | "down">>({});
@@ -158,12 +168,12 @@ export function AssistantTurn({
   return (
     <article className="turn-in space-y-2" aria-label={t("Answer", "Antwort")}>
       {trigger}
-      {/* An isolated run before its first step: say the workspace is
-          starting rather than show nothing (RunStartPhase hides itself
-          outside the start phases and once the run has ended). */}
-      {run && <RunStartPhase phase={run.phase} state={run.state} />}
       <ThoughtDisclosure live={live && !answer} text={thought.text} seconds={thought.seconds} />
       {run && <StepList run={run} labelsOnly={labelsOnly} />}
+      {/* Before the first word: the breathing mark and what the run is doing
+          now -- "Thinking …", the current step, or an isolated run's
+          workspace start. Gone the moment text arrives. */}
+      {awaitingFirstWord && <ThinkingPresence run={run ?? null} />}
       <StreamingText
         text={answer}
         streaming={live}

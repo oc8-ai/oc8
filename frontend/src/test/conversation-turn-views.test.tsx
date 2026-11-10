@@ -144,7 +144,7 @@ describe("AssistantTurn", () => {
       />,
     );
     expect(screen.getByText("Partial")).toBeInTheDocument();
-    expect(screen.getByTestId("stream-caret")).toBeInTheDocument();
+    expect(screen.getByTestId("stream-tail")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Copy answer/ })).toBeNull();
   });
 
@@ -255,7 +255,10 @@ describe("turn view fixes", () => {
         />
       </QueryClientProvider>,
     );
-    expect(screen.getByText("Fresh take")).toBeInTheDocument();
+    // While streaming, each word is its own fading span: match the paragraph.
+    expect(
+      screen.getByText((_, el) => el?.tagName === "P" && el.textContent === "Fresh take"),
+    ).toBeInTheDocument();
   });
 
   it("keeps the rating per answer and resets it on a variant switch", () => {
