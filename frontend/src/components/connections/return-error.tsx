@@ -20,7 +20,7 @@ export function ReturnError({
             readOnly
             aria-label={t(
               "Approval link for your IT administrator",
-              "Freigabe-Link für Ihren IT-Administrator",
+              "Freigabe-Link für deinen IT-Administrator",
             )}
             value={adminConsentUrl}
             onFocus={(event) => event.currentTarget.select()}

@@ -61,7 +61,7 @@ export function ConnectDialog({
               ? oneLineBenefit(integration, t)
               : t(
                   "Connect an account to use it in oc8.",
-                  "Verbinden Sie ein Konto, um es in oc8 zu nutzen.",
+                  "Verbinde ein Konto, um es in oc8 zu nutzen.",
                 )}
           </DialogDescription>
         </DialogHeader>
@@ -69,7 +69,7 @@ export function ConnectDialog({
           <p role="alert" className="text-sm text-destructive">
             {t(
               "The integrations could not be loaded. Please try again later.",
-              "Die Integrationen konnten nicht geladen werden. Bitte versuchen Sie es später erneut.",
+              "Die Integrationen konnten nicht geladen werden. Bitte versuch es später erneut.",
             )}
           </p>
         ) : !integration || !integration.available ? (

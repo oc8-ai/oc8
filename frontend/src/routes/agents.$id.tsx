@@ -1324,7 +1324,7 @@ export function AssignedModelPanel({
           "Die Änderung gilt für den nächsten Lauf. Modellkonfigurationen verwaltest du unter Modelle.",
         )}
         {!mayManage &&
-          ` ${t("Your role does not include agent:manage, so this assignment is read-only for you.", "Ihre Rolle enthält agent:manage nicht, deshalb ist diese Zuweisung für Sie schreibgeschützt.")}`}
+          ` ${t("Your role does not include agent:manage, so this assignment is read-only for you.", "Deine Rolle enthält agent:manage nicht, deshalb ist diese Zuweisung für dich schreibgeschützt.")}`}
       </p>
 
       {agent.modelConfigId && (

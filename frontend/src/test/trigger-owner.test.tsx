@@ -100,7 +100,7 @@ describe("TriggerOwner", () => {
       createdByName: null,
     });
     expect(
-      screen.getByText("Dieser Zeitplan hat keinen Besitzer. Bitte speichern Sie ihn einmal neu."),
+      screen.getByText("Dieser Zeitplan hat keinen Besitzer. Bitte speicher ihn einmal neu."),
     ).toBeInTheDocument();
   });
 
@@ -113,7 +113,7 @@ describe("TriggerOwner", () => {
     });
     expect(
       screen.getByText(
-        "Der Agent wurde geändert. Bitte öffnen und speichern Sie den Zeitplan erneut, damit er wieder in Ihrem Namen arbeitet.",
+        "Der Agent wurde geändert. Bitte öffne und speicher den Zeitplan erneut, damit er wieder in deinem Namen arbeitet.",
       ),
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Zeitplan erneut speichern" }));

@@ -115,7 +115,7 @@ describe("AgentToolAccessPanel", () => {
       "Standard: im Kontext des Nutzers",
       "Im Kontext des Nutzers",
       "Organisation: shared@acme.de",
-      "Ihr Konto: me@acme.de",
+      "Dein Konto: me@acme.de",
       "Konto von Anna: anna@acme.de",
     ]);
   });
@@ -142,7 +142,7 @@ describe("AgentToolAccessPanel", () => {
     });
     expect(
       await screen.findByText(
-        "Wenn Kolleginnen und Kollegen mit diesem Agenten arbeiten, nutzt er dafür Ihr Konto me@acme.de.",
+        "Wenn Kolleginnen und Kollegen mit diesem Agenten arbeiten, nutzt er dafür dein Konto me@acme.de.",
       ),
     ).toBeInTheDocument();
     expect(setAccess).not.toHaveBeenCalled();
@@ -162,7 +162,7 @@ describe("AgentToolAccessPanel", () => {
     });
     fireEvent.click(await screen.findByRole("button", { name: "Abbrechen" }));
     await waitFor(() =>
-      expect(screen.queryByText(/nutzt er dafür Ihr Konto/)).not.toBeInTheDocument(),
+      expect(screen.queryByText(/nutzt er dafür dein Konto/)).not.toBeInTheDocument(),
     );
     expect(setAccess).not.toHaveBeenCalled();
   });
@@ -205,7 +205,7 @@ describe("AgentToolAccessPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Bestätigen" }));
     expect(
       await screen.findByText(
-        "Wenn Kolleginnen und Kollegen mit diesem Agenten arbeiten, nutzt er dafür Ihr Konto me@acme.de.",
+        "Wenn Kolleginnen und Kollegen mit diesem Agenten arbeiten, nutzt er dafür dein Konto me@acme.de.",
       ),
     ).toBeInTheDocument();
     expect(setAccess).not.toHaveBeenCalled();
@@ -233,7 +233,7 @@ describe("AgentToolAccessPanel", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Bestätigen" }));
     fireEvent.click(await screen.findByRole("button", { name: "Abbrechen" }));
     await waitFor(() =>
-      expect(screen.queryByText(/nutzt er dafür Ihr Konto/)).not.toBeInTheDocument(),
+      expect(screen.queryByText(/nutzt er dafür dein Konto/)).not.toBeInTheDocument(),
     );
     expect(setAccess).not.toHaveBeenCalled();
   });
@@ -252,7 +252,7 @@ describe("AgentToolAccessPanel", () => {
     renderPanel(false);
     expect(
       await screen.findByText(
-        "Sie können diesen Agenten nicht bearbeiten. Bitte wenden Sie sich an eine Administratorin bzw. einen Administrator oder an jemanden, der den Agenten bearbeiten darf.",
+        "Du kannst diesen Agenten nicht bearbeiten. Bitte wende dich an eine Administratorin bzw. einen Administrator oder an jemanden, der den Agenten bearbeiten darf.",
       ),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Bestätigen" })).not.toBeInTheDocument();

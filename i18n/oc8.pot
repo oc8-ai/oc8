@@ -506,6 +506,9 @@ msgstr ""
 msgid "Asked you"
 msgstr ""
 
+msgid "Asking a colleague …"
+msgstr ""
+
 msgid "Asking a question"
 msgstr ""
 
@@ -849,6 +852,9 @@ msgid "Checking the numbers"
 msgstr ""
 
 msgid "Checking what needs a decision"
+msgstr ""
+
+msgid "Checking your approvals …"
 msgstr ""
 
 msgid "Choose a company, or create a safely isolated one for local testing."
@@ -2642,6 +2648,9 @@ msgstr ""
 msgid "Looking through its notes"
 msgstr ""
 
+msgid "Looking through its notes …"
+msgstr ""
+
 msgid "Made a note"
 msgstr ""
 
@@ -3662,6 +3671,9 @@ msgstr ""
 msgid "Reading a resource"
 msgstr ""
 
+msgid "Reading a web page …"
+msgstr ""
+
 msgid "Reading archive…"
 msgstr ""
 
@@ -4110,6 +4122,12 @@ msgid "Searched the knowledge base"
 msgstr ""
 
 msgid "Searching the knowledge base"
+msgstr ""
+
+msgid "Searching the knowledge base …"
+msgstr ""
+
+msgid "Searching the web …"
 msgstr ""
 
 msgid "Seat added"
@@ -4796,6 +4814,9 @@ msgstr ""
 msgid "They will disappear from the users list and will not be able to sign in. Unused invite and reset links are spent so they cannot come back through an old mail."
 msgstr ""
 
+msgid "Thinking …"
+msgstr ""
+
 msgid "Thinking…"
 msgstr ""
 
@@ -4977,6 +4998,9 @@ msgid "This widget could not be displayed."
 msgstr ""
 
 msgid "Thought"
+msgstr ""
+
+msgid "Thoughts"
 msgstr ""
 
 msgid "Throttle"

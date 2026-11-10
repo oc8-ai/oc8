@@ -62,7 +62,7 @@ export function TotpEnroll({ token, onDone }: { token: string; onDone: () => voi
   return (
     <div className="space-y-4">
       <h3 className="text-sm font-semibold">
-        {t("Scan with your authenticator app", "Mit Ihrer Authenticator-App scannen")}
+        {t("Scan with your authenticator app", "Mit deiner Authenticator-App scannen")}
       </h3>
       <img src={qrDataUrl} alt={t("QR code", "QR-Code")} className="mx-auto h-40 w-40" />
       <p className="text-center text-xs text-muted-foreground">

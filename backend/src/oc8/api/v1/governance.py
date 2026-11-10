@@ -29,8 +29,8 @@ decision would have to be argued again with the opposite answer.
 
 Two more things it now says, and one it survives:
 
-* **The SOURCE of the caller's authority.** "Aus Ihrer Rolle `operator`" and
-  "aus der Rolle *Freigabe Vertrieb*, die Ihnen zugewiesen wurde" are different
+* **The SOURCE of the caller's authority.** "Aus deiner Rolle `operator`" and
+  "aus der Rolle *Freigabe Vertrieb*, die dir zugewiesen wurde" are different
   sentences, and only one of them tells somebody who to go and ask.
   `callerPermissions` is the RESOLVED set rather than `permissions_for(token)`,
   which for exactly the population this slice creates would have rendered "you

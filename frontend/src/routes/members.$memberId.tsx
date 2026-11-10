@@ -76,7 +76,7 @@ function MemberDetail() {
         <p className="text-sm text-muted-foreground">
           {t(
             "Your role does not include member:manage, so you cannot manage users.",
-            "Ihre Rolle enthält member:manage nicht, daher können Sie Benutzer nicht verwalten.",
+            "Deine Rolle enthält member:manage nicht, daher kannst du Benutzer nicht verwalten.",
           )}
         </p>
       </Panel>
@@ -324,7 +324,7 @@ export function MemberDetailForm({ member }: { member: Member }) {
 
   const addSeat = () => {
     if (!newSeatDepartmentId) {
-      toast.error(t("Choose a department.", "Wählen Sie ein Department."));
+      toast.error(t("Choose a department.", "Wähle ein Department."));
       return;
     }
     grantSeat.mutate(
@@ -493,7 +493,7 @@ export function MemberDetailForm({ member }: { member: Member }) {
           <p className="mt-1 text-sm text-muted-foreground">
             {t(
               "Set a new password so this person can sign in. There is no way to view their current password.",
-              "Vergeben Sie ein neues Passwort, damit sich diese Person anmelden kann. Das aktuelle Passwort kann nicht eingesehen werden.",
+              "Vergib ein neues Passwort, damit sich diese Person anmelden kann. Das aktuelle Passwort kann nicht eingesehen werden.",
             )}
           </p>
           <div className="mt-4 flex max-w-md gap-2 text-sm">

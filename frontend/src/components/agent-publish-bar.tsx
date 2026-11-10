@@ -145,7 +145,7 @@ export function describePublishError(err: unknown, t: (en: string, de: string) =
     const current = detail?.current ?? "?";
     return t(
       `Somebody else published v${current} while you were editing. Reload before publishing.`,
-      `Jemand anderes hat v${current} veröffentlicht, während Sie bearbeitet haben. Bitte neu laden.`,
+      `Jemand anderes hat v${current} veröffentlicht, während du bearbeitet hast. Bitte neu laden.`,
     );
   }
   if (code === "no_changes_to_publish") {
@@ -165,7 +165,7 @@ export function describePublishError(err: unknown, t: (en: string, de: string) =
     const what = describeMissingReferences(detail?.missing, t);
     return t(
       `This version points at ${what} that no longer exist. Pick a different version, or recreate what was deleted first.`,
-      `Diese Version verweist auf ${what}, die nicht mehr existieren. Wählen Sie eine andere Version, oder stellen Sie das Gelöschte zuerst wieder her.`,
+      `Diese Version verweist auf ${what}, die nicht mehr existieren. Wähle eine andere Version, oder stelle das Gelöschte zuerst wieder her.`,
     );
   }
   if (code === "narrowing_exceeds_frame") {

@@ -18,11 +18,11 @@ export function ConnectionRequiredNotice({
   if (!value) return null;
   const name = providerName(value.provider);
   const account = name
-    ? { en: `your ${name} account`, de: `Ihr ${name}-Konto`, deDative: `Ihrem ${name}-Konto` }
+    ? { en: `your ${name} account`, de: `dein ${name}-Konto`, deDative: `deinem ${name}-Konto` }
     : {
         en: `your access to ${value.label}`,
-        de: `Ihren Zugang zu ${value.label}`,
-        deDative: `Ihrem Zugang zu ${value.label}`,
+        de: `deinen Zugang zu ${value.label}`,
+        deDative: `deinem Zugang zu ${value.label}`,
       };
   // Where the problem gets fixed: the connect assistant, or the agent's
   // access setting. A null target means nothing to link to.
@@ -40,7 +40,7 @@ export function ConnectionRequiredNotice({
     case "schedule_without_owner":
       text = t(
         "This schedule has no owner. Please save it once again.",
-        "Dieser Zeitplan hat keinen Besitzer. Bitte speichern Sie ihn einmal neu.",
+        "Dieser Zeitplan hat keinen Besitzer. Bitte speicher ihn einmal neu.",
       );
       target = null;
       break;
@@ -58,7 +58,7 @@ export function ConnectionRequiredNotice({
     case "no_acting_person":
       text = t(
         "This run has no acting person, so the agent cannot pick an account. Give the agent a fixed access.",
-        "Niemand arbeitet mit diesem Lauf, daher kann der Agent kein Konto wählen. Legen Sie beim Agenten einen festen Zugang fest.",
+        "Niemand arbeitet mit diesem Lauf, daher kann der Agent kein Konto wählen. Lege beim Agenten einen festen Zugang fest.",
       );
       target = null;
       break;

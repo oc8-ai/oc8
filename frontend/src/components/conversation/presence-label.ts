@@ -81,7 +81,7 @@ export function presenceLabel(run: PresenceRun | null, ctx: PresenceContext): Pr
       return { key, text: t("Looking through its notes …", "Sieht seine Notizen durch …") };
     case "list_pending_approvals":
     case "decide_approval":
-      return { key, text: t("Checking your approvals …", "Prüft Ihre Freigaben …") };
+      return { key, text: t("Checking your approvals …", "Prüft deine Freigaben …") };
     case "delegate_task": {
       const id = str(args.agent_id);
       const name = id ? (ctx.agentName?.(id) ?? null) : null;

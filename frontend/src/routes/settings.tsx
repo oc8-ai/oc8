@@ -200,7 +200,7 @@ function OrganizationPanel() {
     <Panel id="organization" className="p-5">
       <h3 className="font-serif text-lg">{t("Organization", "Organisation")}</h3>
       <p className="mt-1 text-xs text-muted-foreground">
-        {t("Basic details of your workspace.", "Grunddaten Ihres Arbeitsbereichs.")}
+        {t("Basic details of your workspace.", "Grunddaten deines Arbeitsbereichs.")}
       </p>
       {isLoading && <Loader2 className="mt-5 h-4 w-4 animate-spin text-muted-foreground" />}
       {error && (

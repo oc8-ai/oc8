@@ -50,7 +50,7 @@ export function MembersPage() {
             <p className="mt-2 text-sm text-muted-foreground">
               {t(
                 "Your role does not include member:manage, so you cannot manage users. Ask your administrator for access.",
-                "Ihre Rolle enthält member:manage nicht, daher können Sie Benutzer nicht verwalten. Bitten Sie Ihren Administrator um Zugriff.",
+                "Deine Rolle enthält member:manage nicht, daher kannst du Benutzer nicht verwalten. Bitte deinen Administrator um Zugriff.",
               )}
             </p>
           </div>
@@ -71,7 +71,7 @@ export function MembersPage() {
             <p className="mt-1 text-sm text-muted-foreground">
               {t(
                 "Manage user roles for your organization.",
-                "Verwalten Sie Benutzerrollen für Ihre Organisation.",
+                "Verwalte Benutzerrollen für deine Organisation.",
               )}
             </p>
           </div>
@@ -134,7 +134,7 @@ function InviteLinkDialog({
           <DialogDescription>
             {t(
               "No mail server is configured for this instance, so the invite could not be emailed. Copy this link and send it to the new user yourself — it lets them set their own password.",
-              "Für diese Instanz ist kein Mailserver konfiguriert, daher konnte die Einladung nicht per E-Mail versendet werden. Kopieren Sie diesen Link und senden Sie ihn selbst an den neuen Benutzer — damit kann er sein eigenes Passwort festlegen.",
+              "Für diese Instanz ist kein Mailserver konfiguriert, daher konnte die Einladung nicht per E-Mail versendet werden. Kopiere diesen Link und sende ihn selbst an den neuen Benutzer — damit kann er sein eigenes Passwort festlegen.",
             )}
           </DialogDescription>
         </DialogHeader>
@@ -232,7 +232,7 @@ function CreateMemberDialog({
   const submit = () => {
     const trimmed = subject.trim();
     if (!trimmed) {
-      toast.error(t("Enter a sign-in email or username.", "Geben Sie eine Anmelde-E-Mail oder einen Benutzernamen ein."));
+      toast.error(t("Enter a sign-in email or username.", "Gib eine Anmelde-E-Mail oder einen Benutzernamen ein."));
       return;
     }
     if (localAuth && password.length > 0 && password.length < 8) {
@@ -271,7 +271,7 @@ function CreateMemberDialog({
           toast.error(
             err instanceof Error
               ? err.message
-              : t("Could not create user. Try again.", "Benutzer konnte nicht angelegt werden. Versuchen Sie es erneut."),
+              : t("Could not create user. Try again.", "Benutzer konnte nicht angelegt werden. Versuch es erneut."),
           );
         },
       },
@@ -292,7 +292,7 @@ function CreateMemberDialog({
           <DialogDescription>
             {t(
               "Enrol somebody by their sign-in identity. They can also be added automatically the first time they sign in — this just lets you set them up (and assign a role) ahead of time.",
-              "Legen Sie jemanden über seine Anmelde-Identität an. Personen werden auch automatisch beim ersten Anmelden hinzugefügt — so können Sie vorab einrichten (und eine Rolle zuweisen).",
+              "Lege jemanden über seine Anmelde-Identität an. Personen werden auch automatisch beim ersten Anmelden hinzugefügt — so kannst du vorab einrichten (und eine Rolle zuweisen).",
             )}
           </DialogDescription>
         </DialogHeader>
