@@ -188,9 +188,10 @@ async def _process(
 #: is inside `_process` for as long as a run takes -- which since 2026-08-02 is
 #: legitimately unbounded. A deployment with as many long runs as workers sweeps
 #: nothing until one of them frees up. Left as it is on purpose: the sweep and a
-#: run would then be two writers in one process reaching for the same two rows
-#: from opposite ends (the executor locks agent then run, the sweep run then
-#: agent), and buying an earlier sweep with a deadlock is a poor trade. Nothing
+#: run would then be two writers in one process reaching for the same rows
+#: (the executor holds the agent's run slot and its run row for the whole of an
+#: in-process run; the sweep locks run rows, then writes their agents), and
+#: buying an earlier sweep with lock waits inside one process is a poor trade. Nothing
 #: is lost by the delay -- an abandoned run stays abandoned, and its worker being
 #: busy is proof this host is not the one that died.
 _HOUSEKEEPING_SECONDS = 60.0

@@ -160,6 +160,7 @@ ALLOWED: dict[str, str] = {
         "not a read of the Department table"
     ),
     "runtime/executor.py": "the agent runtime loading its OWN agent row to run or reap it",
+    "runtime/agent_status.py": "the executor re-reading its OWN agent row's status as a run ends",
     "runtime/reconcile.py": "background reconciliation loading its own stale agent rows",
     "runtime/repository.py": (
         "RunRepository.create reads only the target agent's current_version_id to pin "

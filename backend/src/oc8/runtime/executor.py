@@ -23,6 +23,14 @@ from oc8.db.session import tenant_session
 from oc8.observability import get_tracer, record_run_outcome
 from oc8.realtime.emit import publish_agent_status, record_activity
 from oc8.runtime.adapter import RuntimeAdapter
+from oc8.runtime.agent_status import (
+    RunningGuard,
+    expected_status,
+    mark_agent_running,
+    remember_claimed_status,
+    settle_agent_status,
+    take_run_slot,
+)
 from oc8.runtime.intake import publish_run
 from oc8.runtime.person import FOR_PERSON, SEVERAL_PEOPLE, person_behind
 from oc8.runtime.queue import RunMessage
@@ -758,24 +766,33 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
     with get_tracer().start_as_current_span("run.execute") as span:
         span.set_attribute("run_id", str(run_id))
         span.set_attribute("tenant_id", str(tenant_id))
-        async with tenant_session(tenant_id) as db:
+        # The guard is entered first, so it exits after the session has rolled
+        # back: "running" is committed on its own (`mark_agent_running`), and a
+        # run whose transaction never commits must not leave it behind.
+        async with RunningGuard(tenant_id) as running_guard, tenant_session(tenant_id) as db:
             repo = RunRepository(db)
             run = await repo.get(run_id)
             if run is None or run.state != RunState.QUEUED.value:
                 return
 
-            # Claim the run before ANY path below may end it. Agent row first,
-            # then the run row -- the order every writer here takes them (see
-            # the one-run-per-agent check further down for why the agent lock
-            # exists at all). Then the run is read again, under its own lock:
-            # two deliveries of ONE run (a republished stranded run whose first
-            # entry turned up after all, a reclaim racing the original) both
-            # read `queued` above, and the second waits on these locks for the
+            # Claim the run before ANY path below may end it. The agent's run
+            # slot first, then the run row -- the order every executor takes
+            # them (see the one-run-per-agent check further down for why the
+            # slot exists at all). Then the run is read again, under its own
+            # lock: two deliveries of ONE run (a republished stranded run whose
+            # first entry turned up after all, a reclaim racing the original)
+            # both read `queued` above, and the second waits on the slot for the
             # first's commit. Unchecked, it went on to start the run a second
             # time -- the busy check skips this run's own id -- or, on the early
             # exits below (agent missing, hire gate, cancel drain, organisation
             # inactive), recorded the same ending and activity event twice.
-            await db.execute(select(m.Agent.id).where(m.Agent.id == run.agent_id).with_for_update())
+            #
+            # The slot is an advisory lock, not the agent ROW: on the in-process
+            # runtime this transaction lasts the whole run, model calls
+            # included, and a row lock here made every write to the agent (a
+            # model switch, a pause, the Copilot's own sync) wait for the run to
+            # end (`oc8.runtime.agent_status`).
+            await take_run_slot(db, run.agent_id)
             claimed = await db.get(m.AgentRun, run_id, with_for_update=True, populate_existing=True)
             if claimed is None or claimed.state != RunState.QUEUED.value:
                 logger.info(
@@ -803,6 +820,9 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 logger.info("run %s finished in state %s", run_id, RunState.FAILED.value)
                 record_run_outcome(RunState.FAILED.value)
                 return
+            # The status this run may overwrite from here on: every later write
+            # is a compare-and-set against it (`oc8.runtime.agent_status`).
+            remember_claimed_status(db, agent)
 
             if agent.status == "pending_approval":
                 # Hire gate (§5.5 A4): a pending agent must not run via ANY enqueue
@@ -837,10 +857,10 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 # AND cancels its queued run; draining that run here must NOT un-freeze
                 # the agent (it would also orphan pause_reason="budget", poisoning the
                 # scope's idempotency check). An operator-cancelled run of a normal
-                # (unpaused) agent still frees it, as before.
-                if agent.pause_reason is None:
-                    agent.status = "idle"
-                    await publish_agent_status(agent)
+                # (unpaused) agent still frees it, as before. Compare-and-set, and
+                # never over a pause: the agent row is not locked, so a hard-stop
+                # may have paused it since the claim read it.
+                await settle_agent_status(db, agent, "idle")
                 await repo.transition(run, RunState.INTERRUPTED)
                 logger.info("run %s interrupted before start (cancelled while queued)", run_id)
                 record_run_outcome(RunState.INTERRUPTED.value)
@@ -855,9 +875,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                     run,
                     {"cancellation_kind": TENANT_INACTIVE_KIND, "output": TENANT_INACTIVE_OUTPUT},
                 )
-                if agent.pause_reason is None:
-                    agent.status = "idle"
-                    await publish_agent_status(agent)
+                await settle_agent_status(db, agent, "idle")
                 await repo.transition(run, RunState.INTERRUPTED)
                 await record_activity(
                     db,
@@ -881,15 +899,16 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             # agent's turn yet. Leaving the stream entry unacked redelivers it
             # after the idle window, which is a retry with backoff for free.
             #
-            # The agent ROW is locked first, and that lock is what makes this
-            # correct with more than one worker. Without it the check and the
-            # transition are two statements with a gap between them: two workers
-            # both find nothing running, both start, and the agent has two
-            # containers again -- the exact bug this guard exists to prevent,
-            # reintroduced by the fix for it. The lock is released by the commit
-            # that happens before the container runs, so it never spans the run
-            # itself; after the transition, RUNNING is its own guard.
-            # (The agent row is already locked: see "Claim the run" above.)
+            # The agent's run slot is taken first, and that lock is what makes
+            # this correct with more than one worker. Without it the check and
+            # the transition are two statements with a gap between them: two
+            # workers both find nothing running, both start, and the agent has
+            # two containers again -- the exact bug this guard exists to
+            # prevent, reintroduced by the fix for it. An isolated run releases
+            # the slot with the commit before its container runs; after the
+            # transition, RUNNING is its own guard. An in-process run holds it
+            # to the end, so a second run of the agent waits rather than defers.
+            # (The slot is already taken: see "Claim the run" above.)
             busy = (
                 await db.execute(
                     select(m.AgentRun.id)
@@ -912,9 +931,14 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
 
             await repo.transition(run, RunState.RUNNING)
             # Reflect the in-flight run on the agent so the office view stays live
-            # (the old inline endpoint did this; the durable path must too).
-            agent.status = "running"
-            await publish_agent_status(agent)
+            # (the old inline endpoint did this; the durable path must too) --
+            # committed on its own, so this transaction never holds the row, and
+            # only over the status the claim read (never over a pause or a stop
+            # that landed since). From here a failure that rolls this
+            # transaction back puts the status back (`RunningGuard`).
+            claimed_status = expected_status(db, agent)
+            if await mark_agent_running(tenant_id, db, agent) and claimed_status is not None:
+                running_guard.arm(agent.id, claimed_status)
 
             pinned = await resolve_version(db, run, agent)
             # The chat's model choice (spec §2.3): resolve_version already fell
@@ -937,8 +961,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 # mcp_connection_id has always done.
                 error = mcp_error
                 await merge_context(db, run, {"error": error})
-                agent.status = "idle"
-                await publish_agent_status(agent)
+                await settle_agent_status(db, agent, "idle")
                 await repo.transition(run, RunState.FAILED)
                 await record_activity(
                     db,
@@ -1111,8 +1134,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
 
             if run_error is not None:
                 await merge_context(db, run, {"error": run_error})
-                agent.status = "idle"
-                await publish_agent_status(agent)
+                await settle_agent_status(db, agent, "idle")
                 # Failure-reassignment (§7): a genuinely failed sub-task (an
                 # exception in run_agent -- the first-party runtime signals failure
                 # this way, never via status="failed") must still wake its team lead
@@ -1273,8 +1295,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         # the audit trail exactly like one.
                         run_error = str(exc)
                         await merge_context(db, run, {"error": run_error})
-                        agent.status = "idle"
-                        await publish_agent_status(agent)
+                        await settle_agent_status(db, agent, "idle")
                         try:
                             wake_id = await _maybe_wake_parent(
                                 db,
@@ -1398,8 +1419,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                     # already sets "waiting_for_approval" itself when it suspends for
                     # HITL, so don't clobber it.
                     if new_state in (RunState.DONE, RunState.FAILED, RunState.INTERRUPTED):
-                        agent.status = "idle"
-                        await publish_agent_status(agent)
+                        await settle_agent_status(db, agent, "idle")
                     # Wake the delegating lead only on a real task OUTCOME (done/failed).
                     # An interrupt is an operator action, not an outcome -- never wake,
                     # so an interrupted delegated sub-run does not re-spend its lead.
