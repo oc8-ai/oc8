@@ -28,7 +28,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.orm.attributes import flag_modified
 
 from oc8 import models as m
@@ -148,17 +148,13 @@ from oc8.realtime.emit import (
     publish_run_tool_call,
 )
 from oc8.runtime.approval_resume import pre_decided_map
+from oc8.runtime.cancellation import run_stop
 from oc8.runtime.registry import BUILTIN_ISOLATED_RUNTIME_REF
 from oc8.runtime.run_context import append_tool_call, write_back_context
 from oc8.runtime.step_record import call_state_for, step_timing_dto
 from oc8.skills.runtime import LoadedSkill, instruction_block, load_assigned_skills
 from oc8.storage import s3
-from oc8.tenants.activity import (
-    TENANT_INACTIVE_KIND,
-    TENANT_INACTIVE_OUTPUT,
-    TenantInactive,
-    tenant_may_run,
-)
+from oc8.tenants.activity import TenantInactive, tenant_may_run
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -1177,40 +1173,17 @@ async def step(
 
 async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult:
     # The in-process engine's per-step cancel probe (§7.2), for a container
-    # run: an operator cancel or an organisation that may no longer run ends
-    # the run here, before another model call. An operator cancel wins; when
-    # only the activity gate says no, the run context records it so the
-    # executor writes cancellation_kind "tenant_inactive", not an operator kind.
-    operator_kind = (
-        await db.execute(
-            select(m.RunCancellation.cancellation_kind).where(m.RunCancellation.run_id == run_id)
-        )
-    ).scalar_one_or_none()
-    from oc8.runtime.run_inputs import (
-        OWNERSHIP_CHANGED_KIND,
-        OWNERSHIP_CHANGED_OUTPUT,
-        steering_went_stale,
-    )
-
-    # Not an operator's either: the run came to act through someone else's
-    # account after it received a person's words (`steering_went_stale`).
-    stop_kind: str | None = None
-    if operator_kind is None:
-        if not await tenant_may_run(run.tenant_id):
-            stop_kind = TENANT_INACTIVE_KIND
-        elif await steering_went_stale(db, run):
-            stop_kind = OWNERSHIP_CHANGED_KIND
-    if operator_kind is not None or stop_kind is not None:
+    # run: an operator cancel, an organisation that may no longer run, or a run
+    # that came to act through someone else's account after it received a
+    # person's words ends the run here, before another model call. The probe
+    # is shared with the MCP gateway's tools/call (`run_stop`); a kind the
+    # executor cannot read off run_cancellation is recorded on the run context
+    # so it writes that cancellation_kind, not an operator kind.
+    stop = await run_stop(db, run)
+    if stop is not None:
         ctx = dict(run.context)
-        if stop_kind is not None:
-            ctx["cancellation_kind"] = stop_kind
-            reason = (
-                TENANT_INACTIVE_OUTPUT
-                if stop_kind == TENANT_INACTIVE_KIND
-                else OWNERSHIP_CHANGED_OUTPUT
-            )
-        else:
-            reason = "Run cancelled by operator."
+        ctx.update(stop.context_patch)
+        reason = stop.reason
         closed_step_timing = None
         step_timings = ctx.get("stepTimings") or []
         if step_timings and "_t0" in step_timings[-1]:
