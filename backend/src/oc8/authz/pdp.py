@@ -239,8 +239,10 @@ class Decision:
     #: showing `reason`'s raw, un-i18n'd English string verbatim (today's
     #: approval-pane behaviour, kept as the fallback for any reason that
     #: predates this field or any DENY path that never set one -- see
-    #: `approvals/service.py`'s own docstring on `detail`). None for every
-    #: DENY/no-grant path, which this pass leaves as free text only.
+    #: `approvals/service.py`'s own docstring on `detail`). On a DENY, only
+    #: the four frame denials of `authorize_tool_call` set one
+    #: ("connection_not_in_frame", "connection_disabled", "right_not_granted",
+    #: "tool_not_in_frame"); every other DENY stays free text only.
     reason_code: str | None = None
     context: dict[str, Any] = field(default_factory=dict)
 
@@ -674,16 +676,39 @@ def authorize_tool_call(
         return Decision(Effect.DENY, "no tool connection bound to this run")
     if right not in RIGHTS:
         return Decision(Effect.DENY, f"unknown right {right!r}")
+    # The four frame denials name themselves (`reason_code`) and their terms:
+    # the run records them so the person learns WHICH tool the frame withholds
+    # and where it is allowed (oc8.connections.tool_denied). Only that -- the
+    # decision and its reason text are what they always were.
+    terms = {"connection": connection_key, "tool": tool, "right": right}
     policy = policies.get(connection_key)
     if policy is None:
-        return Decision(Effect.DENY, f"no grant for {connection_key!r} in this frame")
+        return Decision(
+            Effect.DENY,
+            f"no grant for {connection_key!r} in this frame",
+            reason_code="connection_not_in_frame",
+            context=terms,
+        )
     if not policy.enabled:
-        return Decision(Effect.DENY, f"{connection_key!r} is disabled in this frame")
+        return Decision(
+            Effect.DENY,
+            f"{connection_key!r} is disabled in this frame",
+            reason_code="connection_disabled",
+            context=terms,
+        )
     if not getattr(policy, right, False):
-        return Decision(Effect.DENY, f"{connection_key!r} does not grant {right!r}")
+        return Decision(
+            Effect.DENY,
+            f"{connection_key!r} does not grant {right!r}",
+            reason_code="right_not_granted",
+            context=terms,
+        )
     if tool is not None and not policy.offers(tool):
         return Decision(
-            Effect.DENY, f"{connection_key!r} does not grant the tool {tool!r} in this frame"
+            Effect.DENY,
+            f"{connection_key!r} does not grant the tool {tool!r} in this frame",
+            reason_code="tool_not_in_frame",
+            context=terms,
         )
 
     if right in policy.approval_actions or (tool is not None and tool in policy.approval_actions):

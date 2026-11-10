@@ -32,6 +32,7 @@ import {
   describeGuardrailSaveError,
 } from "@/components/tool-guardrail-table";
 import { StatCard } from "@/components/stat-card";
+import { initialDepartmentTab, type DepartmentTab } from "@/lib/department-tabs";
 import { contractsFor, type IntakeContract } from "@/lib/collaboration";
 import { formatMs } from "@/lib/format";
 import {
@@ -126,7 +127,8 @@ function DepartmentDetail() {
   // KB grants for this department, not a paginated list view.
   const { data: allBasesPage } = useKnowledgeBases({ pageSize: 200 });
   const allBases = allBasesPage?.items ?? [];
-  const [tab, setTab] = useState<"overview" | "guardrails" | "collab" | "settings">("overview");
+  // `?tab=` (e.g. a run's "open guardrails" link) is read once on arrival.
+  const [tab, setTab] = useState<DepartmentTab>(initialDepartmentTab);
   const [hireOpen, setHireOpen] = useState(false);
   const updateDepartment = useUpdateDepartment(id);
 

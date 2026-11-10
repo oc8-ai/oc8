@@ -130,6 +130,7 @@ from oc8.connections.runtime_env import (
     require_enabled,
     run_mcp_env,
 )
+from oc8.connections.tool_denied import record_tool_denied, tool_denied
 from oc8.copilot.door import chat_door, door_of
 from oc8.copilot.notes import member_behind_run_task
 from oc8.edition.tools import edition_offer
@@ -2512,6 +2513,9 @@ async def run_agent(
                         else:
                             _tool_call_started_at = dt.datetime.now(dt.UTC)
                         tool_error: ToolError | None = None
+                        #: A frame denial's PDP reason, for the call record
+                        #: (tool_error carries the model's sentence instead).
+                        denial_record_reason: str | None = None
                         source = mcp_conn.name if mcp_conn is not None else "oc8"
                         # Whether this call is actually dispatched anywhere -- a
                         # control tool, or the tool server. The two branches
@@ -2663,6 +2667,25 @@ async def run_agent(
                         elif decision.effect is Effect.DENY or server is None:
                             reason = decision.reason or "no tool server available"
                             output = f"ERROR: {reason}"
+                            denied = tool_denied(
+                                decision,
+                                frame=frame,
+                                agent=agent,
+                                conn=owner
+                                or (
+                                    mcp_conn
+                                    if mcp_conn is not None and mcp_conn.name == call_key
+                                    else None
+                                ),
+                            )
+                            if denied is not None:
+                                # The PDP's reason stays on the call record;
+                                # the model reads the sentence it can pass on.
+                                denial_record_reason = reason
+                                reason = denied.sentence()
+                                output = denied.model_message()
+                                if run_row is not None:
+                                    await record_tool_denied(db, run_row, denied)
                             source = "oc8"
                             tool_error = ToolError(kind="deny", message=reason)
                             _tool_call_dispatched = False
@@ -2945,7 +2968,7 @@ async def run_agent(
                             )
                             step_tool_wait_ms += int(_tool_call_entry["durationMs"])
                         if not _tool_call_dispatched:
-                            _tool_call_entry["reason"] = (
+                            _tool_call_entry["reason"] = denial_record_reason or (
                                 tool_error.message if tool_error is not None else None
                             )
                         tool_trace.append(_tool_call_entry)

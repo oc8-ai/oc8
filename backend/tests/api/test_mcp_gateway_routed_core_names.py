@@ -38,9 +38,12 @@ async def test_a_routed_core_name_is_decided_by_the_frame_not_the_core_branch(
     )
 
     assert body["result"]["isError"] is True
-    assert "no grant" in body["result"]["content"][0]["text"]
+    # A frame denial: the model reads the guardrails sentence, not the PDP's
+    # "no grant" (which stays on the run's denial record).
+    assert "does not allow the tool 'ask_user'" in body["result"]["content"][0]["text"]
     assert _FakeMcp.calls == []
     async with app_session(tenant) as db:
         run = await db.get(m.AgentRun, run_id)
         assert run is not None
         assert "isolated_result" not in run.context, "the core ask_user must not park the run"
+        assert run.context["tool_denied"]["tool"] == "ask_user"

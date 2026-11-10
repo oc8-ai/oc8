@@ -1,7 +1,7 @@
 // TanStack Query hooks over the oc8 control-plane API. Return shapes match the
 // existing TypeScript interfaces so screens swap mock imports for these hooks.
 
-import type { ConnectionRequiredInfo } from "@/lib/connections";
+import type { ConnectionRequiredInfo, ToolDeniedInfo } from "@/lib/connections";
 import {
   useInfiniteQuery,
   useMutation,
@@ -369,6 +369,9 @@ export interface RunDTO {
   // A tool call needed an account that is not connected (connections): the
   // chat and the run detail show a "connect" call to action for it.
   connectionRequired?: ConnectionRequiredInfo | null;
+  // A tool call the department frame (or the agent's own guardrails)
+  // withholds: the run detail and the chat say which and where it is allowed.
+  toolDenied?: ToolDeniedInfo | null;
   steps: number;
   toolCalls: Array<Record<string, unknown>>;
   taskId?: string | null;

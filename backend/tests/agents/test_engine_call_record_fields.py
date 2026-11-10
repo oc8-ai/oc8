@@ -212,3 +212,50 @@ async def test_every_recorded_state_is_a_known_state(
 
     for entry in await _run_once(app_session, monkeypatch, _ok):
         assert entry["state"] in CALL_STATES
+
+
+async def test_a_frame_denial_is_recorded_on_the_run_and_told_plainly(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The department frame withholds fs_write (`only`): the run records which
+    tool and where it is allowed, and the model reads one plain sentence."""
+    monkeypatch.setattr("oc8.agent.engine.get_model_router", lambda: _ScriptedRouter())
+
+    async def _never(name: str, arguments: dict[str, Any]) -> str:
+        raise AssertionError("a denied call must never be dispatched")
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent = await _coding_agent(db, tenant)
+        dept = await db.get(m.Department, agent.department_id)
+        assert dept is not None
+        dept.frame = {
+            "tools": {
+                "coding": {"enabled": True, "read": True, "modify": True, "only": ["fs_read"]}
+            }
+        }
+        run = m.AgentRun(tenant_id=tenant, agent_id=agent.id, state="running", context={})
+        db.add(run)
+        await db.flush()
+        result = await run_agent(
+            db,
+            agent=agent,
+            task_text="write the file",
+            tenant_id=tenant,
+            run_id=run.id,
+            toolset=_FakeToolset(_never),
+        )
+        run_id = run.id
+
+    entry = result.tool_calls[-1]
+    assert entry["state"] == "denied"
+    assert "department does not allow the tool 'fs_write'" in entry["result"]
+    # The call record keeps the PDP's own reason; only the model gets the sentence.
+    assert entry["reason"] == "'coding' does not grant the tool 'fs_write' in this frame"
+    async with app_session(tenant) as db:
+        stored = await db.get(m.AgentRun, run_id)
+        assert stored is not None
+        denied = stored.context["tool_denied"]
+    assert denied["tool"] == "fs_write"
+    assert denied["reason"] == "tool_not_in_frame"
+    assert denied["scope"] == "department"
