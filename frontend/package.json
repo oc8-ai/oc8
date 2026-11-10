@@ -1,6 +1,6 @@
 {
   "name": "@oc8/community-frontend",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "oc8 Community Edition — frontend UI for agent orchestration",
   "private": true,
   "license": "LGPL-3.0-or-later",
@@ -31,6 +31,7 @@
     "preview": "vite preview",
     "check:edition-boundaries": "node scripts/check-edition-boundaries.mjs",
     "i18n:export": "node scripts/i18n-export-template.mjs",
+    "i18n:template": "node scripts/i18n-export-template.mjs --template",
     "test:e2e": "playwright test",
     "test:unit": "vitest run --config vitest.config.ts",
     "lint": "eslint .",
