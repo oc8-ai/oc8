@@ -524,6 +524,35 @@ async def test_a_denied_call_is_a_readable_tool_error_not_a_transport_error(
     assert _FakeMcp.calls == [], "nothing may reach the tool server"
 
 
+async def test_a_frame_denial_is_recorded_and_told_to_the_model_plainly(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _FakeMcp.calls = []
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    tenant = uuid.uuid4()
+    read_only = {"tools": {"odoo": {"enabled": True, "read": True, "modify": False}}}
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant, frame=read_only)
+
+    code, body = await _rpc(
+        _token(tenant, agent_id, run_id),
+        "tools/call",
+        {"name": "create_record", "arguments": {"model": "sale.order"}},
+    )
+    assert code == 200, body
+    text = body["result"]["content"][0]["text"]
+    assert "department does not allow the tool 'create_record'" in text
+    assert "department's guardrails" in text
+
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        denied = run.context["tool_denied"]
+    assert denied["tool"] == "create_record"
+    assert denied["reason"] == "right_not_granted"
+    assert denied["scope"] == "department"
+
+
 async def _pin_then_tighten_narrowing(
     db: Any, tenant: uuid.UUID, agent_id: uuid.UUID, run_id: uuid.UUID
 ) -> None:

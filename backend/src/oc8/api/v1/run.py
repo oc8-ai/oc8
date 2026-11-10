@@ -134,6 +134,7 @@ def run_to_dto(run: m.AgentRun, *, agent_version_no: int | None = None) -> RunDT
         connection_required=ctx.get("connection_required")
         if isinstance(ctx.get("connection_required"), dict)
         else None,
+        tool_denied=ctx.get("tool_denied") if isinstance(ctx.get("tool_denied"), dict) else None,
     )
 
 

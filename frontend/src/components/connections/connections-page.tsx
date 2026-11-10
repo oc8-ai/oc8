@@ -255,7 +255,7 @@ export function ConnectionsPage({
       mine={mine.data ?? []}
       organisation={orgRows}
       loading={integrations.isLoading}
-      isAdmin={isAdmin}
+      mayInstall={mayEnable}
       enabling={enable.isPending}
       lang={lang}
       onConnect={(name) => open(name, "me")}
@@ -315,6 +315,7 @@ export function ConnectionsPage({
                 onRemove={(c) => revoke(c, null)}
               />
               <OrganisationCredentials excludeTypes={integrationTypes} />
+              <MoreIntegrationsHint mayInstall={mayEnable} />
             </Panel>
           </TabsContent>
           <TabsContent value="members" className="mt-3">
@@ -364,7 +365,7 @@ function MineList({
   mine,
   organisation,
   loading,
-  isAdmin,
+  mayInstall,
   enabling,
   lang,
   onConnect,
@@ -376,7 +377,8 @@ function MineList({
   mine: Connection[];
   organisation: Connection[];
   loading: boolean;
-  isAdmin: boolean;
+  /** plugin:manage: may install another integration under Capas. */
+  mayInstall: boolean;
   enabling: boolean;
   lang: string;
   onConnect: (integration: string) => void;
@@ -387,20 +389,7 @@ function MineList({
   const nothing = !loading && available.length === 0;
   return (
     <>
-      {nothing && (
-        <p className="py-3 text-sm text-muted-foreground">
-          {isAdmin ? (
-            <Link to="/capas" className="underline">
-              {t("Install an integration", "Integration installieren")}
-            </Link>
-          ) : (
-            t(
-              "Your admin has not set up an integration yet.",
-              "Ihr Admin hat noch keine Integration eingerichtet.",
-            )
-          )}
-        </p>
-      )}
+      {nothing && <MoreIntegrationsHint mayInstall={mayInstall} />}
       {(available.length > 0 || notYetAvailable.length > 0) && (
         <RowList>
           {available.flatMap((integration) => {
@@ -487,7 +476,33 @@ function MineList({
           ))}
         </RowList>
       )}
+      {!loading && !nothing && <MoreIntegrationsHint mayInstall={mayInstall} />}
     </>
+  );
+}
+
+/** One quiet line below a list of integrations (and the empty state when
+ *  none is installed): where another app comes from. A link to Capas for
+ *  whoever may install plugins; for everyone else, whom to ask. */
+function MoreIntegrationsHint({ mayInstall }: { mayInstall: boolean }) {
+  const t = useT();
+  return (
+    <p className="py-3 text-xs text-muted-foreground">
+      {t("Don't see your app?", "Ihre App ist nicht dabei?")}{" "}
+      {mayInstall ? (
+        <Link to="/capas" className="underline underline-offset-2 hover:text-foreground">
+          {t(
+            "Find more integrations under Capas →",
+            "Weitere Integrationen finden Sie unter Capas →",
+          )}
+        </Link>
+      ) : (
+        t(
+          "Ask your admin to install it under Capas.",
+          "Bitten Sie Ihren Admin, sie unter Capas zu installieren.",
+        )
+      )}
+    </p>
   );
 }
 

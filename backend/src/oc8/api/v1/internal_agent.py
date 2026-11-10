@@ -119,6 +119,7 @@ from oc8.chat.modes import ChatMode, mode_from_context, mode_refusal
 from oc8.config import get_settings
 from oc8.connections.access import ConnectionRequired
 from oc8.connections.runtime_env import McpLaunchEnv, run_mcp_env
+from oc8.connections.tool_denied import record_tool_denied, tool_denied
 from oc8.copilot.door import chat_door, door_of
 from oc8.edition.tools import edition_offer, registered_edition_tool
 from oc8.metering import record_usage
@@ -150,6 +151,7 @@ from oc8.realtime.emit import (
 from oc8.runtime.approval_resume import pre_decided_map
 from oc8.runtime.registry import BUILTIN_ISOLATED_RUNTIME_REF
 from oc8.runtime.run_context import append_tool_call, write_back_context
+from oc8.runtime.start_phase import START_PHASES, clear_start_phase
 from oc8.runtime.step_record import call_state_for, step_timing_dto
 from oc8.skills.runtime import LoadedSkill, instruction_block, load_assigned_skills
 from oc8.storage import s3
@@ -1155,6 +1157,9 @@ async def step(
     principal: CurrentPrincipal,
 ) -> StepResult:
     run = await _run_for_token(run_id, db, principal)
+    if run.phase in START_PHASES:
+        # The shell is up and asking: the workspace has started.
+        await clear_start_phase(run.tenant_id, run.id)
     try:
         return await _step(run_id, db, run)
     except Exception as exc:
@@ -2662,6 +2667,9 @@ async def _dispatch_one_tool(
     #: near-zero duration for a call that never ran.
     dispatched = True
     tool_error: ToolError | None = None
+    #: A frame denial's PDP reason, for the call record (tool_error carries
+    #: the model's sentence instead).
+    denial_record_reason: str | None = None
     precomputed_duration_ms: int | None = None
     source = conn.name if conn is not None else "oc8"
     writes = required_right(tc.name, scopes) != "read"
@@ -2766,6 +2774,14 @@ async def _dispatch_one_tool(
     elif decision.effect is Effect.DENY:
         reason = decision.reason or "denied"
         output = f"ERROR: {reason}"
+        denied = tool_denied(decision, frame=frame, agent=agent, conn=conn)
+        if denied is not None:
+            # The PDP's reason stays on the call record; the model reads the
+            # sentence it can pass on.
+            denial_record_reason = reason
+            reason = denied.sentence()
+            output = denied.model_message()
+            await record_tool_denied(db, run, denied, ctx=ctx)
         source = "oc8"
         tool_error = ToolError(kind="deny", message=reason)
         dispatched = False
@@ -3071,7 +3087,9 @@ async def _dispatch_one_tool(
         live_call["startedAt"] = started_at.isoformat()
         live_call["durationMs"] = duration_ms
     else:
-        live_call["reason"] = tool_error.message if tool_error is not None else None
+        live_call["reason"] = denial_record_reason or (
+            tool_error.message if tool_error is not None else None
+        )
     await append_tool_call(db, run, live_call)
     await db.commit()
     await publish_run_tool_call(run.tenant_id, run_id=run.id, call=live_call)

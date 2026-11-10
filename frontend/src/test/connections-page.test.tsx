@@ -392,8 +392,50 @@ describe("ConnectionsPage", () => {
     integrations.mockReturnValue({ data: [], isLoading: false });
     renderPage();
     expect(
-      await screen.findByText("Ihr Admin hat noch keine Integration eingerichtet."),
+      await screen.findByText(
+        "Ihre App ist nicht dabei? Bitten Sie Ihren Admin, sie unter Capas zu installieren.",
+      ),
     ).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Capas/ })).toBeNull();
+  });
+
+  it("points whoever may install plugins to Capas, also when nothing is installed", async () => {
+    may.mockImplementation((p: string) => p === "plugin:manage");
+    integrations.mockReturnValue({ data: [], isLoading: false });
+    renderPage();
+    const link = await screen.findByRole("link", {
+      name: "Weitere Integrationen finden Sie unter Capas →",
+    });
+    expect(link).toHaveAttribute("href", "/capas");
+    expect(screen.getByText(/Ihre App ist nicht dabei\?/)).toBeInTheDocument();
+  });
+
+  it("adds a quiet line below the list for a member", () => {
+    renderPage();
+    expect(
+      screen.getByText(
+        "Ihre App ist nicht dabei? Bitten Sie Ihren Admin, sie unter Capas zu installieren.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Microsoft 365")).toBeInTheDocument();
+  });
+
+  it("says it in English too", () => {
+    window.localStorage.setItem("oc8-lang", "en");
+    may.mockImplementation((p: string) => p === "plugin:manage");
+    renderPage();
+    expect(screen.getByText(/Don't see your app\?/)).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Find more integrations under Capas →" }),
+    ).toHaveAttribute("href", "/capas");
+  });
+
+  it("shows the line on the organisation tab as well", () => {
+    may.mockImplementation((p: string) => p === "integration:manage" || p === "plugin:manage");
+    renderPage({ tab: "organisation" });
+    expect(
+      screen.getByRole("link", { name: "Weitere Integrationen finden Sie unter Capas →" }),
+    ).toHaveAttribute("href", "/capas");
   });
 
   it("never posts a pending id for an unknown provider", () => {
@@ -423,11 +465,14 @@ describe("ConnectionsPage", () => {
     expect(onConsume).toHaveBeenCalledTimes(2);
   });
 
-  it("links an admin with nothing installed to the Capas page inside the app", () => {
-    may.mockImplementation((p: string) => p === "integration:manage");
+  it("links whoever may install plugins, with nothing installed, to Capas inside the app", () => {
+    // Installing a plugin needs plugin:manage, not integration:manage.
+    may.mockImplementation((p: string) => p === "integration:manage" || p === "plugin:manage");
     integrations.mockReturnValue({ data: [], isLoading: false });
     renderPage();
-    const link = screen.getByRole("link", { name: "Integration installieren" });
+    const link = screen.getByRole("link", {
+      name: "Weitere Integrationen finden Sie unter Capas →",
+    });
     expect(link).toHaveAttribute("href", "/capas");
     expect(link).toHaveAttribute("data-router-link");
   });
