@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from fastapi import APIRouter
@@ -50,5 +51,16 @@ class EditionExtension(Protocol):
         Offered only to tenants whose entitlements hold each tool's
         capability; `create_app` refuses one whose name shadows a core control
         tool. Defaults to none, like service_routers().
+        """
+        return ()
+
+    def i18n_catalog_dirs(self) -> Sequence[Path]:
+        """Directories of `<locale>.po` catalogs for the UI strings this
+        edition adds (docs/contributing/translations.md, "Edition catalogs").
+
+        Merged into core's catalog per locale, served by `/i18n/core`; core
+        wins on any msgid it carries. `create_app` refuses a directory that
+        is missing or holds a file that does not parse. Defaults to none,
+        like tools().
         """
         return ()

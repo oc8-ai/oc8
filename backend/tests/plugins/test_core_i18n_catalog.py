@@ -82,3 +82,102 @@ def test_load_core_catalogs_omits_fuzzy_entries(tmp_path: Path) -> None:
         'msgid "Delete"\nmsgstr ""\n',
     )
     assert load_core_catalogs(str(tmp_path))["nl"].translations == {"Save": "Opslaan"}
+
+
+# --- Edition catalogs (EditionExtension.i18n_catalog_dirs) -------------------
+
+
+def _dirs(tmp_path: Path) -> tuple[Path, Path]:
+    core = tmp_path / "core"
+    edition = tmp_path / "edition"
+    core.mkdir()
+    edition.mkdir()
+    return core, edition
+
+
+def test_edition_catalog_adds_its_own_strings(tmp_path: Path) -> None:
+    invalidate_core_catalog_cache()
+    core, edition = _dirs(tmp_path)
+    _write_po(core, "fr", 'msgid "Save"\nmsgstr "Enregistrer"\n')
+    _write_po(edition, "fr", 'msgid "SAML SSO"\nmsgstr "SSO SAML"\n')
+    catalogs = load_core_catalogs(str(core), edition_dirs=(edition,))
+    assert catalogs["fr"].translations == {"Save": "Enregistrer", "SAML SSO": "SSO SAML"}
+
+
+def test_core_wins_over_an_edition_on_the_same_msgid(tmp_path: Path) -> None:
+    """Core's text is never replaced -- not even where core's own entry is
+    still untranslated or an unreviewed draft: the msgid belongs to core."""
+    invalidate_core_catalog_cache()
+    core, edition = _dirs(tmp_path)
+    _write_po(
+        core,
+        "fr",
+        'msgid "Save"\nmsgstr "Enregistrer"\n'
+        "\n"
+        'msgid "Cancel"\nmsgstr ""\n'
+        "\n"
+        "#, fuzzy\n"
+        'msgid "Delete"\nmsgstr "Supprimer"\n',
+    )
+    _write_po(
+        edition,
+        "fr",
+        'msgid "Save"\nmsgstr "Sauver"\n'
+        "\n"
+        'msgid "Cancel"\nmsgstr "Annuler"\n'
+        "\n"
+        'msgid "Delete"\nmsgstr "Effacer"\n',
+    )
+    catalogs = load_core_catalogs(str(core), edition_dirs=(edition,))
+    assert catalogs["fr"].translations == {"Save": "Enregistrer"}
+
+
+def test_edition_fuzzy_and_empty_entries_are_skipped(tmp_path: Path) -> None:
+    invalidate_core_catalog_cache()
+    core, edition = _dirs(tmp_path)
+    _write_po(
+        edition,
+        "nl",
+        'msgid "Supervision"\nmsgstr "Toezicht"\n'
+        "\n"
+        "#, fuzzy\n"
+        'msgid "SAML SSO"\nmsgstr "SAML SSO (concept)"\n'
+        "\n"
+        'msgid "Enabled"\nmsgstr ""\n',
+    )
+    catalogs = load_core_catalogs(str(core), edition_dirs=(edition,))
+    assert catalogs["nl"].translations == {"Supervision": "Toezicht"}
+
+
+def test_native_name_and_flag_come_from_core_when_it_sets_them(tmp_path: Path) -> None:
+    invalidate_core_catalog_cache()
+    core, edition = _dirs(tmp_path)
+    _write_po(
+        core,
+        "fr",
+        'msgid ""\nmsgstr ""\n"X-Native-Name: Français\\n"\n"X-Flag: 🇫🇷\\n"\n',
+    )
+    _write_po(
+        edition,
+        "fr",
+        'msgid ""\nmsgstr ""\n"X-Native-Name: French\\n"\n"X-Flag: FR\\n"\n',
+    )
+    _write_po(
+        edition,
+        "es",
+        'msgid ""\nmsgstr ""\n"X-Native-Name: Español\\n"\n"X-Flag: 🇪🇸\\n"\n'
+        "\n"
+        'msgid "Supervision"\nmsgstr "Supervisión"\n',
+    )
+    catalogs = load_core_catalogs(str(core), edition_dirs=(edition,))
+    assert (catalogs["fr"].native_name, catalogs["fr"].flag) == ("Français", "🇫🇷")
+    # A locale only the edition ships still shows up, named by its own header.
+    assert (catalogs["es"].native_name, catalogs["es"].flag) == ("Español", "🇪🇸")
+    assert catalogs["es"].translations == {"Supervision": "Supervisión"}
+
+
+def test_no_edition_dirs_serves_core_alone(tmp_path: Path) -> None:
+    invalidate_core_catalog_cache()
+    core, _edition = _dirs(tmp_path)
+    _write_po(core, "fr", 'msgid "Save"\nmsgstr "Enregistrer"\n')
+    assert load_core_catalogs(str(core)) == load_core_catalogs(str(core), edition_dirs=())

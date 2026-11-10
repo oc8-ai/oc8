@@ -5,12 +5,21 @@
 // invented keys, matching the capa i18n convention this mirrors).
 //
 // Usage:
-//   node scripts/i18n-export-template.mjs <locale>
-//   node scripts/i18n-export-template.mjs --template
+//   node scripts/i18n-export-template.mjs <locale> [options]
+//   node scripts/i18n-export-template.mjs --template [options]
 //
 // `--template` writes `i18n/oc8.pot` instead: every msgid, all msgstrs
 // empty, a POT header. It is the "template for new translations" hosted
 // Weblate reads; CI checks it is current.
+//
+// Options, for an edition exporting its own strings with this same script
+// (docs/contributing/translations.md, "Edition catalogs"); without them the
+// script reads core's frontend/src and writes core's i18n/oc8.pot:
+//   --src <dir>    scan this source tree instead of frontend/src
+//   --out <dir>    write the catalogs into this directory instead of i18n/
+//   --name <name>  the template's file name (<name>.pot) and the catalogs'
+//                  Project-Id-Version, instead of "oc8"
+// Relative paths resolve against the working directory.
 //
 // Safe to re-run as the UI evolves: existing translations in
 // `i18n/<locale>.po` are kept, new source strings appear with an empty
@@ -23,11 +32,38 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const FRONTEND_SRC = path.join(__dirname, "..", "src");
-const I18N_ROOT = path.join(__dirname, "..", "..", "i18n");
 
-const TEMPLATE_MODE = process.argv[2] === "--template";
-const locale = process.argv[2];
+function usage() {
+  console.error(
+    "usage: node scripts/i18n-export-template.mjs <locale> | --template [--src <dir>] [--out <dir>] [--name <name>]",
+  );
+  process.exit(1);
+}
+
+const options = { src: null, out: null, name: null };
+const positional = [];
+for (let i = 2; i < process.argv.length; i++) {
+  const arg = process.argv[i];
+  const flag = /^--(src|out|name)$/.exec(arg);
+  if (flag) {
+    const value = process.argv[++i];
+    if (!value) usage();
+    options[flag[1]] = value;
+  } else {
+    positional.push(arg);
+  }
+}
+if (positional.length !== 1) usage();
+if (options.name !== null && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(options.name)) usage();
+
+const FRONTEND_SRC = options.src ? path.resolve(options.src) : path.join(__dirname, "..", "src");
+const I18N_ROOT = options.out
+  ? path.resolve(options.out)
+  : path.join(__dirname, "..", "..", "i18n");
+const PROJECT = options.name ?? "oc8";
+
+const TEMPLATE_MODE = positional[0] === "--template";
+const locale = positional[0];
 if (!TEMPLATE_MODE && (!locale || !/^[a-z]{2}([-_][A-Z]{2})?$/.test(locale))) {
   console.error("usage: node scripts/i18n-export-template.mjs <locale> | --template");
   console.error(
@@ -141,11 +177,11 @@ const sourceStrings = collectSourceStrings(FRONTEND_SRC);
 if (TEMPLATE_MODE) {
   // Deterministic on purpose (no timestamps): CI regenerates this file and
   // fails on any diff.
-  const potPath = path.join(I18N_ROOT, "oc8.pot");
+  const potPath = path.join(I18N_ROOT, `${PROJECT}.pot`);
   const header =
     `msgid ""\nmsgstr ""\n` +
     [
-      "Project-Id-Version: oc8",
+      `Project-Id-Version: ${PROJECT}`,
       "MIME-Version: 1.0",
       "Content-Type: text/plain; charset=UTF-8",
       "Content-Transfer-Encoding: 8bit",
@@ -162,10 +198,14 @@ if (TEMPLATE_MODE) {
 }
 
 const filePath = path.join(I18N_ROOT, `${locale}.po`);
-const { metadata: existingMetadata, entries: existingEntries, fuzzy: existingFuzzy } = readExistingPo(filePath);
+const {
+  metadata: existingMetadata,
+  entries: existingEntries,
+  fuzzy: existingFuzzy,
+} = readExistingPo(filePath);
 
 const metadata = {
-  "Project-Id-Version": "oc8",
+  "Project-Id-Version": PROJECT,
   "MIME-Version": "1.0",
   "Content-Type": "text/plain; charset=UTF-8",
   "Content-Transfer-Encoding": "8bit",
