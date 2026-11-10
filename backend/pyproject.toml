@@ -1,6 +1,6 @@
 [project]
 name = "oc8"
-version = "0.2.9"
+version = "0.2.10"
 description = "oc8 control plane — open-source AI agent management platform"
 license = { text = "LGPL-3.0-or-later" }
 authors = [{ name = "oc8 Contributors", email = "legal-review-required@oc8.invalid" }]
