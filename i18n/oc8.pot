@@ -953,9 +953,6 @@ msgstr ""
 msgid "Complexity router — picks among the tier models you configure (fast / balanced / strong)."
 msgstr ""
 
-msgid "Components"
-msgstr ""
-
 msgid "Condense this conversation into a decision record."
 msgstr ""
 
@@ -1361,9 +1358,6 @@ msgstr ""
 msgid "Couldn't delete the file"
 msgstr ""
 
-msgid "Couldn't grant access"
-msgstr ""
-
 msgid "Couldn't load attached files."
 msgstr ""
 
@@ -1395,9 +1389,6 @@ msgid "Couldn't reset runtime"
 msgstr ""
 
 msgid "Couldn't revoke"
-msgstr ""
-
-msgid "Couldn't revoke access"
 msgstr ""
 
 msgid "Couldn't roll back"
@@ -2361,9 +2352,6 @@ msgid "Ingest sources into oc8"
 msgstr ""
 
 msgid "Inherited"
-msgstr ""
-
-msgid "Inherited from department"
 msgstr ""
 
 msgid "Input"
@@ -5270,9 +5258,6 @@ msgstr ""
 msgid "Visibility"
 msgstr ""
 
-msgid "visual output"
-msgstr ""
-
 msgid "waiting"
 msgstr ""
 
@@ -5400,9 +5385,6 @@ msgid "Where the money goes"
 msgstr ""
 
 msgid "Where this person stands, and at which level."
-msgstr ""
-
-msgid "Which visual components (charts, tables, record cards) may be used when responding."
 msgstr ""
 
 msgid "Who may do what — and why you were refused."

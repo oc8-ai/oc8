@@ -1360,7 +1360,28 @@ async def test_render_component_is_offered_through_the_gateway(
     assert "render_component" in [t["name"] for t in listed["result"]["tools"]]
 
 
-async def test_rendering_a_granted_component_publishes_a_realtime_event(
+async def test_render_component_is_offered_to_the_tenant_assistant_through_the_gateway(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Components are on by default on the isolated path too -- the tenant
+    Assistant included, with the full catalogue in the advertised schema."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant)
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        agent.is_tenant_assistant = True
+        await db.flush()
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+
+    _c, listed = await _rpc(_token(tenant, agent_id, run_id), "tools/list")
+    by_name = {t["name"]: t for t in listed["result"]["tools"]}
+    assert "render_component" in by_name
+    key_schema = by_name["render_component"]["inputSchema"]["properties"]["component_key"]
+    assert key_schema["enum"] == ["record_card", "data_table", "bar_chart", "line_chart"]
+
+
+async def test_rendering_a_component_without_any_grant_publishes_a_realtime_event(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     published: list[tuple[str, dict[str, Any]]] = []
@@ -1378,14 +1399,6 @@ async def test_rendering_a_granted_component_publishes_a_realtime_event(
         agent_id, run_id, _t = await _seed(db, tenant)
         agent = await db.get(m.Agent, agent_id)
         assert agent is not None
-        db.add(
-            m.ComponentGrant(
-                tenant_id=tenant,
-                component_key="record_card",
-                grantee_type="agent",
-                grantee_id=agent_id,
-            )
-        )
         await db.commit()
 
     code, body = await _rpc(
@@ -1414,7 +1427,7 @@ async def test_rendering_a_granted_component_publishes_a_realtime_event(
     ) in published
 
 
-async def test_rendering_an_ungranted_component_is_an_error_not_a_silent_no_op(
+async def test_rendering_an_unknown_component_is_an_error_not_a_silent_no_op(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
@@ -1427,12 +1440,12 @@ async def test_rendering_an_ungranted_component_is_an_error_not_a_silent_no_op(
         "tools/call",
         {
             "name": "render_component",
-            "arguments": {"component_key": "record_card", "props": {"title": "Acme"}},
+            "arguments": {"component_key": "nope", "props": {"title": "Acme"}},
         },
     )
     assert code == 200, body
     assert body["result"]["isError"] is True
-    assert "not been granted" in body["result"]["content"][0]["text"]
+    assert "no such component 'nope'" in body["result"]["content"][0]["text"]
 
 
 async def test_the_memory_tools_are_offered_and_the_tier_policy_still_applies(

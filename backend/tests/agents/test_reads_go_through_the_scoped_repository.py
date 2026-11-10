@@ -81,7 +81,6 @@ ALLOWED: dict[str, str] = {
         "(is_tenant_assistant); no departmental browse"
     ),
     "api/v1/knowledge.py": "resolves the grantee (agent or department) of a KB share",
-    "api/v1/components.py": "resolves the grantee (agent or department) of a component grant",
     "agent/control_tools.py": "the agent runtime reading its own department; no human here",
     "copilot/builder.py": (
         "apply re-reads the department a proposal names after may_view/may_create_agent "

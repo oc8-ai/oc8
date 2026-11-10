@@ -6,9 +6,10 @@ Core ships the LAYOUT only -- a title, an optional subtitle, a handful of
 label/value pairs, an optional link. What goes INSIDE one is whatever the
 agent already has from an ordinary, already-authorized MCP tool call earlier
 in the same run: this module never fetches anything and names no vendor,
-matching the rule the rest of oc8.agent.control_tools already holds. Whether
-an agent may use a given layout AT ALL is a separate question, answered by
-oc8.models.components.ComponentGrant, not by this catalogue.
+matching the rule the rest of oc8.agent.control_tools already holds. Every
+layout here is available to every agent: components are presentation only, so
+there is no per-agent grant (the legacy component_grant table is no longer
+consulted).
 """
 
 from __future__ import annotations
@@ -70,9 +71,9 @@ class ChartProps(BaseModel):
 
 
 #: The whole catalogue. A component_key not in here does not exist -- the
-#: first of the three governance checks (exists / granted / valid props).
-#: Every entry here is implicitly available to a granted agent; nothing is
-#: staged here that isn't meant to be used yet.
+#: first of the two checks render_component makes (exists / valid props).
+#: Every entry here is available to every agent; nothing is staged here that
+#: isn't meant to be used yet.
 COMPONENT_CATALOG: dict[str, type[BaseModel]] = {
     "record_card": RecordCardProps,
     "data_table": DataTableProps,
