@@ -233,7 +233,7 @@ export function SidePanelHost({ sessionId }: { sessionId: string | null }) {
   if (!panel) return null;
   const Panel = panel.component;
   return (
-    <aside className="hidden w-[420px] shrink-0 border-l border-border md:flex md:flex-col">
+    <aside className="hidden w-[26.25rem] shrink-0 border-l border-border md:flex md:flex-col">
       <SlotBoundary id={panel.id} resetKey={sessionId}>
         <Panel sessionId={sessionId} onClose={close} />
       </SlotBoundary>

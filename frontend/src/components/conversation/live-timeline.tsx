@@ -145,7 +145,7 @@ function AppLink({ href, children }: { href: string; children: ReactNode }) {
 
 function LiveSkeleton() {
   return (
-    <div className="mx-auto w-full max-w-[760px] space-y-6 p-6" aria-busy="true">
+    <div className="mx-auto w-full max-w-[47.5rem] space-y-6 p-6" aria-busy="true">
       {[0, 1, 2].map((i) => (
         <div key={i} className="space-y-2">
           <Skeleton className="h-3 w-1/4 rounded-md" />

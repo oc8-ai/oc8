@@ -259,7 +259,7 @@ export function CopilotPage({
       }
     />
   ) : (
-    <div className="mx-auto w-full max-w-[760px] space-y-3 p-6" aria-busy="true">
+    <div className="mx-auto w-full max-w-[47.5rem] space-y-3 p-6" aria-busy="true">
       <Skeleton className="h-4 w-1/2 rounded-md" />
       <Skeleton className="h-4 w-2/3 rounded-md" />
     </div>
@@ -343,7 +343,7 @@ export function CopilotPage({
         </section>
         {!mobile && <SidePanelHost sessionId={sessionId} />}
         {!mobile && panelOpen && (
-          <aside className="hidden w-[380px] shrink-0 md:flex md:flex-col">
+          <aside className="hidden w-[23.75rem] shrink-0 md:flex md:flex-col">
             <CopilotWorkPanel />
           </aside>
         )}

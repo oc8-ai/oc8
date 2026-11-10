@@ -859,7 +859,7 @@ export function AppShell() {
       <aside
         className={cn(
           "hidden md:flex shrink-0 flex-col border-r border-border bg-sidebar transition-[width] duration-200",
-          collapsed ? "md:w-[68px]" : "md:w-64",
+          collapsed ? "md:w-[4.25rem]" : "md:w-64",
         )}
       >
         <div
