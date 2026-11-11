@@ -7,28 +7,16 @@ import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Brain, Check, ChevronDown } from "lucide-react";
 
 import { ApiError } from "@/lib/api";
-import {
-  useSessionModels,
-  useSetSessionEffort,
-  type ChatModelOptionDTO,
-} from "@/lib/conversation-api";
+import { useSessionModels, useSetSessionEffort } from "@/lib/conversation-api";
 import { useT } from "@/lib/i18n";
 import {
+  effectiveOption,
   levelHint,
   levelLabel,
   REASONING_LEVELS,
   type ReasoningLevel,
 } from "@/lib/reasoning-levels";
 import { cn } from "@/lib/utils";
-
-/** The option the chat runs on: its own pick, else "Auto", which carries the
- *  agent's default model's capability. */
-export function effectiveOption(
-  options: ChatModelOptionDTO[],
-  modelValue: string | null,
-): ChatModelOptionDTO | undefined {
-  return options.find((o) => o.id === modelValue) ?? options.find((o) => o.id === null);
-}
 
 const CHOICES: ReadonlyArray<ReasoningLevel | null> = [null, ...REASONING_LEVELS];
 
