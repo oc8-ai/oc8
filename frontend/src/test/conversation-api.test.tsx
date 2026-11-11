@@ -14,6 +14,7 @@ import {
   conversationKeys,
   useRegenerate,
   useSetChatMode,
+  useSetSessionEffort,
   type ChatSessionDetailDTO,
 } from "@/lib/conversation-api";
 
@@ -71,5 +72,33 @@ describe("useSetChatMode", () => {
     expect(qc.getQueryData<ChatSessionDetailDTO>(conversationKeys.session("s"))?.mode).toBe(
       "agent",
     );
+  });
+});
+
+describe("useSetSessionEffort", () => {
+  it("PUTs {effort} to the chat and updates the cached session", async () => {
+    const qc = new QueryClient();
+    qc.setQueryData(conversationKeys.session("s"), session);
+    put.mockResolvedValue({ ...session, effort: "thorough" });
+    const { result } = renderHook(() => useSetSessionEffort("s"), { wrapper: wrapper(qc) });
+    await act(async () => {
+      await result.current.mutateAsync("thorough");
+    });
+    expect(put).toHaveBeenCalledWith("/chat/sessions/s/effort", { effort: "thorough" });
+    expect(qc.getQueryData<ChatSessionDetailDTO>(conversationKeys.session("s"))?.effort).toBe(
+      "thorough",
+    );
+  });
+
+  it("sends null to go back to the default", async () => {
+    const qc = new QueryClient();
+    qc.setQueryData(conversationKeys.session("s"), { ...session, effort: "fast" });
+    put.mockResolvedValue({ ...session, effort: null });
+    const { result } = renderHook(() => useSetSessionEffort("s"), { wrapper: wrapper(qc) });
+    await act(async () => {
+      await result.current.mutateAsync(null);
+    });
+    expect(put).toHaveBeenLastCalledWith("/chat/sessions/s/effort", { effort: null });
+    expect(qc.getQueryData<ChatSessionDetailDTO>(conversationKeys.session("s"))?.effort).toBeNull();
   });
 });

@@ -95,6 +95,19 @@ describe("EffortPicker", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(/couldn't be changed/);
   });
 
+  it("drops the inline error when the chat changes", () => {
+    const { rerender } = render(<EffortPicker sessionId="s" modelValue={null} value={null} />);
+    fireEvent.click(screen.getByRole("button", { name: "Reasoning: Balanced" }));
+    fireEvent.click(screen.getByRole("radio", { name: /Thorough/ }));
+    const [, handlers] = setEffort.mock.calls[0] as [string, { onError: (e: Error) => void }];
+    act(() => handlers.onError(new ApiError("boom", 500)));
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+
+    rerender(<EffortPicker sessionId="s2" modelValue={null} value={null} />);
+
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("hands a new chat's pick to the caller instead of writing it", () => {
     const onPick = vi.fn();
     render(

@@ -17,7 +17,7 @@ const steering = vi.hoisted(() => ({ value: undefined as unknown, asked: [] as u
 const create = vi.hoisted(() => vi.fn());
 const send = vi.hoisted(() => vi.fn());
 const budget = vi.hoisted(() => ({ softExceeded: false }));
-const thinks = vi.hoisted(() => ({ value: false }));
+const thinks = vi.hoisted(() => ({ value: false, auto: undefined as boolean | undefined }));
 
 vi.mock("@/components/conversation/use-conversation", () => ({
   useConversation: () => ({
@@ -77,7 +77,7 @@ vi.mock("@/lib/conversation-api", async (orig) => ({
               provider: "",
               locality: "",
               isDefault: false,
-              supportsReasoning: thinks.value,
+              supportsReasoning: thinks.auto ?? thinks.value,
               defaultEffort: "balanced",
             },
             {
@@ -170,6 +170,7 @@ beforeEach(() => {
   steering.asked = [];
   budget.softExceeded = false;
   thinks.value = false;
+  thinks.auto = undefined;
   create.mockReset();
   send.mockReset();
 });
@@ -285,6 +286,37 @@ describe("a new chat's reasoning level", () => {
     await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
     expect(put).toHaveBeenCalledTimes(2);
     expect(put).toHaveBeenLastCalledWith("/chat/sessions/new/effort", { effort: "thorough" });
+  });
+
+  it("is dropped when the member switches to another existing chat", async () => {
+    thinks.value = true;
+    conv.session = detail({ id: "s" });
+    const put = vi.spyOn(api, "put");
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = (sessionId: string) => (
+      <QueryClientProvider client={qc}>
+        <Conversation agentId="a" sessionId={sessionId} onSessionChange={vi.fn()} variant="full" />
+      </QueryClientProvider>
+    );
+    const { rerender } = render(view("s"));
+    // An empty existing chat holds the pick until its first message.
+    fireEvent.click(screen.getByRole("button", { name: "Reasoning: Balanced" }));
+    fireEvent.click(await screen.findByRole("radio", { name: /Thorough/ }));
+    expect(screen.getByRole("button", { name: "Reasoning: Thorough" })).toBeInTheDocument();
+    expect(put).not.toHaveBeenCalled();
+
+    conv.session = detail({ id: "s2" });
+    rerender(view("s2"));
+
+    expect(screen.getByRole("button", { name: "Reasoning: Balanced" })).toBeInTheDocument();
+  });
+
+  it("is hidden in an existing chat whose Auto default cannot think", () => {
+    thinks.value = true;
+    thinks.auto = false;
+    conv.session = detail({ id: "s", modelOverrideId: null });
+    mount("s");
+    expect(screen.queryByRole("button", { name: /Reasoning:/ })).toBeNull();
   });
 
   it("is not offered while the chat's model cannot think", () => {
