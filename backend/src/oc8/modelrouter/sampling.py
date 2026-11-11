@@ -14,6 +14,10 @@ Same shape as ``max_steps`` (§8.3), which an agent plugin may already raise per
 agent. Shared by both runtimes on purpose: sampling drifting apart between
 in-process and isolated runs would be invisible and maddening to debug.
 
+The reasoning level follows the same order with the chat's pick in front
+(spec 2026-11-11 §5): chat session -> agent effort -> model config effort ->
+balanced, and nothing at all for a model whose `supports_reasoning` is off.
+
 Values come from free-form JSONB an operator edits, so nothing here may raise: a
 typo degrades to the default and a wild number is clamped, because a failed run
 is a much worse answer to a misconfiguration than a sane one.
@@ -21,11 +25,13 @@ is a much worse answer to a misconfiguration than a sane one.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from oc8 import models as m
 from oc8.config import get_settings
-from oc8.modelrouter.types import ModelParams
+from oc8.modelrouter.levels import CHAT_LEVEL_KEY, as_level, resolve_reasoning
+from oc8.modelrouter.types import ModelParams, ReasoningLevel
 
 # Slightly above zero: enough variation that an agent doesn't repeat itself word
 # for word, low enough to stay reliable at tool calling.
@@ -82,13 +88,13 @@ def bumped_for_length_retry(params: ModelParams, *, provider: str | None = None)
     the cap; a caller should then skip the retry, which could only fail the
     same way again.
     """
-    return ModelParams(
-        temperature=params.temperature,
+    # `replace`, not a field-by-field copy: a new field (the reasoning level
+    # was one) must never be dropped by the retry that doubles the budget.
+    return replace(
+        params,
         max_tokens=cap_for_provider(
             params.max_tokens * LENGTH_RETRY_MAX_TOKENS_MULTIPLIER, provider
         ),
-        effort=params.effort,
-        extra=params.extra,
     )
 
 
@@ -146,6 +152,28 @@ def _extra(raw: Any) -> dict[str, Any] | None:
     return raw
 
 
+def configured_effort(
+    config: m.ModelConfig | None, definition: dict[str, Any] | None
+) -> str | None:
+    """The free-form effort an operator configured, narrowest first: the
+    agent's `model_params.effort`, then the model config's `params.effort`.
+    None when neither says anything usable. Shared with the chat model picker,
+    so its "Default · ..." names what a run would use."""
+    model_params = (definition or {}).get("model_params")
+    for source in (
+        model_params if isinstance(model_params, dict) else {},
+        (config.params or {}) if config is not None else {},
+    ):
+        if isinstance(source, dict) and (e := _effort(source.get("effort"))) is not None:
+            return e
+    return None
+
+
+def _chat_level(definition: dict[str, Any] | None) -> ReasoningLevel | None:
+    model_params = (definition or {}).get("model_params")
+    return as_level(model_params.get(CHAT_LEVEL_KEY)) if isinstance(model_params, dict) else None
+
+
 def resolve_params(
     config: m.ModelConfig | None,
     *,
@@ -163,7 +191,6 @@ def resolve_params(
         definition = agent.definition
     temperature = DEFAULT_TEMPERATURE
     max_tokens = default_max_tokens()
-    effort: str | None = None
     extra: dict[str, Any] = {}
 
     # Widest scope first, so a narrower one simply overwrites it. Each key is
@@ -181,16 +208,20 @@ def resolve_params(
             temperature = t
         if (mt := _max_tokens(source.get("max_tokens"))) is not None:
             max_tokens = mt
-        if (e := _effort(source.get("effort"))) is not None:
-            effort = e
         if (ex := _extra(source.get("extra"))) is not None:
             extra.update(ex)
 
+    reasoning, effort = resolve_reasoning(
+        supports=None if config is None else bool(config.supports_reasoning),
+        configured=configured_effort(config, definition),
+        chat_level=_chat_level(definition),
+    )
     return ModelParams(
         temperature=temperature,
         # A provider that accepts fewer tokens gets its cap instead of an
         # error that would fail the run.
         max_tokens=cap_for_provider(max_tokens, config.provider if config is not None else None),
         effort=effort,
+        reasoning=reasoning,
         extra=extra or None,
     )

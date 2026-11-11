@@ -139,6 +139,12 @@ class ModelParams:
     #: that set and changes it without oc8's involvement. None omits the
     #: field entirely rather than sending a guessed default.
     effort: str | None = None
+    #: How hard the model should think, provider-neutral (spec 2026-11-11).
+    #: Built-in adapters map it to their own API; a capa adapter reads it
+    #: itself. Wins over `effort` in every built-in adapter; None leaves each
+    #: adapter on its `effort` behaviour. `resolve_params` never sets either
+    #: one for a model that cannot think.
+    reasoning: ReasoningLevel | None = None
     #: Free-form top-level request fields an operator wants forwarded verbatim
     #: (e.g. OpenRouter's `provider`/`top_p`) that oc8 has no named field for.
     #: Merged into the outbound payload strictly AFTER every named field, so a
