@@ -19,6 +19,7 @@ from oc8.modelrouter.types import (
     CompletionResult,
     ImagePart,
     NeutralMessage,
+    ReasoningLevel,
     TextPart,
     ToolCall,
     Usage,
@@ -150,7 +151,16 @@ def to_openai_messages(messages: list[NeutralMessage]) -> list[dict[str, Any]]:
 
 #: Keys this adapter always sets itself. An operator-supplied `extra` key
 #: matching one of these is dropped rather than applied -- see build_payload.
-_RESERVED_PAYLOAD_KEYS = frozenset({"model", "messages", "temperature", "max_tokens", "tools"})
+_RESERVED_PAYLOAD_KEYS = frozenset(
+    {"model", "messages", "temperature", "max_tokens", "tools", "reasoning_effort"}
+)
+
+#: The level as Chat Completions' `reasoning_effort` (spec 2026-11-11 §6).
+_REASONING_EFFORT: dict[ReasoningLevel, str] = {
+    "fast": "low",
+    "balanced": "medium",
+    "thorough": "high",
+}
 
 
 def build_payload(req: CompletionRequest) -> dict[str, Any]:
@@ -160,6 +170,10 @@ def build_payload(req: CompletionRequest) -> dict[str, Any]:
         "temperature": req.params.temperature,
         "max_tokens": req.params.max_tokens,
     }
+    # Only a level is mapped. A free-form `effort` alone was never sent here
+    # and still is not (spec §6: no level keeps today's behaviour).
+    if req.params.reasoning is not None:
+        payload["reasoning_effort"] = _REASONING_EFFORT[req.params.reasoning]
     if req.tools:
         payload["tools"] = [
             {

@@ -135,6 +135,7 @@ from oc8.modelrouter.types import (
     ImagePart,
     NeutralMessage,
     NeutralTool,
+    ReasoningLevel,
     TextPart,
     ToolCall,
     ToolCallDelta,
@@ -260,6 +261,16 @@ def to_responses_tools(tools: list[NeutralTool]) -> list[dict[str, Any]]:
     ]
 
 
+#: The level as the Responses API's `reasoning.effort` (spec 2026-11-11 §6).
+#: The one `ModelParams` field this adapter forwards: it tunes the reasoning
+#: models this backend serves instead of breaking them.
+_REASONING_EFFORT: dict[ReasoningLevel, str] = {
+    "fast": "low",
+    "balanced": "medium",
+    "thorough": "high",
+}
+
+
 def build_responses_payload(req: CompletionRequest) -> dict[str, Any]:
     instructions, items = to_responses_input(req.messages)
     payload: dict[str, Any] = {"model": req.model, "input": items}
@@ -270,6 +281,8 @@ def build_responses_payload(req: CompletionRequest) -> dict[str, Any]:
         payload["tool_choice"] = "auto"
     # Never leave a copy of a tenant's transcript on OpenAI's side for later
     # retrieval; Codex does the same (client.rs:889).
+    if req.params.reasoning is not None:
+        payload["reasoning"] = {"effort": _REASONING_EFFORT[req.params.reasoning]}
     payload["store"] = False
     return payload
 
