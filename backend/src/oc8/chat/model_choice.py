@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.modelrouter.auto_router import is_auto_config
 from oc8.modelrouter.levels import CHAT_LEVEL_KEY, DEFAULT_LEVEL, as_level, default_display
 from oc8.modelrouter.sampling import configured_effort
 
@@ -213,5 +214,6 @@ async def _runs_on_auto(db: AsyncSession, payload: dict[str, Any]) -> bool:
     from oc8.agents.versioning import pinned_model_config_id
 
     config_id = pinned_model_config_id(payload)
-    config = await db.get(m.ModelConfig, config_id) if config_id is not None else None
-    return config is not None and (config.provider or "").lower() == _AUTO_PROVIDER
+    if config_id is None:
+        return False
+    return is_auto_config(await db.get(m.ModelConfig, config_id))
