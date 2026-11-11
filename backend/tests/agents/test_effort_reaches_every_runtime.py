@@ -13,6 +13,7 @@ from httpx import ASGITransport, AsyncClient
 
 from oc8 import models as m
 from oc8.agent.engine import run_agent
+from oc8.agents.versioning import publish_version
 from oc8.main import create_app
 from oc8.modelrouter import CompletionChunk, CompletionResult, Usage, chunk_from_result
 from oc8.modelrouter.types import ModelParams
@@ -82,14 +83,17 @@ async def test_an_auto_router_run_keeps_each_tiers_own_level_through_an_escalati
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The control is hidden on Auto, so the chat's stored pick does not
-    apply: a failed first call escalates to a stronger tier, and both calls
-    carry the tier's own gated level (balanced, nothing configured), not the
-    chat's thorough."""
+    apply: a failed first call escalates to the strong tier, and both calls
+    carry what the PINNED definition configures (effort high -> thorough,
+    temperature 0.2), never the live draft's values nor the chat's fast."""
     tenant = uuid.uuid4()
     recorder = _RecordingStream()
     calls: list[ModelParams] = []
 
+    models: list[str] = []
+
     def flaky(*args: Any, **kw: Any) -> AsyncIterator[CompletionChunk]:
+        models.append(kw["primary"].model)
         if not calls:
             calls.append(kw["params"])
             recorder.params.append(kw["params"])
@@ -132,11 +136,17 @@ async def test_an_auto_router_run_keeps_each_tiers_own_level_through_an_escalati
         db.add(auto)
         await db.flush()
         agent.model_config_id = auto.id
+        agent.definition = {"model_params": {"effort": "high", "temperature": 0.2}}
+        version = await publish_version(db, agent)
+        # The live row is the operator's draft; a run must not read it.
+        agent.definition = {"model_params": {"effort": "low", "temperature": 0.9}}
+        await db.flush()
         run = m.AgentRun(
             tenant_id=tenant,
             agent_id=agent.id,
+            agent_version_id=version.id,
             state=RunState.RUNNING.value,
-            context={"task": "go", "effort_override": "thorough"},
+            context={"task": "go", "effort_override": "fast"},
         )
         db.add(run)
         await db.flush()
@@ -144,8 +154,10 @@ async def test_an_auto_router_run_keeps_each_tiers_own_level_through_an_escalati
             db, agent=agent, task_text="go", tenant_id=tenant, run_id=run.id, mcp_conn=conn
         )
     assert len(recorder.params) >= 2, "the first call failed and the escalated one ran"
-    assert recorder.params[0].reasoning == "balanced"
-    assert recorder.params[-1].reasoning == "balanced"
+    assert models[-1] == "strong-model", models
+    for params in (recorder.params[0], recorder.params[-1]):
+        assert (params.reasoning, params.effort) == ("thorough", "high")
+        assert params.temperature == 0.2
 
 
 async def test_the_isolated_step(
