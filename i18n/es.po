@@ -682,6 +682,10 @@ msgid "Asked you"
 msgstr "Te preguntó"
 
 #, fuzzy
+msgid "Asking a colleague …"
+msgstr "Consultando a un colega"
+
+#, fuzzy
 msgid "Asking a question"
 msgstr "Haciendo una pregunta"
 
@@ -1140,6 +1144,10 @@ msgstr "Revisando las cifras"
 #, fuzzy
 msgid "Checking what needs a decision"
 msgstr "Revisando qué necesita una decisión"
+
+#, fuzzy
+msgid "Checking your approvals …"
+msgstr "esperando aprobación"
 
 #, fuzzy
 msgid "Choose a company, or create a safely isolated one for local testing."
@@ -3522,6 +3530,10 @@ msgid "Looking through its notes"
 msgstr "Revisando sus notas"
 
 #, fuzzy
+msgid "Looking through its notes …"
+msgstr "Revisando sus notas"
+
+#, fuzzy
 msgid "Made a note"
 msgstr "Tomó una nota"
 
@@ -4882,6 +4894,10 @@ msgid "Reading a resource"
 msgstr "Leyendo un recurso"
 
 #, fuzzy
+msgid "Reading a web page …"
+msgstr "Leyó una página web"
+
+#, fuzzy
 msgid "Reading archive…"
 msgstr "Leyendo el archivo…"
 
@@ -5482,6 +5498,14 @@ msgid "Searching the knowledge base"
 msgstr "Buscando en la base de conocimiento"
 
 #, fuzzy
+msgid "Searching the knowledge base …"
+msgstr "Buscando en la base de conocimiento"
+
+#, fuzzy
+msgid "Searching the web …"
+msgstr "Buscando en la base de conocimiento"
+
+#, fuzzy
 msgid "Seat added"
 msgstr "Puesto añadido"
 
@@ -5707,6 +5731,10 @@ msgstr "Muestra los derechos que un rol no puede tener y por qué"
 
 #, fuzzy
 msgid "Show work panel"
+msgstr "Mostrar panel de trabajo"
+
+#, fuzzy
+msgid "Show work panel ({count} items)"
 msgstr "Mostrar panel de trabajo"
 
 #, fuzzy
@@ -6394,6 +6422,10 @@ msgid "They will disappear from the users list and will not be able to sign in. 
 msgstr "Desaparecerán de la lista de usuarios y no podrán iniciar sesión. Los enlaces de invitación y restablecimiento sin usar se invalidan para que no puedan volver a entrar con un correo antiguo."
 
 #, fuzzy
+msgid "Thinking …"
+msgstr "Pensando…"
+
+#, fuzzy
 msgid "Thinking…"
 msgstr "Pensando…"
 
@@ -6638,6 +6670,10 @@ msgid "Thought"
 msgstr "Pensó"
 
 #, fuzzy
+msgid "Thoughts"
+msgstr "Pensó"
+
+#, fuzzy
 msgid "Throttle"
 msgstr "Limitar"
 
@@ -6856,10 +6892,6 @@ msgstr "Sin registrar"
 #, fuzzy
 msgid "Untested"
 msgstr "Sin probar"
-
-#, fuzzy
-msgid "Untitled chat"
-msgstr "Chat sin título"
 
 #, fuzzy
 msgid "Update"
