@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 from pydantic import Field
 
+from oc8.modelrouter.types import ReasoningLevel
 from oc8.schemas.base import CamelModel
 
 
@@ -1251,9 +1252,8 @@ class ChatSessionDTO(CamelModel):
     pinned: bool = False
     #: The sticky mode this chat is in ("agent"), or None.
     mode: str | None = None
-    #: The reasoning level kept on this chat ("fast"|"balanced"|"thorough"),
-    #: or None for the default.
-    effort: str | None = None
+    #: The reasoning level kept on this chat, or None for the default.
+    effort: ReasoningLevel | None = None
 
 
 class BuilderChoiceDTO(CamelModel):

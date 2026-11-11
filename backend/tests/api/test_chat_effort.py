@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -16,6 +17,7 @@ from oc8.auth import get_identity_provider
 from oc8.edition.runtime import RuntimeComposition
 from oc8.main import create_app
 from oc8.runtime.supervision_hook import NOOP_SUPERVISION_RUN_HOOK
+from oc8.schemas.dto import ChatSessionDTO
 from tests.conftest import AppSessionFactory
 from tests.copilot.helpers import copilot_seat
 
@@ -305,3 +307,10 @@ async def test_a_reader_sees_the_level_and_cannot_change_it(
     assert detail.json()["readOnly"] is True
     assert detail.json()["effort"] == "thorough"
     assert write.status_code == 404, write.text
+
+
+def test_the_session_view_only_carries_a_level() -> None:
+    base: dict[str, Any] = {"id": "s", "agent_id": "a", "title": "", "created_at": ""}
+    assert ChatSessionDTO(**base, effort="thorough").effort == "thorough"
+    with pytest.raises(ValidationError):
+        ChatSessionDTO(**base, effort="max")
