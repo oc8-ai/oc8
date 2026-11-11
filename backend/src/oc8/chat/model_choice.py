@@ -19,6 +19,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.modelrouter.levels import DEFAULT_LEVEL, default_display
+from oc8.modelrouter.sampling import configured_effort
 
 _AUTO_PROVIDER = "auto"
 
@@ -30,6 +32,10 @@ class ModelOption:
     provider: str
     locality: str
     is_default: bool
+    #: Whether the composer shows the reasoning-level control on this model.
+    supports_reasoning: bool = False
+    #: The level that applies without a chat pick, or "custom".
+    default_effort: str = DEFAULT_LEVEL
 
 
 async def _chat_enabled_configs(db: AsyncSession, *, tenant_id: uuid.UUID) -> list[m.ModelConfig]:
@@ -61,24 +67,59 @@ async def is_allowed_override(
     return model_config_id in await allowed_model_ids(db, agent=agent)
 
 
+def _reasoning_of(
+    config: m.ModelConfig | None, definition: dict[str, Any] | None
+) -> tuple[bool, str]:
+    """(can it think, the level that applies without a chat pick). An Auto
+    row only routes, so whether a level applies is decided per routed model."""
+    if config is None or config.provider == _AUTO_PROVIDER:
+        return False, DEFAULT_LEVEL
+    return bool(config.supports_reasoning), default_display(configured_effort(config, definition))
+
+
 async def model_options(
-    db: AsyncSession, *, agent: m.Agent, default_model_id: uuid.UUID | None
+    db: AsyncSession,
+    *,
+    agent: m.Agent,
+    default_model_id: uuid.UUID | None,
+    definition: dict[str, Any] | None = None,
 ) -> list[ModelOption]:
     """The picker's entries: "Auto" first, then the agent's default model (if
-    chat-enabled), then the other chat-enabled models by label."""
+    chat-enabled), then the other chat-enabled models by label. `definition`
+    is the agent's pinned definition, whose `model_params.effort` is part of
+    what each option's default level is."""
     configs = await _chat_enabled_configs(db, tenant_id=agent.tenant_id)
     configs.sort(key=lambda c: (c.id != default_model_id, (c.display_name or c.model).lower()))
-    options = [ModelOption(id=None, label="Auto", provider="", locality="", is_default=False)]
-    options.extend(
+    default_cfg = next((c for c in configs if c.id == default_model_id), None)
+    if default_cfg is None and default_model_id is not None:
+        # "Auto" runs on the agent's own model even when that one is not
+        # offered for a pick.
+        default_cfg = await db.get(m.ModelConfig, default_model_id)
+    auto_thinks, auto_default = _reasoning_of(default_cfg, definition)
+    options = [
         ModelOption(
-            id=str(c.id),
-            label=c.display_name or c.model,
-            provider=c.provider,
-            locality=c.locality,
-            is_default=c.id == default_model_id,
+            id=None,
+            label="Auto",
+            provider="",
+            locality="",
+            is_default=False,
+            supports_reasoning=auto_thinks,
+            default_effort=auto_default,
         )
-        for c in configs
-    )
+    ]
+    for c in configs:
+        thinks, default = _reasoning_of(c, definition)
+        options.append(
+            ModelOption(
+                id=str(c.id),
+                label=c.display_name or c.model,
+                provider=c.provider,
+                locality=c.locality,
+                is_default=c.id == default_model_id,
+                supports_reasoning=thinks,
+                default_effort=default,
+            )
+        )
     return options
 
 

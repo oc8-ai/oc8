@@ -15,6 +15,7 @@ from pydantic import (
 )
 
 from oc8.chat.context.manifest import MAX_MESSAGE_REFS, MAX_PINNED_REFS
+from oc8.modelrouter.types import ReasoningLevel
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import WidgetInstanceDTO
 
@@ -106,6 +107,12 @@ class SetChatModelRequest(CamelModel):
 class SetChatModeRequest(CamelModel):
     #: A sticky mode's key, or None to leave the mode.
     mode: str | None = Field(default=None, max_length=32)
+
+
+class SetChatEffortRequest(CamelModel):
+    #: A reasoning level, or None for the agent's or model's default. Anything
+    #: else is a 422 (spec 2026-11-11 §9).
+    effort: ReasoningLevel | None = None
 
 
 class CreateAgentRequest(CamelModel):

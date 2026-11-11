@@ -1251,6 +1251,9 @@ class ChatSessionDTO(CamelModel):
     pinned: bool = False
     #: The sticky mode this chat is in ("agent"), or None.
     mode: str | None = None
+    #: The reasoning level kept on this chat ("fast"|"balanced"|"thorough"),
+    #: or None for the default.
+    effort: str | None = None
 
 
 class BuilderChoiceDTO(CamelModel):
@@ -1350,6 +1353,12 @@ class ChatModelOptionDTO(CamelModel):
     provider: str
     locality: str
     is_default: bool
+    #: Whether this model can think; the composer shows the reasoning-level
+    #: control only then. For "Auto", the agent's default model's value.
+    supports_reasoning: bool = False
+    #: The level that applies without a chat pick, or "custom" for a
+    #: configured value that maps to no level.
+    default_effort: str = "balanced"
 
 
 class FileAttachmentDTO(CamelModel):
