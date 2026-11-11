@@ -11,8 +11,8 @@ from typing import Any
 
 import httpx
 
-from oc8.modelrouter.levels import EFFORT_FOR_LEVEL
 from oc8.modelrouter.http_errors import araise_for_status_with_body, raise_for_status_with_body
+from oc8.modelrouter.levels import EFFORT_FOR_LEVEL
 from oc8.modelrouter.types import (
     CompletionChunk,
     CompletionRequest,
