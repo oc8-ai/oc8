@@ -5596,6 +5596,10 @@ msgid "Show work panel"
 msgstr "Werkpaneel tonen"
 
 #, fuzzy
+msgid "Show work panel ({count} items)"
+msgstr "Werkpaneel tonen"
+
+#, fuzzy
 msgid "Showed a summary"
 msgstr "Toonde een samenvatting"
 

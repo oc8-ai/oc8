@@ -4309,6 +4309,11 @@ msgstr "Rechte anzeigen, die eine Rolle nicht halten darf — und warum"
 msgid "Show work panel"
 msgstr "Arbeitsbereich einblenden"
 
+#, fuzzy
+#| msgid "Show work panel"
+msgid "Show work panel ({count} items)"
+msgstr "Arbeitsbereich einblenden"
+
 msgid "Showed a summary"
 msgstr "Auswertung gezeigt"
 

@@ -5734,6 +5734,10 @@ msgid "Show work panel"
 msgstr "Afficher le panneau de travail"
 
 #, fuzzy
+msgid "Show work panel ({count} items)"
+msgstr "Afficher le panneau de travail"
+
+#, fuzzy
 msgid "Showed a summary"
 msgstr "A affiché un résumé"
 
