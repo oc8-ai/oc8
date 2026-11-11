@@ -8,6 +8,10 @@ from typing import Any, Literal, Protocol
 
 Role = Literal["system", "user", "assistant", "tool"]
 
+#: How hard a model should think (spec 2026-11-11 §2). Provider-neutral: each
+#: adapter maps it to its own API; see oc8.modelrouter.levels.
+ReasoningLevel = Literal["fast", "balanced", "thorough"]
+
 
 @dataclass
 class ToolCall:

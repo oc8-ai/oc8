@@ -29,6 +29,12 @@ from oc8.modelrouter.adapters.chatgpt_subscription import ChatGptSubscriptionAda
 from oc8.modelrouter.adapters.ollama import OllamaAdapter
 from oc8.modelrouter.adapters.openai import OpenAIAdapter
 from oc8.modelrouter.adapters.openai_compatible import OpenAICompatibleAdapter
+from oc8.modelrouter.reasoning_support import (
+    anthropic_thinks,
+    ollama_thinks,
+    openai_compatible_thinks,
+    openai_thinks,
+)
 from oc8.modelrouter.types import ModelAdapter
 from oc8.oauth.openai_chatgpt_params import CHATGPT_BACKEND_BASE_URL
 
@@ -49,6 +55,10 @@ class ProviderEntry:
     #: server, a per-connection login), so only a tenant key or a model set up
     #: against it means the tenant actually uses it.
     always_available: bool = False
+    #: Whether a model of this provider can think, as a bool for the whole
+    #: provider or per model name (spec §6). Prefills a new model config's
+    #: `supports_reasoning`; the admin can change it.
+    supports_reasoning: bool | Callable[[str], bool] = False
 
 
 _PROVIDERS: tuple[ProviderEntry, ...] = (
@@ -58,6 +68,7 @@ _PROVIDERS: tuple[ProviderEntry, ...] = (
         "cloud",
         lambda s, _b, key: AnthropicAdapter(key or s.anthropic_api_key),
         lambda s, key: bool(key or s.anthropic_api_key),
+        supports_reasoning=anthropic_thinks,
     ),
     ProviderEntry(
         "openai",
@@ -65,6 +76,7 @@ _PROVIDERS: tuple[ProviderEntry, ...] = (
         "cloud",
         lambda s, _b, key: OpenAIAdapter(key or s.openai_api_key),
         lambda s, key: bool(key or s.openai_api_key),
+        supports_reasoning=openai_thinks,
     ),
     ProviderEntry(
         "openai_compatible",
@@ -74,6 +86,7 @@ _PROVIDERS: tuple[ProviderEntry, ...] = (
             b or s.mistral_base_url, key or s.mistral_api_key
         ),
         lambda s, key: bool(key or s.mistral_api_key),
+        supports_reasoning=openai_compatible_thinks,
     ),
     ProviderEntry(
         "openai_chatgpt",
@@ -87,6 +100,7 @@ _PROVIDERS: tuple[ProviderEntry, ...] = (
         # it is offered to every tenant and the login decides whether it works.
         lambda _s, _key: True,
         always_available=True,
+        supports_reasoning=True,
     ),
     ProviderEntry(
         "ollama",
@@ -95,6 +109,7 @@ _PROVIDERS: tuple[ProviderEntry, ...] = (
         lambda s, _b, _key: OllamaAdapter(s.ollama_base_url),
         lambda s, _key: True,
         always_available=True,
+        supports_reasoning=ollama_thinks,
     ),
 )
 
@@ -148,6 +163,30 @@ def build_adapter(
     if entry is None:
         raise KeyError(canonical)
     return entry.factory(settings, base_url, api_key)
+
+
+def entry_supports_reasoning(entry: ProviderEntry, model: str) -> bool:
+    """`entry`'s declaration for `model`. A capa's callable that raises reads
+    as "cannot think": a bug in a plugin must not fail a model create or the
+    0116 backfill."""
+    declared = entry.supports_reasoning
+    if isinstance(declared, bool):
+        return declared
+    try:
+        return declared(model) is True
+    except Exception:
+        return False
+
+
+def supports_reasoning_for(provider: str, model: str) -> bool:
+    """Process-wide: built-ins plus every LOADED plugin, not tenant-scoped.
+    Only for callers with no tenant in hand (migration 0116's backfill, the
+    seed). A request path uses `default_supports_reasoning` instead."""
+    canonical = canonical_provider(provider)
+    if canonical is None:
+        return False
+    entry = _BY_CANONICAL.get(canonical) or _plugin_entries().get(canonical)
+    return entry is not None and entry_supports_reasoning(entry, model)
 
 
 def known_providers() -> list[ProviderInfo]:

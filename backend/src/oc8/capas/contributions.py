@@ -98,19 +98,29 @@ class PluginContributions:
         factory: object,
         available: object,
         aliases: tuple[str, ...] = (),
+        supports_reasoning: bool | Callable[[str], bool] = False,
     ) -> None:
+        """A model provider. `supports_reasoning` says whether its models can
+        think, for the whole provider or per model name; it prefills a new
+        model config's "Can think" switch. A provider whose adapter reads
+        `req.params.reasoning` should declare it (spec 2026-11-11 §6)."""
         from oc8.modelrouter.registry import ProviderEntry
 
         if not canonical:
             raise ValueError("a contributed provider needs a canonical name")
         if locality not in ("cloud", "local"):
             raise ValueError("locality must be 'cloud' or 'local'")
+        if not isinstance(supports_reasoning, bool) and not callable(supports_reasoning):
+            raise ValueError(
+                "supports_reasoning must be a bool or a callable taking the model name"
+            )
         self.providers[canonical] = ProviderEntry(
             canonical=canonical,
             aliases=tuple(aliases),
             locality=locality,
             factory=factory,  # type: ignore[arg-type]
             available=available,  # type: ignore[arg-type]
+            supports_reasoning=supports_reasoning,
         )
 
     def add_hook(self, point: str, fn: Callable[..., object]) -> None:
