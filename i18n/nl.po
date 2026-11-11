@@ -22,6 +22,82 @@ msgid " of "
 msgstr " van "
 
 #, fuzzy
+msgid "Answers right away, barely thinks"
+msgstr "Antwoordt meteen, denkt nauwelijks na"
+
+#, fuzzy
+msgid "Balanced"
+msgstr "Gebalanceerd"
+
+#, fuzzy
+msgid "Can think"
+msgstr "Kan nadenken"
+
+#, fuzzy
+msgid "Custom effort value"
+msgstr "Aangepaste effort-waarde"
+
+#, fuzzy
+msgid "Custom setting"
+msgstr "Aangepaste instelling"
+
+#, fuzzy
+msgid "Custom value"
+msgstr "Aangepaste waarde"
+
+#, fuzzy
+msgid "e.g. max"
+msgstr "bijv. max"
+
+#, fuzzy
+msgid "Fast"
+msgstr "Snel"
+
+#, fuzzy
+msgid "from extra parameters"
+msgstr "uit extra parameters"
+
+#, fuzzy
+msgid "How hard this model thinks when neither the chat nor the agent sets a level. A custom value is forwarded to the provider as typed."
+msgstr "Hoe grondig dit model nadenkt als chat noch agent een niveau instelt. Een aangepaste waarde gaat ongewijzigd naar de aanbieder."
+
+#, fuzzy
+msgid "Not set"
+msgstr "Niet ingesteld"
+
+#, fuzzy
+msgid "Reasoning"
+msgstr "Denkniveau"
+
+#, fuzzy
+msgid "Reasoning level not supported by this model, answered without thinking."
+msgstr "Denkniveau niet ondersteund door dit model, beantwoord zonder na te denken."
+
+#, fuzzy
+msgid "Shows the reasoning-level control in chats on this model and sends the chosen level to the provider."
+msgstr "Toont de keuze van het denkniveau in chats op dit model en stuurt het gekozen niveau naar de aanbieder."
+
+#, fuzzy
+msgid "That reasoning level isn't available. Pick another one."
+msgstr "Dit denkniveau is niet beschikbaar. Kies een ander."
+
+#, fuzzy
+msgid "The reasoning level couldn't be changed. Try again."
+msgstr "Het denkniveau kon niet worden gewijzigd. Probeer het opnieuw."
+
+#, fuzzy
+msgid "The usual choice"
+msgstr "De gebruikelijke keuze"
+
+#, fuzzy
+msgid "Thinks longer for tricky questions; slower and costs more"
+msgstr "Denkt langer na bij lastige vragen; trager en duurder"
+
+#, fuzzy
+msgid "Thorough"
+msgstr "Grondig"
+
+#, fuzzy
 msgid "— no agent"
 msgstr "— geen agent"
 
@@ -4904,10 +4980,6 @@ msgstr "Echte serververbindingen waarmee agents tools kunnen gebruiken — los v
 #, fuzzy
 msgid "Reason"
 msgstr "Reden"
-
-#, fuzzy
-msgid "Reasoning effort forwarded as-is to providers that support it (currently Anthropic). Leave blank to omit. Not validated here — the provider decides which values it accepts."
-msgstr "Redeneerinspanning wordt ongewijzigd doorgestuurd naar providers die het ondersteunen (momenteel Anthropic). Laat leeg om weg te laten. Hier niet gevalideerd — de provider bepaalt welke waarden hij accepteert."
 
 #, fuzzy
 msgid "reasoning engine"

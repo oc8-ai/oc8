@@ -13,6 +13,63 @@ msgstr " (öffnet in neuem Tab)"
 msgid " of "
 msgstr " von "
 
+msgid "Answers right away, barely thinks"
+msgstr "Antwortet sofort, denkt kaum nach"
+
+msgid "Balanced"
+msgstr "Ausgewogen"
+
+msgid "Can think"
+msgstr "Kann nachdenken"
+
+msgid "Custom effort value"
+msgstr "Eigener Effort-Wert"
+
+msgid "Custom setting"
+msgstr "Eigene Einstellung"
+
+msgid "Custom value"
+msgstr "Eigener Wert"
+
+msgid "e.g. max"
+msgstr "z. B. max"
+
+msgid "Fast"
+msgstr "Schnell"
+
+msgid "from extra parameters"
+msgstr "aus Extra-Parametern"
+
+msgid "How hard this model thinks when neither the chat nor the agent sets a level. A custom value is forwarded to the provider as typed."
+msgstr "Wie gründlich dieses Modell nachdenkt, wenn weder der Chat noch der Agent eine Stufe setzt. Ein eigener Wert geht unverändert an den Anbieter."
+
+msgid "Not set"
+msgstr "Nicht gesetzt"
+
+msgid "Reasoning"
+msgstr "Denkstufe"
+
+msgid "Reasoning level not supported by this model, answered without thinking."
+msgstr "Denkstufe von diesem Modell nicht unterstützt, ohne Nachdenken geantwortet."
+
+msgid "Shows the reasoning-level control in chats on this model and sends the chosen level to the provider."
+msgstr "Zeigt im Chat auf diesem Modell die Denkstufe an und schickt die gewählte Stufe an den Anbieter."
+
+msgid "That reasoning level isn't available. Pick another one."
+msgstr "Diese Denkstufe ist nicht verfügbar. Wähl eine andere."
+
+msgid "The reasoning level couldn't be changed. Try again."
+msgstr "Die Denkstufe konnte nicht geändert werden. Versuch es noch einmal."
+
+msgid "The usual choice"
+msgstr "Der Normalfall"
+
+msgid "Thinks longer for tricky questions; slower and costs more"
+msgstr "Denkt länger nach, für knifflige Fragen; dauert länger und kostet mehr"
+
+msgid "Thorough"
+msgstr "Gründlich"
+
 msgid "— no agent"
 msgstr "— kein Agent"
 
@@ -3675,9 +3732,6 @@ msgstr "Echte Serververbindungen, die Agenten als Tools nutzen können – getre
 
 msgid "Reason"
 msgstr "Begründung"
-
-msgid "Reasoning effort forwarded as-is to providers that support it (currently Anthropic). Leave blank to omit. Not validated here — the provider decides which values it accepts."
-msgstr "Reasoning-Aufwand, unverändert an Anbieter weitergereicht, die dies unterstützen (aktuell Anthropic). Leer lassen, um es wegzulassen. Wird hier nicht validiert — der Anbieter entscheidet, welche Werte er akzeptiert."
 
 msgid "reasoning engine"
 msgstr "Denkmaschine"

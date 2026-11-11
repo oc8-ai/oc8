@@ -38,6 +38,7 @@ import {
 import { useMay } from "@/lib/governance-hooks";
 import { useLang, useT } from "@/lib/i18n";
 import { useWatchRuns } from "@/lib/live/provider";
+import type { ReasoningLevel } from "@/lib/reasoning-levels";
 import { cn } from "@/lib/utils";
 
 import { SidePanelProvider } from "@/edition/slots";
@@ -444,11 +445,18 @@ function ConversationBody(props: ConversationProps) {
   const [heldModel, setHeldModel] = useState<string | null | undefined>(undefined);
   const heldModelRef = useRef(heldModel);
   heldModelRef.current = heldModel;
+  // The same for the reasoning level (spec 2026-11-11 §3, "New chats").
+  const [heldEffort, setHeldEffort] = useState<ReasoningLevel | null | undefined>(undefined);
+  const heldEffortRef = useRef(heldEffort);
+  heldEffortRef.current = heldEffort;
   const [modelScope, setModelScope] = useState(props.sessionId);
   if (modelScope !== props.sessionId) {
     setModelScope(props.sessionId);
     // The new chat being created under the pick keeps it.
-    if (modelScope !== null) setHeldModel(undefined);
+    if (modelScope !== null) {
+      setHeldModel(undefined);
+      setHeldEffort(undefined);
+    }
   }
   // Agent mode (Copilot Agent Builder §2). A chat that does not exist yet holds
   // the mode here and its first message carries "/agent", so no empty chat is
@@ -679,6 +687,7 @@ function ConversationBody(props: ConversationProps) {
               ...session,
               mode: heldMode,
               modelOverrideId: null,
+              effort: null,
               kind: "chat",
               activeRuns: [],
               readOnly: false,
@@ -717,6 +726,21 @@ function ConversationBody(props: ConversationProps) {
     );
     qc.setQueryData<ChatSessionDetailDTO>(conversationKeys.session(sessionId), (prev) =>
       prev ? { ...prev, modelOverrideId: session.modelOverrideId } : prev,
+    );
+  }
+
+  /** Write the level held for a new chat, before its first message. */
+  async function applyHeldEffort(sessionId: string) {
+    const held = heldEffortRef.current;
+    if (held === undefined) return;
+    heldEffortRef.current = undefined;
+    setHeldEffort(undefined);
+    const session = await api.put<ChatSessionDetailDTO>(
+      `/chat/sessions/${encodeURIComponent(sessionId)}/effort`,
+      { effort: held },
+    );
+    qc.setQueryData<ChatSessionDetailDTO>(conversationKeys.session(sessionId), (prev) =>
+      prev ? { ...prev, effort: session.effort ?? null } : prev,
     );
   }
 
@@ -775,6 +799,7 @@ function ConversationBody(props: ConversationProps) {
         modelRefused = true;
         throw error;
       });
+      await applyHeldEffort(sessionId);
       let message: ChatMessageDTO;
       if (sessionId === props.sessionId) {
         message = await sendMessage.mutateAsync(body);
@@ -1233,6 +1258,8 @@ function ConversationBody(props: ConversationProps) {
           showModelPicker
           agentId={props.agentId}
           onModelPick={firstMessage ? setHeldModel : undefined}
+          effortValue={heldEffort !== undefined ? heldEffort : (conv.session?.effort ?? null)}
+          onEffortPick={firstMessage ? setHeldEffort : undefined}
           sendWhileBusy={steerReply || !!props.sendWhileBusy}
           agentItems={props.agentItems}
           onAddressAgent={props.onAddressAgent}

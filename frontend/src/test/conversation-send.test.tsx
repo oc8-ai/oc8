@@ -17,6 +17,7 @@ const steering = vi.hoisted(() => ({ value: undefined as unknown, asked: [] as u
 const create = vi.hoisted(() => vi.fn());
 const send = vi.hoisted(() => vi.fn());
 const budget = vi.hoisted(() => ({ softExceeded: false }));
+const thinks = vi.hoisted(() => ({ value: false }));
 
 vi.mock("@/components/conversation/use-conversation", () => ({
   useConversation: () => ({
@@ -70,8 +71,24 @@ vi.mock("@/lib/conversation-api", async (orig) => ({
     data:
       sessionId || agentId
         ? [
-            { id: null, label: "Auto", provider: "", locality: "", isDefault: false },
-            { id: "m2", label: "Llama", provider: "ollama", locality: "local", isDefault: false },
+            {
+              id: null,
+              label: "Auto",
+              provider: "",
+              locality: "",
+              isDefault: false,
+              supportsReasoning: thinks.value,
+              defaultEffort: "balanced",
+            },
+            {
+              id: "m2",
+              label: "Llama",
+              provider: "ollama",
+              locality: "local",
+              isDefault: false,
+              supportsReasoning: thinks.value,
+              defaultEffort: "balanced",
+            },
           ]
         : [],
     isLoading: false,
@@ -152,6 +169,7 @@ beforeEach(() => {
   steering.value = undefined;
   steering.asked = [];
   budget.softExceeded = false;
+  thinks.value = false;
   create.mockReset();
   send.mockReset();
 });
@@ -204,6 +222,45 @@ describe("a new chat's model (Rulings 51 and 57)", () => {
     expect(send).not.toHaveBeenCalled();
     expect(post).not.toHaveBeenCalled();
     expect(screen.getByRole("textbox", { name: /Message/ })).toHaveValue("hello");
+  });
+});
+
+describe("a new chat's reasoning level", () => {
+  it("is held and written before the first message", async () => {
+    thinks.value = true;
+    const calls: string[] = [];
+    const put = vi.spyOn(api, "put").mockImplementation(async (path: string) => {
+      calls.push(`PUT ${path}`);
+      return detail({ id: "new", effort: "thorough" });
+    });
+    vi.spyOn(api, "post").mockImplementation(async (path: string) => {
+      calls.push(`POST ${path}`);
+      return message("u1", "user", { sessionId: "new" });
+    });
+    create.mockImplementation(async () => {
+      calls.push("POST /chat/sessions");
+      return { id: "new", agentId: "a", title: "", createdAt: "" };
+    });
+    mount(null);
+    fireEvent.click(screen.getByRole("button", { name: /Reasoning:/ }));
+    fireEvent.click(await screen.findByRole("radio", { name: /Thorough/ }));
+    expect(create).not.toHaveBeenCalled();
+    expect(put).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Reasoning: Thorough" })).toBeInTheDocument();
+
+    type("hello");
+    await waitFor(() => expect(calls).toHaveLength(3));
+    expect(calls).toEqual([
+      "POST /chat/sessions",
+      "PUT /chat/sessions/new/effort",
+      "POST /chat/sessions/new/messages",
+    ]);
+    expect(put).toHaveBeenCalledWith("/chat/sessions/new/effort", { effort: "thorough" });
+  });
+
+  it("is not offered while the chat's model cannot think", () => {
+    mount(null);
+    expect(screen.queryByRole("button", { name: /Reasoning:/ })).toBeNull();
   });
 });
 
