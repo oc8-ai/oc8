@@ -98,6 +98,85 @@ def test_the_backfill_marks_models_that_can_think(pg_url: str) -> None:
     assert after == {row_id: row[3] for row_id, row in zip(ids, _ROWS, strict=True)}
 
 
+def _insert_agent(
+    conn: psycopg.Connection[Any],
+    tenant: uuid.UUID,
+    *,
+    model_config_id: uuid.UUID | None,
+    definition: dict[str, Any],
+) -> uuid.UUID:
+    agent_id = uuid.uuid4()
+    conn.execute(
+        "INSERT INTO agent (id, tenant_id, department_id, name, role_title, mission, "
+        "config_revision, definition, model_config_id, narrowing, narrowing_overridden_keys, "
+        "is_team_lead, is_tenant_assistant, status, trust_level, presentation) "
+        "VALUES (%s, %s, %s, 'A', '', '', 1, %s::jsonb, %s, '{}', '[]', false, false, "
+        "'stopped', 'first_party', '{}')",
+        (agent_id, tenant, uuid.uuid4(), json.dumps(definition), model_config_id),
+    )
+    return agent_id
+
+
+def _insert_model(conn: psycopg.Connection[Any], tenant: uuid.UUID, model: str) -> uuid.UUID:
+    row_id = uuid.uuid4()
+    conn.execute(
+        "INSERT INTO model_config (id, tenant_id, provider, model, locality, params, "
+        "fallbacks, cost_meta, health, used_by_copilot) "
+        "VALUES (%s, %s, 'openai', %s, 'cloud', '{}', '[]', '{}', '{}', false)",
+        (row_id, tenant, model),
+    )
+    return row_id
+
+
+def test_the_backfill_marks_models_an_agent_sets_an_effort_for(pg_url: str) -> None:
+    """An agent's own `model_params.effort` was sent to its model before 0116,
+    on the live row or on a published version: that model must keep it."""
+    tenant = uuid.uuid4()
+    dsn = pg_url.replace("+psycopg", "")
+    command.downgrade(_cfg(), "0115")
+    try:
+        with psycopg.connect(dsn) as conn:
+            live = _insert_model(conn, tenant, "gpt-4o")
+            versioned = _insert_model(conn, tenant, "gpt-4.1")
+            blank = _insert_model(conn, tenant, "gpt-4o-mini")
+            unused = _insert_model(conn, tenant, "gpt-4-turbo")
+            _insert_agent(
+                conn, tenant, model_config_id=live, definition={"model_params": {"effort": "high"}}
+            )
+            _insert_agent(
+                conn, tenant, model_config_id=blank, definition={"model_params": {"effort": "  "}}
+            )
+            _insert_agent(
+                conn, tenant, model_config_id=unused, definition={"model_params": {"effort": 3}}
+            )
+            agent_id = _insert_agent(conn, tenant, model_config_id=None, definition={})
+            conn.execute(
+                "INSERT INTO agent_version (id, tenant_id, agent_id, version_no, payload, "
+                "payload_hash) VALUES (%s, %s, %s, 1, %s::jsonb, %s)",
+                (
+                    uuid.uuid4(),
+                    tenant,
+                    agent_id,
+                    json.dumps(
+                        {
+                            "model_config_id": str(versioned),
+                            "definition": {"model_params": {"effort": "max"}},
+                        }
+                    ),
+                    b"h",
+                ),
+            )
+    finally:
+        command.upgrade(_cfg(), "head")
+    with psycopg.connect(dsn) as conn:
+        after: dict[uuid.UUID, bool] = dict(
+            conn.execute(
+                "SELECT id, supports_reasoning FROM model_config WHERE tenant_id = %s", (tenant,)
+            ).fetchall()
+        )
+    assert after == {live: True, versioned: True, blank: False, unused: False}
+
+
 def _columns_and_check(dsn: str) -> tuple[set[tuple[str, str]], bool]:
     with psycopg.connect(dsn) as conn:
         cols = {

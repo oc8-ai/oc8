@@ -7,7 +7,9 @@ same rule the model form prefills with (`oc8.modelrouter.reasoning_support`
 via the provider declarations), including a capa provider loaded in this
 process. A row whose operator already configured an `effort` counts as one
 that can think: it was sent that value before this revision, and the new gate
-must not silently drop it.
+must not silently drop it. The same holds for a model an agent sets an
+`effort` for in its own `definition.model_params`, on the live row or on any
+published version a run may be pinned to.
 
 Revision ID: 0116
 Revises: 0115
@@ -64,6 +66,25 @@ def upgrade() -> None:
         conn.execute(
             sa.text("UPDATE model_config SET supports_reasoning = true WHERE id = :id"), thinking
         )
+    op.execute(_AGENT_EFFORT_BACKFILL)
+
+
+#: Models an agent configured a non-empty string `effort` for, on the agent row
+#: or in a published version's payload (which stores the id as a string).
+_AGENT_EFFORT_BACKFILL = """
+    UPDATE model_config SET supports_reasoning = true
+    WHERE provider <> 'auto' AND id IN (
+        SELECT model_config_id FROM agent
+        WHERE model_config_id IS NOT NULL
+          AND jsonb_typeof(definition #> '{model_params,effort}') = 'string'
+          AND btrim(definition #>> '{model_params,effort}') <> ''
+        UNION
+        SELECT (payload->>'model_config_id')::uuid FROM agent_version
+        WHERE payload->>'model_config_id' ~* '^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$'
+          AND jsonb_typeof(payload #> '{definition,model_params,effort}') = 'string'
+          AND btrim(payload #>> '{definition,model_params,effort}') <> ''
+    )
+"""
 
 
 def downgrade() -> None:
