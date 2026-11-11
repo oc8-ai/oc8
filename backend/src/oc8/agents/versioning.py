@@ -427,9 +427,10 @@ async def resolve_version(
     if payload is None:
         payload = await snapshot_agent(db, agent)
     # Deferred: oc8.chat reaches the runtime, which imports this module.
-    from oc8.chat.model_choice import apply_model_override
+    from oc8.chat.model_choice import apply_effort_override, apply_model_override
 
-    return await apply_model_override(db, run=run, agent=agent, payload=payload)
+    payload = await apply_model_override(db, run=run, agent=agent, payload=payload)
+    return await apply_effort_override(db, run=run, payload=payload)
 
 
 async def pinned_version_no(db: AsyncSession, run: m.AgentRun) -> int | None:

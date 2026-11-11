@@ -94,4 +94,5 @@ _OPTIONAL_KEYS: tuple[tuple[str, str], ...] = (
     ("reasoning_tokens", "reasoningTokens"),
     ("max_tokens", "maxTokens"),
     ("reasoning", "reasoning"),
+    ("reasoning_dropped", "reasoningDropped"),
 )

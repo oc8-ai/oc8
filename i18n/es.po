@@ -22,6 +22,90 @@ msgid " of "
 msgstr " de "
 
 #, fuzzy
+msgid "Answers right away, barely thinks"
+msgstr "Responde al instante, apenas piensa"
+
+#, fuzzy
+msgid "Balanced"
+msgstr "Equilibrado"
+
+#, fuzzy
+msgid "Can think"
+msgstr "Puede pensar"
+
+#, fuzzy
+msgid "Custom effort value"
+msgstr "Valor de effort personalizado"
+
+#, fuzzy
+msgid "Custom setting"
+msgstr "Ajuste personalizado"
+
+#, fuzzy
+msgid "Custom value"
+msgstr "Valor personalizado"
+
+#, fuzzy
+msgid "e.g. max"
+msgstr "p. ej. max"
+
+#, fuzzy
+msgid "Fast"
+msgstr "Rápido"
+
+#, fuzzy
+msgid "from extra parameters"
+msgstr "de los parámetros adicionales"
+
+#, fuzzy
+msgid "How hard this model thinks when neither the chat nor the agent sets a level. A custom value is forwarded to the provider as typed."
+msgstr "Cuánto piensa este modelo cuando ni el chat ni el agente fijan un nivel. Un valor personalizado se envía al proveedor tal cual."
+
+#, fuzzy
+msgid "Not set"
+msgstr "Sin definir"
+
+#, fuzzy
+msgid "Reasoning"
+msgstr "Razonamiento"
+
+#, fuzzy
+msgid "Reasoning level not supported by this model, answered without thinking."
+msgstr "Nivel de razonamiento no admitido por este modelo; respondió sin pensar."
+
+#, fuzzy
+msgid "Reasoning: {level}"
+msgstr "Razonamiento: {level}"
+
+#, fuzzy
+msgid "Shows the reasoning-level control in chats on this model and sends the chosen level to the provider."
+msgstr "Muestra el selector de nivel de razonamiento en los chats con este modelo y envía el nivel elegido al proveedor."
+
+#, fuzzy
+msgid "That reasoning level isn't available. Pick another one."
+msgstr "Ese nivel de razonamiento no está disponible. Elige otro."
+
+#, fuzzy
+msgid "The reasoning level couldn't be changed. Try again."
+msgstr "No se pudo cambiar el nivel de razonamiento. Inténtalo de nuevo."
+
+#, fuzzy
+msgid "The reasoning level you picked couldn't be set. Your message wasn't sent – send it again or pick another level."
+msgstr "No se pudo aplicar el nivel de razonamiento elegido. Tu mensaje no se ha enviado: vuelve a enviarlo o elige otro nivel."
+
+#, fuzzy
+msgid "The usual choice"
+msgstr "La opción habitual"
+
+#, fuzzy
+msgid "Thinks longer for tricky questions; slower and costs more"
+msgstr "Piensa más en preguntas difíciles; más lento y más caro"
+
+#, fuzzy
+msgid "Thorough"
+msgstr "Exhaustivo"
+
+#, fuzzy
 msgid "— no agent"
 msgstr "— sin agente"
 
@@ -4904,10 +4988,6 @@ msgstr "Conexiones reales de servidor que los agentes pueden usar como herramien
 #, fuzzy
 msgid "Reason"
 msgstr "Motivo"
-
-#, fuzzy
-msgid "Reasoning effort forwarded as-is to providers that support it (currently Anthropic). Leave blank to omit. Not validated here — the provider decides which values it accepts."
-msgstr "Esfuerzo de razonamiento reenviado tal cual a los proveedores que lo admiten (actualmente Anthropic). Déjalo en blanco para omitirlo. Aquí no se valida: el proveedor decide qué valores acepta."
 
 #, fuzzy
 msgid "reasoning engine"

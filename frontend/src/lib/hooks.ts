@@ -282,6 +282,9 @@ export interface ModelDTO {
   // backend, where every model was pickable.
   chatEnabled?: boolean;
   supportsVision?: boolean;
+  /** Whether this model can think; the chat shows its reasoning-level control
+   *  only then. Absent on an older backend. */
+  supportsReasoning?: boolean;
   credentialId: string | null;
   healthError: string | null;
   healthCheckedAt: string | null;
@@ -333,6 +336,7 @@ export interface ModelWriteBody {
   usedByCopilot?: boolean;
   chatEnabled?: boolean;
   supportsVision?: boolean;
+  supportsReasoning?: boolean;
   credentialId?: string | null;
   autoTiers?: Record<string, string> | null;
   autoShadowOnly?: boolean;
@@ -1336,6 +1340,21 @@ export function useDiscoverModels() {
   return useMutation({
     mutationFn: (body: { provider: string; credentialId?: string }) =>
       api.post<{ models: string[] }>("/models/discover", body),
+  });
+}
+
+/** The model form's "Can think" suggestion while an admin types a model:
+ *  the provider's declaration, the same rule a create without
+ *  `supportsReasoning` applies server-side. */
+export function useReasoningSupport(provider: string, model: string) {
+  return useQuery({
+    queryKey: ["models", "reasoning-support", provider, model],
+    queryFn: () =>
+      api.get<{ supportsReasoning: boolean }>(
+        `/models/reasoning-support?provider=${encodeURIComponent(provider)}&model=${encodeURIComponent(model)}`,
+      ),
+    enabled: !!provider && !!model && provider !== "auto",
+    staleTime: 60_000,
   });
 }
 

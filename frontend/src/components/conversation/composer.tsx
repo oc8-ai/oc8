@@ -45,10 +45,12 @@ import {
 import { useContextSearch, type ContextItem } from "@/lib/conversation-api";
 import { useCan } from "@/lib/governance-hooks";
 import { useT } from "@/lib/i18n";
+import type { ReasoningLevel } from "@/lib/reasoning-levels";
 import { cn } from "@/lib/utils";
 
 import { kindIcon, kindLabel } from "./context-icons";
 import { ModelPicker } from "./model-picker";
+import { EffortPicker } from "./effort-picker";
 import { PlusMenu, type PlusMenuItem } from "./plus-menu";
 
 export type { PlusMenuItem } from "./plus-menu";
@@ -80,6 +82,10 @@ export interface ComposerProps {
   agentId?: string;
   /** A new chat: the model pick is held by the caller, not written yet. */
   onModelPick?: (modelConfigId: string | null) => void;
+  /** The chat's reasoning level (or the one held for a new chat). */
+  effortValue?: ReasoningLevel | null;
+  /** A new chat: the level pick is held by the caller, not written yet. */
+  onEffortPick?: (level: ReasoningLevel | null) => void;
   /** While busy, a send goes to the running run (steering): Send stays
    *  beside Stop, and Enter sends. */
   sendWhileBusy?: boolean;
@@ -597,13 +603,23 @@ export function Composer(props: ComposerProps) {
         <div className="flex items-center gap-1">
           <PlusMenu items={plusItems} disabled={props.disabled || textOnly} />
           {props.showModelPicker && (
-            <ModelPicker
-              sessionId={props.sessionId}
-              value={props.modelValue}
-              disabled={props.disabled}
-              agentId={props.agentId}
-              onPick={props.onModelPick}
-            />
+            <>
+              <ModelPicker
+                sessionId={props.sessionId}
+                value={props.modelValue}
+                disabled={props.disabled}
+                agentId={props.agentId}
+                onPick={props.onModelPick}
+              />
+              <EffortPicker
+                sessionId={props.sessionId}
+                agentId={props.agentId}
+                modelValue={props.modelValue}
+                value={props.effortValue ?? null}
+                disabled={props.disabled}
+                onPick={props.onEffortPick}
+              />
+            </>
           )}
           <div className="flex-1" />
           {props.trailing}

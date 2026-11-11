@@ -17,6 +17,7 @@ const steering = vi.hoisted(() => ({ value: undefined as unknown, asked: [] as u
 const create = vi.hoisted(() => vi.fn());
 const send = vi.hoisted(() => vi.fn());
 const budget = vi.hoisted(() => ({ softExceeded: false }));
+const thinks = vi.hoisted(() => ({ value: false, auto: undefined as boolean | undefined }));
 
 vi.mock("@/components/conversation/use-conversation", () => ({
   useConversation: () => ({
@@ -70,8 +71,24 @@ vi.mock("@/lib/conversation-api", async (orig) => ({
     data:
       sessionId || agentId
         ? [
-            { id: null, label: "Auto", provider: "", locality: "", isDefault: false },
-            { id: "m2", label: "Llama", provider: "ollama", locality: "local", isDefault: false },
+            {
+              id: null,
+              label: "Auto",
+              provider: "",
+              locality: "",
+              isDefault: false,
+              supportsReasoning: thinks.auto ?? thinks.value,
+              defaultEffort: "balanced",
+            },
+            {
+              id: "m2",
+              label: "Llama",
+              provider: "ollama",
+              locality: "local",
+              isDefault: false,
+              supportsReasoning: thinks.value,
+              defaultEffort: "balanced",
+            },
           ]
         : [],
     isLoading: false,
@@ -152,6 +169,8 @@ beforeEach(() => {
   steering.value = undefined;
   steering.asked = [];
   budget.softExceeded = false;
+  thinks.value = false;
+  thinks.auto = undefined;
   create.mockReset();
   send.mockReset();
 });
@@ -204,6 +223,105 @@ describe("a new chat's model (Rulings 51 and 57)", () => {
     expect(send).not.toHaveBeenCalled();
     expect(post).not.toHaveBeenCalled();
     expect(screen.getByRole("textbox", { name: /Message/ })).toHaveValue("hello");
+  });
+});
+
+describe("a new chat's reasoning level", () => {
+  it("is held and written before the first message", async () => {
+    thinks.value = true;
+    const calls: string[] = [];
+    const put = vi.spyOn(api, "put").mockImplementation(async (path: string) => {
+      calls.push(`PUT ${path}`);
+      return detail({ id: "new", effort: "thorough" });
+    });
+    vi.spyOn(api, "post").mockImplementation(async (path: string) => {
+      calls.push(`POST ${path}`);
+      return message("u1", "user", { sessionId: "new" });
+    });
+    create.mockImplementation(async () => {
+      calls.push("POST /chat/sessions");
+      return { id: "new", agentId: "a", title: "", createdAt: "" };
+    });
+    mount(null);
+    fireEvent.click(screen.getByRole("button", { name: /Reasoning:/ }));
+    fireEvent.click(await screen.findByRole("radio", { name: /Thorough/ }));
+    expect(create).not.toHaveBeenCalled();
+    expect(put).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Reasoning: Thorough" })).toBeInTheDocument();
+
+    type("hello");
+    await waitFor(() => expect(calls).toHaveLength(3));
+    expect(calls).toEqual([
+      "POST /chat/sessions",
+      "PUT /chat/sessions/new/effort",
+      "POST /chat/sessions/new/messages",
+    ]);
+    expect(put).toHaveBeenCalledWith("/chat/sessions/new/effort", { effort: "thorough" });
+  });
+
+  it("keeps the held pick and says so when writing it fails, then sends it again", async () => {
+    thinks.value = true;
+    create.mockResolvedValue({ id: "new", agentId: "a", title: "", createdAt: "" });
+    const put = vi
+      .spyOn(api, "put")
+      .mockRejectedValueOnce(new ApiError("unavailable", 503))
+      .mockResolvedValue(detail({ id: "new", effort: "thorough" }));
+    const post = vi
+      .spyOn(api, "post")
+      .mockResolvedValue(message("u1", "user", { sessionId: "new" }));
+    mount(null);
+    fireEvent.click(screen.getByRole("button", { name: /Reasoning:/ }));
+    fireEvent.click(await screen.findByRole("radio", { name: /Thorough/ }));
+
+    type("hello");
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /reasoning level you picked couldn't be set/,
+    );
+    expect(post).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox", { name: /Message/ })).toHaveValue("hello");
+    // The pick is still held and shown.
+    expect(screen.getByRole("button", { name: "Reasoning: Thorough" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Send again/ }));
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
+    expect(put).toHaveBeenCalledTimes(2);
+    expect(put).toHaveBeenLastCalledWith("/chat/sessions/new/effort", { effort: "thorough" });
+  });
+
+  it("is dropped when the member switches to another existing chat", async () => {
+    thinks.value = true;
+    conv.session = detail({ id: "s" });
+    const put = vi.spyOn(api, "put");
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = (sessionId: string) => (
+      <QueryClientProvider client={qc}>
+        <Conversation agentId="a" sessionId={sessionId} onSessionChange={vi.fn()} variant="full" />
+      </QueryClientProvider>
+    );
+    const { rerender } = render(view("s"));
+    // An empty existing chat holds the pick until its first message.
+    fireEvent.click(screen.getByRole("button", { name: "Reasoning: Balanced" }));
+    fireEvent.click(await screen.findByRole("radio", { name: /Thorough/ }));
+    expect(screen.getByRole("button", { name: "Reasoning: Thorough" })).toBeInTheDocument();
+    expect(put).not.toHaveBeenCalled();
+
+    conv.session = detail({ id: "s2" });
+    rerender(view("s2"));
+
+    expect(screen.getByRole("button", { name: "Reasoning: Balanced" })).toBeInTheDocument();
+  });
+
+  it("is hidden in an existing chat whose Auto default cannot think", () => {
+    thinks.value = true;
+    thinks.auto = false;
+    conv.session = detail({ id: "s", modelOverrideId: null });
+    mount("s");
+    expect(screen.queryByRole("button", { name: /Reasoning:/ })).toBeNull();
+  });
+
+  it("is not offered while the chat's model cannot think", () => {
+    mount(null);
+    expect(screen.queryByRole("button", { name: /Reasoning:/ })).toBeNull();
   });
 });
 

@@ -16,6 +16,7 @@ from oc8.authz.scope import HumanActor
 from oc8.chat.context.base import Viewer, viewer_for_member
 from oc8.chat.projects import pinned_refs_for_viewer
 from oc8.chat.service import active_runs_for_session, get_session, parked_session_question
+from oc8.modelrouter.levels import as_level
 from oc8.schemas.dto import ActiveRunDTO, ChatSessionDTO, ContextRefViewDTO, PendingQuestionDTO
 
 
@@ -48,6 +49,7 @@ def session_dto(
         project_id=str(session.project_id) if session.project_id else None,
         pinned=bool(session.pinned),
         mode=session.mode,
+        effort=as_level(session.effort),
     )
 
 

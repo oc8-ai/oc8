@@ -33,6 +33,7 @@ def _config(params: dict[str, Any] | None) -> m.ModelConfig:
     return m.ModelConfig(
         id=uuid.uuid4(), tenant_id=uuid.uuid4(), provider="opaas_ai",
         model="opaas_ai:odoo-gpt", params=params if params is not None else {},
+        supports_reasoning=True,
     )
 
 

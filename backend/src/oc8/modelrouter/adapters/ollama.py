@@ -11,13 +11,16 @@ from typing import Any
 import httpx
 
 from oc8.modelrouter.http_errors import araise_for_status_with_body, raise_for_status_with_body
+from oc8.modelrouter.levels import EFFORT_FOR_LEVEL
 from oc8.modelrouter.reasoning import ThinkTagSplitter, split_think_tags
+from oc8.modelrouter.reasoning_support import ollama_has_think_levels
 from oc8.modelrouter.types import (
     CompletionChunk,
     CompletionRequest,
     CompletionResult,
     ImagePart,
     NeutralMessage,
+    ReasoningLevel,
     TextPart,
     ToolCall,
     ToolCallDelta,
@@ -59,6 +62,14 @@ def _message_to_ollama(msg: NeutralMessage) -> dict[str, Any]:
     return out
 
 
+def _think(model: str, level: ReasoningLevel) -> bool | str:
+    """Ollama's `think` for `level` (spec 2026-11-11 §6). A model with think
+    levels (gpt-oss) ignores true/false, so it gets its level name instead."""
+    if ollama_has_think_levels(model):
+        return EFFORT_FOR_LEVEL[level]
+    return level != "fast"
+
+
 def _build_payload(req: CompletionRequest, *, stream: bool) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "model": req.model,
@@ -78,6 +89,8 @@ def _build_payload(req: CompletionRequest, *, stream: bool) -> dict[str, Any]:
             }
             for t in req.tools
         ]
+    if req.params.reasoning is not None:
+        payload["think"] = _think(req.model, req.params.reasoning)
     return payload
 
 

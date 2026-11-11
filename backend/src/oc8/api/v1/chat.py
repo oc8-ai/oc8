@@ -27,7 +27,7 @@ from oc8.authz.authority import Authority, authority_for_principal
 from oc8.authz.permissions import AGENT, COPILOT, COPILOT_USE, MANAGE, RUN_START, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.chat.context.base import Viewer
-from oc8.chat.model_choice import is_allowed_override, model_options
+from oc8.chat.model_choice import ModelOption, is_allowed_override, model_options
 from oc8.chat.modes import ASSISTANT_ONLY_REFUSAL, MODES, ModeNotAvailable
 from oc8.chat.port import session_access
 from oc8.chat.questions import QuestionError
@@ -64,6 +64,7 @@ from oc8.schemas.requests import (
     MessageFeedbackRequest,
     RenameChatSessionRequest,
     SendChatMessageRequest,
+    SetChatEffortRequest,
     SetChatModelRequest,
     SetChatModeRequest,
 )
@@ -436,6 +437,21 @@ async def _session_agent(
     return agent
 
 
+def _option_dtos(options: list[ModelOption]) -> list[ChatModelOptionDTO]:
+    return [
+        ChatModelOptionDTO(
+            id=o.id,
+            label=o.label,
+            provider=o.provider,
+            locality=o.locality,
+            is_default=o.is_default,
+            supports_reasoning=o.supports_reasoning,
+            default_effort=o.default_effort,
+        )
+        for o in options
+    ]
+
+
 @router.get("/chat/sessions/{session_id}/models", response_model=list[ChatModelOptionDTO])
 async def get_chat_models(
     request: Request, session_id: uuid.UUID, db: DbSession, actor: _ChatActor
@@ -445,17 +461,13 @@ async def get_chat_models(
     session = await _owned_session(request, session_id, db, actor)
     agent = await _session_agent(request, db, actor, session)
     pinned = await resolve_version(db, None, agent)
-    options = await model_options(db, agent=agent, default_model_id=pinned_model_config_id(pinned))
-    return [
-        ChatModelOptionDTO(
-            id=o.id,
-            label=o.label,
-            provider=o.provider,
-            locality=o.locality,
-            is_default=o.is_default,
-        )
-        for o in options
-    ]
+    options = await model_options(
+        db,
+        agent=agent,
+        default_model_id=pinned_model_config_id(pinned),
+        definition=pinned["definition"],
+    )
+    return _option_dtos(options)
 
 
 @router.get("/chat/agents/{agent_id}/models", response_model=list[ChatModelOptionDTO])
@@ -472,17 +484,13 @@ async def get_agent_chat_models(
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
     pinned = await resolve_version(db, None, agent)
-    options = await model_options(db, agent=agent, default_model_id=pinned_model_config_id(pinned))
-    return [
-        ChatModelOptionDTO(
-            id=o.id,
-            label=o.label,
-            provider=o.provider,
-            locality=o.locality,
-            is_default=o.is_default,
-        )
-        for o in options
-    ]
+    options = await model_options(
+        db,
+        agent=agent,
+        default_model_id=pinned_model_config_id(pinned),
+        definition=pinned["definition"],
+    )
+    return _option_dtos(options)
 
 
 @router.put("/chat/sessions/{session_id}/model", response_model=ChatSessionDTO)
@@ -505,6 +513,25 @@ async def set_chat_model(
                 status.HTTP_422_UNPROCESSABLE_ENTITY, "model not allowed for this agent"
             )
     session.model_override_id = body.model_config_id
+    await db.flush()
+    dto = session_dto(session)
+    await db.commit()
+    return dto
+
+
+@router.put("/chat/sessions/{session_id}/effort", response_model=ChatSessionDTO)
+async def set_chat_effort(
+    session_id: uuid.UUID,
+    body: SetChatEffortRequest,
+    db: DbSession,
+    actor: _ChatActor,
+) -> ChatSessionDTO:
+    """Keep a reasoning level on this chat, or go back to the default with
+    `null` (spec 2026-11-11 §8). Owner-only, the same gate as the model pick.
+    Kept whatever model the chat is on: a model that cannot think gets no
+    level, and the pick applies again once the chat is back on one that can."""
+    session = await session_owned_by_caller(session_id, db, actor)
+    session.effort = body.effort
     await db.flush()
     dto = session_dto(session)
     await db.commit()

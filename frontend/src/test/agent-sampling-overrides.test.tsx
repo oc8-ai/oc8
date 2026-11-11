@@ -65,13 +65,16 @@ function model(overrides: Partial<ModelDTO> = {}): ModelDTO {
     credentialId: null,
     healthError: null,
     healthCheckedAt: null,
+    supportsReasoning: true,
     ...overrides,
   };
 }
 
 const MODELS: ModelDTO[] = [
   model(),
-  model({ id: "m-ollama", provider: "ollama", model: "llama3.1:8b" }),
+  model({ id: "m-ollama", provider: "ollama", model: "llama3.1:8b", supportsReasoning: false }),
+  model({ id: "m-old-anthropic", supportsReasoning: undefined }),
+  model({ id: "m-old-ollama", provider: "ollama", supportsReasoning: undefined }),
 ];
 
 function renderPanel(agent: AgentDetail = AGENT, mayManage = true) {
@@ -84,12 +87,12 @@ function renderPanel(agent: AgentDetail = AGENT, mayManage = true) {
 }
 
 describe("AssignedModelPanel sampling overrides", () => {
-  it("shows Effort only when the assigned model's provider is anthropic", () => {
+  it("shows Effort when the assigned model can think", () => {
     renderPanel();
     expect(screen.getByText("Effort")).toBeInTheDocument();
   });
 
-  it("hides Effort for a non-anthropic assigned model", () => {
+  it("hides Effort when the assigned model cannot think", () => {
     renderPanel({ ...AGENT, modelConfigId: "m-ollama" });
     expect(screen.queryByText("Effort")).toBeNull();
   });
@@ -104,7 +107,39 @@ describe("AssignedModelPanel sampling overrides", () => {
     renderPanel({ ...AGENT, temperature: 0.9, maxTokens: 4096, effort: "high" });
     expect(screen.getByDisplayValue("0.9")).toBeInTheDocument();
     expect(screen.getByDisplayValue("4096")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("high")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Effort" })).toHaveValue("high");
+  });
+
+  it("falls back to the provider rule when the backend sends no supportsReasoning", () => {
+    const { unmount } = renderPanel({ ...AGENT, modelConfigId: "m-old-anthropic" });
+    expect(screen.getByRole("combobox", { name: "Effort" })).toBeInTheDocument();
+    unmount();
+    renderPanel({ ...AGENT, modelConfigId: "m-old-ollama" });
+    expect(screen.queryByRole("combobox", { name: "Effort" })).toBeNull();
+  });
+
+  it("keeps a custom effort value through an untouched save", () => {
+    switchModelMutate.mockReset();
+    renderPanel({ ...AGENT, effort: "max" });
+    expect(screen.getByRole("textbox", { name: "Custom effort value" })).toHaveValue("max");
+    fireEvent.click(screen.getByRole("button", { name: /save sampling settings/i }));
+    expect(switchModelMutate).toHaveBeenCalledWith(
+      expect.objectContaining({ effort: "max" }),
+      expect.anything(),
+    );
+  });
+
+  it("saves a level picked from the select", () => {
+    switchModelMutate.mockReset();
+    renderPanel();
+    fireEvent.change(screen.getByRole("combobox", { name: "Effort" }), {
+      target: { value: "low" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /save sampling settings/i }));
+    expect(switchModelMutate).toHaveBeenCalledWith(
+      expect.objectContaining({ effort: "low" }),
+      expect.anything(),
+    );
   });
 
   it("saving sends parsed values plus the unchanged modelConfigId", () => {

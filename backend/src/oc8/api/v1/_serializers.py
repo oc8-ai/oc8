@@ -462,6 +462,8 @@ def model_to_dto(mc: m.ModelConfig, assigned_to: list[str]) -> ModelDTO:
         used_by_copilot=bool(mc.used_by_copilot),
         # Same INSERT-time default caveat as above; the column defaults to on.
         chat_enabled=mc.chat_enabled is not False,
+        # Same INSERT-time default caveat; the column defaults to off.
+        supports_reasoning=bool(mc.supports_reasoning),
         credential_id=str(mc.credential_id) if mc.credential_id else None,
         health_error=health.get("error"),
         health_checked_at=health.get("checkedAt"),

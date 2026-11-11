@@ -126,6 +126,7 @@ import { KnowledgeAssignment } from "@/components/knowledge-assignment";
 import { MemoryPanel } from "@/components/memory-panel";
 import { RunComponents } from "@/components/run-record-card";
 import { RunFailureReason, RunModelSteps } from "@/components/run-reasoning";
+import { EffortField } from "@/components/effort-field";
 import { AgentToolAccessPanel } from "@/components/connections/agent-tool-access";
 import { ConnectionRequiredNotice } from "@/components/connections/connection-required-notice";
 import { ToolDeniedNotice } from "@/components/connections/tool-denied-notice";
@@ -1183,7 +1184,12 @@ export function AssignedModelPanel({
   const switchModel = useSwitchAgentModel();
   const assigned = models.find((model) => model.id === agent.modelConfigId);
   const assignedIsAuto = !!assigned && isAutoProvider(assigned.provider);
-  const showEffort = assigned?.provider === "anthropic";
+  // Only a model that can think receives a level or an effort (spec §5).
+  // An older backend does not send the flag: keep the old rule there.
+  const showEffort =
+    !!assigned &&
+    !assignedIsAuto &&
+    (assigned.supportsReasoning ?? assigned.provider === "anthropic");
   const showRawParams = !!assigned && supportsRawParams(assigned.provider);
 
   const [temperature, setTemperature] = useState(
@@ -1248,8 +1254,8 @@ export function AssignedModelPanel({
         modelConfigId: agent.modelConfigId,
         temperature: parsedTemp,
         maxTokens: parsedTokens,
-        // Never send an override for a field this model's provider doesn't
-        // expose -- switching away from anthropic must not silently wipe an
+        // Never send an override for a field this model doesn't expose --
+        // switching to a model that cannot think must not silently wipe an
         // effort value the operator can no longer even see to restore.
         effort: showEffort ? effort.trim() || null : undefined,
         extra: showRawParams ? (pairsToExtra(rawParams) ?? null) : undefined,
@@ -1369,19 +1375,22 @@ export function AssignedModelPanel({
               />
             </label>
             {showEffort && (
-              <label className="col-span-2 block">
-                <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
+              <div className="col-span-2 block">
+                <label
+                  htmlFor="agent-effort"
+                  className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground"
+                >
                   {t("Effort", "Effort")}
-                </span>
-                <input
-                  type="text"
-                  placeholder={t("Inherited", "Geerbt")}
+                </label>
+                <EffortField
+                  id="agent-effort"
+                  key={agent.id}
                   value={effort}
+                  onChange={setEffort}
+                  emptyLabel={t("Inherited", "Geerbt")}
                   disabled={!mayManage}
-                  onChange={(e) => setEffort(e.target.value)}
-                  className="w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50 disabled:cursor-not-allowed disabled:opacity-60"
                 />
-              </label>
+              </div>
             )}
           </div>
           {showRawParams && (

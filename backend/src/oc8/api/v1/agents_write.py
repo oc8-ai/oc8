@@ -816,6 +816,10 @@ async def switch_model(
             model_params["extra"] = body.extra
         else:
             model_params.pop("extra", None)
+    # `reasoning` is the chat's level and is only ever folded in at run time
+    # (chat.model_choice.apply_effort_override); an agent definition never
+    # stores it, whatever a stale or hand-edited row carries.
+    model_params.pop("reasoning", None)
     if model_params:
         definition["model_params"] = model_params
     else:

@@ -127,6 +127,7 @@ from typing import Any
 import httpx
 
 from oc8.modelrouter.http_errors import araise_for_status_with_body, raise_for_status_with_body
+from oc8.modelrouter.levels import EFFORT_FOR_LEVEL
 from oc8.modelrouter.reasoning import reasoning_tokens_from
 from oc8.modelrouter.types import (
     CompletionChunk,
@@ -268,6 +269,11 @@ def build_responses_payload(req: CompletionRequest) -> dict[str, Any]:
     if req.tools:
         payload["tools"] = to_responses_tools(req.tools)
         payload["tool_choice"] = "auto"
+    # The one `ModelParams` field forwarded (see point 4 in the module
+    # docstring): it tunes the reasoning models this backend serves instead of
+    # breaking them (spec 2026-11-11 §6).
+    if req.params.reasoning is not None:
+        payload["reasoning"] = {"effort": EFFORT_FOR_LEVEL[req.params.reasoning]}
     # Never leave a copy of a tenant's transcript on OpenAI's side for later
     # retrieval; Codex does the same (client.rs:889).
     payload["store"] = False

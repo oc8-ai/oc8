@@ -1757,7 +1757,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
                 await _record(result, retry_request_id)
                 note_usage(step_rec, result.usage, max_tokens=retry_params.max_tokens)
             await cache_flow.store_if_matching(key, result, provider=provider, model=model)
-            note_reasoning(step_rec, result.reasoning)
+            note_reasoning(step_rec, result.reasoning, dropped=result.reasoning_dropped)
             note_model(
                 step_rec,
                 model_wait_ms=step_probe.model_wait_ms,

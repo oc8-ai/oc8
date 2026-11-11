@@ -6,6 +6,7 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from typing import Any
 
 import httpx
@@ -70,6 +71,16 @@ def limit_reason(exc: Exception) -> str | None:
     if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
         return "The model provider is rate-limiting requests; try again shortly."
     return None
+
+
+def params_for_model(params: ModelParams, supports_reasoning: bool | None) -> ModelParams:
+    """`params` for one model of the chain. They were resolved for the
+    primary, so a fallback that cannot think must not inherit its level or
+    effort (spec 2026-11-11 §5). None (no model config) leaves them as they
+    are, the same as `resolve_params` does."""
+    if supports_reasoning is False and (params.reasoning is not None or params.effort is not None):
+        return replace(params, reasoning=None, effort=None)
+    return params
 
 
 async def complete_with_fallback(
@@ -173,7 +184,7 @@ async def complete_with_fallback(
                 model=config.model,
                 messages=messages,
                 tools=tools,
-                params=params,
+                params=params_for_model(params, bool(config.supports_reasoning)),
                 tenant_id=tenant_id,
                 agent_id=agent_id,
                 request_id=request_id,
@@ -243,13 +254,16 @@ async def stream_completion_with_fallback(
 
         # No ModelConfig means no chain to draw from -- exactly one attempt, the
         # same as complete_with_fallback.
-        attempts: list[tuple[str, str, dict[str, Any] | None, uuid.UUID | None]] = (
-            [(no_config_provider, no_config_model, None, None)]
+        attempts: list[tuple[str, str, dict[str, Any] | None, uuid.UUID | None, bool | None]] = (
+            [(no_config_provider, no_config_model, None, None, None)]
             if not chain
-            else [(c.provider, c.model, c.params or {}, c.credential_id) for c in chain]
+            else [
+                (c.provider, c.model, c.params or {}, c.credential_id, bool(c.supports_reasoning))
+                for c in chain
+            ]
         )
 
-        for i, (provider, model, cfg_params, credential_id) in enumerate(attempts):
+        for i, (provider, model, cfg_params, credential_id, thinks) in enumerate(attempts):
             is_last = i == len(attempts) - 1
             blocked = await _budget_blocks(db, tenant_id=tenant_id, provider=provider)
             if blocked is not None:
@@ -282,7 +296,7 @@ async def stream_completion_with_fallback(
                 model=model,
                 messages=messages,
                 tools=tools,
-                params=params,
+                params=params_for_model(params, thinks),
                 tenant_id=tenant_id,
                 agent_id=agent_id,
                 request_id=request_id,
@@ -293,7 +307,15 @@ async def stream_completion_with_fallback(
             emitted = False
             try:
                 async for chunk in router.stream(req):
-                    emitted = True
+                    # Only a chunk that carries something counts: an empty one
+                    # has put nothing on the wire, so it must not block fallback.
+                    if (
+                        chunk.text
+                        or chunk.reasoning
+                        or chunk.tool_calls
+                        or chunk.usage is not None
+                    ):
+                        emitted = True
                     yield chunk
                 return
             except Exception as exc:

@@ -8,11 +8,12 @@ fall back to the local default model.
 from __future__ import annotations
 
 import logging
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
@@ -41,6 +42,51 @@ def locality_for_provider(provider: str) -> str:
     function) is always at least as conservative as the real dispatch will
     be, never less."""
     return "local" if canonical_provider(provider) in (None, "ollama") else "cloud"
+
+
+#: A 4xx in which the provider names the reasoning parameter: this model, or
+#: the server in front of it, takes no level. Matched on the provider's own
+#: words, like the temperature retry in adapters/anthropic.py, because no list
+#: of model names could keep up.
+_REASONING_PARAM = re.compile(r"reasoning|effort|think", re.IGNORECASE)
+
+#: `ModelParams.extra` keys that carry a reasoning setting past the level: the
+#: OpenAI-shaped `reasoning_effort`, the `reasoning` object OpenRouter and
+#: other OpenAI-compatible gateways take, and Anthropic's `thinking` and its
+#: old top-level `effort`. Anthropic's `output_config.effort` is handled apart, since
+#: the rest of an `output_config` (a response format) must survive.
+_REASONING_EXTRA_KEYS = frozenset({"reasoning_effort", "reasoning", "effort", "thinking"})
+
+
+def _without_reasoning_extra(extra: dict[str, Any]) -> dict[str, Any]:
+    """`extra` without any key that sets a reasoning level or thinking."""
+    plain = {k: v for k, v in extra.items() if k not in _REASONING_EXTRA_KEYS}
+    output_config = plain.get("output_config")
+    if isinstance(output_config, dict) and "effort" in output_config:
+        rest = {k: v for k, v in output_config.items() if k != "effort"}
+        if rest:
+            plain["output_config"] = rest
+        else:
+            del plain["output_config"]
+    return plain
+
+
+#: Only a malformed or unprocessable request can be a refused parameter. Auth,
+#: billing, missing-model, size and rate-limit failures are never this.
+_PARAM_REFUSAL_STATUSES = frozenset({400, 422})
+
+
+def rejects_reasoning(exc: Exception) -> bool:
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return False
+    if exc.response.status_code not in _PARAM_REFUSAL_STATUSES:
+        return False
+    # The provider's own words, not the URL the message also carries.
+    try:
+        text = exc.response.text
+    except Exception:
+        text = str(exc).split(": ", 1)[-1]
+    return bool(_REASONING_PARAM.search(text))
 
 
 def embedding_local_tag(model: str) -> str | None:
@@ -119,11 +165,7 @@ class ModelRouter:
         # availability downgrade can silently route it to ollama or the platform
         # key. Checked on the REQUESTED provider, not the resolved one.
         requested = canonical_provider(req.provider) or "ollama"
-        if (
-            self._settings.require_tenant_model_key
-            and requested != "ollama"
-            and not req.api_key
-        ):
+        if self._settings.require_tenant_model_key and requested != "ollama" and not req.api_key:
             raise TenantKeyRequired(
                 f"provider '{requested}' requires a per-tenant API key "
                 f"(credential type '{requested}_api_key'); none is configured for this tenant"
@@ -160,19 +202,47 @@ class ModelRouter:
         over = overflow_tokens(str(exc))
         if over is None:
             return None
-        trimmed = trim_for_overflow(
-            req.messages, over_by=over, headroom=req.params.max_tokens
-        )
+        trimmed = trim_for_overflow(req.messages, over_by=over, headroom=req.params.max_tokens)
         if trimmed is None:
             return None
         logger.warning(
-            "conversation was %d tokens past the context window; retrying with "
-            "%d of %d messages",
+            "conversation was %d tokens past the context window; retrying with %d of %d messages",
             over,
             len(trimmed),
             len(req.messages),
         )
         return replace(req, messages=trimmed)
+
+    @staticmethod
+    def _retry_without_reasoning(
+        req: CompletionRequest, exc: Exception
+    ) -> CompletionRequest | None:
+        """The same request without the level and the effort, or None.
+
+        Only when the request carried one and the provider's 4xx names it
+        (spec 2026-11-11 §9). The member still gets an answer, and the step
+        says it came without thinking.
+        """
+        extra = req.params.extra or {}
+        plain_extra = _without_reasoning_extra(extra)
+        if req.params.reasoning is None and req.params.effort is None and plain_extra == extra:
+            return None
+        if not rejects_reasoning(exc):
+            return None
+        logger.warning(
+            "%s/%s refused the reasoning level; retrying once without it",
+            req.provider,
+            req.model,
+        )
+        return replace(
+            req,
+            params=replace(
+                req.params,
+                reasoning=None,
+                effort=None,
+                extra=plain_extra if req.params.extra is not None else None,
+            ),
+        )
 
     async def complete(self, req: CompletionRequest) -> CompletionResult:
         adapter, resolved, canonical, model = self._guard_and_resolve(req)
@@ -182,9 +252,14 @@ class ModelRouter:
                 return await adapter.complete(resolved)
             except Exception as exc:
                 retry = self._retry_trimmed(resolved, exc)
-                if retry is None:
+                if retry is not None:
+                    return await adapter.complete(retry)
+                plain = self._retry_without_reasoning(resolved, exc)
+                if plain is None:
                     raise
-                return await adapter.complete(retry)
+                result = await adapter.complete(plain)
+                result.reasoning_dropped = True
+                return result
         finally:
             record_model_latency(
                 provider=canonical, model=model, ms=(time.monotonic() - started) * 1000
@@ -218,12 +293,24 @@ class ModelRouter:
                 # Only before anything has gone out. Once a chunk is on the wire
                 # it cannot be unsent, and restarting would splice two different
                 # answers together.
-                retry = None if sent else self._retry_trimmed(resolved, exc)
-                if retry is None:
+                if sent:
                     raise
-                async for chunk in stream_with_fallback(adapter, retry):
+                follow_up = self._retry_trimmed(resolved, exc)
+                dropped = False
+                if follow_up is None:
+                    follow_up = self._retry_without_reasoning(resolved, exc)
+                    dropped = follow_up is not None
+                if follow_up is None:
+                    raise
+                async for chunk in stream_with_fallback(adapter, follow_up):
                     chunk.provider = canonical
                     chunk.model = model
+                    if dropped:
+                        # On the retry's own first chunk, never a marker of its
+                        # own: an empty chunk ahead of a retry that then fails
+                        # would read as "already emitted" and block fallback.
+                        chunk.reasoning_dropped = True
+                        dropped = False
                     yield chunk
         finally:
             record_model_latency(

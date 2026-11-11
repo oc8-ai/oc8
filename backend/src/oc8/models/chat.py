@@ -28,6 +28,10 @@ class ChatSession(Base, PkMixin, TenantMixin, TimestampMixin):
             "title_source IS NULL OR title_source IN ('auto','user')",
             name="ck_chat_session_title_source",
         ),
+        CheckConstraint(
+            "effort IS NULL OR effort IN ('fast','balanced','thorough')",
+            name="ck_chat_session_effort",
+        ),
         Index(
             "uq_chat_session_live",
             "tenant_id",
@@ -75,6 +79,12 @@ class ChatSession(Base, PkMixin, TenantMixin, TimestampMixin):
     #: every turn without its own command runs in it until the member leaves it.
     #: NULL for an ordinary chat. No CHECK, like `ChatMessage.mode`.
     mode: Mapped[str | None] = mapped_column(Text)
+    #: How hard the agent thinks in this chat (spec 2026-11-11 §3): "fast",
+    #: "balanced" or "thorough", NULL for the agent's or model's default.
+    #: Sticky like `model_override_id`, and kept while the chat runs on a model
+    #: that cannot think, so it applies again once it is back on one that can
+    #: (`oc8.chat.model_choice.apply_effort_override`; migration 0116).
+    effort: Mapped[str | None] = mapped_column(Text)
 
 
 class ChatMessage(Base, PkMixin, TenantMixin, TimestampMixin):

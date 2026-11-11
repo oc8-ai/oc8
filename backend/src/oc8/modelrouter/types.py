@@ -8,6 +8,10 @@ from typing import Any, Literal, Protocol
 
 Role = Literal["system", "user", "assistant", "tool"]
 
+#: How hard a model should think (spec 2026-11-11 §2). Provider-neutral: each
+#: adapter maps it to its own API; see oc8.modelrouter.levels.
+ReasoningLevel = Literal["fast", "balanced", "thorough"]
+
 
 @dataclass
 class ToolCall:
@@ -79,6 +83,10 @@ class CompletionResult:
     #: (see `NeutralMessage.replay_blocks`). Empty for every provider that has
     #: no such continuity rule.
     replay_blocks: list[dict[str, Any]] = field(default_factory=list)
+    #: The provider refused the reasoning level, so this answer came from one
+    #: retry without it (`ModelRouter._retry_without_reasoning`). Recorded on
+    #: the run step, where an admin sees it.
+    reasoning_dropped: bool = False
 
 
 @dataclass
@@ -123,6 +131,8 @@ class CompletionChunk:
     #: that state through separately.
     provider: str | None = None
     model: str | None = None
+    #: Set on one chunk ahead of a retry without the reasoning level.
+    reasoning_dropped: bool = False
 
 
 @dataclass
@@ -135,6 +145,12 @@ class ModelParams:
     #: that set and changes it without oc8's involvement. None omits the
     #: field entirely rather than sending a guessed default.
     effort: str | None = None
+    #: How hard the model should think, provider-neutral (spec 2026-11-11).
+    #: Built-in adapters map it to their own API; a capa adapter reads it
+    #: itself. Wins over `effort` in every built-in adapter; None leaves each
+    #: adapter on its `effort` behaviour. `resolve_params` never sets either
+    #: one for a model that cannot think.
+    reasoning: ReasoningLevel | None = None
     #: Free-form top-level request fields an operator wants forwarded verbatim
     #: (e.g. OpenRouter's `provider`/`top_p`) that oc8 has no named field for.
     #: Merged into the outbound payload strictly AFTER every named field, so a

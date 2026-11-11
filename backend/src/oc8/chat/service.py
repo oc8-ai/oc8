@@ -487,6 +487,10 @@ def _build_turn_context(
     if session.model_override_id is not None:
         # Re-checked when the run resolves its version (chat.model_choice).
         context["model_override_id"] = str(session.model_override_id)
+    if session.effort is not None:
+        # Folded into the pinned definition when the run resolves its version
+        # (chat.model_choice.apply_effort_override); every runtime reads it there.
+        context["effort_override"] = session.effort
     if extra_context:
         # Everything outside the allow-list is dropped, silently.
         context.update({k: v for k, v in extra_context.items() if k in _EXTRA_CONTEXT_KEYS})

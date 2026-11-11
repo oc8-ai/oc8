@@ -46,6 +46,7 @@ class _Accumulator:
     stop_reason: str = "stop"
     provider: str | None = None
     model: str | None = None
+    reasoning_dropped: bool = False
 
     def absorb(self, chunk: CompletionChunk) -> None:
         if chunk.text:
@@ -53,6 +54,8 @@ class _Accumulator:
         if chunk.reasoning:
             self.reasoning_parts.append(chunk.reasoning)
         self.replay_blocks.extend(chunk.replay_blocks)
+        if chunk.reasoning_dropped:
+            self.reasoning_dropped = True
         for delta in chunk.tool_calls:
             call = self.calls.setdefault(delta.index, _PendingCall())
             if delta.id:
@@ -95,6 +98,7 @@ class _Accumulator:
             model=self.model or "",
             reasoning=reasoning or None,
             replay_blocks=self.replay_blocks,
+            reasoning_dropped=self.reasoning_dropped,
         )
 
 

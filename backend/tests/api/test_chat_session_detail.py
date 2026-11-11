@@ -70,6 +70,8 @@ async def test_models_list_auto_first_and_reject_outside_set(
                 "provider": "",
                 "locality": "",
                 "isDefault": False,
+                "supportsReasoning": False,
+                "defaultEffort": "balanced",
             }
             assert [o["id"] for o in models[1:]] == [str(base)]
             assert models[1]["isDefault"] is True

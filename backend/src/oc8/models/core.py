@@ -16,6 +16,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    false,
     func,
     text,
     true,
@@ -262,6 +263,12 @@ class ModelConfig(Base, PkMixin, TenantMixin, TimestampMixin):
     #: Whether operators may pick this model for a chat (the chat model picker).
     chat_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default=true()
+    )
+    #: Whether this model can think, so a reasoning level and an effort are
+    #: sent to it at all (spec 2026-11-11 §4-5; migration 0116). Prefilled on
+    #: create from the provider's declaration (`ProviderEntry.supports_reasoning`).
+    supports_reasoning: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
     )
 
     __table_args__ = (CheckConstraint("locality IN ('cloud','local')", name="ck_model_locality"),)

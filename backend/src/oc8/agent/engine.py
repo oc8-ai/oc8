@@ -1701,7 +1701,12 @@ async def run_agent(
                         provider = model_config.provider
                         model = model_config.model
                         model_locality = model_config.locality
-                        resolved_params = resolve_params(model_config, agent=agent)
+                        # The pinned definition, as on the first resolution:
+                        # it carries the chat's reasoning level and the agent's
+                        # pinned sampling, which the live row does not.
+                        resolved_params = resolve_params(
+                            model_config, agent=agent, definition=pinned["definition"]
+                        )
                         active_route["config"] = model_config
                         active_route["provider"] = provider
                         active_route["model"] = model
@@ -1791,7 +1796,7 @@ async def run_agent(
                             if not result.tool_calls:
                                 result.tool_calls = _salvage_tool_calls(result.text, _offered())
                     await cache_flow.store_if_matching(key, result, provider=provider, model=model)
-                    note_reasoning(step_rec, result.reasoning)
+                    note_reasoning(step_rec, result.reasoning, dropped=result.reasoning_dropped)
                     note_model(
                         step_rec,
                         model_wait_ms=step_probe.model_wait_ms,

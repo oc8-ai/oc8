@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 
 from oc8.modelrouter.http_errors import raise_for_status_with_body
+from oc8.modelrouter.levels import EFFORT_FOR_LEVEL
 from oc8.modelrouter.reasoning import reasoning_field, reasoning_tokens_from, split_think_tags
 from oc8.modelrouter.types import (
     CompletionRequest,
@@ -160,6 +161,10 @@ def build_payload(req: CompletionRequest) -> dict[str, Any]:
         "temperature": req.params.temperature,
         "max_tokens": req.params.max_tokens,
     }
+    # Only a level is mapped. A free-form `effort` alone was never sent here
+    # and still is not (spec §6: no level keeps today's behaviour).
+    if req.params.reasoning is not None:
+        payload["reasoning_effort"] = EFFORT_FOR_LEVEL[req.params.reasoning]
     if req.tools:
         payload["tools"] = [
             {
@@ -176,8 +181,13 @@ def build_payload(req: CompletionRequest) -> dict[str, Any]:
     # adapter relies on -- see ModelParams.extra.
     if req.params.extra:
         for key, value in req.params.extra.items():
-            if key not in _RESERVED_PAYLOAD_KEYS:
-                payload[key] = value
+            if key in _RESERVED_PAYLOAD_KEYS:
+                continue
+            # A level sets `reasoning_effort` itself; without one the operator's
+            # own key passes through exactly as before.
+            if key == "reasoning_effort" and "reasoning_effort" in payload:
+                continue
+            payload[key] = value
     return payload
 
 

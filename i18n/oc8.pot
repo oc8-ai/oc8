@@ -386,6 +386,9 @@ msgstr ""
 msgid "Answered from the department cache, not a fresh model call"
 msgstr ""
 
+msgid "Answers right away, barely thinks"
+msgstr ""
+
 msgid "Answers to the questions"
 msgstr ""
 
@@ -653,6 +656,9 @@ msgstr ""
 msgid "Bad answer"
 msgstr ""
 
+msgid "Balanced"
+msgstr ""
+
 msgid "Bar"
 msgstr ""
 
@@ -714,6 +720,9 @@ msgid "cached"
 msgstr ""
 
 msgid "Called with no arguments."
+msgstr ""
+
+msgid "Can think"
 msgstr ""
 
 msgid "Cancel"
@@ -1508,7 +1517,16 @@ msgstr ""
 msgid "Currently in this company → in the archive"
 msgstr ""
 
+msgid "Custom effort value"
+msgstr ""
+
 msgid "Custom MCP capa"
+msgstr ""
+
+msgid "Custom setting"
+msgstr ""
+
+msgid "Custom value"
 msgstr ""
 
 msgid "Daily"
@@ -1835,6 +1853,9 @@ msgstr ""
 msgid "e.g. Legal & Compliance"
 msgstr ""
 
+msgid "e.g. max"
+msgstr ""
+
 msgid "e.g. Nova, Atlas, Miro …"
 msgstr ""
 
@@ -2048,6 +2069,9 @@ msgstr ""
 msgid "failed"
 msgstr ""
 
+msgid "Fast"
+msgstr ""
+
 msgid "Fetch again"
 msgstr ""
 
@@ -2145,6 +2169,9 @@ msgid "From (UTC)"
 msgstr ""
 
 msgid "From a chat"
+msgstr ""
+
+msgid "from extra parameters"
 msgstr ""
 
 msgid "From store"
@@ -2271,6 +2298,9 @@ msgid "Hire an agent into it from the Agents page."
 msgstr ""
 
 msgid "History"
+msgstr ""
+
+msgid "How hard this model thinks when neither the chat nor the agent sets a level. A custom value is forwarded to the provider as typed."
 msgstr ""
 
 msgid "How many tool-using steps this agent may take in one run before it stops. Blank inherits the framework default (currently high, not unlimited -- budget/token metering only checks once per run)."
@@ -3203,6 +3233,9 @@ msgstr ""
 msgid "not set"
 msgstr ""
 
+msgid "Not set"
+msgstr ""
+
 msgid "not set up"
 msgstr ""
 
@@ -3686,10 +3719,16 @@ msgstr ""
 msgid "Reason"
 msgstr ""
 
-msgid "Reasoning effort forwarded as-is to providers that support it (currently Anthropic). Leave blank to omit. Not validated here — the provider decides which values it accepts."
+msgid "Reasoning"
 msgstr ""
 
 msgid "reasoning engine"
+msgstr ""
+
+msgid "Reasoning level not supported by this model, answered without thinking."
+msgstr ""
+
+msgid "Reasoning: {level}"
 msgstr ""
 
 msgid "Recent"
@@ -4301,6 +4340,9 @@ msgstr ""
 msgid "Showed a summary"
 msgstr ""
 
+msgid "Shows the reasoning-level control in chats on this model and sends the chosen level to the provider."
+msgstr ""
+
 msgid "Sign in"
 msgstr ""
 
@@ -4628,6 +4670,9 @@ msgstr ""
 msgid "That name is already taken."
 msgstr ""
 
+msgid "That reasoning level isn't available. Pick another one."
+msgstr ""
+
 msgid "The access could not be saved. Please try again."
 msgstr ""
 
@@ -4748,6 +4793,12 @@ msgstr ""
 msgid "The provider needs you to sign in again. Please try once more."
 msgstr ""
 
+msgid "The reasoning level couldn't be changed. Try again."
+msgstr ""
+
+msgid "The reasoning level you picked couldn't be set. Your message wasn't sent – send it again or pick another level."
+msgstr ""
+
 msgid "The role list could not be loaded."
 msgstr ""
 
@@ -4802,6 +4853,9 @@ msgstr ""
 msgid "The username or API key is not correct."
 msgstr ""
 
+msgid "The usual choice"
+msgstr ""
+
 msgid "These describe what an AGENT may do in your systems. They are never given to a person, and they can only ever subtract: what an agent actually does is this, intersected with its department’s frame and with its own narrowing."
 msgstr ""
 
@@ -4815,6 +4869,9 @@ msgid "Thinking …"
 msgstr ""
 
 msgid "Thinking…"
+msgstr ""
+
+msgid "Thinks longer for tricky questions; slower and costs more"
 msgstr ""
 
 msgid "This access already exists."
@@ -4992,6 +5049,9 @@ msgid "This webhook has no owner."
 msgstr ""
 
 msgid "This widget could not be displayed."
+msgstr ""
+
+msgid "Thorough"
 msgstr ""
 
 msgid "Thought"

@@ -120,6 +120,17 @@ export function RunModelSteps({
             </span>
             <StepBudget step={step} />
           </div>
+          {step.reasoningDropped && (
+            <p
+              className="text-[11px] text-[color:var(--status-warning)]"
+              data-testid="reasoning-dropped"
+            >
+              {t(
+                "Reasoning level not supported by this model, answered without thinking.",
+                "Denkstufe von diesem Modell nicht unterstützt, ohne Nachdenken geantwortet.",
+              )}
+            </p>
+          )}
           {step.reasoning && <ReasoningBlock text={step.reasoning} />}
         </li>
       ))}

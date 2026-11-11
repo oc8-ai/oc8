@@ -14,6 +14,9 @@ export interface ModelStep {
   reasoning: string | null;
   /** The step's last call wrote as many tokens as its budget allowed. */
   budgetUsedUp: boolean;
+  /** The provider refused the reasoning level; this step answered without
+   *  it. Absent, never false, so older records compare unchanged. */
+  reasoningDropped?: true;
 }
 
 function num(value: unknown): number | null {
@@ -34,7 +37,9 @@ export function modelSteps(stepTimings: Array<Record<string, unknown>> | undefin
     const reasoningTokens = num(entry.reasoningTokens);
     const maxTokens = num(entry.maxTokens);
     const reasoning = str(entry.reasoning);
-    if (tokensOut === null && maxTokens === null && reasoning === null) continue;
+    const reasoningDropped = entry.reasoningDropped === true;
+    if (tokensOut === null && maxTokens === null && reasoning === null && !reasoningDropped)
+      continue;
     out.push({
       step: num(entry.step) ?? out.length + 1,
       tokensIn,
@@ -46,6 +51,7 @@ export function modelSteps(stepTimings: Array<Record<string, unknown>> | undefin
       // can exceed the last call's budget; at or above it means the budget
       // ran out at least once.
       budgetUsedUp: tokensOut !== null && maxTokens !== null && tokensOut >= maxTokens,
+      ...(reasoningDropped ? { reasoningDropped: true as const } : {}),
     });
   }
   return out;

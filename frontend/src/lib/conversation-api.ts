@@ -22,6 +22,7 @@ import {
 } from "@/lib/hooks-chat";
 import type { RunComponentDTO } from "@/lib/hooks";
 import { runLiveAnswerKey, runLiveStateKey, type RunLiveState } from "@/lib/live/apply-event";
+import type { ReasoningLevel } from "@/lib/reasoning-levels";
 
 export interface ActiveRunDTO {
   runId: string;
@@ -33,6 +34,9 @@ export interface ChatSessionDetailDTO extends ChatSessionDTO {
   /** The sticky mode this chat is in ("agent"), or null. */
   mode: string | null;
   modelOverrideId: string | null;
+  /** The reasoning level kept on this chat, or null for the default.
+   *  Absent on an older backend. */
+  effort?: ReasoningLevel | null;
   kind: "chat" | "live";
   activeRuns: ActiveRunDTO[];
   readOnly: boolean;
@@ -61,6 +65,10 @@ export interface ChatModelOptionDTO {
   provider: string;
   locality: string;
   isDefault: boolean;
+  /** Whether this model can think; for "Auto", the agent's default model's. */
+  supportsReasoning?: boolean;
+  /** The level that applies without a chat pick, or "custom". */
+  defaultEffort?: ReasoningLevel | "custom";
 }
 
 export const conversationKeys = {
@@ -108,6 +116,21 @@ export function useSetSessionModel(sessionId: string | null) {
     onSuccess: (session) =>
       qc.setQueryData<ChatSessionDetailDTO>(conversationKeys.session(session.id), (prev) =>
         prev ? { ...prev, modelOverrideId: session.modelOverrideId } : session,
+      ),
+  });
+}
+
+export function useSetSessionEffort(sessionId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (effort: ReasoningLevel | null) =>
+      api.put<ChatSessionDetailDTO>(
+        `/chat/sessions/${encodeURIComponent(sessionId ?? "")}/effort`,
+        { effort },
+      ),
+    onSuccess: (session) =>
+      qc.setQueryData<ChatSessionDetailDTO>(conversationKeys.session(session.id), (prev) =>
+        prev ? { ...prev, effort: session.effort ?? null } : session,
       ),
   });
 }
