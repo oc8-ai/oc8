@@ -74,6 +74,10 @@ msgid "Reasoning level not supported by this model, answered without thinking."
 msgstr "Denkniveau niet ondersteund door dit model, beantwoord zonder na te denken."
 
 #, fuzzy
+msgid "Reasoning: {level}"
+msgstr "Denkniveau: {level}"
+
+#, fuzzy
 msgid "Shows the reasoning-level control in chats on this model and sends the chosen level to the provider."
 msgstr "Toont de keuze van het denkniveau in chats op dit model en stuurt het gekozen niveau naar de aanbieder."
 

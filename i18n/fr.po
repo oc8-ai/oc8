@@ -74,6 +74,10 @@ msgid "Reasoning level not supported by this model, answered without thinking."
 msgstr "Niveau de réflexion non pris en charge par ce modèle, réponse sans réflexion."
 
 #, fuzzy
+msgid "Reasoning: {level}"
+msgstr "Réflexion : {level}"
+
+#, fuzzy
 msgid "Shows the reasoning-level control in chats on this model and sends the chosen level to the provider."
 msgstr "Affiche le choix du niveau de réflexion dans les chats sur ce modèle et transmet le niveau choisi au fournisseur."
 

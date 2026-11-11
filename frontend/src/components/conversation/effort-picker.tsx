@@ -19,6 +19,19 @@ import {
 import { cn } from "@/lib/utils";
 
 const CHOICES: ReadonlyArray<ReasoningLevel | null> = [null, ...REASONING_LEVELS];
+// The menu's w-72, and the 1rem gutter it keeps from each screen edge.
+const MENU_WIDTH = 288;
+const GUTTER = 16;
+
+/** Whether the menu opens rightward from the control's left edge: only when
+ *  the usual leftward menu would run off the screen and there is more room on
+ *  the right. Without layout (a test, a hidden control) it stays leftward. */
+function opensRightward(trigger: HTMLElement | null): boolean {
+  const rect = trigger?.getBoundingClientRect();
+  if (!rect || rect.width === 0) return false;
+  const needed = Math.min(MENU_WIDTH, window.innerWidth - 2 * GUTTER) + GUTTER;
+  return rect.right < needed && window.innerWidth - rect.left > rect.right;
+}
 
 export function EffortPicker({
   sessionId,
@@ -42,6 +55,7 @@ export function EffortPicker({
 }) {
   const t = useT();
   const [open, setOpen] = useState(false);
+  const [rightward, setRightward] = useState(false);
   // The pick in flight, shown until the server answers. `undefined` = none.
   const [pending, setPending] = useState<ReasoningLevel | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
@@ -157,10 +171,13 @@ export function EffortPicker({
         ref={trigger}
         type="button"
         disabled={disabled || (!sessionId && !agentId)}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          setRightward(opensRightward(trigger.current));
+          setOpen((v) => !v);
+        }}
         aria-haspopup="true"
         aria-expanded={open}
-        aria-label={t(`Reasoning: ${label}`, `Denkstufe: ${label}`)}
+        aria-label={t("Reasoning: {level}", "Denkstufe: {level}").replace("{level}", label)}
         className="inline-flex h-9 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-60"
       >
         <Brain className="size-3.5" aria-hidden />
@@ -175,7 +192,10 @@ export function EffortPicker({
           onBlur={(e) => {
             if (!root.current?.contains(e.relatedTarget as Node | null)) setOpen(false);
           }}
-          className="absolute bottom-full right-0 z-50 mb-1 w-72 max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-popover p-1 shadow-lg"
+          className={cn(
+            "absolute bottom-full z-50 mb-1 w-72 max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-popover p-1 shadow-lg",
+            rightward ? "left-0" : "right-0",
+          )}
         >
           {CHOICES.map((level, i) => (
             <button
@@ -213,7 +233,10 @@ export function EffortPicker({
       {error && !open && (
         <p
           role="alert"
-          className="absolute bottom-full right-0 mb-1 w-64 max-w-[calc(100vw-2rem)] text-xs text-status-error"
+          className={cn(
+            "absolute bottom-full mb-1 w-64 max-w-[calc(100vw-2rem)] text-xs text-status-error",
+            rightward ? "left-0" : "right-0",
+          )}
         >
           {error}
         </p>

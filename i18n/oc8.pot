@@ -3728,6 +3728,9 @@ msgstr ""
 msgid "Reasoning level not supported by this model, answered without thinking."
 msgstr ""
 
+msgid "Reasoning: {level}"
+msgstr ""
+
 msgid "Recent"
 msgstr ""
 

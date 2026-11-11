@@ -52,6 +52,9 @@ msgstr "Denkstufe"
 msgid "Reasoning level not supported by this model, answered without thinking."
 msgstr "Denkstufe von diesem Modell nicht unterstützt, ohne Nachdenken geantwortet."
 
+msgid "Reasoning: {level}"
+msgstr "Denkstufe: {level}"
+
 msgid "Shows the reasoning-level control in chats on this model and sends the chosen level to the provider."
 msgstr "Zeigt im Chat auf diesem Modell die Denkstufe an und schickt die gewählte Stufe an den Anbieter."
 
