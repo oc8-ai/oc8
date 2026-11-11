@@ -64,6 +64,14 @@ async def test_an_unknown_value_is_ignored(app_session: AppSessionFactory) -> No
     assert "reasoning" not in payload["definition"]["model_params"]
 
 
+@pytest.mark.parametrize("stale", ["low", ["x"], "", None, 3])
+async def test_stale_or_invalid_values_are_ignored(
+    app_session: AppSessionFactory, stale: Any
+) -> None:
+    payload, _ = await _payload(app_session, uuid.uuid4(), {"effort_override": stale})
+    assert payload["definition"]["model_params"] == {"temperature": 0.9}
+
+
 async def test_a_run_without_a_level_is_untouched(app_session: AppSessionFactory) -> None:
     payload, _ = await _payload(app_session, uuid.uuid4(), {})
     assert payload["definition"]["model_params"] == {"temperature": 0.9}
@@ -106,3 +114,39 @@ async def test_a_turn_carries_the_chats_level(
             await db.execute(select(m.AgentRun).where(m.AgentRun.agent_id == agent_id))
         ).scalar_one()
         assert run.context["effort_override"] == "fast"
+
+
+async def test_a_session_without_a_level_leaves_the_key_absent(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        dept = m.Department(tenant_id=tenant, name="Ops", frame={})
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(tenant_id=tenant, department_id=dept.id, name="A")
+        db.add(agent)
+        await db.flush()
+        agent_id = agent.id
+    token = get_identity_provider().mint(tenant_id=tenant, subject="op", role="org_admin")
+    headers = {"Authorization": f"Bearer {token}"}
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            sid = (
+                await c.post(
+                    "/api/v1/chat/sessions", json={"agentId": str(agent_id)}, headers=headers
+                )
+            ).json()["id"]
+            with patch("oc8.runtime.intake.publish_run"):
+                sent = await c.post(
+                    f"/api/v1/chat/sessions/{sid}/messages",
+                    json={"message": "hi"},
+                    headers=headers,
+                )
+            assert sent.status_code == 201, sent.text
+    async with app_session(tenant) as db:
+        run = (
+            await db.execute(select(m.AgentRun).where(m.AgentRun.agent_id == agent_id))
+        ).scalar_one()
+        assert "effort_override" not in run.context

@@ -77,6 +77,76 @@ async def test_the_in_process_engine(
     assert recorder.params and recorder.params[0].reasoning == "thorough"
 
 
+async def test_the_level_survives_an_auto_router_escalation(
+    app_session: AppSessionFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed first call escalates to a stronger tier; the retry on the new
+    model must still carry the chat's level, which lives only in the pinned
+    definition (not the live agent row)."""
+    tenant = uuid.uuid4()
+    recorder = _RecordingStream()
+    calls: list[ModelParams] = []
+
+    def flaky(*args: Any, **kw: Any) -> AsyncIterator[CompletionChunk]:
+        if not calls:
+            calls.append(kw["params"])
+            recorder.params.append(kw["params"])
+            raise RuntimeError("provider down")
+        calls.append(kw["params"])
+        return recorder(*args, **kw)
+
+    monkeypatch.setattr(
+        "oc8.agent.mcp_client.McpSession", _session_factory(_RecordingServer(), ["read_a"])
+    )
+    monkeypatch.setattr("oc8.agent.engine.stream_completion_with_fallback", flaky)
+    async with app_session(tenant) as db:
+        agent, conn = await _fixture(db, tenant, tool_scopes={"read": ["read_a"], "modify": []})
+        tiers = [
+            m.ModelConfig(
+                tenant_id=tenant,
+                provider="ollama",
+                model=name,
+                locality="local",
+                supports_reasoning=True,
+                params={},
+            )
+            for name in ("fast-model", "balanced-model", "strong-model")
+        ]
+        db.add_all(tiers)
+        await db.flush()
+        auto = m.ModelConfig(
+            tenant_id=tenant,
+            provider="auto",
+            model="router",
+            locality="cloud",
+            params={
+                "tiers": {
+                    "fast": str(tiers[0].id),
+                    "balanced": str(tiers[1].id),
+                    "strong": str(tiers[2].id),
+                }
+            },
+        )
+        db.add(auto)
+        await db.flush()
+        agent.model_config_id = auto.id
+        run = m.AgentRun(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            state=RunState.RUNNING.value,
+            context={"task": "go", "effort_override": "thorough"},
+        )
+        db.add(run)
+        await db.flush()
+        await run_agent(
+            db, agent=agent, task_text="go", tenant_id=tenant, run_id=run.id, mcp_conn=conn
+        )
+    assert len(recorder.params) >= 2, "the first call failed and the escalated one ran"
+    assert recorder.params[0].reasoning == "thorough"
+    assert recorder.params[-1].reasoning == "thorough"
+
+
 async def test_the_isolated_step(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
