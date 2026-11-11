@@ -34,7 +34,11 @@ vi.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => false }));
 vi.mock("@/lib/conversation-api", () => ({
   useChatSession: () => ({ data: undefined, error: m.linkedError }),
 }));
-vi.mock("@/lib/hooks", () => ({ useAgent: () => ({ data: undefined }) }));
+vi.mock("@/lib/hooks", () => ({
+  useAgent: () => ({ data: undefined }),
+  useAuth: () => ({ data: { memberId: "me" }, isError: false }),
+}));
+vi.mock("@/lib/copilot-work-count", () => ({ useCopilotWorkCount: () => 0 }));
 vi.mock("@/lib/hooks-chat", async (orig) => ({
   ...(await orig<typeof import("@/lib/hooks-chat")>()),
   useChatSessions: () => ({ data: [] }),

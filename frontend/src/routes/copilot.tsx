@@ -1,12 +1,13 @@
 import { createFileRoute, useNavigate, useRouterState } from "@tanstack/react-router";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { ChatHeaderActions, SidePanelHost, SidePanelProvider } from "@/edition/slots";
 import { Conversation } from "@/components/conversation";
 import { copilotStarters } from "@/components/conversation/copilot-starters";
 import { CopilotSidebar } from "@/components/conversation/copilot-sidebar";
 import { CopilotAvatar, CopilotPersonaHeader } from "@/components/copilot-persona";
 import { CopilotWorkPanel } from "@/components/copilot-work-panel";
+import { useWorkRail } from "@/components/copilot-work-rail";
 import { isPlainClick } from "@/components/conversation/object-links";
 import { parsePin, useOpenPinnedChat } from "@/components/conversation/open-pinned-chat";
 import { useObjectNavigation } from "@/components/conversation/use-object-navigation";
@@ -22,8 +23,10 @@ import { useAgent } from "@/lib/hooks";
 import { useChatSessions } from "@/lib/hooks-chat";
 import { useAgentIdeas } from "@/lib/agent-builder-api";
 import { useCopilotProfile } from "@/lib/hooks-copilot";
+import { useCopilotWorkCount } from "@/lib/copilot-work-count";
 import { useLang, useT } from "@/lib/i18n";
 import { urlId } from "@/lib/ids";
+import { cn } from "@/lib/utils";
 
 export interface CopilotSearch {
   /** A conversation to open -- where an answer's session chip
@@ -210,7 +213,11 @@ export function CopilotPage({
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once per pin value; the ref guards re-runs
   }, [pin, mayUse]);
-  const [panelOpen, setPanelOpen] = useState(true);
+  // The work rail stays folded while it has nothing to show (and opens when
+  // the first item turns up), unless the member chose otherwise.
+  const workCount = useCopilotWorkCount(agentId || null);
+  const { open: panelOpen, toggle: togglePanel } = useWorkRail(workCount);
+  const railId = useId();
   const openSession = (id: string | null) => {
     setSessionId(id);
     openedHere.current = id !== (initialSessionId ?? null) ? id : undefined;
@@ -259,7 +266,7 @@ export function CopilotPage({
       }
     />
   ) : (
-    <div className="mx-auto w-full max-w-[760px] space-y-3 p-6" aria-busy="true">
+    <div className="mx-auto w-full max-w-[47.5rem] space-y-3 p-6" aria-busy="true">
       <Skeleton className="h-4 w-1/2 rounded-md" />
       <Skeleton className="h-4 w-2/3 rounded-md" />
     </div>
@@ -303,17 +310,34 @@ export function CopilotPage({
                 <Button
                   variant="ghost"
                   size="icon"
-                  onClick={() => setPanelOpen((o) => !o)}
+                  className="relative"
+                  onClick={togglePanel}
+                  aria-expanded={panelOpen}
+                  aria-controls={railId}
                   aria-label={
                     panelOpen
                       ? t("Hide work panel", "Arbeitsbereich ausblenden")
-                      : t("Show work panel", "Arbeitsbereich einblenden")
+                      : workCount > 0
+                        ? t(
+                            "Show work panel ({count} items)",
+                            "Arbeitsbereich einblenden ({count} Einträge)",
+                          ).replace("{count}", String(workCount))
+                        : t("Show work panel", "Arbeitsbereich einblenden")
                   }
                 >
                   {panelOpen ? (
                     <PanelRightClose className="h-4 w-4" />
                   ) : (
                     <PanelRightOpen className="h-4 w-4" />
+                  )}
+                  {!panelOpen && workCount > 0 && (
+                    <span
+                      data-testid="work-rail-count"
+                      aria-hidden
+                      className="absolute -right-1 -top-1 grid h-5 min-w-5 place-items-center rounded-full bg-[color:var(--status-warning)] px-1 text-[10px] font-semibold text-black tabular-nums"
+                    >
+                      {workCount > 99 ? "99+" : workCount}
+                    </span>
                   )}
                 </Button>
               )}
@@ -342,9 +366,24 @@ export function CopilotPage({
           {chat}
         </section>
         {!mobile && <SidePanelHost sessionId={sessionId} />}
-        {!mobile && panelOpen && (
-          <aside className="hidden w-[380px] shrink-0 md:flex md:flex-col">
-            <CopilotWorkPanel />
+        {!mobile && (
+          // Always in the tree so the toggle's aria-controls has a target;
+          // the width slides between 0 and the rail (no motion when the
+          // member asked for less), and the panel itself only mounts open.
+          <aside
+            id={railId}
+            aria-label={t("Work", "Arbeit")}
+            data-state={panelOpen ? "open" : "closed"}
+            className={cn(
+              "hidden shrink-0 overflow-hidden md:flex md:flex-col motion-safe:transition-[width] motion-safe:duration-200 motion-safe:ease-out",
+              panelOpen ? "w-[23.75rem]" : "w-0",
+            )}
+          >
+            {panelOpen && (
+              <div className="flex min-h-0 w-[23.75rem] flex-1 flex-col">
+                <CopilotWorkPanel />
+              </div>
+            )}
           </aside>
         )}
       </div>

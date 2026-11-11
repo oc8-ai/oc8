@@ -922,9 +922,6 @@ msgstr "Code"
 msgid "Collaboration"
 msgstr "Zusammenarbeit"
 
-msgid "Collapse"
-msgstr "Einklappen"
-
 msgid "Collapse sidebar"
 msgstr "Seitenleiste einklappen"
 
@@ -1059,9 +1056,6 @@ msgstr "Weiter, um den Index zu konfigurieren."
 
 msgid "Continue to export"
 msgstr "Weiter zum Export"
-
-msgid "Control Panel"
-msgstr "Leitstand"
 
 msgid "Copied"
 msgstr "Kopiert"

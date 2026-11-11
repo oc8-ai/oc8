@@ -18,6 +18,7 @@ export function IntegrationIcon({
       alt=""
       width={size}
       height={size}
+      style={{ width: `${size / 16}rem`, height: `${size / 16}rem` }}
       className="shrink-0 rounded-md object-contain"
     />
   );

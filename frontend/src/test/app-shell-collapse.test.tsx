@@ -145,4 +145,37 @@ describe("AppShell sidebar collapse", () => {
     expect(sidebarNav().queryByText("Departments")).not.toBeInTheDocument();
     expect(localStorage.getItem("oc8-sidebar-collapsed")).toBeNull();
   });
+
+  it("puts the toggle in the header row beside the logo, and keeps it there collapsed", () => {
+    renderShell();
+    const logo = screen.getByAltText("oc8");
+    const collapse = screen.getByRole("button", { name: /collapse sidebar/i });
+    expect(collapse).toHaveAttribute("aria-expanded", "true");
+    // Same row as the logo, after it -- not at the foot of the sidebar.
+    expect(collapse.parentElement).toBe(logo.parentElement);
+    expect(logo.compareDocumentPosition(collapse) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(
+      screen.getByRole("navigation").compareDocumentPosition(collapse) &
+        Node.DOCUMENT_POSITION_PRECEDING,
+    ).toBeTruthy();
+
+    fireEvent.click(collapse);
+    const expand = screen.getByRole("button", { name: /expand sidebar/i });
+    expect(expand).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByAltText("oc8")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("navigation").compareDocumentPosition(expand) &
+        Node.DOCUMENT_POSITION_PRECEDING,
+    ).toBeTruthy();
+    // One toggle, not a second one left at the bottom.
+    expect(screen.getAllByRole("button", { name: /(expand|collapse) sidebar/i })).toHaveLength(1);
+    expand.focus();
+    expect(expand).toHaveFocus();
+  });
+
+  it("has no tagline under the logo", () => {
+    renderShell();
+    expect(screen.queryByText("Control Panel")).not.toBeInTheDocument();
+    expect(screen.queryByText("Leitstand")).not.toBeInTheDocument();
+  });
 });

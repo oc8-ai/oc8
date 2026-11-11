@@ -1234,10 +1234,6 @@ msgid "Collaboration"
 msgstr "Collaboration"
 
 #, fuzzy
-msgid "Collapse"
-msgstr "Réduire"
-
-#, fuzzy
 msgid "Collapse sidebar"
 msgstr "Réduire la barre latérale"
 
@@ -1416,10 +1412,6 @@ msgstr "Continuer la configuration de l'index sélectionné."
 #, fuzzy
 msgid "Continue to export"
 msgstr "Poursuivre l'export"
-
-#, fuzzy
-msgid "Control Panel"
-msgstr "Panneau de contrôle"
 
 #, fuzzy
 msgid "Copied"

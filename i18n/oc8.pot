@@ -926,9 +926,6 @@ msgstr ""
 msgid "Collaboration"
 msgstr ""
 
-msgid "Collapse"
-msgstr ""
-
 msgid "Collapse sidebar"
 msgstr ""
 
@@ -1062,9 +1059,6 @@ msgid "Continue to configure the selected index."
 msgstr ""
 
 msgid "Continue to export"
-msgstr ""
-
-msgid "Control Panel"
 msgstr ""
 
 msgid "Copied"
@@ -4299,6 +4293,9 @@ msgid "Show the rights a role may not hold, and why"
 msgstr ""
 
 msgid "Show work panel"
+msgstr ""
+
+msgid "Show work panel ({count} items)"
 msgstr ""
 
 msgid "Showed a summary"

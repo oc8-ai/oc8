@@ -1234,10 +1234,6 @@ msgid "Collaboration"
 msgstr "Colaboración"
 
 #, fuzzy
-msgid "Collapse"
-msgstr "Contraer"
-
-#, fuzzy
 msgid "Collapse sidebar"
 msgstr "Contraer barra lateral"
 
@@ -1416,10 +1412,6 @@ msgstr "Continúa para configurar el índice seleccionado."
 #, fuzzy
 msgid "Continue to export"
 msgstr "Continuar con la exportación"
-
-#, fuzzy
-msgid "Control Panel"
-msgstr "Panel de control"
 
 #, fuzzy
 msgid "Copied"

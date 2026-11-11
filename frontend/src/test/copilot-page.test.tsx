@@ -7,6 +7,7 @@ const m = vi.hoisted(() => ({
   sessions: [] as Array<{ id: string; agentId: string }>,
   linked: undefined as { id: string; agentId: string } | undefined,
   sent: [] as string[],
+  workCount: 0,
 }));
 
 vi.mock("@tanstack/react-router", () => ({
@@ -18,7 +19,9 @@ vi.mock("@/lib/conversation-api", () => ({
 }));
 vi.mock("@/lib/hooks", () => ({
   useAgent: (id: string) => ({ data: { id, name: "Stock agent" } }),
+  useAuth: () => ({ data: { memberId: "me" }, isError: false }),
 }));
+vi.mock("@/lib/copilot-work-count", () => ({ useCopilotWorkCount: () => m.workCount }));
 vi.mock("@/lib/agent-builder-api", () => ({
   useAgentIdeas: () => ({
     data: [
@@ -113,6 +116,7 @@ beforeEach(() => {
   m.sessions = [];
   m.linked = undefined;
   m.sent = [];
+  m.workCount = 0;
 });
 
 describe("CopilotPage", () => {
@@ -190,6 +194,7 @@ describe("CopilotPage", () => {
   });
 
   it("desktop shows the persona header, the chat and the inline work panel", () => {
+    m.workCount = 2;
     wrap();
     expect(screen.getByText("Pip")).toBeInTheDocument();
     expect(screen.getByTestId("chat")).toBeInTheDocument();
@@ -243,5 +248,79 @@ describe("CopilotPage", () => {
     );
     fireEvent.click(screen.getByText("Invoice checker"));
     expect(m.sent).toContain("/agent Set up an invoice checker.");
+  });
+
+  describe("work rail", () => {
+    const toggle = () => screen.getByRole("button", { name: /work panel/i });
+
+    it("stays folded while there is nothing to show", () => {
+      wrap();
+      expect(screen.queryByTestId("work-panel")).toBeNull();
+      expect(toggle()).toHaveAttribute("aria-expanded", "false");
+      const rail = document.getElementById(toggle().getAttribute("aria-controls")!);
+      expect(rail?.tagName).toBe("ASIDE");
+      expect(rail).toHaveAttribute("data-state", "closed");
+      expect(screen.queryByTestId("work-rail-count")).toBeNull();
+    });
+
+    it("opens by itself when the first item shows up, and stays open after", () => {
+      const { rerender } = wrap();
+      expect(screen.queryByTestId("work-panel")).toBeNull();
+      m.workCount = 1;
+      rerender(
+        <QueryClientProvider client={new QueryClient()}>
+          <CopilotPage />
+        </QueryClientProvider>,
+      );
+      expect(screen.getByTestId("work-panel").closest("aside")).not.toBeNull();
+      expect(toggle()).toHaveAttribute("aria-expanded", "true");
+      m.workCount = 0;
+      rerender(
+        <QueryClientProvider client={new QueryClient()}>
+          <CopilotPage />
+        </QueryClientProvider>,
+      );
+      expect(screen.getByTestId("work-panel")).toBeInTheDocument();
+    });
+
+    it("remembers a member's own collapse, and new work does not reopen it", () => {
+      m.workCount = 2;
+      const first = wrap();
+      fireEvent.click(toggle());
+      expect(screen.queryByTestId("work-panel")).toBeNull();
+      expect(toggle()).toHaveAttribute("aria-expanded", "false");
+      expect(screen.getByTestId("work-rail-count")).toHaveTextContent("2");
+      expect(toggle()).toHaveAccessibleName(/2/);
+      expect(window.localStorage.getItem("oc8-copilot-work-rail-me")).toBe("closed");
+      first.unmount();
+
+      // Next visit, more work: still folded, count on the toggle.
+      m.workCount = 5;
+      wrap();
+      expect(screen.queryByTestId("work-panel")).toBeNull();
+      expect(screen.getByTestId("work-rail-count")).toHaveTextContent("5");
+      fireEvent.click(toggle());
+      expect(screen.getByTestId("work-panel")).toBeInTheDocument();
+      expect(window.localStorage.getItem("oc8-copilot-work-rail-me")).toBe("open");
+    });
+
+    it("keeps working when storage throws", () => {
+      const spy = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+        throw new Error("blocked");
+      });
+      const set = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+        throw new Error("blocked");
+      });
+      try {
+        m.workCount = 1;
+        wrap();
+        expect(screen.getByTestId("work-panel")).toBeInTheDocument();
+        fireEvent.click(toggle());
+        expect(screen.queryByTestId("work-panel")).toBeNull();
+      } finally {
+        spy.mockRestore();
+        set.mockRestore();
+      }
+    });
   });
 });

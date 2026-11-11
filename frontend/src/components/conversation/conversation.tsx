@@ -1074,7 +1074,7 @@ function ConversationBody(props: ConversationProps) {
       >
         <div
           ref={contentRef}
-          className={cn("mx-auto w-full max-w-[760px]", full ? "space-y-6" : "space-y-4")}
+          className={cn("mx-auto w-full max-w-[47.5rem]", full ? "space-y-6" : "space-y-4")}
         >
           {hasOlder && onLoadOlder && !conv.isLoading && (
             <div className="flex justify-center">
@@ -1163,7 +1163,7 @@ function ConversationBody(props: ConversationProps) {
       <div
         ref={composerArea}
         className={cn(
-          "relative mx-auto w-full max-w-[760px]",
+          "relative mx-auto w-full max-w-[47.5rem]",
           full ? "px-4 pb-4 md:px-6" : "px-3 pb-3",
         )}
       >

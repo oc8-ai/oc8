@@ -859,35 +859,52 @@ export function AppShell() {
       <aside
         className={cn(
           "hidden md:flex shrink-0 flex-col border-r border-border bg-sidebar transition-[width] duration-200",
-          collapsed ? "md:w-[68px]" : "md:w-64",
+          collapsed ? "md:w-[4.25rem]" : "md:w-64",
         )}
       >
         <div
           className={cn(
-            "flex flex-col items-start gap-1.5 px-6 py-6",
-            collapsed && "items-center px-0",
+            "flex items-center justify-between gap-2 py-5 pr-3 pl-6",
+            collapsed && "justify-center px-0",
           )}
         >
           {/* The lockup SVG already draws "oc8" as artwork (brand sheet:
               "Wordmark -- drawn artwork, not type -- never reset in a
               font") -- a second, separately-typeset "oc8" beside it was a
               duplicate wordmark, not a second brand element. Collapsed to the
-              rail, there is no room for the wordmark OR the caption -- rather
-              than inventing a second, square mark, this header simply goes
-              quiet until the sidebar is wide again. */}
+              rail, there is no room for the wordmark -- rather than inventing
+              a second, square mark, the toggle takes its place, so the way
+              back out sits where the collapse happened. */}
           {!collapsed && (
-            <>
-              <img
-                src={theme === "dark" ? "/oc8_Logo_white.svg" : "/oc8_Logo.svg"}
-                alt="oc8"
-                className="h-9 w-auto shrink-0 select-none"
-                draggable={false}
-              />
-              <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
-                <span>{t("Control Panel", "Leitstand")}</span>
-              </div>
-            </>
+            <img
+              src={theme === "dark" ? "/oc8_Logo_white.svg" : "/oc8_Logo.svg"}
+              alt="oc8"
+              className="h-9 w-auto shrink-0 select-none"
+              draggable={false}
+            />
           )}
+          <button
+            type="button"
+            onClick={toggleSidebar}
+            aria-expanded={!collapsed}
+            aria-label={
+              collapsed
+                ? t("Expand sidebar", "Seitenleiste ausklappen")
+                : t("Collapse sidebar", "Seitenleiste einklappen")
+            }
+            title={
+              collapsed
+                ? t("Expand sidebar", "Seitenleiste ausklappen")
+                : t("Collapse sidebar", "Seitenleiste einklappen")
+            }
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:outline-none"
+          >
+            {collapsed ? (
+              <PanelLeftOpen className="h-4 w-4" />
+            ) : (
+              <PanelLeftClose className="h-4 w-4" />
+            )}
+          </button>
         </div>
         <EditionSidebarHeader collapsed={collapsed} />
 
@@ -943,34 +960,6 @@ export function AppShell() {
               {APP_VERSION && <span className="font-mono text-xs">v{APP_VERSION}</span>}
             </div>
           )}
-        </div>
-
-        <div className="border-t border-sidebar-border p-2">
-          <button
-            type="button"
-            onClick={toggleSidebar}
-            aria-label={
-              collapsed
-                ? t("Expand sidebar", "Seitenleiste ausklappen")
-                : t("Collapse sidebar", "Seitenleiste einklappen")
-            }
-            title={
-              collapsed
-                ? t("Expand sidebar", "Seitenleiste ausklappen")
-                : t("Collapse sidebar", "Seitenleiste einklappen")
-            }
-            className={cn(
-              "flex w-full items-center gap-2 rounded-md py-2 text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground",
-              collapsed ? "justify-center px-2" : "px-3",
-            )}
-          >
-            {collapsed ? (
-              <PanelLeftOpen className="h-4 w-4 shrink-0" />
-            ) : (
-              <PanelLeftClose className="h-4 w-4 shrink-0" />
-            )}
-            {!collapsed && <span>{t("Collapse", "Einklappen")}</span>}
-          </button>
         </div>
       </aside>
 

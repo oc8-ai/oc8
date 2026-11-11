@@ -152,6 +152,11 @@
   --font-serif: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
+  /* Density floor: on desktop the root font is 90 % (see the `html` rule in
+     the base layer), which would take `text-xs` to 10.8px. Keep the smallest
+     scale step readable instead; it still scales up with the user's own
+     browser font size because the rem side of max() wins there. */
+  --text-xs: max(0.75rem, 11.5px);
 }
 
 :root {
@@ -248,6 +253,24 @@
 @layer base {
   * {
     border-color: var(--color-border);
+  }
+
+  /* App density. Every rem-based size (Tailwind spacing, type scale, radii)
+     follows the root font size, so 90 % here reads like the browser at 90 %
+     zoom -- more on screen, still comfortable -- without CSS zoom/transform,
+     which would break pointer maths, sticky/fixed positioning and popper
+     placement. A percentage, not a px value, so the user's own browser font
+     size and zoom still apply on top. Only on wide screens with a precise
+     pointer: phones and tablets keep 100 % so touch targets stay >= 40px.
+     (Media queries resolve rem/em against the browser default, not this.) */
+  html {
+    font-size: 100%;
+  }
+
+  @media (min-width: 48rem) and (pointer: fine) {
+    html {
+      font-size: 90%;
+    }
   }
 
   body {
