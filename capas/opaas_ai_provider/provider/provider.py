@@ -29,4 +29,7 @@ def register(contrib: Any) -> None:
         # Available once a tenant has stored its key (BYOK).
         available=lambda _settings, key: bool(key),
         aliases=("opaas", "odoo-gpt"),
+        # oc8 AI's models reason and take `reasoning_effort` through the
+        # OpenAI-compatible adapter, so the chat's effort control applies.
+        supports_reasoning=True,
     )
