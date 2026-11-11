@@ -1701,7 +1701,12 @@ async def run_agent(
                         provider = model_config.provider
                         model = model_config.model
                         model_locality = model_config.locality
-                        resolved_params = resolve_params(model_config, agent=agent)
+                        # The pinned definition, as on the first resolution:
+                        # it carries the chat's reasoning level and the agent's
+                        # pinned sampling, which the live row does not.
+                        resolved_params = resolve_params(
+                            model_config, agent=agent, definition=pinned["definition"]
+                        )
                         active_route["config"] = model_config
                         active_route["provider"] = provider
                         active_route["model"] = model

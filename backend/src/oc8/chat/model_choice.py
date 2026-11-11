@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.modelrouter.levels import DEFAULT_LEVEL, default_display
+from oc8.modelrouter.levels import CHAT_LEVEL_KEY, DEFAULT_LEVEL, as_level, default_display
 from oc8.modelrouter.sampling import configured_effort
 
 _AUTO_PROVIDER = "auto"
@@ -175,3 +175,20 @@ async def audit_model_override(db: AsyncSession, *, run: m.AgentRun, agent: m.Ag
         reason="model is not a chat-enabled model; the agent's default model was used",
         originating_operator=(run.context or {}).get("originating_operator"),
     )
+
+
+def apply_effort_override(*, run: m.AgentRun | None, payload: dict[str, Any]) -> dict[str, Any]:
+    """The run's behavioural payload with the chat's reasoning level in the
+    pinned definition's `model_params`, where `resolve_params` reads it
+    (spec 2026-11-11 §7). Same seam as `apply_model_override`, so the engine,
+    the isolated control plane and the gateways all agree. Copies, never
+    mutates: the payload may be a version row's own dict."""
+    level = as_level((run.context or {}).get("effort_override")) if run is not None else None
+    if level is None:
+        return payload
+    definition = dict(payload.get("definition") or {})
+    raw = definition.get("model_params")
+    model_params = dict(raw) if isinstance(raw, dict) else {}
+    model_params[CHAT_LEVEL_KEY] = level
+    definition["model_params"] = model_params
+    return {**payload, "definition": definition}
