@@ -228,3 +228,35 @@ def test_the_step_records_it_and_the_wire_carries_it() -> None:
     plain: dict[str, Any] = {"step": 2}
     note_reasoning(plain, None)
     assert "reasoning_dropped" not in plain and "reasoningDropped" not in step_timing_dto(plain)
+
+
+async def test_the_retry_also_drops_reasoning_keys_from_extra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ "Without a level" means without the legacy extra keys too: OpenAI's
+    `reasoning_effort`, Anthropic's `thinking`/`output_config.effort` and its
+    old top-level `effort`. Unrelated keys and an output format stay."""
+    adapter = _FailsOnce(_rejection(_REFUSED))
+    extra = {
+        "reasoning_effort": "high",
+        "effort": "high",
+        "thinking": {"type": "adaptive"},
+        "output_config": {"effort": "high", "format": {"type": "json_schema"}},
+        "top_p": 0.9,
+    }
+    await _router(monkeypatch, adapter).complete(_req(ModelParams(extra=extra)))
+    assert len(adapter.requests) == 2
+    assert adapter.requests[1].params.extra == {
+        "output_config": {"format": {"type": "json_schema"}},
+        "top_p": 0.9,
+    }
+    assert adapter.requests[0].params.extra == extra, "the first request is left as it was"
+
+
+async def test_an_extra_output_config_with_only_an_effort_is_dropped_whole(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _FailsOnce(_rejection(_REFUSED))
+    extra = {"output_config": {"effort": "high"}}
+    await _router(monkeypatch, adapter).stream(_req(ModelParams(extra=extra))).__anext__()
+    assert adapter.requests[1].params.extra == {}

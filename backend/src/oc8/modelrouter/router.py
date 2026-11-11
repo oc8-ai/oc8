@@ -13,7 +13,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
@@ -49,6 +49,26 @@ def locality_for_provider(provider: str) -> str:
 #: words, like the temperature retry in adapters/anthropic.py, because no list
 #: of model names could keep up.
 _REASONING_PARAM = re.compile(r"reasoning|effort|think", re.IGNORECASE)
+
+#: `ModelParams.extra` keys that carry a reasoning setting past the level: the
+#: OpenAI-shaped `reasoning_effort`, and Anthropic's `thinking` and its old
+#: top-level `effort`. Anthropic's `output_config.effort` is handled apart, since
+#: the rest of an `output_config` (a response format) must survive.
+_REASONING_EXTRA_KEYS = frozenset({"reasoning_effort", "effort", "thinking"})
+
+
+def _without_reasoning_extra(extra: dict[str, Any]) -> dict[str, Any]:
+    """`extra` without any key that sets a reasoning level or thinking."""
+    plain = {k: v for k, v in extra.items() if k not in _REASONING_EXTRA_KEYS}
+    output_config = plain.get("output_config")
+    if isinstance(output_config, dict) and "effort" in output_config:
+        rest = {k: v for k, v in output_config.items() if k != "effort"}
+        if rest:
+            plain["output_config"] = rest
+        else:
+            del plain["output_config"]
+    return plain
+
 
 #: Only a malformed or unprocessable request can be a refused parameter. Auth,
 #: billing, missing-model, size and rate-limit failures are never this.
@@ -144,11 +164,7 @@ class ModelRouter:
         # availability downgrade can silently route it to ollama or the platform
         # key. Checked on the REQUESTED provider, not the resolved one.
         requested = canonical_provider(req.provider) or "ollama"
-        if (
-            self._settings.require_tenant_model_key
-            and requested != "ollama"
-            and not req.api_key
-        ):
+        if self._settings.require_tenant_model_key and requested != "ollama" and not req.api_key:
             raise TenantKeyRequired(
                 f"provider '{requested}' requires a per-tenant API key "
                 f"(credential type '{requested}_api_key'); none is configured for this tenant"
@@ -185,14 +201,11 @@ class ModelRouter:
         over = overflow_tokens(str(exc))
         if over is None:
             return None
-        trimmed = trim_for_overflow(
-            req.messages, over_by=over, headroom=req.params.max_tokens
-        )
+        trimmed = trim_for_overflow(req.messages, over_by=over, headroom=req.params.max_tokens)
         if trimmed is None:
             return None
         logger.warning(
-            "conversation was %d tokens past the context window; retrying with "
-            "%d of %d messages",
+            "conversation was %d tokens past the context window; retrying with %d of %d messages",
             over,
             len(trimmed),
             len(req.messages),
@@ -209,7 +222,9 @@ class ModelRouter:
         (spec 2026-11-11 §9). The member still gets an answer, and the step
         says it came without thinking.
         """
-        if req.params.reasoning is None and req.params.effort is None:
+        extra = req.params.extra or {}
+        plain_extra = _without_reasoning_extra(extra)
+        if req.params.reasoning is None and req.params.effort is None and plain_extra == extra:
             return None
         if not rejects_reasoning(exc):
             return None
@@ -218,7 +233,15 @@ class ModelRouter:
             req.provider,
             req.model,
         )
-        return replace(req, params=replace(req.params, reasoning=None, effort=None))
+        return replace(
+            req,
+            params=replace(
+                req.params,
+                reasoning=None,
+                effort=None,
+                extra=plain_extra if req.params.extra is not None else None,
+            ),
+        )
 
     async def complete(self, req: CompletionRequest) -> CompletionResult:
         adapter, resolved, canonical, model = self._guard_and_resolve(req)
