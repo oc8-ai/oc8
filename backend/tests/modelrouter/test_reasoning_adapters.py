@@ -3,14 +3,17 @@ and keeps today's behaviour when only a free-form effort is set."""
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 import pytest
 
+from oc8 import models as m
 from oc8.modelrouter.adapters._openai_common import build_payload
 from oc8.modelrouter.adapters.anthropic import _build_payload as anthropic_payload
 from oc8.modelrouter.adapters.chatgpt_subscription import build_responses_payload
 from oc8.modelrouter.adapters.ollama import _build_payload as ollama_payload
+from oc8.modelrouter.sampling import resolve_params
 from oc8.modelrouter.types import CompletionRequest, ModelParams, NeutralMessage
 
 
@@ -88,3 +91,46 @@ def test_ollama_think_levels_for_models_that_have_them(level: str, think: str) -
 
 def test_ollama_sends_no_think_without_a_level() -> None:
     assert "think" not in ollama_payload(_req("qwen3:8b", effort="high"), stream=False)
+
+
+# An operator's raw `extra.reasoning_effort` is the legacy way to set effort.
+def _legacy_payload(raw: str, chat: str | None = None) -> dict[str, Any]:
+    cfg = m.ModelConfig(
+        id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        provider="openai",
+        model="o3",
+        params={"extra": {"reasoning_effort": raw}},
+        supports_reasoning=True,
+    )
+    definition = {"model_params": {"reasoning": chat}} if chat else {}
+    params = resolve_params(cfg, definition=definition)
+    return build_payload(
+        CompletionRequest(
+            provider="openai",
+            model="o3",
+            messages=[NeutralMessage(role="user", content="hi")],
+            params=params,
+        )
+    )
+
+
+def test_a_custom_extra_reasoning_effort_passes_through() -> None:
+    assert _legacy_payload("minimal")["reasoning_effort"] == "minimal"
+
+
+def test_a_legacy_extra_reasoning_effort_reads_as_a_level() -> None:
+    cfg = m.ModelConfig(
+        id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        provider="openai",
+        model="o3",
+        params={"extra": {"reasoning_effort": "high"}},
+        supports_reasoning=True,
+    )
+    assert resolve_params(cfg, definition={}).reasoning == "thorough"
+    assert _legacy_payload("high")["reasoning_effort"] == "high"
+
+
+def test_a_chat_pick_beats_a_legacy_extra_reasoning_effort() -> None:
+    assert _legacy_payload("high", chat="fast")["reasoning_effort"] == "low"

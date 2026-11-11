@@ -29,6 +29,8 @@ from oc8.modelrouter.reasoning_support import (
         ("claude-3-haiku", False),
         ("gpt-4o", False),
         ("gpt-5-chat-latest", False),
+        ("gpt-5.1-chat-latest", False),
+        ("gpt-5.2-chat", False),
         ("o3d", False),
         ("gpt-oss", False),
     ],
@@ -49,6 +51,8 @@ def test_anthropic(model: str, thinks: bool) -> None:
         ("o10x", False),
         ("o3d", False),
         ("gpt-5-chat-latest", False),
+        ("gpt-5.1-chat-latest", False),
+        ("gpt-5.2-chat", False),
     ],
 )
 def test_openai(model: str, thinks: bool) -> None:

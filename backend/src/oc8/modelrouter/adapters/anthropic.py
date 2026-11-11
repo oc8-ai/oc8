@@ -11,6 +11,7 @@ from typing import Any
 
 import httpx
 
+from oc8.modelrouter.levels import EFFORT_FOR_LEVEL
 from oc8.modelrouter.http_errors import araise_for_status_with_body, raise_for_status_with_body
 from oc8.modelrouter.types import (
     CompletionChunk,
@@ -18,7 +19,6 @@ from oc8.modelrouter.types import (
     CompletionResult,
     ImagePart,
     NeutralMessage,
-    ReasoningLevel,
     TextPart,
     ToolCall,
     ToolCallDelta,
@@ -121,13 +121,6 @@ def _to_anthropic_messages(messages: list[NeutralMessage]) -> tuple[str, list[di
 
 #: Keys this adapter always sets itself. An operator-supplied `extra` key
 #: matching one of these is dropped rather than applied -- see _build_payload.
-#: The level as Anthropic's `effort` (spec 2026-11-11 §6).
-_EFFORT_FOR_LEVEL: dict[ReasoningLevel, str] = {
-    "fast": "low",
-    "balanced": "medium",
-    "thorough": "high",
-}
-
 
 _RESERVED_PAYLOAD_KEYS = frozenset(
     {"model", "max_tokens", "messages", "temperature", "effort", "system", "tools", "stream"}
@@ -144,7 +137,7 @@ def _build_payload(req: CompletionRequest, *, include_temperature: bool = True) 
     if include_temperature:
         payload["temperature"] = req.params.temperature
     if req.params.reasoning is not None:
-        payload["effort"] = _EFFORT_FOR_LEVEL[req.params.reasoning]
+        payload["effort"] = EFFORT_FOR_LEVEL[req.params.reasoning]
     elif req.params.effort:
         payload["effort"] = req.params.effort
     if system:

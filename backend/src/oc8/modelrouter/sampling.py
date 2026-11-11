@@ -166,6 +166,13 @@ def configured_effort(
     ):
         if isinstance(source, dict) and (e := _effort(source.get("effort"))) is not None:
             return e
+    # Legacy source: an operator's raw `extra.reasoning_effort` is the same
+    # setting, so it reads as the configured effort (low/medium/high map to a
+    # level; anything else, e.g. "minimal", passes through as `effort`).
+    if config is not None and isinstance(config.params, dict):
+        extra = config.params.get("extra")
+        if isinstance(extra, dict):
+            return _effort(extra.get("reasoning_effort"))
     return None
 
 

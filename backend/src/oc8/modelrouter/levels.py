@@ -29,6 +29,15 @@ _LEGACY: Final[dict[str, ReasoningLevel]] = {
 }
 
 
+#: The provider-side effort name each level is sent as (spec §6), shared by
+#: every built-in adapter.
+EFFORT_FOR_LEVEL: Final[dict[ReasoningLevel, str]] = {
+    "fast": "low",
+    "balanced": "medium",
+    "thorough": "high",
+}
+
+
 def as_level(raw: object) -> ReasoningLevel | None:
     """`raw` if it is exactly one of the three levels, else None. For values a
     member picked (a chat session, a request body), so nothing is folded."""
