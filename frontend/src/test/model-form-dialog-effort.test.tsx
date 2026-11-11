@@ -7,6 +7,7 @@ const modelsMock = vi.fn();
 const providersMock = vi.fn();
 const credentialsMock = vi.fn();
 const modelPricesMock = vi.fn();
+const reasoningSupportMock = vi.fn();
 const createModelMutateAsync = vi.fn();
 const updateModelMutateAsync = vi.fn();
 
@@ -17,6 +18,7 @@ vi.mock("@/lib/hooks", async (importOriginal) => {
     useModels: () => modelsMock(),
     useModelProviders: () => providersMock(),
     useCredentials: () => credentialsMock(),
+    useReasoningSupport: (provider: string, model: string) => reasoningSupportMock(provider, model),
     useCreateModel: () => ({ mutateAsync: createModelMutateAsync, isPending: false }),
     useUpdateModel: () => ({ mutateAsync: updateModelMutateAsync, isPending: false }),
   };
@@ -75,83 +77,109 @@ function renderPage() {
   );
 }
 
-describe("Model form dialog's effort field", () => {
+function openCreate() {
+  modelsMock.mockReturnValue({ data: [] });
+  renderPage();
+  fireEvent.click(screen.getByRole("button", { name: /new model/i }));
+  fireEvent.change(screen.getByPlaceholderText(/e\.g\. sales gpt/i), {
+    target: { value: "Claude" },
+  });
+  fireEvent.change(screen.getByPlaceholderText(/llama3\.1:8b/i), {
+    target: { value: "claude-sonnet-5" },
+  });
+}
+
+function submitCreate() {
+  const dialog = screen
+    .getByText(/registers a model config/i)
+    .closest(".max-w-lg") as HTMLElement | null;
+  if (!dialog) throw new Error("dialog not found");
+  fireEvent.click(within(dialog).getByRole("button", { name: /^add model$/i }));
+}
+
+function effortSelect() {
+  return screen.getByRole("combobox", { name: "Effort" }) as HTMLSelectElement;
+}
+
+describe("Model form dialog: effort and Can think", () => {
   beforeEach(() => {
     credentialsMock.mockReset().mockReturnValue({ data: [] });
     providersMock.mockReset().mockReturnValue({ data: PROVIDERS });
     modelPricesMock.mockReset().mockReturnValue({ data: [] });
+    reasoningSupportMock.mockReset().mockReturnValue({ data: undefined });
     createModelMutateAsync.mockReset().mockResolvedValue({});
     updateModelMutateAsync.mockReset().mockResolvedValue({});
   });
 
-  it("is present in the create-model dialog, unlike max output tokens", () => {
-    modelsMock.mockReturnValue({ data: [] });
-    renderPage();
-
-    fireEvent.click(screen.getByRole("button", { name: /new model/i }));
-    expect(screen.getByPlaceholderText(/e\.g\. high/i)).toBeTruthy();
+  it("offers the three levels and a custom value", () => {
+    openCreate();
+    const options = within(effortSelect())
+      .getAllByRole("option")
+      .map((o) => o.textContent);
+    expect(options).toEqual(["Not set", "Fast", "Balanced", "Thorough", "Custom value"]);
   });
 
-  it("sends the typed value as effort on create", async () => {
-    modelsMock.mockReturnValue({ data: [] });
-    renderPage();
-
-    fireEvent.click(screen.getByRole("button", { name: /new model/i }));
-    fireEvent.change(screen.getByPlaceholderText(/e\.g\. sales gpt/i), {
-      target: { value: "Claude" },
-    });
-    fireEvent.change(screen.getByPlaceholderText(/llama3\.1:8b/i), {
-      target: { value: "claude-sonnet-5" },
-    });
-    fireEvent.change(screen.getByPlaceholderText(/e\.g\. high/i), {
-      target: { value: "high" },
-    });
-    const dialog = screen
-      .getByText(/registers a model config/i)
-      .closest(".max-w-lg") as HTMLElement | null;
-    if (!dialog) throw new Error("dialog not found");
-    fireEvent.click(within(dialog).getByRole("button", { name: /^add model$/i }));
-
+  it("writes a level as low/medium/high on create", async () => {
+    openCreate();
+    fireEvent.change(effortSelect(), { target: { value: "high" } });
+    submitCreate();
     await waitFor(() => expect(createModelMutateAsync).toHaveBeenCalled());
-    const call = createModelMutateAsync.mock.calls[0][0] as ModelWriteBody;
-    expect(call.effort).toBe("high");
+    expect((createModelMutateAsync.mock.calls[0][0] as ModelWriteBody).effort).toBe("high");
   });
 
-  it("prefills from the model's existing effort on edit", () => {
-    modelsMock.mockReturnValue({ data: [model({ id: "m1", effort: "medium" })] });
-    renderPage();
-
-    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
-    const field = screen.getByPlaceholderText(/e\.g\. high/i) as HTMLInputElement;
-    expect(field.value).toBe("medium");
+  it("keeps a custom value verbatim", async () => {
+    openCreate();
+    fireEvent.change(effortSelect(), { target: { value: "custom" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Custom effort value" }), {
+      target: { value: "max" },
+    });
+    submitCreate();
+    await waitFor(() => expect(createModelMutateAsync).toHaveBeenCalled());
+    expect((createModelMutateAsync.mock.calls[0][0] as ModelWriteBody).effort).toBe("max");
   });
 
-  it("sends the typed value as effort on save", async () => {
-    modelsMock.mockReturnValue({ data: [model({ id: "m1", effort: null })] });
-    renderPage();
+  it("prefills Can think from the suggestion and leaves the decision to the server", async () => {
+    reasoningSupportMock.mockReturnValue({ data: { supportsReasoning: true } });
+    openCreate();
+    expect(reasoningSupportMock).toHaveBeenLastCalledWith("anthropic", "claude-sonnet-5");
+    expect(screen.getByRole("checkbox", { name: /can think/i })).toBeChecked();
+    submitCreate();
+    await waitFor(() => expect(createModelMutateAsync).toHaveBeenCalled());
+    expect(createModelMutateAsync.mock.calls[0][0]).not.toHaveProperty("supportsReasoning");
+  });
 
+  it("sends Can think once the admin changes it", async () => {
+    reasoningSupportMock.mockReturnValue({ data: { supportsReasoning: true } });
+    openCreate();
+    fireEvent.click(screen.getByRole("checkbox", { name: /can think/i }));
+    submitCreate();
+    await waitFor(() => expect(createModelMutateAsync).toHaveBeenCalled());
+    expect((createModelMutateAsync.mock.calls[0][0] as ModelWriteBody).supportsReasoning).toBe(
+      false,
+    );
+  });
+
+  it("prefills a level, a custom value and Can think on edit", () => {
+    modelsMock.mockReturnValue({
+      data: [model({ id: "m1", effort: "medium-high", supportsReasoning: true })],
+    });
+    renderPage();
     fireEvent.click(screen.getByRole("button", { name: /edit/i }));
-    const field = screen.getByPlaceholderText(/e\.g\. high/i) as HTMLInputElement;
-    fireEvent.change(field, { target: { value: "low" } });
+    expect(effortSelect().value).toBe("custom");
+    expect(screen.getByRole("textbox", { name: "Custom effort value" })).toHaveValue("medium-high");
+    expect(screen.getByRole("checkbox", { name: /can think/i })).toBeChecked();
+  });
+
+  it("saves a level and an emptied field on edit", async () => {
+    modelsMock.mockReturnValue({ data: [model({ id: "m1", effort: "MEDIUM" })] });
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+    expect(effortSelect().value).toBe("medium");
+    fireEvent.change(effortSelect(), { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
-
-    await waitFor(() => expect(updateModelMutateAsync).toHaveBeenCalled());
-    const call = updateModelMutateAsync.mock.calls[0][0] as ModelWriteBody & { id: string };
-    expect(call.id).toBe("m1");
-    expect(call.effort).toBe("low");
-  });
-
-  it("sends an empty string (clear) when the field is left blank", async () => {
-    modelsMock.mockReturnValue({ data: [model({ id: "m1", effort: "high" })] });
-    renderPage();
-
-    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
-    const field = screen.getByPlaceholderText(/e\.g\. high/i) as HTMLInputElement;
-    fireEvent.change(field, { target: { value: "" } });
-    fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
-
     await waitFor(() => expect(updateModelMutateAsync).toHaveBeenCalled());
     const call = updateModelMutateAsync.mock.calls[0][0] as ModelWriteBody & { id: string };
     expect(call.effort).toBe("");
+    expect(call.supportsReasoning).toBe(false);
   });
 });

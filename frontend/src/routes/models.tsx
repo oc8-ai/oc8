@@ -21,6 +21,7 @@ import { Panel } from "@/components/app-shell";
 import { Switch } from "@/components/ui/switch";
 import { ChatGptSubscriptionPicker } from "@/components/chatgpt-subscription-picker";
 import { CredentialPicker } from "@/components/credential-picker";
+import { EffortField } from "@/components/effort-field";
 import {
   extraToPairs,
   pairsToExtra,
@@ -41,6 +42,7 @@ import {
   useDiscoverModels,
   useModelProviders,
   useModels,
+  useReasoningSupport,
   useTestModel,
   useUpdateModel,
   type ModelDTO,
@@ -1008,6 +1010,11 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
     editing?.maxTokens != null ? String(editing.maxTokens) : "",
   );
   const [effort, setEffort] = useState(editing?.effort ?? "");
+  // null on create until the admin touches it: the provider's suggestion is
+  // shown, and the server applies the same rule when nothing is sent.
+  const [canThink, setCanThink] = useState<boolean | null>(
+    editing ? (editing.supportsReasoning ?? false) : null,
+  );
   const [rawParams, setRawParams] = useState<RawParamPair[]>(() => extraToPairs(editing?.extra));
   // Create-mode only: discovery + multi-select, so adding several of a
   // provider's models doesn't mean typing each tag by hand. Manual entry
@@ -1027,6 +1034,11 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
 
   const effectiveProvider = provider || providers[0]?.canonical || "";
   const isAuto = isAutoProvider(effectiveProvider);
+  const suggestion = useReasoningSupport(
+    editing ? "" : effectiveProvider,
+    editing ? "" : modelTag.trim(),
+  );
+  const canThinkShown = canThink ?? suggestion.data?.supportsReasoning ?? false;
   const isPending = createModel.isPending || updateModel.isPending;
   const showPicker =
     !editing && !isAuto && discoveredModels !== null && discoveredModels.length > 0 && !manualMode;
@@ -1172,6 +1184,7 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
       displayName: displayName.trim() || undefined,
       usedByCopilot,
       supportsVision,
+      ...(canThink !== null ? { supportsReasoning: canThink } : {}),
       ...(editing ? { maxTokens: parsedMaxTokens ?? 0 } : {}),
       effort: effort.trim(),
       extra: pairsToExtra(rawParams) ?? {},
@@ -1489,6 +1502,24 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
                     )}
                   </label>
 
+                  <label className="flex items-start gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      className="mt-1"
+                      checked={canThinkShown}
+                      onChange={(e) => setCanThink(e.target.checked)}
+                    />
+                    <span>
+                      {t("Can think", "Kann nachdenken")}
+                      <span className="block text-[11px] text-muted-foreground">
+                        {t(
+                          "Shows the reasoning-level control in chats on this model and sends the chosen level to the provider.",
+                          "Zeigt im Chat auf diesem Modell die Denkstufe an und schickt die gewählte Stufe an den Anbieter.",
+                        )}
+                      </span>
+                    </span>
+                  </label>
+
                   {editing && (
                     <label className="block">
                       <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
@@ -1511,24 +1542,23 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
                     </label>
                   )}
 
-                  <label className="block">
+                  <div className="block">
                     <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
                       {t("Effort (optional)", "Effort (optional)")}
                     </span>
-                    <input
-                      type="text"
-                      placeholder="e.g. high"
+                    <EffortField
+                      key={editing?.id ?? "new"}
                       value={effort}
-                      onChange={(e) => setEffort(e.target.value)}
-                      className="w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
+                      onChange={setEffort}
+                      emptyLabel={t("Not set", "Nicht gesetzt")}
                     />
                     <p className="mt-1 text-[11px] text-muted-foreground">
                       {t(
-                        "Reasoning effort forwarded as-is to providers that support it (currently Anthropic). Leave blank to omit. Not validated here — the provider decides which values it accepts.",
-                        "Reasoning-Aufwand, unverändert an Anbieter weitergereicht, die dies unterstützen (aktuell Anthropic). Leer lassen, um es wegzulassen. Wird hier nicht validiert — der Anbieter entscheidet, welche Werte er akzeptiert.",
+                        "How hard this model thinks when neither the chat nor the agent sets a level. A custom value is forwarded to the provider as typed.",
+                        "Wie gründlich dieses Modell nachdenkt, wenn weder der Chat noch der Agent eine Stufe setzt. Ein eigener Wert geht unverändert an den Anbieter.",
                       )}
                     </p>
-                  </label>
+                  </div>
 
                   {supportsRawParams(effectiveProvider) && (
                     <RawParamsEditor pairs={rawParams} onChange={setRawParams} />
