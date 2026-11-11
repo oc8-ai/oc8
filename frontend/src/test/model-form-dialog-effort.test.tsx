@@ -182,4 +182,67 @@ describe("Model form dialog: effort and Can think", () => {
     expect(call.effort).toBe("");
     expect(call.supportsReasoning).toBe(false);
   });
+
+  it("keeps a legacy extra.reasoning_effort untouched and shows it", async () => {
+    modelsMock.mockReturnValue({
+      data: [model({ id: "m1", extra: { reasoning_effort: "high", foo: "bar" } })],
+    });
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+    expect(effortSelect().value).toBe("high");
+    expect(screen.getByText("from extra parameters")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+    await waitFor(() => expect(updateModelMutateAsync).toHaveBeenCalled());
+    const call = updateModelMutateAsync.mock.calls[0][0] as ModelWriteBody;
+    expect(call).not.toHaveProperty("effort");
+    expect(call.extra).toEqual({ reasoning_effort: "high", foo: "bar" });
+  });
+
+  it("writes effort once the admin changes a legacy value", async () => {
+    modelsMock.mockReturnValue({
+      data: [model({ id: "m1", extra: { reasoning_effort: "high" } })],
+    });
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+    fireEvent.change(effortSelect(), { target: { value: "low" } });
+    fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+    await waitFor(() => expect(updateModelMutateAsync).toHaveBeenCalled());
+    expect((updateModelMutateAsync.mock.calls[0][0] as ModelWriteBody).effort).toBe("low");
+  });
+
+  it("keeps a custom effort verbatim on an untouched edit save", async () => {
+    modelsMock.mockReturnValue({ data: [model({ id: "m1", effort: "max" })] });
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+    fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+    await waitFor(() => expect(updateModelMutateAsync).toHaveBeenCalled());
+    expect((updateModelMutateAsync.mock.calls[0][0] as ModelWriteBody).effort).toBe("max");
+  });
+
+  it("sends Can think true on edit when it is stored as true", async () => {
+    modelsMock.mockReturnValue({ data: [model({ id: "m1", supportsReasoning: true })] });
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+    fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+    await waitFor(() => expect(updateModelMutateAsync).toHaveBeenCalled());
+    expect((updateModelMutateAsync.mock.calls[0][0] as ModelWriteBody).supportsReasoning).toBe(
+      true,
+    );
+  });
+
+  it("keeps the admin's Can think choice when the model changes on create", async () => {
+    reasoningSupportMock.mockReturnValue({ data: { supportsReasoning: true } });
+    openCreate();
+    fireEvent.click(screen.getByRole("checkbox", { name: /can think/i }));
+    reasoningSupportMock.mockReturnValue({ data: { supportsReasoning: true } });
+    fireEvent.change(screen.getByPlaceholderText(/llama3\.1:8b/i), {
+      target: { value: "claude-opus-5" },
+    });
+    expect(screen.getByRole("checkbox", { name: /can think/i })).not.toBeChecked();
+    submitCreate();
+    await waitFor(() => expect(createModelMutateAsync).toHaveBeenCalled());
+    expect((createModelMutateAsync.mock.calls[0][0] as ModelWriteBody).supportsReasoning).toBe(
+      false,
+    );
+  });
 });

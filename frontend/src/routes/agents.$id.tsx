@@ -1185,7 +1185,11 @@ export function AssignedModelPanel({
   const assigned = models.find((model) => model.id === agent.modelConfigId);
   const assignedIsAuto = !!assigned && isAutoProvider(assigned.provider);
   // Only a model that can think receives a level or an effort (spec §5).
-  const showEffort = !!assigned && !assignedIsAuto && assigned.supportsReasoning === true;
+  // An older backend does not send the flag: keep the old rule there.
+  const showEffort =
+    !!assigned &&
+    !assignedIsAuto &&
+    (assigned.supportsReasoning ?? assigned.provider === "anthropic");
   const showRawParams = !!assigned && supportsRawParams(assigned.provider);
 
   const [temperature, setTemperature] = useState(
@@ -1372,10 +1376,14 @@ export function AssignedModelPanel({
             </label>
             {showEffort && (
               <div className="col-span-2 block">
-                <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
+                <label
+                  htmlFor="agent-effort"
+                  className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground"
+                >
                   {t("Effort", "Effort")}
-                </span>
+                </label>
                 <EffortField
+                  id="agent-effort"
                   key={agent.id}
                   value={effort}
                   onChange={setEffort}

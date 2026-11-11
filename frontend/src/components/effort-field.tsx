@@ -29,12 +29,18 @@ export function EffortField({
   onChange,
   emptyLabel,
   disabled = false,
+  id,
+  hint,
 }: {
   value: string;
   onChange: (value: string) => void;
   /** What "nothing set" means here: "Not set" on a model, "Inherited" on an agent. */
   emptyLabel: string;
   disabled?: boolean;
+  /** Id of the select, so a visible caption can point at it. */
+  id?: string;
+  /** A small note under the select, e.g. where the shown value comes from. */
+  hint?: string;
 }) {
   const t = useT();
   // Picking "Custom value" keeps the text box open even while it is empty
@@ -44,6 +50,7 @@ export function EffortField({
   return (
     <div className="space-y-2">
       <select
+        id={id}
         aria-label={t("Effort", "Effort")}
         value={choice}
         disabled={disabled}
@@ -70,13 +77,14 @@ export function EffortField({
         <input
           type="text"
           aria-label={t("Custom effort value", "Eigener Effort-Wert")}
-          placeholder="e.g. max"
+          placeholder={t("e.g. max", "z. B. max")}
           value={value}
           disabled={disabled}
           onChange={(e) => onChange(e.target.value)}
           className={FIELD}
         />
       )}
+      {hint && <p className="text-[11px] text-muted-foreground">{hint}</p>}
     </div>
   );
 }

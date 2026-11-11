@@ -1010,6 +1010,14 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
     editing?.maxTokens != null ? String(editing.maxTokens) : "",
   );
   const [effort, setEffort] = useState(editing?.effort ?? "");
+  // An older model carries its effort in the free-form extra parameters
+  // (`reasoning_effort`). It is shown as the current choice, but only a
+  // change by the admin writes `effort`; an untouched save leaves both alone.
+  const legacyEffort =
+    editing && !editing.effort && typeof editing.extra?.reasoning_effort === "string"
+      ? editing.extra.reasoning_effort
+      : "";
+  const [effortTouched, setEffortTouched] = useState(false);
   // null on create until the admin touches it: the provider's suggestion is
   // shown, and the server applies the same rule when nothing is sent.
   const [canThink, setCanThink] = useState<boolean | null>(
@@ -1186,7 +1194,7 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
       supportsVision,
       ...(canThink !== null ? { supportsReasoning: canThink } : {}),
       ...(editing ? { maxTokens: parsedMaxTokens ?? 0 } : {}),
-      effort: effort.trim(),
+      ...(legacyEffort && !effortTouched ? {} : { effort: effort.trim() }),
       extra: pairsToExtra(rawParams) ?? {},
     };
     try {
@@ -1543,13 +1551,25 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
                   )}
 
                   <div className="block">
-                    <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
+                    <label
+                      htmlFor="model-effort"
+                      className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground"
+                    >
                       {t("Effort (optional)", "Effort (optional)")}
-                    </span>
+                    </label>
                     <EffortField
                       key={editing?.id ?? "new"}
-                      value={effort}
-                      onChange={setEffort}
+                      id="model-effort"
+                      value={effortTouched ? effort : effort || legacyEffort}
+                      onChange={(v) => {
+                        setEffortTouched(true);
+                        setEffort(v);
+                      }}
+                      hint={
+                        legacyEffort && !effortTouched
+                          ? t("from extra parameters", "aus Extra-Parametern")
+                          : undefined
+                      }
                       emptyLabel={t("Not set", "Nicht gesetzt")}
                     />
                     <p className="mt-1 text-[11px] text-muted-foreground">
