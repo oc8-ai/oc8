@@ -51,10 +51,11 @@ def locality_for_provider(provider: str) -> str:
 _REASONING_PARAM = re.compile(r"reasoning|effort|think", re.IGNORECASE)
 
 #: `ModelParams.extra` keys that carry a reasoning setting past the level: the
-#: OpenAI-shaped `reasoning_effort`, and Anthropic's `thinking` and its old
-#: top-level `effort`. Anthropic's `output_config.effort` is handled apart, since
+#: OpenAI-shaped `reasoning_effort`, the `reasoning` object OpenRouter and
+#: other OpenAI-compatible gateways take, and Anthropic's `thinking` and its
+#: old top-level `effort`. Anthropic's `output_config.effort` is handled apart, since
 #: the rest of an `output_config` (a response format) must survive.
-_REASONING_EXTRA_KEYS = frozenset({"reasoning_effort", "effort", "thinking"})
+_REASONING_EXTRA_KEYS = frozenset({"reasoning_effort", "reasoning", "effort", "thinking"})
 
 
 def _without_reasoning_extra(extra: dict[str, Any]) -> dict[str, Any]:

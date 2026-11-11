@@ -260,3 +260,15 @@ async def test_an_extra_output_config_with_only_an_effort_is_dropped_whole(
     extra = {"output_config": {"effort": "high"}}
     await _router(monkeypatch, adapter).stream(_req(ModelParams(extra=extra))).__anext__()
     assert adapter.requests[1].params.extra == {}
+
+
+async def test_the_retry_drops_an_openrouter_reasoning_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OpenRouter and other OpenAI-compatible gateways take a `reasoning`
+    object ({"effort": ..., "max_tokens": ...}); "without a level" drops it."""
+    adapter = _FailsOnce(_rejection(_REFUSED))
+    extra = {"reasoning": {"effort": "high"}, "top_p": 0.9}
+    await _router(monkeypatch, adapter).complete(_req(ModelParams(extra=extra)))
+    assert len(adapter.requests) == 2
+    assert adapter.requests[1].params.extra == {"top_p": 0.9}
