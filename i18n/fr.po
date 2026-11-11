@@ -86,6 +86,10 @@ msgid "The reasoning level couldn't be changed. Try again."
 msgstr "Le niveau de réflexion n'a pas pu être modifié. Réessayez."
 
 #, fuzzy
+msgid "The reasoning level you picked couldn't be set. Your message wasn't sent – send it again or pick another level."
+msgstr "Le niveau de réflexion choisi n'a pas pu être appliqué. Votre message n'a pas été envoyé – renvoyez-le ou choisissez un autre niveau."
+
+#, fuzzy
 msgid "The usual choice"
 msgstr "Le choix habituel"
 

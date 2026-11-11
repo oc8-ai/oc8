@@ -729,16 +729,24 @@ function ConversationBody(props: ConversationProps) {
     );
   }
 
-  /** Write the level held for a new chat, before its first message. */
+  /** Write the level held for a new chat, before its first message. A write
+   *  that fails keeps the pick held, so "Send again" writes it once more. */
   async function applyHeldEffort(sessionId: string) {
     const held = heldEffortRef.current;
     if (held === undefined) return;
     heldEffortRef.current = undefined;
     setHeldEffort(undefined);
-    const session = await api.put<ChatSessionDetailDTO>(
-      `/chat/sessions/${encodeURIComponent(sessionId)}/effort`,
-      { effort: held },
-    );
+    let session: ChatSessionDetailDTO;
+    try {
+      session = await api.put<ChatSessionDetailDTO>(
+        `/chat/sessions/${encodeURIComponent(sessionId)}/effort`,
+        { effort: held },
+      );
+    } catch (error) {
+      heldEffortRef.current = held;
+      setHeldEffort(held);
+      throw error;
+    }
     qc.setQueryData<ChatSessionDetailDTO>(conversationKeys.session(sessionId), (prev) =>
       prev ? { ...prev, effort: session.effort ?? null } : prev,
     );
@@ -787,6 +795,7 @@ function ConversationBody(props: ConversationProps) {
       contextRefs: submit.contextRefs.map(({ kind, id }) => ({ kind, id })),
     };
     let modelRefused = false;
+    let effortRefused = false;
     try {
       const sessionId = await ensureSession();
       if (heldMode && !props.sessionId && submit.text.startsWith("/")) {
@@ -799,7 +808,10 @@ function ConversationBody(props: ConversationProps) {
         modelRefused = true;
         throw error;
       });
-      await applyHeldEffort(sessionId);
+      await applyHeldEffort(sessionId).catch((error: unknown) => {
+        effortRefused = true;
+        throw error;
+      });
       let message: ChatMessageDTO;
       if (sessionId === props.sessionId) {
         message = await sendMessage.mutateAsync(body);
@@ -838,6 +850,16 @@ function ConversationBody(props: ConversationProps) {
           text: t(
             "The model you picked isn't available for this chat. Your message wasn't sent – pick another model or send with Auto.",
             "Das gewählte Modell ist für diesen Chat nicht freigegeben. Deine Nachricht wurde nicht gesendet – wähl ein anderes Modell oder sende mit Auto.",
+          ),
+          retry: { submit, fromComposer },
+        });
+        return;
+      }
+      if (effortRefused) {
+        setSendError({
+          text: t(
+            "The reasoning level you picked couldn't be set. Your message wasn't sent – send it again or pick another level.",
+            "Die gewählte Denkstufe konnte nicht gesetzt werden. Deine Nachricht wurde nicht gesendet – sende sie noch einmal oder wähl eine andere Stufe.",
           ),
           retry: { submit, fromComposer },
         });

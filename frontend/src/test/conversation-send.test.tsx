@@ -258,6 +258,35 @@ describe("a new chat's reasoning level", () => {
     expect(put).toHaveBeenCalledWith("/chat/sessions/new/effort", { effort: "thorough" });
   });
 
+  it("keeps the held pick and says so when writing it fails, then sends it again", async () => {
+    thinks.value = true;
+    create.mockResolvedValue({ id: "new", agentId: "a", title: "", createdAt: "" });
+    const put = vi
+      .spyOn(api, "put")
+      .mockRejectedValueOnce(new ApiError("unavailable", 503))
+      .mockResolvedValue(detail({ id: "new", effort: "thorough" }));
+    const post = vi
+      .spyOn(api, "post")
+      .mockResolvedValue(message("u1", "user", { sessionId: "new" }));
+    mount(null);
+    fireEvent.click(screen.getByRole("button", { name: /Reasoning:/ }));
+    fireEvent.click(await screen.findByRole("radio", { name: /Thorough/ }));
+
+    type("hello");
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /reasoning level you picked couldn't be set/,
+    );
+    expect(post).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox", { name: /Message/ })).toHaveValue("hello");
+    // The pick is still held and shown.
+    expect(screen.getByRole("button", { name: "Reasoning: Thorough" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Send again/ }));
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
+    expect(put).toHaveBeenCalledTimes(2);
+    expect(put).toHaveBeenLastCalledWith("/chat/sessions/new/effort", { effort: "thorough" });
+  });
+
   it("is not offered while the chat's model cannot think", () => {
     mount(null);
     expect(screen.queryByRole("button", { name: /Reasoning:/ })).toBeNull();

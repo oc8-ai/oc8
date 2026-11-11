@@ -4793,6 +4793,9 @@ msgstr ""
 msgid "The reasoning level couldn't be changed. Try again."
 msgstr ""
 
+msgid "The reasoning level you picked couldn't be set. Your message wasn't sent – send it again or pick another level."
+msgstr ""
+
 msgid "The role list could not be loaded."
 msgstr ""
 

@@ -61,6 +61,9 @@ msgstr "Diese Denkstufe ist nicht verfügbar. Wähl eine andere."
 msgid "The reasoning level couldn't be changed. Try again."
 msgstr "Die Denkstufe konnte nicht geändert werden. Versuch es noch einmal."
 
+msgid "The reasoning level you picked couldn't be set. Your message wasn't sent – send it again or pick another level."
+msgstr "Die gewählte Denkstufe konnte nicht gesetzt werden. Deine Nachricht wurde nicht gesendet – sende sie noch einmal oder wähl eine andere Stufe."
+
 msgid "The usual choice"
 msgstr "Der Normalfall"
 
