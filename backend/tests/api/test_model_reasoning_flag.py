@@ -17,8 +17,8 @@ from tests.conftest import AppSessionFactory
 pytestmark = pytest.mark.asyncio
 
 
-def _h(tenant: uuid.UUID) -> dict[str, str]:
-    token = get_identity_provider().mint(tenant_id=tenant, subject="op", role="org_admin")
+def _h(tenant: uuid.UUID, role: str = "org_admin") -> dict[str, str]:
+    token = get_identity_provider().mint(tenant_id=tenant, subject="op", role=role)
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -80,3 +80,16 @@ async def test_the_form_can_ask_for_the_suggestion(app_session: AppSessionFactor
                 headers=_h(tenant),
             )
             assert unknown.json() == {"supportsReasoning": False}
+
+
+async def test_the_suggestion_needs_model_manage(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.get(
+                "/api/v1/models/reasoning-support",
+                params={"provider": "ollama", "model": "qwen3:8b"},
+                headers=_h(tenant, role="member"),
+            )
+    assert r.status_code == 403, r.text

@@ -98,19 +98,30 @@ def test_the_backfill_marks_models_that_can_think(pg_url: str) -> None:
     assert after == {row_id: row[3] for row_id, row in zip(ids, _ROWS, strict=True)}
 
 
+def _columns_and_check(dsn: str) -> tuple[set[tuple[str, str]], bool]:
+    with psycopg.connect(dsn) as conn:
+        cols = {
+            (r[0], r[1])
+            for r in conn.execute(
+                "SELECT table_name, column_name FROM information_schema.columns "
+                "WHERE (table_name, column_name) IN "
+                "(('chat_session','effort'), ('model_config','supports_reasoning'))"
+            ).fetchall()
+        }
+        check = conn.execute(
+            "SELECT 1 FROM pg_constraint WHERE conname = 'ck_chat_session_effort'"
+        ).fetchone()
+    return cols, check is not None
+
+
 def test_the_downgrade_drops_both_columns(pg_url: str) -> None:
     dsn = pg_url.replace("+psycopg", "")
+    assert _columns_and_check(dsn) == (
+        {("chat_session", "effort"), ("model_config", "supports_reasoning")},
+        True,
+    )
     command.downgrade(_cfg(), "0115")
     try:
-        with psycopg.connect(dsn) as conn:
-            cols = {
-                (r[0], r[1])
-                for r in conn.execute(
-                    "SELECT table_name, column_name FROM information_schema.columns "
-                    "WHERE (table_name, column_name) IN "
-                    "(('chat_session','effort'), ('model_config','supports_reasoning'))"
-                ).fetchall()
-            }
-        assert cols == set()
+        assert _columns_and_check(dsn) == (set(), False)
     finally:
         command.upgrade(_cfg(), "head")

@@ -9,11 +9,15 @@ from typing import Any
 import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.auth import get_identity_provider
+from oc8.edition.runtime import RuntimeComposition
 from oc8.main import create_app
+from oc8.runtime.supervision_hook import NOOP_SUPERVISION_RUN_HOOK
 from tests.conftest import AppSessionFactory
+from tests.copilot.helpers import copilot_seat
 
 pytestmark = pytest.mark.asyncio
 
@@ -196,3 +200,108 @@ async def test_the_agents_configured_effort_is_the_default(
     # The agent's value is narrower than the model config's custom one.
     assert by_id[str(custom)]["defaultEffort"] == "fast"
     assert by_id[str(thinker)]["defaultEffort"] == "fast"
+
+
+async def test_a_legacy_extra_reasoning_effort_is_the_default(
+    app_session: AppSessionFactory,
+) -> None:
+    """An operator's raw `extra.reasoning_effort` from before the levels names
+    what applies, so "Default · ..." matches the run."""
+    tenant = uuid.uuid4()
+    agent_id, *_ = await _seed(app_session, tenant)
+    async with app_session(tenant) as db:
+        legacy = m.ModelConfig(
+            tenant_id=tenant,
+            provider="openai",
+            model="o3-mini",
+            locality="cloud",
+            supports_reasoning=True,
+            params={"extra": {"reasoning_effort": "high"}},
+        )
+        db.add(legacy)
+        await db.flush()
+        legacy_id = legacy.id
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            options = (
+                await c.get(f"/api/v1/chat/agents/{agent_id}/models", headers=_h(tenant))
+            ).json()
+    by_id = {o["id"]: o for o in options}
+    assert by_id[str(legacy_id)]["defaultEffort"] == "thorough"
+
+
+async def test_auto_on_an_auto_router_default_offers_no_level(
+    app_session: AppSessionFactory,
+) -> None:
+    """An auto-router row only routes: whether a level applies is decided per
+    routed model, so "Auto" on such an agent shows no control."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        router = m.ModelConfig(
+            tenant_id=tenant,
+            provider="auto",
+            model="router",
+            locality="cloud",
+            supports_reasoning=True,
+            params={"tiers": {}},
+        )
+        thinker = m.ModelConfig(
+            tenant_id=tenant,
+            provider="anthropic",
+            model="claude-sonnet-5",
+            locality="cloud",
+            supports_reasoning=True,
+        )
+        db.add_all([router, thinker])
+        await db.flush()
+        dept = m.Department(tenant_id=tenant, name="Ops", frame={})
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(
+            tenant_id=tenant, department_id=dept.id, name="A", model_config_id=router.id
+        )
+        db.add(agent)
+        await db.flush()
+        agent_id, thinker_id = agent.id, thinker.id
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            options = (
+                await c.get(f"/api/v1/chat/agents/{agent_id}/models", headers=_h(tenant))
+            ).json()
+    by_id = {o["id"]: o for o in options}
+    assert by_id[None]["supportsReasoning"] is False
+    assert by_id[str(thinker_id)]["supportsReasoning"] is True
+
+
+async def test_a_reader_sees_the_level_and_cannot_change_it(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        alice = await copilot_seat(db, tenant, "alice")
+        bob = await copilot_seat(db, tenant, "bob")
+        chat = await db.get(m.ChatSession, alice.session_id)
+        assert chat is not None
+        chat.effort = "thorough"
+
+    async def readers(_db: AsyncSession, session: m.ChatSession) -> list[uuid.UUID]:
+        return [bob.member_id] if session.id == alice.session_id else []
+
+    app = create_app(
+        runtime_composition=RuntimeComposition(NOOP_SUPERVISION_RUN_HOOK, extra_readers=readers)
+    )
+    sid = alice.session_id
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            detail = await c.get(f"/api/v1/chat/sessions/{sid}", headers=_h(tenant, "bob"))
+            write = await c.put(
+                f"/api/v1/chat/sessions/{sid}/effort",
+                json={"effort": "fast"},
+                headers=_h(tenant, "bob"),
+            )
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["readOnly"] is True
+    assert detail.json()["effort"] == "thorough"
+    assert write.status_code == 404, write.text
