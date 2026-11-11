@@ -175,7 +175,7 @@ export function EffortPicker({
           onBlur={(e) => {
             if (!root.current?.contains(e.relatedTarget as Node | null)) setOpen(false);
           }}
-          className="absolute bottom-full left-0 z-50 mb-1 w-72 max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-popover p-1 shadow-lg"
+          className="absolute bottom-full right-0 z-50 mb-1 w-72 max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-popover p-1 shadow-lg"
         >
           {CHOICES.map((level, i) => (
             <button
@@ -211,7 +211,10 @@ export function EffortPicker({
         </div>
       )}
       {error && !open && (
-        <p role="alert" className="absolute bottom-full left-0 mb-1 w-64 text-xs text-status-error">
+        <p
+          role="alert"
+          className="absolute bottom-full right-0 mb-1 w-64 max-w-[calc(100vw-2rem)] text-xs text-status-error"
+        >
           {error}
         </p>
       )}

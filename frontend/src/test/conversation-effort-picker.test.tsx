@@ -69,6 +69,16 @@ describe("EffortPicker", () => {
     );
   });
 
+  it("opens toward the composer's left so a phone shows it whole", () => {
+    // The control sits right of the model picker; a menu anchored on its left
+    // edge ran past a 375px screen and scrolled the page sideways.
+    render(<EffortPicker sessionId="s" modelValue={null} value={null} />);
+    fireEvent.click(screen.getByRole("button", { name: "Reasoning: Balanced" }));
+    const menu = screen.getByRole("radiogroup", { name: "Reasoning" });
+    expect(menu).toHaveClass("right-0");
+    expect(menu).not.toHaveClass("left-0");
+  });
+
   it("names a configured value that maps to no level", () => {
     state.options = options("custom");
     render(<EffortPicker sessionId="s" modelValue={null} value={null} />);
