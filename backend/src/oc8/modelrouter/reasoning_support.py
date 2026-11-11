@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 
 _ANTHROPIC = re.compile(r"^claude-(3[.-]7-sonnet|(opus|sonnet|haiku)-[4-9])")
-_OPENAI = re.compile(r"^(o[1-9]|gpt-5|gpt-oss|codex)")
+_OPENAI = re.compile(r"^(o[1-9]\d?(?:-|$|:|\.)|gpt-5(?!-chat)|gpt-oss|codex)")
 _OPEN_WEIGHTS = re.compile(r"^(qwen3|qwq|deepseek-r1|gpt-oss|magistral|phi4-reasoning|cogito)")
 #: Ollama models that take `think: "low"|"medium"|"high"` instead of a bool.
 _THINK_LEVELS = re.compile(r"^gpt-oss")

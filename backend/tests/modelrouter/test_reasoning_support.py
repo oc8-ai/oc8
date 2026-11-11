@@ -27,6 +27,10 @@ from oc8.modelrouter.reasoning_support import (
         ("claude-3-7-sonnet-20250219", True),
         ("claude-3-5-sonnet-20241022", False),
         ("claude-3-haiku", False),
+        ("gpt-4o", False),
+        ("gpt-5-chat-latest", False),
+        ("o3d", False),
+        ("gpt-oss", False),
     ],
 )
 def test_anthropic(model: str, thinks: bool) -> None:
@@ -35,8 +39,17 @@ def test_anthropic(model: str, thinks: bool) -> None:
 
 @pytest.mark.parametrize(
     ("model", "thinks"),
-    [("o3-mini", True), ("o1", True), ("gpt-5.1-codex", True), ("gpt-4o", False),
-     ("omni-moderation-latest", False)],
+    [
+        ("o3-mini", True),
+        ("o1", True),
+        ("o4-mini:high", True),
+        ("gpt-5.1-codex", True),
+        ("gpt-4o", False),
+        ("omni-moderation-latest", False),
+        ("o10x", False),
+        ("o3d", False),
+        ("gpt-5-chat-latest", False),
+    ],
 )
 def test_openai(model: str, thinks: bool) -> None:
     assert openai_thinks(model) is thinks
@@ -44,8 +57,13 @@ def test_openai(model: str, thinks: bool) -> None:
 
 @pytest.mark.parametrize(
     ("model", "thinks"),
-    [("openai/o3-mini", True), ("deepseek/deepseek-r1", True), ("magistral-medium", True),
-     ("anthropic/claude-sonnet-4.5", True), ("mistral-large-latest", False)],
+    [
+        ("openai/o3-mini", True),
+        ("deepseek/deepseek-r1", True),
+        ("magistral-medium", True),
+        ("anthropic/claude-sonnet-4.5", True),
+        ("mistral-large-latest", False),
+    ],
 )
 def test_openai_compatible_strips_the_vendor_prefix(model: str, thinks: bool) -> None:
     assert openai_compatible_thinks(model) is thinks
@@ -53,9 +71,14 @@ def test_openai_compatible_strips_the_vendor_prefix(model: str, thinks: bool) ->
 
 @pytest.mark.parametrize(
     ("model", "thinks", "levels"),
-    [("qwen3:8b", True, False), ("deepseek-r1:7b", True, False), ("gpt-oss:20b", True, True),
-     ("magistral:24b", True, False), ("llama3.1:8b", False, False),
-     ("hf.co/unsloth/Qwen3-8B-GGUF", True, False)],
+    [
+        ("qwen3:8b", True, False),
+        ("deepseek-r1:7b", True, False),
+        ("gpt-oss:20b", True, True),
+        ("magistral:24b", True, False),
+        ("llama3.1:8b", False, False),
+        ("hf.co/unsloth/Qwen3-8B-GGUF", True, False),
+    ],
 )
 def test_ollama(model: str, thinks: bool, levels: bool) -> None:
     assert ollama_thinks(model) is thinks
@@ -64,9 +87,15 @@ def test_ollama(model: str, thinks: bool, levels: bool) -> None:
 
 @pytest.mark.parametrize(
     ("provider", "model", "thinks"),
-    [("anthropic", "claude-sonnet-5", True), ("claude", "claude-sonnet-5", True),
-     ("openai_chatgpt", "anything", True), ("Ollama", "qwen3:8b", True),
-     ("ollama", "llama3.1:8b", False), ("auto", "router", False), ("nope", "x", False)],
+    [
+        ("anthropic", "claude-sonnet-5", True),
+        ("claude", "claude-sonnet-5", True),
+        ("openai_chatgpt", "anything", True),
+        ("Ollama", "qwen3:8b", True),
+        ("ollama", "llama3.1:8b", False),
+        ("auto", "router", False),
+        ("nope", "x", False),
+    ],
 )
 def test_supports_reasoning_for_reads_the_built_in_declarations(
     provider: str, model: str, thinks: bool
@@ -95,8 +124,10 @@ def test_a_capa_declares_per_model() -> None:
 def test_a_capa_that_declares_nothing_cannot_think() -> None:
     contrib = PluginContributions("demo_provider")
     contrib.add_model_provider(
-        canonical="demo-llm", locality="cloud",
-        factory=lambda _s, _b, _k: None, available=lambda _s, _k: True,
+        canonical="demo-llm",
+        locality="cloud",
+        factory=lambda _s, _b, _k: None,
+        available=lambda _s, _k: True,
     )
     assert registry.entry_supports_reasoning(contrib.providers["demo-llm"], "x") is False
 

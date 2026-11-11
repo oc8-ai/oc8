@@ -181,7 +181,7 @@ def entry_supports_reasoning(entry: ProviderEntry, model: str) -> bool:
 def supports_reasoning_for(provider: str, model: str) -> bool:
     """Process-wide: built-ins plus every LOADED plugin, not tenant-scoped.
     Only for callers with no tenant in hand (migration 0116's backfill, the
-    seed). A request path uses `default_supports_reasoning` instead."""
+    seed). A request path reads the model config's `supports_reasoning` instead."""
     canonical = canonical_provider(provider)
     if canonical is None:
         return False
