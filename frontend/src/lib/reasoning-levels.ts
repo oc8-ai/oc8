@@ -21,3 +21,16 @@ export function levelHint(level: ReasoningLevel, t: Translate): string {
     "Denkt länger nach, für knifflige Fragen; dauert länger und kostet mehr",
   );
 }
+
+export type EffortChoice = "" | "low" | "medium" | "high" | "custom";
+
+/** Which entry of the select a stored value is. A level key reads as its
+ *  low/medium/high value; anything else is a custom value. */
+export function effortChoice(value: string): EffortChoice {
+  const key = value.trim().toLowerCase();
+  if (key === "") return "";
+  if (key === "low" || key === "fast") return "low";
+  if (key === "medium" || key === "balanced") return "medium";
+  if (key === "high" || key === "thorough") return "high";
+  return "custom";
+}

@@ -5,26 +5,21 @@
 import { useState } from "react";
 
 import { useT } from "@/lib/i18n";
-import { levelLabel, type ReasoningLevel } from "@/lib/reasoning-levels";
+import {
+  effortChoice,
+  levelLabel,
+  type EffortChoice,
+  type ReasoningLevel,
+} from "@/lib/reasoning-levels";
 
-type Choice = "" | "low" | "medium" | "high" | "custom";
-
-const PRESETS: ReadonlyArray<{ value: Exclude<Choice, "" | "custom">; level: ReasoningLevel }> = [
+const PRESETS: ReadonlyArray<{
+  value: Exclude<EffortChoice, "" | "custom">;
+  level: ReasoningLevel;
+}> = [
   { value: "low", level: "fast" },
   { value: "medium", level: "balanced" },
   { value: "high", level: "thorough" },
 ];
-
-/** Which entry of the select a stored value is. A level key reads as its
- *  low/medium/high value; anything else is a custom value. */
-export function effortChoice(value: string): Choice {
-  const key = value.trim().toLowerCase();
-  if (key === "") return "";
-  if (key === "low" || key === "fast") return "low";
-  if (key === "medium" || key === "balanced") return "medium";
-  if (key === "high" || key === "thorough") return "high";
-  return "custom";
-}
 
 const FIELD =
   "w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50 disabled:cursor-not-allowed disabled:opacity-60";
@@ -45,7 +40,7 @@ export function EffortField({
   // Picking "Custom value" keeps the text box open even while it is empty
   // or holds a word that happens to be a level.
   const [custom, setCustom] = useState(() => effortChoice(value) === "custom");
-  const choice: Choice = custom ? "custom" : effortChoice(value);
+  const choice: EffortChoice = custom ? "custom" : effortChoice(value);
   return (
     <div className="space-y-2">
       <select
@@ -53,7 +48,7 @@ export function EffortField({
         value={choice}
         disabled={disabled}
         onChange={(e) => {
-          const next = e.target.value as Choice;
+          const next = e.target.value as EffortChoice;
           if (next === "custom") {
             setCustom(true);
             return;
