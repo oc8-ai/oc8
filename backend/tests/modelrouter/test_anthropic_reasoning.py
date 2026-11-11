@@ -228,3 +228,10 @@ def test_thinking_with_tools_replays_the_signed_block_first() -> None:
     assert assistant["content"][1]["type"] == "tool_use"
     # No forced tool choice: thinking rejects it.
     assert "tool_choice" not in payload
+
+
+def test_thinking_set_through_extra_also_drops_temperature() -> None:
+    """Sampling parameters are incompatible with thinking, whoever set it."""
+    payload = _build_payload(_req("claude-sonnet-4-6", extra={"thinking": {"type": "adaptive"}}))
+    assert payload["thinking"] == {"type": "adaptive"}
+    assert "temperature" not in payload

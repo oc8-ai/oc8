@@ -187,9 +187,6 @@ def _build_payload(req: CompletionRequest, *, include_temperature: bool = True) 
         "messages": messages,
     }
     effort, thinking = _reasoning_fields(req)
-    # Sampling parameters are incompatible with thinking.
-    if include_temperature and thinking is None:
-        payload["temperature"] = req.params.temperature
     if effort is not None:
         payload["output_config"] = {"effort": effort}
     if thinking is not None:
@@ -215,6 +212,10 @@ def _build_payload(req: CompletionRequest, *, include_temperature: bool = True) 
                 payload["output_config"] = {**value, "effort": effort}
             continue
         payload[key] = value
+    # Sampling parameters are incompatible with thinking, whether the level or
+    # an operator's `extra` turned it on.
+    if include_temperature and "thinking" not in payload:
+        payload["temperature"] = req.params.temperature
     return payload
 
 
