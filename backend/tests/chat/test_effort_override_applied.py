@@ -150,3 +150,52 @@ async def test_a_session_without_a_level_leaves_the_key_absent(
             await db.execute(select(m.AgentRun).where(m.AgentRun.agent_id == agent_id))
         ).scalar_one()
         assert "effort_override" not in run.context
+
+
+async def _auto_payload(
+    app_session: AppSessionFactory, tenant: uuid.UUID, context: dict[str, Any]
+) -> dict[str, Any]:
+    agent_id, run_id = await _agent_and_run(app_session, tenant, context)
+    async with app_session(tenant) as db:
+        auto = m.ModelConfig(tenant_id=tenant, provider="auto", model="router", locality="cloud")
+        db.add(auto)
+        await db.flush()
+        agent, run = await db.get(m.Agent, agent_id), await db.get(m.AgentRun, run_id)
+        assert agent is not None and run is not None
+        agent.model_config_id = auto.id
+        await db.flush()
+        return await resolve_version(db, run, agent)
+
+
+async def test_no_chat_level_reaches_an_auto_router_run(app_session: AppSessionFactory) -> None:
+    """The control is hidden on Auto, so the stored pick does not apply: each
+    routed tier keeps its own gated level (ruling, final review of #107)."""
+    payload = await _auto_payload(app_session, uuid.uuid4(), {"effort_override": "thorough"})
+    assert payload["definition"]["model_params"] == {"temperature": 0.9}
+
+
+async def _stored_reasoning_payload(
+    app_session: AppSessionFactory, tenant: uuid.UUID, context: dict[str, Any]
+) -> dict[str, Any]:
+    agent_id, run_id = await _agent_and_run(app_session, tenant, context)
+    async with app_session(tenant) as db:
+        agent, run = await db.get(m.Agent, agent_id), await db.get(m.AgentRun, run_id)
+        assert agent is not None and run is not None
+        # An import, a capa or the builder wrote the run-time key into the row.
+        agent.definition = {"model_params": {"temperature": 0.9, "reasoning": "thorough"}}
+        await db.flush()
+        return await resolve_version(db, run, agent)
+
+
+async def test_a_stored_reasoning_key_is_ignored(app_session: AppSessionFactory) -> None:
+    payload = await _stored_reasoning_payload(app_session, uuid.uuid4(), {})
+    assert payload["definition"]["model_params"] == {"temperature": 0.9}
+
+
+async def test_only_the_chat_sets_reasoning_over_a_stored_key(
+    app_session: AppSessionFactory,
+) -> None:
+    payload = await _stored_reasoning_payload(
+        app_session, uuid.uuid4(), {"effort_override": "fast"}
+    )
+    assert payload["definition"]["model_params"] == {"temperature": 0.9, "reasoning": "fast"}

@@ -430,7 +430,7 @@ async def resolve_version(
     from oc8.chat.model_choice import apply_effort_override, apply_model_override
 
     payload = await apply_model_override(db, run=run, agent=agent, payload=payload)
-    return apply_effort_override(run=run, payload=payload)
+    return await apply_effort_override(db, run=run, payload=payload)
 
 
 async def pinned_version_no(db: AsyncSession, run: m.AgentRun) -> int | None:

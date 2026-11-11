@@ -177,18 +177,41 @@ async def audit_model_override(db: AsyncSession, *, run: m.AgentRun, agent: m.Ag
     )
 
 
-def apply_effort_override(*, run: m.AgentRun | None, payload: dict[str, Any]) -> dict[str, Any]:
+async def apply_effort_override(
+    db: AsyncSession, *, run: m.AgentRun | None, payload: dict[str, Any]
+) -> dict[str, Any]:
     """The run's behavioural payload with the chat's reasoning level in the
     pinned definition's `model_params`, where `resolve_params` reads it
     (spec 2026-11-11 §7). Same seam as `apply_model_override`, so the engine,
     the isolated control plane and the gateways all agree. Copies, never
-    mutates: the payload may be a version row's own dict."""
-    level = as_level((run.context or {}).get("effort_override")) if run is not None else None
-    if level is None:
-        return payload
+    mutates: the payload may be a version row's own dict.
+
+    A `reasoning` key the stored definition carries (an import, a capa, the
+    builder) is dropped first: only a chat sets it. And no level applies when
+    the run's model is the auto-router: the control is hidden there, so each
+    routed tier keeps its own gated level, and the stored pick applies again
+    once the member is back on a model that can think (spec §3).
+    """
     definition = dict(payload.get("definition") or {})
     raw = definition.get("model_params")
     model_params = dict(raw) if isinstance(raw, dict) else {}
-    model_params[CHAT_LEVEL_KEY] = level
-    definition["model_params"] = model_params
+    stored = model_params.pop(CHAT_LEVEL_KEY, None) is not None
+    level = as_level((run.context or {}).get("effort_override")) if run is not None else None
+    if level is not None and await _runs_on_auto(db, payload):
+        level = None
+    if level is None and not stored:
+        return payload
+    if level is not None:
+        model_params[CHAT_LEVEL_KEY] = level
+    if model_params or isinstance(raw, dict):
+        definition["model_params"] = model_params
     return {**payload, "definition": definition}
+
+
+async def _runs_on_auto(db: AsyncSession, payload: dict[str, Any]) -> bool:
+    # Deferred: oc8.agents.versioning calls into this module.
+    from oc8.agents.versioning import pinned_model_config_id
+
+    config_id = pinned_model_config_id(payload)
+    config = await db.get(m.ModelConfig, config_id) if config_id is not None else None
+    return config is not None and (config.provider or "").lower() == _AUTO_PROVIDER

@@ -77,13 +77,14 @@ async def test_the_in_process_engine(
     assert recorder.params and recorder.params[0].reasoning == "thorough"
 
 
-async def test_the_level_survives_an_auto_router_escalation(
+async def test_an_auto_router_run_keeps_each_tiers_own_level_through_an_escalation(
     app_session: AppSessionFactory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A failed first call escalates to a stronger tier; the retry on the new
-    model must still carry the chat's level, which lives only in the pinned
-    definition (not the live agent row)."""
+    """The control is hidden on Auto, so the chat's stored pick does not
+    apply: a failed first call escalates to a stronger tier, and both calls
+    carry the tier's own gated level (balanced, nothing configured), not the
+    chat's thorough."""
     tenant = uuid.uuid4()
     recorder = _RecordingStream()
     calls: list[ModelParams] = []
@@ -143,8 +144,8 @@ async def test_the_level_survives_an_auto_router_escalation(
             db, agent=agent, task_text="go", tenant_id=tenant, run_id=run.id, mcp_conn=conn
         )
     assert len(recorder.params) >= 2, "the first call failed and the escalated one ran"
-    assert recorder.params[0].reasoning == "thorough"
-    assert recorder.params[-1].reasoning == "thorough"
+    assert recorder.params[0].reasoning == "balanced"
+    assert recorder.params[-1].reasoning == "balanced"
 
 
 async def test_the_isolated_step(
