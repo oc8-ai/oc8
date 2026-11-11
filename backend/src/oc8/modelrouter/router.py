@@ -8,6 +8,7 @@ fall back to the local default model.
 from __future__ import annotations
 
 import logging
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -18,6 +19,7 @@ import httpx
 
 from oc8.config import Settings, get_settings
 from oc8.modelrouter.adapters.ollama import OllamaAdapter
+from oc8.modelrouter.http_errors import describe_upstream_error
 from oc8.modelrouter.registry import build_adapter, canonical_provider
 from oc8.modelrouter.streaming import stream_with_fallback
 from oc8.modelrouter.trim import overflow_tokens, trim_for_overflow
@@ -41,6 +43,22 @@ def locality_for_provider(provider: str) -> str:
     function) is always at least as conservative as the real dispatch will
     be, never less."""
     return "local" if canonical_provider(provider) in (None, "ollama") else "cloud"
+
+
+#: A 4xx in which the provider names the reasoning parameter: this model, or
+#: the server in front of it, takes no level. Matched on the provider's own
+#: words, like the temperature retry in adapters/anthropic.py, because no list
+#: of model names could keep up.
+_REASONING_PARAM = re.compile(r"reasoning|effort|think", re.IGNORECASE)
+
+
+def rejects_reasoning(exc: Exception) -> bool:
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return False
+    code = exc.response.status_code
+    if code < 400 or code >= 500 or code == 429:
+        return False
+    return bool(_REASONING_PARAM.search(describe_upstream_error(exc)))
 
 
 def embedding_local_tag(model: str) -> str | None:
@@ -174,6 +192,27 @@ class ModelRouter:
         )
         return replace(req, messages=trimmed)
 
+    @staticmethod
+    def _retry_without_reasoning(
+        req: CompletionRequest, exc: Exception
+    ) -> CompletionRequest | None:
+        """The same request without the level and the effort, or None.
+
+        Only when the request carried one and the provider's 4xx names it
+        (spec 2026-11-11 §9). The member still gets an answer, and the step
+        says it came without thinking.
+        """
+        if req.params.reasoning is None and req.params.effort is None:
+            return None
+        if not rejects_reasoning(exc):
+            return None
+        logger.warning(
+            "%s/%s refused the reasoning level; retrying once without it",
+            req.provider,
+            req.model,
+        )
+        return replace(req, params=replace(req.params, reasoning=None, effort=None))
+
     async def complete(self, req: CompletionRequest) -> CompletionResult:
         adapter, resolved, canonical, model = self._guard_and_resolve(req)
         started = time.monotonic()
@@ -182,9 +221,14 @@ class ModelRouter:
                 return await adapter.complete(resolved)
             except Exception as exc:
                 retry = self._retry_trimmed(resolved, exc)
-                if retry is None:
+                if retry is not None:
+                    return await adapter.complete(retry)
+                plain = self._retry_without_reasoning(resolved, exc)
+                if plain is None:
                     raise
-                return await adapter.complete(retry)
+                result = await adapter.complete(plain)
+                result.reasoning_dropped = True
+                return result
         finally:
             record_model_latency(
                 provider=canonical, model=model, ms=(time.monotonic() - started) * 1000
@@ -218,10 +262,18 @@ class ModelRouter:
                 # Only before anything has gone out. Once a chunk is on the wire
                 # it cannot be unsent, and restarting would splice two different
                 # answers together.
-                retry = None if sent else self._retry_trimmed(resolved, exc)
-                if retry is None:
+                if sent:
                     raise
-                async for chunk in stream_with_fallback(adapter, retry):
+                follow_up = self._retry_trimmed(resolved, exc)
+                dropped = False
+                if follow_up is None:
+                    follow_up = self._retry_without_reasoning(resolved, exc)
+                    dropped = follow_up is not None
+                if follow_up is None:
+                    raise
+                if dropped:
+                    yield CompletionChunk(provider=canonical, model=model, reasoning_dropped=True)
+                async for chunk in stream_with_fallback(adapter, follow_up):
                     chunk.provider = canonical
                     chunk.model = model
                     yield chunk

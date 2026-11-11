@@ -1791,7 +1791,7 @@ async def run_agent(
                             if not result.tool_calls:
                                 result.tool_calls = _salvage_tool_calls(result.text, _offered())
                     await cache_flow.store_if_matching(key, result, provider=provider, model=model)
-                    note_reasoning(step_rec, result.reasoning)
+                    note_reasoning(step_rec, result.reasoning, dropped=result.reasoning_dropped)
                     note_model(
                         step_rec,
                         model_wait_ms=step_probe.model_wait_ms,

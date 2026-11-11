@@ -97,11 +97,15 @@ def note_usage(record: dict[str, Any], usage: Any, *, max_tokens: int) -> None:
     record["max_tokens"] = int(max_tokens)
 
 
-def note_reasoning(record: dict[str, Any], text: str | None) -> None:
-    """Keep the reasoning behind the step's answer, bounded for storage."""
+def note_reasoning(record: dict[str, Any], text: str | None, *, dropped: bool = False) -> None:
+    """Keep the reasoning behind the step's answer, bounded for storage, and
+    whether the provider refused the reasoning level so the step answered
+    without it (`ModelRouter._retry_without_reasoning`)."""
     bounded = bound_reasoning(text)
     if bounded:
         record["reasoning"] = bounded
+    if dropped:
+        record["reasoning_dropped"] = True
 
 
 def note_tools(record: dict, tool_wait_ms: int) -> None:

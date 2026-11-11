@@ -83,6 +83,10 @@ class CompletionResult:
     #: (see `NeutralMessage.replay_blocks`). Empty for every provider that has
     #: no such continuity rule.
     replay_blocks: list[dict[str, Any]] = field(default_factory=list)
+    #: The provider refused the reasoning level, so this answer came from one
+    #: retry without it (`ModelRouter._retry_without_reasoning`). Recorded on
+    #: the run step, where an admin sees it.
+    reasoning_dropped: bool = False
 
 
 @dataclass
@@ -127,6 +131,8 @@ class CompletionChunk:
     #: that state through separately.
     provider: str | None = None
     model: str | None = None
+    #: Set on one chunk ahead of a retry without the reasoning level.
+    reasoning_dropped: bool = False
 
 
 @dataclass
