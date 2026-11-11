@@ -122,7 +122,77 @@ async def test_stream_retries_once_and_marks_the_answer(monkeypatch: pytest.Monk
     adapter = _FailsOnce(_rejection(_REFUSED))
     result = await accumulate_stream(_router(monkeypatch, adapter).stream(_req()))
     assert result.text == "ok" and result.reasoning_dropped is True
+    assert len(adapter.requests) == 2
     assert adapter.requests[1].params.reasoning is None
+
+
+async def test_an_unrelated_400_on_a_stream_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _FailsOnce(_rejection('{"error": "messages: field required"}'))
+    with pytest.raises(httpx.HTTPStatusError):
+        await accumulate_stream(_router(monkeypatch, adapter).stream(_req()))
+    assert len(adapter.requests) == 1
+
+
+async def test_a_failing_retry_is_not_retried_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _AlwaysRefuses(_FailsOnce):
+        async def complete(self, req: CompletionRequest) -> CompletionResult:
+            self.requests.append(req)
+            raise self.error
+
+    adapter = _AlwaysRefuses(_rejection(_REFUSED))
+    with pytest.raises(httpx.HTTPStatusError):
+        await _router(monkeypatch, adapter).complete(_req())
+    assert len(adapter.requests) == 2
+
+
+async def test_a_retry_that_dies_before_its_first_chunk_leaves_fallback_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The flag rides the retry's first real chunk, not a marker of its own."""
+
+    class _RefusesThenFlaps:
+        provider = "openai"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, req: CompletionRequest) -> CompletionResult:  # pragma: no cover
+            raise AssertionError("stream only")
+
+        async def stream(self, req: CompletionRequest) -> AsyncIterator[CompletionChunk]:
+            self.calls += 1
+            if self.calls == 1:
+                raise _rejection(_REFUSED)
+            raise _rejection("upstream down", status=503)
+            yield  # pragma: no cover
+
+    adapter = _RefusesThenFlaps()
+    seen: list[CompletionChunk] = []
+    with pytest.raises(httpx.HTTPStatusError):
+        async for chunk in _router(monkeypatch, adapter).stream(_req()):
+            seen.append(chunk)
+    assert seen == []  # nothing emitted, so stream_completion_with_fallback may move on
+
+
+async def test_the_flag_rides_the_first_real_chunk(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = _FailsOnce(_rejection(_REFUSED))
+    chunks = [c async for c in _router(monkeypatch, adapter).stream(_req())]
+    assert [c.text for c in chunks] == ["ok"]
+    assert chunks[0].reasoning_dropped is True
+
+
+@pytest.mark.parametrize("status", [401, 402, 403, 404, 413, 429])
+def test_other_statuses_are_never_a_refused_parameter(status: int) -> None:
+    assert rejects_reasoning(_rejection('{"error": "model think-v2 not found"}', status)) is False
+
+
+def test_the_url_is_not_read_as_the_providers_words() -> None:
+    request = httpx.Request("POST", "https://reasoning.example/effort/think")
+    response = httpx.Response(400, request=request, text='{"error": "bad json"}')
+    exc = httpx.HTTPStatusError("400", request=request, response=response)
+    assert rejects_reasoning(exc) is False
 
 
 class _AnswersThenDies:

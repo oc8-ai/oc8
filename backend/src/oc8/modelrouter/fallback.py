@@ -307,7 +307,15 @@ async def stream_completion_with_fallback(
             emitted = False
             try:
                 async for chunk in router.stream(req):
-                    emitted = True
+                    # Only a chunk that carries something counts: an empty one
+                    # has put nothing on the wire, so it must not block fallback.
+                    if (
+                        chunk.text
+                        or chunk.reasoning
+                        or chunk.tool_calls
+                        or chunk.usage is not None
+                    ):
+                        emitted = True
                     yield chunk
                 return
             except Exception as exc:

@@ -130,3 +130,45 @@ async def test_a_streamed_fallback_that_cannot_think_gets_no_level(
     assert "".join(c.text for c in chunks) == "ok"
     assert router.requests[0].params.reasoning == "thorough"
     assert (router.requests[1].params.reasoning, router.requests[1].params.effort) == (None, None)
+
+
+class _EmptyChunkThenDies:
+    """The first model emits an empty flagged chunk, then fails retryably."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(self, req: CompletionRequest) -> AsyncIterator[CompletionChunk]:
+        self.calls += 1
+        if self.calls == 1:
+            yield CompletionChunk(reasoning_dropped=True)
+            raise _unavailable()
+        yield CompletionChunk(text="ok")
+
+
+async def test_an_empty_chunk_does_not_block_the_fallback(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    router = _EmptyChunkThenDies()
+    async with app_session(tenant) as db:
+        primary = await _chain(db, tenant)
+        chunks = [
+            c
+            async for c in stream_completion_with_fallback(
+                db,
+                router,  # type: ignore[arg-type]
+                tenant_id=tenant,
+                agent_id=uuid.uuid4(),
+                primary=primary,
+                no_config_provider="openai",
+                no_config_model="o3",
+                messages=[NeutralMessage(role="user", content="hi")],
+                tools=[],
+                params=_PARAMS,
+                request_id=uuid.uuid4(),
+                contains_restricted=False,
+            )
+        ]
+    assert "".join(c.text for c in chunks) == "ok"
+    assert any(c.reasoning_dropped for c in chunks)

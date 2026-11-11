@@ -19,7 +19,6 @@ import httpx
 
 from oc8.config import Settings, get_settings
 from oc8.modelrouter.adapters.ollama import OllamaAdapter
-from oc8.modelrouter.http_errors import describe_upstream_error
 from oc8.modelrouter.registry import build_adapter, canonical_provider
 from oc8.modelrouter.streaming import stream_with_fallback
 from oc8.modelrouter.trim import overflow_tokens, trim_for_overflow
@@ -51,14 +50,22 @@ def locality_for_provider(provider: str) -> str:
 #: of model names could keep up.
 _REASONING_PARAM = re.compile(r"reasoning|effort|think", re.IGNORECASE)
 
+#: Only a malformed or unprocessable request can be a refused parameter. Auth,
+#: billing, missing-model, size and rate-limit failures are never this.
+_PARAM_REFUSAL_STATUSES = frozenset({400, 422})
+
 
 def rejects_reasoning(exc: Exception) -> bool:
     if not isinstance(exc, httpx.HTTPStatusError):
         return False
-    code = exc.response.status_code
-    if code < 400 or code >= 500 or code == 429:
+    if exc.response.status_code not in _PARAM_REFUSAL_STATUSES:
         return False
-    return bool(_REASONING_PARAM.search(describe_upstream_error(exc)))
+    # The provider's own words, not the URL the message also carries.
+    try:
+        text = exc.response.text
+    except Exception:
+        text = str(exc).split(": ", 1)[-1]
+    return bool(_REASONING_PARAM.search(text))
 
 
 def embedding_local_tag(model: str) -> str | None:
@@ -271,11 +278,15 @@ class ModelRouter:
                     dropped = follow_up is not None
                 if follow_up is None:
                     raise
-                if dropped:
-                    yield CompletionChunk(provider=canonical, model=model, reasoning_dropped=True)
                 async for chunk in stream_with_fallback(adapter, follow_up):
                     chunk.provider = canonical
                     chunk.model = model
+                    if dropped:
+                        # On the retry's own first chunk, never a marker of its
+                        # own: an empty chunk ahead of a retry that then fails
+                        # would read as "already emitted" and block fallback.
+                        chunk.reasoning_dropped = True
+                        dropped = False
                     yield chunk
         finally:
             record_model_latency(
