@@ -82,18 +82,33 @@ describe("EffortPicker", () => {
     expect(menu).not.toHaveClass("left-0");
   });
 
-  it("opens rightward instead when the control sits near the screen's left edge", () => {
-    render(<EffortPicker sessionId="s" modelValue={null} value={null} />);
-    const button = screen.getByRole("button", { name: "Reasoning: Balanced" });
-    // A right-anchored w-72 menu would start 200px left of the screen.
-    vi.spyOn(button, "getBoundingClientRect").mockReturnValue(
-      DOMRect.fromRect({ x: 8, y: 600, width: 82, height: 36 }),
-    );
-    fireEvent.click(button);
-    const menu = screen.getByRole("radiogroup", { name: "Reasoning" });
-    expect(menu).toHaveClass("left-0");
-    expect(menu).not.toHaveClass("right-0");
-    expect(menu).toHaveClass("max-w-[calc(100vw-2rem)]");
+  it("clamps the menu inside the screen's gutter, and again on resize", () => {
+    const width = window.innerWidth;
+    try {
+      window.innerWidth = 320;
+      render(<EffortPicker sessionId="s" modelValue={null} value={null} />);
+      const button = screen.getByRole("button", { name: "Reasoning: Balanced" });
+      vi.spyOn(button, "getBoundingClientRect").mockReturnValue(
+        DOMRect.fromRect({ x: 40, y: 600, width: 82, height: 36 }),
+      );
+      fireEvent.click(button);
+      const menu = screen.getByRole("radiogroup", { name: "Reasoning" });
+      // Right-aligned it would start at 122 - 288 = -166; clamped, it starts at
+      // the 16px gutter (16 - 40 = -24 from the control) and ends at 304.
+      expect(menu).not.toHaveClass("right-0");
+      expect(menu.style.left).toBe("-24px");
+      expect(menu.style.width).toBe("288px");
+
+      act(() => {
+        window.innerWidth = 250;
+        window.dispatchEvent(new Event("resize"));
+      });
+      // Narrower than the menu: it shrinks to the screen minus both gutters.
+      expect(menu.style.width).toBe("218px");
+      expect(menu.style.left).toBe("-24px");
+    } finally {
+      window.innerWidth = width;
+    }
   });
 
   it("names a configured value that maps to no level", () => {

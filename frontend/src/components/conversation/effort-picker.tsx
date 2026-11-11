@@ -19,18 +19,29 @@ import {
 import { cn } from "@/lib/utils";
 
 const CHOICES: ReadonlyArray<ReasoningLevel | null> = [null, ...REASONING_LEVELS];
-// The menu's w-72, and the 1rem gutter it keeps from each screen edge.
+// The menu's and the error's widths (w-72, w-64), and the 1rem gutter both
+// keep from each screen edge.
 const MENU_WIDTH = 288;
+const ERROR_WIDTH = 256;
 const GUTTER = 16;
 
-/** Whether the menu opens rightward from the control's left edge: only when
- *  the usual leftward menu would run off the screen and there is more room on
- *  the right. Without layout (a test, a hidden control) it stays leftward. */
-function opensRightward(trigger: HTMLElement | null): boolean {
+type Placement = { left: number; width: number };
+
+/** Where a popup of `width` sits relative to the control: right-aligned with
+ *  it when that fits, otherwise shifted just far enough to stay inside the
+ *  gutter on both sides, and never wider than the screen allows. Null without
+ *  layout (a test, a hidden control): the popup then stays right-aligned. */
+function placement(trigger: HTMLElement | null, width: number): Placement | null {
   const rect = trigger?.getBoundingClientRect();
-  if (!rect || rect.width === 0) return false;
-  const needed = Math.min(MENU_WIDTH, window.innerWidth - 2 * GUTTER) + GUTTER;
-  return rect.right < needed && window.innerWidth - rect.left > rect.right;
+  if (!rect || rect.width === 0) return null;
+  const fitted = Math.min(width, window.innerWidth - 2 * GUTTER);
+  const wanted = rect.right - fitted;
+  const left = Math.min(Math.max(wanted, GUTTER), window.innerWidth - GUTTER - fitted);
+  return { left: left - rect.left, width: fitted };
+}
+
+function placed(at: Placement | null) {
+  return at ? { left: at.left, width: at.width } : undefined;
 }
 
 export function EffortPicker({
@@ -55,7 +66,8 @@ export function EffortPicker({
 }) {
   const t = useT();
   const [open, setOpen] = useState(false);
-  const [rightward, setRightward] = useState(false);
+  const [menuAt, setMenuAt] = useState<Placement | null>(null);
+  const [errorAt, setErrorAt] = useState<Placement | null>(null);
   // The pick in flight, shown until the server answers. `undefined` = none.
   const [pending, setPending] = useState<ReasoningLevel | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
@@ -97,6 +109,21 @@ export function EffortPicker({
     document.addEventListener("pointerdown", onPointerDown);
     return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [open]);
+
+  function place() {
+    setMenuAt(placement(trigger.current, MENU_WIDTH));
+    setErrorAt(placement(trigger.current, ERROR_WIDTH));
+  }
+
+  useEffect(() => {
+    if (!open && !error) return;
+    function onResize() {
+      setMenuAt(placement(trigger.current, MENU_WIDTH));
+      setErrorAt(placement(trigger.current, ERROR_WIDTH));
+    }
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [open, error]);
 
   const effective = effectiveOption(options, modelValue);
   // A reader cannot list the chat's models; the chat's own pick still shows.
@@ -172,7 +199,7 @@ export function EffortPicker({
         type="button"
         disabled={disabled || (!sessionId && !agentId)}
         onClick={() => {
-          setRightward(opensRightward(trigger.current));
+          place();
           setOpen((v) => !v);
         }}
         aria-haspopup="true"
@@ -194,8 +221,9 @@ export function EffortPicker({
           }}
           className={cn(
             "absolute bottom-full z-50 mb-1 w-72 max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-popover p-1 shadow-lg",
-            rightward ? "left-0" : "right-0",
+            !menuAt && "right-0",
           )}
+          style={placed(menuAt)}
         >
           {CHOICES.map((level, i) => (
             <button
@@ -235,8 +263,9 @@ export function EffortPicker({
           role="alert"
           className={cn(
             "absolute bottom-full mb-1 w-64 max-w-[calc(100vw-2rem)] text-xs text-status-error",
-            rightward ? "left-0" : "right-0",
+            !errorAt && "right-0",
           )}
+          style={placed(errorAt)}
         >
           {error}
         </p>
