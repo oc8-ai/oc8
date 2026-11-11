@@ -13,12 +13,18 @@ import httpx
 
 from oc8.modelrouter.http_errors import araise_for_status_with_body, raise_for_status_with_body
 from oc8.modelrouter.levels import EFFORT_FOR_LEVEL
+from oc8.modelrouter.reasoning_support import (
+    anthropic_has_effort,
+    anthropic_hides_thinking,
+    anthropic_thinking_style,
+)
 from oc8.modelrouter.types import (
     CompletionChunk,
     CompletionRequest,
     CompletionResult,
     ImagePart,
     NeutralMessage,
+    ReasoningLevel,
     TextPart,
     ToolCall,
     ToolCallDelta,
@@ -121,10 +127,56 @@ def _to_anthropic_messages(messages: list[NeutralMessage]) -> tuple[str, list[di
 
 #: Keys this adapter always sets itself. An operator-supplied `extra` key
 #: matching one of these is dropped rather than applied -- see _build_payload.
-
+#: `effort` is here although the adapter never sends it: Anthropic takes effort
+#: only inside `output_config`, and a stray top-level copy would 400.
 _RESERVED_PAYLOAD_KEYS = frozenset(
     {"model", "max_tokens", "messages", "temperature", "effort", "system", "tools", "stream"}
 )
+
+#: `budget_tokens` per level for models that think on a budget (Claude 3.7 to
+#: 4.5). The API takes >= 1024 and < max_tokens; fast forces no thinking.
+_THINKING_BUDGET: dict[ReasoningLevel, int] = {"balanced": 4096, "thorough": 16384}
+_MIN_THINKING_BUDGET = 1024
+
+
+def _thinking_config(model: str, level: ReasoningLevel, max_tokens: int) -> dict[str, Any] | None:
+    """The `thinking` block for `level`, or None to leave thinking alone.
+
+    Fast forces nothing: the lowest effort is the whole ask. Balanced and
+    thorough turn thinking on, since Claude 4.6 to 4.8 and every budget model
+    run without it otherwise.
+    """
+    if level == "fast":
+        return None
+    style = anthropic_thinking_style(model)
+    if style == "adaptive":
+        config: dict[str, Any] = {"type": "adaptive"}
+        if anthropic_hides_thinking(model):
+            config["display"] = "summarized"
+        return config
+    if style == "budget":
+        # Half the room at most, so the answer itself still fits.
+        budget = min(_THINKING_BUDGET[level], max_tokens // 2)
+        if budget < _MIN_THINKING_BUDGET:
+            return None
+        return {"type": "enabled", "budget_tokens": budget}
+    return None
+
+
+def _reasoning_fields(req: CompletionRequest) -> tuple[str | None, dict[str, Any] | None]:
+    """(`output_config.effort`, `thinking`) for this request (spec 2026-11-11 §6).
+
+    A level maps to low/medium/high and, above fast, to thinking. Without a
+    level, a configured free-form effort goes through verbatim. A model that
+    takes no effort gets none either way.
+    """
+    level = req.params.reasoning
+    if level is not None:
+        effort = EFFORT_FOR_LEVEL[level] if anthropic_has_effort(req.model) else None
+        return effort, _thinking_config(req.model, level, req.params.max_tokens)
+    if req.params.effort and anthropic_has_effort(req.model):
+        return req.params.effort, None
+    return None, None
 
 
 def _build_payload(req: CompletionRequest, *, include_temperature: bool = True) -> dict[str, Any]:
@@ -134,12 +186,14 @@ def _build_payload(req: CompletionRequest, *, include_temperature: bool = True) 
         "max_tokens": req.params.max_tokens,
         "messages": messages,
     }
-    if include_temperature:
+    effort, thinking = _reasoning_fields(req)
+    # Sampling parameters are incompatible with thinking.
+    if include_temperature and thinking is None:
         payload["temperature"] = req.params.temperature
-    if req.params.reasoning is not None:
-        payload["effort"] = EFFORT_FOR_LEVEL[req.params.reasoning]
-    elif req.params.effort:
-        payload["effort"] = req.params.effort
+    if effort is not None:
+        payload["output_config"] = {"effort": effort}
+    if thinking is not None:
+        payload["thinking"] = thinking
     if system:
         payload["system"] = system
     if req.tools:
@@ -149,10 +203,18 @@ def _build_payload(req: CompletionRequest, *, include_temperature: bool = True) 
         ]
     # Applied last so an operator-typed key can never clobber a field this
     # adapter relies on -- see ModelParams.extra.
-    if req.params.extra:
-        for key, value in req.params.extra.items():
-            if key not in _RESERVED_PAYLOAD_KEYS:
-                payload[key] = value
+    for key, value in (req.params.extra or {}).items():
+        if key in _RESERVED_PAYLOAD_KEYS:
+            continue
+        if key == "thinking" and thinking is not None:
+            continue
+        if key == "output_config" and effort is not None:
+            # Other keys (a response `format`) still apply; the effort set
+            # from the level or the configured value wins.
+            if isinstance(value, dict):
+                payload["output_config"] = {**value, "effort": effort}
+            continue
+        payload[key] = value
     return payload
 
 

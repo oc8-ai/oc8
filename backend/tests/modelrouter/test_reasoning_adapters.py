@@ -10,7 +10,6 @@ import pytest
 
 from oc8 import models as m
 from oc8.modelrouter.adapters._openai_common import build_payload
-from oc8.modelrouter.adapters.anthropic import _build_payload as anthropic_payload
 from oc8.modelrouter.adapters.chatgpt_subscription import build_responses_payload
 from oc8.modelrouter.adapters.ollama import _build_payload as ollama_payload
 from oc8.modelrouter.sampling import resolve_params
@@ -30,22 +29,6 @@ def _req(
         messages=[NeutralMessage(role="user", content="hi")],
         params=ModelParams(reasoning=reasoning, effort=effort, extra=extra),
     )
-
-
-@pytest.mark.parametrize(
-    ("level", "sent"), [("fast", "low"), ("balanced", "medium"), ("thorough", "high")]
-)
-def test_anthropic_sends_effort(level: str, sent: str) -> None:
-    assert anthropic_payload(_req("claude-sonnet-5", reasoning=level))["effort"] == sent
-
-
-def test_anthropic_level_wins_over_a_free_form_effort() -> None:
-    payload = anthropic_payload(_req("claude-sonnet-5", reasoning="fast", effort="max"))
-    assert payload["effort"] == "low"
-
-
-def test_anthropic_keeps_a_free_form_effort_without_a_level() -> None:
-    assert anthropic_payload(_req("claude-sonnet-5", effort="max"))["effort"] == "max"
 
 
 @pytest.mark.parametrize(

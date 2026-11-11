@@ -22,6 +22,8 @@ from oc8.modelrouter.reasoning_support import (
     ("model", "thinks"),
     [
         ("claude-sonnet-5", True),
+        ("claude-fable-5-1", True),
+        ("claude-mythos-5", True),
         ("claude-opus-4-1-20250805", True),
         ("claude-haiku-4-5", True),
         ("claude-3-7-sonnet-20250219", True),

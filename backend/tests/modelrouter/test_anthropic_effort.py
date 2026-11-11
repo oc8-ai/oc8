@@ -1,6 +1,7 @@
 """`effort` (feature request: "switch effort in Claude models") is forwarded
-to Anthropic verbatim, never validated against a fixed set of values -- the
-provider owns what it accepts and that changes on its own schedule.
+to Anthropic verbatim as `output_config.effort`, never validated against a
+fixed set of values -- the provider owns what it accepts and that changes on
+its own schedule.
 """
 
 from __future__ import annotations
@@ -41,7 +42,8 @@ async def test_a_configured_effort_is_sent_verbatim(monkeypatch: pytest.MonkeyPa
 
     await adapter.complete(_req("medium-high"))
 
-    assert calls[0]["effort"] == "medium-high"
+    assert calls[0]["output_config"] == {"effort": "medium-high"}
+    assert "effort" not in calls[0]
 
 
 async def test_no_effort_configured_omits_the_field(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -59,3 +61,4 @@ async def test_no_effort_configured_omits_the_field(monkeypatch: pytest.MonkeyPa
     await adapter.complete(_req(None))
 
     assert "effort" not in calls[0]
+    assert "output_config" not in calls[0]
