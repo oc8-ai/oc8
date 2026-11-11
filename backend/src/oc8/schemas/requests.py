@@ -228,6 +228,10 @@ class ModelConfigWrite(CamelModel):
     used_by_copilot: bool | None = None
     #: Whether members may pick this model in a chat. None leaves it unchanged.
     chat_enabled: bool | None = None
+    #: Whether this model can think, so a reasoning level is sent to it at all.
+    #: On create, None takes the provider's declaration (`ProviderEntry.
+    #: supports_reasoning`); on update, None leaves it unchanged.
+    supports_reasoning: bool | None = None
     #: A specific Credential to bind to this ModelConfig (id as string). None
     #: leaves the tenant-wide "first credential of this provider's type"
     #: convention as the fallback (resolve_model_key/resolve_model_base_url).

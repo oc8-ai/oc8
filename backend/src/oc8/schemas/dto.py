@@ -427,6 +427,8 @@ class ModelDTO(CamelModel):
     used_by_copilot: bool = False
     #: Whether members may pick this model in a chat (`oc8.chat.model_choice`).
     chat_enabled: bool = True
+    #: Whether this model can think; gates the chat's reasoning-level control.
+    supports_reasoning: bool = False
     credential_id: str | None = None
     #: Set only when `status` is "error"/"unknown" -- the real reason from
     #: the last POST /models/{id}/test check (see catalog.py).
@@ -442,6 +444,12 @@ class ModelDTO(CamelModel):
 
 class ModelDiscoverResponse(CamelModel):
     models: list[str]
+
+
+class ReasoningSupportDTO(CamelModel):
+    """The model form's "Can think" suggestion for a provider and model."""
+
+    supports_reasoning: bool
 
 
 class ModelPriceDTO(CamelModel):

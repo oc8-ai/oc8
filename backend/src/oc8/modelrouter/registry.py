@@ -263,3 +263,13 @@ async def resolve_provider(
         if lowered in {entry.canonical.lower(), *(a.lower() for a in entry.aliases)}:
             return entry
     return None
+
+
+async def default_supports_reasoning(
+    db: AsyncSession, *, tenant_id: uuid.UUID, provider: str, model: str
+) -> bool:
+    """What a new model config's "Can think" starts as: the declaration of the
+    provider THIS tenant may configure (spec 2026-11-11 §6). Unknown or not
+    entitled reads as False, the same answer as everywhere else here."""
+    entry = await resolve_provider(db, tenant_id=tenant_id, name=provider)
+    return entry is not None and entry_supports_reasoning(entry, model)

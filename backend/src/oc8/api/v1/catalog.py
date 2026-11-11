@@ -20,6 +20,7 @@ from oc8.modelrouter.discovery import DiscoveryError, discover_models
 from oc8.modelrouter.keys import resolve_model_base_url, resolve_model_key
 from oc8.modelrouter.registry import (
     available_provider_entries,
+    default_supports_reasoning,
     provider_infos,
     resolve_provider,
 )
@@ -42,6 +43,7 @@ from oc8.schemas.dto import (
     IntegrationDTO,
     ModelDiscoverResponse,
     ModelDTO,
+    ReasoningSupportDTO,
     SkillDTO,
 )
 from oc8.schemas.paging import Page
@@ -73,6 +75,26 @@ async def list_models(db: DbSession) -> list[ModelDTO]:
         if a.model_config_id:
             assigned.setdefault(str(a.model_config_id), []).append(str(a.id))
     return [_model_to_dto(mc, assigned.get(str(mc.id), [])) for mc in models]
+
+
+@router.get(
+    "/models/reasoning-support",
+    response_model=ReasoningSupportDTO,
+    dependencies=[Depends(require_permission(perm(MODEL, MANAGE)))],
+)
+async def get_reasoning_support(
+    db: DbSession,
+    _p: CurrentPrincipal,
+    provider: str = Query(min_length=1),
+    model: str = Query(min_length=1),
+) -> ReasoningSupportDTO:
+    """The model form's "Can think" suggestion while an admin types a model:
+    the same rule a create without `supportsReasoning` applies."""
+    return ReasoningSupportDTO(
+        supports_reasoning=await default_supports_reasoning(
+            db, tenant_id=_p.tenant_id, provider=provider, model=model
+        )
+    )
 
 
 @router.get("/models/providers", dependencies=[Depends(require_permission(perm(MODEL, VIEW)))])
@@ -286,6 +308,13 @@ async def create_model(
             params=params,
         )
     else:
+        supports = (
+            body.supports_reasoning
+            if body.supports_reasoning is not None
+            else await default_supports_reasoning(
+                db, tenant_id=_p.tenant_id, provider=canon, model=model
+            )
+        )
         cfg = m.ModelConfig(
             tenant_id=_p.tenant_id,
             provider=canon,
@@ -294,6 +323,7 @@ async def create_model(
             display_name=body.display_name,
             credential_id=uuid.UUID(body.credential_id) if body.credential_id else None,
             params={"effort": body.effort.strip()} if body.effort and body.effort.strip() else {},
+            supports_reasoning=supports,
         )
     db.add(cfg)
     await db.flush()  # cfg.id must exist before the auto-activation count query below
@@ -360,6 +390,8 @@ async def update_model(
         cfg.display_name = body.display_name
     if body.chat_enabled is not None:
         cfg.chat_enabled = body.chat_enabled
+    if body.supports_reasoning is not None:
+        cfg.supports_reasoning = body.supports_reasoning
     if canon == AUTO_PROVIDER:
         # Auto rows only carry router params; skip concrete-model fields below.
         if "used_by_copilot" in body.model_fields_set:
