@@ -165,7 +165,10 @@ async def test_assignments_of_a_course(fake_moodle: Callable[[Any], Any]) -> Non
         },
     )
     result = await grading.moodle_list_assignments({"course_id": 5})
-    assert fake.params("mod_assign_get_assignments") == {"courseids": [5]}
+    assert fake.params("mod_assign_get_assignments") == {
+        "courseids": [5],
+        "includenotenrolledcourses": 1,
+    }
     assert result == [
         {
             "id": 9,
@@ -178,6 +181,51 @@ async def test_assignments_of_a_course(fake_moodle: Callable[[Any], Any]) -> Non
             "intro": "Thema frei",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_assignments_of_a_course_the_user_cannot_see_raise_with_moodles_warning(
+    fake_moodle: Callable[[Any], Any],
+) -> None:
+    fake = fake_moodle(client)
+    fake.on(
+        "mod_assign_get_assignments",
+        {
+            "courses": [],
+            "warnings": [
+                {
+                    "item": "course",
+                    "itemid": 2,
+                    "warningcode": "2",
+                    "message": "User is not enrolled or does not have requested capability",
+                }
+            ],
+        },
+    )
+    with pytest.raises(
+        ValueError,
+        match="no assignments for course 2: User is not enrolled or does not have requested",
+    ):
+        await grading.moodle_list_assignments({"course_id": 2})
+
+
+@pytest.mark.asyncio
+async def test_assignments_without_warning_text_still_raise(
+    fake_moodle: Callable[[Any], Any],
+) -> None:
+    fake = fake_moodle(client)
+    fake.on("mod_assign_get_assignments", {"courses": []})
+    with pytest.raises(ValueError, match=r"no assignments for course 2$"):
+        await grading.moodle_list_assignments({"course_id": 2})
+
+
+@pytest.mark.asyncio
+async def test_a_course_without_assignments_is_a_legitimate_empty_list(
+    fake_moodle: Callable[[Any], Any],
+) -> None:
+    fake = fake_moodle(client)
+    fake.on("mod_assign_get_assignments", {"courses": [{"id": 5, "assignments": []}]})
+    assert await grading.moodle_list_assignments({"course_id": 5}) == []
 
 
 def _students_and_teacher() -> list[dict[str, Any]]:

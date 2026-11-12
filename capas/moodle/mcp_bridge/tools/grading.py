@@ -68,11 +68,24 @@ async def moodle_get_completion(args: Mapping[str, Any]) -> list[dict[str, Any]]
 
 
 async def moodle_list_assignments(args: Mapping[str, Any]) -> list[dict[str, Any]]:
+    course_id = int(args["course_id"])
+    # includenotenrolledcourses: the service user is usually a manager, not enrolled.
     answer = await client.call(
-        "mod_assign_get_assignments", {"courseids": [int(args["course_id"])]}
+        "mod_assign_get_assignments",
+        {"courseids": [course_id], "includenotenrolledcourses": 1},
     )
-    courses = (answer or {}).get("courses") or []
-    assignments = courses[0].get("assignments") or [] if courses else []
+    course = next(
+        (c for c in (answer or {}).get("courses") or [] if c.get("id") == course_id), None
+    )
+    if course is None:
+        reasons = "; ".join(
+            str(w.get("message")) for w in (answer or {}).get("warnings") or [] if w.get("message")
+        )
+        raise ValueError(
+            f"Moodle returned no assignments for course {course_id}"
+            + (f": {reasons}" if reasons else "")
+        )
+    assignments = course.get("assignments") or []
     return [
         {
             "id": a.get("id"),
