@@ -18,6 +18,8 @@ import mcp.server.stdio
 import mcp.types as types
 from mcp.server import Server, ServerRequestContext
 
+from .tools.communication import CALL_HANDLERS as COMMUNICATION_HANDLERS
+from .tools.communication import TOOLS as COMMUNICATION_TOOLS
 from .tools.courses import CALL_HANDLERS as COURSE_HANDLERS
 from .tools.courses import TOOLS as COURSE_TOOLS
 from .tools.grading import CALL_HANDLERS as GRADING_HANDLERS
@@ -25,8 +27,8 @@ from .tools.grading import TOOLS as GRADING_TOOLS
 from .tools.people import CALL_HANDLERS as PEOPLE_HANDLERS
 from .tools.people import TOOLS as PEOPLE_TOOLS
 
-ALL_TOOLS: list[types.Tool] = [*COURSE_TOOLS, *PEOPLE_TOOLS, *GRADING_TOOLS]
-ALL_HANDLERS = {**COURSE_HANDLERS, **PEOPLE_HANDLERS, **GRADING_HANDLERS}
+ALL_TOOLS: list[types.Tool] = [*COURSE_TOOLS, *PEOPLE_TOOLS, *GRADING_TOOLS, *COMMUNICATION_TOOLS]
+ALL_HANDLERS = {**COURSE_HANDLERS, **PEOPLE_HANDLERS, **GRADING_HANDLERS, **COMMUNICATION_HANDLERS}
 
 
 async def _on_list_tools(

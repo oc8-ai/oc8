@@ -104,3 +104,8 @@ async def test_unknown_tool_is_an_error() -> None:
     result = await bridge._on_call_tool(_NO_CTX, params)
     assert result.is_error is True
     assert "unknown tool" in _text(result)
+
+
+def test_the_bridge_serves_exactly_the_catalogued_tools() -> None:
+    assert {t.name for t in bridge.ALL_TOOLS} == set(TOOL_FUNCTIONS)
+    assert len(bridge.ALL_TOOLS) == 19
