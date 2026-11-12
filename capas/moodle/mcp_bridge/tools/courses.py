@@ -9,7 +9,7 @@ from mcp.types import Tool
 
 from .. import client
 from ..catalog import TOOL_FUNCTIONS
-from ..shaping import MAX_LIMIT, page, pick_one, shape_course, to_timestamp
+from ..shaping import MAX_LIMIT, page, pick_one, refusals, shape_course, to_timestamp
 
 #: Moodle 4.1 LTS's version number; older sites are outside what this capa
 #: is tested against.
@@ -138,7 +138,10 @@ async def moodle_update_course(args: Mapping[str, Any]) -> dict[str, Any]:
     answer = await client.call(
         "core_course_update_courses", {"courses": [{"id": course_id, **payload}]}
     )
-    return {"updated": course_id, "warnings": (answer or {}).get("warnings", [])}
+    refused = refusals(answer, course_id)
+    if refused:
+        raise ValueError(f"Moodle did not update course {course_id}: {refused}")
+    return {"updated": course_id}
 
 
 TOOLS: list[Tool] = [

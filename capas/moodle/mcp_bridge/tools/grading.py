@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from mcp.types import Tool
 
 from .. import client
-from ..shaping import has_role, iso, page, plain_text
+from ..shaping import as_html, has_role, iso, page, plain_text
 
 _COMPLETION_STATES = {0: "incomplete", 1: "complete", 2: "complete_pass", 3: "complete_fail"}
 #: Moodle's FORMAT_HTML: feedback is stored as HTML.
@@ -179,9 +180,42 @@ async def moodle_list_submissions(args: Mapping[str, Any]) -> Any:
     return page(rows, args)
 
 
+async def _max_grade(course_id: int, assignment_id: int) -> float:
+    """The assignment's maximum grade; negative means it is graded on a scale."""
+    answer = await client.call(
+        "mod_assign_get_assignments",
+        {"courseids": [course_id], "includenotenrolledcourses": 1},
+    )
+    assignment = next(
+        (
+            a
+            for c in (answer or {}).get("courses") or []
+            if c.get("id") == course_id
+            for a in c.get("assignments") or []
+            if a.get("id") == assignment_id
+        ),
+        None,
+    )
+    if assignment is None:
+        raise ValueError(f"Assignment {assignment_id} was not found in course {course_id}.")
+    return float(assignment.get("grade") or 0)
+
+
 async def moodle_grade_submission(args: Mapping[str, Any]) -> dict[str, Any]:
     assignment_id, user_id = int(args["assignment_id"]), int(args["user_id"])
+    if args.get("course_id") is None:
+        raise ValueError("course_id is required to check the assignment's maximum grade.")
+    course_id = int(args["course_id"])
     grade = float(args["grade"])
+    if not math.isfinite(grade):
+        raise ValueError(f"{args['grade']!r} is not a valid grade.")
+    if grade < 0:
+        raise ValueError(f"Grade {grade:g} cannot be negative.")
+    maximum = await _max_grade(course_id, assignment_id)
+    if maximum < 0:
+        raise ValueError("This assignment uses a scale; grade it in Moodle.")
+    if grade > maximum:
+        raise ValueError(f"Grade {grade:g} is above the maximum {maximum:g} for this assignment.")
     params: dict[str, Any] = {
         "assignmentid": assignment_id,
         "userid": user_id,
@@ -192,8 +226,12 @@ async def moodle_grade_submission(args: Mapping[str, Any]) -> dict[str, Any]:
         "applytoall": 1,
     }
     if args.get("feedback"):
+        feedback = str(args["feedback"])
+        if "<" not in feedback:
+            # Plain text: keep the model's line breaks once Moodle renders HTML.
+            feedback = as_html(feedback)
         params["plugindata"] = {
-            "assignfeedbackcomments_editor": {"text": str(args["feedback"]), "format": _FORMAT_HTML}
+            "assignfeedbackcomments_editor": {"text": feedback, "format": _FORMAT_HTML}
         }
     await client.call("mod_assign_save_grade", params)
     return {"graded": True, "assignment_id": assignment_id, "user_id": user_id, "grade": grade}
@@ -259,18 +297,22 @@ TOOLS: list[Tool] = [
     Tool(
         name="moodle_grade_submission",
         description=(
-            "Set a student's grade for an assignment, with optional feedback text. Whether "
-            "Moodle notifies the student follows the assignment's own notification setting."
+            "Set a student's grade for an assignment, with optional feedback text. Needs "
+            "the assignment's course_id. Grades must be between 0 and the assignment's "
+            "maximum; assignments graded on a scale are refused (grade them in Moodle). "
+            "Whether Moodle notifies the student follows the assignment's own "
+            "notification setting."
         ),
         inputSchema={
             "type": "object",
             "properties": {
                 "assignment_id": {"type": "integer"},
+                "course_id": {"type": "integer"},
                 "user_id": {"type": "integer"},
-                "grade": {"type": "number"},
+                "grade": {"type": "number", "minimum": 0},
                 "feedback": {"type": "string"},
             },
-            "required": ["assignment_id", "user_id", "grade"],
+            "required": ["assignment_id", "course_id", "user_id", "grade"],
         },
     ),
 ]

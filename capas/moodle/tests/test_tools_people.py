@@ -169,6 +169,41 @@ async def test_update_user_maps_suspended_and_needs_a_change(
 
 
 @pytest.mark.asyncio
+async def test_update_user_raises_when_moodle_refuses_it_with_a_warning(
+    fake_moodle: Callable[[Any], Any],
+) -> None:
+    fake = fake_moodle(client)
+    fake.on(
+        "core_user_update_users",
+        {
+            "warnings": [
+                {
+                    "item": "user",
+                    "itemid": 7,
+                    "warningcode": "usernotupdatedemailexists",
+                    "message": "Email address already exists",
+                },
+                {"item": "user", "warningcode": "x", "message": "Second reason"},
+            ]
+        },
+    )
+    with pytest.raises(ValueError, match="Email address already exists; Second reason"):
+        await people.moodle_update_user({"user_id": 7, "email": "dup@example.org"})
+
+
+@pytest.mark.asyncio
+async def test_update_user_ignores_a_warning_about_another_user(
+    fake_moodle: Callable[[Any], Any],
+) -> None:
+    fake = fake_moodle(client)
+    fake.on(
+        "core_user_update_users",
+        {"warnings": [{"item": "user", "itemid": 8, "warningcode": "x", "message": "Other"}]},
+    )
+    assert await people.moodle_update_user({"user_id": 7, "firstname": "Ana"}) == {"updated": 7}
+
+
+@pytest.mark.asyncio
 async def test_enrol_maps_role_names_to_moodle_default_ids(
     fake_moodle: Callable[[Any], Any],
 ) -> None:

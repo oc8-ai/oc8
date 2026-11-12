@@ -211,4 +211,26 @@ async def test_update_course_sends_only_given_fields(fake_moodle: Callable[[Any]
     assert fake.params("core_course_update_courses") == {
         "courses": [{"id": 5, "fullname": "Bio 10a (neu)"}],
     }
-    assert result == {"updated": 5, "warnings": []}
+    assert result == {"updated": 5}
+
+
+@pytest.mark.asyncio
+async def test_update_course_raises_when_moodle_refuses_it_with_a_warning(
+    fake_moodle: Callable[[Any], Any],
+) -> None:
+    fake = fake_moodle(client)
+    fake.on(
+        "core_course_update_courses",
+        {
+            "warnings": [
+                {
+                    "item": "course",
+                    "itemid": 5,
+                    "warningcode": "shortnametaken",
+                    "message": "Short name is already used for another course",
+                }
+            ]
+        },
+    )
+    with pytest.raises(ValueError, match="Short name is already used for another course"):
+        await courses.moodle_update_course({"course_id": 5, "shortname": "BIO"})

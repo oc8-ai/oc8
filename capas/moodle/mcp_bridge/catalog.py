@@ -28,7 +28,7 @@ TOOL_FUNCTIONS: dict[str, tuple[str, ...]] = {
         "mod_assign_get_submission_status",
         "core_enrol_get_enrolled_users",
     ),
-    "moodle_grade_submission": ("mod_assign_save_grade",),
+    "moodle_grade_submission": ("mod_assign_get_assignments", "mod_assign_save_grade"),
     "moodle_list_forum_discussions": (
         "mod_forum_get_forum_discussions",
         "mod_forum_get_discussion_posts",

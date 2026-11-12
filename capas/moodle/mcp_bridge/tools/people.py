@@ -9,7 +9,7 @@ from typing import Any
 from mcp.types import Tool
 
 from .. import client
-from ..shaping import has_role, page, pick_one, shape_user
+from ..shaping import has_role, page, pick_one, refusals, shape_user
 
 #: Moodle's install-default role ids. Moodle 4.1 has no web service function
 #: that lists roles, so names map to these; a site that renumbered its roles
@@ -66,7 +66,10 @@ async def moodle_update_user(args: Mapping[str, Any]) -> dict[str, Any]:
     if not changes:
         raise ValueError("Nothing to change: give at least one field besides user_id.")
     user_id = int(args["user_id"])
-    await client.call("core_user_update_users", {"users": [{"id": user_id, **changes}]})
+    answer = await client.call("core_user_update_users", {"users": [{"id": user_id, **changes}]})
+    refused = refusals(answer, user_id)
+    if refused:
+        raise ValueError(f"Moodle did not update user {user_id}: {refused}")
     return {"updated": user_id}
 
 

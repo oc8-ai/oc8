@@ -40,6 +40,21 @@ def as_html(text: str) -> str:
     return html.escape(text, quote=False).replace("\n", "<br>")
 
 
+def refusals(answer: Any, item_id: int) -> str:
+    """Moodle's per-item refusals, joined by "; ".
+
+    Update functions answer HTTP 200 with `warnings` for items they skipped;
+    a warning about this id, or one with no id at all, means it was refused.
+    """
+    warnings = answer.get("warnings") if isinstance(answer, Mapping) else None
+    messages = [
+        str(w.get("message") or w.get("warningcode") or "refused")
+        for w in warnings or []
+        if isinstance(w, Mapping) and w.get("itemid") in (None, item_id, str(item_id))
+    ]
+    return "; ".join(messages)
+
+
 def clamp_limit(value: Any) -> int:
     try:
         number = DEFAULT_LIMIT if value is None else int(value)

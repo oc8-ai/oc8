@@ -358,15 +358,30 @@ async def test_include_text_needs_one_user() -> None:
         )
 
 
+def _assignment(max_grade: float) -> dict[str, Any]:
+    return {"courses": [{"id": 5, "assignments": [{"id": 9, "grade": max_grade}]}]}
+
+
 @pytest.mark.asyncio
 async def test_grade_submission_writes_grade_and_feedback(
     fake_moodle: Callable[[Any], Any],
 ) -> None:
     fake = fake_moodle(client)
+    fake.on("mod_assign_get_assignments", _assignment(10))
     fake.on("mod_assign_save_grade", None)
     result = await grading.moodle_grade_submission(
-        {"assignment_id": 9, "user_id": 1, "grade": 8.5, "feedback": "Gute Gliederung."}
+        {
+            "assignment_id": 9,
+            "course_id": 5,
+            "user_id": 1,
+            "grade": 8.5,
+            "feedback": "<p>Gute Gliederung.</p>",
+        }
     )
+    assert fake.params("mod_assign_get_assignments") == {
+        "courseids": [5],
+        "includenotenrolledcourses": 1,
+    }
     assert fake.params("mod_assign_save_grade") == {
         "assignmentid": 9,
         "userid": 1,
@@ -375,9 +390,31 @@ async def test_grade_submission_writes_grade_and_feedback(
         "addattempt": 0,
         "workflowstate": "",
         "applytoall": 1,
-        "plugindata": {"assignfeedbackcomments_editor": {"text": "Gute Gliederung.", "format": 1}},
+        "plugindata": {
+            "assignfeedbackcomments_editor": {"text": "<p>Gute Gliederung.</p>", "format": 1}
+        },
     }
     assert result == {"graded": True, "assignment_id": 9, "user_id": 1, "grade": 8.5}
+
+
+@pytest.mark.asyncio
+async def test_plain_feedback_keeps_its_line_breaks_as_html(
+    fake_moodle: Callable[[Any], Any],
+) -> None:
+    fake = fake_moodle(client)
+    fake.on("mod_assign_get_assignments", _assignment(10))
+    fake.on("mod_assign_save_grade", None)
+    await grading.moodle_grade_submission(
+        {
+            "assignment_id": 9,
+            "course_id": 5,
+            "user_id": 1,
+            "grade": 8,
+            "feedback": "Gut.\nQuellen & Zitate fehlen.",
+        }
+    )
+    editor = fake.params("mod_assign_save_grade")["plugindata"]["assignfeedbackcomments_editor"]
+    assert editor["text"] == "Gut.<br>Quellen &amp; Zitate fehlen."
 
 
 @pytest.mark.asyncio
@@ -385,9 +422,72 @@ async def test_grade_without_feedback_sends_no_plugindata(
     fake_moodle: Callable[[Any], Any],
 ) -> None:
     fake = fake_moodle(client)
+    fake.on("mod_assign_get_assignments", _assignment(10))
     fake.on("mod_assign_save_grade", None)
-    await grading.moodle_grade_submission({"assignment_id": 9, "user_id": 1, "grade": 7})
+    await grading.moodle_grade_submission(
+        {"assignment_id": 9, "course_id": 5, "user_id": 1, "grade": 7}
+    )
     assert "plugindata" not in fake.params("mod_assign_save_grade")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("grade", "message"),
+    [
+        (float("nan"), "not a valid grade"),
+        (float("inf"), "not a valid grade"),
+        (-1, "cannot be negative"),
+    ],
+)
+async def test_invalid_grades_are_refused_before_any_call(
+    fake_moodle: Callable[[Any], Any], grade: float, message: str
+) -> None:
+    fake = fake_moodle(client)
+    with pytest.raises(ValueError, match=message):
+        await grading.moodle_grade_submission(
+            {"assignment_id": 9, "course_id": 5, "user_id": 1, "grade": grade}
+        )
+    assert fake.calls == []
+
+
+@pytest.mark.asyncio
+async def test_grade_submission_needs_the_course() -> None:
+    with pytest.raises(ValueError, match="course_id is required"):
+        await grading.moodle_grade_submission({"assignment_id": 9, "user_id": 1, "grade": 5})
+
+
+@pytest.mark.asyncio
+async def test_a_grade_above_the_maximum_is_refused(fake_moodle: Callable[[Any], Any]) -> None:
+    fake = fake_moodle(client)
+    fake.on("mod_assign_get_assignments", _assignment(10))
+    with pytest.raises(ValueError, match="Grade 12 is above the maximum 10 for this assignment"):
+        await grading.moodle_grade_submission(
+            {"assignment_id": 9, "course_id": 5, "user_id": 1, "grade": 12}
+        )
+    assert [f for f, _ in fake.calls] == ["mod_assign_get_assignments"]
+
+
+@pytest.mark.asyncio
+async def test_a_scale_graded_assignment_is_refused(fake_moodle: Callable[[Any], Any]) -> None:
+    fake = fake_moodle(client)
+    fake.on("mod_assign_get_assignments", _assignment(-3))
+    with pytest.raises(ValueError, match="uses a scale; grade it in Moodle"):
+        await grading.moodle_grade_submission(
+            {"assignment_id": 9, "course_id": 5, "user_id": 1, "grade": 2}
+        )
+    assert [f for f, _ in fake.calls] == ["mod_assign_get_assignments"]
+
+
+@pytest.mark.asyncio
+async def test_an_assignment_outside_the_course_is_refused(
+    fake_moodle: Callable[[Any], Any],
+) -> None:
+    fake = fake_moodle(client)
+    fake.on("mod_assign_get_assignments", {"courses": [{"id": 5, "assignments": []}]})
+    with pytest.raises(ValueError, match="Assignment 9 was not found in course 5"):
+        await grading.moodle_grade_submission(
+            {"assignment_id": 9, "course_id": 5, "user_id": 1, "grade": 2}
+        )
 
 
 @pytest.mark.asyncio
