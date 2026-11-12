@@ -1,0 +1,27 @@
+kind = "library"
+key = "administration_no_outreach"
+label = "Administration, no outreach"
+summary = "Creates and updates courses and accounts and manages enrolments, each after approval. Never grades, messages or posts to a forum."
+use_case = "administration"
+read = true
+modify = true
+approval_actions = ["modify"]
+approval_eur = ""
+only = [
+    "moodle_site_info",
+    "moodle_search_courses",
+    "moodle_get_course_contents",
+    "moodle_list_participants",
+    "moodle_find_users",
+    "moodle_get_grades",
+    "moodle_get_completion",
+    "moodle_list_assignments",
+    "moodle_list_submissions",
+    "moodle_list_forum_discussions",
+    "moodle_create_course",
+    "moodle_update_course",
+    "moodle_create_user",
+    "moodle_update_user",
+    "moodle_enrol_user",
+    "moodle_unenrol_user",
+]

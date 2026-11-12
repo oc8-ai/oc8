@@ -1,0 +1,15 @@
+name = "moodle_token"
+display_name = "Moodle web service token"
+
+[[fields]]
+key = "url"
+label = "Moodle site URL"
+kind = "url"
+placeholder = "https://lms.example.org"
+help = "The address you open Moodle at, without /login or any other path."
+
+[[fields]]
+key = "token"
+label = "Web service token"
+kind = "password"
+help = "Site administration → Server → Web services → Manage tokens: a token for the oc8 service user and the oc8 external service."

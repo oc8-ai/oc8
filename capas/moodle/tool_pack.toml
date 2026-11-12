@@ -1,0 +1,199 @@
+# The tool-pack half of the moodle capa. This file's TOP LEVEL *is* the
+# `tool_pack` table -- there is no `[plugin.tool_pack]` wrapper. Guardrail
+# presets and the curated library live one file per key in guardrails/.
+
+[[connections]]
+key = "primary"
+name = "moodle"
+transport = "stdio"
+server_url = ""
+credential_type = "moodle_token"
+
+# Right classification: exactly the tools mcp_bridge serves (a test asserts it).
+[connections.scopes]
+read = [
+    "moodle_site_info", "moodle_search_courses", "moodle_get_course_contents",
+    "moodle_list_participants", "moodle_find_users", "moodle_get_grades",
+    "moodle_get_completion", "moodle_list_assignments", "moodle_list_submissions",
+    "moodle_list_forum_discussions",
+]
+modify = [
+    "moodle_create_course", "moodle_update_course",
+    "moodle_create_user", "moodle_update_user",
+    "moodle_enrol_user", "moodle_unenrol_user",
+    "moodle_grade_submission",
+    "moodle_send_message", "moodle_post_to_forum",
+]
+
+[connections.credential_env_fields]
+MOODLE_URL = "url"
+MOODLE_TOKEN = "token"
+
+[connections.config]
+command = "python"
+args = ["-m", "mcp_bridge"]
+
+# NEUTRAL SEAM (outward_tools): the three actions that put text in front of a
+# learner -- a grade with feedback (Moodle may notify the student, per the
+# assignment's own setting), a direct message, and a forum post (subscribers
+# are mailed). Everything else changes state inside Moodle only.
+outward_tools = ["moodle_grade_submission", "moodle_send_message", "moodle_post_to_forum"]
+irreversible_tools = ["moodle_grade_submission", "moodle_send_message", "moodle_post_to_forum"]
+destructive_tools = ["moodle_unenrol_user"]
+read_before_write = true
+entity_lookup_tools = ["moodle_search_courses", "moodle_find_users", "moodle_list_participants"]
+
+[connections.config.env]
+PYTHONPATH = "/app/capas/moodle"
+MOODLE_URL = "http://host.docker.internal:8081"
+
+# Replaced by the setup form's real secret ref on configure.
+[connections.config.secret_env]
+MOODLE_TOKEN = "moodle/token"
+
+# NEUTRAL SEAM (focus_spec): the entity is implied by the TOOL, like
+# gitea_mcp/jira_mcp. Listing tools are searches: they name a kind of record,
+# not one, so two agents reading the same course never "collide".
+[connections.config.focus_spec]
+id_field = "id"
+id_fields = ["user_id", "course_id", "assignment_id", "forum_id", "post_id"]
+title_fields = ["fullname", "name", "subject"]
+default_verb = "Updates"
+search_label = "Searches"
+search_tools = [
+    "moodle_search_courses", "moodle_find_users", "moodle_list_participants",
+    "moodle_get_grades", "moodle_list_assignments", "moodle_list_submissions",
+    "moodle_list_forum_discussions", "moodle_get_course_contents", "moodle_site_info",
+]
+
+[connections.config.focus_spec.labels]
+course = "course"
+user = "user"
+student = "student"
+forum = "forum"
+
+[connections.config.focus_spec.tool_entities]
+moodle_update_course = "course"
+moodle_update_user = "user"
+moodle_enrol_user = "user"
+moodle_unenrol_user = "user"
+moodle_get_completion = "student"
+moodle_grade_submission = "student"
+moodle_post_to_forum = "forum"
+
+[connections.config.focus_spec.verbs]
+moodle_update_course = "Updates"
+moodle_update_user = "Updates"
+moodle_enrol_user = "Enrols"
+moodle_unenrol_user = "Unenrols"
+moodle_get_completion = "Checks progress of"
+moodle_grade_submission = "Grades"
+moodle_post_to_forum = "Posts in"
+
+# NEUTRAL SEAM (record_url): where a course or a person lives, so an approval
+# links straight into Moodle. Core percent-encodes {model} (safe=""), so the
+# segment is a bare name and the fixed "/view.php?id=" lives in the template.
+[connections.record_url]
+template = "{base_url}/{model}/view.php?id={id}"
+base_url_path = ["env", "MOODLE_URL"]
+
+[connections.record_url.models]
+course = "course"
+user = "user"
+student = "user"
+
+# NEUTRAL SEAM (tool_labels): how calls read in a run's step timeline.
+[connections.tool_labels.moodle_site_info]
+verb = "Checked"
+object = "the Moodle connection"
+running = "Checking the Moodle connection"
+
+[connections.tool_labels.moodle_search_courses]
+verb = "Looked up"
+object = "courses"
+running = "Looking up courses"
+
+[connections.tool_labels.moodle_get_course_contents]
+verb = "Read"
+object = "course {course_id}"
+running = "Reading course {course_id}"
+
+[connections.tool_labels.moodle_list_participants]
+verb = "Listed"
+object = "participants of course {course_id}"
+running = "Listing participants"
+
+[connections.tool_labels.moodle_find_users]
+verb = "Looked up"
+object = "users"
+running = "Looking up users"
+
+[connections.tool_labels.moodle_get_grades]
+verb = "Read"
+object = "grades of course {course_id}"
+running = "Reading grades"
+
+[connections.tool_labels.moodle_get_completion]
+verb = "Checked"
+object = "progress of user {user_id}"
+running = "Checking progress"
+
+[connections.tool_labels.moodle_list_assignments]
+verb = "Listed"
+object = "assignments of course {course_id}"
+running = "Listing assignments"
+
+[connections.tool_labels.moodle_list_submissions]
+verb = "Read"
+object = "submissions"
+running = "Reading submissions"
+
+[connections.tool_labels.moodle_list_forum_discussions]
+verb = "Read"
+object = "forum posts"
+running = "Reading forum posts"
+
+[connections.tool_labels.moodle_create_course]
+verb = "Created"
+object = "a course"
+running = "Creating a course"
+
+[connections.tool_labels.moodle_update_course]
+verb = "Updated"
+object = "course {course_id}"
+running = "Updating course {course_id}"
+
+[connections.tool_labels.moodle_create_user]
+verb = "Created"
+object = "a user account"
+running = "Creating a user account"
+
+[connections.tool_labels.moodle_update_user]
+verb = "Updated"
+object = "user {user_id}"
+running = "Updating user {user_id}"
+
+[connections.tool_labels.moodle_enrol_user]
+verb = "Enrolled"
+object = "user {user_id} in course {course_id}"
+running = "Enrolling user {user_id}"
+
+[connections.tool_labels.moodle_unenrol_user]
+verb = "Unenrolled"
+object = "user {user_id} from course {course_id}"
+running = "Unenrolling user {user_id}"
+
+[connections.tool_labels.moodle_grade_submission]
+verb = "Graded"
+object = "the submission of user {user_id}"
+running = "Grading a submission"
+
+[connections.tool_labels.moodle_send_message]
+verb = "Sent"
+object = "a Moodle message"
+running = "Sending a Moodle message"
+
+[connections.tool_labels.moodle_post_to_forum]
+verb = "Posted"
+object = "in the forum"
+running = "Posting in the forum"

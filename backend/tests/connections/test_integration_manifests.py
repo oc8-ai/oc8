@@ -33,3 +33,9 @@ def test_hubspot_and_jira_logins_map_onto_their_bridges() -> None:
         "JIRA_USERNAME": "username",
         "JIRA_API_TOKEN": "api_token",
     }
+
+
+def test_moodle_token_maps_onto_its_bridge() -> None:
+    moodle = _integration("moodle")
+    assert (moodle.label, moodle.kind) == ("Moodle", "credential")
+    assert moodle.credential_env_fields == {"MOODLE_URL": "url", "MOODLE_TOKEN": "token"}
