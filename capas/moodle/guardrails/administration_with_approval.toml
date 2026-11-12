@@ -1,7 +1,7 @@
 kind = "library"
-key = "administration_no_outreach"
-label = "Administration, no outreach"
-summary = "Creates and updates courses and accounts and manages enrolments, each after approval. Never grades, messages or posts to a forum."
+key = "administration_with_approval"
+label = "Administration with approval"
+summary = "Creates and updates courses and accounts and manages enrolments, each after approval. Moodle may send its own account and welcome emails. Never grades, messages or posts to a forum."
 use_case = "administration"
 read = true
 modify = true

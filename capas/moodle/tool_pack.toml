@@ -33,12 +33,21 @@ MOODLE_TOKEN = "token"
 command = "python"
 args = ["-m", "mcp_bridge"]
 
-# NEUTRAL SEAM (outward_tools): the three actions that put text in front of a
-# learner -- a grade with feedback (Moodle may notify the student, per the
-# assignment's own setting), a direct message, and a forum post (subscribers
-# are mailed). Everything else changes state inside Moodle only.
-outward_tools = ["moodle_grade_submission", "moodle_send_message", "moodle_post_to_forum"]
-irreversible_tools = ["moodle_grade_submission", "moodle_send_message", "moodle_post_to_forum"]
+# NEUTRAL SEAM (outward_tools): actions that make Moodle put text in front of
+# a person. Three reach a learner directly -- a grade with feedback (Moodle may
+# notify the student, per the assignment's own setting), a direct message, and
+# a forum post (subscribers are mailed). Two more can make Moodle send an
+# account or welcome email: create_user (createpassword mails the new user
+# their password) and enrol_user (the course welcome message, per course
+# setting). An email cannot be recalled, so all five are also irreversible.
+outward_tools = [
+    "moodle_grade_submission", "moodle_send_message", "moodle_post_to_forum",
+    "moodle_create_user", "moodle_enrol_user",
+]
+irreversible_tools = [
+    "moodle_grade_submission", "moodle_send_message", "moodle_post_to_forum",
+    "moodle_create_user", "moodle_enrol_user",
+]
 destructive_tools = ["moodle_unenrol_user"]
 read_before_write = true
 entity_lookup_tools = ["moodle_search_courses", "moodle_find_users", "moodle_list_participants"]

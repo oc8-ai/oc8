@@ -26,7 +26,14 @@ READ = {
     "moodle_list_submissions",
     "moodle_list_forum_discussions",
 }
-OUTWARD = ["moodle_grade_submission", "moodle_send_message", "moodle_post_to_forum"]
+OUTWARD = [
+    "moodle_grade_submission",
+    "moodle_send_message",
+    "moodle_post_to_forum",
+    "moodle_create_user",
+    "moodle_enrol_user",
+]
+NEVER_FOR_ADMIN = {"moodle_grade_submission", "moodle_send_message", "moodle_post_to_forum"}
 
 
 def _evict() -> None:
@@ -84,6 +91,9 @@ def test_outward_and_destructive_tools_are_modify_tools_in_config() -> None:
     conn = _connection()
     assert conn.config["outward_tools"] == OUTWARD
     assert conn.config["irreversible_tools"] == OUTWARD
+    for name in ("moodle_create_user", "moodle_enrol_user"):
+        assert name in conn.config["outward_tools"]
+        assert name in conn.config["irreversible_tools"]
     assert conn.config["destructive_tools"] == ["moodle_unenrol_user"]
     modify = set(conn.scopes["modify"])
     assert set(OUTWARD) <= modify and "moodle_unenrol_user" in modify
@@ -134,7 +144,7 @@ def test_presets_and_library() -> None:
     assert discovered is not None and discovered.guardrail_library is not None
     assert {g.key for g in discovered.guardrail_library.guardrail} == {
         "teaching_assistant",
-        "administration_no_outreach",
+        "administration_with_approval",
         "communication_with_approval",
     }
 
@@ -156,11 +166,11 @@ def test_teaching_assistant_cannot_message_or_administer() -> None:
     assert set(entry["only"]) == READ | {"moodle_grade_submission"}
 
 
-def test_administration_preset_reaches_nobody_outside() -> None:
+def test_administration_preset_never_grades_messages_or_posts() -> None:
     entry = tomllib.loads(
-        (PLUGIN_ROOT / "guardrails" / "administration_no_outreach.toml").read_text()
+        (PLUGIN_ROOT / "guardrails" / "administration_with_approval.toml").read_text()
     )
-    assert not set(entry["only"]) & set(OUTWARD)
+    assert not set(entry["only"]) & NEVER_FOR_ADMIN
     assert {"moodle_enrol_user", "moodle_create_user", "moodle_create_course"} <= set(entry["only"])
 
 
