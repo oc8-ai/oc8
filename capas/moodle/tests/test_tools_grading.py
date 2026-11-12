@@ -269,6 +269,17 @@ async def test_submissions_include_students_without_a_row_and_never_teachers(
     fake.on("core_enrol_get_enrolled_users", _students_and_teacher())
     result = await grading.moodle_list_submissions({"assignment_id": 9, "course_id": 5})
     assert fake.params("mod_assign_get_submissions") == {"assignmentids": [9]}
+    assert fake.params("core_enrol_get_enrolled_users") == {
+        "courseid": 5,
+        "options": [
+            {"name": "onlyactive", "value": 1},
+            {
+                "name": "userfields",
+                "value": "id,fullname,email,username,roles,groups,lastaccess,lastcourseaccess,"
+                "suspended",
+            },
+        ],
+    }
     rows = {r["user_id"]: r for r in result["items"]}
     assert set(rows) == {1, 2, 3}
     assert rows[1]["status"] == "submitted"
@@ -281,6 +292,59 @@ async def test_submissions_include_students_without_a_row_and_never_teachers(
         "submitted_at": None,
         "grading_status": "notgraded",
     }
+
+
+@pytest.mark.asyncio
+async def test_a_team_submission_counts_for_every_member_of_its_group(
+    fake_moodle: Callable[[Any], Any],
+) -> None:
+    fake = fake_moodle(client)
+    fake.on(
+        "mod_assign_get_submissions",
+        {
+            "assignments": [
+                {
+                    "assignmentid": 9,
+                    "submissions": [
+                        {
+                            "userid": 0,
+                            "groupid": 3,
+                            "status": "submitted",
+                            "timemodified": 1767225600,
+                            "gradingstatus": "notgraded",
+                        },
+                    ],
+                }
+            ]
+        },
+    )
+    fake.on(
+        "core_enrol_get_enrolled_users",
+        [
+            {
+                "id": 1,
+                "fullname": "Ana",
+                "roles": [{"shortname": "student"}],
+                "groups": [{"id": 3}],
+            },
+            {
+                "id": 2,
+                "fullname": "Ben",
+                "roles": [{"shortname": "student"}],
+                "groups": [{"id": 3}],
+            },
+            {
+                "id": 3,
+                "fullname": "Cem",
+                "roles": [{"shortname": "student"}],
+                "groups": [{"id": 4}],
+            },
+        ],
+    )
+    result = await grading.moodle_list_submissions({"assignment_id": 9, "course_id": 5})
+    status = {r["user_id"]: r["status"] for r in result["items"]}
+    assert status == {1: "submitted", 2: "submitted", 3: "new"}
+    assert result["items"][0]["submitted_at"] == "2026-01-01T00:00:00Z"
 
 
 @pytest.mark.asyncio

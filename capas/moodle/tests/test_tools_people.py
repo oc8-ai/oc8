@@ -32,6 +32,18 @@ sys.path.remove(str(PLUGIN_ROOT))
 _evict()
 
 DAY = 86400
+#: Only active enrolments, and only the fields an agent needs.
+ACTIVE_ONLY = {
+    "courseid": 5,
+    "options": [
+        {"name": "onlyactive", "value": 1},
+        {
+            "name": "userfields",
+            "value": "id,fullname,email,username,roles,groups,lastaccess,lastcourseaccess,"
+            "suspended",
+        },
+    ],
+}
 
 
 def _user(uid: int, role: str, last_course_access: int) -> dict[str, Any]:
@@ -76,7 +88,7 @@ async def test_participants_filter_by_role_and_inactivity_and_drop_private_field
     result = await people.moodle_list_participants(
         {"course_id": 5, "role": "student", "only_inactive_days": 14}
     )
-    assert fake.params("core_enrol_get_enrolled_users") == {"courseid": 5}
+    assert fake.params("core_enrol_get_enrolled_users") == ACTIVE_ONLY
     assert [u["id"] for u in result["items"]] == [2, 3]
     assert all("phone1" not in u for u in result["items"])
     assert result["items"][1]["last_course_access"] is None

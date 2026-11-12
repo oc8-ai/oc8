@@ -17,15 +17,33 @@ from ..shaping import has_role, page, pick_one, refusals, shape_user
 ROLE_IDS = {"student": 5, "teacher": 4, "editingteacher": 3}
 _DAY = 86400
 _USER_FIELDS = ("firstname", "lastname", "email", "idnumber")
+#: What core_enrol_get_enrolled_users returns: only the fields shape_user and
+#: the submission join read, instead of every profile field.
+_ENROLLED_FIELDS = "id,fullname,email,username,roles,groups,lastaccess,lastcourseaccess,suspended"
 _PAGING = {
     "limit": {"type": "integer", "description": "Max items (default 50, max 200)."},
     "offset": {"type": "integer", "description": "Items to skip, for the next page."},
 }
 
 
+async def enrolled_users(course_id: int) -> list[dict[str, Any]]:
+    """People with an ACTIVE enrolment in a course: suspended or expired
+    enrolments are left out, so they never count as students to chase."""
+    users = await client.call(
+        "core_enrol_get_enrolled_users",
+        {
+            "courseid": course_id,
+            "options": [
+                {"name": "onlyactive", "value": 1},
+                {"name": "userfields", "value": _ENROLLED_FIELDS},
+            ],
+        },
+    )
+    return list(users or [])
+
+
 async def moodle_list_participants(args: Mapping[str, Any]) -> dict[str, Any]:
-    users = await client.call("core_enrol_get_enrolled_users", {"courseid": int(args["course_id"])})
-    users = list(users or [])
+    users = await enrolled_users(int(args["course_id"]))
     if args.get("role"):
         users = [u for u in users if has_role(u, str(args["role"]))]
     if args.get("only_inactive_days") is not None:

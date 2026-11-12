@@ -10,6 +10,7 @@ from mcp.types import Tool
 
 from .. import client
 from ..shaping import as_html, has_role, iso, page, plain_text
+from .people import enrolled_users
 
 _COMPLETION_STATES = {0: "incomplete", 1: "complete", 2: "complete_pass", 3: "complete_fail"}
 #: Moodle's FORMAT_HTML: feedback is stored as HTML.
@@ -154,13 +155,23 @@ async def moodle_list_submissions(args: Mapping[str, Any]) -> Any:
             f"Moodle returned no submissions for assignment {assignment_id}"
             + (f": {reasons}" if reasons else " (wrong id or no access?).")
         )
-    rows_by_user = {s.get("userid"): s for s in match.get("submissions") or []}
-    enrolled = await client.call(
-        "core_enrol_get_enrolled_users", {"courseid": int(args["course_id"])}
-    )
+    submissions = match.get("submissions") or []
+    rows_by_user = {s.get("userid"): s for s in submissions if s.get("userid")}
+    # Team assignments: one row per group (userid 0), shared by its members.
+    rows_by_group = {
+        s.get("groupid"): s for s in submissions if not s.get("userid") and s.get("groupid")
+    }
+    enrolled = await enrolled_users(int(args["course_id"]))
     rows: list[dict[str, Any]] = []
-    for student in [u for u in enrolled or [] if has_role(u, "student")]:
-        submission = rows_by_user.get(student.get("id")) or {}
+    for student in [u for u in enrolled if has_role(u, "student")]:
+        submission = rows_by_user.get(student.get("id")) or next(
+            (
+                rows_by_group[g.get("id")]
+                for g in student.get("groups") or []
+                if g.get("id") in rows_by_group
+            ),
+            {},
+        )
         status = submission.get("status") or "new"
         rows.append(
             {
