@@ -243,6 +243,7 @@ async def test_submissions_filter_by_status(fake_moodle: Callable[[Any], Any]) -
         {
             "assignments": [
                 {
+                    "assignmentid": 9,
                     "submissions": [
                         {
                             "userid": 1,
@@ -250,7 +251,7 @@ async def test_submissions_filter_by_status(fake_moodle: Callable[[Any], Any]) -
                             "timemodified": 1,
                             "gradingstatus": "graded",
                         },
-                    ]
+                    ],
                 }
             ]
         },
@@ -339,3 +340,31 @@ async def test_grade_without_feedback_sends_no_plugindata(
     fake.on("mod_assign_save_grade", None)
     await grading.moodle_grade_submission({"assignment_id": 9, "user_id": 1, "grade": 7})
     assert "plugindata" not in fake.params("mod_assign_save_grade")
+
+
+@pytest.mark.asyncio
+async def test_missing_assignment_raises_instead_of_listing_everyone_as_new(
+    fake_moodle: Callable[[Any], Any],
+) -> None:
+    fake = fake_moodle(client)
+    fake.on("mod_assign_get_submissions", {"assignments": []})
+    fake.on("core_enrol_get_enrolled_users", _students_and_teacher())
+    with pytest.raises(ValueError, match="no submissions for assignment 9"):
+        await grading.moodle_list_submissions({"assignment_id": 9, "course_id": 5})
+
+
+@pytest.mark.asyncio
+async def test_moodle_warning_is_surfaced_as_an_error(
+    fake_moodle: Callable[[Any], Any],
+) -> None:
+    fake = fake_moodle(client)
+    fake.on(
+        "mod_assign_get_submissions",
+        {
+            "assignments": [],
+            "warnings": [{"item": "assignment", "itemid": 9, "message": "No access"}],
+        },
+    )
+    fake.on("core_enrol_get_enrolled_users", _students_and_teacher())
+    with pytest.raises(ValueError, match="assignment 9: No access"):
+        await grading.moodle_list_submissions({"assignment_id": 9, "course_id": 5})

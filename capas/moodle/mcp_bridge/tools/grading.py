@@ -131,9 +131,16 @@ async def moodle_list_submissions(args: Mapping[str, Any]) -> Any:
         raise ValueError("course_id is required to find students who have not submitted.")
     answer = await client.call("mod_assign_get_submissions", {"assignmentids": [assignment_id]})
     assignments = (answer or {}).get("assignments") or []
-    rows_by_user = {
-        s.get("userid"): s for s in (assignments[0].get("submissions") or [] if assignments else [])
-    }
+    match = next((a for a in assignments if a.get("assignmentid") == assignment_id), None)
+    if match is None:
+        reasons = "; ".join(
+            str(w.get("message")) for w in (answer or {}).get("warnings") or [] if w.get("message")
+        )
+        raise ValueError(
+            f"Moodle returned no submissions for assignment {assignment_id}"
+            + (f": {reasons}" if reasons else " (wrong id or no access?).")
+        )
+    rows_by_user = {s.get("userid"): s for s in match.get("submissions") or []}
     enrolled = await client.call(
         "core_enrol_get_enrolled_users", {"courseid": int(args["course_id"])}
     )
