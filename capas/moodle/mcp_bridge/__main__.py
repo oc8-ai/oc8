@@ -20,9 +20,11 @@ from mcp.server import Server, ServerRequestContext
 
 from .tools.courses import CALL_HANDLERS as COURSE_HANDLERS
 from .tools.courses import TOOLS as COURSE_TOOLS
+from .tools.people import CALL_HANDLERS as PEOPLE_HANDLERS
+from .tools.people import TOOLS as PEOPLE_TOOLS
 
-ALL_TOOLS: list[types.Tool] = [*COURSE_TOOLS]
-ALL_HANDLERS = {**COURSE_HANDLERS}
+ALL_TOOLS: list[types.Tool] = [*COURSE_TOOLS, *PEOPLE_TOOLS]
+ALL_HANDLERS = {**COURSE_HANDLERS, **PEOPLE_HANDLERS}
 
 
 async def _on_list_tools(
