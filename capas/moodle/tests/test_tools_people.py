@@ -254,4 +254,13 @@ async def test_unenrol(fake_moodle: Callable[[Any], Any]) -> None:
     assert fake.params("enrol_manual_unenrol_users") == {
         "enrolments": [{"userid": 7, "courseid": 5}],
     }
-    assert result == {"unenrolled": True, "course_id": 5, "user_id": 7}
+    assert result == {
+        "unenrolled": True,
+        "method": "manual",
+        "note": (
+            "Only the manual enrolment was removed; other enrolment methods "
+            "(self, cohort) are unchanged."
+        ),
+    }
+    unenrol = next(t for t in people.TOOLS if t.name == "moodle_unenrol_user")
+    assert "self" in (unenrol.description or "") and "cohort" in (unenrol.description or "")

@@ -139,6 +139,23 @@ async def test_send_message_reports_failed_recipients(
 
 
 @pytest.mark.asyncio
+async def test_send_message_sends_each_recipient_once(
+    fake_moodle: Callable[[Any], Any],
+) -> None:
+    fake = fake_moodle(client)
+    fake.on(
+        "core_message_send_instant_messages",
+        lambda params: [{"msgid": 100 + i} for i, _ in enumerate(params["messages"])],
+    )
+    result = await communication.moodle_send_message(
+        {"user_ids": [2, 1, 2, *([1] * 60)], "text": "Erinnerung"}
+    )
+    sent = fake.params("core_message_send_instant_messages")["messages"]
+    assert [m["touserid"] for m in sent] == [2, 1]
+    assert result == {"sent": 2, "failed": []}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("args", "message"),
     [

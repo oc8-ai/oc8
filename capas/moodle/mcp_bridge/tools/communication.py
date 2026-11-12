@@ -68,7 +68,8 @@ async def moodle_list_forum_discussions(args: Mapping[str, Any]) -> dict[str, An
 
 
 async def moodle_send_message(args: Mapping[str, Any]) -> dict[str, Any]:
-    user_ids = [int(u) for u in args.get("user_ids") or []]
+    # One message per person, in the order given, however often a model repeats an id.
+    user_ids = list(dict.fromkeys(int(u) for u in args.get("user_ids") or []))
     if not user_ids:
         raise ValueError("Give at least one recipient in user_ids.")
     if len(user_ids) > MAX_RECIPIENTS:

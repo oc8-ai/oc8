@@ -20,6 +20,9 @@ _USER_FIELDS = ("firstname", "lastname", "email", "idnumber")
 #: What core_enrol_get_enrolled_users returns: only the fields shape_user and
 #: the submission join read, instead of every profile field.
 _ENROLLED_FIELDS = "id,fullname,email,username,roles,groups,lastaccess,lastcourseaccess,suspended"
+_UNENROL_NOTE = (
+    "Only the manual enrolment was removed; other enrolment methods (self, cohort) are unchanged."
+)
 _PAGING = {
     "limit": {"type": "integer", "description": "Max items (default 50, max 200)."},
     "offset": {"type": "integer", "description": "Items to skip, for the next page."},
@@ -114,7 +117,7 @@ async def moodle_unenrol_user(args: Mapping[str, Any]) -> dict[str, Any]:
     await client.call(
         "enrol_manual_unenrol_users", {"enrolments": [{"userid": user_id, "courseid": course_id}]}
     )
-    return {"unenrolled": True, "course_id": course_id, "user_id": user_id}
+    return {"unenrolled": True, "method": "manual", "note": _UNENROL_NOTE}
 
 
 TOOLS: list[Tool] = [
@@ -203,7 +206,11 @@ TOOLS: list[Tool] = [
     ),
     Tool(
         name="moodle_unenrol_user",
-        description="Remove a user's manual enrolment from a course.",
+        description=(
+            "Remove a user's manual enrolment from a course. Only the manual enrolment is "
+            "removed: if the user is also enrolled by another method (self, cohort), they "
+            "stay in the course."
+        ),
         inputSchema={
             "type": "object",
             "properties": {"course_id": {"type": "integer"}, "user_id": {"type": "integer"}},
