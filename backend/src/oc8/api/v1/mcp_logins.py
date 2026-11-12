@@ -14,7 +14,7 @@ from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
 from oc8.api.v1.mcp import _manifest_connection
 from oc8.authz.permissions import INTEGRATION, MANAGE, VIEW, perm
-from oc8.connections.credential_env import credential_mcp_env
+from oc8.connections.credential_env import credential_env_targets, credential_mcp_env
 from oc8.credentials.registry import CredentialTypeNotFound, get_credential_type
 from oc8.credentials.service import CredentialNotFound, create_credential, get_credential
 from oc8.schemas.dto import McpLoginDTO
@@ -194,13 +194,29 @@ async def create_login(
     # connection (credential_type registered but not yet wired to any tool
     # pack) still gets a usable Credential + connection pair.
     env, secret_env = credential_mcp_env(cred, cred_type, credential_env_fields)
-    # Everything from the manifest connection's own config EXCEPT env/
-    # secret_env (those are this login's credential, not the shared
-    # plugin's demo/default values) -- command, args, _plugin_name,
-    # focus_spec, value_spec, outward_tools, _connection_key, all carried
-    # over so the runtime can actually start this server.
+    # Everything from the manifest connection's own config -- command, args,
+    # _plugin_name, focus_spec, value_spec, outward_tools, _connection_key,
+    # all carried over so the runtime can actually start this server -- with
+    # env/secret_env rebuilt rather than copied. `env` starts from the
+    # manifest's own env so NON-credential launch env (e.g. a PYTHONPATH a
+    # `python -m <bridge>` server needs to be importable at all) survives: a
+    # login whose env was only the credential's fields started that server
+    # without it and every run died with "No module named ..." (live bug).
+    # The names this credential manages (credential_env_targets: the mapped
+    # env names plus each unmapped field's own key) are dropped first -- those
+    # are the shared plugin's demo/default values -- and the credential's own
+    # values are overlaid, so they always win. `secret_env` stays ONLY this
+    # credential's refs: the manifest's placeholder secret refs never carry
+    # over.
+    managed = credential_env_targets(cred_type, credential_env_fields)
+    manifest_env = source_cfg.get("env")
+    launch_env = (
+        {k: v for k, v in manifest_env.items() if k not in managed}
+        if isinstance(manifest_env, dict)
+        else {}
+    )
     config = {k: v for k, v in source_cfg.items() if k not in ("env", "secret_env")}
-    config["env"] = env
+    config["env"] = {**launch_env, **env}
     config["secret_env"] = secret_env
     conn = m.McpConnection(
         tenant_id=principal.tenant_id,
