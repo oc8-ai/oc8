@@ -1,0 +1,19 @@
+# Moodle over the Model Context Protocol, through this capa's OWN stdio bridge
+# (mcp_bridge/) calling Moodle's web service REST API. No third-party MCP
+# server: the tool cut, the read/modify split and the outward marks are what
+# oc8's guardrails gate on, so they are written here, against Moodle 4.1 LTS.
+#
+# This file is the slim core only. The tool pack lives in tool_pack.toml, the
+# guardrail presets and curated library in guardrails/<key>.toml, and the
+# setup form in setup/{fields,mcp}.toml.
+
+[plugin]
+name = "moodle"
+label = "Moodle"
+version = "1.0.0"
+type = "tool_pack"
+trust = "first_party"
+summary = "Connect Moodle — courses, participants, grades, submissions, enrolments and messages"
+permissions = ["mcp:connect", "secrets:use"]
+capabilities = ["integration:lms"]
+icon = "icon.svg"

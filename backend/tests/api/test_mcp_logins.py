@@ -9,7 +9,6 @@ import pytest
 from asgi_lifespan import LifespanManager
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.auth import get_identity_provider
@@ -514,3 +513,86 @@ async def test_creating_a_login_inherits_the_spawn_command_and_renames_env_keys(
         # toml's own credential_env_fields comment explains why both names
         # are needed).
         assert set(conn.config["secret_env"]) == {"ODOO_PASSWORD", "ODOO_API_KEY"}
+
+
+async def test_creating_a_login_keeps_the_manifest_launch_env_and_only_the_credentials_secrets(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Live bug: a tool pack that launches `python -m <bridge>` needs a launch
+    # var in its manifest `env` (PYTHONPATH) that is NOT a credential field. The
+    # login connection's env used to be ONLY the credential's own values, so
+    # the per-agent login lost PYTHONPATH and every run died with "No module
+    # named ..." ("connection offers no tools right now"). The DECLARED launch
+    # env must survive; anything only the stored row carries (an org value the
+    # setup form wrote there) must not leak into a person's login; the
+    # credential-managed names carry the login's values, not the defaults; and
+    # secret_env stays the credential's own refs. Uses the REAL moodle manifest,
+    # which declares PYTHONPATH next to its credential-managed MOODLE_URL.
+    monkeypatch.setattr(get_settings(), "capas_path", str(_PLUGINS_DIR), raising=False)
+    monkeypatch.setitem(
+        registry.CORE_CREDENTIAL_TYPES,
+        "moodle_token",
+        CredentialTypeSpec(
+            name="moodle_token",
+            display_name="Moodle token",
+            fields=[
+                SetupFieldSpec(key="url", label="URL", kind="url", required=True),
+                SetupFieldSpec(key="token", label="Token", kind="password", required=True),
+            ],
+        ),
+    )
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        db.add(
+            m.McpConnection(
+                tenant_id=tenant,
+                name="moodle",
+                server_url="",
+                transport="stdio",
+                scopes=[],
+                config={
+                    "_plugin_name": "moodle",
+                    "_connection_key": "primary",
+                    "command": "python",
+                    "args": ["-m", "mcp_bridge"],
+                    "env": {
+                        "PYTHONPATH": "/app/capas/moodle",
+                        "MOODLE_URL": "https://org.example.org",
+                        "ORG_ONLY": "written-by-setup",
+                    },
+                    "secret_env": {"MOODLE_TOKEN": "moodle/token"},
+                },
+                connected=True,
+            )
+        )
+        await db.flush()
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            r = await c.post(
+                "/api/v1/mcp/logins",
+                json={
+                    "name": "moodle",
+                    "credentialType": "moodle_token",
+                    "fieldValues": {"url": "https://lms.example.org", "token": "person-token"},
+                    "scopes": [],
+                },
+                headers=_headers(tenant),
+            )
+            assert r.status_code == 201, r.text
+            login_id = r.json()["id"]
+
+    async with app_session(tenant) as db:
+        conn = await db.get(m.McpConnection, uuid.UUID(login_id))
+        assert conn is not None
+        # Exactly the declared launch env, with the login's own value for the
+        # credential-managed name; the row-only org value is not copied.
+        assert conn.config["env"] == {
+            "PYTHONPATH": "/app/capas/moodle",
+            "MOODLE_URL": "https://lms.example.org",
+        }
+        # secret_env is only this credential's refs, never the manifest's.
+        assert set(conn.config["secret_env"]) == {"MOODLE_TOKEN"}
+        assert "moodle/token" not in conn.config["secret_env"].values()

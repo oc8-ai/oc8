@@ -6,6 +6,8 @@ tool packs that still use it."""
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -14,7 +16,7 @@ from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
 from oc8.api.v1.mcp import _manifest_connection
 from oc8.authz.permissions import INTEGRATION, MANAGE, VIEW, perm
-from oc8.connections.credential_env import credential_mcp_env
+from oc8.connections.credential_env import credential_env_targets, credential_mcp_env
 from oc8.credentials.registry import CredentialTypeNotFound, get_credential_type
 from oc8.credentials.service import CredentialNotFound, create_credential, get_credential
 from oc8.schemas.dto import McpLoginDTO
@@ -50,9 +52,7 @@ async def create_login(
             db, tenant_id=principal.tenant_id, name=body.credential_type
         )
     except CredentialTypeNotFound as exc:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, f"unknown credential type: {exc}"
-        ) from exc
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"unknown credential type: {exc}") from exc
     dept: m.Department | None = None
     if body.department_id is not None:
         dept = await db.get(m.Department, body.department_id)
@@ -179,10 +179,14 @@ async def create_login(
     # mapping was added got ODOO_API_KEY only, never ODOO_PASSWORD, because
     # dict inversion collapsed the two entries into one.
     credential_env_fields: dict[str, str] = {}
+    declared_env: dict[str, Any] = {}
     if source_conn is not None:
         resolved = _manifest_connection(source_conn)
         if resolved is not None:
             credential_env_fields = resolved[0].credential_env_fields
+            raw_env = resolved[0].config.get("env")
+            if isinstance(raw_env, dict):
+                declared_env = raw_env
     # Derive config["secret_env"]/["env"] from the credential's OWN stored
     # refs/values -- resolve_mcp_env's existing per-entry loop (agent/mcp_env.py)
     # already knows how to resolve a plain secret-store ref the same way
@@ -194,13 +198,29 @@ async def create_login(
     # connection (credential_type registered but not yet wired to any tool
     # pack) still gets a usable Credential + connection pair.
     env, secret_env = credential_mcp_env(cred, cred_type, credential_env_fields)
-    # Everything from the manifest connection's own config EXCEPT env/
-    # secret_env (those are this login's credential, not the shared
-    # plugin's demo/default values) -- command, args, _plugin_name,
-    # focus_spec, value_spec, outward_tools, _connection_key, all carried
-    # over so the runtime can actually start this server.
+    # Everything from the manifest connection's own config -- command, args,
+    # _plugin_name, focus_spec, value_spec, outward_tools, _connection_key,
+    # all carried over so the runtime can actually start this server -- with
+    # env/secret_env rebuilt rather than copied. `env` starts from the env the
+    # plugin's MANIFEST declares for this connection (as
+    # runtime_env._without_identity does), so NON-credential launch env (e.g.
+    # a PYTHONPATH a `python -m <bridge>` server needs to be importable at
+    # all) survives: a login whose env was only the credential's fields
+    # started that server without it and every run died with "No module
+    # named ..." (live bug). Never the stored row's env: setup writes the
+    # organisation's own values there, and those must not leak into a
+    # person's login. The names this credential manages
+    # (credential_env_targets: the mapped env names plus each unmapped field's
+    # own key) are dropped first -- those are the plugin's demo/default
+    # values -- and the credential's own values are overlaid, so they always
+    # win. `secret_env` stays ONLY this credential's refs: the manifest's
+    # placeholder secret refs never carry over.
+    managed = credential_env_targets(cred_type, credential_env_fields)
+    launch_env = {
+        str(k): v for k, v in declared_env.items() if k not in managed and isinstance(v, str)
+    }
     config = {k: v for k, v in source_cfg.items() if k not in ("env", "secret_env")}
-    config["env"] = env
+    config["env"] = {**launch_env, **env}
     config["secret_env"] = secret_env
     conn = m.McpConnection(
         tenant_id=principal.tenant_id,

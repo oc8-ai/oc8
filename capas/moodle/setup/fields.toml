@@ -1,0 +1,22 @@
+# Operator setup form, interpreted generically by the core. The site URL and
+# the token live together in ONE shared credential (moodle_token): one
+# credential = one Moodle site, reusable across departments.
+title = "Set up Moodle"
+description = "Connect a Moodle site (4.1 or newer) through a web service user. In Moodle, enable web services and REST, add an external service \"oc8\" with the functions listed in the guide, and create a token for a dedicated service user — oc8 sees only what that user may see. Step-by-step guide: https://docs.oc8.ai/user/integrations/moodle"
+submit_label = "Save & test"
+
+[[fields]]
+key = "department"
+label = "Department"
+kind = "department"
+required = false
+help = "Agents in this department will use this connection automatically."
+
+# Required: this one field carries the site URL AND the token, so leaving it
+# blank on a resubmit would wipe both from a working connection.
+[[fields]]
+key = "site"
+label = "Moodle site"
+kind = "credential"
+credential_type = "moodle_token"
+help = "Site URL and web service token, resolved from the shared credentials store only while the bridge starts."
