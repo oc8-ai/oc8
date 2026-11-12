@@ -1,18 +1,16 @@
-# backend/tests/api/test_treg_mcp_capa_flow.py
-"""The treg_mcp capa's real install -> enable -> configure flow, using the
-ACTUAL shipped manifest folder (not an inline dict, unlike
-test_custom_mcp_capa_e2e.py's wizard-shaped one) discovered off disk exactly
-as production would. Stops short of a live `/mcp/connections/{id}/test` call:
-treg.to is a real hosted, metered third-party service, not a fixture this
-repo controls, so the boundary this test proves instead is the one that is
-actually new here -- that treg_mcp's manifest wires a real submitted secret
-all the way into the exact `X-Treg-Token` header `open_tool_session` would
-send, using nothing but the generic mechanism `test_open_tool_session.py` and
-`test_custom_mcp_capa_e2e.py` already cover for other manifests."""
+# backend/tests/api/test_moodle_capa_flow.py
+"""The moodle capa's real install -> enable -> setup flow, using the ACTUAL
+shipped manifest folder discovered off disk exactly as production would.
+Setup points the connection at a stored `moodle_token` credential and must
+wire MOODLE_URL into the bridge's launch env and MOODLE_TOKEN into a secret
+reference that resolves at launch -- the token itself is stored encrypted,
+never in the connection config or a secret row's ciphertext in clear. Stops
+short of starting the bridge: no live Moodle is part of this test."""
 
 from __future__ import annotations
 
 import base64
+import json
 import uuid
 from pathlib import Path
 
@@ -104,6 +102,7 @@ async def test_install_enable_and_configure_moodle_wires_url_and_token_into_the_
         cfg = conn.config or {}
         assert cfg["args"] == ["-m", "mcp_bridge"]
         assert cfg["env"]["MOODLE_URL"] == "https://lms.example.org"
+        assert "s3cr3t-moodle" not in json.dumps(cfg)
         env = await resolve_mcp_env(db, tenant_id=tenant, cfg=cfg, connection_name=conn.name)
         assert env["MOODLE_TOKEN"] == "s3cr3t-moodle"
         assert env["MOODLE_URL"] == "https://lms.example.org"

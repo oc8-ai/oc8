@@ -183,6 +183,19 @@ def test_every_modify_tool_writes_without_a_prior_read_through_core() -> None:
         assert denial is None, tool
 
 
+def test_read_only_preset_cannot_modify() -> None:
+    conn = _connection()
+    read_only = next(p for p in conn.guardrail_presets if p.key == "read_only")
+    assert read_only.modify is False
+
+
+def test_communication_preset_reads_and_reaches_learners_only() -> None:
+    entry = tomllib.loads(
+        (PLUGIN_ROOT / "guardrails" / "communication_with_approval.toml").read_text()
+    )
+    assert set(entry["only"]) == READ | {"moodle_send_message", "moodle_post_to_forum"}
+
+
 def test_send_message_asks_for_one_call_per_reminder() -> None:
     from mcp_bridge.tools.communication import TOOLS
 
