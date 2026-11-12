@@ -13,6 +13,7 @@ from ..shaping import MAX_LIMIT, as_html, iso, page, plain_text
 MAX_RECIPIENTS = 50
 #: Moodle's FORMAT_PLAIN.
 _FORMAT_PLAIN = 2
+_NO_RESULT = "Moodle returned no result for this recipient"
 _PAGING = {
     "limit": {"type": "integer", "description": "Max items (default 50, max 200)."},
     "offset": {"type": "integer", "description": "Items to skip, for the next page."},
@@ -57,7 +58,13 @@ async def moodle_list_forum_discussions(args: Mapping[str, Any]) -> dict[str, An
         }
         for d in (answer or {}).get("discussions") or []
     ]
-    return page(discussions, args)
+    result = page(discussions, args)
+    if len(discussions) >= MAX_LIMIT:
+        result["truncated"] = True
+        result["note"] = (
+            f"Only the {MAX_LIMIT} most recent discussions were fetched; older ones are not listed."
+        )
+    return result
 
 
 async def moodle_send_message(args: Mapping[str, Any]) -> dict[str, Any]:
@@ -77,11 +84,14 @@ async def moodle_send_message(args: Mapping[str, Any]) -> dict[str, Any]:
             ]
         },
     )
-    failed = [
-        {"user_id": uid, "error": reply.get("errormessage") or "not delivered"}
-        for uid, reply in zip(user_ids, answer or [], strict=False)
-        if int(reply.get("msgid", -1)) == -1
-    ]
+    replies = answer if isinstance(answer, list) else []
+    failed: list[dict[str, Any]] = []
+    for index, uid in enumerate(user_ids):
+        reply = replies[index] if index < len(replies) else None
+        if not isinstance(reply, dict):
+            failed.append({"user_id": uid, "error": _NO_RESULT})
+        elif int(reply.get("msgid", -1)) == -1:
+            failed.append({"user_id": uid, "error": reply.get("errormessage") or "not delivered"})
     return {"sent": len(user_ids) - len(failed), "failed": failed}
 
 

@@ -193,3 +193,44 @@ async def test_reply(fake_moodle: Callable[[Any], Any]) -> None:
 async def test_post_to_forum_validates(args: dict[str, Any], message: str) -> None:
     with pytest.raises(ValueError, match=message):
         await communication.moodle_post_to_forum(args)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replies", [[{"msgid": 101}], [], None])
+async def test_send_message_flags_recipients_without_a_reply(
+    fake_moodle: Callable[[Any], Any], replies: Any
+) -> None:
+    fake = fake_moodle(client)
+    fake.on("core_message_send_instant_messages", replies)
+    result = await communication.moodle_send_message({"user_ids": [1, 2], "text": "Hallo"})
+    missing = [{"user_id": 2, "error": "Moodle returned no result for this recipient"}]
+    if replies:
+        assert result == {"sent": 1, "failed": missing}
+    else:
+        assert result["sent"] == 0
+        assert [f["user_id"] for f in result["failed"]] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_a_full_discussion_batch_is_flagged_as_capped(
+    fake_moodle: Callable[[Any], Any],
+) -> None:
+    fake = fake_moodle(client)
+    fake.on(
+        "mod_forum_get_forum_discussions",
+        {"discussions": [{"id": i, "discussion": i, "name": "t"} for i in range(200)]},
+    )
+    result = await communication.moodle_list_forum_discussions({"forum_id": 4})
+    assert result["truncated"] is True
+    assert "200 most recent" in result["note"]
+
+
+@pytest.mark.asyncio
+async def test_a_small_discussion_batch_has_no_note(fake_moodle: Callable[[Any], Any]) -> None:
+    fake = fake_moodle(client)
+    fake.on(
+        "mod_forum_get_forum_discussions",
+        {"discussions": [{"id": i, "discussion": i, "name": "t"} for i in range(3)]},
+    )
+    result = await communication.moodle_list_forum_discussions({"forum_id": 4})
+    assert "note" not in result
