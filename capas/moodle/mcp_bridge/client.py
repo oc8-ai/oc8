@@ -101,6 +101,8 @@ async def call(function: str, params: Mapping[str, Any] | None = None) -> Any:
     except httpx.HTTPError as exc:
         reason = redact(f"{type(exc).__name__}: {exc}", token)
         raise MoodleError(f"Moodle at {url} is not reachable ({reason}).") from None
+    if 300 <= response.status_code < 400:
+        raise MoodleError(redact(_redirect_text(url, response), token))
     if response.status_code != 200:
         raise MoodleError(f"Moodle at {url} is not reachable (HTTP {response.status_code}).")
     try:
@@ -114,6 +116,15 @@ async def call(function: str, params: Mapping[str, Any] | None = None) -> Any:
     if isinstance(body, dict) and "exception" in body:
         raise MoodleError(redact(_explain(function, body), token))
     return body
+
+
+def _redirect_text(url: str, response: httpx.Response) -> str:
+    location = response.headers.get("location", "").strip().split("?", 1)[0]
+    target = f" to {location}" if location else ""
+    return (
+        f"Moodle at {url} redirected the request{target}. Use Moodle's own web address "
+        "(its wwwroot) as the URL, exactly as Moodle is configured."
+    )
 
 
 def _explain(function: str, body: Mapping[str, Any]) -> str:

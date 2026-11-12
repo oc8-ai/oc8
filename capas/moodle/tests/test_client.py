@@ -160,6 +160,37 @@ async def test_a_non_200_answer_is_unreachable(monkeypatch: pytest.MonkeyPatch) 
 
 
 @pytest.mark.asyncio
+async def test_a_redirect_is_explained_as_a_wrong_moodle_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _serve(
+        monkeypatch,
+        lambda r: httpx.Response(
+            303,
+            headers={"Location": "https://moodle.example.org/webservice/rest/server.php?x=1"},
+        ),
+    )
+    with pytest.raises(client.MoodleError) as caught:
+        await client.call("core_webservice_get_site_info")
+    text = str(caught.value)
+    assert "redirected" in text
+    assert "https://moodle.example.org/webservice/rest/server.php" in text
+    assert "x=1" not in text
+    assert "wwwroot" in text
+    assert TOKEN not in text
+    assert len(seen) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_redirect_without_location_omits_the_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _serve(monkeypatch, lambda r: httpx.Response(302))
+    with pytest.raises(client.MoodleError, match=r"redirected the request\. Use Moodle's own"):
+        await client.call("core_webservice_get_site_info")
+
+
+@pytest.mark.asyncio
 async def test_html_instead_of_json_points_at_the_url_and_rest_protocol(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
