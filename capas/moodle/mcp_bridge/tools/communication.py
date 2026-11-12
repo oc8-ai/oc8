@@ -144,8 +144,9 @@ TOOLS: list[Tool] = [
     Tool(
         name="moodle_send_message",
         description=(
-            "Send a plain-text Moodle message to up to 50 users. Reports recipients Moodle "
-            "could not deliver to (e.g. they blocked messages)."
+            "Send a plain-text Moodle message to up to 50 users. Put every recipient in "
+            "ONE call: one reminder per task. Reports recipients Moodle could not deliver "
+            "to (e.g. they blocked messages)."
         ),
         inputSchema={
             "type": "object",

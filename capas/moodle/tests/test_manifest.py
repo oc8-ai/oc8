@@ -30,9 +30,8 @@ OUTWARD = [
     "moodle_grade_submission",
     "moodle_send_message",
     "moodle_post_to_forum",
-    "moodle_create_user",
-    "moodle_enrol_user",
 ]
+IRREVERSIBLE = [*OUTWARD, "moodle_create_user", "moodle_enrol_user"]
 NEVER_FOR_ADMIN = {"moodle_grade_submission", "moodle_send_message", "moodle_post_to_forum"}
 
 
@@ -90,13 +89,15 @@ def test_scopes_cover_every_served_tool_exactly_once() -> None:
 def test_outward_and_destructive_tools_are_modify_tools_in_config() -> None:
     conn = _connection()
     assert conn.config["outward_tools"] == OUTWARD
-    assert conn.config["irreversible_tools"] == OUTWARD
+    assert conn.config["irreversible_tools"] == IRREVERSIBLE
+    # Account and enrolment mails are Moodle's own system mails: confirmed as
+    # irreversible, but not outward, so one task may create or enrol many.
     for name in ("moodle_create_user", "moodle_enrol_user"):
-        assert name in conn.config["outward_tools"]
+        assert name not in conn.config["outward_tools"]
         assert name in conn.config["irreversible_tools"]
     assert conn.config["destructive_tools"] == ["moodle_unenrol_user"]
     modify = set(conn.scopes["modify"])
-    assert set(OUTWARD) <= modify and "moodle_unenrol_user" in modify
+    assert set(IRREVERSIBLE) <= modify and "moodle_unenrol_user" in modify
     assert "outward_tools" not in conn.scopes
 
 
@@ -159,6 +160,34 @@ def test_guardrails_name_real_tools_and_gate_modify() -> None:
         assert set(entry.get("only", [])) <= actual, path
         if entry.get("modify"):
             assert entry["approval_actions"] == ["modify"], path
+
+
+def test_every_modify_tool_writes_without_a_prior_read_through_core() -> None:
+    """Search tools carry no identity, so core's read-before-write could never
+    be satisfied for a course/user/forum write; approval shows the target."""
+    from oc8.agent.harness.stages.b_read_before_write import read_before_write_denial
+    from oc8.agent.harness.state import Ledger
+
+    conn = _connection()
+    assert conn.config["read_before_write"] is False
+    for tool in conn.scopes["modify"]:
+        denial = read_before_write_denial(
+            tool=tool,
+            tier="modify",
+            identity=("user", "7"),
+            ledger=Ledger(),
+            connection="moodle",
+            config=conn.config,
+            label="user 7",
+        )
+        assert denial is None, tool
+
+
+def test_send_message_asks_for_one_call_per_reminder() -> None:
+    from mcp_bridge.tools.communication import TOOLS
+
+    send = next(t for t in TOOLS if t.name == "moodle_send_message")
+    assert "ONE call" in (send.description or "")
 
 
 def test_teaching_assistant_cannot_message_or_administer() -> None:
