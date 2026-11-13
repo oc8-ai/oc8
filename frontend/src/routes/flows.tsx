@@ -41,6 +41,7 @@ import {
   type FlowListDTO,
   type FlowRunDTO,
 } from "@/lib/hooks";
+import { useMay } from "@/lib/governance-hooks";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -107,6 +108,10 @@ export function FlowsPage() {
   const [openRun, setOpenRun] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const t = useT();
+  const may = useMay();
+  // Archive, cancel and publish all need flow:manage (cancel too: it rejects
+  // handoffs and stops agent runs in every department the flow reaches).
+  const mayManageFlows = may("flow:manage");
   const { confirm, ConfirmDialog } = useConfirm();
   const archiveFlow = useArchiveFlow();
   const cancelRun = useCancelFlowRun();
@@ -129,8 +134,8 @@ export function FlowsPage() {
     const ok = await confirm({
       title: t("Archive flow?", "Flow archivieren?"),
       description: t(
-        `Archive "${f.name}"? It disappears from this list and can no longer be started. Runs already going keep running; cancel them separately if they should stop. Publishing the flow again brings it back.`,
-        `"${f.name}" archivieren? Der Flow verschwindet aus dieser Liste und kann nicht mehr gestartet werden. Laufende Runs laufen weiter; brich sie einzeln ab, wenn sie stoppen sollen. Wenn du den Flow erneut veröffentlichst, ist er wieder da.`,
+        `Archive "${f.name}"? It disappears from this list and can no longer be started. Its runs that are still going are cancelled too: their open handoffs are rejected. Publishing the flow again brings it back.`,
+        `"${f.name}" archivieren? Der Flow verschwindet aus dieser Liste und kann nicht mehr gestartet werden. Seine noch laufenden Runs werden dabei abgebrochen, ihre offenen Übergaben abgelehnt. Wenn du den Flow erneut veröffentlichst, ist er wieder da.`,
       ),
       confirmLabel: t("Archive", "Archivieren"),
       cancelLabel: t("Cancel", "Abbrechen"),
@@ -153,8 +158,8 @@ export function FlowsPage() {
     const ok = await confirm({
       title: t("Cancel flow run?", "Flow-Run abbrechen?"),
       description: t(
-        "Its open handoffs are rejected and any agent run working on them is stopped. Completed stages stay as they are. This cannot be undone.",
-        "Seine offenen Übergaben werden abgelehnt und Agenten-Runs, die daran arbeiten, werden gestoppt. Abgeschlossene Stufen bleiben, wie sie sind. Das kann nicht rückgängig gemacht werden.",
+        "Its open handoffs are rejected and agent runs working on them are asked to stop. A run waiting for an answer or an approval stops once it resumes. Completed stages stay as they are. This cannot be undone.",
+        "Seine offenen Übergaben werden abgelehnt, und Agenten-Runs, die daran arbeiten, werden zum Stoppen aufgefordert. Ein Run, der auf eine Antwort oder Freigabe wartet, stoppt, sobald er weiterläuft. Abgeschlossene Stufen bleiben, wie sie sind. Das kann nicht rückgängig gemacht werden.",
       ),
       confirmLabel: t("Cancel run", "Run abbrechen"),
       cancelLabel: t("Keep running", "Weiterlaufen lassen"),
@@ -249,15 +254,22 @@ export function FlowsPage() {
                 <AlertTriangle className="h-3 w-3" /> {problems.length} contract issue
               </span>
             )}
-            <button
-              type="button"
-              onClick={() => onArchive(flow)}
-              disabled={archiveFlow.isPending}
-              className="ml-auto inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground transition hover:border-destructive/50 hover:text-destructive disabled:opacity-50"
+            {mayManageFlows && (
+              <button
+                type="button"
+                onClick={() => onArchive(flow)}
+                disabled={archiveFlow.isPending}
+                className="ml-auto inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground transition hover:border-destructive/50 hover:text-destructive disabled:opacity-50"
+              >
+                <Archive className="h-3 w-3" /> {t("Archive", "Archivieren")}
+              </button>
+            )}
+            <div
+              className={cn(
+                "flex overflow-hidden rounded-md border border-border",
+                !mayManageFlows && "ml-auto",
+              )}
             >
-              <Archive className="h-3 w-3" /> {t("Archive", "Archivieren")}
-            </button>
-            <div className="flex overflow-hidden rounded-md border border-border">
               {(["canvas", "yaml"] as const).map((v) => (
                 <button
                   key={v}
@@ -316,7 +328,7 @@ export function FlowsPage() {
               run={run}
               status={runStatus.get(run.id) ?? "running"}
               cancelling={cancelRun.isPending}
-              onCancel={() => onCancelRun(run)}
+              onCancel={mayManageFlows ? () => onCancelRun(run) : undefined}
             />
           )}
         </section>
@@ -736,10 +748,11 @@ function RunDetail({
   run: FlowRun;
   status: string;
   cancelling: boolean;
-  onCancel: () => void;
+  /** Absent when the caller may not cancel (flow:manage). */
+  onCancel?: () => void;
 }) {
   const t = useT();
-  const cancellable = status === "running" || status === "suspended";
+  const cancellable = !!onCancel && (status === "running" || status === "suspended");
   return (
     <Panel className="mt-3 p-4">
       <div className="mb-3 flex items-center justify-between">

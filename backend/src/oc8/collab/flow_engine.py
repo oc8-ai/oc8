@@ -149,7 +149,9 @@ async def on_handoff_completed(db: AsyncSession, handoff: m.Handoff) -> None:
     """If a completed handoff belongs to a flow run, advance that run's stage."""
     if handoff.flow_run_id is None:
         return
-    run = await db.get(m.FlowRun, handoff.flow_run_id)
+    # Locked so a cancel running at the same moment either sees the advanced
+    # run or makes this one see `cancelled`, never both acting on a stale read.
+    run = await db.get(m.FlowRun, handoff.flow_run_id, with_for_update=True)
     if run is None or run.status != "running":
         return
     stage_id = run.context.get("__handoff_stage", {}).get(str(handoff.id))

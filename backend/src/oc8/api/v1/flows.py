@@ -14,8 +14,8 @@ from sqlalchemy import func, select
 
 from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
-from oc8.authz.permissions import FLOW, MANAGE, RUN_CONTROL, RUN_START, VIEW, perm
-from oc8.collab.flow_engine import FlowError, cancel_flow_run, start_flow_run
+from oc8.authz.permissions import FLOW, MANAGE, RUN_START, VIEW, perm
+from oc8.collab.flow_engine import CANCELLABLE, FlowError, cancel_flow_run, start_flow_run
 from oc8.collab.flow_spec import FlowSpecError, parse_flow_spec
 from oc8.schemas.base import CamelModel
 
@@ -165,12 +165,18 @@ async def get_run(run_id: uuid.UUID, db: DbSession, principal: CurrentPrincipal)
 @router.post(
     "/flow-runs/{run_id}/cancel",
     response_model=FlowRunDTO,
-    dependencies=[Depends(require_permission(RUN_CONTROL))],
+    dependencies=[Depends(require_permission(perm(FLOW, MANAGE)))],
 )
 async def cancel_run(run_id: uuid.UUID, db: DbSession, principal: CurrentPrincipal) -> FlowRunDTO:
     """Stop a running flow: its open handoffs are rejected and the agent runs
-    working them cancelled. 409 once the run has ended."""
-    run = await db.get(m.FlowRun, run_id)
+    working them cancelled. 409 once the run has ended.
+
+    Gated on `flow:manage` like publish and archive, NOT on `run:control`: the
+    cancel rejects handoffs and stops agent runs in every department the flow
+    reaches, and `run:control` is delegatable to a role whose reach is one
+    department's seats. Neither door it would bypass (handoff reject, agent run
+    cancel) admits such a caller outside its reach."""
+    run = await db.get(m.FlowRun, run_id, with_for_update=True)
     if run is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "flow run not found")
     try:
@@ -231,14 +237,32 @@ async def list_flows(db: DbSession, principal: CurrentPrincipal) -> list[FlowLis
     dependencies=[Depends(require_permission(perm(FLOW, MANAGE)))],
 )
 async def archive_flow(flow_id: uuid.UUID, db: DbSession, principal: CurrentPrincipal) -> FlowDTO:
-    """Hide a flow and stop new runs of it. Runs already going are left alone
-    (cancel them one by one), and their history stays readable. Idempotent."""
+    """Hide a flow, stop new runs of it and cancel the runs still going.
+
+    The open runs are cancelled in the same request (same path as
+    `POST /flow-runs/{id}/cancel`): an archived flow leaves the list, and with
+    it the only place its runs could be reached to stop them. Ended runs keep
+    their history. Idempotent."""
     flow = await db.get(m.Flow, flow_id)
     if flow is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "flow not found")
     if flow.archived_at is None:
         flow.archived_at = dt.datetime.now(tz=dt.UTC)
         await db.flush()
+    open_runs = (
+        (
+            await db.execute(
+                select(m.FlowRun)
+                .join(m.FlowVersion, m.FlowVersion.id == m.FlowRun.flow_version_id)
+                .where(m.FlowVersion.flow_id == flow.id, m.FlowRun.status.in_(CANCELLABLE))
+                .with_for_update(of=m.FlowRun)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for run in open_runs:
+        await cancel_flow_run(db, run, principal=principal)
     return FlowDTO(id=str(flow.id), name=flow.name, archived=True)
 
 

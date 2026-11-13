@@ -77,7 +77,7 @@ async def _published_flow(app_session: AppSessionFactory, client: AsyncClient) -
     return str(pub.json()["flowId"]), str(pub.json()["id"])
 
 
-async def test_an_archived_flow_is_hidden_and_cannot_start(
+async def test_an_archived_flow_is_hidden_cannot_start_and_its_runs_stop(
     app_session: AppSessionFactory, client: AsyncClient
 ) -> None:
     flow_id, version_id = await _published_flow(app_session, client)
@@ -97,9 +97,19 @@ async def test_an_archived_flow_is_hidden_and_cannot_start(
     )
     assert refused.status_code == 409
 
-    # The run already going is left alone.
+    # The run still going is cancelled with it: once the flow is hidden, its
+    # runs can no longer be reached to stop them, and its handoff is withdrawn.
     run = await client.get(f"/api/v1/flow-runs/{run_id}", headers=_headers())
-    assert run.json()["status"] == "running"
+    assert run.json()["status"] == "cancelled"
+    async with app_session(TENANT) as db:
+        handoff = (
+            await db.execute(select(m.Handoff).where(m.Handoff.flow_run_id == uuid.UUID(run_id)))
+        ).scalar_one()
+        assert handoff.status == "rejected"
+
+    # Archiving again is harmless.
+    again = await client.post(f"/api/v1/flows/{flow_id}/archive", headers=_headers())
+    assert again.status_code == 200
 
     missing = await client.post(f"/api/v1/flows/{uuid.uuid4()}/archive", headers=_headers())
     assert missing.status_code == 404
