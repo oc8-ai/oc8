@@ -150,6 +150,7 @@ def test_declared_placeholders_validate() -> None:
         templates={"pull": "https://github.com/{owner}/{repo}/pull/{id}"},
         placeholders={"owner": ["arg:owner"], "repo": ["arg:repo", "item:repository.name"]},
         native_url_fields=["html_url"],
+        native_url_hosts=["github.com"],
     )
     assert spec.templates_for("pull").endswith("/pull/{id}")
     assert spec.templates_for("issue").endswith("/issues/{id}")
@@ -165,8 +166,15 @@ def test_a_placeholder_source_must_name_a_known_kind() -> None:
 
 
 def test_native_fields_alone_are_enough() -> None:
-    spec = RecordUrlTemplate(native_url_fields=["webUrl", "webLink"])
+    spec = RecordUrlTemplate(
+        native_url_fields=["webUrl", "webLink"], native_url_hosts=["*.sharepoint.com"]
+    )
     assert spec.template == ""
+
+
+def test_native_fields_need_a_host_bound() -> None:
+    with pytest.raises(ValueError, match="native_url_hosts or a base_url_path"):
+        RecordUrlTemplate(native_url_fields=["webUrl"])
 
 
 def test_nothing_declared_is_rejected() -> None:
