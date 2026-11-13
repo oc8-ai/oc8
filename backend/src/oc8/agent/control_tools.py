@@ -867,7 +867,8 @@ PROPOSE_AGENT = NeutralTool(
     name="propose_agent",
     description=(
         "Propose ONE new agent as a card the person confirms -- you never create "
-        "it yourself. Pass the agent's fields directly: departmentId, name, "
+        "it yourself. Pass the agent's fields directly: departmentId (or "
+        "newDepartment, when builder_options allows it and no department fits), name, "
         "roleTitle, mission, and optionally modelId, skillIds, schedule (a cron "
         "expression), eventSource/eventType, taskText, systems and limits. Use "
         "only ids and systems from builder_options. Calling it again replaces "
@@ -879,6 +880,20 @@ PROPOSE_AGENT = NeutralTool(
         "type": "object",
         "properties": {
             "departmentId": {**_ID, "description": "The department id from builder_options."},
+            "newDepartment": {
+                "type": "object",
+                "description": (
+                    "Instead of departmentId, only when builder_options allows it and "
+                    "the agent clearly belongs to none of the departments: the new "
+                    "department, created together with the agent."
+                ),
+                "properties": {
+                    "name": {"type": "string", "maxLength": 200, "description": "e.g. Sales"},
+                    "goal": {"type": "string", "maxLength": 2000, "description": "Its purpose."},
+                },
+                "required": ["name"],
+                "additionalProperties": False,
+            },
             "name": {"type": "string", "maxLength": 200, "description": "The agent's name."},
             "roleTitle": {"type": "string", "maxLength": 200, "description": "e.g. Accounting"},
             "mission": {**_TEXT, "description": "What the agent does, in a few sentences."},

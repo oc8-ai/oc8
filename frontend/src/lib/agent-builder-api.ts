@@ -36,8 +36,11 @@ export interface AgentBuilderDTO {
   id: string;
   status: BuilderStatus;
   sessionId: string | null;
-  departmentId: string;
+  /** Null while the agent goes into a department the proposal creates. */
+  departmentId: string | null;
   departmentName: string;
+  /** The proposal creates `departmentName` for its agent. */
+  newDepartment: boolean;
   name: string;
   roleTitle: string;
   mission: string;

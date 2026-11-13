@@ -37,6 +37,7 @@ const approval: Approval = {
   actionType: "copilot.agent_builder",
   departmentId: "d1",
   departmentName: "Buchhaltung",
+  newDepartment: false,
   proposalId: "p1",
 };
 

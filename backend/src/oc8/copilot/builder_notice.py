@@ -34,6 +34,7 @@ _STATE_REFUSALS: Final = frozenset(
 
 #: What each step does, in the person's terms.
 STEP_LABELS: Final[dict[str, str]] = {
+    "department.create": "create the new department",
     "agent.create": "create the agent",
     "agent.mission.set": "set the mission",
     "agent.model.switch": "set the model",
@@ -92,6 +93,10 @@ REASONS: Final[dict[str, str]] = {
     "skill_not_allowed": "a skill is no longer available. Pick one from builder_options",
     "name_taken": "an agent with this name already exists. Pick another name",
     "department_unknown": "the department no longer exists. Pick one from builder_options",
+    "department_exists": (
+        "a department with the new department's name exists now. Use that "
+        "department's id from builder_options instead"
+    ),
     "secret_value": ("a text contains a credential. Remove it; logins are set up on /connections"),
 }
 _UNKNOWN: Final = (

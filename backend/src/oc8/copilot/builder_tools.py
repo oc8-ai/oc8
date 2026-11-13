@@ -30,13 +30,19 @@ from oc8.authz.scope import AgentActor
 from oc8.chat.model_choice import chat_enabled_model_ids
 from oc8.chat.modes import AGENT, mode_directive, mode_from_context, mode_refusal
 from oc8.connections.usable import department_systems
-from oc8.copilot.builder import create_builder_proposal, may_create_agent
+from oc8.copilot.builder import (
+    create_builder_proposal,
+    may_create_agent,
+    may_create_department,
+)
 from oc8.copilot.builder_ops import (
     FLAT_FIELDS,
     BuilderInvalid,
     flat_department_id,
+    flat_new_department,
     proposal_operations,
 )
+from oc8.copilot.capabilities import new_department_frame
 from oc8.copilot.door import door_of
 from oc8.copilot.tools import uuid_or_none
 from oc8.departments.repo import visible_departments
@@ -66,6 +72,16 @@ _REFUSALS: dict[str, str] = {
     "unknown_field": "use only these fields: " + ", ".join(sorted(FLAT_FIELDS)),
     "mixed_shapes": "pass either the agent's fields or operations, not both",
     "missing_agent": "give at least departmentId, name and mission",
+    "department_create_not_allowed": (
+        "this person may not create departments; pick the best-fitting existing "
+        "department from builder_options and tell them why it is that one"
+    ),
+    "department_exists": "a department with this name exists; use its departmentId instead",
+    "two_departments": "pass either departmentId or newDepartment, not both",
+    "unknown_department_ref": (
+        "an agent.create after department.create needs departmentRef, the ref of that "
+        "department.create, and no departmentId"
+    ),
     "awaiting_approval": (
         "the previous proposal is waiting for approval; tell the person to wait "
         "for the decision before changing it"
@@ -118,7 +134,25 @@ async def builder_options_text(
     departments, _total = await visible_departments(
         db, scope=actor.scope, tenant_wide=_reads_every_department(authority)
     )
-    lines = ["Departments (id | name | how | connected systems | not usable yet, and why):"]
+    if may_create_department(authority):
+        how = (
+            "create directly"
+            if may_create_agent(authority, actor.scope, None)
+            else "needs approval"
+        )
+        new_department = (
+            "New department: allowed (newDepartment instead of departmentId, "
+            f"{how}) -- only when the agent clearly belongs to none of these"
+        )
+    else:
+        new_department = (
+            "New department: not allowed for this person -- pick the best-fitting "
+            "department below and say why"
+        )
+    lines = [
+        new_department,
+        "Departments (id | name | how | connected systems | not usable yet, and why):",
+    ]
     own = actor.scope.viewable
     for dept in sorted(departments, key=lambda d: d.name.lower()):
         if not actor.scope.may_view(dept.id):
@@ -247,7 +281,10 @@ async def execute_builder_tool(
     try:
         operations = proposal_operations(
             tc.arguments,
-            frame=await _department_frame(db, tenant_id, flat_department_id(tc.arguments)),
+            # A new department gets the default frame (`department.create`).
+            frame=new_department_frame()
+            if flat_new_department(tc.arguments)
+            else await _department_frame(db, tenant_id, flat_department_id(tc.arguments)),
         )
         # A savepoint: a refused proposal leaves nothing behind -- neither the
         # draft it would have superseded nor a lost race's half (Task 4).
@@ -261,6 +298,7 @@ async def execute_builder_tool(
                 session_id=session.id,
                 operations=operations,
                 now=dt.datetime.now(tz=dt.UTC),
+                may_create_departments=may_create_department(authority),
             )
     except BuilderInvalid as exc:
         return ControlOutcome(output=_refusal(exc))

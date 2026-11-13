@@ -445,6 +445,18 @@ async def target_revision(
     return str(changed)
 
 
+def new_department_frame() -> dict[str, Any]:
+    """A new department's frame -- the same POST /departments writes: no tool
+    listed (so none is switched off: an enabled integration stays usable,
+    `connections.usable`), and the department-tier memory grant every other
+    department has, so its agents can remember."""
+    return {
+        "tools": {},
+        "kbs": [],
+        "memory": {"department": ["read", "write"], "company": ["read"]},
+    }
+
+
 async def _has_no_draft(db: AsyncSession, agent: m.Agent) -> bool:
     """Whether `agent`'s working copy is exactly its published version -- read
     BEFORE a Copilot write, to decide whether that write may be published on
@@ -502,8 +514,9 @@ async def apply_operation(
 ) -> uuid.UUID | None:
     """Apply exactly one validated operation through existing service boundaries.
 
-    Returns the new agent's id for `agent.create` (builder proposals map their
-    `ref` to it) and None for every other operation.
+    Returns the new agent's id for `agent.create` and the new department's
+    for `department.create` (builder proposals map their `ref` to it), and
+    None for every other operation.
 
     `publish=False` leaves an agent change in the working copy -- `agent.create`
     then writes no v1 either -- for a caller that publishes the agent once
@@ -628,16 +641,13 @@ async def apply_operation(
             tenant_id=tenant_id,
             name=operation.name,
             goal=operation.goal,
-            frame={
-                "tools": {},
-                "kbs": [],
-                "memory": {"department": ["read", "write"], "company": ["read"]},
-            },
+            frame=new_department_frame(),
             presentation={"icon": operation.icon},
         )
         db.add(dept)
         await db.flush()
-        return None
+        # The agent builder places its new agent in it (`departmentRef`).
+        return dept.id
     if isinstance(operation, DepartmentUpdate):
         dept = await db.get(m.Department, operation.departmentId)
         if dept is None or dept.deleted_at is not None:

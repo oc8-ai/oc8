@@ -125,7 +125,13 @@ export function AgentBuilderCard({
     );
 
   const rows: { label: string; value: ReactNode }[] = [
-    { label: t("Department", "Abteilung"), value: card.departmentName },
+    {
+      label: t("Department", "Abteilung"),
+      value:
+        card.newDepartment && card.status !== "applied"
+          ? t(`New department: ${card.departmentName}`, `Neue Abteilung: ${card.departmentName}`)
+          : card.departmentName,
+    },
     ...(card.model ? [{ label: t("Model", "Modell"), value: card.model.label }] : []),
     ...(card.skills.length
       ? [{ label: t("Skills", "Skills"), value: card.skills.map((s) => s.label).join(", ") }]
