@@ -149,6 +149,9 @@ def _host_allowed(url: str, ctx: LinkContext) -> bool:
     one: a result is untrusted text and an issued link is whitelisted in answers."""
     from oc8.records.registry import host_of
 
+    # Browsers read `\` as `/`; no legitimate native link carries one, so fail closed.
+    if "\\" in url:
+        return False
     host = host_of(url)
     if not host:
         return False
@@ -162,7 +165,7 @@ def _host_allowed(url: str, ctx: LinkContext) -> bool:
             # redirector) is trusted for one path only. Compare the decoded,
             # dot-segment-normalised path so `/calendar/../url` cannot pass.
             allowed_host, _, prefix = allowed.partition("/")
-            path = posixpath.normpath(unquote(urlsplit(url).path))
+            path = posixpath.normpath(unquote(urlsplit(url.replace("\\", "/")).path))
             if host == allowed_host.lower() and (path + "/").startswith(
                 "/" + prefix.rstrip("/") + "/"
             ):

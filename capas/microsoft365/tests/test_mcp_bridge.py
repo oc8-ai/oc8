@@ -182,3 +182,18 @@ async def test_a_string_result_passes_through_unchanged(monkeypatch: pytest.Monk
     params = types.CallToolRequestParams(name="mail_search", arguments={})
     result = await bridge._on_call_tool(_NO_CTX, params)
     assert _text(result) == 'Hello "world"\nline two'
+
+
+async def test_a_json_looking_string_result_is_quoted(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Document text that happens to be JSON must not be parsed as records.
+    import json
+
+    doc = '[{"id": "1", "webViewLink": "https://drive.google.com/file/d/X/view"}]'
+
+    async def _handler(args: dict[str, Any]) -> object:
+        return doc
+
+    monkeypatch.setitem(bridge.ALL_HANDLERS, "mail_search", _handler)
+    params = types.CallToolRequestParams(name="mail_search", arguments={})
+    result = await bridge._on_call_tool(_NO_CTX, params)
+    assert json.loads(_text(result)) == doc

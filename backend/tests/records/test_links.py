@@ -283,6 +283,8 @@ def test_a_host_path_entry_matches_only_under_its_prefix() -> None:
     assert not link("https://www.google.com/url?q=https://evil.example")
     assert not link("https://www.google.com/calendar/../url?q=x")
     assert not link("https://www.google.com/%63alendar/../url")
+    assert not link("https://www.google.com/calendar/..\\url?q=https://evil.example")
+    assert not link("https://www.google.com\\calendar\\..\\url")
     assert not link("https://www.google.com/calendarx/event")
     assert not link("https://evil.example/calendar/event")
 

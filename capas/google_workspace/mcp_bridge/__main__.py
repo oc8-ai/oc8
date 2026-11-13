@@ -60,6 +60,21 @@ async def _on_list_tools(
     return types.ListToolsResult(tools=ALL_TOOLS)
 
 
+def _result_text(result: object) -> str:
+    """Tool output as the model sees it. Non-strings are JSON (record links parse
+    them, and str(dict) is Python repr no parser reads). A bare string stays raw,
+    unless it is itself valid JSON (document text can be anything): then it goes
+    out as a quoted JSON string, so core never parses attacker-authored file
+    content as records."""
+    if not isinstance(result, str):
+        return json.dumps(result, ensure_ascii=False, default=str)
+    try:
+        json.loads(result)
+    except ValueError:
+        return result
+    return json.dumps(result, ensure_ascii=False)
+
+
 async def _on_call_tool(
     ctx: ServerRequestContext, params: types.CallToolRequestParams
 ) -> types.CallToolResult:
@@ -76,12 +91,7 @@ async def _on_call_tool(
             content=[types.TextContent(type="text", text=f"ERROR: {exc}")],
             is_error=True,
         )
-    # JSON, not str(): record links parse the output, and str(dict) is Python
-    # repr (single quotes, True/None) that no JSON parser reads. A bare string
-    # (document text) stays raw: JSON-quoting it would hand the model an escaped blob.
-    text = (
-        result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
-    )
+    text = _result_text(result)
     return types.CallToolResult(content=[types.TextContent(type="text", text=text)])
 
 
