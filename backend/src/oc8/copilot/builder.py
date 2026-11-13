@@ -14,9 +14,9 @@ import datetime as dt
 import logging
 import uuid
 from collections.abc import Iterator
-from typing import Any, Final, Literal
+from typing import Final, Literal
 
-from sqlalchemy import Text, cast, func, literal, or_, select
+from sqlalchemy import Text, cast, func, literal, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,6 +29,7 @@ from oc8.authz.authority import Authority
 from oc8.authz.permissions import AGENT, MANAGE, perm
 from oc8.authz.scope import DecisionActor, DepartmentScope, HumanActor
 from oc8.chat.model_choice import chat_enabled_model_ids
+from oc8.connections.usable import department_systems
 from oc8.copilot.builder_ops import (
     BuilderInvalid,
     BuilderStep,
@@ -164,48 +165,18 @@ async def _live_department(db: AsyncSession, department_id: uuid.UUID) -> m.Depa
     return dept if dept is not None and dept.deleted_at is None else None
 
 
-def enabled_systems(frame: dict[str, Any] | None) -> frozenset[str]:
-    """The systems (connection names) a department's frame switches on."""
-    tools = (frame or {}).get("tools") or {}
-    if not isinstance(tools, dict):
-        return frozenset()
-    return frozenset(
-        name for name, cfg in tools.items() if isinstance(cfg, dict) and cfg.get("enabled")
-    )
-
-
-def selectable(
-    name: str, connection_department_id: uuid.UUID | None, department: m.Department
-) -> bool:
-    """Whether a connected connection is offered in `department`: the department's
-    frame enables its name and it is tenant-wide or sits in that department."""
-    return name in enabled_systems(department.frame) and connection_department_id in (
-        None,
-        department.id,
-    )
-
-
 async def usable_systems(
     db: AsyncSession, *, tenant_id: uuid.UUID, department: m.Department
 ) -> frozenset[str]:
-    """What a builder proposal may select (Ruling A12): enabled by the
-    department's frame AND backed by a connected connection of that name,
-    tenant-wide or in this department. A revoked connection drops out."""
-    if not enabled_systems(department.frame):
-        return frozenset()
-    rows = (
-        await db.execute(
-            select(m.McpConnection.name, m.McpConnection.department_id).where(
-                m.McpConnection.tenant_id == tenant_id,
-                m.McpConnection.connected.is_(True),
-                or_(
-                    m.McpConnection.department_id.is_(None),
-                    m.McpConnection.department_id == department.id,
-                ),
-            )
-        )
-    ).all()
-    return frozenset(name for name, dept_id in rows if selectable(name, dept_id, department))
+    """What a builder proposal may select (Ruling A12): the systems a new
+    agent in `department` can actually use -- the shared rule in
+    `connections.usable`, the one the runtime applies. A revoked connection
+    or a removed organisation login drops out."""
+    return frozenset(
+        s.key
+        for s in await department_systems(db, tenant_id=tenant_id, department=department)
+        if s.usable
+    )
 
 
 def _texts(operation: Operation) -> list[str]:

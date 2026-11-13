@@ -150,6 +150,15 @@ def test_a_system_never_gets_more_than_the_frame_grants() -> None:
     }
 
 
+def test_a_system_the_frame_does_not_list_may_read_but_not_write() -> None:
+    """An agent-exclusive grant (pdp.narrowing_within_frame): reading on,
+    writes stay off until a person grants them."""
+    ops = flat_operations(_flat(limits=None), frame={"tools": {"microsoft365": {"enabled": True}}})
+    assert ops[-1]["narrowing"] == {
+        "tools": {"odoo": {"enabled": True, "read": True, "modify": False}}
+    }
+
+
 @pytest.mark.parametrize(
     ("flat", "explicit_step"),
     [
