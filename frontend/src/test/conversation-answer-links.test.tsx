@@ -104,7 +104,13 @@ describe("links in a member's own message", () => {
           turn={{
             kind: "user",
             key: "u1",
-            message: { ...saved, id: "u1", role: "user", content: `[my order](${url})` },
+            message: {
+              ...saved,
+              id: "u1",
+              role: "user",
+              content: `[my order](${url})`,
+              authorMemberId: "me",
+            },
           }}
           viewerMemberId={null}
           canEdit={false}
