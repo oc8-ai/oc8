@@ -335,6 +335,9 @@ connections themselves.
   under the dev override). Omit `-v` to keep data across restarts.
 - **Update to new code:** `git pull && docker compose up -d --build`. The
   `migrate` service applies any new revisions before the app restarts.
+  If you upgrade from a release whose MinIO ran as root, the bundled
+  `minio-perms` service hands the existing `oc8-miniodata` volume to the MinIO
+  user (uid 65532) on the next `up`, so no manual `chown` is needed.
 - **The four backend processes** are one image with different commands:
   `backend` (uvicorn), `worker`, `ingestion-worker`, `scheduler`. Scale or
   restart them independently with `docker compose restart <service>`.
