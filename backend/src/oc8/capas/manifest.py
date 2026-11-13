@@ -390,6 +390,10 @@ class RecordUrlTemplate(BaseModel):
     placeholders: dict[str, list[str]] = {}
     #: Native URL fields in result records that hold the system's own link
     native_url_fields: list[str] = []
+    #: Hosts a native URL may point at besides the base URL's own: an exact host
+    #: or "*.suffix" (any subdomain of suffix, not suffix itself). A tool result
+    #: is untrusted text, so a native URL elsewhere is ignored, never issued.
+    native_url_hosts: list[str] = []
     #: Maps argument paths to entity models for CREATE context linking
     related_fields: dict[str, str] = {}
 
@@ -406,6 +410,10 @@ class RecordUrlTemplate(BaseModel):
             raise ValueError(
                 "record_url declares neither a template nor native_url_fields, "
                 "so it can never produce a link"
+            )
+        if self.native_url_fields and not (self.native_url_hosts or self.base_url_path):
+            raise ValueError(
+                "native_url_fields need native_url_hosts or a base_url_path to bound their hosts"
             )
         known = RECORD_URL_BUILTIN_PLACEHOLDERS | set(self.placeholders)
         for tpl in all_templates:

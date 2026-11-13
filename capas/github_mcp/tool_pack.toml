@@ -145,11 +145,12 @@ push_files = "Commits to"
 
 # NEUTRAL SEAM (record_url): where an issue or pull request lives. A result
 # that carries its own `html_url` wins (search results, GitHub Enterprise
-# hosts: the server returns the right host); the template is the fallback for
+# hosts would need declaring in native_url_hosts); the template is the fallback for
 # results that only carry a number.
 [connections.record_url]
 template = "https://github.com/{owner}/{repo}/issues/{id}"
 native_url_fields = ["html_url"]
+native_url_hosts = ["github.com"]
 
 [connections.record_url.models]
 issue = "issues"

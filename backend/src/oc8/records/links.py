@@ -17,7 +17,7 @@ import json
 import logging
 import uuid
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from string import Formatter
 from typing import Any
 from urllib.parse import quote
@@ -57,6 +57,11 @@ class LinkContext:
     #: the pack's defaults.
     env: Mapping[str, str]
     labels: Mapping[str, str]
+    #: The manifest's own `connections.config` for this connection: the last
+    #: fallback for a value the row and the launch env both lack (an optional
+    #: login field left blank must not erase the pack's default, e.g. HubSpot's
+    #: US app address).
+    defaults: Mapping[str, Any] = field(default_factory=dict)
 
 
 def safe_url(value: object) -> str | None:
@@ -73,6 +78,7 @@ def link_context_from(
     *,
     config: Mapping[str, Any],
     env: Mapping[str, str] | None = None,
+    defaults: Mapping[str, Any] | None = None,
 ) -> LinkContext | None:
     if spec is None:
         return None
@@ -84,6 +90,7 @@ def link_context_from(
         config=config,
         env=env or {},
         labels={str(k): str(v) for k, v in labels.items()} if isinstance(labels, dict) else {},
+        defaults=defaults or {},
     )
 
 
@@ -101,7 +108,12 @@ def link_context(
         declared = resolve_tool_pack_connection(
             str(cfg.get("_plugin_name", "")), str(cfg.get("_connection_key", ""))
         )
-        return link_context_from(declared.record_url if declared else None, config=cfg, env=env)
+        return link_context_from(
+            declared.record_url if declared else None,
+            config=cfg,
+            env=env,
+            defaults=declared.config if declared else None,
+        )
     except Exception:  # never let a link cost a call
         logger.warning("record link context for %s could not be built", conn.name, exc_info=True)
         return None
@@ -128,7 +140,28 @@ def config_path(ctx: LinkContext, path: list[str]) -> str:
         resolved = _text(ctx.env.get(path[1]))
         if resolved:
             return resolved
-    return _text(_dig(ctx.config, path))
+    return _text(_dig(ctx.config, path)) or _text(_dig(ctx.defaults, path))
+
+
+def _host_allowed(url: str, ctx: LinkContext) -> bool:
+    """A native URL is trusted only on the connection's own host or a declared
+    one: a result is untrusted text and an issued link is whitelisted in answers."""
+    from oc8.records.registry import host_of
+
+    host = host_of(url)
+    if not host:
+        return False
+    spec = ctx.spec
+    base = config_path(ctx, list(spec.base_url_path)) if spec.base_url_path else ""
+    if base and host == host_of(base):
+        return True
+    for allowed in spec.native_url_hosts:
+        if allowed.startswith("*."):
+            if host.endswith(allowed[1:].lower()) and len(host) > len(allowed) - 1:
+                return True
+        elif host == allowed.lower():
+            return True
+    return False
 
 
 def _placeholder(
@@ -167,7 +200,7 @@ def link_for(
         if item is not None:
             for field_name in spec.native_url_fields:
                 native = safe_url(item.get(field_name))
-                if native:
+                if native and _host_allowed(native, ctx):
                     return native
         template = spec.templates_for(entity) if entity else ""
         segment = spec.models.get(entity) if entity else None

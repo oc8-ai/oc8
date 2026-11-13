@@ -7,6 +7,8 @@ import json
 import uuid
 from typing import Any
 
+import pytest
+
 from oc8.agent.tool_idempotency import REPLAY_NOTE
 from oc8.capas.manifest import RecordUrlTemplate
 from oc8.records.links import (
@@ -38,6 +40,7 @@ GITHUB = RecordUrlTemplate(
     templates={"pull": "https://github.com/{owner}/{repo}/pull/{id}"},
     placeholders={"owner": ["arg:owner"], "repo": ["arg:repo"]},
     native_url_fields=["html_url"],
+    native_url_hosts=["github.com"],
 )
 GITHUB_FOCUS: dict[str, Any] = {
     "id_fields": ["issue_number", "number"],
@@ -237,3 +240,49 @@ async def test_enrich_and_remember_without_context_changes_nothing(
             arguments={},
             output='[{"id": 1}]',
         ) == ('[{"id": 1}]', [])
+
+
+def test_a_native_link_on_a_foreign_host_is_ignored() -> None:
+    ctx = link_context_from(GITHUB, config={"focus_spec": GITHUB_FOCUS})
+    item = {"number": 7, "html_url": "https://evil.example/x"}
+    url = link_for(ctx, entity="issue", ref="7", args={"owner": "o", "repo": "r"}, item=item)
+    assert url == "https://github.com/o/r/issues/7"
+    assert link_for(ctx, entity="issue", ref="7", item=item) is None
+
+
+def test_a_native_link_must_match_the_base_url_host() -> None:
+    spec = RecordUrlTemplate(
+        template="{base_url}/{id}",
+        base_url_path=["env", "GITEA_URL"],
+        models={"issue": "issues"},
+        native_url_fields=["html_url"],
+    )
+    ctx = link_context_from(spec, config={}, env={"GITEA_URL": "https://git.acme.dev"})
+    ok = {"html_url": "https://git.acme.dev/a/b/issues/3"}
+    bad = {"html_url": "https://git.evil.dev/a/b/issues/3"}
+    assert link_for(ctx, entity="issue", ref="3", item=ok) == ok["html_url"]
+    assert link_for(ctx, entity="issue", ref="3", item=bad) == "https://git.acme.dev/3"
+
+
+def test_suffix_hosts_match_subdomains_only() -> None:
+    spec = RecordUrlTemplate(native_url_fields=["webUrl"], native_url_hosts=["*.sharepoint.com"])
+    ctx = link_context_from(spec, config={})
+    assert link_for(ctx, entity="", ref="", item={"webUrl": "https://a.sharepoint.com/x"})
+    assert not link_for(ctx, entity="", ref="", item={"webUrl": "https://sharepoint.com/x"})
+    assert not link_for(ctx, entity="", ref="", item={"webUrl": "https://evilsharepoint.com/x"})
+
+
+def test_native_url_fields_need_a_host_bound() -> None:
+    with pytest.raises(ValueError, match="native_url_hosts or a base_url_path"):
+        RecordUrlTemplate(native_url_fields=["html_url"])
+
+
+def test_the_manifest_default_is_the_last_config_fallback() -> None:
+    spec = RecordUrlTemplate(
+        template="{base_url}/{id}", base_url_path=["env", "UI"], models={"x": "x"}
+    )
+    defaults = {"env": {"UI": "https://app.example.com"}}
+    ctx = link_context_from(spec, config={"env": {}}, env={}, defaults=defaults)
+    assert link_for(ctx, entity="x", ref="1") == "https://app.example.com/1"
+    ctx = link_context_from(spec, config={"env": {"UI": "https://own.example"}}, defaults=defaults)
+    assert link_for(ctx, entity="x", ref="1") == "https://own.example/1"

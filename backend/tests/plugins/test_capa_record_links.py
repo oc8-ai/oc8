@@ -29,10 +29,17 @@ def _connection(plugin: str) -> ToolPackConnection:
     return manifest.tool_pack.connections[0]
 
 
-def _ctx(plugin: str, env: dict[str, str]) -> LinkContext:
+def _ctx(plugin: str, env: dict[str, str], config_env: dict[str, str] | None = None) -> LinkContext:
     conn = _connection(plugin)
     assert conn.record_url is not None
-    ctx = link_context_from(conn.record_url, config={**conn.config, "env": env}, env=env)
+    # `config` is the ROW's config (the pack's env defaults are not in it once a
+    # login has rewritten them); `defaults` is the manifest, the last fallback.
+    ctx = link_context_from(
+        conn.record_url,
+        config={**conn.config, "env": env if config_env is None else config_env},
+        env=env,
+        defaults=conn.config,
+    )
     assert ctx is not None
     return ctx
 
@@ -138,3 +145,25 @@ def test_odoo_related_partner_link() -> None:
     links = related_links(ctx, {"model": "sale.order", "values": {"partner_id": 7}})
     assert len(links) == 1
     assert "/odoo/res.partner/7" in str(links[0])
+
+
+def test_hubspot_defaults_to_the_us_address_when_the_login_leaves_it_blank() -> None:
+    plugin, tool, args, result = _HUBSPOT
+    ctx = _ctx(plugin, {"HUBSPOT_PORTAL_ID": "1234"}, config_env={})
+    _, urls = enrich(ctx, tool, args, json.dumps(result))
+    assert urls == ["https://app.hubspot.com/contacts/1234/record/0-3/77"]
+
+
+def test_github_ignores_a_foreign_html_url() -> None:
+    ctx = _ctx("github_mcp", {})
+    out = json.dumps({"number": 5, "html_url": "https://evil.example/x"})
+    args = {"owner": "oc8-ai", "repo": "oc8", "issue_number": 5}
+    _, urls = enrich(ctx, "issue_read", args, out)
+    assert urls == ["https://github.com/oc8-ai/oc8/issues/5"]
+
+
+def test_gitea_ignores_an_html_url_off_its_own_host() -> None:
+    ctx = _ctx("gitea_mcp", {"GITEA_URL": "https://git.acme.dev"})
+    out = json.dumps({"number": 3, "html_url": "https://evil.example/x"})
+    _, urls = enrich(ctx, "get_issue", {"owner": "acme", "repo": "web", "index": 3}, out)
+    assert urls == ["https://git.acme.dev/acme/web/issues/3"]
