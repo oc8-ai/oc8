@@ -1225,7 +1225,13 @@ export function useDeleteAgent() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api.delete<{ outcome: "deleted" | "archived" }>(`/agents/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: keys.agents }),
+    onSuccess: (_data, id) => {
+      // The agent is gone: drop its own queries rather than refetch them into
+      // a 404 that would unmount the page before the caller can navigate away.
+      qc.removeQueries({ queryKey: keys.agent(id) });
+      // Not awaited, so the caller's onSuccess (navigation) runs at once.
+      void qc.invalidateQueries({ queryKey: keys.agents });
+    },
   });
 }
 
