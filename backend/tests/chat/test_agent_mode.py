@@ -34,6 +34,15 @@ def test_agent_is_a_known_sticky_command() -> None:
     assert not any(MODES[k].sticky for k in ("ask", "plan", "do", "summarise"))
 
 
+def test_agent_mode_sends_people_to_capas_and_connections_not_knowledge() -> None:
+    """Tools are installed on /capas and connected on /connections; the
+    Knowledge page only holds data sources."""
+    text = AGENT.instruction
+    assert "/capas" in text and "/connections" in text
+    assert "where a system is connected" not in text
+    assert "/knowledge) is only for data sources" in text
+
+
 def test_agent_mode_keeps_asking_and_proposing_and_withholds_every_write() -> None:
     assert mode_refusal(AGENT, "ask_user", tool_scopes=None) is None
     assert mode_refusal(AGENT, "propose_agent", tool_scopes=None) is None
