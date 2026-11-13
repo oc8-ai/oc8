@@ -35,6 +35,9 @@ _URL = re.compile(rf"(?i)(?:{_START})(?:(?!{_START})[^\s<>\"'`])*")
 _TRAILING = ")]>.,;:!?'\""
 _LINK_TAIL = re.compile(r"""[>]?(?:\s+(?:"[^"\n]*"|'[^'\n]*'))?\s*\)""")
 _MAX_URL = 2048
+# What may follow an issued URL without being part of it: the sentence's own
+# punctuation, and the brackets of the Markdown around it.
+_AROUND = set(_TRAILING) | set("[(")
 
 
 def _host(url: str) -> str:
@@ -52,6 +55,40 @@ def _candidates(found: str) -> list[str]:
         if ch in _TRAILING and i > 0:
             cuts.update((i, i + 1))
     return [found[:c] for c in sorted(cuts, reverse=True)]
+
+
+def _excused(found: str, issued: set[str]) -> bool:
+    """An issued prefix excuses the match only when what follows it is
+    punctuation -- `.../42./../99` is not the issued `.../42`."""
+    return any(c in issued and set(found[len(c) :]) <= _AROUND for c in _candidates(found))
+
+
+def _code(run: str) -> str:
+    """The run as a code span, whatever backticks it holds."""
+    longest = max((len(t) for t in re.findall(r"`+", run)), default=0)
+    fence = "`" * (longest + 1)
+    pad = " " if run.startswith("`") or run.endswith("`") else ""
+    return f"{fence}{pad}{run}{pad}{fence}"
+
+
+def _ambiguous_runs(text: str, is_connected: Callable[[str], bool]) -> list[tuple[int, int, str]]:
+    """Runs a Markdown parser reads differently from how they are written:
+    backslash escapes and entities are decoded inside link destinations, so
+    `https\\://h.example/x` is a link the plain scan cannot see. If the decoded
+    run points at a connected host, or at a host we cannot determine, the
+    whole run is shown as code."""
+    spans: list[tuple[int, int, str]] = []
+    for run in re.finditer(r"\S+", text):
+        raw = run.group(0)
+        decoded = html.unescape(raw.replace("\\", ""))
+        if decoded == raw:
+            continue
+        for found in _URL.finditer(decoded):
+            host = _host(_core(found.group(0)))
+            if not host or is_connected(host):
+                spans.append((run.start(), run.end(), _code(raw)))
+                break
+    return spans
 
 
 def _core(found: str) -> str:
@@ -90,11 +127,13 @@ def _spans(
     for mt in _URL.finditer(text):
         found = mt.group(0)
         host = _host(_core(found))
-        if not host or not is_connected(host):
-            continue
-        if any(c in issued for c in _candidates(found)):
-            continue
         start, end = mt.start(), mt.start() + len(_core(found))
+        if not host:
+            # A host that cannot be determined is not one we can call safe.
+            spans.append((start, end, _code(found[: end - start])))
+            continue
+        if not is_connected(host) or _excused(found, issued):
+            continue
         if text[start - 3 : start] == "](<":
             opener = start - 3
         elif text[start - 2 : start] == "](":
@@ -108,7 +147,7 @@ def _spans(
             spans.append((open_at, tail.end(), inner))
         else:
             spans.append((start, end, f"`{host}`"))
-    return spans
+    return [*spans, *_ambiguous_runs(text, is_connected)]
 
 
 def _neutralise(text: str, is_connected: Callable[[str], bool], issued: set[str]) -> str:
@@ -137,9 +176,7 @@ def _neutralise(text: str, is_connected: Callable[[str], bool], issued: set[str]
         if hidden != text and any(
             core not in text
             for core in (_core(u.group(0)) for u in _URL.finditer(hidden))
-            if (h := _host(core))
-            and is_connected(h)
-            and not any(c in issued for c in _candidates(core))
+            if (h := _host(core)) and is_connected(h) and not _excused(core, issued)
         ):
             result = result.replace("&", "&amp;")
     return result

@@ -4,6 +4,7 @@ check (`oc8.records.vetting`), written wherever `enrich` issued links."""
 from __future__ import annotations
 
 import datetime as dt
+import unicodedata
 import uuid
 from collections.abc import Iterable, Sequence
 from urllib.parse import unquote, urlsplit
@@ -18,15 +19,23 @@ from oc8.db.base import uuid7
 ISSUED_LINK_TTL = dt.timedelta(days=30)
 
 
+_DOTS = str.maketrans({"\u3002": ".", "\uff0e": ".", "\uff61": "."})
+
+
 def host_of(url: str) -> str:
-    """The host a URL points at, spelled one way: lowercase, percent-decoded,
-    no trailing dot -- `h%2Eexample` and `H.example.` are `h.example`. Pure and
-    never raising: an unparsable URL has no host."""
+    """The host a URL points at, spelled the way a browser resolves it:
+    percent-decoded, NFKC-folded, ideographic dots as dots, IDNA-encoded,
+    lowercase, no trailing dot -- `h%2Eexample`, `H.example.` and `h。example`
+    are all `h.example`. Pure and never raising: a host that cannot be
+    determined is the empty string."""
     try:
         host = unquote(urlsplit(url).hostname or "")
-    except ValueError:
+        host = unicodedata.normalize("NFKC", host).translate(_DOTS).lower()
+        if not host.isascii():
+            host = host.encode("idna").decode("ascii")
+    except (ValueError, UnicodeError):
         return ""
-    return host.lower().rstrip(".")
+    return host.rstrip(".")
 
 
 async def remember_links(db: AsyncSession, *, tenant_id: uuid.UUID, urls: Sequence[str]) -> None:
