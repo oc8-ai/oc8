@@ -272,6 +272,26 @@ def test_suffix_hosts_match_subdomains_only() -> None:
     assert not link_for(ctx, entity="", ref="", item={"webUrl": "https://evilsharepoint.com/x"})
 
 
+def test_a_host_path_entry_matches_only_under_its_prefix() -> None:
+    spec = RecordUrlTemplate(native_url_fields=["u"], native_url_hosts=["www.google.com/calendar/"])
+    ctx = link_context_from(spec, config={})
+
+    def link(url: str) -> str:
+        return link_for(ctx, entity="", ref="", item={"u": url})
+
+    assert link("https://www.google.com/calendar/event?eid=abc")
+    assert not link("https://www.google.com/url?q=https://evil.example")
+    assert not link("https://www.google.com/calendar/../url?q=x")
+    assert not link("https://www.google.com/%63alendar/../url")
+    assert not link("https://www.google.com/calendarx/event")
+    assert not link("https://evil.example/calendar/event")
+
+
+def test_a_native_host_entry_must_start_with_a_host() -> None:
+    with pytest.raises(ValueError, match="must start with a host"):
+        RecordUrlTemplate(native_url_fields=["u"], native_url_hosts=["/calendar/"])
+
+
 def test_native_url_fields_need_a_host_bound() -> None:
     with pytest.raises(ValueError, match="native_url_hosts or a base_url_path"):
         RecordUrlTemplate(native_url_fields=["html_url"])

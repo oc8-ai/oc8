@@ -66,9 +66,7 @@ async def _on_call_tool(
     handler = ALL_HANDLERS.get(params.name)
     if handler is None:
         return types.CallToolResult(
-            content=[
-                types.TextContent(type="text", text=f"unknown tool: {params.name}")
-            ],
+            content=[types.TextContent(type="text", text=f"unknown tool: {params.name}")],
             is_error=True,
         )
     try:
@@ -78,20 +76,16 @@ async def _on_call_tool(
             content=[types.TextContent(type="text", text=f"ERROR: {exc}")],
             is_error=True,
         )
-    return types.CallToolResult(
-        # JSON, not str(): record links parse the output, and str(dict) is Python
-        # repr (single quotes, True/None) that no JSON parser reads.
-        content=[
-            types.TextContent(
-                type="text", text=json.dumps(result, ensure_ascii=False, default=str)
-            )
-        ]
+    # JSON, not str(): record links parse the output, and str(dict) is Python
+    # repr (single quotes, True/None) that no JSON parser reads. A bare string
+    # (document text) stays raw: JSON-quoting it would hand the model an escaped blob.
+    text = (
+        result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
     )
+    return types.CallToolResult(content=[types.TextContent(type="text", text=text)])
 
 
-server = Server(
-    "google_workspace", on_list_tools=_on_list_tools, on_call_tool=_on_call_tool
-)
+server = Server("google_workspace", on_list_tools=_on_list_tools, on_call_tool=_on_call_tool)
 
 
 async def _run() -> None:

@@ -172,3 +172,13 @@ async def test_bridge_output_is_json(monkeypatch: pytest.MonkeyPatch) -> None:
     params = types.CallToolRequestParams(name="mail_search", arguments={})
     result = await bridge._on_call_tool(_NO_CTX, params)
     assert json.loads(_text(result)) == {"a": True, "b": None}
+
+
+async def test_a_string_result_passes_through_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _handler(args: dict[str, Any]) -> object:
+        return 'Hello "world"\nline two'
+
+    monkeypatch.setitem(bridge.ALL_HANDLERS, "mail_search", _handler)
+    params = types.CallToolRequestParams(name="mail_search", arguments={})
+    result = await bridge._on_call_tool(_NO_CTX, params)
+    assert _text(result) == 'Hello "world"\nline two'

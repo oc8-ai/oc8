@@ -237,3 +237,12 @@ def test_microsoft365_ignores_a_native_url_on_a_foreign_host() -> None:
     out = json.dumps([{"id": "1", "webUrl": "https://evil.example/x"}])
     _, urls = enrich(ctx, "files_search", {"query": "x"}, out)
     assert urls == []
+
+
+def test_google_workspace_ignores_the_google_redirector() -> None:
+    ctx = _ctx("google_workspace", {})
+    out = json.dumps(
+        {"items": [{"id": "e1", "htmlLink": "https://www.google.com/url?q=https://evil.example"}]}
+    )
+    _, urls = enrich(ctx, "calendar_list_events", {}, out)
+    assert urls == []

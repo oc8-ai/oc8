@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import json
 import logging
+import posixpath
 import uuid
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from string import Formatter
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlsplit
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -156,7 +157,17 @@ def _host_allowed(url: str, ctx: LinkContext) -> bool:
     if base and host == host_of(base):
         return True
     for allowed in spec.native_url_hosts:
-        if allowed.startswith("*."):
+        if "/" in allowed:
+            # `host/path-prefix`: a shared host (www.google.com also serves a
+            # redirector) is trusted for one path only. Compare the decoded,
+            # dot-segment-normalised path so `/calendar/../url` cannot pass.
+            allowed_host, _, prefix = allowed.partition("/")
+            path = posixpath.normpath(unquote(urlsplit(url).path))
+            if host == allowed_host.lower() and (path + "/").startswith(
+                "/" + prefix.rstrip("/") + "/"
+            ):
+                return True
+        elif allowed.startswith("*."):
             if host.endswith(allowed[1:].lower()) and len(host) > len(allowed) - 1:
                 return True
         elif host == allowed.lower():

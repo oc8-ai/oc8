@@ -69,8 +69,11 @@ async def _on_call_tool(
             content=[types.TextContent(type="text", text=f"ERROR: {exc}")], is_error=True
         )
     # JSON, not str(): record links parse the output, and str(dict) is Python
-    # repr (single quotes, True/None) that no JSON parser reads.
-    text = json.dumps(result, ensure_ascii=False, default=str)
+    # repr (single quotes, True/None) that no JSON parser reads. A bare string
+    # (document text) stays raw: JSON-quoting it would hand the model an escaped blob.
+    text = (
+        result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
+    )
     return types.CallToolResult(content=[types.TextContent(type="text", text=text)])
 
 

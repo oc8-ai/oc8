@@ -102,12 +102,13 @@ gmail_get = "message"
 # (`webViewLink`, `htmlLink`), preferred; a Gmail message has none, so its
 # thread id builds one. A tool result is untrusted text, hence the host
 # allow-list: Drive files open on drive.google.com or docs.google.com, Calendar
-# events on www.google.com/calendar or calendar.google.com.
+# events on www.google.com/calendar/ (path-bound: www.google.com also hosts
+# a redirector) or calendar.google.com.
 [connections.record_url]
 template = "https://mail.google.com/mail/#all/{thread}"
 native_url_fields = ["webViewLink", "htmlLink"]
 native_url_hosts = [
-    "drive.google.com", "docs.google.com", "www.google.com",
+    "drive.google.com", "docs.google.com", "www.google.com/calendar/",
     "calendar.google.com", "mail.google.com",
 ]
 
