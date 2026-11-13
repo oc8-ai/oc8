@@ -91,6 +91,9 @@ describe("AgentBuilderCard", () => {
     expect(screen.getByText("Mistral")).toBeInTheDocument();
     expect(screen.getByText("Rechnungen prüfen")).toBeInTheDocument();
     expect(screen.getByText("odoo")).toBeInTheDocument();
+    // The schedule in plain words, not the cron.
+    expect(screen.getByText("Every weekday at 7:00 UTC")).toBeInTheDocument();
+    expect(screen.queryByText(/0 7 \* \* 1-5/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Create this agent" }));
     expect(m.apply).toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "Send for approval" })).not.toBeInTheDocument();

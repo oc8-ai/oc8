@@ -2036,7 +2036,13 @@ msgstr ""
 msgid "Every export, with or without a passphrase, carries every member's password hash. With a passphrase, the file also carries every provider credential and OAuth token this company holds, encrypted under it — anyone with the file AND the passphrase holds those credentials too. The passphrase cannot be recovered if lost; losing it only costs the secrets, everything else still restores."
 msgstr ""
 
+msgid "Every hour"
+msgstr ""
+
 msgid "Every installable capability — connectors, tools, guardrails, templates."
+msgstr ""
+
+msgid "Every minute"
 msgstr ""
 
 msgid "Every save is kept — nothing is pruned."
