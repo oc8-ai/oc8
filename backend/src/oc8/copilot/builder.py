@@ -14,7 +14,7 @@ import datetime as dt
 import logging
 import uuid
 from collections.abc import Iterator
-from typing import Final, Literal
+from typing import Any, Final, Literal
 
 from sqlalchemy import Text, cast, func, literal, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -25,6 +25,7 @@ from oc8.agents.hire import create_hire_request
 from oc8.approvals import expire_approval
 from oc8.audit import append_event
 from oc8.auth import Principal
+from oc8.authz import pdp
 from oc8.authz.authority import Authority
 from oc8.authz.permissions import AGENT, MANAGE, perm
 from oc8.authz.scope import DecisionActor, DepartmentScope, HumanActor
@@ -279,6 +280,31 @@ async def check_selections(
             named = _narrowed_systems(op)
             if named is None or any(name not in systems for name in named):
                 raise BuilderInvalid("connection_not_allowed", index)
+    await _check_skill_systems(db, department=department, steps=steps)
+
+
+async def _check_skill_systems(
+    db: AsyncSession, *, department: m.Department, steps: list[BuilderStep]
+) -> None:
+    """Every skill's required systems are ones the new agent will have -- the
+    department's frame with the proposal's own narrowing, the very check
+    `apply_operation` makes when it assigns the skill. Refused here, while the
+    Copilot can still add the system, instead of failing on "Create"."""
+    narrowing: dict[str, Any] = {}
+    for step in steps:
+        if isinstance(step.operation, AgentNarrowingSet):
+            narrowing = step.operation.narrowing
+    for index, step in enumerate(steps):
+        op = step.operation
+        if not isinstance(op, AgentSkillAssign):
+            continue
+        version = await db.get(m.SkillVersion, op.skillVersionId)
+        requires = (version.definition or {}).get("requires") if version is not None else None
+        tools = requires.get("tools") if isinstance(requires, dict) else None
+        if tools and pdp.missing_skill_requirements(
+            department.frame or {}, narrowing, {"tools": tools}
+        ):
+            raise BuilderInvalid("skill_needs_system", index)
 
 
 async def create_builder_proposal(
@@ -431,16 +457,41 @@ async def create_builder_proposal(
 
 
 async def _remember(
-    db: AsyncSession, proposal: CopilotProposal, refused: BuilderInvalid
+    db: AsyncSession,
+    proposal: CopilotProposal,
+    refused: BuilderInvalid,
+    reason: str | None = None,
 ) -> BuilderInvalid:
-    """Keep the refusal on the proposal, for the card (codes only)."""
-    proposal.result = {
-        **(proposal.result or {}),
-        "refusal": refused.code,
-        "failedStep": refused.step,
-    }
+    """Keep the refusal on the proposal, for the card (codes only): the
+    refusal, the step to blame and, for a failed step, why (an
+    `InvalidOperation.reason` code) when the step said."""
+    kept = {k: v for k, v in (proposal.result or {}).items() if k not in _REFUSAL_KEYS}
+    proposal.result = {**kept, "refusal": refused.code, "failedStep": refused.step}
+    if reason is not None:
+        proposal.result["failedReason"] = reason
     await db.flush()
     return refused
+
+
+#: What `_remember` writes; cleared on the next refusal and on success.
+_REFUSAL_KEYS: Final = ("refusal", "failedStep", "failedReason")
+
+
+def _apply_order(steps: list[BuilderStep]) -> list[tuple[int, BuilderStep]]:
+    """The steps in the order apply runs them, each with its stored index:
+    `agent.create`, then the agent's tool access, then everything else as
+    proposed. A skill's requirements are checked against the agent's
+    effective tools when it is assigned (`pdp.missing_skill_requirements`),
+    and a system the department frame does not list is only reachable
+    through the narrowing -- so the narrowing must exist before the skill
+    that needs it, whatever order the proposal names them in."""
+    indexed = list(enumerate(steps))
+    first = [(i, s) for i, s in indexed if isinstance(s.operation, AgentCreate)]
+    access = [(i, s) for i, s in indexed if isinstance(s.operation, AgentNarrowingSet)]
+    rest = [
+        (i, s) for i, s in indexed if not isinstance(s.operation, AgentCreate | AgentNarrowingSet)
+    ]
+    return [*first, *access, *rest]
 
 
 async def _member_id(db: AsyncSession, *, tenant_id: uuid.UUID, subject: str) -> uuid.UUID | None:
@@ -511,7 +562,7 @@ async def apply_builder_proposal(
     failed_at = 0
     try:
         async with db.begin_nested():
-            for index, step in enumerate(steps):
+            for index, step in _apply_order(steps):
                 failed_at = index
                 data, ref = resolve_step(builder_operation_data(step), refs)
                 created = await apply_operation(
@@ -528,7 +579,8 @@ async def apply_builder_proposal(
         # ValueError covers BuilderInvalid from resolve_step and any service
         # refusal that is not yet an InvalidOperation; SQLAlchemyError a step
         # the database refused. The savepoint is gone either way.
-        failed = await _remember(db, proposal, BuilderInvalid("step_failed", failed_at))
+        reason = exc.reason if isinstance(exc, InvalidOperation) else None
+        failed = await _remember(db, proposal, BuilderInvalid("step_failed", failed_at), reason)
         raise failed from exc
     # `load_steps` admits exactly one ref, defined by the create step.
     (agent_id,) = refs.values()
@@ -541,7 +593,7 @@ async def apply_builder_proposal(
     proposal.status = "applied"
     proposal.applied_by = applied_by
     proposal.revision += 1
-    kept = {k: v for k, v in (proposal.result or {}).items() if k not in ("refusal", "failedStep")}
+    kept = {k: v for k, v in (proposal.result or {}).items() if k not in _REFUSAL_KEYS}
     proposal.result = {**kept, "agentId": str(agent_id)}
     await db.flush()
     requested_by_member = await _member_id(

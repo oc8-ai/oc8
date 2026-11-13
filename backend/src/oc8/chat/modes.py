@@ -148,8 +148,14 @@ AGENT = ChatMode(
         "on the Capas page (/capas) and connected on the Connections page "
         "(/connections), with an organisation login or the person's own sign-in; "
         "the Knowledge page (/knowledge) is only for data sources. Do not propose "
-        "an agent that cannot work. Every other tool that "
-        "would change anything is withheld."
+        "an agent that cannot work. A turn starting with 'oc8 notice:' means "
+        "the person clicked Create and oc8 refused it; it names the failed step, "
+        "why and a code. Explain it in one or two plain sentences, then either "
+        "call propose_agent once with the corrected agent (drop or replace the "
+        "failing part, fix the schedule, pick another department or name) and "
+        "say what you changed, or, if only the person can fix it, say exactly "
+        "what to do and on which page. Never propose the same agent unchanged. "
+        "Every other tool that would change anything is withheld."
     ),
     allows_tools=True,
     allows_writes=False,

@@ -66,6 +66,7 @@ const draft: AgentBuilderDTO = {
   readOnly: false,
   refusal: null,
   failedStep: null,
+  failedReason: null,
   rejectedReason: null,
   agent: null,
 };
@@ -213,6 +214,20 @@ describe("AgentBuilderCard", () => {
     expect(screen.queryAllByRole("button", { name: /create|approval/i })).toHaveLength(0);
   });
 
+  it("says why a step failed, not only its number", () => {
+    m.card = {
+      ...draft,
+      refusal: "step_failed",
+      failedStep: 2,
+      failedReason: "skill_requirements_missing",
+    };
+    render(<AgentBuilderCard proposalId="p1" />);
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("Step 3 could not be applied");
+    expect(alert).toHaveTextContent("The skill needs a system this agent does not have");
+    expect(alert).toHaveTextContent("Nothing was created.");
+  });
+
   it("names why the last apply was refused", () => {
     m.card = { ...draft, refusal: "name_taken", failedStep: 0 };
     render(<AgentBuilderCard proposalId="p1" />);
@@ -294,6 +309,28 @@ describe("builderRefusalText", () => {
   it("numbers the failed step and tolerates none", () => {
     expect(builderRefusalText("step_failed", 2, t)).toContain("Step 3");
     expect(builderRefusalText("step_failed", null, t)).toContain("Step 1");
+  });
+  it("gives every step reason its own sentence, in German with du", () => {
+    const reasons = [
+      "skill_requirements_missing",
+      "runtime_lacks_skills",
+      "trigger_invalid",
+      "model_manual_only",
+      "system_outside_frame",
+      "system_login_needed",
+      "system_no_amount_limit",
+    ];
+    const de = (_en: string, de: string) => de;
+    const texts = reasons.map((r) => builderRefusalText("step_failed", 0, t, r));
+    expect(new Set(texts).size).toBe(reasons.length);
+    for (const x of texts) expect(x).not.toBe(builderRefusalText("step_failed", 0, t));
+    expect(builderRefusalText("step_failed", 0, de, "trigger_invalid")).toMatch(/Schritt 1/);
+    expect(builderRefusalText("step_failed", 0, t, "unknown_reason")).toBe(
+      builderRefusalText("step_failed", 0, t),
+    );
+  });
+  it("explains a skill that needs a system when proposing", () => {
+    expect(builderRefusalText("skill_needs_system", null, t)).toMatch(/skill needs a system/);
   });
   it("names a concurrent replacement", () => {
     expect(builderRefusalText("superseded_concurrently", null, t)).toBe(

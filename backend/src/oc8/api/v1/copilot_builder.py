@@ -36,6 +36,7 @@ from oc8.copilot.builder import (
     may_create_agent,
     request_builder_approval,
 )
+from oc8.copilot.builder_notice import tell_copilot_best_effort
 from oc8.copilot.builder_ops import BuilderInvalid, BuilderStep
 from oc8.copilot.capabilities import (
     AgentModelSwitch,
@@ -180,6 +181,7 @@ async def builder_dto(
         agent_dto = BuilderAgentDTO(id=str(agent.id), name=agent.name, status=agent.status)
     refusal = result.get("refusal")
     failed_step = result.get("failedStep")
+    failed_reason = result.get("failedReason")
     rejected_reason = result.get("rejectedReason")
     is_draft = proposal.status == "draft"
     return AgentBuilderDTO(
@@ -202,6 +204,7 @@ async def builder_dto(
         read_only=read_only,
         refusal=refusal if isinstance(refusal, str) else None,
         failed_step=failed_step if isinstance(failed_step, int) else None,
+        failed_reason=failed_reason if isinstance(failed_reason, str) else None,
         rejected_reason=rejected_reason if isinstance(rejected_reason, str) else None,
         agent=agent_dto,
     )
@@ -260,6 +263,16 @@ async def apply_builder(
     except BuilderInvalid as exc:
         # The refusal (and its step) stays on the proposal for the card.
         await db.commit()
+        # And the Copilot hears of it: one notice turn in this chat, so it
+        # explains the refusal and fixes the proposal or says what to do.
+        await tell_copilot_best_effort(
+            db,
+            tenant_id=actor.principal.tenant_id,
+            proposal_id=proposal.id,
+            steps=steps,
+            member=actor.member,
+            operator_role=actor.principal.role,
+        )
         raise _refused(exc) from None
     await announce_builder(db, proposal)
     dto = await builder_dto(

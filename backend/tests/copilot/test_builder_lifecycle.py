@@ -379,7 +379,11 @@ async def test_a_failing_step_rolls_everything_back(app_session: AppSessionFacto
             await _apply(db, office, proposal.id)
         assert caught.value.code == "step_failed" and caught.value.step == 1
         assert proposal.status == "draft"
-        assert proposal.result == {"refusal": "step_failed", "failedStep": 1}
+        assert proposal.result == {
+            "refusal": "step_failed",
+            "failedStep": 1,
+            "failedReason": "trigger_invalid",
+        }
         created = (
             (await db.execute(select(m.Agent).where(m.Agent.name == "Rechnungsprüfer")))
             .scalars()

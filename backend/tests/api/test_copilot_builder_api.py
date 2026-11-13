@@ -19,6 +19,7 @@ from oc8.auth import get_identity_provider
 from oc8.authz.authority import authority_for_member, tenant_wide_read
 from oc8.authz.permissions import DEPARTMENT, SEAT_APPROVER, SEAT_VIEWER, VIEW, perm
 from oc8.authz.scope import scope_for_member
+from oc8.chat.service import NOTICE_PREFIX
 from oc8.copilot.builder import create_builder_proposal
 from oc8.copilot.models import CopilotProposal
 from oc8.edition.runtime import RuntimeComposition
@@ -311,3 +312,87 @@ async def test_an_unknown_proposal_is_not_found(app_session: AppSessionFactory) 
         assert (await c.get(url, headers=admin)).status_code == 404
         assert (await c.post(f"{url}/apply", headers=admin)).status_code == 404
         assert (await c.post(f"{url}/request", headers=admin)).status_code == 404
+
+
+async def test_a_failed_step_says_why_and_tells_the_copilot_once(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """A refused "Create": the card reads the failed step and its reason, and
+    the Copilot gets exactly one oc8 notice turn in the chat (web door, Agent
+    mode) -- clicking again with the same refusal starts no second one."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await builder_office(db, tenant)
+        session = await db.get(m.ChatSession, office.admin.session_id)
+        assert session is not None
+        session.mode = "agent"
+        await db.flush()
+    office, pid = await _seed_in(
+        app_session,
+        office,
+        [
+            *invoice_checker_ops(office)[:3],
+            {
+                "type": "trigger.create",
+                "agentRef": "$new",
+                "kind": "event",
+                "taskText": "x",
+                "eventSource": "nowhere",
+                "eventType": "never",
+            },
+        ],
+    )
+    admin = _headers(office.tenant, "admin", "org_admin")
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        for _click in range(2):
+            refused = await c.post(f"/api/v1/copilot/builder/{pid}/apply", headers=admin)
+            assert refused.status_code == 422, refused.text
+            assert refused.json()["detail"] == "agent_builder:step_failed"
+        card = (await c.get(f"/api/v1/copilot/builder/{pid}", headers=admin)).json()
+        assert card["refusal"] == "step_failed"
+        assert card["failedStep"] == 3 and card["failedReason"] == "trigger_invalid"
+    async with app_session(office.tenant) as db:
+        assert await _agents_named(db) == 0
+        notices = (
+            (
+                await db.execute(
+                    select(m.ChatMessage).where(m.ChatMessage.session_id == office.admin.session_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert [n.role for n in notices] == ["followup"], "one notice, not one per click"
+        notice = notices[0]
+        assert notice.content.startswith(NOTICE_PREFIX)
+        assert "step 4 (create the schedule or event trigger)" in notice.content
+        assert "code: trigger_invalid" in notice.content
+        run = (await db.execute(select(m.AgentRun).where(m.AgentRun.source == "chat"))).scalar_one()
+        assert run.context["door"] == "web", "the Copilot may propose again"
+        assert run.context["chat_mode"] == "agent"
+        assert run.context["notice"]["builder_proposal_id"] == str(pid)
+        assert run.context["originating_operator"] == "admin"
+        assert "oc8 (a notice from the system" in run.context["task"]
+
+
+async def _seed_in(
+    app_session: AppSessionFactory, office: BuilderOffice, ops: list[dict[str, object]]
+) -> tuple[BuilderOffice, uuid.UUID]:
+    """A proposal by the admin in an office that already exists."""
+    async with app_session(office.tenant) as db:
+        member = await db.get(m.OrgMember, office.admin.member_id)
+        assert member is not None
+        scope = await scope_for_member(db, member, token_role="org_admin")
+        authority = await authority_for_member(db, member, token_role="org_admin")
+        proposal = await create_builder_proposal(
+            db,
+            tenant_id=office.tenant,
+            member=member,
+            scope=scope,
+            tenant_wide=tenant_wide_read(authority, perm(DEPARTMENT, VIEW)),
+            session_id=office.admin.session_id,
+            operations=ops,
+            now=dt.datetime.now(tz=dt.UTC),
+        )
+        return office, proposal.id
