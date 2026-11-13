@@ -13,7 +13,7 @@ from tests.conftest import AppSessionFactory
 
 from oc8 import models as m
 from oc8.agent.engine import run_agent
-from oc8.modelrouter import CompletionResult, ToolCall, chunk_from_result
+from oc8.modelrouter import CompletionResult, NeutralTool, ToolCall, chunk_from_result
 
 pytestmark = pytest.mark.asyncio
 
@@ -189,3 +189,76 @@ async def test_find_tools_never_returns_a_withheld_tool(
     assert found, result.tool_calls
     assert all("mail_op" not in text for text in found), found
     assert any("files_op" in text for text in found), found
+
+
+class _CodingToolset:
+    def __init__(self) -> None:
+        self.tools = [
+            NeutralTool(name=n, description=n, parameters={"type": "object", "properties": {}})
+            for n in ("fs_read", "fs_write", "shell_run")
+        ]
+        self.called: list[str] = []
+
+    async def call(self, name: str, arguments: dict[str, Any]) -> str:
+        self.called.append(name)
+        return "ok"
+
+
+async def _coding_run(
+    app_session: AppSessionFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    policy: dict[str, Any],
+    script: list[CompletionResult] | None = None,
+) -> tuple[set[str], _CodingToolset, Any]:
+    toolset = _CodingToolset()
+    stream = _OfferRecorder(script or [_turn("fertig")])
+    monkeypatch.setattr("oc8.agent.engine.stream_completion_with_fallback", stream)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, _conn = await _fixture(db, tenant, tool_scopes=SCOPES)
+        dept = await db.get(m.Department, agent.department_id)
+        assert dept is not None
+        dept.frame = {"tools": {"coding": policy}}
+        await db.flush()
+        result = await run_agent(db, agent=agent, task_text="go", tenant_id=tenant, toolset=toolset)
+    names = {t.name for t in toolset.tools}
+    return stream.offered[0] & names, toolset, result
+
+
+async def test_the_coding_toolset_follows_the_frames_only(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    offered, _, _ = await _coding_run(
+        app_session,
+        monkeypatch,
+        {"enabled": True, "read": True, "modify": True, "only": ["fs_read", "fs_write"]},
+    )
+    assert offered == {"fs_read", "fs_write"}
+
+
+async def test_a_read_only_coding_grant_offers_no_writing_tool(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    offered, _, _ = await _coding_run(
+        app_session, monkeypatch, {"enabled": True, "read": True, "modify": False}
+    )
+    assert offered == {"fs_read"}
+
+
+async def test_a_hidden_coding_tool_named_anyway_is_still_denied(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    offered, toolset, result = await _coding_run(
+        app_session,
+        monkeypatch,
+        {"enabled": True, "read": True, "modify": True, "only": ["fs_read"]},
+        script=[
+            _turn("", ToolCall(id="c1", name="shell_run", arguments={"command": "ls"})),
+            _turn("fertig"),
+        ],
+    )
+    assert offered == {"fs_read"}
+    assert toolset.called == []
+    entry = result.tool_calls[-1]
+    assert entry["state"] == "denied", result.tool_calls
+    assert entry["reason"] == "'coding' does not grant the tool 'shell_run' in this frame"

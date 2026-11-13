@@ -3072,7 +3072,20 @@ async def run_agent(
         async def _run_with_session_end() -> RunResult:
             try:
                 if toolset is not None:
-                    return await loop(toolset.tools, toolset)
+                    # The coding toolset answers to its own frame key: the same
+                    # rule as a connection, so a read-only or `only`-narrowed
+                    # `coding` grant is not offered fs_write/shell_run.
+                    coding = [
+                        t
+                        for t in toolset.tools
+                        if offers_tool(
+                            tool_policies,
+                            connection_key=CODING_FRAME_KEY,
+                            tool=t.name,
+                            scopes=tool_scopes,
+                        )
+                    ]
+                    return await loop(coding, toolset)
 
                 def _note_unavailable(conn: m.McpConnection, exc: BaseException) -> None:
                     reason = " ".join(str(exc).split())[:200] or type(exc).__name__
