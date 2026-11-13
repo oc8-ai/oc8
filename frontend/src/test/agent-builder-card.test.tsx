@@ -44,6 +44,7 @@ const draft: AgentBuilderDTO = {
   sessionId: "s1",
   departmentId: "d1",
   departmentName: "Buchhaltung",
+  newDepartment: false,
   name: "Rechnungsprüfer",
   roleTitle: "Buchhaltung",
   mission: "Prüft jeden Morgen offene Rechnungen.",
@@ -91,9 +92,18 @@ describe("AgentBuilderCard", () => {
     expect(screen.getByText("Mistral")).toBeInTheDocument();
     expect(screen.getByText("Rechnungen prüfen")).toBeInTheDocument();
     expect(screen.getByText("odoo")).toBeInTheDocument();
+    // The schedule in plain words, not the cron.
+    expect(screen.getByText("Every weekday at 7:00 UTC")).toBeInTheDocument();
+    expect(screen.queryByText(/0 7 \* \* 1-5/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Create this agent" }));
     expect(m.apply).toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "Send for approval" })).not.toBeInTheDocument();
+  });
+
+  it("says when the agent goes into a new department", () => {
+    m.card = { ...draft, departmentId: null, departmentName: "Vertrieb", newDepartment: true };
+    render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByText("New department: Vertrieb", { selector: "dd" })).toBeInTheDocument();
   });
 
   it.each([403, 404])("says the preview is unavailable when the read fails (%i)", () => {

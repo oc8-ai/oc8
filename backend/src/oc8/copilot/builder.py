@@ -22,12 +22,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agents.hire import create_hire_request
+from oc8.agents.publish_hooks import PublishHookFailed
+from oc8.agents.versioning import NoChangesToPublish, publish_version
 from oc8.approvals import expire_approval
 from oc8.audit import append_event
 from oc8.auth import Principal
 from oc8.authz import pdp
-from oc8.authz.authority import Authority
-from oc8.authz.permissions import AGENT, MANAGE, perm
+from oc8.authz.authority import Authority, granted_for_member
+from oc8.authz.permissions import AGENT, DEPARTMENT, MANAGE, perm
 from oc8.authz.scope import DecisionActor, DepartmentScope, HumanActor
 from oc8.chat.model_choice import chat_enabled_model_ids
 from oc8.connections.usable import department_systems
@@ -43,12 +45,14 @@ from oc8.copilot.capabilities import (
     AgentModelSwitch,
     AgentNarrowingSet,
     AgentSkillAssign,
+    DepartmentCreate,
     GuardrailSet,
     InvalidOperation,
     MissionSet,
     Operation,
     TriggerCreate,
     apply_operation,
+    new_department_frame,
     operation_label,
 )
 from oc8.copilot.models import CopilotOperation, CopilotProposal
@@ -66,12 +70,28 @@ PROPOSAL_LIFETIME: Final = dt.timedelta(days=7)
 
 
 def may_create_agent(
-    authority: Authority, scope: DepartmentScope, department_id: uuid.UUID
+    authority: Authority, scope: DepartmentScope, department_id: uuid.UUID | None
 ) -> bool:
     """The existing agent-write rule (`api.deps.authorize_agent_write`) as a
     question: tenant-wide `agent:manage`, or the seat's agent_manage toggle in
     exactly this department. A test pins the two to the same answers."""
     return perm(AGENT, MANAGE) in authority.tenant_wide or scope.may_manage_agents(department_id)
+
+
+def may_create_department(authority: Authority) -> bool:
+    """POST /departments' own rule: tenant-wide `department:manage`."""
+    return perm(DEPARTMENT, MANAGE) in authority.tenant_wide
+
+
+def may_create_in(authority: Authority, scope: DepartmentScope, steps: list[BuilderStep]) -> bool:
+    """Whether the member may create the proposal's agent where it goes: in an
+    existing department, `may_create_agent` there; in a new one, the right to
+    create departments and agents outside any seat (nobody has a seat in a
+    department that does not exist yet)."""
+    department_id = target_department_id(steps)
+    if department_id is None:
+        return may_create_department(authority) and may_create_agent(authority, scope, None)
+    return may_create_agent(authority, scope, department_id)
 
 
 def expire_if_due(proposal: CopilotProposal, *, now: dt.datetime) -> bool:
@@ -184,6 +204,8 @@ def _texts(operation: Operation) -> list[str]:
     """Free text a step stores as configuration -- what the secret gate reads."""
     if isinstance(operation, AgentCreate):
         return [operation.name, operation.roleTitle, operation.mission]
+    if isinstance(operation, DepartmentCreate):
+        return [operation.name, operation.goal]
     if isinstance(operation, MissionSet):
         return [operation.mission]
     if isinstance(operation, TriggerCreate):
@@ -216,11 +238,62 @@ def _leaf_texts(value: object, key: str | None = None) -> Iterator[str]:
             yield f"{key}={value}"
 
 
+def _create_index(steps: list[BuilderStep]) -> int:
+    """`agent.create` is first, or second after the new department's step."""
+    return 1 if steps and isinstance(steps[0].operation, DepartmentCreate) else 0
+
+
 def create_step(steps: list[BuilderStep]) -> AgentCreate:
-    create = steps[0].operation
+    index = _create_index(steps)
+    create = steps[index].operation if len(steps) > index else None
     if not isinstance(create, AgentCreate):
         raise BuilderInvalid("missing_create")
     return create
+
+
+def new_department(steps: list[BuilderStep]) -> DepartmentCreate | None:
+    """The department the proposal creates for its agent, if it does."""
+    first = steps[0].operation if steps else None
+    return first if isinstance(first, DepartmentCreate) else None
+
+
+def target_department_id(steps: list[BuilderStep]) -> uuid.UUID | None:
+    """The existing department the agent goes into; None for a new one. None
+    is also what `DepartmentScope` answers for "no department": only a
+    tenant-wide right reaches it, which is exactly who may act on a
+    department that does not exist yet."""
+    if new_department(steps) is not None:
+        return None
+    return create_step(steps).departmentId
+
+
+def _planned_department(tenant_id: uuid.UUID, operation: DepartmentCreate) -> m.Department:
+    """The new department as the checks see it before it exists: its name and
+    the frame it will get. Never added to the session."""
+    return m.Department(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        name=operation.name,
+        goal=operation.goal,
+        frame=new_department_frame(),
+    )
+
+
+async def _check_new_department_name(
+    db: AsyncSession, *, tenant_id: uuid.UUID, operation: DepartmentCreate
+) -> None:
+    """A department of that name exists: the agent belongs there."""
+    taken = await db.scalar(
+        select(func.count())
+        .select_from(m.Department)
+        .where(
+            m.Department.tenant_id == tenant_id,
+            m.Department.deleted_at.is_(None),
+            func.lower(m.Department.name) == func.lower(operation.name.strip()),
+        )
+    )
+    if taken:
+        raise BuilderInvalid("department_exists", 0)
 
 
 def _narrowed_systems(operation: AgentNarrowingSet) -> list[str] | None:
@@ -317,19 +390,31 @@ async def create_builder_proposal(
     session_id: uuid.UUID,
     operations: object,
     now: dt.datetime,
+    may_create_departments: bool = False,
 ) -> CopilotProposal:
     """Validate and store one builder proposal for `member`'s chat, superseding
     the chat's open draft. A proposal already waiting for approval is not
-    replaced: the member waits for the decision (or it expires)."""
+    replaced: the member waits for the decision (or it expires).
+
+    A proposal for a new department only from a member who may create
+    departments (`may_create_departments`, the caller's `may_create_department`)."""
     steps = parse_builder_operations(operations)
     create = create_step(steps)
-    # Through the scoped repository, like builder_options lists them (A24):
-    # a department outside the member's reach reads as unknown.
-    department = await visible_department(
-        db, scope=scope, tenant_wide=tenant_wide, department_id=create.departmentId
-    )
-    if department is None or not scope.may_view(department.id):
-        raise BuilderInvalid("department_unknown", 0)
+    planned = new_department(steps)
+    if planned is not None:
+        if not may_create_departments:
+            raise BuilderInvalid("department_create_not_allowed", 0)
+        await _check_new_department_name(db, tenant_id=tenant_id, operation=planned)
+        department = _planned_department(tenant_id, planned)
+    else:
+        # Through the scoped repository, like builder_options lists them (A24):
+        # a department outside the member's reach reads as unknown.
+        visible = await visible_department(
+            db, scope=scope, tenant_wide=tenant_wide, department_id=create.departmentId
+        )
+        if visible is None or not scope.may_view(visible.id):
+            raise BuilderInvalid("department_unknown", 0)
+        department = visible
     await check_selections(db, tenant_id=tenant_id, department=department, steps=steps)
     in_session = (
         CopilotProposal.tenant_id == tenant_id,
@@ -480,18 +565,47 @@ _REFUSAL_KEYS: Final = ("refusal", "failedStep", "failedReason")
 def _apply_order(steps: list[BuilderStep]) -> list[tuple[int, BuilderStep]]:
     """The steps in the order apply runs them, each with its stored index:
     `agent.create`, then the agent's tool access, then everything else as
-    proposed. A skill's requirements are checked against the agent's
-    effective tools when it is assigned (`pdp.missing_skill_requirements`),
-    and a system the department frame does not list is only reachable
-    through the narrowing -- so the narrowing must exist before the skill
-    that needs it, whatever order the proposal names them in."""
+    proposed, then its triggers. A skill's requirements are checked against
+    the agent's effective tools when it is assigned
+    (`pdp.missing_skill_requirements`), and a system the department frame
+    does not list is only reachable through the narrowing -- so the narrowing
+    must exist before the skill that needs it, whatever order the proposal
+    names them in. Triggers come last because the agent is published before
+    them (`apply_builder_proposal`): a trigger records what its creator saw of
+    the PUBLISHED agent (`connections.access.trigger_fingerprint`)."""
     indexed = list(enumerate(steps))
-    first = [(i, s) for i, s in indexed if isinstance(s.operation, AgentCreate)]
+    first = [(i, s) for i, s in indexed if isinstance(s.operation, DepartmentCreate)]
+    first += [(i, s) for i, s in indexed if isinstance(s.operation, AgentCreate)]
     access = [(i, s) for i, s in indexed if isinstance(s.operation, AgentNarrowingSet)]
+    triggers = [(i, s) for i, s in indexed if isinstance(s.operation, TriggerCreate)]
     rest = [
-        (i, s) for i, s in indexed if not isinstance(s.operation, AgentCreate | AgentNarrowingSet)
+        (i, s)
+        for i, s in indexed
+        if not isinstance(
+            s.operation, DepartmentCreate | AgentCreate | AgentNarrowingSet | TriggerCreate
+        )
     ]
-    return [*first, *access, *rest]
+    return [*first, *access, *rest, *triggers]
+
+
+async def _publish_new_agent(
+    db: AsyncSession, agent_id: uuid.UUID, *, published_by: uuid.UUID | None
+) -> None:
+    """Publish the builder's new agent once, with every step applied so far.
+
+    Runs execute the published version (`versioning.resolve_version`), so an
+    agent whose tool access, model or guardrails stayed in the working copy
+    would run without them -- the person's "Create" is their decision for all
+    of it, and a brand-new agent has no draft of anybody's to protect."""
+    agent = await db.get(m.Agent, agent_id)
+    if agent is None:
+        raise InvalidOperation()
+    try:
+        await publish_version(db, agent, note="created by the Copilot", published_by=published_by)
+    except NoChangesToPublish:
+        pass
+    except PublishHookFailed as exc:
+        raise InvalidOperation() from exc
 
 
 async def _member_id(db: AsyncSession, *, tenant_id: uuid.UUID, subject: str) -> uuid.UUID | None:
@@ -547,22 +661,37 @@ async def apply_builder_proposal(
     except BuilderInvalid as refused:
         raise await _remember(db, proposal, refused) from None
     create = create_step(steps)
-    department = await _live_department(db, create.departmentId)
+    planned = new_department(steps)
+    if planned is not None:
+        department: m.Department | None = _planned_department(proposal.tenant_id, planned)
+    else:
+        department = await _live_department(db, create.departmentId)
     if department is None:
         raise await _remember(db, proposal, BuilderInvalid("department_unknown", 0))
     await _lock_agent_name(db, tenant_id=proposal.tenant_id, name=create.name)
     try:
+        if planned is not None:
+            await _check_new_department_name(db, tenant_id=proposal.tenant_id, operation=planned)
         await check_selections(db, tenant_id=proposal.tenant_id, department=department, steps=steps)
     except BuilderInvalid as refused:
         raise await _remember(db, proposal, refused) from None
+    agent_ref = steps[_create_index(steps)].ref
+    assert agent_ref is not None  # `parse_builder_operations` requires it
     # The applier owns any trigger a step creates, as on a plain Copilot
     # proposal (`apply_proposal` passes its actor the same way).
     applied_by_member = await _member_id(db, tenant_id=proposal.tenant_id, subject=applied_by)
     refs: dict[str, uuid.UUID] = {}
     failed_at = 0
+    published = False
     try:
         async with db.begin_nested():
             for index, step in _apply_order(steps):
+                if isinstance(step.operation, TriggerCreate) and not published:
+                    # The agent's first version, with everything but its
+                    # triggers (`_apply_order` puts them last), before them.
+                    failed_at = _create_index(steps)
+                    await _publish_new_agent(db, refs[agent_ref], published_by=applied_by_member)
+                    published = True
                 failed_at = index
                 data, ref = resolve_step(builder_operation_data(step), refs)
                 created = await apply_operation(
@@ -570,11 +699,15 @@ async def apply_builder_proposal(
                     tenant_id=proposal.tenant_id,
                     data=data,
                     actor_member_id=applied_by_member,
+                    publish=False,
                 )
                 if ref is not None:
                     if created is None:
                         raise InvalidOperation()
                     refs[ref] = created
+            if not published:
+                failed_at = _create_index(steps)
+                await _publish_new_agent(db, refs[agent_ref], published_by=applied_by_member)
     except (InvalidOperation, ValueError, SQLAlchemyError) as exc:
         # ValueError covers BuilderInvalid from resolve_step and any service
         # refusal that is not yet an InvalidOperation; SQLAlchemyError a step
@@ -582,8 +715,8 @@ async def apply_builder_proposal(
         reason = exc.reason if isinstance(exc, InvalidOperation) else None
         failed = await _remember(db, proposal, BuilderInvalid("step_failed", failed_at), reason)
         raise failed from exc
-    # `load_steps` admits exactly one ref, defined by the create step.
-    (agent_id,) = refs.values()
+    # `load_steps` admits one agent ref, defined by the create step.
+    agent_id = refs[agent_ref]
     agent = await db.get(m.Agent, agent_id)
     if agent is not None and agent.status == "pending_approval":
         # The tenant's hire gate held the new agent (`apply_operation` read the
@@ -609,7 +742,8 @@ async def apply_builder_proposal(
         resource={
             "proposal_id": str(proposal.id),
             "agent_id": str(agent_id),
-            "department_id": str(create.departmentId),
+            "department_id": str(agent.department_id if agent else create.departmentId),
+            "new_department": planned is not None,
             "requested_by": proposal.created_by,
             "requested_by_member_id": str(requested_by_member) if requested_by_member else None,
             "applied_by": applied_by,
@@ -680,14 +814,20 @@ async def request_builder_approval(
         raise BuilderInvalid("expired")
     if proposal.status != "draft":
         raise BuilderInvalid("not_open")
-    create = create_step(await load_steps(db, proposal))
-    # Still within the requester's reach, through the scoped repository like at
-    # propose time: a seat removed since then cannot file into that queue.
-    department = await visible_department(
-        db, scope=scope, tenant_wide=tenant_wide, department_id=create.departmentId
-    )
-    if department is None or not scope.may_view(department.id):
-        raise BuilderInvalid("department_unknown", 0)
+    steps = await load_steps(db, proposal)
+    create = create_step(steps)
+    department_id = target_department_id(steps)
+    if department_id is not None:
+        # Still within the requester's reach, through the scoped repository like
+        # at propose time: a seat removed since then cannot file into that queue.
+        department = await visible_department(
+            db, scope=scope, tenant_wide=tenant_wide, department_id=department_id
+        )
+        if department is None or not scope.may_view(department.id):
+            raise BuilderInvalid("department_unknown", 0)
+    # A new department has no queue yet: the request goes to whoever decides
+    # everywhere (no department), and its approver must be allowed to create
+    # departments (`resolve_builder_approval`).
     assistant = await get_or_create_assistant(db, tenant_id=proposal.tenant_id)
     name = one_line(create.name, 120)
     approval = await raise_approval(
@@ -703,7 +843,7 @@ async def request_builder_approval(
             "i18n": {"de": {"title": f"Agent anlegen: {name}"}},
         },
         expires_at=proposal.expires_at,
-        department_id=create.departmentId,
+        department_id=department_id,
     )
     proposal.status = "awaiting_approval"
     proposal.revision += 1
@@ -719,13 +859,30 @@ async def request_builder_approval(
         resource={
             "proposal_id": str(proposal.id),
             "approval_id": str(approval.id),
-            "department_id": str(create.departmentId),
+            "department_id": str(department_id) if department_id else None,
             "requested_by": requester.subject,
             "requested_by_member_id": str(requester.id),
         },
     )
     await announce_builder(db, proposal)
     return approval
+
+
+async def _creates_department(db: AsyncSession, proposal: CopilotProposal) -> bool:
+    try:
+        return new_department(await load_steps(db, proposal)) is not None
+    except BuilderInvalid:
+        return False  # apply refuses it on its own
+
+
+async def _approver_may_create_department(db: AsyncSession, actor: DecisionActor) -> bool:
+    """POST /departments' right, held by the approver themself -- resolved
+    the way the funnel resolves the agent right (`_may_apply_the_effect`),
+    and only for a person at the screen, like that check."""
+    if not isinstance(actor, HumanActor):
+        return False
+    granted, _source = await granted_for_member(db, actor.principal, actor.member)
+    return perm(DEPARTMENT, MANAGE) in granted
 
 
 async def resolve_builder_approval(
@@ -783,6 +940,12 @@ async def resolve_builder_approval(
         return
     if proposal.status == "expired":
         raise EffectRefused("expired")
+    if await _creates_department(db, proposal) and not await _approver_may_create_department(
+        db, actor
+    ):
+        # Checked when it is applied, as the approver: the requester's right
+        # to propose it is not the approver's to create it.
+        raise EffectRefused("department_create_not_allowed")
     try:
         await apply_builder_proposal(
             db,

@@ -15,9 +15,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.agents.versioning import draft_status, resolve_version
+from oc8.api.mcp_gateway import _connections
 from oc8.auth import Principal
-from oc8.capas.discovery import find_plugin
+from oc8.authz.pdp import Effect, authorize_tool_call, effective_tool_policies, required_right
+from oc8.capas.discovery import find_plugin, resolve_tool_pack_connection
 from oc8.config import get_settings
+from oc8.connections.access import trigger_fingerprint
 from oc8.copilot.agent_templates import connected_kinds
 from oc8.copilot.builder import apply_builder_proposal, usable_systems
 from oc8.copilot.models import CopilotProposal
@@ -366,3 +370,136 @@ async def test_a_skill_whose_system_the_agent_would_not_have_is_refused_when_pro
         assert outcome.output.startswith("ERROR"), outcome.output
         assert "needs a system" in outcome.output
         assert (await db.execute(select(CopilotProposal))).scalars().all() == []
+
+
+async def _create_reporter(
+    db: AsyncSession, office: BuilderOffice, skill_version: uuid.UUID
+) -> uuid.UUID:
+    """The builder's "Odoo Umsatz-Reporter", proposed and created as in prod."""
+    tenant = office.tenant
+    run, task = await _run(db, office, chat_mode="agent")
+    outcome = await _call(
+        db,
+        office,
+        run,
+        task,
+        "propose_agent",
+        departmentId=str(office.other_department_id),
+        name="Odoo Umsatz-Reporter",
+        roleTitle="Vertrieb / Reporting",
+        mission="Fasst täglich die Verkaufsaufträge in Odoo zusammen.",
+        modelId=str(office.model_id),
+        skillIds=[str(skill_version)],
+        schedule="0 8 * * *",
+        systems=["odoo"],
+    )
+    assert not outcome.output.startswith("ERROR"), outcome.output
+    proposal = (await db.execute(select(CopilotProposal))).scalar_one()
+    return await apply_builder_proposal(
+        db,
+        proposal_id=proposal.id,
+        expect_status="draft",
+        applied_by="admin",
+        principal=Principal(subject="admin", tenant_id=tenant, role="org_admin"),
+        now=proposal.created_at,
+    )
+
+
+async def _manual_run(db: AsyncSession, agent: m.Agent) -> m.AgentRun:
+    """A "Run now": pinned to the published version, like run intake does."""
+    run = m.AgentRun(
+        tenant_id=agent.tenant_id,
+        agent_id=agent.id,
+        source="manual",
+        state="running",
+        agent_version_id=agent.current_version_id,
+        context={"task": "Umsatzstatistik von gestern"},
+    )
+    db.add(run)
+    await db.flush()
+    return run
+
+
+def _odoo_decision(policies: Any, tool: str, conn: m.McpConnection) -> Effect:
+    declared = resolve_tool_pack_connection("odoo_mcp", "primary")
+    assert declared is not None and conn.name == "odoo"
+    scopes = declared.scopes
+    return authorize_tool_call(
+        policies=policies,
+        connection_key="odoo",
+        right=required_right(tool, scopes),
+        value=None,
+        tool=tool,
+    ).effect
+
+
+async def test_a_builder_agent_runs_with_the_integration_it_was_created_with(
+    app_session: AppSessionFactory,
+) -> None:
+    """Prod, end to end: the frame lists only Microsoft 365, Odoo is one
+    organisation login, the builder creates the agent with Odoo read on and
+    write off, a model, an Odoo skill and a schedule. Its runs execute the
+    PUBLISHED version -- so "Create" must publish all of it, and a run must
+    then be offered Odoo and be allowed to read, never to write."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await _office_without_legacy(db, tenant)
+        await _install(db, tenant, "odoo_mcp")
+        await _install(db, tenant, "microsoft365")
+        await _org_login(db, tenant)
+        dept = await _department(db, office)
+        dept.frame = {"tools": {"microsoft365": {"enabled": True, "read": True}}}
+        await db.flush()
+        skill_version = await _odoo_skill(db, tenant)
+        agent_id = await _create_reporter(db, office, skill_version)
+
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        # One version holding every step, nothing left unpublished.
+        versions = (
+            (await db.execute(select(m.AgentVersion).where(m.AgentVersion.agent_id == agent_id)))
+            .scalars()
+            .all()
+        )
+        assert [v.version_no for v in versions] == [1]
+        assert agent.current_version_id == versions[0].id
+        assert not (await draft_status(db, agent)).dirty
+
+        run = await _manual_run(db, agent)
+        pinned = await resolve_version(db, run, agent)
+        assert pinned["narrowing"] == {
+            "tools": {"odoo": {"enabled": True, "read": True, "modify": False}}
+        }
+        assert pinned["model_config_id"] == str(office.model_id)
+
+        # The run's systems ("Systems you can reach"): Odoo, through the
+        # unbound row the organisation login acts through.
+        conns = await _connections(db, run, dept)
+        odoo = next((c for c in conns if c.name == "odoo"), None)
+        assert odoo is not None, [c.name for c in conns]
+
+        policies = effective_tool_policies(dept.frame, pinned["narrowing"])
+        assert _odoo_decision(policies, "search_records", odoo) is Effect.ALLOW
+        assert _odoo_decision(policies, "create_record", odoo) is Effect.DENY
+
+        # The schedule was saved against the version that runs.
+        trigger = (
+            await db.execute(select(m.Trigger).where(m.Trigger.agent_id == agent_id))
+        ).scalar_one()
+        assert trigger.access_fingerprint is not None
+        assert trigger.access_fingerprint == await trigger_fingerprint(
+            db, trigger, version_id=agent.current_version_id
+        )
+
+        # The department switching Odoo off still wins, mid-run included.
+        dept.frame = {
+            "tools": {
+                "microsoft365": {"enabled": True, "read": True},
+                "odoo": {"enabled": False, "read": False},
+            }
+        }
+        await db.flush()
+        conns = await _connections(db, run, dept)
+        assert "odoo" not in {c.name for c in conns}
+        policies = effective_tool_policies(dept.frame, pinned["narrowing"])
+        assert _odoo_decision(policies, "search_records", odoo) is Effect.DENY

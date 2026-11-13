@@ -1,3 +1,3 @@
 """oc8 control plane."""
 
-__version__ = "0.3.6"
+__version__ = "0.3.7"

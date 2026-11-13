@@ -33,8 +33,10 @@ from oc8.copilot.builder import (
     create_step,
     expire_if_due,
     load_steps,
-    may_create_agent,
+    may_create_in,
+    new_department,
     request_builder_approval,
+    target_department_id,
 )
 from oc8.copilot.builder_notice import tell_copilot_best_effort
 from oc8.copilot.builder_ops import BuilderInvalid, BuilderStep
@@ -129,14 +131,25 @@ async def builder_dto(
     show_mission: bool,
 ) -> AgentBuilderDTO:
     create = create_step(steps)
-    department = await db.get(m.Department, create.departmentId)
+    planned = new_department(steps)
+    result = proposal.result or {}
+    agent_id = uuid_or_none(result.get("agentId"))
+    agent = await db.get(m.Agent, agent_id) if agent_id is not None else None
+    if agent is not None and agent.tenant_id != proposal.tenant_id:
+        agent = None
+    if planned is None:
+        department_id: uuid.UUID | None = create.departmentId
+    else:
+        # Applied: the department it created; before, none exists yet.
+        department_id = agent.department_id if agent is not None else None
+    department = await db.get(m.Department, department_id) if department_id else None
     mission = create.mission
     model: BuilderChoiceDTO | None = None
     skills: list[BuilderChoiceDTO] = []
     triggers: list[BuilderTriggerDTO] = []
     systems: set[str] = set()
     limits: list[BuilderLimitDTO] = []
-    for step in steps[1:]:
+    for step in steps:
         op = step.operation
         if isinstance(op, MissionSet):
             mission = op.mission
@@ -173,11 +186,8 @@ async def builder_dto(
                     connection_name=op.connectionName, function=op.function, decision=op.decision
                 )
             )
-    result = proposal.result or {}
     agent_dto: BuilderAgentDTO | None = None
-    agent_id = uuid_or_none(result.get("agentId"))
-    agent = await db.get(m.Agent, agent_id) if agent_id is not None else None
-    if agent is not None and agent.tenant_id == proposal.tenant_id:
+    if agent is not None:
         agent_dto = BuilderAgentDTO(id=str(agent.id), name=agent.name, status=agent.status)
     refusal = result.get("refusal")
     failed_step = result.get("failedStep")
@@ -188,8 +198,11 @@ async def builder_dto(
         id=str(proposal.id),
         status=proposal.status,
         session_id=str(proposal.session_id) if proposal.session_id else None,
-        department_id=str(create.departmentId),
-        department_name=department.name if department is not None else "",
+        department_id=str(department_id) if department_id else None,
+        department_name=(
+            department.name if department is not None else planned.name if planned else ""
+        ),
+        new_department=planned is not None,
         name=create.name,
         role_title=create.roleTitle,
         mission=mission if show_mission else "",
@@ -215,13 +228,14 @@ async def get_builder(
     request: Request, proposal_id: uuid.UUID, db: DbSession, actor: _Actor
 ) -> AgentBuilderDTO:
     proposal, owner, steps = await _load(db, actor, proposal_id)
-    department_id = create_step(steps).departmentId
+    # None for a new department: only who reads and decides everywhere.
+    department_id = target_department_id(steps)
     # A draft, a superseded one, one never sent: the member's alone. Once it is
     # in a queue, whoever may view that department reads it (Ruling A4).
     if not owner and not (_was_submitted(proposal) and actor.scope.may_view(department_id)):
         raise HTTPException(status.HTTP_404_NOT_FOUND, _NOT_FOUND)
     authority = await authority_for_principal(request, db, actor.principal)
-    may_create = may_create_agent(authority, actor.scope, department_id)
+    may_create = may_create_in(authority, actor.scope, steps)
     # The approver is whoever the approvals funnel would let decide it.
     approver = actor.scope.may_decide(department_id) and may_create
     dto = await builder_dto(
@@ -246,8 +260,13 @@ async def apply_builder(
     if not owner:
         raise HTTPException(status.HTTP_404_NOT_FOUND, _NOT_FOUND)
     authority = await authority_for_principal(request, db, actor.principal)
-    if not may_create_agent(authority, actor.scope, create_step(steps).departmentId):
+    if not may_create_in(authority, actor.scope, steps):
         await db.commit()  # keep a lazy expiry
+        if target_department_id(steps) is None:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                f"requires {perm(DEPARTMENT, MANAGE)} and {perm(AGENT, MANAGE)}",
+            )
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, f"requires {perm(AGENT, MANAGE)} in this department"
         )
@@ -307,7 +326,7 @@ async def request_builder(
         db,
         proposal,
         steps,
-        may_create=may_create_agent(authority, actor.scope, create_step(steps).departmentId),
+        may_create=may_create_in(authority, actor.scope, steps),
         read_only=False,
         show_mission=True,
     )

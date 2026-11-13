@@ -12,6 +12,11 @@ an ordinary operation could not.
 A builder proposal may only ever touch the agent it creates: a raw `agentId`
 is refused on every step, at validation and again at resolve time, and a ref
 resolves only to an `agent.create` earlier in the same proposal.
+
+When no department fits, the proposal may open with one `department.create`
+carrying its own ref; `agent.create` then names it with `departmentRef`
+instead of a `departmentId`. Whether the member may create departments is the
+caller's check (`builder.create_builder_proposal`), not this module's.
 """
 
 from __future__ import annotations
@@ -42,9 +47,13 @@ REF_TARGETS: Final = frozenset(
 )
 #: What an `agentRef` step is validated with before the agent exists.
 PLACEHOLDER_AGENT_ID: Final = uuid.UUID(int=0)
+#: What an `agent.create` with `departmentRef` is validated with before the
+#: department exists.
+PLACEHOLDER_DEPARTMENT_ID: Final = uuid.UUID(int=0)
 #: One agent with its settings; anything longer is not a builder proposal.
 MAX_BUILDER_STEPS: Final = 24
 _CREATE: Final = "agent.create"
+_NEW_DEPARTMENT: Final = "department.create"
 _REF = re.compile(r"^\$[a-z][a-z0-9_]{0,31}$")
 
 
@@ -65,29 +74,60 @@ class BuilderStep:
     ref: str | None = None
     #: Set on every later step: the `ref` it points at.
     agent_ref: str | None = None
+    #: Set on an `agent.create` placed in the proposal's new department: the
+    #: `ref` of its `department.create`.
+    department_ref: str | None = None
 
 
 def _is_ref(value: object) -> bool:
     return isinstance(value, str) and _REF.match(value) is not None
 
 
+def _new_department(
+    raw: list[dict[str, Any]],
+) -> tuple[BuilderStep | None, list[dict[str, Any]]]:
+    """The opening `department.create`, when there is one, and the rest. Only
+    the first step may create a department, it needs a ref, and the agent must
+    be placed in it -- a department the agent does not use is not part of a
+    builder proposal."""
+    if any(item.get("type") == _NEW_DEPARTMENT for item in raw[1:]):
+        index = next(i for i, item in enumerate(raw) if i and item.get("type") == _NEW_DEPARTMENT)
+        raise BuilderInvalid("type_not_allowed", index)
+    if raw[0].get("type") != _NEW_DEPARTMENT:
+        return None, raw
+    data = dict(raw[0])
+    ref = data.pop("ref", None)
+    if not _is_ref(ref) or "agentRef" in data or "departmentRef" in data:
+        raise BuilderInvalid("missing_ref" if ref is None else "invalid", 0)
+    try:
+        operation = parse_operations([data])[0]
+    except InvalidOperation as exc:
+        raise BuilderInvalid("invalid", 0) from exc
+    return BuilderStep(operation=operation, ref=ref), raw[1:]
+
+
 def parse_builder_operations(raw: object) -> list[BuilderStep]:
-    """Validate a builder proposal. Rules: exactly one `agent.create`, first,
-    carrying a `ref`; every later step is a `REF_TARGETS` type pointing at that
-    ref with `agentRef` and no `agentId`; each step passes its closed schema."""
+    """Validate a builder proposal. Rules: exactly one `agent.create`, first --
+    or second, after one `department.create` with its own ref that the agent
+    is placed in (`departmentRef`) -- carrying a `ref`; every later step is a
+    `REF_TARGETS` type pointing at that ref with `agentRef` and no `agentId`;
+    each step passes its closed schema."""
     if not isinstance(raw, list) or not raw or len(raw) > MAX_BUILDER_STEPS:
         raise BuilderInvalid("invalid")
     if not all(isinstance(item, dict) for item in raw):
         raise BuilderInvalid("invalid")
     if not any(item.get("type") == _CREATE for item in raw):
         raise BuilderInvalid("missing_create")
-    declared_anywhere = {item.get("ref") for item in raw if _is_ref(item.get("ref"))}
+    department_step, rest = _new_department(raw)
+    offset = len(raw) - len(rest)
+    declared_anywhere = {item.get("ref") for item in rest if _is_ref(item.get("ref"))}
     defined: set[str] = set()
-    steps: list[BuilderStep] = []
-    for index, item in enumerate(raw):
+    steps: list[BuilderStep] = [department_step] if department_step is not None else []
+    for index, item in enumerate(rest, start=offset):
         data = dict(item)
         ref = data.pop("ref", None)
         agent_ref = data.pop("agentRef", None)
+        department_ref = data.pop("departmentRef", None)
         kind = data.get("type")
         if kind == _CREATE:
             if ref is None:
@@ -96,8 +136,19 @@ def parse_builder_operations(raw: object) -> list[BuilderStep]:
                 raise BuilderInvalid("invalid", index)
             if defined:
                 raise BuilderInvalid("two_refs", index)
+            if department_step is not None:
+                # Placed in the new department, and only there.
+                if department_ref != department_step.ref or "departmentId" in data:
+                    raise BuilderInvalid("unknown_department_ref", index)
+                if ref == department_step.ref:
+                    raise BuilderInvalid("two_refs", index)
+                data["departmentId"] = str(PLACEHOLDER_DEPARTMENT_ID)
+            elif department_ref is not None:
+                raise BuilderInvalid("unknown_department_ref", index)
             defined.add(ref)
         else:
+            if department_ref is not None:
+                raise BuilderInvalid("invalid", index)
             if ref is not None:
                 raise BuilderInvalid("invalid", index)
             if kind not in REF_TARGETS:
@@ -115,7 +166,13 @@ def parse_builder_operations(raw: object) -> list[BuilderStep]:
         except InvalidOperation as exc:
             raise BuilderInvalid("invalid", index) from exc
         if kind == _CREATE:
-            steps.append(BuilderStep(operation=operation, ref=ref))
+            steps.append(
+                BuilderStep(
+                    operation=operation,
+                    ref=ref,
+                    department_ref=department_step.ref if department_step else None,
+                )
+            )
         else:
             steps.append(BuilderStep(operation=operation, agent_ref=agent_ref))
     return steps
@@ -128,6 +185,9 @@ def builder_operation_data(step: BuilderStep) -> dict[str, Any]:
     if step.agent_ref is not None:
         data.pop("agentId", None)
         data["agentRef"] = step.agent_ref
+    if step.department_ref is not None:
+        data.pop("departmentId", None)
+        data["departmentRef"] = step.department_ref
     if step.ref is not None:
         data["ref"] = step.ref
     return data
@@ -144,13 +204,24 @@ def resolve_step(
     out = dict(data)
     ref = out.pop("ref", None)
     agent_ref = out.pop("agentRef", None)
+    department_ref = out.pop("departmentRef", None)
     if "agentId" in out:
         raise BuilderInvalid("agent_id_not_allowed")
+    if out.get("type") == _NEW_DEPARTMENT:
+        if agent_ref is not None or department_ref is not None:
+            raise BuilderInvalid("invalid")
+        return out, (str(ref) if ref is not None else None)
     if out.get("type") == _CREATE:
         if agent_ref is not None:
             raise BuilderInvalid("invalid")
+        if department_ref is not None:
+            # Only a department this very apply created.
+            department = refs.get(department_ref) if isinstance(department_ref, str) else None
+            if department is None or "departmentId" in out:
+                raise BuilderInvalid("unknown_department_ref")
+            out["departmentId"] = str(department)
         return out, (str(ref) if ref is not None else None)
-    if ref is not None:
+    if ref is not None or department_ref is not None:
         raise BuilderInvalid("invalid")
     created = refs.get(agent_ref) if isinstance(agent_ref, str) else None
     if created is None:
@@ -170,10 +241,13 @@ def resolve_step(
 
 #: The one ref a flat proposal's operations use.
 NEW_REF: Final = "$new"
+#: The ref of a flat proposal's new department.
+NEW_DEPARTMENT_REF: Final = "$department"
 #: What the flat shape takes; anything else is refused, never dropped.
 FLAT_FIELDS: Final = frozenset(
     {
         "departmentId",
+        "newDepartment",
         "name",
         "roleTitle",
         "mission",
@@ -242,6 +316,17 @@ def flat_operations(
         if key in fields and fields[key] is not None:
             create[key] = fields[key]
     ops: list[dict[str, Any]] = [create]
+    new_department = fields.get("newDepartment")
+    if _given(new_department):
+        if _given(fields.get("departmentId")):
+            raise BuilderInvalid("two_departments")
+        if not isinstance(new_department, Mapping) or set(new_department) - {"name", "goal"}:
+            raise BuilderInvalid("invalid", 0)
+        department: dict[str, Any] = {"type": _NEW_DEPARTMENT, "ref": NEW_DEPARTMENT_REF}
+        department.update({k: v for k, v in new_department.items() if v is not None})
+        create.pop("departmentId", None)
+        create["departmentRef"] = NEW_DEPARTMENT_REF
+        ops.insert(0, department)
 
     def follow(op_type: str, /, **data: Any) -> None:
         ops.append({"type": op_type, "agentRef": NEW_REF, **data})
@@ -292,6 +377,15 @@ def proposal_operations(arguments: object, *, frame: Mapping[str, Any] | None = 
     if not any(_given(value) for value in flat.values()):
         raise BuilderInvalid("missing_agent")
     return flat_operations(flat, frame=frame)
+
+
+def flat_new_department(arguments: object) -> bool:
+    """Whether a flat proposal asks for a new department."""
+    return (
+        isinstance(arguments, Mapping)
+        and "operations" not in arguments
+        and _given(arguments.get("newDepartment"))
+    )
 
 
 def flat_department_id(arguments: object) -> str | None:

@@ -1289,8 +1289,12 @@ class AgentBuilderDTO(CamelModel):
     id: str
     status: str  # draft | awaiting_approval | applied | rejected | expired | superseded
     session_id: str | None = None
-    department_id: str
+    #: None while the agent goes into a department the proposal creates
+    #: (`new_department`); once applied, the department it was created in.
+    department_id: str | None = None
     department_name: str = ""
+    #: The proposal creates `department_name` for its agent.
+    new_department: bool = False
     name: str
     role_title: str = ""
     mission: str = ""

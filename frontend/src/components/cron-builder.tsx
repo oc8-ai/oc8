@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { Save } from "lucide-react";
+import { describeCron } from "@/lib/describe-cron";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 // Extracted from agents.$id.tsx's ScheduleEditor so the Hire dialog can offer
@@ -25,10 +27,6 @@ const DEFAULT_CRON: CronState = {
   weekdays: [1, 2, 3, 4, 5],
   dayOfMonth: 1,
 };
-
-function pad2(n: number) {
-  return n.toString().padStart(2, "0");
-}
 
 export function buildCron(s: CronState): string {
   switch (s.freq) {
@@ -85,23 +83,6 @@ export function parseCron(expr: string): CronState {
 
 const WEEKDAY_LABELS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 
-function humanCron(s: CronState): string {
-  const time = `${pad2(s.hour)}:${pad2(s.minute)}`;
-  switch (s.freq) {
-    case "every-n-min":
-      return `Every ${s.everyNMin} min`;
-    case "hourly":
-      return `Every hour at :${pad2(s.minute)}`;
-    case "daily":
-      return `Every day at ${time}`;
-    case "weekly":
-      if (!s.weekdays.length) return `Weekly at ${time}`;
-      return `${s.weekdays.map((d) => WEEKDAY_LABELS[d]).join(", ")} at ${time}`;
-    case "monthly":
-      return `Day ${s.dayOfMonth} of each month at ${time}`;
-  }
-}
-
 export function CronBuilder({
   initial,
   onChange,
@@ -113,6 +94,7 @@ export function CronBuilder({
   onSave: () => void;
   saveLabel: string;
 }) {
+  const t = useT();
   const [state, setState] = useState<CronState>(() => parseCron(initial));
 
   function update(patch: Partial<CronState>) {
@@ -124,7 +106,7 @@ export function CronBuilder({
   }
 
   const cron = buildCron(state);
-  const human = humanCron(state);
+  const human = describeCron(cron, t);
 
   return (
     <div className="space-y-3 rounded-md border border-border bg-background/30 p-3">
