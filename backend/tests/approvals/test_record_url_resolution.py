@@ -118,7 +118,7 @@ def test_a_connection_resolves_through_its_manifest(monkeypatch: pytest.MonkeyPa
         key="primary", name="odoo", server_url="", record_url=ODOO
     )
     monkeypatch.setattr(
-        "oc8.approvals.record_url.resolve_tool_pack_connection",
+        "oc8.capas.discovery.resolve_tool_pack_connection",
         lambda plugin, key: manifest_conn if (plugin, key) == ("odoo_mcp", "primary") else None,
     )
     assert (
@@ -136,6 +136,6 @@ def test_a_plugin_that_is_no_longer_on_disk_is_none(monkeypatch: pytest.MonkeyPa
         config={"_plugin_name": "odoo_mcp", "_connection_key": "primary"},
     )
     monkeypatch.setattr(
-        "oc8.approvals.record_url.resolve_tool_pack_connection", lambda plugin, key: None
+        "oc8.capas.discovery.resolve_tool_pack_connection", lambda plugin, key: None
     )
     assert record_url_for_connection(conn, entity="crm.lead", ref="7") is None
