@@ -71,6 +71,10 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
 vi.mock("@/components/connections/organisation-credentials", () => ({
   OrganisationCredentials: () => <div>further-credentials</div>,
 }));
+vi.mock("@/components/custom-mcp-wizard", () => ({
+  CustomMcpWizard: ({ open }: { open: boolean }) =>
+    open ? <div role="dialog">custom-wizard</div> : null,
+}));
 vi.mock("@/components/connections/connect-dialog", () => ({
   ConnectDialog: ({ integration, open }: { integration: string; open: boolean }) =>
     open ? <div role="dialog">dialog:{integration}</div> : null,
@@ -193,6 +197,23 @@ describe("ConnectionsPage", () => {
     complete.mockReset();
     enable.mockReset();
     enable.mockResolvedValue({});
+  });
+
+  it("offers the custom server tile to plugin managers and opens the wizard", () => {
+    may.mockReturnValue(true);
+    renderPage();
+    expect(screen.getByText("Eigener Server oder eigene API")).toBeTruthy();
+    expect(screen.getByText("Verbinde deinen eigenen MCP-Server oder eine REST-API.")).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Eigenen Server oder eigene API hinzufügen" }),
+    );
+    expect(screen.getByText("custom-wizard")).toBeTruthy();
+  });
+
+  it("hides the custom server tile from people who may not manage plugins", () => {
+    may.mockReturnValue(false);
+    renderPage();
+    expect(screen.queryByText("Eigener Server oder eigene API")).toBeNull();
   });
 
   it("lets an admin make a legacy installed integration available", async () => {
