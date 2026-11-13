@@ -320,6 +320,34 @@ async def test_tools_list_hides_what_the_frame_forbids(
     assert core <= set(names)
 
 
+async def test_tools_list_follows_the_frames_only_and_keeps_an_approval_gated_tool(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Offer and gate share one rule (authz.pdp.offers_tool): a tool outside
+    `only` is never listed; a tool that needs approval still is."""
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    tenant = uuid.uuid4()
+    frame = {
+        "tools": {
+            "odoo": {
+                "enabled": True,
+                "read": True,
+                "modify": True,
+                "only": ["create_record"],
+                "approval_actions": ["create_record"],
+            }
+        }
+    }
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant, frame=frame)
+
+    code, body = await _rpc(_token(tenant, agent_id, run_id), "tools/list")
+    assert code == 200, body
+    names = {t["name"] for t in body["result"]["tools"]}
+    assert "create_record" in names
+    assert "search_records" not in names
+
+
 async def test_tools_list_offers_read_context_to_a_turn_with_readable_pins(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

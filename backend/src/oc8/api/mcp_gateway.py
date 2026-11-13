@@ -79,6 +79,7 @@ from oc8.authz.pdp import (
     Decision,
     Effect,
     effective_tool_policies,
+    offers_tool,
     required_right,
 )
 from oc8.capas.discovery import resolve_tool_pack_connection
@@ -454,8 +455,9 @@ async def _list_tools(
         allowed[conn.name] = [
             t
             for t in discovered
-            if policy.offers(t.name)
-            and policy.has_right(required_right(t.name, scopes))
+            # The gate's own frame checks (authz.pdp.offers_tool): one rule
+            # for what is offered and what is let through.
+            if offers_tool(policies, connection_key=conn.name, tool=t.name, scopes=scopes)
             # Scopes are known HERE (unlike in offered_tools), so a read-only
             # mode's writing tools are withheld rather than offered-then-denied.
             and mode_refusal(

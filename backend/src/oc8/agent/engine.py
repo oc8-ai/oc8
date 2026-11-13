@@ -108,7 +108,13 @@ from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_
 from oc8.agents.versioning import pinned_model_config_id, resolve_version
 from oc8.approvals import raise_approval, record_url_for_connection
 from oc8.audit import append_event
-from oc8.authz.pdp import Decision, Effect, effective_tool_policies, required_right
+from oc8.authz.pdp import (
+    Decision,
+    Effect,
+    effective_tool_policies,
+    offers_tool,
+    required_right,
+)
 from oc8.capas.claude_hooks import dispatch_claude_event
 from oc8.capas.claude_hooks.context import (
     base_payload,
@@ -3049,6 +3055,20 @@ async def run_agent(
                 step_timings,
             )
 
+        def _offerable(listed: list[NeutralTool], conn: m.McpConnection) -> list[NeutralTool]:
+            # Offered only what the gate would let through (authz.pdp.offers_tool):
+            # the frame's `only`, the agent's narrowing and the right each tool
+            # needs. Listing the server's whole surface offered tools every
+            # call of which is denied (live 2026-11-13: mail_* on a frame that
+            # grants files only). Filtered before routes are built, so a
+            # withheld tool never forces another system's twin to be qualified.
+            scopes = _mcp_auth(conn).tool_scopes
+            return [
+                t
+                for t in listed
+                if offers_tool(tool_policies, connection_key=conn.name, tool=t.name, scopes=scopes)
+            ]
+
         async def _run_with_session_end() -> RunResult:
             try:
                 if toolset is not None:
@@ -3080,7 +3100,7 @@ async def run_agent(
                             db, tenant_id=tenant_id, mcp_conn=only, run=run_row
                         )
                         async with tool_session as server:
-                            noted = apply_tool_notes(server.tools, cfg)
+                            noted = _offerable(apply_tool_notes(server.tools, cfg), only)
                             if any(t.name in CONTROL_TOOL_NAMES for t in noted):
                                 # A tool named like a core one is offered
                                 # qualified, as with several connections (see
@@ -3112,7 +3132,9 @@ async def run_agent(
                             _note_unavailable(conn, exc)
                             continue
                         sessions[conn.name] = session
-                        tools_by_connection[conn.name] = apply_tool_notes(session.tools, cfg)
+                        tools_by_connection[conn.name] = _offerable(
+                            apply_tool_notes(session.tools, cfg), conn
+                        )
                         auth_by_connection[conn.name] = _mcp_auth(conn)
                     if not sessions:
                         return await loop([], None)

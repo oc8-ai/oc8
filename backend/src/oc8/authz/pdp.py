@@ -639,38 +639,20 @@ def required_right(tool_name: str, scopes: Mapping[str, Any] | None) -> str:
     return "modify"
 
 
-def authorize_tool_call(
-    *,
+def _frame_denial(
     policies: Mapping[str, ToolPolicy],
+    *,
     connection_key: str | None,
     right: str,
-    value: float | None,
-    extra_thresholds: Sequence[float | None] = (),
-    tool: str | None = None,
-    attributes: Mapping[str, Any] | None = None,
-) -> Decision:
-    """Decide a tool call against the department frame (§5.3).
+    tool: str | None,
+) -> Decision | None:
+    """The frame's own DENY for a tool call, or None when the frame permits it.
 
-    `extra_thresholds` carries the agent's own `approval_value_eur` and any
-    active skill guardrail; the strictest (lowest non-null) of those and the
-    policy's own `approval_eur` governs.
-
-    `attributes` is the generic, CAPA-declared-name-keyed sibling of `value`
-    (e.g. `{"order_value": 12480, "customer_type": "wholesale"}`), checked
-    against `policy.conditions` via `evaluate_conditions`. It is additive
-    alongside `value`/`extra_thresholds`, not a replacement for them -- a
-    connection with no conditions authored behaves exactly as before.
-
-    `tool` is checked against the frame's surface (`only`) where one is set.
-    Withholding a tool from the advertised list is not enough on its own: a
-    model that has seen the name once, in an earlier run or a mission, will
-    call it anyway, and a grant that only hides is not a grant that holds.
-
-    THE live gate: this is what `agent/engine.py` and `api/mcp_gateway.py`
-    call for every real tool call. `authorize_tool` above answers a related
-    but distinct question over a raw frame/narrowing pair with a single
-    conflated `tool_key`; see the comment on it for why the two do not
-    collapse into one function.
+    The part of `authorize_tool_call` that does not depend on the call's
+    arguments: is the connection granted and switched on, does it grant the
+    tool's right, is the tool on its surface (`only`, already narrowed by the
+    agent). `offers_tool` asks exactly this, so what a model is offered and
+    what the gate lets through cannot drift apart.
     """
     if connection_key is None:
         return Decision(Effect.DENY, "no tool connection bound to this run")
@@ -710,6 +692,89 @@ def authorize_tool_call(
             reason_code="tool_not_in_frame",
             context=terms,
         )
+    return None
+
+
+def offers_tool(
+    policies: Mapping[str, ToolPolicy],
+    *,
+    connection_key: str | None,
+    tool: str,
+    scopes: Mapping[str, Any] | None,
+) -> bool:
+    """Whether a connection's tool may be OFFERED to the model at all.
+
+    One rule for offer and authorise: a tool is offered exactly when
+    `authorize_tool_call` would not deny it on frame grounds -- the connection
+    granted and enabled, the tool's right (`required_right` over the
+    manifest's `scopes`, unlisted = modify) granted, the tool on the effective
+    `only` surface. A tool that needs approval is still offered: it is
+    allowed, with a human in the loop. Offering a tool the gate always refuses
+    only spends the model's steps on denials (observed live 2026-11-13: an
+    office agent offered every mail_*/teams_* tool its department's `only`
+    withholds).
+
+    The gate stays the authority at call time; this only stops the offer
+    leaking.
+    """
+    right = required_right(tool, scopes)
+    return _frame_denial(policies, connection_key=connection_key, right=right, tool=tool) is None
+
+
+def reachable_connections(policies: Mapping[str, ToolPolicy]) -> list[str]:
+    """The connections whose tools can be offered at all, sorted.
+
+    For the run context's "Systems you can reach": a connection switched off,
+    granting no right, or narrowed to an empty surface offers nothing, so
+    naming it only invites the model to look for tools it will never get.
+    """
+    return sorted(
+        key
+        for key, policy in policies.items()
+        if policy.enabled
+        and any(policy.has_right(right) for right in RIGHTS)
+        and (policy.only is None or bool(policy.only))
+    )
+
+
+def authorize_tool_call(
+    *,
+    policies: Mapping[str, ToolPolicy],
+    connection_key: str | None,
+    right: str,
+    value: float | None,
+    extra_thresholds: Sequence[float | None] = (),
+    tool: str | None = None,
+    attributes: Mapping[str, Any] | None = None,
+) -> Decision:
+    """Decide a tool call against the department frame (§5.3).
+
+    `extra_thresholds` carries the agent's own `approval_value_eur` and any
+    active skill guardrail; the strictest (lowest non-null) of those and the
+    policy's own `approval_eur` governs.
+
+    `attributes` is the generic, CAPA-declared-name-keyed sibling of `value`
+    (e.g. `{"order_value": 12480, "customer_type": "wholesale"}`), checked
+    against `policy.conditions` via `evaluate_conditions`. It is additive
+    alongside `value`/`extra_thresholds`, not a replacement for them -- a
+    connection with no conditions authored behaves exactly as before.
+
+    `tool` is checked against the frame's surface (`only`) where one is set.
+    Withholding a tool from the advertised list is not enough on its own: a
+    model that has seen the name once, in an earlier run or a mission, will
+    call it anyway, and a grant that only hides is not a grant that holds.
+
+    THE live gate: this is what `agent/engine.py` and `api/mcp_gateway.py`
+    call for every real tool call. `authorize_tool` above answers a related
+    but distinct question over a raw frame/narrowing pair with a single
+    conflated `tool_key`; see the comment on it for why the two do not
+    collapse into one function.
+    """
+    denied = _frame_denial(policies, connection_key=connection_key, right=right, tool=tool)
+    if denied is not None:
+        return denied
+    # Both present: `_frame_denial` denies a missing connection or policy.
+    policy = policies[connection_key or ""]
 
     if right in policy.approval_actions or (tool is not None and tool in policy.approval_actions):
         # Deliberately AFTER every DENY check above and BEFORE the euro
