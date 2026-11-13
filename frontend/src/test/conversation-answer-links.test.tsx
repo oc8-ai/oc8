@@ -12,12 +12,18 @@ vi.mock("@/lib/conversation-api", async (orig) => ({
 }));
 // The server's verdicts: no link here points at a connected system.
 const asked = vi.hoisted(() => vi.fn());
-vi.mock("@/lib/record-links", () => ({
+vi.mock("@/lib/record-links", async (orig) => ({
+  ...(await orig<typeof import("@/lib/record-links")>()),
   useVerifiedLinks: (messageId: string | undefined, urls: string[]) => {
     if (messageId && urls.length) asked(messageId);
     return {
       data: messageId
-        ? new Map(urls.map((url) => [url, { url, connected: false, issued: false }]))
+        ? new Map(
+            urls.map((url) => [
+              url,
+              { url, host: new URL(url).hostname, connected: false, issued: false },
+            ]),
+          )
         : undefined,
     };
   },

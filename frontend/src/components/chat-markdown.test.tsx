@@ -9,6 +9,10 @@ import { api } from "@/lib/api";
 vi.mock("@/lib/api", () => ({ api: { post: vi.fn() } }));
 
 const CONNECTED = new Set(["odoo.example.com", "192.168.1.10"]);
+const DECIMAL_IP = "https://3232235786/odoo/sale.order/99";
+// Hosts the (mocked) server reads differently from the browser: a decimal IP
+// left as written, which is no connected host.
+const SERVER_READS: Record<string, string> = { [DECIMAL_IP]: "3232235786" };
 const MESSAGE = "m-1";
 const ISSUED = "https://odoo.example.com/odoo/sale.order/42";
 const GUESSED = "https://odoo.example.com/odoo/sale.order/99";
@@ -21,14 +25,16 @@ const render = (ui: ReactElement) => rtlRender(ui, { wrapper });
 
 beforeEach(() => {
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  // The server's verdicts, judged by the host the browser reported: the
-  // CONNECTED hosts are connected, and only ISSUED was issued.
+  // The server's verdicts, by its own reading of each host -- the browser's,
+  // except where SERVER_READS says it reads a host differently: the CONNECTED
+  // hosts are connected, and only ISSUED was issued.
   vi.mocked(api.post)
     .mockReset()
     .mockImplementation(async (_path, body) => ({
-      links: (body as { links: { url: string; host: string }[] }).links.map(({ url, host }) => {
+      links: (body as { urls: string[] }).urls.map((url) => {
+        const host = SERVER_READS[url] ?? new URL(url).hostname.replace(/\.$/, "");
         const connected = CONNECTED.has(host);
-        return { url, connected, issued: connected && url === ISSUED };
+        return { url, host, connected, issued: connected && url === ISSUED };
       }),
     }));
 });
@@ -199,11 +205,7 @@ describe("ChatMarkdown record links", () => {
     expect(api.post).toHaveBeenCalledTimes(1);
     expect(api.post).toHaveBeenCalledWith("/record-links/verify", {
       messageId: MESSAGE,
-      links: [
-        { url: "https://example.com/x", host: "example.com" },
-        { url: ISSUED, host: "odoo.example.com" },
-        { url: GUESSED, host: "odoo.example.com" },
-      ],
+      urls: ["https://example.com/x", ISSUED, GUESSED],
     });
   });
 
@@ -246,24 +248,31 @@ describe("ChatMarkdown record links", () => {
   });
 
   it.each([
-    [
-      "userinfo before the host",
-      "https://example.com\\@odoo.example.com/odoo/99",
-      "odoo.example.com",
-    ],
-    ["a respelled host", "https://ODOO.example.com./odoo/sale.order/99", "odoo.example.com"],
-    ["a percent-encoded dot", "https://odoo%2Eexample.com/odoo/sale.order/99", "odoo.example.com"],
-    ["a decimal IP address", "https://3232235786/odoo/sale.order/99", "192.168.1.10"],
-    ["a hexadecimal IP address", "https://0xC0A8010A/odoo/sale.order/99", "192.168.1.10"],
-  ])("judges %s by the host the browser opens", async (_name, href, host) => {
+    ["userinfo before the host", "https://example.com\\@odoo.example.com/odoo/99"],
+    ["a respelled host", "https://ODOO.example.com./odoo/sale.order/99"],
+    ["a percent-encoded dot", "https://odoo%2Eexample.com/odoo/sale.order/99"],
+    ["a hexadecimal IP address", "https://0xC0A8010A/odoo/sale.order/99"],
+  ])("judges %s by the host the browser opens", async (_name, href) => {
     const { container } = render(
       <ChatMarkdown text={`[docs](https://example.com/x) [record](${href})`} messageId={MESSAGE} />,
     );
     await screen.findByRole("link", { name: /docs/ });
     expect(container.querySelectorAll("a")).toHaveLength(1);
     expect(container.textContent).toContain("record");
-    const sent = vi.mocked(api.post).mock.calls[0][1] as { links: { host: string }[] };
-    expect(sent.links.map((l) => l.host)).toContain(host);
+  });
+
+  it("keeps a link as text where the server read its host differently", async () => {
+    // The browser opens 192.168.1.10, a connected system; the server's verdict
+    // ("not connected") is about the host it read, 3232235786.
+    const { container } = render(
+      <ChatMarkdown
+        text={`[docs](https://example.com/x) [record](${DECIMAL_IP})`}
+        messageId={MESSAGE}
+      />,
+    );
+    await screen.findByRole("link", { name: /docs/ });
+    expect(container.querySelectorAll("a")).toHaveLength(1);
+    expect(screen.getByText("record").tagName).toBe("SPAN");
   });
 
   it("renders a member's own links as written, without asking", async () => {

@@ -20,7 +20,7 @@ import { commonPrefixLength, splitBlocks, stabilizeTail } from "@/components/mar
 import { rehypeStreamFresh } from "@/components/stream-words";
 import type { ChatSourceDTO } from "@/lib/hooks-chat";
 import { useT } from "@/lib/i18n";
-import { useVerifiedLinks, type LinkVerdict } from "@/lib/record-links";
+import { browserHost, useVerifiedLinks, type LinkVerdict } from "@/lib/record-links";
 import { cn } from "@/lib/utils";
 
 function isHttp(href: string | undefined): href is string {
@@ -29,21 +29,21 @@ function isHttp(href: string | undefined): href is string {
 
 /** Whether an answer's http(s) href may be clickable. One the browser cannot
  *  parse never is. Otherwise it is recorded in `asked` and needs the server's
- *  verdict for this answer: another host, or a connected system's link that
- *  oc8 issued. No verdict yet, or none to be had, means text (fail closed). */
+ *  verdict for this answer, read for the host this browser will open: if the
+ *  server read the host differently (an IP spelling, an IDNA variant), the
+ *  verdict is about another host and the link stays text. Else it is another
+ *  system's link, or a connected system's that oc8 issued. No verdict yet,
+ *  or none to be had, means text (fail closed). */
 function linkable(
   href: string,
   verdicts: Map<string, LinkVerdict> | undefined,
   asked: Set<string>,
 ): boolean {
-  try {
-    if (!new URL(href).hostname) return false;
-  } catch {
-    return false;
-  }
+  const host = browserHost(href);
+  if (!host) return false;
   asked.add(href);
   const verdict = verdicts?.get(href);
-  return !!verdict && (!verdict.connected || verdict.issued);
+  return !!verdict && verdict.host === host && (!verdict.connected || verdict.issued);
 }
 
 // react-markdown hands `pre` a single `<code>` child whose className carries
