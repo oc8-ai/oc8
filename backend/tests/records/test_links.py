@@ -158,3 +158,8 @@ def test_related_links_accept_odoo_many2one_shapes() -> None:
         {"label": "Kontakt XYZ GmbH", "url": "https://odoo.example.com/odoo/res.partner/7"}
     ]
     assert related_links(ctx, {"values": {"partner_id": False}}) == []
+
+
+def test_enrich_survives_pathologically_nested_json() -> None:
+    out = "[" * 100000 + "]" * 100000
+    assert enrich(_odoo(), "search_records", {"model": "sale.order"}, out) == (out, [])

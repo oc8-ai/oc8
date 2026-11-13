@@ -229,7 +229,7 @@ def enrich(
         return output, []
     try:
         parsed = json.loads(output)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
         return output, []
     try:
         # Lazy: oc8.approvals.record_url imports this module and the agent

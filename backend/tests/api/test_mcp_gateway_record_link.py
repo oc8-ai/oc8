@@ -38,11 +38,11 @@ TEMPLATE = RecordUrlTemplate(
 
 def _declare(monkeypatch: pytest.MonkeyPatch, spec: RecordUrlTemplate | None) -> None:
     """Stand in for the pack on disk. The gateway resolves the template through
-    `oc8.approvals.record_url.resolve_tool_pack_connection`, and the test
+    `oc8.capas.discovery.resolve_tool_pack_connection`, and the test
     database's connection row is not backed by a real plugin folder."""
     conn = ToolPackConnection(key="primary", name="odoo", server_url="", record_url=spec)
     monkeypatch.setattr(
-        "oc8.approvals.record_url.resolve_tool_pack_connection", lambda plugin, key: conn
+        "oc8.capas.discovery.resolve_tool_pack_connection", lambda plugin, key: conn
     )
 
 
