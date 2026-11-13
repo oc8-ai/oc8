@@ -190,6 +190,7 @@ from oc8.records.links import (
     link_for,
     related_links,
 )
+from oc8.records.vetting import vet_answer_links
 from oc8.runtime.agent_status import settle_agent_status
 from oc8.runtime.run_context import append_tool_call
 from oc8.runtime.step_record import call_state_for, step_timing_dto
@@ -1930,6 +1931,9 @@ async def run_agent(
                     output_text = result.text
                     if finish_verdict.exhausted_note is not None:
                         output_text = f"{output_text}\n\n{finish_verdict.exhausted_note}"
+                    # The activity log below is written before the executor's
+                    # check sees this text, so it is vetted here too (idempotent).
+                    output_text = await vet_answer_links(db, tenant_id=tenant_id, text=output_text)
 
                     task.state = "done"
                     if auto_cfg is not None:

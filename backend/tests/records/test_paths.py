@@ -301,3 +301,36 @@ async def test_a_gateway_replay_is_linked_without_touching_the_connection(
         assert run is not None
     assert used == []
     assert "connection_required" not in run.context
+
+
+async def test_the_activity_log_does_not_carry_a_guessed_record_link(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The engine writes its activity detail before the executor's answer
+    check runs, so it must vet the final text itself."""
+    from sqlalchemy import select
+
+    async def _open(*_a: Any, **_kw: Any) -> _OdooSession:
+        return _OdooSession()
+
+    guessed = "https://odoo.example.com/odoo/sale.order/99"
+    stream = _SeeingStream(
+        [
+            _turn("", ToolCall(id="c1", name="search_records", arguments=ARGS)),
+            _turn(f"Done: [S99]({guessed}) and [S42]({URL})"),
+        ]
+    )
+    monkeypatch.setattr("oc8.agent.engine._open_mcp_session", _open)
+    monkeypatch.setattr("oc8.agent.engine.stream_completion_with_fallback", stream)
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, conn = await _fixture(db, tenant, tool_scopes={"read": ["search_records"]})
+        conn.config = {**conn.config, **ODOO_CONFIG}
+        await db.flush()
+        await run_agent(db, agent=agent, task_text="go", tenant_id=tenant, mcp_conn=conn)
+        details = (await db.execute(select(m.ActivityEvent.detail))).scalars().all()
+
+    joined = "\n".join(d or "" for d in details)
+    assert guessed not in joined
+    assert f"[S42]({URL})" in joined
