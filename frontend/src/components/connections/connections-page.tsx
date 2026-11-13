@@ -9,6 +9,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -316,6 +317,7 @@ export function ConnectionsPage({
                 onReconnect={(c) => open(c.integration as string, "organisation")}
                 onTest={runTest}
                 onRemove={(c) => revoke(c, null)}
+                onAddCustom={mayEnable ? () => setCustomOpen(true) : undefined}
               />
               <OrganisationCredentials excludeTypes={integrationTypes} />
               <MoreIntegrationsHint mayInstall={mayEnable} />
@@ -552,6 +554,7 @@ function OrganisationAccesses({
   onReconnect,
   onTest,
   onRemove,
+  onAddCustom,
 }: {
   rows: Connection[];
   available: Integration[];
@@ -563,6 +566,8 @@ function OrganisationAccesses({
   onReconnect: (c: Connection) => void;
   onTest: (c: Connection) => void;
   onRemove: (c: Connection) => void;
+  /** Set for plugin:manage: adds a custom MCP server or REST API. */
+  onAddCustom?: () => void;
 }) {
   const t = useT();
   return (
@@ -571,7 +576,7 @@ function OrganisationAccesses({
         <h3 id="connections-org-accesses" className="text-sm font-medium">
           {t("Organisation accesses", "Zugänge der Organisation")}
         </h3>
-        {available.length > 0 && (
+        {(available.length > 0 || onAddCustom) && (
           <DropdownMenu modal={false}>
             <DropdownMenuTrigger asChild>
               <Button size="sm">
@@ -585,6 +590,13 @@ function OrganisationAccesses({
                   {i.label}
                 </DropdownMenuItem>
               ))}
+              {onAddCustom && available.length > 0 && <DropdownMenuSeparator />}
+              {onAddCustom && (
+                <DropdownMenuItem onSelect={onAddCustom}>
+                  <PlugZap aria-hidden />
+                  {t("Custom server or API", "Eigener Server oder eigene API")}
+                </DropdownMenuItem>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         )}
