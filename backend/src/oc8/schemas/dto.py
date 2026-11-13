@@ -1309,6 +1309,8 @@ class AgentBuilderDTO(CamelModel):
     #: Why the last apply was refused (`agent_builder` code), and at which step.
     refusal: str | None = None
     failed_step: int | None = None
+    #: Why that step failed (`InvalidOperation.reason` code), when it said.
+    failed_reason: str | None = None
     rejected_reason: str | None = None
     agent: BuilderAgentDTO | None = None
 

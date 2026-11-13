@@ -82,6 +82,12 @@ logger = logging.getLogger(__name__)
 #: bounded without needing a separate summarization step for v1.
 _TRANSCRIPT_TURNS = 20
 
+#: How an oc8 notice turn starts (`send_message(notice=...)`): something oc8
+#: tells the Copilot about this chat -- an agent the person tried to create
+#: from its card was refused -- neither typed by the person nor scheduled by
+#: the Copilot. Stored as a `followup` row (no new role), told apart by this.
+NOTICE_PREFIX: Final = "oc8 notice: "
+
 #: Matches the retired `oc8.copilot.chat._SECRET_REFUSAL` text -- carried over
 #: rather than imported so this module has no dependency on the module Task 5
 #: deletes.
@@ -248,9 +254,11 @@ async def list_messages(
     return list((await db.execute(stmt)).scalars())
 
 
-def _speaker(role: str) -> str:
+def _speaker(role: str, content: str = "") -> str:
     if role == "user":
         return "User"
+    if role == "followup" and content.startswith(NOTICE_PREFIX):
+        return "oc8 (a notice from the system, not typed by the user)"
     if role == "followup":
         return "Follow-up (scheduled by you, not typed by the user)"
     return "You (assistant)"
@@ -264,8 +272,8 @@ def _build_task_text(history: list[m.ChatMessage], new_message: str, new_role: s
     on native multi-turn state that does not exist on that path."""
     lines = []
     for msg in history[-_TRANSCRIPT_TURNS:]:
-        lines.append(f"{_speaker(msg.role)}: {msg.content}")
-    lines.append(f"{_speaker(new_role)}: {new_message}")
+        lines.append(f"{_speaker(msg.role, msg.content)}: {msg.content}")
+    lines.append(f"{_speaker(new_role, new_message)}: {new_message}")
     return "\n".join(lines)
 
 
@@ -434,6 +442,7 @@ def _build_turn_context(
     extra_context: dict[str, object] | None,
     manifest: Manifest | None = None,
     followup: Mapping[str, str] | None = None,
+    notice: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """The `AgentRun.context` for the run answering one chat turn.
 
@@ -478,7 +487,12 @@ def _build_turn_context(
         context["chat_channel_external_id"] = chat_channel_external_id
     # Which door this turn came through (design §7a.6). Read back by
     # `oc8.copilot.door` to decide whether `ask_user` may be offered.
-    if role == "followup":
+    if role == "followup" and notice is not None:
+        # An oc8 notice answers the person's own click in the web chat: the
+        # Copilot may ask them and propose again there, as on a web turn.
+        context["door"] = "web"
+        context["notice"] = dict(notice)
+    elif role == "followup":
         context["door"] = "followup"
     elif chat_channel is not None and chat_channel_external_id is not None:
         context["door"] = "telegram"
@@ -562,6 +576,7 @@ async def send_message(
     followup: Mapping[str, str] | None = None,
     author_member_id: uuid.UUID | None = None,
     acting_member: m.OrgMember | None = None,
+    notice: Mapping[str, object] | None = None,
 ) -> tuple[m.ChatMessage, m.AgentRun | None]:
     """Record the user's turn and enqueue the run that answers it.
 
@@ -628,7 +643,14 @@ async def send_message(
     # actually said -- an unknown command, a path, or a bare "/ask" comes back
     # unchanged with no mode, so a message that legitimately starts with a
     # slash is still sendable.
-    if role == "followup":
+    if role == "followup" and notice is not None:
+        # An oc8 notice is ours too, but about what the person is doing in
+        # this chat right now: it runs in the chat's sticky mode (Agent mode,
+        # for a refused agent card), so the Copilot can propose again.
+        mode, body = MODES.get(session.mode or ""), message
+        if mode is not None and mode.assistant_only and not await _is_assistant(db, session):
+            mode = None
+    elif role == "followup":
         # A follow-up's text is ours, not a member's command, and it runs
         # outside any sticky mode the member left on the chat.
         mode, body = None, message
@@ -788,6 +810,7 @@ async def send_message(
         extra_context=extra_context,
         manifest=manifest,
         followup=followup,
+        notice=notice,
     )
     task_text = str(context["task"])
     if originating_operator is not None:

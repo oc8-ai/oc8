@@ -83,7 +83,19 @@ msgstr ""
 msgid "A skill is no longer available."
 msgstr ""
 
+msgid "A skill needs a system this agent would not have."
+msgstr ""
+
+msgid "A system cannot report amounts, so it cannot take an amount limit."
+msgstr ""
+
 msgid "A system is no longer connected or not released for this department."
+msgstr ""
+
+msgid "A system is switched off or restricted for this department."
+msgstr ""
+
+msgid "A system needs a login chosen for this agent first. Set it up under Connections."
 msgstr ""
 
 msgid "A template only — it ticks boxes now and is not stored. There is no inheritance."
@@ -4697,6 +4709,9 @@ msgstr ""
 msgid "The agent was not created. Try again."
 msgstr ""
 
+msgid "The agent's runtime cannot run skills."
+msgstr ""
+
 msgid "The answer was not stopped. Try again."
 msgstr ""
 
@@ -4823,10 +4838,16 @@ msgstr ""
 msgid "The schedule has ended"
 msgstr ""
 
+msgid "The schedule or event is not valid."
+msgstr ""
+
 msgid "The server cannot be reached. Please check the address."
 msgstr ""
 
 msgid "The setting could not be saved. Please try again."
+msgstr ""
+
+msgid "The skill needs a system this agent does not have. Add the system or leave the skill out."
 msgstr ""
 
 msgid "The source did not answer. Try again."
@@ -4989,6 +5010,9 @@ msgid "This member"
 msgstr ""
 
 msgid "This model can see images (vision)"
+msgstr ""
+
+msgid "This model may only answer chats, not run on a schedule or an event."
 msgstr ""
 
 msgid "This proposal has expired."

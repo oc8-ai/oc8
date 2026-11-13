@@ -188,7 +188,7 @@ export function AgentBuilderCard({
         )}
         {refusal && card.status === "draft" && (
           <p role="alert" className="text-xs text-status-error">
-            {builderRefusalText(refusal, card.failedStep, t)}
+            {builderRefusalText(refusal, card.failedStep, t, card.failedReason)}
           </p>
         )}
         {card.status === "rejected" && (

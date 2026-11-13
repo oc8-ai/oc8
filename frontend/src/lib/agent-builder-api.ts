@@ -52,6 +52,8 @@ export interface AgentBuilderDTO {
   readOnly: boolean;
   refusal: string | null;
   failedStep: number | null;
+  /** Why that step failed (a fixed code), when the server said. */
+  failedReason: string | null;
   rejectedReason: string | null;
   agent: { id: string; name: string; status: string } | null;
 }
@@ -119,8 +121,56 @@ export function builderRefusalCode(error: unknown): string | null {
   return null;
 }
 
+/** Why a step failed, from its `failedReason` code; null for an unknown one. */
+function stepReasonText(reason: string, t: Translate): string | null {
+  switch (reason) {
+    case "skill_requirements_missing":
+      return t(
+        "The skill needs a system this agent does not have. Add the system or leave the skill out.",
+        "Der Skill braucht ein System, das dieser Agent nicht hat. Nimm das System dazu oder lass den Skill weg.",
+      );
+    case "runtime_lacks_skills":
+      return t(
+        "The agent's runtime cannot run skills.",
+        "Die Laufzeit des Agenten kann keine Skills ausführen.",
+      );
+    case "trigger_invalid":
+      return t(
+        "The schedule or event is not valid.",
+        "Der Zeitplan oder das Ereignis ist ungültig.",
+      );
+    case "model_manual_only":
+      return t(
+        "This model may only answer chats, not run on a schedule or an event.",
+        "Dieses Modell darf nur im Chat antworten, nicht nach Zeitplan oder auf ein Ereignis.",
+      );
+    case "system_outside_frame":
+      return t(
+        "A system is switched off or restricted for this department.",
+        "Ein System ist für diese Abteilung abgeschaltet oder eingeschränkt.",
+      );
+    case "system_login_needed":
+      return t(
+        "A system needs a login chosen for this agent first. Set it up under Connections.",
+        "Für ein System muss erst ein Login für diesen Agenten gewählt werden. Richte es unter Verbindungen ein.",
+      );
+    case "system_no_amount_limit":
+      return t(
+        "A system cannot report amounts, so it cannot take an amount limit.",
+        "Ein System kann keine Beträge melden, also auch kein Betragslimit bekommen.",
+      );
+    default:
+      return null;
+  }
+}
+
 /** Why the agent was not created, in the member's words. */
-export function builderRefusalText(code: string, step: number | null, t: Translate): string {
+export function builderRefusalText(
+  code: string,
+  step: number | null,
+  t: Translate,
+  reason?: string | null,
+): string {
   switch (code) {
     case "name_taken":
       return t("That name is already taken.", "Diesen Namen gibt es schon.");
@@ -138,6 +188,11 @@ export function builderRefusalText(code: string, step: number | null, t: Transla
       );
     case "skill_not_allowed":
       return t("A skill is no longer available.", "Ein Skill ist nicht mehr verfügbar.");
+    case "skill_needs_system":
+      return t(
+        "A skill needs a system this agent would not have.",
+        "Ein Skill braucht ein System, das dieser Agent nicht hätte.",
+      );
     case "secret_value":
       return t(
         "The text contains a credential. Remove it and set it up under Credentials.",
@@ -154,11 +209,19 @@ export function builderRefusalText(code: string, step: number | null, t: Transla
         "Replaced by a newer proposal meanwhile.",
         "Inzwischen durch einen neueren Vorschlag ersetzt.",
       );
-    case "step_failed":
-      return t(
-        `Step ${(step ?? 0) + 1} could not be applied. Nothing was created.`,
-        `Schritt ${(step ?? 0) + 1} ließ sich nicht anwenden. Es wurde nichts angelegt.`,
-      );
+    case "step_failed": {
+      const why = reason ? stepReasonText(reason, t) : null;
+      const n = (step ?? 0) + 1;
+      return why
+        ? t(
+            `Step ${n} could not be applied: ${why} Nothing was created.`,
+            `Schritt ${n} ließ sich nicht anwenden: ${why} Es wurde nichts angelegt.`,
+          )
+        : t(
+            `Step ${n} could not be applied. Nothing was created.`,
+            `Schritt ${n} ließ sich nicht anwenden. Es wurde nichts angelegt.`,
+          );
+    }
     default:
       return t(
         "The agent was not created. Try again.",
