@@ -349,6 +349,9 @@ msgstr "Agenten"
 msgid "Agents"
 msgstr "Agenten"
 
+msgid "Agents in this department get its tools; agents in other departments don't."
+msgstr "Agents in dieser Abteilung bekommen seine Tools, Agents in anderen Abteilungen nicht."
+
 msgid "Alerts"
 msgstr "Benachrichtigungen"
 
@@ -919,6 +922,9 @@ msgstr "Prüft, was zu entscheiden ist"
 msgid "Choose a company, or create a safely isolated one for local testing."
 msgstr "Wähle eine Firma oder lege eine isolierte Testfirma an."
 
+msgid "Choose a department"
+msgstr "Abteilung wählen"
+
 msgid "Choose a department."
 msgstr "Wähle ein Department."
 
@@ -1182,6 +1188,9 @@ msgstr "Zuweisen fehlgeschlagen"
 
 msgid "Could not assign role."
 msgstr "Rolle konnte nicht zugewiesen werden."
+
+msgid "Could not assign the department."
+msgstr "Abteilung konnte nicht zugewiesen werden."
 
 msgid "could not be checked — the tamper-proofing key is unavailable"
 msgstr "konnte nicht geprüft werden — der Schlüssel für den Manipulationsschutz ist nicht verfügbar"
@@ -1734,6 +1743,9 @@ msgstr "Department erlaubt (Decke)"
 
 msgid "Department archived"
 msgstr "Abteilung archiviert"
+
+msgid "Department assigned"
+msgstr "Abteilung zugewiesen"
 
 msgid "Department deleted"
 msgstr "Abteilung gelöscht"
@@ -4911,6 +4923,9 @@ msgstr "Diesen Chat gibt es nicht mehr. Starte einen neuen."
 
 msgid "This company has not defined any roles of its own. As long as everybody may do everything, you do not need any."
 msgstr "Dieses Unternehmen hat noch keine eigenen Rollen definiert. Solange jeder alles darf, brauchst du keine."
+
+msgid "This connection is in no department, so no agent gets its tools yet. Choose the department whose agents should use it."
+msgstr "Diese Verbindung ist in keiner Abteilung, deshalb bekommt noch kein Agent ihre Tools. Wähle die Abteilung, deren Agents sie nutzen sollen."
 
 msgid "This connection is not set up yet. Please contact your administrator."
 msgstr "Diese Verbindung ist noch nicht eingerichtet. Bitte wende dich an deinen Administrator."

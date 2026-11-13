@@ -23,7 +23,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
-from sqlalchemy import select, text
+from sqlalchemy import text
 
 from oc8 import models as m
 from oc8.agent import mcp_pool
@@ -87,6 +87,7 @@ from oc8.chat.modes import mode_from_context, mode_refusal
 from oc8.connections.access import ConnectionRequired
 from oc8.connections.runtime_env import McpLaunchEnv, integration_connections, run_mcp_env
 from oc8.connections.tool_denied import record_tool_denied, tool_denied
+from oc8.connections.usable import department_connections
 from oc8.copilot.door import chat_door
 from oc8.edition.tools import EditionOffer, edition_offer
 from oc8.memory.policy import authorize_memory_write
@@ -200,20 +201,9 @@ async def _connections(
         return [pinned] if pinned is not None else []
     if dept is None:
         return []
-    found = (
-        (
-            await db.execute(
-                select(m.McpConnection)
-                .where(
-                    m.McpConnection.department_id == dept.id,
-                    m.McpConnection.connected.is_(True),
-                )
-                .order_by(m.McpConnection.created_at)
-            )
-        )
-        .scalars()
-        .all()
-    )
+    # The same query `connections.usable` reports a system usable from: what
+    # the builder offers is what a run gets.
+    found = (await db.execute(department_connections(dept.id))).scalars().all()
     # Names are how a call is routed, so two connections cannot share one. The
     # older wins and the younger is dropped rather than silently swallowing the
     # other's tools -- a wrong-system write is worse than a missing tool.

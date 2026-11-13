@@ -197,6 +197,10 @@ export interface McpConnection {
   command: string;
   args: string[];
   departmentId: string | null;
+  // In no department, and so reaching no agent's run until it gets one (the
+  // MCP gateway hands a run only its own department's connections). False for
+  // an integration or an organisation login, which reach agents unbound.
+  needsDepartment?: boolean;
   connected: boolean;
   scopes: string[];
   health: Record<string, unknown>;

@@ -85,6 +85,9 @@ async def builder_office(db: AsyncSession, tenant: uuid.UUID) -> BuilderOffice:
     db.add(
         m.McpConnection(
             tenant_id=tenant,
+            # Bound to the department whose frame enables it: the only kind
+            # of non-integration row the gateway hands a run.
+            department_id=books.id,
             name="odoo",
             server_url="stdio://odoo",
             transport="stdio",

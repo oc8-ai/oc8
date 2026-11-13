@@ -15,6 +15,7 @@ import {
   PlugZap,
   Terminal,
   Trash2,
+  Users,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -23,11 +24,13 @@ import { McpTestLogDrawer } from "@/components/mcp-test-log-drawer";
 import { useConfirm } from "@/hooks/use-confirm";
 import { api } from "@/lib/api";
 import {
+  useDepartments,
   useDisablePlugin,
   useEnablePlugin,
   useInstallCustomCapa,
   useTestMcpConnectionById,
 } from "@/lib/hooks";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 type ServerType = "stdio" | "remote_mcp" | "manual_http";
@@ -50,6 +53,10 @@ interface WizardState {
   name: string;
   summary: string;
   serverType: ServerType | null;
+  // The department whose agents get the connection's tools. The MCP gateway
+  // hands a run only its own department's connections, so one left in no
+  // department reaches no agent at all.
+  departmentId: string;
   // stdio
   command: string;
   args: string; // space-separated, split on submit
@@ -78,6 +85,7 @@ const INITIAL_STATE: WizardState = {
   name: "",
   summary: "",
   serverType: null,
+  departmentId: "",
   command: "",
   args: "",
   envRows: [],
@@ -153,8 +161,24 @@ const ALL_STEPS: Array<{ key: StepKey; title: string; subtitle: string; icon: ty
   },
 ];
 
-async function buildManifest(state: WizardState): Promise<Record<string, unknown>> {
-  const fields: Array<Record<string, unknown>> = [];
+// The setup field (and `mcp.department_field`) that places the connection in a
+// department -- the same declarative mechanism a tool pack's own manifest uses
+// (e.g. github_mcp's setup/mcp.toml), so the generic setup form can move it
+// later too.
+const DEPARTMENT_FIELD = "department";
+
+async function buildManifest(
+  state: WizardState,
+  departmentRequired: boolean,
+): Promise<Record<string, unknown>> {
+  const fields: Array<Record<string, unknown>> = [
+    {
+      key: DEPARTMENT_FIELD,
+      label: "Department",
+      kind: "department",
+      required: departmentRequired,
+    },
+  ];
   const secretEnvFields: Record<string, string> = {};
   const envFields: Record<string, string> = {};
   const plainEnv: Record<string, string> = {};
@@ -233,6 +257,7 @@ async function buildManifest(state: WizardState): Promise<Record<string, unknown
         env_fields: envFields,
         env: plainEnv,
         secret_env_fields: secretEnvFields,
+        department_field: DEPARTMENT_FIELD,
       },
     },
   };
@@ -240,8 +265,9 @@ async function buildManifest(state: WizardState): Promise<Record<string, unknown
 
 /** The setup-form values a saved/tested WizardState resolves to -- the same
  * shape `buildManifest`'s own `fields`/`secret_env_fields` keys expect back. */
-function buildSetupValues(state: WizardState): Record<string, string> {
+function buildSetupValues(state: WizardState, departmentId: string): Record<string, string> {
   const values: Record<string, string> = {};
+  if (departmentId) values[DEPARTMENT_FIELD] = departmentId;
   if (state.serverType === "stdio") {
     for (const row of state.envRows) {
       if (row.secret && row.key) values[`env_${row.key}`] = row.value;
@@ -256,15 +282,31 @@ export function CustomMcpWizard({
   open,
   onOpenChange,
   onExported,
+  defaultDepartmentId,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   // Called after a successful "Save & export as capa", with the resulting
   // capa's id, so Task 12 can hand it off to CapaExportWizard.
   onExported?: (capaId: string) => void;
+  // Preselected department, when opened from a department's own page.
+  defaultDepartmentId?: string;
 }) {
+  const t = useT();
+  const initialState: WizardState = { ...INITIAL_STATE, departmentId: defaultDepartmentId ?? "" };
   const [step, setStep] = useState(0);
-  const [state, setState] = useState<WizardState>(INITIAL_STATE);
+  const [state, setState] = useState<WizardState>(initialState);
+  const { data: departmentsPage } = useDepartments({ pageSize: 200 });
+  const departments = departmentsPage?.items ?? [];
+  // Required as soon as the organisation has departments. A preselection that
+  // is not (or no longer) one of them counts as none; a single department is
+  // the only possible answer.
+  const departmentId = departments.some((d) => d.id === state.departmentId)
+    ? state.departmentId
+    : departments.length === 1
+      ? departments[0].id
+      : "";
+  const departmentName = departments.find((d) => d.id === departmentId)?.name ?? null;
   const [stepError, setStepError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -296,7 +338,7 @@ export function CustomMcpWizard({
 
   function reset() {
     setStep(0);
-    setState(INITIAL_STATE);
+    setState(initialState);
     setStepError(null);
   }
 
@@ -346,7 +388,13 @@ export function CustomMcpWizard({
   }
 
   function canProceedFrom(key: StepKey): boolean {
-    if (key === "type") return state.name.trim().length > 0 && state.serverType !== null;
+    if (key === "type") {
+      return (
+        state.name.trim().length > 0 &&
+        state.serverType !== null &&
+        (departments.length === 0 || departmentId !== "")
+      );
+    }
     if (key === "connection") {
       if (state.serverType === "stdio") return state.command.trim().length > 0;
       if (state.serverType === "remote_mcp") return state.serverUrl.trim().length > 0;
@@ -403,13 +451,13 @@ export function CustomMcpWizard({
   }> {
     let pluginId = state.installedPluginId;
     if (!pluginId) {
-      const manifest = await buildManifest(state);
+      const manifest = await buildManifest(state, departments.length > 0);
       const installed = await installCustomCapa.mutateAsync({ manifest });
       pluginId = installed.pluginId;
       update({ installedPluginId: pluginId });
     }
     await enablePlugin.mutateAsync({ pluginId, grantedPermissions: [] });
-    const values = buildSetupValues(state);
+    const values = buildSetupValues(state, departmentId);
     const result = await api.post<{ connectionId: string | null }>(`/capas/${pluginId}/setup`, {
       values,
     });
@@ -601,6 +649,32 @@ export function CustomMcpWizard({
                     className="w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
                   />
                 </Field>
+                {departments.length > 0 && (
+                  <Field label={t("Department", "Abteilung")}>
+                    <select
+                      aria-label={t("Department", "Abteilung")}
+                      value={departmentId}
+                      onChange={(e) => update({ departmentId: e.target.value })}
+                      // Fixed once a test installed it: a different department
+                      // would get a second, untested connection of its own.
+                      disabled={state.installedPluginId !== null}
+                      className="w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50 disabled:opacity-60"
+                    >
+                      <option value="">{t("Choose a department", "Abteilung wählen")}</option>
+                      {departments.map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {d.name}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="mt-1 block text-[11px] normal-case tracking-normal text-muted-foreground">
+                      {t(
+                        "Agents in this department get its tools; agents in other departments don't.",
+                        "Agents in dieser Abteilung bekommen seine Tools, Agents in anderen Abteilungen nicht.",
+                      )}
+                    </span>
+                  </Field>
+                )}
                 <Field label="Server type">
                   <div className="grid gap-2.5 sm:grid-cols-3">
                     {SERVER_TYPES.map((type) => {
@@ -821,7 +895,9 @@ export function CustomMcpWizard({
               </div>
             )}
 
-            {activeStep.key === "summary" && <SummaryCard state={state} />}
+            {activeStep.key === "summary" && (
+              <SummaryCard state={state} departmentName={departmentName} />
+            )}
           </div>
 
           <footer className="flex items-center justify-between gap-3 border-t border-border bg-background/30 px-6 py-4">
@@ -980,7 +1056,14 @@ const SERVER_TYPE_LABELS: Record<ServerType, string> = {
   manual_http: "Plain HTTP API",
 };
 
-function SummaryCard({ state }: { state: WizardState }) {
+function SummaryCard({
+  state,
+  departmentName,
+}: {
+  state: WizardState;
+  departmentName: string | null;
+}) {
+  const t = useT();
   const typeLabel = state.serverType ? SERVER_TYPE_LABELS[state.serverType] : "—";
   const toolOrEndpointCount =
     state.serverType === "manual_http"
@@ -1027,6 +1110,11 @@ function SummaryCard({ state }: { state: WizardState }) {
         <Row icon={<Check className="h-3 w-3" />} label="Secrets">
           <span className="font-medium text-foreground">{secretCount}</span>
         </Row>
+        {departmentName && (
+          <Row icon={<Users className="h-3 w-3" />} label={t("Department", "Abteilung")}>
+            <span className="font-medium text-foreground">{departmentName}</span>
+          </Row>
+        )}
       </dl>
     </div>
   );

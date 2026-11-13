@@ -20,6 +20,8 @@ vi.mock("@/lib/hooks", () => ({
   useCapaIcon: () => ({ data: null }),
   useInstallCustomCapa: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useTestMcpConnectionById: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  // CustomMcpWizard's department picker.
+  useDepartments: () => ({ data: { items: [], totalCount: 0 } }),
 }));
 
 import { CapasPage } from "@/routes/capas";

@@ -296,6 +296,9 @@ msgstr ""
 msgid "Agents"
 msgstr ""
 
+msgid "Agents in this department get its tools; agents in other departments don't."
+msgstr ""
+
 msgid "Alerts"
 msgstr ""
 
@@ -881,6 +884,9 @@ msgstr ""
 msgid "Choose a company, or create a safely isolated one for local testing."
 msgstr ""
 
+msgid "Choose a department"
+msgstr ""
+
 msgid "Choose a department."
 msgstr ""
 
@@ -1146,6 +1152,9 @@ msgid "Could not assign"
 msgstr ""
 
 msgid "Could not assign role."
+msgstr ""
+
+msgid "Could not assign the department."
 msgstr ""
 
 msgid "could not be checked — the tamper-proofing key is unavailable"
@@ -1707,6 +1716,9 @@ msgid "Department allows (ceiling)"
 msgstr ""
 
 msgid "Department archived"
+msgstr ""
+
+msgid "Department assigned"
 msgstr ""
 
 msgid "Department deleted"
@@ -4962,6 +4974,9 @@ msgid "This chat no longer exists. Start a new one."
 msgstr ""
 
 msgid "This company has not defined any roles of its own. As long as everybody may do everything, you do not need any."
+msgstr ""
+
+msgid "This connection is in no department, so no agent gets its tools yet. Choose the department whose agents should use it."
 msgstr ""
 
 msgid "This connection is not set up yet. Please contact your administrator."

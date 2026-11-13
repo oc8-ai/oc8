@@ -20,6 +20,7 @@ from oc8.capas.discovery import find_plugin
 from oc8.capas.guardrails import GuardrailLibrary
 from oc8.capas.i18n import translations_for
 from oc8.capas.manifest import ManifestError, ToolPackConnection, parse_manifest
+from oc8.connections.usable import needs_department
 from oc8.realtime.emit import publish_mcp_test_log
 from oc8.schemas.dto import (
     ConnectionToolLabelsDTO,
@@ -191,6 +192,7 @@ def _to_dto(c: m.McpConnection) -> McpConnectionDTO:
         command=cfg.get("command", ""),
         args=cfg.get("args", []),
         department_id=str(c.department_id) if c.department_id else None,
+        needs_department=needs_department(c),
         connected=c.connected,
         scopes=scopes,
         health=c.health or {},
@@ -367,6 +369,11 @@ async def update_connection(
     if body.name is not None:
         conn.name = body.name
     if body.department_id is not None:
+        # The foreign key alone would accept another organisation's department
+        # (RLS does not apply to it); the RLS-bound read below does not.
+        dept = await db.get(m.Department, body.department_id)
+        if dept is None or dept.deleted_at is not None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "department not found")
         conn.department_id = body.department_id
     if body.scopes is not None:
         conn.scopes = body.scopes
@@ -379,10 +386,12 @@ async def update_connection(
         cfg["env"] = body.env
     if body.secret_env is not None:
         cfg["secret_env"] = body.secret_env
-    conn.config = cfg
     # A changed command/config invalidates the previous health assertion.
-    conn.connected = False
-    conn.health = {}
+    # Moving it to a department does not: it runs the same server either way.
+    if body.model_fields_set - {"department_id"}:
+        conn.connected = False
+        conn.health = {}
+    conn.config = cfg
     # Flush, don't commit: the RLS GUC is transaction-local, so committing here
     # leaves the session unbound and the reload that followed ran with
     # app.tenant_id = '' and failed the uuid cast -- a 500 for a change that had

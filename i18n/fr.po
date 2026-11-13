@@ -470,6 +470,10 @@ msgid "Agents"
 msgstr "Agents"
 
 #, fuzzy
+msgid "Agents in this department get its tools; agents in other departments don't."
+msgstr "Les agents de ce département reçoivent ses outils ; ceux des autres départements, non."
+
+#, fuzzy
 msgid "Alerts"
 msgstr "Alertes"
 
@@ -1230,6 +1234,10 @@ msgid "Choose a company, or create a safely isolated one for local testing."
 msgstr "Choisissez une entreprise ou créez-en une isolée en toute sécurité pour des tests locaux."
 
 #, fuzzy
+msgid "Choose a department"
+msgstr "Choisis un département"
+
+#, fuzzy
 msgid "Choose a department."
 msgstr "Choisissez un département."
 
@@ -1580,6 +1588,10 @@ msgstr "Impossible d'attribuer"
 #, fuzzy
 msgid "Could not assign role."
 msgstr "Impossible d'attribuer le rôle."
+
+#, fuzzy
+msgid "Could not assign the department."
+msgstr "Impossible d'attribuer le département."
 
 #, fuzzy
 msgid "could not be checked — the tamper-proofing key is unavailable"
@@ -2316,6 +2328,10 @@ msgstr "Le département autorise (plafond)"
 #, fuzzy
 msgid "Department archived"
 msgstr "Département archivé"
+
+#, fuzzy
+msgid "Department assigned"
+msgstr "Département attribué"
 
 #, fuzzy
 msgid "Department deleted"
@@ -6552,6 +6568,10 @@ msgstr "Ce chat n'existe plus. Démarrez-en un nouveau."
 #, fuzzy
 msgid "This company has not defined any roles of its own. As long as everybody may do everything, you do not need any."
 msgstr "Cette entreprise n'a défini aucun rôle propre. Tant que tout le monde peut tout faire, vous n'en avez pas besoin."
+
+#, fuzzy
+msgid "This connection is in no department, so no agent gets its tools yet. Choose the department whose agents should use it."
+msgstr "Cette connexion n'appartient à aucun département, donc aucun agent ne reçoit encore ses outils. Choisis le département dont les agents doivent l'utiliser."
 
 #, fuzzy
 msgid "This connection is not set up yet. Please contact your administrator."

@@ -1003,6 +1003,9 @@ class McpConnectionDTO(CamelModel):
     command: str = ""
     args: list[str] = []
     department_id: str | None = None
+    #: In no department, and no run reaches it until it gets one
+    #: (`connections.usable.needs_department`).
+    needs_department: bool = False
     connected: bool
     scopes: list[str] = []
     health: dict[str, object] = {}

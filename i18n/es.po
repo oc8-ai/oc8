@@ -470,6 +470,10 @@ msgid "Agents"
 msgstr "Agentes"
 
 #, fuzzy
+msgid "Agents in this department get its tools; agents in other departments don't."
+msgstr "Los agentes de este departamento reciben sus herramientas; los de otros departamentos, no."
+
+#, fuzzy
 msgid "Alerts"
 msgstr "Alertas"
 
@@ -1230,6 +1234,10 @@ msgid "Choose a company, or create a safely isolated one for local testing."
 msgstr "Elige una empresa o crea una aislada de forma segura para pruebas locales."
 
 #, fuzzy
+msgid "Choose a department"
+msgstr "Elige un departamento"
+
+#, fuzzy
 msgid "Choose a department."
 msgstr "Elige un departamento."
 
@@ -1580,6 +1588,10 @@ msgstr "No se pudo asignar"
 #, fuzzy
 msgid "Could not assign role."
 msgstr "No se pudo asignar el rol."
+
+#, fuzzy
+msgid "Could not assign the department."
+msgstr "No se pudo asignar el departamento."
 
 #, fuzzy
 msgid "could not be checked — the tamper-proofing key is unavailable"
@@ -2316,6 +2328,10 @@ msgstr "El departamento permite (techo)"
 #, fuzzy
 msgid "Department archived"
 msgstr "Departamento archivado"
+
+#, fuzzy
+msgid "Department assigned"
+msgstr "Departamento asignado"
 
 #, fuzzy
 msgid "Department deleted"
@@ -6552,6 +6568,10 @@ msgstr "Este chat ya no existe. Empieza uno nuevo."
 #, fuzzy
 msgid "This company has not defined any roles of its own. As long as everybody may do everything, you do not need any."
 msgstr "Esta empresa no ha definido ningún rol propio. Mientras todos puedan hacerlo todo, no necesitas ninguno."
+
+#, fuzzy
+msgid "This connection is in no department, so no agent gets its tools yet. Choose the department whose agents should use it."
+msgstr "Esta conexión no está en ningún departamento, así que ningún agente recibe aún sus herramientas. Elige el departamento cuyos agentes deben usarla."
 
 #, fuzzy
 msgid "This connection is not set up yet. Please contact your administrator."

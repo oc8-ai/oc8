@@ -470,6 +470,10 @@ msgid "Agents"
 msgstr "Agents"
 
 #, fuzzy
+msgid "Agents in this department get its tools; agents in other departments don't."
+msgstr "Agents in deze afdeling krijgen de tools; agents in andere afdelingen niet."
+
+#, fuzzy
 msgid "Alerts"
 msgstr "Meldingen"
 
@@ -1230,6 +1234,10 @@ msgid "Choose a company, or create a safely isolated one for local testing."
 msgstr "Kies een bedrijf, of maak een veilig geïsoleerd bedrijf voor lokaal testen."
 
 #, fuzzy
+msgid "Choose a department"
+msgstr "Kies een afdeling"
+
+#, fuzzy
 msgid "Choose a department."
 msgstr "Kies een afdeling."
 
@@ -1580,6 +1588,10 @@ msgstr "Toewijzen mislukt"
 #, fuzzy
 msgid "Could not assign role."
 msgstr "Rol toewijzen mislukt."
+
+#, fuzzy
+msgid "Could not assign the department."
+msgstr "De afdeling kon niet worden toegewezen."
 
 #, fuzzy
 msgid "could not be checked — the tamper-proofing key is unavailable"
@@ -2316,6 +2328,10 @@ msgstr "Afdeling staat toe (plafond)"
 #, fuzzy
 msgid "Department archived"
 msgstr "Afdeling gearchiveerd"
+
+#, fuzzy
+msgid "Department assigned"
+msgstr "Afdeling toegewezen"
 
 #, fuzzy
 msgid "Department deleted"
@@ -6552,6 +6568,10 @@ msgstr "Deze chat bestaat niet meer. Start een nieuwe."
 #, fuzzy
 msgid "This company has not defined any roles of its own. As long as everybody may do everything, you do not need any."
 msgstr "Dit bedrijf heeft geen eigen rollen gedefinieerd. Zolang iedereen alles mag doen, heb je die ook niet nodig."
+
+#, fuzzy
+msgid "This connection is in no department, so no agent gets its tools yet. Choose the department whose agents should use it."
+msgstr "Deze verbinding zit in geen enkele afdeling, dus nog geen enkele agent krijgt de tools. Kies de afdeling waarvan de agents haar moeten gebruiken."
 
 #, fuzzy
 msgid "This connection is not set up yet. Please contact your administrator."

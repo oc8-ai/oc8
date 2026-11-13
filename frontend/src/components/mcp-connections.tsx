@@ -14,6 +14,7 @@ import {
   useDepartments,
   useMcpConnections,
   useTestMcpConnection,
+  useUpdateMcpConnection,
   type McpConnection,
 } from "@/lib/hooks";
 import { useT } from "@/lib/i18n";
@@ -233,6 +234,57 @@ function McpConnectionCard({ connection }: { connection: McpConnection }) {
 // used standalone above (wrapped in its own Panel) and embedded directly
 // inside a Capa's own card on /capas, where the Capa's name is already the
 // card's header and a second bordered box nested inside it would be noise.
+/** A connection in no department reaches no agent: say so, and let an operator
+ * move it into the department whose agents should get its tools. */
+function AssignDepartment({ connection }: { connection: McpConnection }) {
+  const t = useT();
+  const { data: departmentsPage } = useDepartments({ pageSize: 200 });
+  const departments = departmentsPage?.items ?? [];
+  const update = useUpdateMcpConnection(connection.id);
+  return (
+    <div className="mt-3 rounded-md border border-[color:var(--status-warning)]/40 bg-background/30 p-2.5">
+      <p className="text-[11px] text-muted-foreground">
+        {t(
+          "This connection is in no department, so no agent gets its tools yet. Choose the department whose agents should use it.",
+          "Diese Verbindung ist in keiner Abteilung, deshalb bekommt noch kein Agent ihre Tools. Wähle die Abteilung, deren Agents sie nutzen sollen.",
+        )}
+      </p>
+      <select
+        aria-label={t("Department", "Abteilung")}
+        value=""
+        disabled={update.isPending || departments.length === 0}
+        onChange={(e) => {
+          const departmentId = e.target.value;
+          if (!departmentId) return;
+          update.mutate(
+            { departmentId },
+            {
+              onSuccess: () => toast.success(t("Department assigned", "Abteilung zugewiesen")),
+              onError: (err: unknown) =>
+                toast.error(
+                  err instanceof Error
+                    ? err.message
+                    : t(
+                        "Could not assign the department.",
+                        "Abteilung konnte nicht zugewiesen werden.",
+                      ),
+                ),
+            },
+          );
+        }}
+        className="mt-2 w-full rounded-md border border-border bg-background/40 px-2.5 py-1.5 text-xs text-foreground"
+      >
+        <option value="">{t("Choose a department", "Abteilung wählen")}</option>
+        {departments.map((d) => (
+          <option key={d.id} value={d.id}>
+            {d.name}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
 export function McpConnectionBody({ connection }: { connection: McpConnection }) {
   const t = useT();
   const testConnection = useTestMcpConnection(connection.id);
@@ -302,6 +354,8 @@ export function McpConnectionBody({ connection }: { connection: McpConnection })
           </button>
         </div>
       </div>
+
+      {connection.needsDepartment && <AssignDepartment connection={connection} />}
 
       {status === "ok" && tools.length > 0 && (
         <div className="mt-3">
