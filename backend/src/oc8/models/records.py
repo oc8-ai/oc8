@@ -14,6 +14,8 @@ from oc8.models._mixins import PkMixin, TenantMixin
 class RecordLink(Base, PkMixin, TenantMixin):
     __tablename__ = "record_link"
 
+    #: `registry.link_scope`: the conversation (or task chain) it was issued in.
+    scope: Mapped[str] = mapped_column(Text, nullable=False)
     url: Mapped[str] = mapped_column(Text, nullable=False)
     host: Mapped[str] = mapped_column(Text, nullable=False)
     #: `registry.canonical(url)`: where the link leads, however it is spelled.
@@ -23,8 +25,8 @@ class RecordLink(Base, PkMixin, TenantMixin):
     )
 
     __table_args__ = (
-        UniqueConstraint("tenant_id", "url", name="uq_record_link_tenant_url"),
+        UniqueConstraint("tenant_id", "scope", "url", name="uq_record_link_tenant_scope_url"),
         CheckConstraint("char_length(url) <= 2000", name="ck_record_link_url"),
         Index("ix_record_link_tenant_host", "tenant_id", "host"),
-        Index("ix_record_link_tenant_canon", "tenant_id", "canon"),
+        Index("ix_record_link_tenant_scope_canon", "tenant_id", "scope", "canon"),
     )

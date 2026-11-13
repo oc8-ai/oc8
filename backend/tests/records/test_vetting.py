@@ -11,6 +11,7 @@ from tests.conftest import AppSessionFactory
 HOSTS = {"odoo.example.com"}
 GOOD = "https://odoo.example.com/odoo/sale.order/42"
 BAD = "https://odoo.example.com/odoo/sale.order/99"
+SCOPE = "chat:00000000-0000-0000-0000-00000000000a"
 
 
 def test_an_issued_markdown_link_stays() -> None:
@@ -92,8 +93,10 @@ async def test_failing_issued_lookup_fails_closed(
     tenant = uuid.uuid4()
     monkeypatch.setattr("oc8.records.vetting.issued_links", _boom)
     async with app_session(tenant) as db:
-        await remember_links(db, tenant_id=tenant, urls=[GOOD])
-        out = await vet_answer_links(db, tenant_id=tenant, text=f"{GOOD} {BAD} https://o.org/x")
+        await remember_links(db, tenant_id=tenant, scope=SCOPE, urls=[GOOD])
+        out = await vet_answer_links(
+            db, tenant_id=tenant, scope=SCOPE, text=f"{GOOD} {BAD} https://o.org/x"
+        )
     assert GOOD not in out
     assert BAD not in out
     assert "https://o.org/x" in out
@@ -107,7 +110,7 @@ async def test_failing_host_lookup_neutralises_every_link(
     monkeypatch.setattr("oc8.records.vetting.issued_links", _boom)
     monkeypatch.setattr("oc8.records.vetting.linked_hosts", _boom)
     async with app_session(tenant) as db:
-        out = await vet_answer_links(db, tenant_id=tenant, text="a https://o.org/x b")
+        out = await vet_answer_links(db, tenant_id=tenant, scope=SCOPE, text="a https://o.org/x b")
     assert out == "a `o.org` b"
 
 
@@ -117,9 +120,26 @@ async def test_vet_answer_links_unlinks_only_what_oc8_never_issued(
 ) -> None:
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
-        await remember_links(db, tenant_id=tenant, urls=[GOOD])
-        out = await vet_answer_links(db, tenant_id=tenant, text=f"[ok]({GOOD}) and [no]({BAD})")
+        await remember_links(db, tenant_id=tenant, scope=SCOPE, urls=[GOOD])
+        out = await vet_answer_links(
+            db, tenant_id=tenant, scope=SCOPE, text=f"[ok]({GOOD}) and [no]({BAD})"
+        )
     assert out == f"[ok]({GOOD}) and no"
+
+
+@pytest.mark.asyncio
+async def test_a_link_issued_in_another_conversation_is_neutralised(
+    app_session: AppSessionFactory,
+) -> None:
+    """An answer in conversation B quoting a link only conversation A was
+    given: in B it is a guess like any other, in A it stays."""
+    tenant = uuid.uuid4()
+    other = "chat:00000000-0000-0000-0000-00000000000b"
+    text = f"[Ada]({GOOD})"
+    async with app_session(tenant) as db:
+        await remember_links(db, tenant_id=tenant, scope=SCOPE, urls=[GOOD])
+        assert await vet_answer_links(db, tenant_id=tenant, scope=other, text=text) == "Ada"
+        assert await vet_answer_links(db, tenant_id=tenant, scope=SCOPE, text=text) == text
 
 
 I42 = "https://h.example/odoo/42"

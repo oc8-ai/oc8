@@ -156,6 +156,7 @@ from oc8.records.links import (
     link_for,
     related_links,
 )
+from oc8.records.registry import link_scope
 from oc8.runtime.approval_resume import pre_decided_map
 from oc8.runtime.cancellation import run_stop
 from oc8.runtime.registry import BUILTIN_ISOLATED_RUNTIME_REF
@@ -1125,6 +1126,7 @@ async def _finish_elicitation(
             output, issued = await enrich_and_remember(
                 db,
                 tenant_id=run.tenant_id,
+                scope=await link_scope(db, run=run),
                 ctx=await _link_ctx_for(conn, db, run, ctx),
                 tool_name=tool,
                 arguments=arguments,
@@ -2968,6 +2970,7 @@ async def _dispatch_one_tool(
             output, issued = await enrich_and_remember(
                 db,
                 tenant_id=run.tenant_id,
+                scope=await link_scope(db, run=run),
                 ctx=await _link_ctx(),
                 tool_name=tc.name,
                 arguments=tc.arguments,

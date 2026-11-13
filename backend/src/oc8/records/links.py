@@ -288,13 +288,15 @@ async def enrich_and_remember(
     db: AsyncSession,
     *,
     tenant_id: uuid.UUID,
+    scope: str,
     ctx: LinkContext | None,
     tool_name: str,
     arguments: Mapping[str, Any],
     output: str,
 ) -> tuple[str, list[str]]:
-    """`enrich`, plus remembering what it issued in the tenant's registry, so
-    the answer check later keeps exactly these links (spec §5 items 1 and 3).
+    """`enrich`, plus remembering what it issued in the registry under the
+    calling run's `scope` (`registry.link_scope`), so the answer check later
+    keeps exactly these links, in that conversation (spec §4.2, §5 items 1 and 3).
 
     A replayed write comes back as the first result with the idempotency note
     appended, which is no longer JSON. The JSON part is enriched and the note
@@ -312,7 +314,7 @@ async def enrich_and_remember(
     if issued:
         try:
             async with db.begin_nested():
-                await remember_links(db, tenant_id=tenant_id, urls=issued)
+                await remember_links(db, tenant_id=tenant_id, scope=scope, urls=issued)
         except Exception:
             # An unremembered link is unlinked in the answer later; that is
             # better than failing the call over it. The model still sees it.

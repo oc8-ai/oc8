@@ -181,6 +181,7 @@ async def test_enrich_and_remember_registers_what_it_issued(
         new, issued = await enrich_and_remember(
             db,
             tenant_id=tenant,
+            scope="task:1",
             ctx=_odoo(),
             tool_name="search_records",
             arguments={"model": "sale.order"},
@@ -188,7 +189,8 @@ async def test_enrich_and_remember_registers_what_it_issued(
         )
         assert issued == [url]
         assert json.loads(new)[0]["oc8_url"] == url
-        assert await issued_links(db, tenant_id=tenant, urls=[url]) == {url}
+        assert await issued_links(db, tenant_id=tenant, scope="task:1", urls=[url]) == {url}
+        assert await issued_links(db, tenant_id=tenant, scope="task:2", urls=[url]) == set()
 
 
 async def test_a_replayed_result_is_enriched_like_the_first_one(
@@ -202,6 +204,7 @@ async def test_a_replayed_result_is_enriched_like_the_first_one(
         first, _ = await enrich_and_remember(
             db,
             tenant_id=tenant,
+            scope="task:1",
             ctx=_odoo(),
             tool_name="search_records",
             arguments={"model": "sale.order"},
@@ -210,6 +213,7 @@ async def test_a_replayed_result_is_enriched_like_the_first_one(
         replayed, issued = await enrich_and_remember(
             db,
             tenant_id=tenant,
+            scope="task:1",
             ctx=_odoo(),
             tool_name="search_records",
             arguments={"model": "sale.order"},
@@ -225,5 +229,11 @@ async def test_enrich_and_remember_without_context_changes_nothing(
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         assert await enrich_and_remember(
-            db, tenant_id=tenant, ctx=None, tool_name="x", arguments={}, output='[{"id": 1}]'
+            db,
+            tenant_id=tenant,
+            scope="task:1",
+            ctx=None,
+            tool_name="x",
+            arguments={},
+            output='[{"id": 1}]',
         ) == ('[{"id": 1}]', [])

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.agent.engine import run_agent
@@ -63,9 +64,11 @@ async def _fake_pool_call(*_a: Any, tool: str, arguments: dict[str, Any], **_kw:
     return OUTPUT
 
 
-async def _issued(app_session: AppSessionFactory, tenant: uuid.UUID) -> set[str]:
+async def _scopes(app_session: AppSessionFactory, tenant: uuid.UUID) -> set[str]:
+    """The scopes `URL` was issued in for the tenant."""
     async with app_session(tenant) as db:
-        return await issued_links(db, tenant_id=tenant, urls=[URL])
+        rows = await db.execute(select(m.RecordLink.scope).where(m.RecordLink.url == URL))
+        return set(rows.scalars())
 
 
 class _OdooSession:
@@ -111,10 +114,11 @@ async def test_the_engine_hands_the_model_a_record_link(
         agent, conn = await _fixture(db, tenant, tool_scopes={"read": ["search_records"]})
         conn.config = {**conn.config, **ODOO_CONFIG}
         await db.flush()
-        await run_agent(db, agent=agent, task_text="go", tenant_id=tenant, mcp_conn=conn)
+        result = await run_agent(db, agent=agent, task_text="go", tenant_id=tenant, mcp_conn=conn)
 
     assert f'"oc8_url": "{URL}"' in stream.seen[-1]
-    assert await _issued(app_session, tenant) == {URL}
+    # No conversation: the run's task chain is the scope.
+    assert await _scopes(app_session, tenant) == {f"task:{result.task_id}"}
 
 
 async def test_the_gateway_hands_the_harness_a_record_link(
@@ -124,7 +128,7 @@ async def test_the_gateway_hands_the_harness_a_record_link(
 
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
-        agent_id, run_id, _t = await _seed(db, tenant, config_extra=ODOO_CONFIG)
+        agent_id, run_id, task_id = await _seed(db, tenant, config_extra=ODOO_CONFIG)
 
     code, body = await _rpc(
         _token(tenant, agent_id, run_id),
@@ -134,7 +138,7 @@ async def test_the_gateway_hands_the_harness_a_record_link(
     assert code == 200, body
     assert body["result"]["isError"] is False
     assert f'"oc8_url": "{URL}"' in body["result"]["content"][0]["text"]
-    assert await _issued(app_session, tenant) == {URL}
+    assert await _scopes(app_session, tenant) == {f"task:{task_id}"}
 
 
 async def test_the_isolated_runtime_hands_the_model_a_record_link(
@@ -150,12 +154,15 @@ async def test_the_isolated_runtime_hands_the_model_a_record_link(
         conn = await db.get(m.McpConnection, uuid.UUID(run.context["mcp_connection_id"]))
         assert conn is not None
         conn.config = {**conn.config, **ODOO_CONFIG}
+        # A copilot turn: the link belongs to the conversation, not the task.
+        session = uuid.uuid4()
+        run.context = {**run.context, "chat_session_id": str(session)}
 
     code, body = await _post_tool(tenant, agent_id, run_id, "search_records", ARGS)
     assert code == 200, body
     assert body["status"] == "ok"
     assert f'"oc8_url": "{URL}"' in body["output"]
-    assert await _issued(app_session, tenant) == {URL}
+    assert await _scopes(app_session, tenant) == {f"chat:{session}"}
 
 
 async def test_a_failing_env_lookup_leaves_the_call_s_output_intact(
@@ -191,7 +198,7 @@ async def test_a_failing_env_lookup_leaves_the_call_s_output_intact(
     assert '[{"id": 42, "name": "S00042"}]' in stream.seen[-1]
     # The key as a JSON field; the prompt itself now names `oc8_url`.
     assert '"oc8_url":' not in stream.seen[-1]
-    assert await _issued(app_session, tenant) == set()
+    assert await _scopes(app_session, tenant) == set()
 
 
 async def test_the_engine_links_a_held_call_re_run_with_the_operator_s_answer(
@@ -234,14 +241,16 @@ async def test_the_engine_links_a_held_call_re_run_with_the_operator_s_answer(
         )
         db.add(run)
         await db.flush()
-        await run_agent(
+        result = await run_agent(
             db, agent=agent, task_text="go", tenant_id=tenant, mcp_conn=conn, run_id=run.id
         )
 
     assert "finished with the operator" in stream.seen[-1]
     assert f'"oc8_url": "{created}"' in stream.seen[-1]
     async with app_session(tenant) as db:
-        assert await issued_links(db, tenant_id=tenant, urls=[created]) == {created}
+        assert await issued_links(
+            db, tenant_id=tenant, scope=f"task:{result.task_id}", urls=[created]
+        ) == {created}
 
 
 async def test_a_gateway_replay_is_linked_without_touching_the_connection(
@@ -334,3 +343,83 @@ async def test_the_activity_log_does_not_carry_a_guessed_record_link(
     joined = "\n".join(d or "" for d in details)
     assert guessed not in joined
     assert f"[S42]({URL})" in joined
+
+
+@pytest.mark.parametrize("chat", [True, False], ids=["chat", "task-chain"])
+async def test_a_delegated_agent_s_link_stays_clickable_in_the_lead_s_answer(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch, chat: bool
+) -> None:
+    """The copilot passes on what a delegated agent found. The sub-run issues
+    the link; the lead's wake run, a fresh run, answers with it -- and the
+    executor's check keeps it, because both share the conversation (or, with
+    no chat, the task chain). A link nobody issued there is still unlinked."""
+    from oc8.agent.engine import RunResult
+    from oc8.constants import ACME_TENANT_ID
+    from oc8.records.registry import link_scope, remember_links
+    from oc8.runtime.executor import execute_run
+    from tests.runtime.test_wakeup import _delegated_setup, _FnRuntime, _msg, _RecordingQueue
+
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    session = str(uuid.uuid4()) if chat else None
+    lead_id, sub_task_id, sub_run_id = await _delegated_setup(
+        app_session, tenant, chat_session_id=session
+    )
+    queue = _RecordingQueue()
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: queue)
+    found = f"Found [S00042]({URL})."
+
+    async def worker(db: Any, **kw: Any) -> RunResult:
+        # What a tool call in the sub-run does: issue the link in its scope.
+        run = await db.get(m.AgentRun, kw["run_id"])
+        scope = await link_scope(db, run=run, task_id=sub_task_id)
+        await remember_links(db, tenant_id=tenant, scope=scope, urls=[URL])
+        return RunResult(sub_task_id, kw["agent"].id, "done", found, [], 1)
+
+    await execute_run(_msg(sub_run_id, tenant), runtime=_FnRuntime(worker))
+    assert len(queue.enqueued) == 1
+    async with app_session(tenant) as s:
+        wake = await s.get(m.AgentRun, queue.enqueued[0])
+        assert wake is not None
+        assert found in wake.context["task"]
+        lead_task_id = uuid.UUID(wake.context["parent_task_id"])
+
+    guessed = "https://odoo.example.com/odoo/sale.order/99"
+
+    async def lead(db: Any, **kw: Any) -> RunResult:
+        answer = f"Here: [S00042]({URL}) and [S00099]({guessed})"
+        return RunResult(lead_task_id, lead_id, "done", answer, [], 1)
+
+    await execute_run(_msg(queue.enqueued[0], tenant), runtime=_FnRuntime(lead))
+    async with app_session(tenant) as s:
+        wake = await s.get(m.AgentRun, queue.enqueued[0])
+        assert wake is not None
+        assert wake.context["output"] == f"Here: [S00042]({URL}) and S00099"
+
+
+async def test_another_conversation_s_link_is_unlinked_in_the_answer(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The oracle itself: a member's chat answer quoting a record link only
+    another conversation was given keeps the text, not the link."""
+    from oc8.agent.engine import RunResult
+    from oc8.constants import ACME_TENANT_ID
+    from oc8.records.registry import remember_links
+    from oc8.runtime.executor import execute_run
+    from tests.runtime.test_wakeup import _delegated_setup, _FnRuntime, _msg, _RecordingQueue
+
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    _lead, sub_task_id, sub_run_id = await _delegated_setup(
+        app_session, tenant, chat_session_id=str(uuid.uuid4())
+    )
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: _RecordingQueue())
+    async with app_session(tenant) as s:
+        await remember_links(s, tenant_id=tenant, scope=f"chat:{uuid.uuid4()}", urls=[URL])
+
+    async def worker(db: Any, **kw: Any) -> RunResult:
+        return RunResult(sub_task_id, kw["agent"].id, "done", f"See [Ada]({URL}).", [], 1)
+
+    await execute_run(_msg(sub_run_id, tenant), runtime=_FnRuntime(worker))
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, sub_run_id)
+        assert run is not None
+        assert run.context["output"] == "See Ada."

@@ -301,7 +301,9 @@ def _has_url(text: str) -> bool:
     return "http" in low or "www." in low
 
 
-async def vet_answer_links(db: AsyncSession, *, tenant_id: uuid.UUID, text: str) -> str:
+async def vet_answer_links(db: AsyncSession, *, tenant_id: uuid.UUID, scope: str, text: str) -> str:
+    """`text` with every link to a connected host that oc8 did not issue in
+    this `scope` (`registry.link_scope` of the answering run) neutralised."""
     if not text or not _has_url(text):
         return text
     hosts: set[str] | None = None
@@ -310,7 +312,11 @@ async def vet_answer_links(db: AsyncSession, *, tenant_id: uuid.UUID, text: str)
         async with db.begin_nested():
             hosts = await linked_hosts(db, tenant_id=tenant_id) | await connection_hosts(db)
             wanted = _all_candidates(text, hosts)
-            issued = await issued_links(db, tenant_id=tenant_id, urls=wanted) if wanted else set()
+            issued = (
+                await issued_links(db, tenant_id=tenant_id, scope=scope, urls=wanted)
+                if wanted
+                else set()
+            )
         return vet_links(text, connected_hosts=hosts, issued=issued)
     except Exception:
         # Fail closed (spec §7): without the issued set, every link to a

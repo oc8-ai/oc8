@@ -1,14 +1,23 @@
-"""Which record links oc8 issued, per tenant (spec §4.2). Read by the answer
-check (`oc8.records.vetting`), written wherever `enrich` issued links."""
+"""Which record links oc8 issued, and in which conversation (spec §4.2). Read
+by the answer check (`oc8.records.vetting`) and the web UI's verify endpoint,
+written wherever `enrich` issued links.
+
+Every link is stored under a SCOPE (`link_scope`): a link counts as issued only
+for an answer in the same conversation. A tenant-wide registry would be an
+oracle -- a member could have the copilot write a constructed record URL and
+learn from whether it stays a link that some agent, for someone else, touched
+that record."""
 
 from __future__ import annotations
 
 import datetime as dt
 import ipaddress
 import json
+import logging
 import unicodedata
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from typing import Any
 from urllib.parse import unquote, urlsplit
 
 from sqlalchemy import func, select
@@ -18,7 +27,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.db.base import uuid7
 
+logger = logging.getLogger(__name__)
+
 ISSUED_LINK_TTL = dt.timedelta(days=30)
+# A delegation chain is a handful of hops; a longer walk is a cycle or garbage.
+_MAX_TASK_HOPS = 20
 
 
 _DOTS = str.maketrans({"\u3002": ".", "\uff0e": ".", "\uff61": "."})
@@ -93,9 +106,80 @@ def _ipv4(host: str) -> str | None:
     return str(ipaddress.IPv4Address(value))
 
 
-async def remember_links(db: AsyncSession, *, tenant_id: uuid.UUID, urls: Sequence[str]) -> None:
+async def link_scope(
+    db: AsyncSession,
+    *,
+    run: m.AgentRun | None = None,
+    context: Mapping[str, Any] | None = None,
+    task_id: uuid.UUID | None = None,
+) -> str:
+    """The scope a run's issued links are stored and looked up under.
+
+    `chat:<session id>` when the run belongs to a conversation -- delegated
+    runs and the lead's wake runs carry the session id along
+    (`control_tools._delegate`, `executor._maybe_wake_parent`), so the copilot
+    can pass on a delegated agent's links. Otherwise `task:<root task id>`,
+    which a delegation chain shares as well; `run:<run id>` when there is no
+    task either. Never raises: an unreadable task chain stops at the run's
+    own task, which only ever narrows what counts as issued."""
+    run_id: uuid.UUID | None = None
+    try:
+        if run is not None:
+            run_id = run.id
+            context = run.context if context is None else context
+            task_id = task_id or run.task_id
+        session = (context or {}).get("chat_session_id")
+        if session:
+            return f"chat:{_session_key(session)}"
+    except Exception:
+        logger.warning("the run's conversation could not be read", exc_info=True)
+    if task_id is not None:
+        return f"task:{await _root_task(db, task_id)}"
+    # Nothing to tie the links to: a scope of their own, matching no answer.
+    return f"run:{run_id or uuid7()}"
+
+
+def _session_key(session: object) -> str:
+    # The same spelling as `ChatSession.id` in the verify endpoint, however
+    # the context stored it.
+    try:
+        return str(uuid.UUID(str(session)))
+    except ValueError:
+        return str(session)
+
+
+async def _root_task(db: AsyncSession, task_id: uuid.UUID) -> uuid.UUID:
+    """The top of the delegation chain `task_id` belongs to, or `task_id`
+    itself when the chain cannot be followed to its end."""
+    try:
+        async with db.begin_nested():
+            current = task_id
+            for _ in range(_MAX_TASK_HOPS):
+                row = (
+                    await db.execute(select(m.Task.parent_task_id).where(m.Task.id == current))
+                ).one_or_none()
+                if row is None:
+                    break  # a parent that does not exist: the chain is broken
+                if row.parent_task_id is None:
+                    return current
+                current = row.parent_task_id
+    except Exception:
+        logger.warning("the task chain of %s could not be read", task_id, exc_info=True)
+    return task_id
+
+
+async def remember_links(
+    db: AsyncSession, *, tenant_id: uuid.UUID, scope: str, urls: Sequence[str]
+) -> None:
     rows = [
-        {"id": uuid7(), "tenant_id": tenant_id, "url": u, "host": host_of(u), "canon": canonical(u)}
+        {
+            "id": uuid7(),
+            "tenant_id": tenant_id,
+            "scope": scope,
+            "url": u,
+            "host": host_of(u),
+            "canon": canonical(u),
+        }
         for u in dict.fromkeys(urls)
         if host_of(u)
     ]
@@ -104,13 +188,15 @@ async def remember_links(db: AsyncSession, *, tenant_id: uuid.UUID, urls: Sequen
     stmt = insert(m.RecordLink).values(rows)
     await db.execute(
         stmt.on_conflict_do_update(
-            constraint="uq_record_link_tenant_url",
+            constraint="uq_record_link_tenant_scope_url",
             set_={"issued_at": func.now(), "canon": stmt.excluded.canon},
         )
     )
 
 
-async def issued_links(db: AsyncSession, *, tenant_id: uuid.UUID, urls: Iterable[str]) -> set[str]:
+async def issued_links(
+    db: AsyncSession, *, tenant_id: uuid.UUID, scope: str, urls: Iterable[str]
+) -> set[str]:
     wanted = list(dict.fromkeys(urls))
     if not wanted:
         return set()
@@ -118,6 +204,7 @@ async def issued_links(db: AsyncSession, *, tenant_id: uuid.UUID, urls: Iterable
     rows = await db.execute(
         select(m.RecordLink.url).where(
             m.RecordLink.tenant_id == tenant_id,
+            m.RecordLink.scope == scope,
             m.RecordLink.url.in_(wanted),
             m.RecordLink.issued_at >= since,
         )
@@ -126,6 +213,8 @@ async def issued_links(db: AsyncSession, *, tenant_id: uuid.UUID, urls: Iterable
 
 
 async def linked_hosts(db: AsyncSession, *, tenant_id: uuid.UUID) -> set[str]:
+    """Hosts of every issued link in the tenant, whatever its scope: they only
+    decide which links are checked at all, and never leave the server."""
     rows = await db.execute(
         select(m.RecordLink.host).where(m.RecordLink.tenant_id == tenant_id).distinct()
     )
@@ -158,7 +247,7 @@ def canonical(url: str) -> str | None:
 
 
 async def verified_links(
-    db: AsyncSession, *, tenant_id: uuid.UUID, urls: Iterable[str]
+    db: AsyncSession, *, tenant_id: uuid.UUID, scope: str, urls: Iterable[str]
 ) -> set[str]:
     """The given strings that lead exactly where an issued link does.
 
@@ -173,6 +262,7 @@ async def verified_links(
     rows = await db.execute(
         select(m.RecordLink.canon).where(
             m.RecordLink.tenant_id == tenant_id,
+            m.RecordLink.scope == scope,
             m.RecordLink.canon.in_(set(wanted.values())),
             m.RecordLink.issued_at >= since,
         )

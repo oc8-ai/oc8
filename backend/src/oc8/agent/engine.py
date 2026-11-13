@@ -190,6 +190,7 @@ from oc8.records.links import (
     link_for,
     related_links,
 )
+from oc8.records.registry import link_scope
 from oc8.records.vetting import vet_answer_links
 from oc8.runtime.agent_status import settle_agent_status
 from oc8.runtime.run_context import append_tool_call
@@ -716,6 +717,9 @@ async def run_agent(
             delegation_depth=delegation_depth,
             resume_task_id=resume_task_id,
         )
+        # The conversation (else task chain) this run's record links are issued
+        # in and checked against -- the executor computes the same one.
+        links_scope = await link_scope(db, run=run_row, task_id=task.id)
 
         budget = await check_budget(db, tenant_id=tenant_id, department_id=agent.department_id)
         if budget.hard_exceeded:
@@ -1319,6 +1323,7 @@ async def run_agent(
                             finished, held_issued = await enrich_and_remember(
                                 db,
                                 tenant_id=tenant_id,
+                                scope=links_scope,
                                 ctx=await _link_ctx(held_route[0]),
                                 tool_name=held_route[6],
                                 arguments=arguments,
@@ -1934,11 +1939,13 @@ async def run_agent(
                     # The activity log below is written before the executor's
                     # check sees this text, so it is vetted here too (idempotent).
                     raw_output = output_text
-                    output_text = await vet_answer_links(db, tenant_id=tenant_id, text=raw_output)
+                    output_text = await vet_answer_links(
+                        db, tenant_id=tenant_id, scope=links_scope, text=raw_output
+                    )
                     # Cut first, vet after: cutting a vetted text could shorten an
                     # issued URL into a different, unissued one.
                     activity_detail = await vet_answer_links(
-                        db, tenant_id=tenant_id, text=raw_output[:500]
+                        db, tenant_id=tenant_id, scope=links_scope, text=raw_output[:500]
                     )
 
                     task.state = "done"
@@ -2915,6 +2922,7 @@ async def run_agent(
                                 output, issued = await enrich_and_remember(
                                     db,
                                     tenant_id=tenant_id,
+                                    scope=links_scope,
                                     ctx=await _link_ctx(call_key),
                                     tool_name=auth_tc.name,
                                     arguments=tc.arguments,

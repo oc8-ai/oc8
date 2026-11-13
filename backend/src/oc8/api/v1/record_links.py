@@ -72,7 +72,12 @@ async def verify(
     # Only our own reading of a host decides; the client compares it with the
     # host it will open and keeps the link as text where the two disagree.
     connected = {u for u, host in in_answer.items() if host in hosts}
-    issued = await verified_links(db, tenant_id=tenant_id, urls=connected)
+    # Issued in THIS answer's conversation only (spec §4.2): a link given to
+    # another chat says nothing here, or this would tell which records agents
+    # touched for other members.
+    issued = await verified_links(
+        db, tenant_id=tenant_id, scope=f"chat:{msg.session_id}", urls=connected
+    )
     return RecordLinkVerdictsDTO(
         links=[
             RecordLinkVerdictDTO(

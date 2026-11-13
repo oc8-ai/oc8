@@ -94,6 +94,7 @@ from oc8.modelrouter import ToolCall
 from oc8.realtime.emit import note_focus, record_activity
 from oc8.records.approvals import note_approved_result
 from oc8.records.links import enrich_and_remember, link_context, link_for, related_links
+from oc8.records.registry import link_scope
 from oc8.runtime.approval_resume import pre_decided_map
 from oc8.runtime.cancellation import run_stop
 from oc8.runtime.run_context import merge_context
@@ -1208,6 +1209,7 @@ async def _call_tool(
             replay, _issued = await enrich_and_remember(
                 db,
                 tenant_id=run.tenant_id,
+                scope=await link_scope(db, run=run),
                 ctx=replay_ctx,
                 tool_name=tc.name,
                 arguments=tc.arguments,
@@ -1320,6 +1322,7 @@ async def _call_tool(
     output, issued = await enrich_and_remember(
         db,
         tenant_id=run.tenant_id,
+        scope=await link_scope(db, run=run),
         ctx=link_ctx,
         tool_name=tc.name,
         arguments=tc.arguments,

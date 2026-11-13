@@ -78,14 +78,14 @@ async def _answer(
     issued: list[str],
     role: str = "assistant",
 ) -> uuid.UUID:
-    """Alice's chat with one message, and the links oc8 issued for the tenant."""
+    """Alice's chat with one message, and the links oc8 issued in that chat."""
     async with app_session(tenant) as db:
         seat = await copilot_seat(db, tenant, "alice")
         msg = m.ChatMessage(
             tenant_id=tenant, session_id=seat.session_id, role=role, content=content
         )
         db.add(msg)
-        await remember_links(db, tenant_id=tenant, urls=issued)
+        await remember_links(db, tenant_id=tenant, scope=f"chat:{seat.session_id}", urls=issued)
         await db.flush()
         return msg.id
 
@@ -137,7 +137,7 @@ async def test_another_tenants_or_an_expired_link_is_not_issued(
 ) -> None:
     tenant, other = uuid.uuid4(), uuid.uuid4()
     async with app_session(other) as db:
-        await remember_links(db, tenant_id=other, urls=[GUESSED])
+        await remember_links(db, tenant_id=other, scope="chat:x", urls=[GUESSED])
     msg = await _answer(app_session, tenant, f"[a]({ISSUED}) [b]({GUESSED})", issued=[ISSUED])
     async with app_session(tenant) as db:
         await db.execute(
@@ -147,6 +147,20 @@ async def test_another_tenants_or_an_expired_link_is_not_issued(
         )
     got = await _verdicts(tenant, msg, [ISSUED, GUESSED])
     assert got == {ISSUED: (True, False), GUESSED: (True, False)}
+
+
+async def test_a_link_issued_in_another_conversation_is_not_issued(
+    app_session: AppSessionFactory,
+) -> None:
+    """Even quoted in a readable answer: the registry is no oracle for what
+    agents touched in other members' chats or other departments."""
+    tenant = uuid.uuid4()
+    msg = await _answer(app_session, tenant, f"[a]({ISSUED}) [b]({GUESSED})", issued=[ISSUED])
+    async with app_session(tenant) as db:
+        for scope in (f"chat:{uuid.uuid4()}", f"task:{uuid.uuid4()}"):
+            await remember_links(db, tenant_id=tenant, scope=scope, urls=[GUESSED])
+    got = await _verdicts(tenant, msg, [ISSUED, GUESSED])
+    assert got == {ISSUED: (True, True), GUESSED: (True, False)}
 
 
 async def test_a_connections_base_host_is_connected_before_any_link_was_issued(
