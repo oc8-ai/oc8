@@ -111,6 +111,17 @@ class ApprovalRequest(Base, PkMixin, TenantMixin, TimestampMixin):
     #: hire requests, `request_decision`), and for every row written before
     #: this column existed. The absence must never block an approval.
     record_url: Mapped[str | None] = mapped_column(Text)
+    #: Existing records a held CREATE references (e.g. the customer a new
+    #: quotation is for), as `[{"label", "url"}]` resolved once at raise time,
+    #: for the same reason `record_url` is stored: the manifest may change
+    #: later and every channel renders the same row. Empty for any approval
+    #: that references nothing, so it never blocks one.
+    related_links: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
+    #: The record the approved call produced, set once the call has run.
+    #: NULL until then, and for tools that return no record link.
+    result_url: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (
         CheckConstraint(

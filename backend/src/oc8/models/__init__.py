@@ -55,6 +55,7 @@ from oc8.models.ops import (
     TokenUsageRecord,
 )
 from oc8.models.pricing import ModelCostReconciliation, ModelPrice
+from oc8.models.records import RecordLink
 from oc8.models.run import (
     AgentRun,
     Clarification,
@@ -125,6 +126,7 @@ __all__ = [
     "ProviderBudget",
     "PushSubscription",
     "RecordClaim",
+    "RecordLink",
     "Responsibility",
     "Role",
     "RolePermission",
