@@ -205,3 +205,20 @@ def test_a_truncated_issued_url_is_no_longer_issued() -> None:
     cut = f"[S42]({I42})"[:-2]  # ".../odoo/4"
     out = vet_links(cut, connected_hosts=BYPASS_HOSTS, issued={I42})
     assert "h.example/odoo/4" not in out
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "see https://h.example\\odoo\\99 now",
+        "see https://h.example\\@o.org/../odoo/99 now",
+    ],
+)
+def test_backslashes_that_a_browser_reads_as_slashes_are_neutralised(text: str) -> None:
+    out = vet_links(text, connected_hosts=BYPASS_HOSTS, issued={I42})
+    assert out == "see `h.example` now"
+
+
+def test_an_other_host_with_a_backslash_path_is_left_alone() -> None:
+    text = "see https://o.org\\path now"
+    assert vet_links(text, connected_hosts=BYPASS_HOSTS, issued={I42}) == text

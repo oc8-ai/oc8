@@ -29,7 +29,8 @@ def host_of(url: str) -> str:
     are all `h.example`. Pure and never raising: a host that cannot be
     determined is the empty string."""
     try:
-        host = unquote(urlsplit(url).hostname or "")
+        # Browsers read `\` as `/` in http(s) URLs: `h.example\@o.org` is h.example.
+        host = unquote(urlsplit(url.replace("\\", "/")).hostname or "")
         host = unicodedata.normalize("NFKC", host).translate(_DOTS).lower()
         if not host.isascii():
             host = host.encode("idna").decode("ascii")

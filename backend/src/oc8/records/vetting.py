@@ -80,14 +80,17 @@ def _ambiguous_runs(text: str, is_connected: Callable[[str], bool]) -> list[tupl
     spans: list[tuple[int, int, str]] = []
     for run in re.finditer(r"\S+", text):
         raw = run.group(0)
-        decoded = html.unescape(raw.replace("\\", ""))
-        if decoded == raw:
+        # A parser deletes the backslash of an escape (`https\://`); a browser
+        # reads one inside a URL as `/`. Judge both readings.
+        readings = {html.unescape(raw.replace("\\", "")), html.unescape(raw.replace("\\", "/"))}
+        if readings == {raw}:
             continue
-        for found in _URL.finditer(decoded):
-            host = _host(_core(found.group(0)))
-            if not host or is_connected(host):
-                spans.append((run.start(), run.end(), _code(raw)))
-                break
+        if any(
+            not (host := _host(_core(found.group(0)))) or is_connected(host)
+            for decoded in readings
+            for found in _URL.finditer(decoded)
+        ):
+            spans.append((run.start(), run.end(), _code(raw)))
     return spans
 
 
@@ -154,10 +157,13 @@ def _neutralise(text: str, is_connected: Callable[[str], bool], issued: set[str]
     # Merge overlapping spans and rewrite once: a link whose text holds another
     # URL, or two URLs glued together, must not leave either one raw.
     merged: list[tuple[int, int, list[str]]] = []
-    for start, end, repl in sorted(_spans(text, is_connected, issued), key=lambda sp: sp[:2]):
+    for start, end, repl in sorted(
+        _spans(text, is_connected, issued), key=lambda sp: (sp[0], -sp[1])
+    ):
         if merged and start < merged[-1][1]:
             prev = merged[-1]
-            merged[-1] = (prev[0], max(prev[1], end), [*prev[2], repl])
+            if end > prev[1]:  # a span inside another one adds nothing
+                merged[-1] = (prev[0], end, [*prev[2], repl])
         else:
             merged.append((start, end, [repl]))
     out: list[str] = []
