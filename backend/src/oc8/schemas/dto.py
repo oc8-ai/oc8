@@ -97,6 +97,11 @@ class BoardDTO(CamelModel):
     totals: dict[str, int] = {}
 
 
+class RecordLinkDTO(CamelModel):
+    label: str
+    url: str
+
+
 class ApprovalOptionDTO(CamelModel):
     key: str
     label: str
@@ -182,6 +187,12 @@ class ApprovalDTO(CamelModel):
     #: The builder proposal a `copilot.agent_builder` approval decides, so the
     #: pane can show the same preview read-only. None for every other kind.
     proposal_id: str | None = None
+    #: Records the approved call references, e.g. the customer for a new quotation.
+    #: Links to EXISTING records only (resolved at raise time, filtered for safe URLs).
+    related_links: list[RecordLinkDTO] = []
+    #: The record produced by the approved call, set once it runs.
+    #: NULL until the call has run, and for tools that return no link.
+    result_url: str | None = None
 
 
 class QuestionOptionDTO(CamelModel):

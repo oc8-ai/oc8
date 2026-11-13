@@ -33,6 +33,7 @@ from oc8.schemas.dto import (
     ModelDTO,
     QuestionDTO,
     QuestionOptionDTO,
+    RecordLinkDTO,
     SeatDTO,
     SimilarChunkDTO,
     SkillDTO,
@@ -255,6 +256,9 @@ async def resolve_approval_names(
 
 
 def approval_to_dto(a: m.ApprovalRequest, names: ApprovalNames | None = None) -> ApprovalDTO:
+    # Lazy import to avoid cycles: approvals -> records.links -> agent -> approvals
+    from oc8.records.links import safe_url
+
     payload: dict[str, Any] = a.payload or {}
     raw_options = payload.get("options") or []
     resolved = names or _NO_NAMES
@@ -311,6 +315,12 @@ def approval_to_dto(a: m.ApprovalRequest, names: ApprovalNames | None = None) ->
             if a.action_type == "copilot.agent_builder" and payload.get("proposal_id")
             else None
         ),
+        related_links=[
+            RecordLinkDTO(**x)
+            for x in (a.related_links or [])
+            if isinstance(x, dict) and safe_url(x.get("url"))
+        ],
+        result_url=safe_url(a.result_url),
     )
 
 
