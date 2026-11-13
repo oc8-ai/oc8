@@ -14,13 +14,14 @@ from typing import Any, Literal
 
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agents.hire import require_hire_approval
 from oc8.agents.presentation import show_model
 from oc8.agents.publish_hooks import PublishHookFailed
+from oc8.agents.retire import delete_or_archive_agent
 from oc8.agents.versioning import NoChangesToPublish, draft_status, publish_version
 from oc8.auth import Principal
 from oc8.authz import pdp
@@ -682,17 +683,15 @@ async def apply_operation(
         else:
             dept.deleted_at = now
             for agent in live_agents:
-                agent_dependents = (
-                    await db.execute(
-                        select(func.count())
-                        .select_from(m.AgentRun)
-                        .where(m.AgentRun.agent_id == agent.id)
-                    )
-                ).scalar_one()
-                if agent_dependents == 0:
-                    await db.delete(agent)
-                else:
-                    agent.deleted_at = now
+                # The same step `DELETE /departments/{id}` takes for each agent.
+                await delete_or_archive_agent(
+                    db,
+                    agent,
+                    principal=None,
+                    actor_id=actor_member_id,
+                    now=now,
+                    resource_extra={"cascaded_from_department_id": str(dept.id)},
+                )
         await db.flush()
         return None
     if isinstance(operation, DepartmentRestore):
@@ -753,17 +752,8 @@ async def apply_operation(
         agent = await db.get(m.Agent, operation.agentId)
         if agent is None or agent.deleted_at is not None:
             raise InvalidOperation()
-        dependents = (
-            await db.execute(
-                select(func.count())
-                .select_from(m.AgentRun)
-                .where(m.AgentRun.agent_id == operation.agentId)
-            )
-        ).scalar_one()
-        if dependents == 0:
-            await db.delete(agent)
-        else:
-            agent.deleted_at = dt.datetime.now(tz=dt.UTC)
+        # The same step `DELETE /agents/{id}` takes.
+        await delete_or_archive_agent(db, agent, principal=None, actor_id=actor_member_id)
         await db.flush()
         return None
     if isinstance(operation, AgentRestore):

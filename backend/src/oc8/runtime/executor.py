@@ -12,7 +12,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.agents.retire import AGENT_ARCHIVED, AGENT_ARCHIVED_OUTPUT
 from oc8.agents.versioning import resolve_version
 from oc8.connections.acting import (
     NO_ACTING_PERSON,
@@ -32,6 +31,7 @@ from oc8.runtime.agent_status import (
     settle_agent_status,
     take_run_slot,
 )
+from oc8.runtime.cancellation import AGENT_ARCHIVED, AGENT_ARCHIVED_OUTPUT, agent_archived
 from oc8.runtime.intake import publish_run
 from oc8.runtime.person import FOR_PERSON, SEVERAL_PEOPLE, person_behind
 from oc8.runtime.queue import RunMessage
@@ -835,6 +835,9 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                     run,
                     {"cancellation_kind": AGENT_ARCHIVED, "output": AGENT_ARCHIVED_OUTPUT},
                 )
+                # Compare-and-set, as on the cancel drain below: an archived
+                # agent does not stay "running" once its last run is drained.
+                await settle_agent_status(db, agent, "idle")
                 await repo.transition(run, RunState.INTERRUPTED)
                 await record_activity(
                     db,
@@ -1062,9 +1065,10 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
 
             stopped_by_gate = False
             stopped_by_owner_change = False
+            stopped_by_archive = False
 
             async def _cancel_check() -> bool:
-                nonlocal stopped_by_gate, stopped_by_owner_change
+                nonlocal stopped_by_gate, stopped_by_owner_change, stopped_by_archive
                 # Per-step cancel probe (§7.2). Reads the run_cancellation table --
                 # a row this transaction does NOT lock -- so under READ COMMITTED it
                 # sees the cancel endpoint's committed insert at the next step
@@ -1075,6 +1079,11 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 # boundary; when it is what stopped the run, the kind written
                 # below is "tenant_inactive" rather than an operator interrupt.
                 if await _cancellation_kind(db, run_id) is not None:
+                    return True
+                # The agent was deleted while this run was going: retiring it
+                # wrote a cancel row, unless the run started at that very moment.
+                if await agent_archived(db, agent.id):
+                    stopped_by_archive = True
                     return True
                 if not await tenant_may_run(tenant_id):
                     stopped_by_gate = True
@@ -1410,13 +1419,19 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         kind = await _cancellation_kind(db, run_id)
                         if kind is None:
                             recorded = (run.context or {}).get("cancellation_kind")
-                            if stopped_by_gate or recorded == TENANT_INACTIVE_KIND:
+                            if stopped_by_archive or recorded == AGENT_ARCHIVED:
+                                kind = AGENT_ARCHIVED
+                            elif stopped_by_gate or recorded == TENANT_INACTIVE_KIND:
                                 kind = TENANT_INACTIVE_KIND
                             elif stopped_by_owner_change or recorded == OWNERSHIP_CHANGED_KIND:
                                 kind = OWNERSHIP_CHANGED_KIND
                             else:
                                 kind = "operator_interrupted"
                         stop: dict[str, Any] = {"cancellation_kind": kind}
+                        if kind == AGENT_ARCHIVED:
+                            # The engine's interrupted result names the operator;
+                            # this run was stopped because its agent was deleted.
+                            stop["output"] = AGENT_ARCHIVED_OUTPUT
                         if kind == OWNERSHIP_CHANGED_KIND:
                             stop["output"] = OWNERSHIP_CHANGED_OUTPUT
                             await record_activity(

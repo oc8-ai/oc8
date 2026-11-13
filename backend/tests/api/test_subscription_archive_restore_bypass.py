@@ -268,3 +268,62 @@ async def test_restore_allows_a_subscription_agent_with_no_enabled_trigger(
     async with _http() as http:
         resp = await http.post(f"/api/v1/agents/{agent_id}/restore", headers=_headers(tenant))
         assert resp.status_code == 200, resp.text
+
+
+async def test_rebind_is_refused_while_an_archived_agent_still_has_an_enabled_trigger(
+    app_session: AppSessionFactory,
+) -> None:
+    """Step 3's front door, for an archived agent whose trigger is still on --
+    data archived before archiving turned triggers off, or written some other
+    way. The model-side half of the guard still counts it."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        sub = await create_credential(
+            db,
+            tenant_id=tenant,
+            name="My ChatGPT",
+            credential_type="openai_chatgpt_subscription",
+            field_values={"oauth_connection_id": str(uuid.uuid4())},
+        )
+        api_key = await create_credential(
+            db,
+            tenant_id=tenant,
+            name="Work OpenAI",
+            credential_type="openai_api_key",
+            field_values={"api_key": "sk-x"},
+        )
+        mc = m.ModelConfig(
+            tenant_id=tenant, provider="openai_chatgpt", model="gpt-5", credential_id=api_key.id
+        )
+        db.add(mc)
+        await db.flush()
+        agent = m.Agent(
+            tenant_id=tenant,
+            department_id=uuid.uuid4(),
+            name="Legacy archived",
+            model_config_id=mc.id,
+            deleted_at=dt.datetime.now(tz=dt.UTC),
+        )
+        db.add(agent)
+        await db.flush()
+        db.add(
+            m.Trigger(
+                tenant_id=tenant,
+                agent_id=agent.id,
+                kind="cron",
+                task_text="daily",
+                cron_expression="0 * * * *",
+                enabled=True,
+            )
+        )
+        await db.flush()
+        model_id, sub_id = mc.id, sub.id
+
+    async with _http() as http:
+        rebind = await http.patch(
+            f"/api/v1/models/{model_id}",
+            json={"provider": "openai_chatgpt", "model": "gpt-5", "credentialId": str(sub_id)},
+            headers=_headers(tenant),
+        )
+        assert rebind.status_code == 422, rebind.text
+        assert "ChatGPT subscription" in rebind.json()["detail"]

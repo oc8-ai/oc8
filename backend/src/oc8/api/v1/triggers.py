@@ -180,6 +180,14 @@ async def update_agent_trigger(
     trigger = await get_trigger(db, trigger_id=trigger_id)
     if trigger is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "trigger not found")
+    if body.enabled is True:
+        # Like creating one: an archived agent gets no live trigger (the next
+        # fire would only turn it off again). Restoring the agent comes first.
+        agent = await db.get(m.Agent, trigger.agent_id)
+        if agent is None or agent.deleted_at is not None:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "the agent is deleted; restore it before enabling"
+            )
     caller = await _caller_member_id(db, principal)
     owner = trigger.created_by_member_id
     if body.acts_for_creator is True and owner is not None and caller != owner:

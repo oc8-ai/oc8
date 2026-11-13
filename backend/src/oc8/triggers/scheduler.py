@@ -16,8 +16,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.agents.retire import AGENT_ARCHIVED, AGENT_MISSING
+from oc8.agents.retire import AGENT_MISSING
 from oc8.db.session import tenant_session
+from oc8.runtime.cancellation import AGENT_ARCHIVED
 from oc8.runtime.intake import enqueue_run
 from oc8.tenants.activity import TenantInactive, tenant_may_run
 from oc8.triggers.service import compute_next_run

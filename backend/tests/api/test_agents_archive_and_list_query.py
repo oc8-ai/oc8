@@ -136,9 +136,14 @@ async def test_delete_agent_with_runs_disables_its_triggers_and_cancels_its_open
         refreshed = await db.get(m.Trigger, trigger_id)
         assert refreshed is not None
         assert refreshed.enabled is False
-        cancelled = set((await db.execute(select(m.RunCancellation.run_id))).scalars().all())
-        assert open_ids <= cancelled
+        rows = (
+            await db.execute(select(m.RunCancellation.run_id, m.RunCancellation.cancellation_kind))
+        ).all()
+        cancelled = {run_id: kind for run_id, kind in rows}
+        assert open_ids <= cancelled.keys()
         assert done_id not in cancelled
+        # The run history says why, not "cancelled by operator".
+        assert {cancelled[i] for i in open_ids} == {"agent_archived"}
 
 
 async def test_delete_agent_without_runs_deletes_its_triggers(
