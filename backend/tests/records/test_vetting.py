@@ -169,7 +169,7 @@ def test_an_issued_url_followed_by_punctuation_is_kept(text: str) -> None:
         ("[t][r]\n\n[r]: https\\://h.example/99", "[t][r]\n\n[r]: `https\\://h.example/99`"),
         ("[t](https://h\u3002example/odoo/99)", "t"),
         ("[t](https://\uff48.example/odoo/99)", "t"),
-        ("[t](https://h.example\\.)", "`[t](https://h.example\\.)`"),
+        ("[t](https://h.example\\.)", "t"),
     ],
 )
 def test_ambiguous_or_respelled_destinations_are_neutralised(text: str, expected: str) -> None:
@@ -222,3 +222,60 @@ def test_backslashes_that_a_browser_reads_as_slashes_are_neutralised(text: str) 
 def test_an_other_host_with_a_backslash_path_is_left_alone() -> None:
     text = "see https://o.org\\path now"
     assert vet_links(text, connected_hosts=BYPASS_HOSTS, issued={I42}) == text
+
+
+ISSUED_ROUND5 = {I42, PAREN}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"**[S42]({I42})**",
+        f"*[S42]({I42})*",
+        f"_[S42]({I42})_",
+        f"~~[S42]({I42})~~",
+        f"**{I42}**",
+        f"[S42]({I42})**:** x",
+        f"| [S42]({I42})|",
+        f"[S42]({I42}),[S43]({I42})",
+        f"**[P]({PAREN})**",
+    ],
+)
+def test_an_issued_link_inside_markdown_emphasis_or_tables_is_kept(text: str) -> None:
+    assert vet_links(text, connected_hosts=BYPASS_HOSTS, issued=ISSUED_ROUND5) == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"[S\\_42]({I42})",
+        f"[S42]({I42})\\*",
+        f"[S42]({I42})&nbsp;",
+        f"see {I42}\\ now",
+    ],
+)
+def test_an_issued_link_next_to_an_escape_or_entity_is_kept(text: str) -> None:
+    assert vet_links(text, connected_hosts=BYPASS_HOSTS, issued=ISSUED_ROUND5) == text
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (f"**[S99]({G})**", "**S99**"),
+        (f"**{G}**", "**`h.example`**"),
+        (f"[S42]({I42})/../99", "S42/../99"),
+        (f"[S42]({I42})\\..\\99", "S42\\..\\99"),
+        (f"[S42]({I42}x)", "S42"),
+        (f'[S42]({I42}"x)', "S42"),
+        ("[S42](https&#58;//h.example/odoo/42)", "`[S42](https&#58;//h.example/odoo/42)`"),
+    ],
+)
+def test_emphasis_and_escapes_do_not_excuse_a_changed_destination(text: str, expected: str) -> None:
+    assert vet_links(text, connected_hosts=BYPASS_HOSTS, issued=ISSUED_ROUND5) == expected
+
+
+def test_a_backslash_url_longer_run_keeps_only_its_host() -> None:
+    out = vet_links(
+        "see https://h.example\\odoo\\99. now", connected_hosts=BYPASS_HOSTS, issued={I42}
+    )
+    assert out == "see `h.example`. now"

@@ -32,12 +32,20 @@ logger = logging.getLogger(__name__)
 # `www.` inside a URL or word is not a start of its own.
 _START = r"https?://|(?<![A-Za-z0-9./@-])www\."
 _URL = re.compile(rf"(?i)(?:{_START})(?:(?!{_START})[^\s<>\"'`])*")
-_TRAILING = ")]>.,;:!?'\""
+# What may close a bare URL without being part of it: sentence punctuation and
+# the Markdown around it (emphasis, strikethrough, table pipes), as GFM trims it.
+_SENTENCE = ".,;:!?'\">*_~|"
+_TRAILING = f"){_SENTENCE}]\\"
 _LINK_TAIL = re.compile(r"""[>]?(?:\s+(?:"[^"\n]*"|'[^'\n]*'))?\s*\)""")
 _MAX_URL = 2048
-# What may follow an issued URL without being part of it: the sentence's own
-# punctuation, and the brackets of the Markdown around it.
+# What may follow an issued bare URL without being part of it: the sentence's
+# own punctuation, the Markdown around it, and an escape of either.
 _AROUND = set(_TRAILING) | set("[(")
+# After an issued link's closing `)` the rest is the surrounding text -- unless
+# it could carry a plain-text reading of the URL somewhere else.
+_RETARGETS = set("/?#%")
+# A Markdown parser deletes a backslash before ASCII punctuation.
+_ESCAPE = re.compile(r"\\([!-/:-@\[-`{-~])")
 
 
 def _host(url: str) -> str:
@@ -57,10 +65,46 @@ def _candidates(found: str) -> list[str]:
     return [found[:c] for c in sorted(cuts, reverse=True)]
 
 
+def _dot_after_backslash(rest: str) -> bool:
+    # A browser reads `\` as `/`: `42\..\99` is the dot-segment `/../99`.
+    return "\\" in rest and "." in rest
+
+
 def _excused(found: str, issued: set[str]) -> bool:
     """An issued prefix excuses the match only when what follows it is
     punctuation -- `.../42./../99` is not the issued `.../42`."""
-    return any(c in issued and set(found[len(c) :]) <= _AROUND for c in _candidates(found))
+    return any(
+        c in issued and set(rest := found[len(c) :]) <= _AROUND and not _dot_after_backslash(rest)
+        for c in _candidates(found)
+    )
+
+
+def _link_excused(dest: str, rest: str, issued: set[str]) -> bool:
+    """A link destination is excused only as exactly an issued URL; what
+    follows its `)` is the surrounding text, `**`, `,` or a table pipe alike."""
+    return dest in issued and not set(rest) & _RETARGETS and not _dot_after_backslash(rest)
+
+
+def _destination_end(text: str, start: int, angled: bool) -> int:
+    """End of the inline-link destination starting at `start`, read the way
+    CommonMark does: `<...>` up to `>`, otherwise up to whitespace or the
+    unbalanced `)`, backslash escapes skipped."""
+    if angled:
+        close = text.find(">", start)
+        return close if close >= 0 else len(text)
+    depth, i = 0, start
+    while i < len(text) and not text[i].isspace():
+        ch = text[i]
+        if ch == "\\":
+            i += 1
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            if depth == 0:
+                break
+            depth -= 1
+        i += 1
+    return min(i, len(text))
 
 
 def _code(run: str) -> str:
@@ -71,26 +115,46 @@ def _code(run: str) -> str:
     return f"{fence}{pad}{run}{pad}{fence}"
 
 
-def _ambiguous_runs(text: str, is_connected: Callable[[str], bool]) -> list[tuple[int, int, str]]:
+def _readings(run: str) -> set[str]:
+    """How a Markdown parser may read the run: escapes deleted (exactly, and
+    every backslash) and entities decoded."""
+    return {html.unescape(_ESCAPE.sub(r"\1", run)), html.unescape(run.replace("\\", ""))}
+
+
+def _hidden_link(run: str, is_connected: Callable[[str], bool], issued: set[str]) -> bool:
+    """Whether a parser's reading of `run` holds a URL the plain scan would
+    neutralise. Only issued URLs written out verbatim in the run excuse one:
+    the ambiguity must sit outside the URL itself."""
+    verbatim = {c for c in issued if c in run}
+    return any(
+        _judge(reading, mt, is_connected, verbatim) is not None
+        for reading in _readings(run) - {run}
+        for mt in _URL.finditer(reading)
+    )
+
+
+def _ambiguous_runs(
+    text: str,
+    plain: list[tuple[int, int, str]],
+    is_connected: Callable[[str], bool],
+    issued: set[str],
+) -> list[tuple[int, int, str]]:
     """Runs a Markdown parser reads differently from how they are written:
     backslash escapes and entities are decoded inside link destinations, so
-    `https\\://h.example/x` is a link the plain scan cannot see. If the decoded
-    run points at a connected host, or at a host we cannot determine, the
-    whole run is shown as code."""
+    `https\\://h.example/x` is a link the plain scan cannot see. The run is
+    judged after the plain scan's own rewrites; if a reading of what is left
+    still holds a link to a connected (or undeterminable) host that oc8 did
+    not issue, the whole run is shown as code."""
     spans: list[tuple[int, int, str]] = []
     for run in re.finditer(r"\S+", text):
-        raw = run.group(0)
-        # A parser deletes the backslash of an escape (`https\://`); a browser
-        # reads one inside a URL as `/`. Judge both readings.
-        readings = {html.unescape(raw.replace("\\", "")), html.unescape(raw.replace("\\", "/"))}
-        if readings == {raw}:
+        if _readings(run.group(0)) == {run.group(0)}:
             continue
-        if any(
-            not (host := _host(_core(found.group(0)))) or is_connected(host)
-            for decoded in readings
-            for found in _URL.finditer(decoded)
-        ):
-            spans.append((run.start(), run.end(), _code(raw)))
+        inside = [sp for sp in plain if sp[0] < run.end() and sp[1] > run.start()]
+        lo = min([run.start(), *(sp[0] for sp in inside)])
+        hi = max([run.end(), *(sp[1] for sp in inside)])
+        left = _apply(text[lo:hi], [(s - lo, e - lo, r) for s, e, r in inside])
+        if _hidden_link(left, is_connected, issued):
+            spans.append((lo, hi, _code(left)))
     return spans
 
 
@@ -100,7 +164,7 @@ def _core(found: str) -> str:
     while found:
         last = found[-1]
         if (
-            last in ".,;:!?'\">"
+            last in _SENTENCE
             or (last == ")" and found.count(")") > found.count("("))
             or (last == "]" and found.count("]") > found.count("["))
         ):
@@ -123,43 +187,51 @@ def _link_text_start(text: str, close: int) -> int | None:
     return None
 
 
+def _judge(
+    text: str, mt: re.Match[str], is_connected: Callable[[str], bool], issued: set[str]
+) -> tuple[int, int, str] | None:
+    """The rewrite for one URL match, or None when it may stay."""
+    found = mt.group(0)
+    start = mt.start()
+    core = _core(found)
+    host = _host(core)
+    if not host:
+        # A host that cannot be determined is not one we can call safe.
+        return start, start + len(core), _code(core)
+    angled = text[start - 3 : start] == "](<"
+    opener = start - 3 if angled else start - 2 if text[start - 2 : start] == "](" else -1
+    if opener >= 0:
+        dest_end = _destination_end(text, start, angled)
+        tail = _LINK_TAIL.match(text, dest_end)
+        open_at = _link_text_start(text, opener) if tail is not None else None
+        if tail is not None and open_at is not None:
+            # A Markdown inline link: judge its destination up to the link's
+            # own `)`; what follows belongs to the surrounding text.
+            dest = text[start:dest_end]
+            dest_host = _host(dest)
+            suspect = not dest_host or is_connected(dest_host) or is_connected(host)
+            if not suspect or _link_excused(dest, text[dest_end : mt.end()], issued):
+                return None
+            inner = _neutralise(text[open_at + 1 : opener], is_connected, issued)
+            return open_at, tail.end(), inner
+    if not is_connected(host) or _excused(found, issued):
+        return None
+    return start, start + len(core), f"`{host}`"
+
+
 def _spans(
     text: str, is_connected: Callable[[str], bool], issued: set[str]
 ) -> list[tuple[int, int, str]]:
-    spans: list[tuple[int, int, str]] = []
-    for mt in _URL.finditer(text):
-        found = mt.group(0)
-        host = _host(_core(found))
-        start, end = mt.start(), mt.start() + len(_core(found))
-        if not host:
-            # A host that cannot be determined is not one we can call safe.
-            spans.append((start, end, _code(found[: end - start])))
-            continue
-        if not is_connected(host) or _excused(found, issued):
-            continue
-        if text[start - 3 : start] == "](<":
-            opener = start - 3
-        elif text[start - 2 : start] == "](":
-            opener = start - 2
-        else:
-            opener = -1
-        tail = _LINK_TAIL.match(text, end) if opener >= 0 else None
-        open_at = _link_text_start(text, opener) if tail is not None else None
-        if tail is not None and open_at is not None:
-            inner = _neutralise(text[open_at + 1 : opener], is_connected, issued)
-            spans.append((open_at, tail.end(), inner))
-        else:
-            spans.append((start, end, f"`{host}`"))
-    return [*spans, *_ambiguous_runs(text, is_connected)]
+    plain = [sp for mt in _URL.finditer(text) if (sp := _judge(text, mt, is_connected, issued))]
+    # Ambiguous runs first: on equal extents their rewrite is the one kept.
+    return [*_ambiguous_runs(text, plain, is_connected, issued), *plain]
 
 
-def _neutralise(text: str, is_connected: Callable[[str], bool], issued: set[str]) -> str:
+def _apply(text: str, spans: list[tuple[int, int, str]]) -> str:
     # Merge overlapping spans and rewrite once: a link whose text holds another
     # URL, or two URLs glued together, must not leave either one raw.
     merged: list[tuple[int, int, list[str]]] = []
-    for start, end, repl in sorted(
-        _spans(text, is_connected, issued), key=lambda sp: (sp[0], -sp[1])
-    ):
+    for start, end, repl in sorted(spans, key=lambda sp: (sp[0], -sp[1])):
         if merged and start < merged[-1][1]:
             prev = merged[-1]
             if end > prev[1]:  # a span inside another one adds nothing
@@ -173,7 +245,11 @@ def _neutralise(text: str, is_connected: Callable[[str], bool], issued: set[str]
         out.append(" ".join(dict.fromkeys(repls)))
         pos = end
     out.append(text[pos:])
-    result = "".join(out)
+    return "".join(out)
+
+
+def _neutralise(text: str, is_connected: Callable[[str], bool], issued: set[str]) -> str:
+    result = _apply(text, _spans(text, is_connected, issued))
     # CommonMark decodes entities in link destinations, so a scheme hidden as
     # `https&#58;//` is a link the scan above cannot see. If such a URL is in
     # the text, escape every `&` so nothing is decoded any more.
@@ -194,7 +270,7 @@ def vet_links(text: str, *, connected_hosts: set[str], issued: set[str]) -> str:
 
 def _all_candidates(text: str, hosts: set[str]) -> set[str]:
     wanted: set[str] = set()
-    for seen in (text, html.unescape(text)):
+    for seen in (text, *_readings(text)):
         for mt in _URL.finditer(seen):
             if _host(_core(mt.group(0))) in hosts:
                 wanted.update(_candidates(mt.group(0)))
