@@ -22,8 +22,8 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
 
-from oc8.constants import CORE_VERSION
 from oc8.modelrouter.types import NeutralTool
+from oc8.net.outbound import USER_AGENT
 
 if TYPE_CHECKING:
     from typing import TextIO
@@ -83,7 +83,7 @@ def _safe_env(overrides: dict[str, str] | None) -> dict[str, str]:
     # Workspace/config for the demo servers, but never secrets.
     env.update({k: v for k, v in os.environ.items() if k.startswith("OC8_MCP_")})
     env.update(overrides or {})
-    env["OC8_USER_AGENT"] = f"oc8/{CORE_VERSION}"
+    env["OC8_USER_AGENT"] = USER_AGENT
     # Prepended, not overwritten: a plugin (microsoft365, google_workspace)
     # may already need its own PYTHONPATH entry for its bridge package
     # (tool_pack.toml's env.PYTHONPATH) -- both must stay importable.
@@ -414,9 +414,7 @@ class McpSession:
         if self._session is None:
             raise RuntimeError("MCP session not started")
         try:
-            result = await self._session.call_tool(
-                name, arguments, allow_input_required=True
-            )
+            result = await self._session.call_tool(name, arguments, allow_input_required=True)
         except TypeError as exc:
             if "allow_input_required" not in str(exc):
                 raise
