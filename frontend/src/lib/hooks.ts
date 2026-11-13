@@ -2008,10 +2008,11 @@ export function useHandoffs() {
   return useQuery({ queryKey: ["handoffs"], queryFn: () => api.get<HandoffDTO[]>("/handoffs") });
 }
 
-export function useHandoffTypes() {
+export function useHandoffTypes(enabled = true) {
   return useQuery({
     queryKey: ["handoff-types"],
     queryFn: () => api.get<HandoffTypeDTO[]>("/handoff-types"),
+    enabled,
   });
 }
 
@@ -2067,10 +2068,11 @@ export interface BindingDTO {
   targetDepartmentId: string;
 }
 
-export function useContractBindings() {
+export function useContractBindings(enabled = true) {
   return useQuery({
     queryKey: ["contract-bindings"],
     queryFn: () => api.get<BindingDTO[]>("/contract-bindings"),
+    enabled,
   });
 }
 

@@ -10,6 +10,7 @@ import {
   useHandoffTypes,
   type BindingDTO,
 } from "@/lib/hooks";
+import { useMay } from "@/lib/governance-hooks";
 import { useT } from "@/lib/i18n";
 
 /** The contract bindings this department takes part in, as sender or receiver.
@@ -18,8 +19,13 @@ import { useT } from "@/lib/i18n";
  *  handoffs it already created alone. */
 export function ContractBindingsPanel({ departmentId }: { departmentId: string }) {
   const t = useT();
-  const { data: bindings = [] } = useContractBindings();
-  const { data: types = [] } = useHandoffTypes();
+  const may = useMay();
+  // Shown only to people who may read bindings, so nobody else's tab fires a
+  // request that can only 403.
+  const mayView = may("contract:view");
+  const mayManage = may("contract:manage");
+  const { data: bindings = [] } = useContractBindings(mayView);
+  const { data: types = [] } = useHandoffTypes(mayView && may("handoff:view"));
   // Name lookup over the whole tenant, not a paginated list view.
   const { data: departmentsPage } = useDepartments({ pageSize: 200 });
   const remove = useDeleteContractBinding();
@@ -63,6 +69,7 @@ export function ContractBindingsPanel({ departmentId }: { departmentId: string }
     });
   }
 
+  if (!mayView) return null;
   return (
     <Panel className="p-5">
       {ConfirmDialog}
@@ -93,18 +100,20 @@ export function ContractBindingsPanel({ departmentId }: { departmentId: string }
                   {typeName(b.handoffTypeId)}
                 </span>
               )}
-              <button
-                type="button"
-                onClick={() => onRemove(b)}
-                disabled={remove.isPending}
-                aria-label={t(
-                  `Remove binding ${b.eventType}`,
-                  `Vertragsbindung ${b.eventType} entfernen`,
-                )}
-                className="ml-auto rounded-md p-1 text-muted-foreground transition hover:text-destructive disabled:opacity-50"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
+              {mayManage && (
+                <button
+                  type="button"
+                  onClick={() => onRemove(b)}
+                  disabled={remove.isPending}
+                  aria-label={t(
+                    `Remove binding ${b.eventType}`,
+                    `Vertragsbindung ${b.eventType} entfernen`,
+                  )}
+                  className="ml-auto rounded-md p-1 text-muted-foreground transition hover:text-destructive disabled:opacity-50"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              )}
             </li>
           ))}
         </ul>

@@ -38,17 +38,27 @@ function connection(patch: Partial<McpConnection> = {}): McpConnection {
   } as McpConnection;
 }
 
+function grant(callerPermissions: string[]) {
+  getMock.mockImplementation((url: string) =>
+    Promise.resolve(
+      url.startsWith("/governance")
+        ? { callerPermissions }
+        : {
+            items: [
+              { id: "d-support", name: "Support" },
+              { id: "d-sales", name: "Sales" },
+            ],
+            totalCount: 2,
+          },
+    ),
+  );
+}
+
 describe("McpConnectionBody department", () => {
   beforeEach(() => {
     getMock.mockReset();
     patchMock.mockReset();
-    getMock.mockResolvedValue({
-      items: [
-        { id: "d-support", name: "Support" },
-        { id: "d-sales", name: "Sales" },
-      ],
-      totalCount: 2,
-    });
+    grant(["integration:manage"]);
     patchMock.mockResolvedValue(connection({ departmentId: "d-sales", needsDepartment: false }));
   });
 
@@ -75,6 +85,14 @@ describe("McpConnectionBody department", () => {
       { wrapper },
     );
     expect(screen.queryByText(/in no department/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Department")).not.toBeInTheDocument();
+  });
+
+  it("tells someone who may not manage integrations, without offering the picker", async () => {
+    grant([]);
+    render(<McpConnectionBody connection={connection()} />, { wrapper });
+    expect(screen.getByText(/in no department/i)).toBeInTheDocument();
+    await waitFor(() => expect(getMock).toHaveBeenCalledWith("/governance"));
     expect(screen.queryByLabelText("Department")).not.toBeInTheDocument();
   });
 });

@@ -45,10 +45,20 @@ const departments = {
   pageSize: 200,
 };
 
-function routeGet(routes: Record<string, unknown>) {
+const ALL = [
+  "contract:view",
+  "contract:manage",
+  "handoff:view",
+  "handoff:manage",
+  "flow:view",
+  "flow:manage",
+];
+
+function routeGet(routes: Record<string, unknown>, callerPermissions: string[] = ALL) {
+  const all: Record<string, unknown> = { "/governance": { callerPermissions }, ...routes };
   apiGet.mockImplementation((url: string) => {
-    const key = Object.keys(routes).find((k) => url.startsWith(k));
-    return Promise.resolve(key ? routes[key] : []);
+    const key = Object.keys(all).find((k) => url.startsWith(k));
+    return Promise.resolve(key ? all[key] : []);
   });
 }
 
@@ -203,6 +213,74 @@ describe("FlowsPage", () => {
 
     fireEvent.click(await screen.findByText("onboarding"));
     fireEvent.click(await screen.findByText("Acme"));
+    expect(screen.queryByRole("button", { name: /cancel run/i })).not.toBeInTheDocument();
+  });
+});
+
+describe("without the manage permission", () => {
+  const binding = {
+    id: "b1",
+    eventType: "sales.deal.won",
+    handoffTypeId: "ht1",
+    sourceDepartmentId: "d-sales",
+    targetDepartmentId: "d-eng",
+  };
+
+  it("lists bindings without a remove button", async () => {
+    routeGet({ "/contract-bindings": [binding], "/departments": departments }, ["contract:view"]);
+    renderWithClient(<ContractBindingsPanel departmentId="d-sales" />);
+    expect(await screen.findByText("sales.deal.won")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /remove binding/i })).not.toBeInTheDocument();
+  });
+
+  it("shows no bindings panel and asks for none without contract:view", async () => {
+    routeGet({ "/contract-bindings": [binding], "/departments": departments }, []);
+    const { container } = renderWithClient(<ContractBindingsPanel departmentId="d-sales" />);
+    await waitFor(() => expect(apiGet).toHaveBeenCalledWith("/governance"));
+    expect(container).toBeEmptyDOMElement();
+    expect(apiGet).not.toHaveBeenCalledWith("/contract-bindings");
+  });
+
+  it("lists handoff types without a delete button", async () => {
+    routeGet(
+      { "/handoff-types": [{ id: "ht1", name: "project.kickoff", classification: "internal" }] },
+      ["handoff:view"],
+    );
+    renderWithClient(<HandoffTypesPanel />);
+    expect(await screen.findByText("project.kickoff")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /delete project/i })).not.toBeInTheDocument();
+  });
+
+  it("offers neither archive nor cancel on the flows page", async () => {
+    routeGet(
+      {
+        "/flows": [
+          {
+            id: "f1",
+            name: "onboarding",
+            semver: "1.0.0",
+            spec: { trigger: { from_department_id: "d-sales" }, stages: [] },
+            runCount: 1,
+          },
+        ],
+        "/flow-runs": [
+          {
+            id: "r1",
+            flowVersionId: "v1",
+            flowId: "f1",
+            status: "running",
+            currentStages: [],
+            context: { customer: "Acme" },
+          },
+        ],
+        "/departments": departments,
+      },
+      ["flow:view"],
+    );
+    renderWithClient(<FlowsPage />);
+    fireEvent.click(await screen.findByText("onboarding"));
+    fireEvent.click(await screen.findByText("Acme"));
+    expect(screen.queryByRole("button", { name: /^archive$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /cancel run/i })).not.toBeInTheDocument();
   });
 });

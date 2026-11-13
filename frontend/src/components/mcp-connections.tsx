@@ -17,6 +17,7 @@ import {
   useUpdateMcpConnection,
   type McpConnection,
 } from "@/lib/hooks";
+import { useMay } from "@/lib/governance-hooks";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -241,6 +242,20 @@ function AssignDepartment({ connection }: { connection: McpConnection }) {
   const { data: departmentsPage } = useDepartments({ pageSize: 200 });
   const departments = departmentsPage?.items ?? [];
   const update = useUpdateMcpConnection(connection.id);
+  // Moving a connection is PATCH /mcp/connections/{id}: integration:manage.
+  const mayManage = useMay()("integration:manage");
+  if (!mayManage) {
+    return (
+      <div className="mt-3 rounded-md border border-[color:var(--status-warning)]/40 bg-background/30 p-2.5">
+        <p className="text-[11px] text-muted-foreground">
+          {t(
+            "This connection is in no department, so no agent gets its tools yet. Someone who manages integrations can choose the department.",
+            "Diese Verbindung ist in keiner Abteilung, deshalb bekommt noch kein Agent ihre Tools. Jemand, der Integrationen verwaltet, kann die Abteilung wählen.",
+          )}
+        </p>
+      </div>
+    );
+  }
   return (
     <div className="mt-3 rounded-md border border-[color:var(--status-warning)]/40 bg-background/30 p-2.5">
       <p className="text-[11px] text-muted-foreground">
