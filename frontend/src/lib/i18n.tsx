@@ -55,6 +55,18 @@ const Ctx = createContext<LangCtx>({
   catalogs: {},
 });
 
+/** Built-in en/de plus each reported locale that carries at least one string
+ *  (the server already omits empty ones; this keeps the picker honest against
+ *  an older backend). Deduped by code, reported entries win. */
+export function mergeLocales(reported: CoreI18nResponse["locales"]): LocaleInfo[] {
+  const byCode = new Map(BUILTIN_LOCALES.map((l) => [l.code, l]));
+  for (const l of reported) {
+    if (Object.keys(l.translations ?? {}).length === 0) continue;
+    byCode.set(l.locale, { code: l.locale, nativeName: l.nativeName || l.locale, flag: l.flag });
+  }
+  return [...byCode.values()];
+}
+
 export function LanguageProvider({ children }: { children: ReactNode }) {
   const [lang, setLangState] = useState<Lang>("en");
   const [locales, setLocales] = useState<LocaleInfo[]>(BUILTIN_LOCALES);
@@ -68,15 +80,7 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
     fetch(`${CORE_I18N_URL}/i18n/core`)
       .then((r) => r.json() as Promise<CoreI18nResponse>)
       .then((data) => {
-        const byCode = new Map(BUILTIN_LOCALES.map((l) => [l.code, l]));
-        for (const l of data.locales) {
-          byCode.set(l.locale, {
-            code: l.locale,
-            nativeName: l.nativeName || l.locale,
-            flag: l.flag,
-          });
-        }
-        setLocales([...byCode.values()]);
+        setLocales(mergeLocales(data.locales));
         setCatalogs(Object.fromEntries(data.locales.map((l) => [l.locale, l.translations])));
       })
       .catch(() => {

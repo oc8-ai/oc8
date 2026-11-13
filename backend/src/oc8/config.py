@@ -57,6 +57,11 @@ class Settings(BaseSettings):
     # resolved against the working directory, mounted read-only so dropping
     # in a new file needs no image rebuild, just a backend restart.
     core_i18n_path: str = "i18n"
+    # Serve `#, fuzzy` ("needs editing", e.g. unreviewed machine drafts) entries
+    # that carry a msgstr, like any reviewed one. Off by default: only reviewed
+    # strings are served, and a language with none is not offered at all.
+    # Empty msgstr entries are never served. Env: OC8_I18N_SERVE_DRAFTS.
+    i18n_serve_drafts: bool = False
 
     # Max tool-using steps one agent run may take before it stops (§8.3). The
     # framework default; an operator may override it per agent, in either
