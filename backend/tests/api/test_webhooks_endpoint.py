@@ -6,6 +6,7 @@ Trigger its token names."""
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 
 import pytest
@@ -120,6 +121,38 @@ async def test_disabled_webhook_trigger_is_404(app_session: AppSessionFactory) -
 
             r = await c.post(f"/api/v1/webhooks/{token}", json={"anything": "goes"})
             assert r.status_code == 404, r.text
+
+
+async def test_webhook_of_an_archived_agent_is_404_and_turns_the_trigger_off(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """A webhook still enabled from before archiving stopped an agent's
+    triggers answers like an unknown one, creates no run, and is disabled."""
+    tenant = uuid.uuid4()
+    agent_id, token, _ = await _webhook_trigger(app_session, tenant)
+    async with app_session(tenant) as s:
+        agent = await s.get(m.Agent, agent_id)
+        assert agent is not None
+        agent.deleted_at = dt.datetime.now(tz=dt.UTC)
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post(f"/api/v1/webhooks/{token}", json={"anything": "goes"})
+            assert r.status_code == 404, r.text
+
+    async with app_session(tenant) as s:
+        runs = (
+            (await s.execute(select(m.AgentRun).where(m.AgentRun.agent_id == agent_id)))
+            .scalars()
+            .all()
+        )
+        assert runs == []
+        trigger = (
+            await s.execute(select(m.Trigger).where(m.Trigger.agent_id == agent_id))
+        ).scalar_one()
+        assert trigger.enabled is False
+        assert trigger.last_skip_reason == "agent_archived"
 
 
 async def test_non_json_body_does_not_crash_the_endpoint(

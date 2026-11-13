@@ -4,7 +4,13 @@ import httpx
 
 from oc8.knowledge.connectors.base import ConnectorError
 from oc8.net import outbound
-from oc8.net.outbound import OutboundBlocked, PinnedTransport, guard_outbound_url, is_blocked_ip
+from oc8.net.outbound import (
+    USER_AGENT,
+    OutboundBlocked,
+    PinnedTransport,
+    guard_outbound_url,
+    is_blocked_ip,
+)
 
 _is_blocked_ip = is_blocked_ip
 
@@ -56,6 +62,7 @@ async def _fetch_bytes(
         async with httpx.AsyncClient(
             follow_redirects=False,
             timeout=timeout,
+            headers={"User-Agent": USER_AGENT},
             transport=PinnedTransport(ip) if ip else None,
         ) as client:
             async with client.stream("GET", current) as resp:
@@ -109,6 +116,7 @@ async def _fetch_text(
         async with httpx.AsyncClient(
             follow_redirects=False,
             timeout=timeout,
+            headers={"User-Agent": USER_AGENT},
             transport=PinnedTransport(ip) if ip else None,
         ) as client:
             async with client.stream("GET", current) as resp:

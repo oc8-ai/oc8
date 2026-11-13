@@ -276,3 +276,30 @@ async def test_website_sync_skips_a_page_that_fails_to_fetch(
         "https://www.example.test/",
         "https://www.example.test/ok",
     ]
+
+
+async def test_fetches_send_the_oc8_user_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    # httpx's default "python-httpx/x" UA is what bot protection blocks; both
+    # fetch paths must announce oc8 and its release version instead.
+    import oc8
+    import oc8.knowledge.connectors.fetcher as f
+
+    monkeypatch.setattr(f, "_guard", lambda url: None)
+    seen: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("user-agent"))
+        return httpx.Response(200, content=b"ok", headers={"content-type": "text/plain"})
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def client_factory(*args: object, **kwargs: object) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(httpx, "AsyncClient", client_factory)
+
+    await f.safe_fetch("http://example.com/page")
+    await f.safe_fetch_bytes("http://example.com/archive")
+    assert seen == [f"oc8/{oc8.__version__}"] * 2

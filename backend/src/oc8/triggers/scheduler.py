@@ -16,7 +16,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.agents.retire import AGENT_MISSING
 from oc8.db.session import tenant_session
+from oc8.runtime.cancellation import AGENT_ARCHIVED
 from oc8.runtime.intake import enqueue_run
 from oc8.tenants.activity import TenantInactive, tenant_may_run
 from oc8.triggers.service import compute_next_run
@@ -75,7 +77,7 @@ async def fire_trigger(
     tenant_id: uuid.UUID,
     idempotency_key: str | None = None,
     payload: dict[str, Any] | None = None,
-) -> None:
+) -> bool:
     """Enqueue an AgentRun for `trigger` -- the same durable intake path
     POST /agents/{id}/run uses. Records last_run_at for any kind, and
     (cron-kind only) recomputes next_run_at.
@@ -95,7 +97,20 @@ async def fire_trigger(
 
     `trigger_id` lets a tool in the user's context act through the trigger
     creator's account.
+
+    Returns False, without enqueueing, when the trigger's agent is archived or
+    no longer exists: the trigger is disabled instead, so it stops coming due.
+    Deleting an agent retires its triggers (`oc8.agents.retire`); this catches
+    the ones left behind before it did, and anything that got past it.
     """
+    agent = await db.get(m.Agent, trigger.agent_id)
+    if agent is None or agent.deleted_at is not None:
+        trigger.enabled = False
+        trigger.last_skip_reason = AGENT_MISSING if agent is None else AGENT_ARCHIVED
+        logger.info(
+            "trigger %s disabled instead of fired: %s", trigger.id, trigger.last_skip_reason
+        )
+        return False
     now = datetime.now(tz=UTC)
     trigger.last_run_at = now
     if trigger.kind == "cron" and trigger.cron_expression is not None:
@@ -116,6 +131,7 @@ async def fire_trigger(
         # past that point would drop it.
         fold_running=trigger.kind == "cron",
     )
+    return True
 
 
 async def run_scheduler_tick() -> int:
@@ -190,8 +206,8 @@ async def run_scheduler_tick() -> int:
                         # session; without one there is nothing to fire into.
                         trigger.enabled = False
                         continue
-                    else:
-                        await fire_trigger(db, trigger, tenant_id=tenant_id)
+                    elif not await fire_trigger(db, trigger, tenant_id=tenant_id):
+                        continue  # its agent is gone; fire_trigger disabled it
                     fired += 1
             except TenantInactive:
                 # The organisation stopped being allowed to run after the

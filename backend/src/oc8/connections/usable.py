@@ -4,7 +4,10 @@ One rule for every place that asks, so the agent builder, its ideas and the
 runtime cannot drift apart:
 
 - legacy: the department's frame enables the system and a connected
-  McpConnection of that name exists, tenant-wide or in the department;
+  McpConnection of that name is bound to the department
+  (`department_connections`, the very query the MCP gateway hands a run). A
+  connected one bound to no department reaches no run until it is given one
+  (`needs_department`), so it is reported as missing, with that reason;
 - integration: the plugin is an enabled integration, the department's frame
   does not switch its tool off, and an agent without an access row can act
   through it (`organisation_access_ready`) -- exactly what
@@ -20,13 +23,22 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.authz.pdp import ToolPolicy
 from oc8.connections.access import single_organisation_credential
-from oc8.connections.integrations import Integration, installed_integrations
+from oc8.connections.integrations import (
+    Integration,
+    installed_integrations,
+    integration_for_connection,
+)
+
+#: Why a connected system in no department is not usable (for the Copilot).
+NO_DEPARTMENT = (
+    "connected, but in no department -- assign it to a department on its connection under /capas"
+)
 
 
 @dataclass(frozen=True)
@@ -38,6 +50,30 @@ class DepartmentSystem:
     usable: bool
     #: Why it is not usable (English, for the Copilot); None when it is.
     missing: str | None = None
+
+
+def department_connections(department_id: uuid.UUID) -> Select[tuple[m.McpConnection]]:
+    """The connected systems bound to one department, oldest first: what the
+    MCP gateway hands every run of an agent in it (integrations aside)."""
+    return (
+        select(m.McpConnection)
+        .where(
+            m.McpConnection.department_id == department_id,
+            m.McpConnection.connected.is_(True),
+        )
+        .order_by(m.McpConnection.created_at)
+    )
+
+
+def needs_department(conn: m.McpConnection) -> bool:
+    """A connection no run reaches until it is bound to a department: not an
+    organisation login (pinned to agents one by one) and not an integration
+    (`runtime_env.integration_connections` hands those out unbound)."""
+    return (
+        conn.department_id is None
+        and conn.credential_id is None
+        and integration_for_connection(conn) is None
+    )
 
 
 async def organisation_access_ready(db: AsyncSession, integration: Integration) -> bool:
@@ -94,6 +130,11 @@ async def _why_not(db: AsyncSession, integration: Integration) -> str:
     return "installed, no organisation login yet -- connect it on /connections"
 
 
+def _plugin(conn: m.McpConnection) -> str | None:
+    cfg = conn.config if isinstance(conn.config, dict) else {}
+    return str(cfg.get("_plugin_name") or "") or None
+
+
 async def department_systems(
     db: AsyncSession, *, tenant_id: uuid.UUID, department: m.Department
 ) -> list[DepartmentSystem]:
@@ -102,24 +143,23 @@ async def department_systems(
     with a tenant-bound session (installed integrations are read under RLS)."""
     frame = department.frame
     out: dict[str, DepartmentSystem] = {}
-    rows = (
+    for conn in (await db.execute(department_connections(department.id))).scalars():
+        if frame_enables(frame, conn.name):
+            out.setdefault(conn.name, DepartmentSystem(conn.name, _plugin(conn), usable=True))
+    unbound = (
         await db.execute(
-            select(
-                m.McpConnection.name,
-                m.McpConnection.config["_plugin_name"].as_string(),
-            ).where(
+            select(m.McpConnection).where(
                 m.McpConnection.tenant_id == tenant_id,
                 m.McpConnection.connected.is_(True),
-                or_(
-                    m.McpConnection.department_id.is_(None),
-                    m.McpConnection.department_id == department.id,
-                ),
+                m.McpConnection.department_id.is_(None),
             )
         )
-    ).all()
-    for name, plugin in rows:
-        if frame_enables(frame, name):
-            out.setdefault(name, DepartmentSystem(name, plugin or None, usable=True))
+    ).scalars()
+    for conn in unbound:
+        if conn.name not in out and frame_enables(frame, conn.name) and needs_department(conn):
+            out[conn.name] = DepartmentSystem(
+                conn.name, _plugin(conn), usable=False, missing=NO_DEPARTMENT
+            )
     for installed in await installed_integrations(db):
         integration = installed.integration
         key = integration.tool_key

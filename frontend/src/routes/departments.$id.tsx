@@ -31,6 +31,7 @@ import {
   describeGuardrailSaveError,
 } from "@/components/tool-guardrail-table";
 import { StatCard } from "@/components/stat-card";
+import { ContractBindingsPanel } from "@/components/contract-bindings-panel";
 import { initialDepartmentTab, type DepartmentTab } from "@/lib/department-tabs";
 import { contractsFor, type IntakeContract } from "@/lib/collaboration";
 import { formatMs } from "@/lib/format";
@@ -1476,6 +1477,8 @@ function CollaborationTab({ deptId }: { deptId: string }) {
           </table>
         </div>
       </Panel>
+
+      <ContractBindingsPanel departmentId={deptId} />
 
       {currentSchema && (
         <div

@@ -39,11 +39,12 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import ConfigDict, Field, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.agents.publish_hooks import PublishHookFailed
 from oc8.agents.repo import visible_agents
+from oc8.agents.retire import delete_or_archive_agent
 from oc8.agents.versioning import NoChangesToPublish, draft_status, publish_version
 from oc8.api.deps import CurrentPrincipal, DbSession, require_departmental, require_permission
 from oc8.api.v1._serializers import agent_to_dto, department_to_dto, task_to_dto
@@ -412,9 +413,10 @@ async def delete_department(
     makes for one agent on its own (by its own run history, not blanket
     archival), so an agent with no runs is actually removed and one with
     history is archived, same as calling that endpoint on it directly would
-    do. This is the ONLY writer that cascades into `agent` from a department
-    mutation -- `set_department_tools`'s own cascade (its docstring) only
-    ever touches `agent.narrowing`, never `deleted_at`."""
+    do, and each is retired the same way (`oc8.agents.retire`). This is the
+    ONLY writer that cascades into `agent` from a department mutation --
+    `set_department_tools`'s own cascade (its docstring) only ever touches
+    `agent.narrowing`, never `deleted_at`."""
     dept = await _get_department(db, dept_id)
     live_agents = (
         (
@@ -435,19 +437,15 @@ async def delete_department(
         dept.deleted_at = now
         outcome = "archived"
         for agent in live_agents:
-            agent_dependents = (
-                await db.execute(
-                    select(func.count())
-                    .select_from(m.AgentRun)
-                    .where(m.AgentRun.agent_id == agent.id)
-                )
-            ).scalar_one()
-            if agent_dependents == 0:
-                await db.delete(agent)
-                agent_outcome = "deleted"
-            else:
-                agent.deleted_at = now
-                agent_outcome = "archived"
+            agent_id = agent.id
+            # The same delete-or-archive-and-retire step `delete_agent` takes.
+            agent_outcome = await delete_or_archive_agent(
+                db,
+                agent,
+                principal=principal,
+                now=now,
+                resource_extra={"cascaded_from_department_id": str(dept_id)},
+            )
             await append_event(
                 db,
                 tenant_id=principal.tenant_id,
@@ -456,7 +454,7 @@ async def delete_department(
                 category="admin",
                 action=f"agent.{agent_outcome}",
                 resource={
-                    "agent_id": str(agent.id),
+                    "agent_id": str(agent_id),
                     "by": principal.subject,
                     "cascaded_from_department_id": str(dept_id),
                 },

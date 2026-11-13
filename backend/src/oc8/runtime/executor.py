@@ -31,6 +31,7 @@ from oc8.runtime.agent_status import (
     settle_agent_status,
     take_run_slot,
 )
+from oc8.runtime.cancellation import AGENT_ARCHIVED, AGENT_ARCHIVED_OUTPUT, agent_archived
 from oc8.runtime.intake import publish_run
 from oc8.runtime.person import FOR_PERSON, SEVERAL_PEOPLE, person_behind
 from oc8.runtime.queue import RunMessage
@@ -824,6 +825,31 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             # is a compare-and-set against it (`oc8.runtime.agent_status`).
             remember_claimed_status(db, agent)
 
+            if agent.deleted_at is not None:
+                # An archived agent does no more work. Deleting it cancels its
+                # open runs (`oc8.agents.retire`), but a run can still be queued
+                # for it afterwards -- a delegation, a handoff, a channel, a
+                # trigger from before -- and every one of them passes through here.
+                await merge_context(
+                    db,
+                    run,
+                    {"cancellation_kind": AGENT_ARCHIVED, "output": AGENT_ARCHIVED_OUTPUT},
+                )
+                # Compare-and-set, as on the cancel drain below: an archived
+                # agent does not stay "running" once its last run is drained.
+                await settle_agent_status(db, agent, "idle")
+                await repo.transition(run, RunState.INTERRUPTED)
+                await record_activity(
+                    db,
+                    tenant_id=tenant_id,
+                    agent_id=agent.id,
+                    status="error",
+                    message=f"{agent.name}: {AGENT_ARCHIVED_OUTPUT}",
+                )
+                logger.info("run %s interrupted before start (agent archived)", run_id)
+                record_run_outcome(RunState.INTERRUPTED.value)
+                return
+
             if agent.status == "pending_approval":
                 # Hire gate (§5.5 A4): a pending agent must not run via ANY enqueue
                 # path (delegation, cron/triggers, HTTP). The executor is the single
@@ -1039,9 +1065,10 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
 
             stopped_by_gate = False
             stopped_by_owner_change = False
+            stopped_by_archive = False
 
             async def _cancel_check() -> bool:
-                nonlocal stopped_by_gate, stopped_by_owner_change
+                nonlocal stopped_by_gate, stopped_by_owner_change, stopped_by_archive
                 # Per-step cancel probe (§7.2). Reads the run_cancellation table --
                 # a row this transaction does NOT lock -- so under READ COMMITTED it
                 # sees the cancel endpoint's committed insert at the next step
@@ -1052,6 +1079,11 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 # boundary; when it is what stopped the run, the kind written
                 # below is "tenant_inactive" rather than an operator interrupt.
                 if await _cancellation_kind(db, run_id) is not None:
+                    return True
+                # The agent was deleted while this run was going: retiring it
+                # wrote a cancel row, unless the run started at that very moment.
+                if await agent_archived(db, agent.id):
+                    stopped_by_archive = True
                     return True
                 if not await tenant_may_run(tenant_id):
                     stopped_by_gate = True
@@ -1387,13 +1419,19 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         kind = await _cancellation_kind(db, run_id)
                         if kind is None:
                             recorded = (run.context or {}).get("cancellation_kind")
-                            if stopped_by_gate or recorded == TENANT_INACTIVE_KIND:
+                            if stopped_by_archive or recorded == AGENT_ARCHIVED:
+                                kind = AGENT_ARCHIVED
+                            elif stopped_by_gate or recorded == TENANT_INACTIVE_KIND:
                                 kind = TENANT_INACTIVE_KIND
                             elif stopped_by_owner_change or recorded == OWNERSHIP_CHANGED_KIND:
                                 kind = OWNERSHIP_CHANGED_KIND
                             else:
                                 kind = "operator_interrupted"
                         stop: dict[str, Any] = {"cancellation_kind": kind}
+                        if kind == AGENT_ARCHIVED:
+                            # The engine's interrupted result names the operator;
+                            # this run was stopped because its agent was deleted.
+                            stop["output"] = AGENT_ARCHIVED_OUTPUT
                         if kind == OWNERSHIP_CHANGED_KIND:
                             stop["output"] = OWNERSHIP_CHANGED_OUTPUT
                             await record_activity(

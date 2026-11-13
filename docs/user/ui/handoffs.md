@@ -29,6 +29,9 @@ If you use [Flows](flows.md), each stage often **is** a handoff under the hood.
 2. Open a handoff detail.
 3. **Accept**, **Reject**, or complete as your role allows.
 4. If gated for a person, the decision may also appear in [My work](my-work.md).
+5. Under **Handoff types**, delete a type nothing uses. A type that handoffs
+   were made with, or that a contract binding or a live flow still names, is
+   kept, and the message says which.
 
 ## Where work goes next
 

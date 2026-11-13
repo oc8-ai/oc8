@@ -6,6 +6,7 @@ token, `/me/...` for a person's own -- see `_user.py`.
 
 from __future__ import annotations
 
+import datetime as dt
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -15,18 +16,55 @@ from .. import graph
 from .._user import USER_ID_PROPERTY, user_base
 
 _TIMEZONE = "UTC"
+_RANGE_PAGE_SIZE = 50
+#: How far a range reaches when only one of its bounds is given.
+_DEFAULT_SPAN = dt.timedelta(days=7)
+
+
+def _parse(name: str, value: str) -> dt.datetime:
+    try:
+        return dt.datetime.fromisoformat(value)
+    except ValueError:
+        raise ValueError(f"{name} must be an ISO 8601 date-time, got {value!r}") from None
+
+
+def _complete_range(start: str, end: str) -> tuple[str, str]:
+    """Fill the missing bound of a half-given range, so a range is never
+    silently dropped. Only a start: the week after it. Only an end: from now,
+    or the week before it when it already lies in the past. A bound without an
+    offset is read as UTC, the zone every event is written in here."""
+    if start and end:
+        return start, end
+    if start:
+        return start, (_parse("start", start) + _DEFAULT_SPAN).isoformat()
+    until = _parse("end", end)
+    now = dt.datetime.now(tz=dt.UTC).replace(microsecond=0)
+    if until.tzinfo is None:
+        now = now.replace(tzinfo=None)
+    since = now if until > now else until - _DEFAULT_SPAN
+    return since.isoformat(), end
 
 
 async def calendar_list_events(args: dict[str, Any]) -> Any:
     base = user_base(args)
-    result = await graph.get(
-        f"{base}/events",
-        params={
-            "$orderby": "start/dateTime",
-            "startDateTime": args.get("start", ""),
-            "endDateTime": args.get("end", ""),
-        },
-    )
+    start = str(args.get("start") or "").strip()
+    end = str(args.get("end") or "").strip()
+    if start or end:
+        start, end = _complete_range(start, end)
+        # Only `/calendarView` honours a date range (and expands recurring
+        # events into their occurrences); `/events` ignores startDateTime and
+        # endDateTime and returns its first page regardless.
+        result = await graph.get(
+            f"{base}/calendarView",
+            params={
+                "startDateTime": start,
+                "endDateTime": end,
+                "$orderby": "start/dateTime",
+                "$top": _RANGE_PAGE_SIZE,
+            },
+        )
+    else:
+        result = await graph.get(f"{base}/events", params={"$orderby": "start/dateTime"})
     return result.get("value", [])
 
 
@@ -105,7 +143,13 @@ _CALENDAR = (
 TOOLS: list[Tool] = [
     Tool(
         name="calendar_list_events",
-        description="List events in a date range." + _CALENDAR,
+        description=(
+            "List events. Pass `start` and `end` (ISO 8601) to get the events in "
+            "that range. Only `start` reads the 7 days after it; only `end` reads "
+            "from now until then (or the 7 days before it, if it has passed). "
+            "Without either, the calendar's first events are returned."
+        )
+        + _CALENDAR,
         inputSchema={
             "type": "object",
             "properties": {

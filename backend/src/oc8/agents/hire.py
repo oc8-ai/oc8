@@ -47,9 +47,7 @@ async def create_hire_request(db: AsyncSession, *, agent: m.Agent) -> m.Approval
             "department_id": str(agent.department_id),
             "mission": agent.mission,
             "is_team_lead": agent.is_team_lead,
-            "model_config_id": (
-                str(agent.model_config_id) if agent.model_config_id else None
-            ),
+            "model_config_id": (str(agent.model_config_id) if agent.model_config_id else None),
         },
         title=f"Hire agent: {agent.name}",
         detail=(
@@ -75,4 +73,9 @@ async def resolve_hire_agent(
     else:  # reject
         agent.status = "stopped"
         agent.deleted_at = dt.datetime.now(tz=dt.UTC)
+        # Archived like any deleted agent, so retired like one: a trigger made
+        # while it waited for approval does not stay on.
+        from oc8.agents.retire import retire_agent
+
+        await retire_agent(db, agent_id=agent.id, hard_delete=False, principal=None)
     await db.flush()

@@ -1651,3 +1651,81 @@ async def test_a_container_run_that_comes_to_act_for_someone_else_stops_at_its_n
 
     assert step["status_override"] == "interrupted"
     await _assert_stopped_for_the_owner_change(app_session, tenant, run_id)
+
+
+async def test_execute_run_cancels_a_run_of_an_archived_agent_before_start(
+    app_session: AppSessionFactory,
+) -> None:
+    """An archived agent does no more work, whichever path queued the run (a
+    trigger, a delegation, a channel): the run ends INTERRUPTED with a reason
+    saying so, and the runtime is never called."""
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    run_id = await _make_queued_run(app_session, tenant)
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        agent = await s.get(m.Agent, run.agent_id)
+        assert agent is not None
+        agent.deleted_at = _now()
+        agent.status = "running"
+
+    called = False
+
+    async def runner(db: Any, **kw: Any) -> RunResult:
+        nonlocal called
+        called = True
+        raise AssertionError("an archived agent's run must not reach the runtime")
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=_FnRuntime(runner),
+    )
+
+    assert called is False
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        assert run.state == RunState.INTERRUPTED.value
+        assert run.context["cancellation_kind"] == "agent_archived"
+        assert "deleted" in run.context["output"]
+        # The archived agent does not stay "running" once its last run is drained.
+        agent = await s.get(m.Agent, run.agent_id)
+        assert agent is not None and agent.status == "idle"
+
+
+async def test_execute_run_stops_a_running_run_when_its_agent_is_archived_mid_flight(
+    app_session: AppSessionFactory,
+) -> None:
+    """A run that started at the moment its agent was deleted got no cancel row;
+    the per-step probe still stops it, and says why."""
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    run_id = await _make_queued_run(app_session, tenant)
+
+    async def archiving_runner(db: Any, **kw: Any) -> RunResult:
+        check = kw["cancel_check"]
+        assert await check() is False
+        async with app_session(tenant) as other:
+            agent = await other.get(m.Agent, kw["agent"].id)
+            assert agent is not None
+            agent.deleted_at = _now()
+        assert await check() is True
+        return RunResult(
+            task_id=uuid.uuid4(),
+            agent_id=kw["agent"].id,
+            status="interrupted",
+            output="cancelled",
+            tool_calls=[],
+            steps=1,
+        )
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=_FnRuntime(archiving_runner),
+    )
+
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        assert run.state == RunState.INTERRUPTED.value
+        assert run.context["cancellation_kind"] == "agent_archived"
+        assert "deleted" in run.context["output"]

@@ -733,7 +733,10 @@ async def _apply_plugin_setup(
                 raise HTTPException(
                     status.HTTP_422_UNPROCESSABLE_CONTENT, "invalid department id"
                 ) from exc
-            if await db.get(m.Department, target_department_id) is None:
+            # RLS hides another organisation's department; an archived one
+            # runs no agent, so a connection placed there would reach nobody.
+            target = await db.get(m.Department, target_department_id)
+            if target is None or target.deleted_at is not None:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "department not found")
 
     # One connection PER DEPARTMENT. Setting the same tool pack up for a second

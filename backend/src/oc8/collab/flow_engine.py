@@ -5,7 +5,7 @@ departments through their own agents/permissions (invariant I3, §14a.4)."""
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,7 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.collab.contracts import apply_payload_map
 from oc8.collab.flow_spec import FlowSpec, Stage, parse_flow_spec
-from oc8.collab.handoff import create_handoff
+from oc8.collab.handoff import create_handoff, reject_handoff
+
+if TYPE_CHECKING:
+    from oc8.auth.principal import Principal
 
 # Flow-created handoffs are attributed to a stable non-agent actor.
 _FLOW_ACTOR = uuid.UUID("00000000-0000-7000-8000-0000000f0000")
@@ -146,7 +149,9 @@ async def on_handoff_completed(db: AsyncSession, handoff: m.Handoff) -> None:
     """If a completed handoff belongs to a flow run, advance that run's stage."""
     if handoff.flow_run_id is None:
         return
-    run = await db.get(m.FlowRun, handoff.flow_run_id)
+    # Locked so a cancel running at the same moment either sees the advanced
+    # run or makes this one see `cancelled`, never both acting on a stale read.
+    run = await db.get(m.FlowRun, handoff.flow_run_id, with_for_update=True)
     if run is None or run.status != "running":
         return
     stage_id = run.context.get("__handoff_stage", {}).get(str(handoff.id))
@@ -157,3 +162,66 @@ async def on_handoff_completed(db: AsyncSession, handoff: m.Handoff) -> None:
         return
     spec = parse_flow_spec(version.spec)
     await advance_flow_run(db, run=run, spec=spec, completed_stage_id=stage_id)
+
+
+#: The flow run statuses a cancel may still stop.
+CANCELLABLE: frozenset[str] = frozenset({"running", "suspended"})
+
+
+async def cancel_flow_run(
+    db: AsyncSession, run: m.FlowRun, *, principal: Principal | None = None
+) -> m.FlowRun:
+    """Stop a flow run and the steps it still has open.
+
+    Every handoff of the run that has not finished is rejected (the same
+    transition a person's reject makes, so its status events fire), and an
+    agent run working an accepted handoff's task is cancelled through the
+    operator cancel the run screen uses. Completed steps keep their history.
+    A run that already ended raises `FlowError`; the caller commits.
+    """
+    from oc8.runtime.cancellation import record_operator_cancel
+    from oc8.runtime.states import TERMINAL
+
+    if run.status not in CANCELLABLE:
+        raise FlowError(f"flow run is already {run.status}")
+    handoffs = (
+        (await db.execute(select(m.Handoff).where(m.Handoff.flow_run_id == run.id))).scalars().all()
+    )
+    terminal_runs = [s.value for s in TERMINAL]
+    for handoff in handoffs:
+        if handoff.status not in ("pending", "accepted", "in_progress"):
+            continue
+        if handoff.target_task_id is not None:
+            agent_runs = (
+                (
+                    await db.execute(
+                        select(m.AgentRun).where(
+                            m.AgentRun.task_id == handoff.target_task_id,
+                            m.AgentRun.state.not_in(terminal_runs),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for agent_run in agent_runs:
+                await record_operator_cancel(
+                    db,
+                    run=agent_run,
+                    principal=principal,
+                    actor_id=None,
+                    resource_extra={"flow_run_id": str(run.id)},
+                )
+        await reject_handoff(db, handoff)
+    run.status = "cancelled"
+    run.current_stages = []
+    await db.flush()
+    from oc8.realtime.bus import get_event_bus
+
+    await get_event_bus().publish_event(
+        run.tenant_id,
+        "flow_run.status",
+        {"flow_run_id": str(run.id), "status": run.status},
+        source=f"oc8/flow_run/{run.id}",
+    )
+    return run

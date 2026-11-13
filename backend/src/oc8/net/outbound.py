@@ -19,9 +19,16 @@ from urllib.parse import urlparse
 
 import httpx
 
+from oc8 import __version__
 from oc8.config import get_settings
 
 _ALLOWED_SCHEMES = {"http", "https"}
+
+#: What oc8 calls itself on outbound requests. httpx's default
+#: `python-httpx/x.y` is what bot protection blocks; a stable, named agent can
+#: be allowlisted by a site owner. The release version, not the plugin-compat
+#: `CORE_VERSION`.
+USER_AGENT = f"oc8/{__version__}"
 
 
 #: Never reachable, whatever the operator allows: link-local (cloud metadata

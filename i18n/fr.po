@@ -326,6 +326,10 @@ msgid "Add custom MCP server"
 msgstr "Ajouter un serveur MCP personnalisé"
 
 #, fuzzy
+msgid "Add custom server or API"
+msgstr "Ajouter un serveur ou une API personnalisés"
+
+#, fuzzy
 msgid "Add existing source…"
 msgstr "Ajouter une source existante…"
 
@@ -468,6 +472,10 @@ msgstr "agents"
 #, fuzzy
 msgid "Agents"
 msgstr "Agents"
+
+#, fuzzy
+msgid "Agents in this department get its tools; agents in other departments don't."
+msgstr "Les agents de ce département reçoivent ses outils ; ceux des autres départements, non."
 
 #, fuzzy
 msgid "Alerts"
@@ -730,8 +738,16 @@ msgid "Approved"
 msgstr "Approuvé"
 
 #, fuzzy
+msgid "Archive"
+msgstr "Archiver"
+
+#, fuzzy
 msgid "Archive file"
 msgstr "Fichier d'archive"
+
+#, fuzzy
+msgid "Archive flow?"
+msgstr "Archiver le flux ?"
 
 #, fuzzy
 msgid "Archived"
@@ -1046,6 +1062,10 @@ msgid "Cancel"
 msgstr "Annuler"
 
 #, fuzzy
+msgid "Cancel flow run?"
+msgstr "Annuler l'exécution du flux ?"
+
+#, fuzzy
 msgid "Cancel requested"
 msgstr "Annulation demandée"
 
@@ -1054,12 +1074,20 @@ msgid "Cancel responsibility"
 msgstr "Annuler la responsabilité"
 
 #, fuzzy
+msgid "Cancel run"
+msgstr "Annuler l'exécution"
+
+#, fuzzy
 msgid "Cancel this responsibility?"
 msgstr "Annuler cette responsabilité ?"
 
 #, fuzzy
 msgid "cancelled"
 msgstr "annulé"
+
+#, fuzzy
+msgid "Cancelled"
+msgstr "Annulé"
 
 #, fuzzy
 msgid "Cancelling…"
@@ -1230,6 +1258,10 @@ msgid "Choose a company, or create a safely isolated one for local testing."
 msgstr "Choisissez une entreprise ou créez-en une isolée en toute sécurité pour des tests locaux."
 
 #, fuzzy
+msgid "Choose a department"
+msgstr "Choisis un département"
+
+#, fuzzy
 msgid "Choose a department."
 msgstr "Choisissez un département."
 
@@ -1354,6 +1386,10 @@ msgid "Complete these live checks before inviting pilot users."
 msgstr "Effectuez les vérifications en direct avant d'inviter des utilisateurs pilotes."
 
 #, fuzzy
+msgid "Completed"
+msgstr "Terminé"
+
+#, fuzzy
 msgid "Complexity router — picks among the tier models you configure (fast / balanced / strong)."
 msgstr "Routeur de complexité : choisit parmi les modèles de niveaux que vous configurez (rapide / équilibré / puissant)."
 
@@ -1426,6 +1462,10 @@ msgid "Connect now →"
 msgstr "Connecter maintenant →"
 
 #, fuzzy
+msgid "Connect your own MCP server or a REST API."
+msgstr "Connecte ton propre serveur MCP ou une API REST."
+
+#, fuzzy
 msgid "Connected"
 msgstr "Connecté"
 
@@ -1496,6 +1536,14 @@ msgstr "Continuer la configuration de l'index sélectionné."
 #, fuzzy
 msgid "Continue to export"
 msgstr "Poursuivre l'export"
+
+#, fuzzy
+msgid "Contract binding removed"
+msgstr "Liaison de contrat supprimée"
+
+#, fuzzy
+msgid "Contract bindings"
+msgstr "Liaisons de contrat"
 
 #, fuzzy
 msgid "Copied"
@@ -1574,6 +1622,10 @@ msgid "Could not add source."
 msgstr "Impossible d'ajouter la source."
 
 #, fuzzy
+msgid "Could not archive the flow"
+msgstr "Impossible d'archiver le flux"
+
+#, fuzzy
 msgid "Could not assign"
 msgstr "Impossible d'attribuer"
 
@@ -1582,12 +1634,20 @@ msgid "Could not assign role."
 msgstr "Impossible d'attribuer le rôle."
 
 #, fuzzy
+msgid "Could not assign the department."
+msgstr "Impossible d'attribuer le département."
+
+#, fuzzy
 msgid "could not be checked — the tamper-proofing key is unavailable"
 msgstr "n'a pas pu être vérifié : la clé d'anti-falsification est indisponible"
 
 #, fuzzy
 msgid "Could not build the archive."
 msgstr "Impossible de créer l'archive."
+
+#, fuzzy
+msgid "Could not cancel the run"
+msgstr "Impossible d'annuler l'exécution"
 
 #, fuzzy
 msgid "Could not change your email."
@@ -1648,6 +1708,10 @@ msgstr "Impossible de supprimer : des agents y sont peut-être attribués."
 #, fuzzy
 msgid "Could not delete the department."
 msgstr "Impossible de supprimer le département."
+
+#, fuzzy
+msgid "Could not delete the handoff type"
+msgstr "Impossible de supprimer le type de transfert"
 
 #, fuzzy
 msgid "Could not delete the key."
@@ -1740,6 +1804,10 @@ msgstr "Impossible de supprimer le poste."
 #, fuzzy
 msgid "Could not remove source."
 msgstr "Impossible de supprimer la source."
+
+#, fuzzy
+msgid "Could not remove the binding"
+msgstr "Impossible de supprimer la liaison"
 
 #, fuzzy
 msgid "Could not resolve this connection, so it isn't safe to continue -- saving now could write guardrails under the wrong key."
@@ -2098,6 +2166,10 @@ msgid "Custom MCP capa"
 msgstr "Capa MCP personnalisée"
 
 #, fuzzy
+msgid "Custom server or API"
+msgstr "Serveur ou API personnalisés"
+
+#, fuzzy
 msgid "Daily"
 msgstr "Quotidien"
 
@@ -2238,6 +2310,10 @@ msgid "Delete file"
 msgstr "Supprimer le fichier"
 
 #, fuzzy
+msgid "Delete handoff type?"
+msgstr "Supprimer le type de transfert ?"
+
+#, fuzzy
 msgid "Delete knowledge base?"
 msgstr "Supprimer la base de connaissances ?"
 
@@ -2316,6 +2392,10 @@ msgstr "Le département autorise (plafond)"
 #, fuzzy
 msgid "Department archived"
 msgstr "Département archivé"
+
+#, fuzzy
+msgid "Department assigned"
+msgstr "Département attribué"
 
 #, fuzzy
 msgid "Department deleted"
@@ -2730,6 +2810,10 @@ msgid "Event"
 msgstr "Événement"
 
 #, fuzzy
+msgid "Event to handoff"
+msgstr "De l'événement au transfert"
+
+#, fuzzy
 msgid "Every action, every timestamp."
 msgstr "Chaque action, chaque horodatage."
 
@@ -2814,6 +2898,10 @@ msgid "failed"
 msgstr "échoué"
 
 #, fuzzy
+msgid "Failed"
+msgstr "Échoué"
+
+#, fuzzy
 msgid "Fetch again"
 msgstr "Récupérer à nouveau"
 
@@ -2892,6 +2980,14 @@ msgstr "convient"
 #, fuzzy
 msgid "Floor 1 · Live operations"
 msgstr "Étage 1 · Opérations en direct"
+
+#, fuzzy
+msgid "Flow archived"
+msgstr "Flux archivé"
+
+#, fuzzy
+msgid "Flow run cancelled"
+msgstr "Exécution du flux annulée"
 
 #, fuzzy
 msgid "Flows"
@@ -3060,6 +3156,14 @@ msgstr "Confie du travail à un collègue"
 #, fuzzy
 msgid "handoff"
 msgstr "transfert"
+
+#, fuzzy
+msgid "Handoff type deleted"
+msgstr "Type de transfert supprimé"
+
+#, fuzzy
+msgid "Handoff types"
+msgstr "Types de transfert"
 
 #, fuzzy
 msgid "Handoff updated"
@@ -3294,6 +3398,10 @@ msgid "its model configuration"
 msgstr "sa configuration de modèle"
 
 #, fuzzy
+msgid "Its open handoffs are rejected and agent runs working on them are asked to stop. A run waiting for an answer or an approval stops once it resumes. Completed stages stay as they are. This cannot be undone."
+msgstr "Ses transferts ouverts sont refusés et les exécutions d'agents qui y travaillent doivent s'arrêter. Une exécution en attente d'une réponse ou d'une approbation s'arrête dès qu'elle reprend. Les étapes terminées restent telles quelles. Cette action est irréversible."
+
+#, fuzzy
 msgid "Its runs then use the creator's personal accounts. Anyone who can reach this trigger can start them."
 msgstr "Ses exécutions utilisent alors les comptes personnels de son créateur. Toute personne pouvant accéder à ce déclencheur peut les lancer."
 
@@ -3316,6 +3424,10 @@ msgstr "Surveiller quelque chose pour moi"
 #, fuzzy
 msgid "Keep it"
 msgstr "Conserver"
+
+#, fuzzy
+msgid "Keep running"
+msgstr "Continuer"
 
 #, fuzzy
 msgid "key"
@@ -4064,6 +4176,10 @@ msgstr "Aucune source de données connectée pour l'instant : créez-en d'abord
 #, fuzzy
 msgid "No connection matches."
 msgstr "Aucune connexion ne correspond."
+
+#, fuzzy
+msgid "No contract bindings involve this department."
+msgstr "Aucune liaison de contrat ne concerne ce service."
 
 #, fuzzy
 msgid "No credential selected yet — pick or create one, or the platform's shared key is used if available."
@@ -5098,6 +5214,10 @@ msgid "Remove"
 msgstr "Retirer"
 
 #, fuzzy
+msgid "Remove contract binding?"
+msgstr "Supprimer la liaison de contrat ?"
+
+#, fuzzy
 msgid "Remove from project"
 msgstr "Retirer du projet"
 
@@ -5332,6 +5452,10 @@ msgstr "Exécuter au nom du créateur"
 #, fuzzy
 msgid "running"
 msgstr "en cours d'exécution"
+
+#, fuzzy
+msgid "Running"
+msgstr "En cours"
 
 #, fuzzy
 msgid "Running a command"
@@ -6062,6 +6186,10 @@ msgid "Supervisor updated"
 msgstr "Superviseur mis à jour"
 
 #, fuzzy
+msgid "Suspended"
+msgstr "Suspendu"
+
+#, fuzzy
 msgid "Switch"
 msgstr "Changer"
 
@@ -6552,6 +6680,14 @@ msgstr "Ce chat n'existe plus. Démarrez-en un nouveau."
 #, fuzzy
 msgid "This company has not defined any roles of its own. As long as everybody may do everything, you do not need any."
 msgstr "Cette entreprise n'a défini aucun rôle propre. Tant que tout le monde peut tout faire, vous n'en avez pas besoin."
+
+#, fuzzy
+msgid "This connection is in no department, so no agent gets its tools yet. Choose the department whose agents should use it."
+msgstr "Cette connexion n'appartient à aucun département, donc aucun agent ne reçoit encore ses outils. Choisis le département dont les agents doivent l'utiliser."
+
+#, fuzzy
+msgid "This connection is in no department, so no agent gets its tools yet. Someone who manages integrations can choose the department."
+msgstr "Cette connexion n'est dans aucun service, aucun agent ne reçoit donc encore ses outils. Une personne qui gère les intégrations peut choisir le service."
 
 #, fuzzy
 msgid "This connection is not set up yet. Please contact your administrator."

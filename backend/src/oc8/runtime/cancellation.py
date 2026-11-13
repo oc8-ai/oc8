@@ -33,6 +33,13 @@ from oc8.tenants.activity import TENANT_INACTIVE_KIND, TENANT_INACTIVE_OUTPUT, t
 if TYPE_CHECKING:
     from oc8.auth.principal import Principal
 
+#: The cancellation_kind of a run stopped because its agent was deleted
+#: (archived): written by `oc8.agents.retire`, and found by the probes below
+#: when a run started at the moment of deletion has no row.
+AGENT_ARCHIVED: Final = "agent_archived"
+#: What a run stopped because its agent was archived reports as its output.
+AGENT_ARCHIVED_OUTPUT: Final = "Cancelled: the agent was deleted"
+
 
 async def record_operator_cancel(
     db: AsyncSession,
@@ -41,13 +48,16 @@ async def record_operator_cancel(
     principal: Principal | None,
     actor_id: uuid.UUID | None,
     resource_extra: dict[str, Any] | None = None,
+    cancellation_kind: str = "operator_interrupted",
 ) -> None:
     """Record the cancel on an UNLOCKED row. NEVER write agent_run here: a
     running executor holds that row's lock for the whole run, so a write would
     block until the run ends. The executor is the sole agent_run.state mutator
     and honors this row -- skipping a queued run before start, or stopping a
     running run at its next step boundary. Idempotent: a second cancel adds no
-    row. The caller has already refused a terminal run and commits."""
+    row, and the first cancel keeps its kind. `cancellation_kind` names who
+    asked when it was not an operator stopping this one run (`AGENT_ARCHIVED`).
+    The caller has already refused a terminal run and commits."""
     existing = (
         await db.execute(select(m.RunCancellation).where(m.RunCancellation.run_id == run.id))
     ).scalar_one_or_none()
@@ -57,7 +67,7 @@ async def record_operator_cancel(
                 tenant_id=run.tenant_id,
                 run_id=run.id,
                 requested_at=dt.datetime.now(tz=dt.UTC),
-                cancellation_kind="operator_interrupted",
+                cancellation_kind=cancellation_kind,
             )
         )
 
@@ -104,8 +114,9 @@ async def run_stop(db: AsyncSession, run: m.AgentRun) -> RunStop | None:
     the executor's `_cancel_check`:
 
     1. an operator's run_cancellation row -- an operator cancel always wins;
-    2. the tenant activity gate (`tenant_inactive`);
-    3. the run came to act through someone else's account after it received
+    2. the run's agent was archived (`agent_archived`), also without a row;
+    3. the tenant activity gate (`tenant_inactive`);
+    4. the run came to act through someone else's account after it received
        a person's words (`steering_went_stale`, `ownership_changed`).
 
     Reads only: the caller records `RunStop.context_patch` and commits."""
@@ -115,7 +126,14 @@ async def run_stop(db: AsyncSession, run: m.AgentRun) -> RunStop | None:
         )
     ).scalar_one_or_none()
     if operator_kind is not None:
-        return RunStop(kind=operator_kind, reason=OPERATOR_CANCEL_OUTPUT, recorded_kind=None)
+        reason = (
+            AGENT_ARCHIVED_OUTPUT if operator_kind == AGENT_ARCHIVED else OPERATOR_CANCEL_OUTPUT
+        )
+        return RunStop(kind=operator_kind, reason=reason, recorded_kind=None)
+    if await agent_archived(db, run.agent_id):
+        return RunStop(
+            kind=AGENT_ARCHIVED, reason=AGENT_ARCHIVED_OUTPUT, recorded_kind=AGENT_ARCHIVED
+        )
     if not await tenant_may_run(run.tenant_id):
         return RunStop(
             kind=TENANT_INACTIVE_KIND,
@@ -129,3 +147,13 @@ async def run_stop(db: AsyncSession, run: m.AgentRun) -> RunStop | None:
             recorded_kind=OWNERSHIP_CHANGED_KIND,
         )
     return None
+
+
+async def agent_archived(db: AsyncSession, agent_id: uuid.UUID) -> bool:
+    """Whether the run's agent has been archived (or is gone) since the run
+    started. A fresh column read, not the session's loaded row, so a running
+    run's long transaction sees a deletion committed under READ COMMITTED."""
+    deleted_at = (
+        await db.execute(select(m.Agent.deleted_at).where(m.Agent.id == agent_id))
+    ).one_or_none()
+    return deleted_at is None or deleted_at[0] is not None

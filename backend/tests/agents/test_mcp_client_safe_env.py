@@ -11,12 +11,12 @@ from __future__ import annotations
 import os
 
 from oc8.agent.mcp_client import _SITECUSTOMIZE_DIR, _safe_env
-from oc8.constants import CORE_VERSION
+from oc8.net.outbound import USER_AGENT
 
 
 def test_sets_a_real_oc8_user_agent() -> None:
     env = _safe_env(None)
-    assert env["OC8_USER_AGENT"] == f"oc8/{CORE_VERSION}"
+    assert env["OC8_USER_AGENT"] == USER_AGENT
 
 
 def test_prepends_the_sitecustomize_dir_to_pythonpath() -> None:
@@ -29,9 +29,7 @@ def test_a_plugins_own_pythonpath_survives_alongside_it() -> None:
     # env.PYTHONPATH entry (their bridge package's own directory) -- the
     # sitecustomize dir must not clobber it, both need to stay importable.
     env = _safe_env({"PYTHONPATH": "/app/capas/microsoft365"})
-    assert env["PYTHONPATH"] == os.pathsep.join(
-        [_SITECUSTOMIZE_DIR, "/app/capas/microsoft365"]
-    )
+    assert env["PYTHONPATH"] == os.pathsep.join([_SITECUSTOMIZE_DIR, "/app/capas/microsoft365"])
 
 
 def test_sitecustomize_file_actually_exists_on_disk() -> None:

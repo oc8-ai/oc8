@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.runtime.queue import RunQueue
@@ -33,6 +34,15 @@ async def _new_tenant_with_org(app_session: AppSessionFactory) -> uuid.UUID:
     return tenant
 
 
+async def _agent(db: AsyncSession, tenant: uuid.UUID) -> uuid.UUID:
+    """A live agent for a trigger to fire into: a trigger whose agent is
+    archived or gone is disabled instead of fired."""
+    agent = m.Agent(tenant_id=tenant, department_id=uuid.uuid4(), name="Scheduled")
+    db.add(agent)
+    await db.flush()
+    return agent.id
+
+
 async def test_list_active_tenant_ids_includes_seeded_organization(
     app_session: AppSessionFactory,
 ) -> None:
@@ -46,9 +56,9 @@ async def test_tick_fires_due_cron_trigger_and_enqueues(
     tenant = await _new_tenant_with_org(app_session)
     test_queue = RunQueue(redis_url, key=f"test:{uuid.uuid4()}")
     monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: test_queue)
-    agent_id = uuid.uuid4()
 
     async with app_session(tenant) as db:
+        agent_id = await _agent(db, tenant)
         trigger = await create_trigger(
             db,
             tenant_id=tenant,
@@ -99,7 +109,7 @@ async def test_tick_fires_all_due_triggers_for_one_tenant_not_just_the_first(
             trigger = await create_trigger(
                 db,
                 tenant_id=tenant,
-                agent_id=uuid.uuid4(),
+                agent_id=await _agent(db, tenant),
                 kind="cron",
                 task_text=label,
                 cron_expression="0 9 * * *",
@@ -240,9 +250,9 @@ async def test_second_tick_coalesces_while_first_fire_is_queued(
     tenant = await _new_tenant_with_org(app_session)
     test_queue = RunQueue(redis_url, key=f"test:{uuid.uuid4()}")
     monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: test_queue)
-    agent_id = uuid.uuid4()
 
     async with app_session(tenant) as db:
+        agent_id = await _agent(db, tenant)
         trigger = await create_trigger(
             db,
             tenant_id=tenant,
@@ -297,9 +307,9 @@ async def test_fired_run_records_source(
     tenant = await _new_tenant_with_org(app_session)
     test_queue = RunQueue(redis_url, key=f"test:{uuid.uuid4()}")
     monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: test_queue)
-    agent_id = uuid.uuid4()
 
     async with app_session(tenant) as db:
+        agent_id = await _agent(db, tenant)
         trigger = await create_trigger(
             db,
             tenant_id=tenant,
@@ -339,7 +349,7 @@ async def test_tick_isolates_tenants_each_fires_only_its_own_due_trigger(
         trigger_a = await create_trigger(
             db,
             tenant_id=tenant_a,
-            agent_id=uuid.uuid4(),
+            agent_id=await _agent(db, tenant_a),
             kind="cron",
             task_text="a",
             cron_expression="0 9 * * *",
@@ -381,6 +391,85 @@ async def test_tick_isolates_tenants_each_fires_only_its_own_due_trigger(
         assert refreshed_b.last_run_at is None
 
 
+async def test_tick_disables_a_due_trigger_of_an_archived_agent_instead_of_firing_it(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Data from before archiving stopped an agent's triggers: the tick must not
+    run the archived agent, and turns the trigger off so it stops coming due."""
+    tenant = await _new_tenant_with_org(app_session)
+    test_queue = RunQueue(redis_url, key=f"test:{uuid.uuid4()}")
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: test_queue)
+
+    async with app_session(tenant) as db:
+        agent_id = await _agent(db, tenant)
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        agent.deleted_at = datetime.now(tz=UTC)
+        trigger = await create_trigger(
+            db,
+            tenant_id=tenant,
+            agent_id=agent_id,
+            kind="cron",
+            task_text="daily",
+            cron_expression="0 9 * * *",
+        )
+        trigger.next_run_at = datetime.now(tz=UTC) - timedelta(seconds=1)
+        trigger_id = trigger.id
+        await db.flush()
+
+    try:
+        fired = await run_scheduler_tick()
+        assert await test_queue.dequeue(timeout=1.0) is None
+    finally:
+        await test_queue.close()
+
+    assert fired == 0
+    assert await _runs_for(app_session, tenant, agent_id) == []
+    async with app_session(tenant) as db:
+        refreshed = await db.get(m.Trigger, trigger_id)
+        assert refreshed is not None
+        assert refreshed.enabled is False
+        assert refreshed.last_skip_reason == "agent_archived"
+
+
+async def test_tick_disables_an_orphaned_trigger_instead_of_failing_a_run_each_tick(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A trigger left behind by a hard-deleted agent: no run (which could only
+    fail with "agent not found"), and the trigger is turned off."""
+    tenant = await _new_tenant_with_org(app_session)
+    test_queue = RunQueue(redis_url, key=f"test:{uuid.uuid4()}")
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: test_queue)
+    gone = uuid.uuid4()
+
+    async with app_session(tenant) as db:
+        trigger = await create_trigger(
+            db,
+            tenant_id=tenant,
+            agent_id=gone,
+            kind="cron",
+            task_text="daily",
+            cron_expression="0 9 * * *",
+        )
+        trigger.next_run_at = datetime.now(tz=UTC) - timedelta(seconds=1)
+        trigger_id = trigger.id
+        await db.flush()
+
+    try:
+        fired = await run_scheduler_tick()
+        assert await test_queue.dequeue(timeout=1.0) is None
+    finally:
+        await test_queue.close()
+
+    assert fired == 0
+    assert await _runs_for(app_session, tenant, gone) == []
+    async with app_session(tenant) as db:
+        refreshed = await db.get(m.Trigger, trigger_id)
+        assert refreshed is not None
+        assert refreshed.enabled is False
+        assert refreshed.last_skip_reason == "agent_missing"
+
+
 def _gate_saying_no_for(*inactive: uuid.UUID) -> TenantActivityGate:
     async def gate(tenant_id: uuid.UUID) -> bool:
         return tenant_id not in inactive
@@ -391,8 +480,8 @@ def _gate_saying_no_for(*inactive: uuid.UUID) -> TenantActivityGate:
 async def _due_cron_trigger(
     app_session: AppSessionFactory, tenant: uuid.UUID, *, cron_expression: str = "0 9 * * *"
 ) -> tuple[uuid.UUID, uuid.UUID]:
-    agent_id = uuid.uuid4()
     async with app_session(tenant) as db:
+        agent_id = await _agent(db, tenant)
         trigger = await create_trigger(
             db,
             tenant_id=tenant,

@@ -133,6 +133,10 @@ ALLOWED: dict[str, str] = {
     "api/mcp_gateway.py": "agent-token-authenticated path, scoped to the token's own run",
     "api/v1/capas.py": "a different permission (plugin install), department-existence check only",
     "api/v1/internal_agent.py": "agent-token-authenticated path, scoped to the token's own run",
+    "api/v1/mcp.py": (
+        "gated by integration:manage (tenant-wide, NEVER_DELEGATABLE), department-existence "
+        "check only when moving a connection into a department"
+    ),
     "capas/export.py": (
         "gated by plugin:manage -- the SAME tenant-wide permission api/v1/capas.py above "
         "already uses for capa install/enable, not a narrower departmental seat. An "

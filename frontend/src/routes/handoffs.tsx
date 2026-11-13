@@ -8,14 +8,26 @@ import {
   FileText,
   Paperclip,
   ShieldCheck,
+  Trash2,
   X,
   XCircle,
   Zap,
 } from "lucide-react";
 import { Panel } from "@/components/app-shell";
+import { useConfirm } from "@/hooks/use-confirm";
 import { departmentById } from "@/lib/mock-data";
 import { statusMeta, type Handoff, type HandoffStatus } from "@/lib/collaboration";
-import { useHandoffs, useHandoffAction, useStanding, type HandoffDTO } from "@/lib/hooks";
+import {
+  useDeleteHandoffType,
+  useHandoffs,
+  useHandoffAction,
+  useHandoffTypes,
+  useStanding,
+  type HandoffDTO,
+  type HandoffTypeDTO,
+} from "@/lib/hooks";
+import { useMay } from "@/lib/governance-hooks";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 function relativeAge(iso: string): string {
@@ -173,6 +185,8 @@ function HandoffsPage() {
           <HandoffRow key={h.id} h={h} onOpen={() => setSelected(h.id)} />
         ))}
       </Panel>
+
+      <HandoffTypesPanel />
 
       <Sheet open={!!current} onOpenChange={(v) => !v && setSelected(null)}>
         <SheetContent
@@ -450,5 +464,69 @@ function HandoffDrawer({
         )}
       </footer>
     </>
+  );
+}
+
+/** The tenant's handoff types, each removable while nothing uses it. The
+ *  server refuses (409) a type that handoffs were made with or that a binding
+ *  or a live flow names, and says which; that reason is shown as is. */
+export function HandoffTypesPanel() {
+  const t = useT();
+  const { data: types = [] } = useHandoffTypes();
+  const remove = useDeleteHandoffType();
+  const mayManage = useMay()("handoff:manage");
+  const { confirm, ConfirmDialog } = useConfirm();
+
+  async function onDelete(ht: HandoffTypeDTO) {
+    const ok = await confirm({
+      title: t("Delete handoff type?", "Übergabetyp löschen?"),
+      description: t(
+        `Delete "${ht.name}"? This only works while no handoff, contract binding or flow uses it. This cannot be undone.`,
+        `"${ht.name}" löschen? Das geht nur, solange keine Übergabe, keine Vertragsbindung und kein Flow ihn nutzt. Das kann nicht rückgängig gemacht werden.`,
+      ),
+      confirmLabel: t("Delete", "Löschen"),
+      cancelLabel: t("Cancel", "Abbrechen"),
+    });
+    if (!ok) return;
+    remove.mutate(ht.id, {
+      onSuccess: () =>
+        toast.success(t("Handoff type deleted", "Übergabetyp gelöscht"), {
+          description: ht.name,
+        }),
+      onError: (error) =>
+        toast.error(
+          t("Could not delete the handoff type", "Übergabetyp konnte nicht gelöscht werden"),
+          {
+            description: error instanceof Error ? error.message : String(error),
+          },
+        ),
+    });
+  }
+
+  if (types.length === 0) return null;
+  return (
+    <section>
+      {ConfirmDialog}
+      <h3 className="mb-2 font-serif text-lg">{t("Handoff types", "Übergabetypen")}</h3>
+      <Panel className="divide-y divide-border">
+        {types.map((ht) => (
+          <div key={ht.id} className="flex items-center gap-3 px-4 py-2.5">
+            <span className="min-w-0 flex-1 truncate font-mono text-sm">{ht.name}</span>
+            <span className="text-[11px] text-muted-foreground">{ht.classification}</span>
+            {mayManage && (
+              <button
+                type="button"
+                onClick={() => onDelete(ht)}
+                disabled={remove.isPending}
+                aria-label={t(`Delete ${ht.name}`, `${ht.name} löschen`)}
+                className="rounded-md p-1 text-muted-foreground transition hover:text-destructive disabled:opacity-50"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+        ))}
+      </Panel>
+    </section>
   );
 }

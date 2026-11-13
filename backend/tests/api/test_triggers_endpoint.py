@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import datetime as dt
 import uuid
 
 import pytest
@@ -108,6 +109,43 @@ async def test_create_list_update_delete_cron_trigger(app_session: AppSessionFac
 
             listed_after = await client.get(f"/api/v1/agents/{agent_id}/triggers", headers=headers)
             assert all(t["id"] != trigger_id for t in listed_after.json())
+
+
+async def test_enabling_a_trigger_of_an_archived_agent_is_refused(
+    app_session: AppSessionFactory,
+) -> None:
+    """Like creating one: an archived agent gets no live trigger. Restoring the
+    agent comes first."""
+    tenant = uuid.uuid4()
+    agent_id, headers = await _agent_and_headers(app_session, tenant)
+    async with app_session(tenant) as s:
+        trigger = m.Trigger(
+            tenant_id=tenant,
+            agent_id=agent_id,
+            kind="cron",
+            task_text="daily",
+            cron_expression="0 9 * * *",
+            enabled=False,
+        )
+        s.add(trigger)
+        agent = await s.get(m.Agent, agent_id)
+        assert agent is not None
+        agent.deleted_at = dt.datetime.now(tz=dt.UTC)
+        await s.flush()
+        trigger_id = trigger.id
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            resp = await client.patch(
+                f"/api/v1/triggers/{trigger_id}", json={"enabled": True}, headers=headers
+            )
+            assert resp.status_code == 409, resp.text
+
+    async with app_session(tenant) as s:
+        refreshed = await s.get(m.Trigger, trigger_id)
+        assert refreshed is not None
+        assert refreshed.enabled is False
 
 
 async def test_create_trigger_rejects_invalid_cron(app_session: AppSessionFactory) -> None:

@@ -197,6 +197,10 @@ export interface McpConnection {
   command: string;
   args: string[];
   departmentId: string | null;
+  // In no department, and so reaching no agent's run until it gets one (the
+  // MCP gateway hands a run only its own department's connections). False for
+  // an integration or an organisation login, which reach agents unbound.
+  needsDepartment?: boolean;
   connected: boolean;
   scopes: string[];
   health: Record<string, unknown>;
@@ -2004,10 +2008,11 @@ export function useHandoffs() {
   return useQuery({ queryKey: ["handoffs"], queryFn: () => api.get<HandoffDTO[]>("/handoffs") });
 }
 
-export function useHandoffTypes() {
+export function useHandoffTypes(enabled = true) {
   return useQuery({
     queryKey: ["handoff-types"],
     queryFn: () => api.get<HandoffTypeDTO[]>("/handoff-types"),
+    enabled,
   });
 }
 
@@ -2045,17 +2050,37 @@ export function useHandoffAction() {
   });
 }
 
+/** Delete a handoff type nothing uses. A type handoffs were made with, or that a
+ *  binding or a live flow names, is refused with a 409 saying which. */
+export function useDeleteHandoffType() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete<void>(`/handoff-types/${encodeURIComponent(id)}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["handoff-types"] }),
+  });
+}
+
 export interface BindingDTO {
   id: string;
   eventType: string;
+  handoffTypeId: string;
   sourceDepartmentId: string;
   targetDepartmentId: string;
 }
 
-export function useContractBindings() {
+export function useContractBindings(enabled = true) {
   return useQuery({
     queryKey: ["contract-bindings"],
     queryFn: () => api.get<BindingDTO[]>("/contract-bindings"),
+    enabled,
+  });
+}
+
+export function useDeleteContractBinding() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete<void>(`/contract-bindings/${encodeURIComponent(id)}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["contract-bindings"] }),
   });
 }
 
@@ -2105,6 +2130,32 @@ export function useFlowRuns() {
   return useQuery({
     queryKey: ["flow-runs"],
     queryFn: () => api.get<FlowRunDTO[]>("/flow-runs"),
+  });
+}
+
+/** Archive a flow: hidden from the list and no new runs; its runs stay. */
+export function useArchiveFlow() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (flowId: string) =>
+      api.post<{ id: string; name: string; archived: boolean }>(
+        `/flows/${encodeURIComponent(flowId)}/archive`,
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["flows"] }),
+  });
+}
+
+/** Cancel a running flow run: its open handoffs are rejected and the agent
+ *  runs working them cancelled. */
+export function useCancelFlowRun() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (runId: string) =>
+      api.post<FlowRunDTO>(`/flow-runs/${encodeURIComponent(runId)}/cancel`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["flow-runs"] });
+      qc.invalidateQueries({ queryKey: ["handoffs"] });
+    },
   });
 }
 

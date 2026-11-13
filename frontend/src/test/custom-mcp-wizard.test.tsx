@@ -3,12 +3,12 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CustomMcpWizard } from "@/components/custom-mcp-wizard";
 
-const { postMock } = vi.hoisted(() => ({ postMock: vi.fn() }));
+const { postMock, getMock } = vi.hoisted(() => ({ postMock: vi.fn(), getMock: vi.fn() }));
 
 vi.mock("@/lib/api", () => ({
   api: {
     post: postMock,
-    get: vi.fn(),
+    get: getMock,
     patch: vi.fn(),
     delete: vi.fn(),
   },
@@ -38,6 +38,8 @@ async function installAndTestAStdioServer() {
 describe("CustomMcpWizard", () => {
   beforeEach(() => {
     postMock.mockReset();
+    getMock.mockReset();
+    getMock.mockResolvedValue({ items: [], totalCount: 0 });
   });
 
   it("renders step 1 with the three server-type cards when open", () => {
@@ -143,5 +145,89 @@ describe("CustomMcpWizard", () => {
     // Still on the test step with its result intact -- "Keep editing" did not
     // reset the wizard the way a real close() would have.
     expect(screen.getByText(/Connected/i)).toBeInTheDocument();
+  });
+
+  describe("department", () => {
+    const departments = {
+      items: [
+        { id: "d-support", name: "Support" },
+        { id: "d-sales", name: "Sales" },
+      ],
+      totalCount: 2,
+    };
+
+    function mockInstall() {
+      postMock.mockImplementation((path: string) => {
+        if (path === "/capas") {
+          return Promise.resolve({
+            id: "cv-1",
+            pluginId: "capa-1",
+            name: "Tickets",
+            type: "tool_pack",
+            semver: "1.0.0",
+            trustLevel: "unverified",
+          });
+        }
+        if (path === "/capas/capa-1/enable") return Promise.resolve({});
+        if (path === "/capas/capa-1/setup") return Promise.resolve({ connectionId: "conn-1" });
+        return Promise.reject(new Error(`unexpected POST ${path}`));
+      });
+    }
+
+    async function nameAndType() {
+      fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Tickets" } });
+      fireEvent.click(screen.getByText("Plain HTTP API"));
+    }
+
+    it("places the connection in the department it was opened from", async () => {
+      getMock.mockResolvedValue(departments);
+      mockInstall();
+      render(<CustomMcpWizard open onOpenChange={() => {}} defaultDepartmentId="d-sales" />, {
+        wrapper,
+      });
+      await nameAndType();
+      const select = (await screen.findByLabelText("Department")) as HTMLSelectElement;
+      await waitFor(() => expect(select.value).toBe("d-sales"));
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+
+      fireEvent.change(screen.getByPlaceholderText("https://api.example.com"), {
+        target: { value: "https://tickets.acme.test" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: /add tool/i }));
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+      fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+      await waitFor(() =>
+        expect(postMock).toHaveBeenCalledWith("/capas/capa-1/setup", {
+          values: { department: "d-sales" },
+        }),
+      );
+      const install = postMock.mock.calls.find(([path]) => path === "/capas");
+      const setup = install?.[1].manifest.setup;
+      expect(setup.fields).toContainEqual(
+        expect.objectContaining({ key: "department", kind: "department", required: true }),
+      );
+      expect(setup.mcp.department_field).toBe("department");
+    });
+
+    it("needs a department before going on when the organisation has departments", async () => {
+      getMock.mockResolvedValue(departments);
+      render(<CustomMcpWizard open onOpenChange={() => {}} />, { wrapper });
+      await nameAndType();
+      const select = (await screen.findByLabelText("Department")) as HTMLSelectElement;
+      expect(select.value).toBe("");
+      expect(screen.getByRole("button", { name: /next/i })).toBeDisabled();
+
+      fireEvent.change(select, { target: { value: "d-support" } });
+      expect(screen.getByRole("button", { name: /next/i })).toBeEnabled();
+    });
+
+    it("asks for no department in an organisation without departments", async () => {
+      mockInstall();
+      render(<CustomMcpWizard open onOpenChange={() => {}} />, { wrapper });
+      await nameAndType();
+      expect(screen.queryByLabelText("Department")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /next/i })).toBeEnabled();
+    });
   });
 });

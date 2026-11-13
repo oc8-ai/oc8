@@ -15,17 +15,17 @@ calls without re-reading it.
 
 from __future__ import annotations
 
-import datetime as dt
 import uuid
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, UploadFile, status
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.agents.hire import create_hire_request, require_hire_approval
 from oc8.agents.presentation import show_model
 from oc8.agents.publish_hooks import PublishHookFailed
+from oc8.agents.retire import delete_or_archive_agent
 from oc8.agents.versioning import (
     NoChangesToPublish,
     apply_payload,
@@ -1461,7 +1461,9 @@ async def delete_agent(
 ) -> dict[str, str]:
     """Hard-delete when nothing depends on the agent; archive (soft-delete)
     otherwise -- a run's `agent_id` must keep pointing at a real row (same
-    dependents-detection shape as `skills_write.py::delete_skill`)."""
+    dependents-detection shape as `skills_write.py::delete_skill`). Either
+    way the agent is retired (`oc8.agents.retire`): its triggers stop, its
+    pending approvals expire and its unfinished runs are cancelled."""
     agent = await _load_agent(db, agent_id)
     await authorize_agent_write(
         request,
@@ -1471,18 +1473,7 @@ async def delete_agent(
         not_found=HTTPException(status.HTTP_404_NOT_FOUND, "agent not found"),
     )
     principal = actor.principal
-    dependents = (
-        await db.execute(
-            select(func.count()).select_from(m.AgentRun).where(m.AgentRun.agent_id == agent_id)
-        )
-    ).scalar_one()
-    now = dt.datetime.now(tz=dt.UTC)
-    if dependents == 0:
-        await db.delete(agent)
-        outcome = "deleted"
-    else:
-        agent.deleted_at = now
-        outcome = "archived"
+    outcome = await delete_or_archive_agent(db, agent, principal=principal)
     # `flush`, not `commit`: same reasoning as `assign_skill` above -- the
     # route body never commits itself, `get_db`/`tenant_session` commits once
     # when the request finishes, and a commit here would unbind `app.tenant_id`
@@ -1521,8 +1512,10 @@ async def restore_agent(
         agent.department_id,
         not_found=HTTPException(status.HTTP_404_NOT_FOUND, "no archived agent with that id"),
     )
-    # Restoring is the moment an agent's triggers start firing again, so it is
-    # the moment the manual-trigger-only rule starts applying to it again.
+    # Restoring does NOT turn the agent's triggers back on: archiving disabled
+    # them (`oc8.agents.retire`), and the operator re-enables each one through
+    # the trigger route, which runs this same guard. Restoring is still the
+    # moment the manual-trigger-only rule starts applying to the agent again.
     # `subscription_guard` counts archived agents on both of its directions
     # (see `assert_credential_bind_safe`), so no route should be able to leave
     # an archived agent in this state -- this is the backstop for a pairing

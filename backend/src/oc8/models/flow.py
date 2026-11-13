@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from typing import Any
 
-from sqlalchemy import CheckConstraint, LargeBinary, Text, UniqueConstraint, Uuid
+from sqlalchemy import CheckConstraint, DateTime, LargeBinary, Text, UniqueConstraint, Uuid
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -18,6 +19,9 @@ class Flow(Base, PkMixin, TenantMixin, TimestampMixin):
 
     name: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     current_version_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    # Archived flows are hidden from the list and start no new runs; their
+    # runs keep their history.
+    archived_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_flow_tenant_name"),)
 
@@ -44,6 +48,7 @@ class FlowRun(Base, PkMixin, TenantMixin, TimestampMixin):
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('running','completed','failed','suspended')", name="ck_flow_run_status"
+            "status IN ('running','completed','failed','suspended','cancelled')",
+            name="ck_flow_run_status",
         ),
     )

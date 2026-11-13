@@ -186,6 +186,19 @@ services:
       timeout: 3s
       retries: 30
 
+  minio-perms:
+    # One-shot, as root: the MinIO image runs as uid 65532, but a data volume
+    # created by the earlier root-running image is owned by root and MinIO then
+    # cannot write to it. Hands the volume over only when it isn't already.
+    image: cgr.dev/chainguard/busybox:latest
+    user: "0"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - '[ "$$(stat -c %u /data)" = 65532 ] || chown -R 65532:65532 /data'
+    volumes:
+      - oc8-miniodata:/data
+    restart: "no"
+
   # Bundled S3-compatible object storage for file attachments (chat + agent
   # Instructions uploads, see oc8.storage.s3). Bundled-by-default, switchable
   # via env: point OC8_S3_ENDPOINT/OC8_S3_* at any S3-compatible endpoint
@@ -198,6 +211,9 @@ services:
     # source and still serves them without a login.
     image: cgr.dev/chainguard/minio:latest
     command: server /data --console-address ":9001"
+    depends_on:
+      minio-perms:
+        condition: service_completed_successfully
     environment:
       MINIO_ROOT_USER: ${OC8_S3_ACCESS_KEY:-oc8-minio}
       MINIO_ROOT_PASSWORD: ${OC8_S3_SECRET_KEY:?set OC8_S3_SECRET_KEY in .env}

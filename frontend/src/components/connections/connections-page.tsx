@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { Plus } from "lucide-react";
+import { Plus, PlugZap } from "lucide-react";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
+import { CustomMcpWizard } from "@/components/custom-mcp-wizard";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -100,6 +101,7 @@ export function ConnectionsPage({
   // needs plugin:manage, so only offer it to whoever holds that.
   const mayEnable = may("plugin:manage");
   const { confirm, ConfirmDialog } = useConfirm();
+  const [customOpen, setCustomOpen] = useState(false);
   useNoReferrer();
   // Captured once: the URL is cleaned right away, and a refetch must not
   // close what the return or a call to action opened.
@@ -261,6 +263,7 @@ export function ConnectionsPage({
       onConnect={(name) => open(name, "me")}
       onDisconnect={(c) => revoke(c, null)}
       onMakeAvailable={makeAvailable}
+      onAddCustom={() => setCustomOpen(true)}
     />
   );
 
@@ -344,6 +347,7 @@ export function ConnectionsPage({
           onOpenChange={(next) => !next && setDialog(null)}
         />
       )}
+      {customOpen && <CustomMcpWizard open={customOpen} onOpenChange={setCustomOpen} />}
       {ConfirmDialog}
     </div>
   );
@@ -371,6 +375,7 @@ function MineList({
   onConnect,
   onDisconnect,
   onMakeAvailable,
+  onAddCustom,
 }: {
   available: Integration[];
   notYetAvailable: Integration[];
@@ -384,13 +389,14 @@ function MineList({
   onConnect: (integration: string) => void;
   onDisconnect: (c: Connection) => void;
   onMakeAvailable: (i: Integration) => void;
+  onAddCustom: () => void;
 }) {
   const t = useT();
   const nothing = !loading && available.length === 0;
   return (
     <>
       {nothing && <MoreIntegrationsHint mayInstall={mayInstall} />}
-      {(available.length > 0 || notYetAvailable.length > 0) && (
+      {(available.length > 0 || notYetAvailable.length > 0 || mayInstall) && (
         <RowList>
           {available.flatMap((integration) => {
             const icon = <IntegrationIcon integration={integration} size={20} />;
@@ -474,6 +480,28 @@ function MineList({
               </Button>
             </ConnectionRow>
           ))}
+          {mayInstall && (
+            <ConnectionRow
+              icon={<PlugZap className="size-5 text-muted-foreground" aria-hidden />}
+              title={t("Custom server or API", "Eigener Server oder eigene API")}
+              detail={t(
+                "Connect your own MCP server or a REST API.",
+                "Verbinde deinen eigenen MCP-Server oder eine REST-API.",
+              )}
+            >
+              <Button
+                size="sm"
+                variant="outline"
+                aria-label={t(
+                  "Add custom server or API",
+                  "Eigenen Server oder eigene API hinzufügen",
+                )}
+                onClick={onAddCustom}
+              >
+                {t("Add", "Hinzufügen")}
+              </Button>
+            </ConnectionRow>
+          )}
         </RowList>
       )}
       {!loading && !nothing && <MoreIntegrationsHint mayInstall={mayInstall} />}
