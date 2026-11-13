@@ -30,7 +30,6 @@ from oc8.connections.access import (
     ConnectionRequired,
     ToolAccess,
     resolve_tool_access,
-    single_organisation_credential,
 )
 from oc8.connections.credential_env import credential_env_targets, credential_mcp_env
 from oc8.connections.integrations import (
@@ -38,6 +37,7 @@ from oc8.connections.integrations import (
     integration_enabled,
     integration_for_connection,
 )
+from oc8.connections.usable import organisation_access_ready
 from oc8.credentials.registry import get_credential_type
 from oc8.oauth.errors import OAuthReauthRequired
 from oc8.runtime.run_context import merge_context
@@ -305,14 +305,8 @@ async def integration_connections(
             integration = template[2] if template is not None else None
         if integration is None:
             continue
-        if not (
-            integration.kind == "oauth"
-            or name in access_keys
-            or (
-                integration.credential_type
-                and await single_organisation_credential(db, integration.credential_type)
-            )
-        ):
+        # The builder offers exactly what passes here (connections.usable).
+        if not (name in access_keys or await organisation_access_ready(db, integration)):
             continue
         if conn is None:
             assert template is not None

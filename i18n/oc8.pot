@@ -1010,6 +1010,9 @@ msgstr ""
 msgid "Connect existing vector index"
 msgstr ""
 
+msgid "Connect first"
+msgstr ""
+
 msgid "Connect model"
 msgstr ""
 
@@ -2862,6 +2865,9 @@ msgid "Name your workspace"
 msgstr ""
 
 msgid "Narrowed"
+msgstr ""
+
+msgid "Needs an organisation connection"
 msgstr ""
 
 msgid "Needs reconnecting"

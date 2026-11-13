@@ -15,11 +15,10 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Final
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.copilot.builder import selectable
+from oc8.connections.usable import department_systems
 
 MAX_IDEAS: Final = 4
 
@@ -186,27 +185,14 @@ def pick_ideas(
 async def connected_kinds(
     db: AsyncSession, *, tenant_id: uuid.UUID, departments: Sequence[m.Department]
 ) -> frozenset[str]:
-    """Plugin names of systems the builder would offer in a department this member
-    may view (`selectable`: frame-enabled, connected, tenant-wide or in that department)."""
-    if not departments:
-        return frozenset()
-    rows = (
-        await db.execute(
-            select(
-                m.McpConnection.name,
-                m.McpConnection.department_id,
-                m.McpConnection.config["_plugin_name"].as_string(),
-            ).where(
-                m.McpConnection.tenant_id == tenant_id,
-                m.McpConnection.connected.is_(True),
-            )
-        )
-    ).all()
-    return frozenset(
-        plugin
-        for name, dept_id, plugin in rows
-        if plugin and any(selectable(name, dept_id, d) for d in departments)
-    )
+    """Plugin names of systems the builder would offer in a department this
+    member may view -- the same rule (`connections.usable`) as `usable_systems`."""
+    kinds: set[str] = set()
+    for department in departments:
+        for system in await department_systems(db, tenant_id=tenant_id, department=department):
+            if system.usable and system.plugin:
+                kinds.add(system.plugin)
+    return frozenset(kinds)
 
 
 def collect_edition_templates(extensions: Iterable[object]) -> tuple[AgentTemplate, ...]:

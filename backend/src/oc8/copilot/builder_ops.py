@@ -210,9 +210,14 @@ def _listed(value: object) -> list[object]:
 def _system_policy(frame: Mapping[str, Any] | None, system: str) -> dict[str, Any]:
     """The narrowing entry that lets the new agent use `system` as far as the
     department's frame allows -- the frame's own rights, never more, so it can
-    not widen anything (`pdp.narrowing_within_frame`)."""
+    not widen anything (`pdp.narrowing_within_frame`). A system the frame does
+    not list is an agent-exclusive grant: reading on, writing off (a write
+    stays something a person grants on the agent's page). Without a frame
+    (unknown department) nothing is granted; the proposal is refused anyway."""
     tools = (frame or {}).get("tools")
     raw = tools.get(system) if isinstance(tools, dict) else None
+    if frame is not None and system not in (tools if isinstance(tools, dict) else {}):
+        return {"enabled": True, "read": True, "modify": False}
     policy = raw if isinstance(raw, dict) else {}
     return {
         "enabled": True,

@@ -65,6 +65,10 @@ export interface ConnectorCatalogEntry {
     required?: string[];
   };
   requiresOauth?: string | null;
+  // False when a source cannot be set up yet: it signs in somewhere and the
+  // organisation has no active connection of that provider ("oauth:google").
+  usable?: boolean;
+  missing?: string | null;
 }
 
 export interface OAuthConnection {

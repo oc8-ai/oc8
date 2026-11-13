@@ -29,7 +29,8 @@ from oc8.authz.permissions import DEPARTMENT, VIEW, perm
 from oc8.authz.scope import AgentActor
 from oc8.chat.model_choice import chat_enabled_model_ids
 from oc8.chat.modes import AGENT, mode_directive, mode_from_context, mode_refusal
-from oc8.copilot.builder import create_builder_proposal, may_create_agent, usable_systems
+from oc8.connections.usable import department_systems
+from oc8.copilot.builder import create_builder_proposal, may_create_agent
 from oc8.copilot.builder_ops import (
     FLAT_FIELDS,
     BuilderInvalid,
@@ -113,7 +114,9 @@ async def builder_options_text(
     departments, _total = await visible_departments(
         db, scope=actor.scope, tenant_wide=_reads_every_department(authority)
     )
-    lines = ["Departments (id | name | how | connected systems):"]
+    lines = [
+        "Departments (id | name | how | connected systems | not usable yet, and why):"
+    ]
     own = actor.scope.viewable
     for dept in sorted(departments, key=lambda d: d.name.lower()):
         if not actor.scope.may_view(dept.id):
@@ -124,10 +127,15 @@ async def builder_options_text(
             if may_create_agent(authority, actor.scope, dept.id)
             else "needs approval"
         )
-        systems = sorted(await usable_systems(db, tenant_id=tenant_id, department=dept))
+        systems = await department_systems(db, tenant_id=tenant_id, department=dept)
         mine = " (their department)" if dept.id in own else ""
-        listed = ", ".join(one_line(s, 60) for s in systems) or "none"
-        lines.append(f"- {dept.id} | {one_line(dept.name, 80)}{mine} | {how} | {listed}")
+        listed = ", ".join(one_line(s.key, 60) for s in systems if s.usable) or "none"
+        missing = "; ".join(
+            f"{one_line(s.key, 60)}: {s.missing}" for s in systems if s.missing
+        ) or "-"
+        lines.append(
+            f"- {dept.id} | {one_line(dept.name, 80)}{mine} | {how} | {listed} | {missing}"
+        )
     model_ids = await chat_enabled_model_ids(db, tenant_id=tenant_id)
     models = (
         (await db.execute(select(m.ModelConfig).where(m.ModelConfig.id.in_(model_ids))))

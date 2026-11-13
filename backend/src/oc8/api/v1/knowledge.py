@@ -100,6 +100,12 @@ class ConnectorCatalogDTO(CamelModel):
     description: str | None = None
     config_schema: dict[str, object]
     requires_oauth: str | None = None
+    #: Whether a source can be set up with it now. A connector that signs in
+    #: somewhere needs an active organisation connection of that provider:
+    #: a source feeds shared knowledge, never one person's own account.
+    usable: bool = True
+    #: What is missing when it is not usable, e.g. "oauth:google".
+    missing: str | None = None
 
 
 class VectorIndexCatalogDTO(CamelModel):
@@ -124,18 +130,35 @@ class PreviewIndexRequest(CamelModel):
 )
 async def list_connectors(db: DbSession, principal: CurrentPrincipal) -> list[ConnectorCatalogDTO]:
     connectors = await available_connectors(db, tenant_id=principal.tenant_id)
-    return [
-        ConnectorCatalogDTO(
-            type_id=type_id,
-            label=getattr(connector, "label", None),
-            description=getattr(connector, "description", None),
-            config_schema=connector.config_schema,
-            requires_oauth=connector.requires_oauth,
-        )
-        for type_id, connector in sorted(connectors.items())
+    connected = set(
+        (
+            await db.execute(
+                select(m.OAuthConnection.provider).where(
+                    m.OAuthConnection.owner_member_id.is_(None),
+                    m.OAuthConnection.status == "active",
+                )
+            )
+        ).scalars()
+    )
+    out: list[ConnectorCatalogDTO] = []
+    for type_id, connector in sorted(connectors.items()):
         # Uploads are created by document upload, not as a configurable source.
-        if type_id != "upload"
-    ]
+        if type_id == "upload":
+            continue
+        provider = connector.requires_oauth
+        missing = f"oauth:{provider}" if provider and provider not in connected else None
+        out.append(
+            ConnectorCatalogDTO(
+                type_id=type_id,
+                label=getattr(connector, "label", None),
+                description=getattr(connector, "description", None),
+                config_schema=connector.config_schema,
+                requires_oauth=provider,
+                usable=missing is None,
+                missing=missing,
+            )
+        )
+    return out
 
 
 @router.get(

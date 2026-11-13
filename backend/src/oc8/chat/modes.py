@@ -143,9 +143,12 @@ AGENT = ChatMode(
         "systems, limits -- ids from builder_options); the person sees it as a "
         "card and nothing is created until they confirm there. If they ask for "
         "changes, call propose_agent again with the revised agent -- it replaces "
-        "the previous one. If no connected system fits, say so plainly, point "
-        "them to the Knowledge page (/knowledge) where a system is connected, "
-        "and do not propose an agent that cannot work. Every other tool that "
+        "the previous one. If no connected system fits, say so plainly and use "
+        "the reason builder_options gives: tools and integrations are installed "
+        "on the Capas page (/capas) and connected on the Connections page "
+        "(/connections), with an organisation login or the person's own sign-in; "
+        "the Knowledge page (/knowledge) is only for data sources. Do not propose "
+        "an agent that cannot work. Every other tool that "
         "would change anything is withheld."
     ),
     allows_tools=True,

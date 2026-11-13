@@ -1331,7 +1331,11 @@ export function SourceWizard({
   const [schedule, setSchedule] = useState<"hourly" | "daily" | "manual">("daily");
   const [sensitivity, setSensitivity] = useState<SensitivityLevel>("internal");
 
-  const connector = connectors.find((entry) => entry.typeId === kind) ?? connectors[0];
+  const t = useT();
+  // A connector the organisation has not connected yet is shown, but cannot
+  // be picked (`usable` from GET /knowledge/connectors).
+  const usableConnectors = connectors.filter((entry) => entry.usable !== false);
+  const connector = usableConnectors.find((entry) => entry.typeId === kind) ?? usableConnectors[0];
   const schema = connector?.configSchema;
   const connectorLabel = connector?.label ?? kind.replace(/[-_]/g, " ");
   const createSource = useCreateSource();
@@ -1350,8 +1354,9 @@ export function SourceWizard({
   const [createError, setCreateError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!connectors.length) return;
-    if (!connectors.some((entry) => entry.typeId === kind)) setKind(connectors[0].typeId);
+    const usable = connectors.filter((entry) => entry.usable !== false);
+    if (!usable.length) return;
+    if (!usable.some((entry) => entry.typeId === kind)) setKind(usable[0].typeId);
   }, [connectors, kind]);
 
   useEffect(() => {
@@ -1436,7 +1441,7 @@ export function SourceWizard({
           )}
           {step < 4 ? (
             <button
-              disabled={step === 3 && !targetKbId}
+              disabled={(step === 1 && !connector) || (step === 3 && !targetKbId)}
               onClick={() => setStep((s) => s + 1)}
               className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-40 hover:brightness-110"
             >
@@ -1470,6 +1475,39 @@ export function SourceWizard({
           <div className="grid grid-cols-2 gap-2">
             {connectors.map((entry) => {
               const Icon = KIND_ICON[entry.typeId as DataSourceKind] ?? FileText;
+              if (entry.usable === false) {
+                return (
+                  <div
+                    key={entry.typeId}
+                    className="flex flex-col gap-1 rounded-md border border-dashed border-border bg-background/20 p-3 text-xs"
+                  >
+                    <button
+                      type="button"
+                      disabled
+                      className="flex cursor-not-allowed items-center gap-2 text-left opacity-60"
+                    >
+                      <Icon className="h-4 w-4 text-muted-foreground" />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-medium">
+                          {entry.label ?? entry.typeId.replace(/[-_]/g, " ")}
+                        </div>
+                        <div className="truncate text-[10px] text-muted-foreground">
+                          {t(
+                            "Needs an organisation connection",
+                            "Braucht eine Verbindung der Organisation",
+                          )}
+                        </div>
+                      </div>
+                    </button>
+                    <Link
+                      to="/connections"
+                      className="text-[11px] font-medium text-primary hover:underline"
+                    >
+                      {t("Connect first", "Erst verbinden")} →
+                    </Link>
+                  </div>
+                );
+              }
               const active = kind === entry.typeId;
               return (
                 <button
@@ -1673,6 +1711,7 @@ function DynamicConnectorFields({
   oauthConnectionId: string;
   onOAuthConnectionChange: (id: string) => void;
 }) {
+  const t = useT();
   const fields = Object.entries(schema?.properties ?? {});
   const connections = oauthConnections.filter(
     (connection) => connection.provider === oauthProvider && connection.status === "active",
@@ -1696,7 +1735,13 @@ function DynamicConnectorFields({
           </select>
           {!connections.length && (
             <span className="mt-1 block text-[11px] text-[color:var(--status-warning)]">
-              No active {oauthProvider} account is connected yet. Configure OAuth first.
+              {t(
+                `The organisation has no active ${oauthProvider} connection yet.`,
+                `Die Organisation hat noch keine aktive Verbindung zu ${oauthProvider}.`,
+              )}{" "}
+              <Link to="/connections" className="font-medium underline">
+                {t("Connect first", "Erst verbinden")}
+              </Link>
             </span>
           )}
         </label>
