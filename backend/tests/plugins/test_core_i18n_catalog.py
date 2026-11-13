@@ -45,8 +45,8 @@ def test_load_core_catalogs_missing_headers_falls_back_to_locale_code(tmp_path: 
 
 def test_load_core_catalogs_omits_untranslated_entries(tmp_path: Path) -> None:
     invalidate_core_catalog_cache()
-    _write_po(tmp_path, "fr", 'msgid "Save"\nmsgstr ""\n')
-    assert load_core_catalogs(str(tmp_path))["fr"].translations == {}
+    _write_po(tmp_path, "fr", 'msgid "Save"\nmsgstr ""\n\nmsgid "Close"\nmsgstr "Fermer"\n')
+    assert load_core_catalogs(str(tmp_path))["fr"].translations == {"Close": "Fermer"}
 
 
 def test_load_core_catalogs_skips_malformed_file_without_failing_others(
@@ -155,7 +155,9 @@ def test_native_name_and_flag_come_from_core_when_it_sets_them(tmp_path: Path) -
     _write_po(
         core,
         "fr",
-        'msgid ""\nmsgstr ""\n"X-Native-Name: Français\\n"\n"X-Flag: 🇫🇷\\n"\n',
+        'msgid ""\nmsgstr ""\n"X-Native-Name: Français\\n"\n"X-Flag: 🇫🇷\\n"\n'
+        "\n"
+        'msgid "Save"\nmsgstr "Enregistrer"\n',
     )
     _write_po(
         edition,

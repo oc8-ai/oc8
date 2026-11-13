@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _CACHE_TTL_SECONDS = 5.0
-_cache: dict[tuple[str, tuple[str, ...]], tuple[float, dict[str, CoreCatalog]]] = {}
+_cache: dict[tuple[str, tuple[str, ...], bool], tuple[float, dict[str, CoreCatalog]]] = {}
 
 
 @dataclass(frozen=True)
@@ -45,9 +45,9 @@ class CoreCatalog:
     #: renders no flag rather than a placeholder.
     flag: str
     #: `{msgid: msgstr}`. Untranslated entries (empty `msgstr`) and `fuzzy`
-    #: ones (Weblate's "Needs editing", e.g. unreviewed AI drafts) are
-    #: omitted, like `msgfmt` does -- a lookup miss falls back to the English
-    #: source.
+    #: ones (Weblate's "Needs editing", e.g. unreviewed AI drafts; served when
+    #: `i18n_serve_drafts` is on) are omitted, like `msgfmt` does -- a lookup
+    #: miss falls back to the English source.
     translations: dict[str, str]
 
 
@@ -70,7 +70,8 @@ def load_core_catalogs(
     from the first edition file that does.
     """
     resolved_root = root if root is not None else get_settings().core_i18n_path
-    cache_key = (resolved_root, tuple(str(d) for d in edition_dirs))
+    drafts = get_settings().i18n_serve_drafts
+    cache_key = (resolved_root, tuple(str(d) for d in edition_dirs), drafts)
     cached = _cache.get(cache_key)
     now = time.monotonic()
     if cached is not None and now - cached[0] < _CACHE_TTL_SECONDS:
@@ -83,12 +84,12 @@ def load_core_catalogs(
             po.metadata.get("X-Native-Name"),
             po.metadata.get("X-Flag"),
             {entry.msgid for entry in po},
-            _served(po),
+            _served(po, drafts),
         )
     for edition_dir in edition_dirs:
         for path, po in _read_dir(edition_dir, "edition"):
             native, flag, owned, translations = merged.get(path.stem, (None, None, set(), {}))
-            for msgid, msgstr in _served(po).items():
+            for msgid, msgstr in _served(po, drafts).items():
                 if msgid not in owned:
                     translations.setdefault(msgid, msgstr)
             merged[path.stem] = (
@@ -106,6 +107,9 @@ def load_core_catalogs(
             translations=translations,
         )
         for locale, (native, flag, _owned, translations) in merged.items()
+        # A locale with nothing to serve would only show English under its own
+        # name in the language picker, so it is not offered.
+        if translations
     }
     _cache[cache_key] = (now, out)
     return out
@@ -127,8 +131,12 @@ def _read_dir(base: Path, kind: str) -> Iterable[tuple[Path, polib.POFile]]:
         yield path, po
 
 
-def _served(po: polib.POFile) -> dict[str, str]:
-    return {entry.msgid: entry.msgstr for entry in po if entry.msgstr and not entry.fuzzy}
+def _served(po: polib.POFile, drafts: bool = False) -> dict[str, str]:
+    """Translated entries; fuzzy ones only when `i18n_serve_drafts` is on.
+    An empty msgstr is never served."""
+    return {
+        entry.msgid: entry.msgstr for entry in po if entry.msgstr and (drafts or not entry.fuzzy)
+    }
 
 
 def collect_edition_catalog_dirs(extensions: Iterable[object]) -> tuple[Path, ...]:
