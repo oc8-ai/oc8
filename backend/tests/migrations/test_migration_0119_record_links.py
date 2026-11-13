@@ -1,4 +1,4 @@
-"""0118: the record_link registry (RLS on) and the two approval columns."""
+"""0119: the record_link registry (RLS on) and the two approval columns."""
 
 from __future__ import annotations
 
@@ -34,5 +34,5 @@ def test_record_link_table_has_rls_and_approval_columns(pg_url: str) -> None:
 
 
 def test_downgrade_drops_and_upgrade_restores(pg_url: str) -> None:
-    command.downgrade(_cfg(), "0117")
+    command.downgrade(_cfg(), "0118")
     command.upgrade(_cfg(), "head")
