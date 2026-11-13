@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import sys
 from pathlib import Path
 from typing import Any
@@ -109,6 +110,63 @@ async def test_list_events_with_a_range_uses_calendar_view(
     assert captured["params"]["startDateTime"] == "2026-08-20T00:00:00"
     assert captured["params"]["endDateTime"] == "2026-08-27T00:00:00"
     assert result == [{"id": "e1"}]
+
+
+async def _list_with(monkeypatch: pytest.MonkeyPatch, args: dict[str, Any]) -> dict[str, Any]:
+    captured: dict[str, Any] = {}
+
+    async def fake_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        captured["path"] = path
+        captured["params"] = params or {}
+        return {"value": []}
+
+    monkeypatch.setattr(graph, "get", fake_get)
+    monkeypatch.delenv(DEFAULT_USER_ENV, raising=False)
+    await CALL_HANDLERS["calendar_list_events"]({**args, "userId": "sina@contoso.com"})
+    return captured
+
+
+async def test_list_events_with_only_a_start_reads_the_week_after_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = await _list_with(monkeypatch, {"start": "2026-08-20T09:00:00"})
+    assert captured["path"] == "/users/sina@contoso.com/calendarView"
+    assert captured["params"]["startDateTime"] == "2026-08-20T09:00:00"
+    assert captured["params"]["endDateTime"] == "2026-08-27T09:00:00"
+
+
+async def test_list_events_with_only_a_start_keeps_its_offset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = await _list_with(monkeypatch, {"start": "2026-08-20T09:00:00Z"})
+    assert captured["params"]["startDateTime"] == "2026-08-20T09:00:00Z"
+    assert captured["params"]["endDateTime"] == "2026-08-27T09:00:00+00:00"
+
+
+async def test_list_events_with_only_an_end_reads_from_now(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    end = (dt.datetime.now(tz=dt.UTC) + dt.timedelta(days=3)).replace(microsecond=0)
+    captured = await _list_with(monkeypatch, {"end": end.isoformat()})
+    assert captured["path"] == "/users/sina@contoso.com/calendarView"
+    assert captured["params"]["endDateTime"] == end.isoformat()
+    start = dt.datetime.fromisoformat(captured["params"]["startDateTime"])
+    assert abs((dt.datetime.now(tz=dt.UTC) - start).total_seconds()) < 60
+
+
+async def test_list_events_with_only_a_past_end_reads_the_week_before_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = await _list_with(monkeypatch, {"end": "2020-03-08T00:00:00"})
+    assert captured["params"]["startDateTime"] == "2020-03-01T00:00:00"
+    assert captured["params"]["endDateTime"] == "2020-03-08T00:00:00"
+
+
+async def test_list_events_refuses_a_bound_that_is_not_a_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValueError, match="ISO 8601"):
+        await _list_with(monkeypatch, {"start": "next tuesday"})
 
 
 async def test_list_events_without_a_range_keeps_the_events_collection(
