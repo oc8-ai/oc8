@@ -313,6 +313,36 @@ describe("ConnectionsPage", () => {
     expect(screen.getByRole("dialog")).toHaveTextContent("dialog:odoo_mcp");
   });
 
+  it("offers a custom server or API as an organisation access to plugin managers", async () => {
+    may.mockReturnValue(true);
+    renderPage({ tab: "organisation" });
+    openMenu("Zugang hinzufügen");
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Eigener Server oder eigene API" }),
+    );
+    expect(screen.getByText("custom-wizard")).toBeTruthy();
+  });
+
+  it("offers the custom server even when no app is installed", async () => {
+    may.mockReturnValue(true);
+    integrations.mockReturnValue({ data: [], isLoading: false });
+    renderPage({ tab: "organisation" });
+    openMenu("Zugang hinzufügen");
+    expect(
+      await screen.findByRole("menuitem", { name: "Eigener Server oder eigene API" }),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps the custom server out of the organisation menu without plugin:manage", async () => {
+    may.mockImplementation(ADMIN);
+    renderPage({ tab: "organisation" });
+    openMenu("Zugang hinzufügen");
+    await screen.findByRole("menuitem", { name: "Odoo" });
+    expect(
+      screen.queryByRole("menuitem", { name: "Eigener Server oder eigene API" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("asks before revoking a member's connection", async () => {
     may.mockImplementation(ADMIN);
     disconnect.mockResolvedValue(undefined);
