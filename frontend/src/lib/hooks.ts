@@ -133,6 +133,10 @@ export interface Approval {
   // remains the only "why" for those.
   reasonContext?: Record<string, unknown> | null;
   recordUrl?: string | null;
+  // Other records the held call names (a customer, a product), and once it
+  // ran, the record it created. Both already pass the server's safe-URL check.
+  relatedLinks?: { label: string; url: string }[];
+  resultUrl?: string | null;
   // The builder proposal a "copilot.agent_builder" approval decides (the pane
   // shows the same preview read-only). null/absent for every other kind.
   proposalId?: string | null;
