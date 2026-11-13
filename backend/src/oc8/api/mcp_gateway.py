@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
@@ -56,7 +57,6 @@ from oc8.agent.outward import (
     remember_delivery,
 )
 from oc8.agent.provenance import fence, shorten_long_strings
-from oc8.agent.record_link import record_url_from_env
 from oc8.agent.tool_idempotency import (
     record_invocation,
     replayed_result,
@@ -73,7 +73,6 @@ from oc8.agent.tool_semantics import (
 from oc8.agents.versioning import resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession
 from oc8.approvals import raise_approval
-from oc8.approvals.record_url import record_url_for_connection
 from oc8.audit import append_event
 from oc8.authz.pdp import (
     Decision,
@@ -93,6 +92,8 @@ from oc8.edition.tools import EditionOffer, edition_offer
 from oc8.memory.policy import authorize_memory_write
 from oc8.modelrouter import ToolCall
 from oc8.realtime.emit import note_focus, record_activity
+from oc8.records.approvals import note_approved_result
+from oc8.records.links import enrich_and_remember, link_context, link_for, related_links
 from oc8.runtime.approval_resume import pre_decided_map
 from oc8.runtime.cancellation import run_stop
 from oc8.runtime.run_context import merge_context
@@ -1050,6 +1051,8 @@ async def _call_tool(
         # link on the approval and the record the run is reaching for can
         # never disagree. A search names a kind of record rather than one and
         # gets None here, which resolves to no link.
+        # Config only: the env is resolved further down, for a call that runs.
+        held_ctx = link_context(conn)
         held_record = record_identity(tc.name, tc.arguments, focus_spec)
         ar = await raise_approval(
             db,
@@ -1063,10 +1066,11 @@ async def _call_tool(
             reason_code=decision.reason_code,
             reason_context=decision.context,
             record_url=(
-                record_url_for_connection(conn, entity=held_record[0], ref=held_record[1])
+                link_for(held_ctx, entity=held_record[0], ref=held_record[1], args=tc.arguments)
                 if held_record is not None
                 else None
             ),
+            related_links=related_links(held_ctx, tc.arguments),
         )
         # Park the run and return immediately -- no bounded wait. The adapter
         # polls for the park marker every couple of seconds (runtime.py's
@@ -1187,6 +1191,27 @@ async def _call_tool(
             arguments=tc.arguments,
         )
         if replay is not None:
+            # Enriched like the first result, so a resumed harness sees the
+            # same links. The env is where a link's base URL may come from;
+            # when it cannot be resolved the config's own is all there is, and
+            # the replay is answered either way.
+            replay_ctx = link_context(conn)
+            if replay_ctx is not None:
+                try:
+                    replay_ctx = replace(
+                        replay_ctx, env=(await _env(conn, db, run, tool=tc.name)).env
+                    )
+                except Exception:  # links are cosmetic; the replay is not
+                    pass
+            replay, _issued = await enrich_and_remember(
+                db,
+                tenant_id=run.tenant_id,
+                ctx=replay_ctx,
+                tool_name=tc.name,
+                arguments=tc.arguments,
+                output=replay,
+            )
+            await db.commit()
             return _tool_result(replay)
 
     # Before the call, never after: the point is that the recipient is not
@@ -1218,8 +1243,11 @@ async def _call_tool(
         return _tool_result(str(exc), is_error=True)
     except Exception as exc:  # surface to the model, not as a broken server
         return _tool_result(f"ERROR: {exc}", is_error=True)
-    record_url = record_url_from_env(
-        conn.name, env, record_identity(tc.name, tc.arguments, focus_spec)
+    link_ctx = link_context(conn, env)
+    record_url = (
+        link_for(link_ctx, entity=ident[0], ref=ident[1], args=tc.arguments)
+        if (ident := record_identity(tc.name, tc.arguments, focus_spec))
+        else None
     )
     if focus is not None:
         await note_focus(
@@ -1284,6 +1312,25 @@ async def _call_tool(
             tool=tc.name,
             arguments=tc.arguments,
             result=output,
+        )
+    # After the replay record (it stays raw), before the fence (which wraps the
+    # links too), and before the commit, so the issued links are kept with it.
+    output, issued = await enrich_and_remember(
+        db,
+        tenant_id=run.tenant_id,
+        ctx=link_ctx,
+        tool_name=tc.name,
+        arguments=tc.arguments,
+        output=output,
+    )
+    if issued and writes:
+        await note_approved_result(
+            db,
+            tenant_id=run.tenant_id,
+            task_id=run.task_id,
+            tool_names=(tc.name,),
+            arguments=tc.arguments,
+            urls=issued,
         )
     await db.commit()
     # Fenced, so what a stranger wrote cannot pass itself off as an instruction
