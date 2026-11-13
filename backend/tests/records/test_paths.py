@@ -189,7 +189,8 @@ async def test_a_failing_env_lookup_leaves_the_call_s_output_intact(
 
     assert result.status == "done"
     assert '[{"id": 42, "name": "S00042"}]' in stream.seen[-1]
-    assert "oc8_url" not in stream.seen[-1]
+    # The key as a JSON field; the prompt itself now names `oc8_url`.
+    assert '"oc8_url":' not in stream.seen[-1]
     assert await _issued(app_session, tenant) == set()
 
 

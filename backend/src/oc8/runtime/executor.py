@@ -22,6 +22,7 @@ from oc8.connections.acting import (
 from oc8.db.session import tenant_session
 from oc8.observability import get_tracer, record_run_outcome
 from oc8.realtime.emit import publish_agent_status, record_activity
+from oc8.records.vetting import vet_answer_links
 from oc8.runtime.adapter import RuntimeAdapter
 from oc8.runtime.agent_status import (
     RunningGuard,
@@ -1154,6 +1155,10 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         ),
                         task_images_raw=task_images_raw,
                     )
+                # One check for every runtime and every destination: the saved
+                # run output, the chat message, messenger doors and a parent's
+                # wake all read `result.output` after this line (spec §5).
+                result.output = await vet_answer_links(db, tenant_id=tenant_id, text=result.output)
             except Exception as exc:  # persist failure, never crash the worker
                 run_error = repr(exc)
 

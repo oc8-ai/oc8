@@ -486,3 +486,10 @@ async def _user(db: AsyncSession, integration: Integration, acting: ActingPerson
     if cred is None:
         raise ConnectionRequired(integration, "not_connected")
     return ToolAccess("credential", integration, acting.member_id, credential=cred)
+
+
+async def connected_connections(db: AsyncSession) -> list[m.McpConnection]:
+    """Every live connection the session's tenant has, whatever department it
+    sits in. Row-level security already scopes the session to the tenant."""
+    rows = await db.execute(select(m.McpConnection).where(m.McpConnection.connected.is_(True)))
+    return list(rows.scalars())
