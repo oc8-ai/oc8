@@ -37,7 +37,7 @@ async def drive_list(args: dict[str, Any]) -> Any:
             "includeItemsFromAllDrives": "true",
             "supportsAllDrives": "true",
             "pageSize": 1000,
-            "fields": "nextPageToken,files(id,name,mimeType,modifiedTime)",
+            "fields": "nextPageToken,files(id,name,mimeType,modifiedTime,webViewLink)",
         }
         if page_token:
             params["pageToken"] = page_token
@@ -73,7 +73,7 @@ async def drive_search(args: dict[str, Any]) -> Any:
             "includeItemsFromAllDrives": "true",
             "supportsAllDrives": "true",
             "q": f"name contains '{safe_query}' and trashed = false",
-            "fields": "files(id,name,mimeType,modifiedTime)",
+            "fields": "files(id,name,mimeType,modifiedTime,webViewLink)",
         },
     )
 

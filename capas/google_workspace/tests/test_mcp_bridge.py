@@ -95,3 +95,19 @@ async def test_a_raising_handler_becomes_an_error_result_not_an_exception(
     result = await bridge._on_call_tool(_NO_CTX, params)
     assert result.is_error is True
     assert "403" in _text(result)
+
+
+async def test_bridge_output_is_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    # str(dict) is Python repr (single quotes, True/None): record links parse
+    # the tool output as JSON, so the bridge has to emit real JSON.
+    import json
+
+    from mcp_bridge import __main__ as bridge
+
+    async def _handler(args: dict[str, object]) -> object:
+        return {"a": True, "b": None}
+
+    monkeypatch.setitem(bridge.ALL_HANDLERS, "gmail_search", _handler)
+    params = types.CallToolRequestParams(name="gmail_search", arguments={})
+    result = await bridge._on_call_tool(_NO_CTX, params)
+    assert json.loads(_text(result)) == {"a": True, "b": None}

@@ -17,6 +17,7 @@ Microsoft 365 plugin's Task 7; this file mirrors that confirmed-correct shape).
 from __future__ import annotations
 
 import asyncio
+import json
 
 import mcp.server.stdio
 import mcp.types as types
@@ -78,7 +79,13 @@ async def _on_call_tool(
             is_error=True,
         )
     return types.CallToolResult(
-        content=[types.TextContent(type="text", text=str(result))]
+        # JSON, not str(): record links parse the output, and str(dict) is Python
+        # repr (single quotes, True/None) that no JSON parser reads.
+        content=[
+            types.TextContent(
+                type="text", text=json.dumps(result, ensure_ascii=False, default=str)
+            )
+        ]
     )
 
 

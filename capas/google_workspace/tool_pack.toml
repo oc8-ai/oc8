@@ -95,6 +95,27 @@ id_fields = ["eventId", "start"]
 calendar_create_event = "calendar_event"
 calendar_update_event = "calendar_event"
 calendar_create_meet_link = "calendar_event"
+gmail_search = "message"
+gmail_get = "message"
+
+# NEUTRAL SEAM (record_url): Drive and Calendar results carry their own link
+# (`webViewLink`, `htmlLink`), preferred; a Gmail message has none, so its
+# thread id builds one. A tool result is untrusted text, hence the host
+# allow-list: Drive files open on drive.google.com or docs.google.com, Calendar
+# events on www.google.com/calendar or calendar.google.com.
+[connections.record_url]
+template = "https://mail.google.com/mail/#all/{thread}"
+native_url_fields = ["webViewLink", "htmlLink"]
+native_url_hosts = [
+    "drive.google.com", "docs.google.com", "www.google.com",
+    "calendar.google.com", "mail.google.com",
+]
+
+[connections.record_url.models]
+message = "message"
+
+[connections.record_url.placeholders]
+thread = ["item:threadId", "arg:threadId"]
 
 [connections.config.env]
 PYTHONPATH = "/app/capas/google_workspace"

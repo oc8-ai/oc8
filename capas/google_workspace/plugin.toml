@@ -10,7 +10,7 @@
 [plugin]
 name = "google_workspace"
 label = "Google Workspace"
-version = "1.0.2"
+version = "1.1.0"
 type = "tool_pack"
 trust = "first_party"
 summary = "Connect Google Workspace — Shared Drive knowledge base, plus Gmail, Calendar, Drive, Docs, Sheets and Slides tools"

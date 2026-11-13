@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -94,7 +95,7 @@ async def test_on_call_tool_routes_to_the_named_handler(monkeypatch: pytest.Monk
     # `/users/{id}/...`, never `/me/...` -- see the whole-branch review's C1.
     assert captured["path"] == "/users/info@contoso.com/messages"
     assert captured["params"]["$search"] == '"x"'
-    assert _text(result) == str([{"id": "m1"}])
+    assert json.loads(_text(result)) == [{"id": "m1"}]
     assert result.is_error is False
 
 
@@ -159,3 +160,15 @@ async def test_a_missing_default_mailbox_reaches_the_model_as_an_error(
     result = await bridge._on_call_tool(_NO_CTX, params)
     assert result.is_error is True
     assert "userId" in _text(result)
+
+
+async def test_bridge_output_is_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    # str(dict) is Python repr (single quotes, True/None): record links parse
+    # the tool output as JSON, so the bridge has to emit real JSON.
+    async def _handler(args: dict[str, Any]) -> object:
+        return {"a": True, "b": None}
+
+    monkeypatch.setitem(bridge.ALL_HANDLERS, "mail_search", _handler)
+    params = types.CallToolRequestParams(name="mail_search", arguments={})
+    result = await bridge._on_call_tool(_NO_CTX, params)
+    assert json.loads(_text(result)) == {"a": True, "b": None}

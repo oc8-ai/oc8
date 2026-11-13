@@ -113,6 +113,62 @@ CASES: list[tuple[str, str, dict[str, Any], Any, dict[str, str], list[str]]] = [
         {"MOODLE_URL": "https://lms.acme.de"},
         ["https://lms.acme.de/course/view.php?id=7"],
     ),
+    (
+        "google_workspace",
+        "drive_search",
+        {"query": "x"},
+        {
+            "files": [
+                {
+                    "id": "f1",
+                    "name": "Offer.pdf",
+                    "webViewLink": "https://drive.google.com/file/d/f1/view",
+                }
+            ]
+        },
+        {},
+        ["https://drive.google.com/file/d/f1/view"],
+    ),
+    (
+        "google_workspace",
+        "calendar_list_events",
+        {},
+        {"items": [{"id": "e1", "htmlLink": "https://www.google.com/calendar/event?eid=abc"}]},
+        {},
+        ["https://www.google.com/calendar/event?eid=abc"],
+    ),
+    (
+        "google_workspace",
+        "gmail_search",
+        {"query": "x"},
+        {"messages": [{"id": "m1", "threadId": "t1"}]},
+        {},
+        ["https://mail.google.com/mail/#all/t1"],
+    ),
+    (
+        "microsoft365",
+        "files_search",
+        {"query": "x"},
+        [{"id": "1", "name": "a.docx", "webUrl": "https://acme.sharepoint.com/a.docx"}],
+        {},
+        ["https://acme.sharepoint.com/a.docx"],
+    ),
+    (
+        "microsoft365",
+        "files_search",
+        {"query": "x"},
+        [{"id": "1", "name": "a.docx", "webUrl": "https://acme-my.sharepoint.com/personal/a.docx"}],
+        {},
+        ["https://acme-my.sharepoint.com/personal/a.docx"],
+    ),
+    (
+        "microsoft365",
+        "mail_search",
+        {"query": "x"},
+        [{"id": "m1", "subject": "Hi", "webLink": "https://outlook.office365.com/owa/?ItemID=m1"}],
+        {},
+        ["https://outlook.office365.com/owa/?ItemID=m1"],
+    ),
 ]
 
 
@@ -167,3 +223,17 @@ def test_gitea_ignores_an_html_url_off_its_own_host() -> None:
     out = json.dumps({"number": 3, "html_url": "https://evil.example/x"})
     _, urls = enrich(ctx, "get_issue", {"owner": "acme", "repo": "web", "index": 3}, out)
     assert urls == ["https://git.acme.dev/acme/web/issues/3"]
+
+
+def test_google_workspace_ignores_a_native_url_on_a_foreign_host() -> None:
+    ctx = _ctx("google_workspace", {})
+    out = json.dumps({"files": [{"id": "f1", "webViewLink": "https://evil.example/x"}]})
+    _, urls = enrich(ctx, "drive_search", {"query": "x"}, out)
+    assert urls == []
+
+
+def test_microsoft365_ignores_a_native_url_on_a_foreign_host() -> None:
+    ctx = _ctx("microsoft365", {})
+    out = json.dumps([{"id": "1", "webUrl": "https://evil.example/x"}])
+    _, urls = enrich(ctx, "files_search", {"query": "x"}, out)
+    assert urls == []

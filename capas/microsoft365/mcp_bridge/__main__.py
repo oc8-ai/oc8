@@ -16,6 +16,7 @@ earlier SDK versions -- this repo's locked `mcp` dependency is 2.0.0, whose
 from __future__ import annotations
 
 import asyncio
+import json
 
 import mcp.server.stdio
 import mcp.types as types
@@ -67,7 +68,10 @@ async def _on_call_tool(
         return types.CallToolResult(
             content=[types.TextContent(type="text", text=f"ERROR: {exc}")], is_error=True
         )
-    return types.CallToolResult(content=[types.TextContent(type="text", text=str(result))])
+    # JSON, not str(): record links parse the output, and str(dict) is Python
+    # repr (single quotes, True/None) that no JSON parser reads.
+    text = json.dumps(result, ensure_ascii=False, default=str)
+    return types.CallToolResult(content=[types.TextContent(type="text", text=text)])
 
 
 server = Server("microsoft365", on_list_tools=_on_list_tools, on_call_tool=_on_call_tool)
