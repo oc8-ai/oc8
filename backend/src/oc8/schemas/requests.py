@@ -940,5 +940,6 @@ class SetAgentToolAccessRequest(CamelModel):
 
 
 class VerifyRecordLinksRequest(CamelModel):
+    message_id: uuid.UUID
     #: One chat answer's worth of links; the URL cap matches what `enrich` issues.
     urls: list[Annotated[str, StringConstraints(max_length=2000)]] = Field(max_length=100)

@@ -6,6 +6,9 @@ issued is a guess and is unlinked before anyone sees it (design doc
 2026-11-13-record-links-design.md §4.2/§5). Tenant-scoped, not run-scoped: the
 copilot passes on answers of delegated runs, which arrive in a fresh run.
 
+`canon` is where a link leads however it is spelled (`records.registry.canonical`),
+so the web UI's check of a browser-re-encoded href is one index lookup.
+
 `approval_request.related_links` lists the existing records a held CREATE
 references; `result_url` is the record the approved call produced.
 
@@ -33,13 +36,19 @@ def upgrade() -> None:
             tenant_id uuid NOT NULL,
             url text NOT NULL,
             host text NOT NULL,
+            canon text,
             issued_at timestamptz NOT NULL DEFAULT now(),
             CONSTRAINT uq_record_link_tenant_url UNIQUE (tenant_id, url),
             CONSTRAINT ck_record_link_url CHECK (char_length(url) <= 2000)
         )
     """)
+    # A database that ran an earlier draft of this revision lacks `canon`.
+    op.execute("ALTER TABLE record_link ADD COLUMN IF NOT EXISTS canon text")
     op.execute(
         "CREATE INDEX IF NOT EXISTS ix_record_link_tenant_host ON record_link (tenant_id, host)"
+    )
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_record_link_tenant_canon ON record_link (tenant_id, canon)"
     )
     op.execute("ALTER TABLE record_link ENABLE ROW LEVEL SECURITY")
     op.execute("""

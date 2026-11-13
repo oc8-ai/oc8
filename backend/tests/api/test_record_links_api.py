@@ -1,9 +1,11 @@
-"""The web UI's second gate on record links (ruling R9).
+"""The web UI's second gate on record links (rulings R9, R11).
 
 `vet_answer_links` reads Markdown with regexes; the browser reads it with a
-real parser. So the chat renderer asks the server itself: which hosts are
-connected (`GET /record-links/hosts`), and which of the hrefs it is about to
-make clickable oc8 actually issued (`POST /record-links/verify`).
+real parser. So the chat renderer asks the server about the hrefs its parser
+produced for one saved answer: `POST /record-links/verify` says, per URL,
+whether it points at a connected system and whether oc8 issued it. It is
+bound to an answer the caller may read and to the URLs that answer contains,
+so it is no oracle for constructed URLs.
 """
 
 from __future__ import annotations
@@ -23,32 +25,123 @@ from oc8.capas.manifest import RecordUrlTemplate, ToolPackConnection
 from oc8.main import create_app
 from oc8.records.registry import remember_links
 from tests.conftest import AppSessionFactory
+from tests.copilot.helpers import copilot_seat
 
 pytestmark = pytest.mark.asyncio
 
 ISSUED = "https://odoo.example.com/odoo/sale.order/42"
+GUESSED = "https://odoo.example.com/odoo/sale.order/99"
+BRACKETED = "https://odoo.example.com/odoo/action-1?ids=[1,2]#Größe"
+REENCODED = "https://ODOO.example.com/odoo/action-1?ids=%5B1,2%5D#Gr%C3%B6%C3%9Fe"
 
 
-def _h(tenant: uuid.UUID) -> dict[str, str]:
-    token = get_identity_provider().mint(tenant_id=tenant, subject="op", role="org_admin")
+def _h(tenant: uuid.UUID, subject: str) -> dict[str, str]:
+    token = get_identity_provider().mint(tenant_id=tenant, subject=subject, role="org_admin")
     return {"Authorization": f"Bearer {token}"}
 
 
-async def _call(tenant: uuid.UUID, method: str, path: str, **kw: Any) -> tuple[int, Any]:
+async def _verify_call(
+    tenant: uuid.UUID, subject: str, message_id: uuid.UUID, urls: list[str]
+) -> tuple[int, Any]:
     app = create_app()
     async with LifespanManager(app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
-            resp = await c.request(method, f"/api/v1/record-links{path}", headers=_h(tenant), **kw)
+            resp = await c.post(
+                "/api/v1/record-links/verify",
+                json={"messageId": str(message_id), "urls": urls},
+                headers=_h(tenant, subject),
+            )
             return resp.status_code, resp.json()
 
 
-async def _verify(tenant: uuid.UUID, urls: list[str]) -> list[str]:
-    code, body = await _call(tenant, "POST", "/verify", json={"urls": urls})
+async def _verdicts(
+    tenant: uuid.UUID, message_id: uuid.UUID, urls: list[str], subject: str = "alice"
+) -> dict[str, tuple[bool, bool]]:
+    code, body = await _verify_call(tenant, subject, message_id, urls)
     assert code == 200, body
-    return list(body["issued"])
+    return {v["url"]: (v["connected"], v["issued"]) for v in body["links"]}
 
 
-async def test_hosts_are_the_linked_and_the_connected_ones(
+async def _answer(
+    app_session: AppSessionFactory,
+    tenant: uuid.UUID,
+    content: str,
+    *,
+    issued: list[str],
+    role: str = "assistant",
+) -> uuid.UUID:
+    """Alice's chat with one message, and the links oc8 issued for the tenant."""
+    async with app_session(tenant) as db:
+        seat = await copilot_seat(db, tenant, "alice")
+        msg = m.ChatMessage(
+            tenant_id=tenant, session_id=seat.session_id, role=role, content=content
+        )
+        db.add(msg)
+        await remember_links(db, tenant_id=tenant, urls=issued)
+        await db.flush()
+        return msg.id
+
+
+async def test_judges_the_links_of_an_answer(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    content = f"[a]({ISSUED}) [b]({BRACKETED}) [c]({GUESSED}) [d](https://example.com/x)"
+    msg = await _answer(app_session, tenant, content, issued=[ISSUED, BRACKETED])
+    got = await _verdicts(tenant, msg, [ISSUED, REENCODED, GUESSED, "https://example.com/x"])
+    assert got == {
+        ISSUED: (True, True),
+        # The browser re-encoded the href; it still leads where the issued one does.
+        REENCODED: (True, True),
+        GUESSED: (True, False),
+        "https://example.com/x": (False, False),
+    }
+
+
+async def test_an_issued_url_the_answer_does_not_contain_is_never_issued(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    msg = await _answer(app_session, tenant, "No links here.", issued=[ISSUED, BRACKETED])
+    got = await _verdicts(tenant, msg, [ISSUED, REENCODED])
+    assert got == {ISSUED: (True, False), REENCODED: (True, False)}
+
+
+async def test_backslash_and_port_spellings_match_by_target(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    backslash = "https://odoo.example.com\\odoo\\sale.order\\42"
+    default_port = "https://odoo.example.com:443/odoo/sale.order/42"
+    other_port = "https://odoo.example.com:8443/odoo/sale.order/42"
+    plain_http = "http://odoo.example.com/odoo/sale.order/42"
+    content = " ".join(f"[x]({u})" for u in (backslash, default_port, other_port, plain_http))
+    msg = await _answer(app_session, tenant, content, issued=[ISSUED])
+    got = await _verdicts(tenant, msg, [backslash, default_port, other_port, plain_http])
+    assert got == {
+        backslash: (True, True),
+        default_port: (True, True),
+        other_port: (True, False),
+        plain_http: (True, False),
+    }
+
+
+async def test_another_tenants_or_an_expired_link_is_not_issued(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant, other = uuid.uuid4(), uuid.uuid4()
+    async with app_session(other) as db:
+        await remember_links(db, tenant_id=other, urls=[GUESSED])
+    msg = await _answer(app_session, tenant, f"[a]({ISSUED}) [b]({GUESSED})", issued=[ISSUED])
+    async with app_session(tenant) as db:
+        await db.execute(
+            update(m.RecordLink)
+            .where(m.RecordLink.tenant_id == tenant)
+            .values(issued_at=dt.datetime.now(dt.UTC) - dt.timedelta(days=31))
+        )
+    got = await _verdicts(tenant, msg, [ISSUED, GUESSED])
+    assert got == {ISSUED: (True, False), GUESSED: (True, False)}
+
+
+async def test_a_connections_base_host_is_connected_before_any_link_was_issued(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     template = RecordUrlTemplate(
@@ -61,6 +154,8 @@ async def test_hosts_are_the_linked_and_the_connected_ones(
         "oc8.capas.discovery.resolve_tool_pack_connection", lambda plugin, key: conn
     )
     tenant = uuid.uuid4()
+    erp = "https://erp.example.com/odoo/sale.order/1"
+    msg = await _answer(app_session, tenant, f"[a]({erp})", issued=[])
     async with app_session(tenant) as db:
         dept = m.Department(tenant_id=tenant, name="Vertrieb")
         db.add(dept)
@@ -82,77 +177,33 @@ async def test_hosts_are_the_linked_and_the_connected_ones(
                 },
             )
         )
-        await remember_links(db, tenant_id=tenant, urls=[ISSUED])
-
-    code, body = await _call(tenant, "GET", "/hosts")
-    assert code == 200, body
-    assert sorted(body["hosts"]) == ["erp.example.com", "odoo.example.com"]
+    assert await _verdicts(tenant, msg, [erp]) == {erp: (True, False)}
 
 
-async def test_verify_returns_the_issued_url_as_submitted(
-    app_session: AppSessionFactory,
-) -> None:
+async def test_another_members_answer_is_not_found(app_session: AppSessionFactory) -> None:
     tenant = uuid.uuid4()
-    bracketed = "https://odoo.example.com/odoo/action-1?ids=[1,2]#Größe"
+    msg = await _answer(app_session, tenant, f"[a]({ISSUED})", issued=[ISSUED])
     async with app_session(tenant) as db:
-        await remember_links(db, tenant_id=tenant, urls=[ISSUED, bracketed])
-
-    # The browser re-encodes what the model wrote; the match is canonical.
-    reencoded = "https://ODOO.example.com/odoo/action-1?ids=%5B1,2%5D#Gr%C3%B6%C3%9Fe"
-    submitted = [ISSUED, reencoded, "https://odoo.example.com/odoo/sale.order/99"]
-    assert sorted(await _verify(tenant, submitted)) == sorted([ISSUED, reencoded])
+        await copilot_seat(db, tenant, "bob")
+    code, _body = await _verify_call(tenant, "bob", msg, [ISSUED])
+    assert code == 404
 
 
-async def test_verify_matches_a_backslash_path_the_browser_reads_as_slashes(
-    app_session: AppSessionFactory,
-) -> None:
+async def test_a_members_own_message_is_not_judged(app_session: AppSessionFactory) -> None:
+    """A member chooses what their own message says, so it is no answer to
+    check -- it would make the endpoint an oracle for typed-in URLs."""
     tenant = uuid.uuid4()
-    async with app_session(tenant) as db:
-        await remember_links(db, tenant_id=tenant, urls=[ISSUED])
-    raw = "https://odoo.example.com\\odoo\\sale.order\\42"
-    assert await _verify(tenant, [raw]) == [raw]
+    msg = await _answer(app_session, tenant, f"[a]({ISSUED})", issued=[ISSUED], role="user")
+    code, _body = await _verify_call(tenant, "alice", msg, [ISSUED])
+    assert code == 404
 
 
-async def test_verify_does_not_confirm_a_different_port_or_scheme(
-    app_session: AppSessionFactory,
-) -> None:
-    tenant = uuid.uuid4()
-    async with app_session(tenant) as db:
-        await remember_links(db, tenant_id=tenant, urls=[ISSUED])
-    others = [
-        "https://odoo.example.com:8443/odoo/sale.order/42",
-        "http://odoo.example.com/odoo/sale.order/42",
-        "https://odoo.example.com/odoo/sale.order/42/../99",
-    ]
-    assert await _verify(tenant, others) == []
-    assert await _verify(tenant, ["https://odoo.example.com:443/odoo/sale.order/42"]) == [
-        "https://odoo.example.com:443/odoo/sale.order/42"
-    ]
-
-
-async def test_verify_ignores_another_tenants_links(app_session: AppSessionFactory) -> None:
-    mine, theirs = uuid.uuid4(), uuid.uuid4()
-    async with app_session(theirs) as db:
-        await remember_links(db, tenant_id=theirs, urls=[ISSUED])
-    assert await _verify(mine, [ISSUED]) == []
-
-
-async def test_verify_ignores_a_link_older_than_the_ttl(app_session: AppSessionFactory) -> None:
-    tenant = uuid.uuid4()
-    async with app_session(tenant) as db:
-        await remember_links(db, tenant_id=tenant, urls=[ISSUED])
-        await db.execute(
-            update(m.RecordLink)
-            .where(m.RecordLink.tenant_id == tenant)
-            .values(issued_at=dt.datetime.now(dt.UTC) - dt.timedelta(days=31))
-        )
-    assert await _verify(tenant, [ISSUED]) == []
-
-
-async def test_verify_of_nothing_or_of_junk_is_empty(app_session: AppSessionFactory) -> None:
-    tenant = uuid.uuid4()
-    assert await _verify(tenant, []) == []
-    assert await _verify(tenant, ["not a url", "javascript:alert(1)", "https://[x"]) == []
+async def test_there_is_no_host_listing() -> None:
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            resp = await c.get("/api/v1/record-links/hosts", headers=_h(uuid.uuid4(), "alice"))
+    assert resp.status_code in (404, 405)
 
 
 @pytest.mark.parametrize(
@@ -165,5 +216,5 @@ async def test_verify_of_nothing_or_of_junk_is_empty(app_session: AppSessionFact
 async def test_verify_refuses_more_than_its_limits(
     app_session: AppSessionFactory, urls: list[str]
 ) -> None:
-    code, _body = await _call(uuid.uuid4(), "POST", "/verify", json={"urls": urls})
+    code, _body = await _verify_call(uuid.uuid4(), "alice", uuid.uuid4(), urls)
     assert code == 422

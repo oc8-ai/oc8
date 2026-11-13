@@ -277,6 +277,17 @@ def _all_candidates(text: str, hosts: set[str]) -> set[str]:
     return wanted
 
 
+def urls_in(text: str) -> set[str]:
+    """Every string in the text that may be read as a URL: each match and its
+    prefixes ending at punctuation, in the text as written and as a Markdown
+    parser reads it (escapes deleted, entities decoded)."""
+    found: set[str] = set()
+    for seen in (text, *_readings(text)):
+        for mt in _URL.finditer(seen):
+            found.update(_candidates(mt.group(0)))
+    return found
+
+
 def _has_url(text: str) -> bool:
     low = text.lower()
     return "http" in low or "www." in low

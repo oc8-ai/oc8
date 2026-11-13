@@ -4,6 +4,7 @@ check (`oc8.records.vetting`), written wherever `enrich` issued links."""
 from __future__ import annotations
 
 import datetime as dt
+import json
 import unicodedata
 import uuid
 from collections.abc import Iterable, Sequence
@@ -41,7 +42,7 @@ def host_of(url: str) -> str:
 
 async def remember_links(db: AsyncSession, *, tenant_id: uuid.UUID, urls: Sequence[str]) -> None:
     rows = [
-        {"id": uuid7(), "tenant_id": tenant_id, "url": u, "host": host_of(u)}
+        {"id": uuid7(), "tenant_id": tenant_id, "url": u, "host": host_of(u), "canon": canonical(u)}
         for u in dict.fromkeys(urls)
         if host_of(u)
     ]
@@ -50,7 +51,8 @@ async def remember_links(db: AsyncSession, *, tenant_id: uuid.UUID, urls: Sequen
     stmt = insert(m.RecordLink).values(rows)
     await db.execute(
         stmt.on_conflict_do_update(
-            constraint="uq_record_link_tenant_url", set_={"issued_at": func.now()}
+            constraint="uq_record_link_tenant_url",
+            set_={"issued_at": func.now(), "canon": stmt.excluded.canon},
         )
     )
 
@@ -80,10 +82,11 @@ async def linked_hosts(db: AsyncSession, *, tenant_id: uuid.UUID) -> set[str]:
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
-def _canonical(url: str) -> tuple[object, ...] | None:
+def canonical(url: str) -> str | None:
     """Where a URL leads, independent of how it is spelled: `[`, `%5B` and an
-    upper-case host are the same target, `:8443` and `http:` are not. None for
-    anything that is not an http(s) URL with a host."""
+    upper-case host are the same target, `:8443` and `http:` are not. Stored
+    with every issued link, so a re-encoded URL is matched by an index lookup.
+    None for anything that is not an http(s) URL with a host."""
     try:
         # A browser reads `\` as `/` before the query starts, not after it.
         cut = min((i for i in (url.find("?"), url.find("#")) if i >= 0), default=len(url))
@@ -93,34 +96,33 @@ def _canonical(url: str) -> tuple[object, ...] | None:
         if scheme not in _DEFAULT_PORTS or not host:
             return None
         port = parts.port or _DEFAULT_PORTS[scheme]
-        userinfo = (parts.username, parts.password)
+        userinfo = [parts.username, parts.password]
     except ValueError:
         return None
     path = unquote(parts.path) or "/"
-    return scheme, userinfo, host, port, path, unquote(parts.query), unquote(parts.fragment)
+    target = [scheme, userinfo, host, port, path, unquote(parts.query), unquote(parts.fragment)]
+    return json.dumps(target, ensure_ascii=False, separators=(",", ":"))
 
 
 async def verified_links(
     db: AsyncSession, *, tenant_id: uuid.UUID, urls: Iterable[str]
 ) -> set[str]:
-    """The submitted strings that lead exactly where an issued link does.
+    """The given strings that lead exactly where an issued link does.
 
     `issued_links` matches strings; this matches targets, for callers that see
     a URL only after something else re-encoded it -- the browser turns an
-    issued `?ids=[1,2]` into `?ids=%5B1,2%5D`. Issued links are therefore read
-    by host and compared canonically, and the caller gets back its own
+    issued `?ids=[1,2]` into `?ids=%5B1,2%5D`. The caller gets back its own
     spelling of each match."""
-    wanted = {u: c for u in dict.fromkeys(urls) if (c := _canonical(u)) is not None}
-    hosts = {c[2] for c in wanted.values()}
-    if not hosts:
+    wanted = {u: c for u in dict.fromkeys(urls) if (c := canonical(u)) is not None}
+    if not wanted:
         return set()
     since = dt.datetime.now(dt.UTC) - ISSUED_LINK_TTL
     rows = await db.execute(
-        select(m.RecordLink.url).where(
+        select(m.RecordLink.canon).where(
             m.RecordLink.tenant_id == tenant_id,
-            m.RecordLink.host.in_(hosts),
+            m.RecordLink.canon.in_(set(wanted.values())),
             m.RecordLink.issued_at >= since,
         )
     )
-    issued = {c for u in rows.scalars() if (c := _canonical(u)) is not None}
+    issued = set(rows.scalars())
     return {u for u, c in wanted.items() if c in issued}
