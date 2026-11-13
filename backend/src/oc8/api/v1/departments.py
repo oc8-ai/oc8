@@ -44,6 +44,7 @@ from sqlalchemy import func, select
 from oc8 import models as m
 from oc8.agents.publish_hooks import PublishHookFailed
 from oc8.agents.repo import visible_agents
+from oc8.agents.retire import retire_agent
 from oc8.agents.versioning import NoChangesToPublish, draft_status, publish_version
 from oc8.api.deps import CurrentPrincipal, DbSession, require_departmental, require_permission
 from oc8.api.v1._serializers import agent_to_dto, department_to_dto, task_to_dto
@@ -412,9 +413,10 @@ async def delete_department(
     makes for one agent on its own (by its own run history, not blanket
     archival), so an agent with no runs is actually removed and one with
     history is archived, same as calling that endpoint on it directly would
-    do. This is the ONLY writer that cascades into `agent` from a department
-    mutation -- `set_department_tools`'s own cascade (its docstring) only
-    ever touches `agent.narrowing`, never `deleted_at`."""
+    do, and each is retired the same way (`oc8.agents.retire`). This is the
+    ONLY writer that cascades into `agent` from a department mutation --
+    `set_department_tools`'s own cascade (its docstring) only ever touches
+    `agent.narrowing`, never `deleted_at`."""
     dept = await _get_department(db, dept_id)
     live_agents = (
         (
@@ -448,6 +450,15 @@ async def delete_department(
             else:
                 agent.deleted_at = now
                 agent_outcome = "archived"
+            # The same retire step `delete_agent` takes: triggers stop, unfinished
+            # runs are cancelled.
+            await retire_agent(
+                db,
+                agent_id=agent.id,
+                hard_delete=agent_dependents == 0,
+                principal=principal,
+                resource_extra={"cascaded_from_department_id": str(dept_id)},
+            )
             await append_event(
                 db,
                 tenant_id=principal.tenant_id,

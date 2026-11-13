@@ -20,10 +20,16 @@ step out from under one of them:
 5. a live agent with an enabled cron trigger running on a personal ChatGPT
    subscription: exactly what the feature exists to prevent.
 
-Both halves of the fix are covered here: step 3 is now rejected (the front
-door, consistent with how the agent-side direction has always treated archived
-agents), and step 4 re-checks the agent it is bringing back to life, so state
-that reached the database some other way cannot be revived either.
+Both halves of the fix are covered here: step 3 is rejected while an archived
+agent still has an enabled trigger (the front door, consistent with how the
+agent-side direction has always treated archived agents), and step 4 re-checks
+the agent it is bringing back to life, so state that reached the database some
+other way cannot be revived either.
+
+Since archiving also disables the agent's triggers (`oc8.agents.retire`), the
+HTTP path closes earlier still: after step 2 nothing unattended reaches the
+model, so the bind in step 3 is safe, restoring leaves the trigger off, and
+turning it back on is what the guard refuses.
 """
 
 from __future__ import annotations
@@ -110,18 +116,17 @@ async def test_archive_then_rebind_then_restore_cannot_smuggle_a_subscription_mo
         await db.flush()
         # A run makes DELETE archive the agent instead of hard-deleting it.
         db.add(m.AgentRun(tenant_id=tenant, agent_id=agent.id, context={}))
-        db.add(
-            m.Trigger(
-                tenant_id=tenant,
-                agent_id=agent.id,
-                kind="cron",
-                task_text="daily",
-                cron_expression="0 * * * *",
-                enabled=True,
-            )
+        trigger = m.Trigger(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            kind="cron",
+            task_text="daily",
+            cron_expression="0 * * * *",
+            enabled=True,
         )
+        db.add(trigger)
         await db.flush()
-        agent_id, model_id, sub_id = agent.id, mc.id, sub.id
+        agent_id, model_id, sub_id, trigger_id = agent.id, mc.id, sub.id, trigger.id
 
     async with _http() as http:
         headers = _headers(tenant)
@@ -130,7 +135,8 @@ async def test_archive_then_rebind_then_restore_cannot_smuggle_a_subscription_mo
         assert archived.status_code == 200, archived.text
         assert archived.json()["outcome"] == "archived"
 
-        # Step 3 of the exploit: this is the front door, and it must refuse.
+        # Step 3: archiving turned the trigger off, so nothing unattended
+        # reaches the model any more and the bind is safe.
         rebind = await http.patch(
             f"/api/v1/models/{model_id}",
             json={
@@ -140,22 +146,27 @@ async def test_archive_then_rebind_then_restore_cannot_smuggle_a_subscription_mo
             },
             headers=headers,
         )
-        assert rebind.status_code == 422, rebind.text
-        assert "ChatGPT subscription" in rebind.json()["detail"]
+        assert rebind.status_code == 200, rebind.text
 
-        # Step 4 still works -- the refusal above must not have stranded the
-        # archived agent, only kept the unsafe bind out of the database.
+        # Step 4 works and brings the agent back without its trigger.
         restored = await http.post(f"/api/v1/agents/{agent_id}/restore", headers=headers)
         assert restored.status_code == 200, restored.text
 
+        # Turning the trigger back on is where the guard now refuses.
+        reenable = await http.patch(
+            f"/api/v1/triggers/{trigger_id}", json={"enabled": True}, headers=headers
+        )
+        assert reenable.status_code == 422, reenable.text
+        assert "ChatGPT subscription" in reenable.json()["detail"]
+
     async with app_session(tenant) as db:
-        cfg = await db.get(m.ModelConfig, model_id)
-        assert cfg is not None
-        # The forbidden end state: live agent + enabled trigger + subscription model.
-        assert cfg.credential_id != sub_id
         restored_agent = await db.get(m.Agent, agent_id)
         assert restored_agent is not None
         assert restored_agent.deleted_at is None
+        # The forbidden end state: live agent + enabled trigger + subscription model.
+        refreshed = await db.get(m.Trigger, trigger_id)
+        assert refreshed is not None
+        assert refreshed.enabled is False
 
 
 async def test_restore_rejects_an_agent_that_would_run_unattended_on_a_subscription(

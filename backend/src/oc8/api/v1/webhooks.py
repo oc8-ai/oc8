@@ -65,11 +65,16 @@ async def ingest_webhook(token: str, request: Request) -> dict[str, str]:
             if not trigger.enabled or not await tenant_may_run(tenant_id):
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown or disabled webhook")
             try:
-                await fire_trigger(db, trigger, tenant_id=tenant_id, payload=payload)
+                fired = await fire_trigger(db, trigger, tenant_id=tenant_id, payload=payload)
             except TenantInactive:
                 # The gate changed between the check above and the intake's own.
                 raise HTTPException(
                     status.HTTP_404_NOT_FOUND, "unknown or disabled webhook"
                 ) from None
-            return {"status": "accepted"}
+            if fired:
+                return {"status": "accepted"}
+        # Its agent is archived or gone, and fire_trigger disabled the trigger.
+        # Leaving the session cleanly commits that before the 404 below; raising
+        # inside it would roll it back and leave the webhook live.
+        break
     raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown or disabled webhook")

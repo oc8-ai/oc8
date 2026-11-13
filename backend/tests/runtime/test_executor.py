@@ -1651,3 +1651,39 @@ async def test_a_container_run_that_comes_to_act_for_someone_else_stops_at_its_n
 
     assert step["status_override"] == "interrupted"
     await _assert_stopped_for_the_owner_change(app_session, tenant, run_id)
+
+
+async def test_execute_run_cancels_a_run_of_an_archived_agent_before_start(
+    app_session: AppSessionFactory,
+) -> None:
+    """An archived agent does no more work, whichever path queued the run (a
+    trigger, a delegation, a channel): the run ends INTERRUPTED with a reason
+    saying so, and the runtime is never called."""
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    run_id = await _make_queued_run(app_session, tenant)
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        agent = await s.get(m.Agent, run.agent_id)
+        assert agent is not None
+        agent.deleted_at = _now()
+
+    called = False
+
+    async def runner(db: Any, **kw: Any) -> RunResult:
+        nonlocal called
+        called = True
+        raise AssertionError("an archived agent's run must not reach the runtime")
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=_FnRuntime(runner),
+    )
+
+    assert called is False
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        assert run.state == RunState.INTERRUPTED.value
+        assert run.context["cancellation_kind"] == "agent_archived"
+        assert "deleted" in run.context["output"]

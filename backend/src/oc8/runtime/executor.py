@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.agents.retire import AGENT_ARCHIVED, AGENT_ARCHIVED_OUTPUT
 from oc8.agents.versioning import resolve_version
 from oc8.connections.acting import (
     NO_ACTING_PERSON,
@@ -823,6 +824,28 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             # The status this run may overwrite from here on: every later write
             # is a compare-and-set against it (`oc8.runtime.agent_status`).
             remember_claimed_status(db, agent)
+
+            if agent.deleted_at is not None:
+                # An archived agent does no more work. Deleting it cancels its
+                # open runs (`oc8.agents.retire`), but a run can still be queued
+                # for it afterwards -- a delegation, a handoff, a channel, a
+                # trigger from before -- and every one of them passes through here.
+                await merge_context(
+                    db,
+                    run,
+                    {"cancellation_kind": AGENT_ARCHIVED, "output": AGENT_ARCHIVED_OUTPUT},
+                )
+                await repo.transition(run, RunState.INTERRUPTED)
+                await record_activity(
+                    db,
+                    tenant_id=tenant_id,
+                    agent_id=agent.id,
+                    status="error",
+                    message=f"{agent.name}: {AGENT_ARCHIVED_OUTPUT}",
+                )
+                logger.info("run %s interrupted before start (agent archived)", run_id)
+                record_run_outcome(RunState.INTERRUPTED.value)
+                return
 
             if agent.status == "pending_approval":
                 # Hire gate (§5.5 A4): a pending agent must not run via ANY enqueue

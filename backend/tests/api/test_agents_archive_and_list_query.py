@@ -21,6 +21,7 @@ from contextlib import asynccontextmanager
 import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.auth import get_identity_provider
@@ -91,6 +92,124 @@ async def test_delete_agent_without_runs_hard_deletes(app_session: AppSessionFac
 
         archived = await http.get("/api/v1/agents?includeArchived=true", headers=_headers(tenant))
         assert str(agent_id) not in [a["id"] for a in archived.json()["items"]]
+
+
+async def test_delete_agent_with_runs_disables_its_triggers_and_cancels_its_open_runs(
+    app_session: AppSessionFactory,
+) -> None:
+    """An archived agent must not go on working: its schedules stop, and its
+    open runs are cancelled the way an operator's cancel does it. A finished
+    run is left alone."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        dept = m.Department(tenant_id=tenant, name="Vertrieb", frame={})
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(tenant_id=tenant, department_id=dept.id, name="Nora")
+        db.add(agent)
+        await db.flush()
+        queued = m.AgentRun(tenant_id=tenant, agent_id=agent.id, context={}, state="queued")
+        waiting = m.AgentRun(
+            tenant_id=tenant, agent_id=agent.id, context={}, state="waiting_for_input"
+        )
+        done = m.AgentRun(tenant_id=tenant, agent_id=agent.id, context={}, state="done")
+        trigger = m.Trigger(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            kind="cron",
+            task_text="daily",
+            cron_expression="0 9 * * *",
+            enabled=True,
+        )
+        db.add_all([queued, waiting, done, trigger])
+        await db.flush()
+        agent_id, trigger_id = agent.id, trigger.id
+        open_ids = {queued.id, waiting.id}
+        done_id = done.id
+
+    async with _http() as http:
+        resp = await http.delete(f"/api/v1/agents/{agent_id}", headers=_headers(tenant))
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["outcome"] == "archived"
+
+    async with app_session(tenant) as db:
+        refreshed = await db.get(m.Trigger, trigger_id)
+        assert refreshed is not None
+        assert refreshed.enabled is False
+        cancelled = set((await db.execute(select(m.RunCancellation.run_id))).scalars().all())
+        assert open_ids <= cancelled
+        assert done_id not in cancelled
+
+
+async def test_delete_agent_without_runs_deletes_its_triggers(
+    app_session: AppSessionFactory,
+) -> None:
+    """A hard-deleted agent leaves no trigger behind: nothing references the
+    agent row, so an orphaned schedule would fire into nothing on every tick."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        dept = m.Department(tenant_id=tenant, name="Vertrieb", frame={})
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(tenant_id=tenant, department_id=dept.id, name="No Runs")
+        db.add(agent)
+        await db.flush()
+        trigger = m.Trigger(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            kind="cron",
+            task_text="daily",
+            cron_expression="0 9 * * *",
+            enabled=True,
+        )
+        db.add(trigger)
+        await db.flush()
+        agent_id, trigger_id = agent.id, trigger.id
+
+    async with _http() as http:
+        resp = await http.delete(f"/api/v1/agents/{agent_id}", headers=_headers(tenant))
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["outcome"] == "deleted"
+
+    async with app_session(tenant) as db:
+        assert await db.get(m.Trigger, trigger_id) is None
+
+
+async def test_restore_agent_leaves_its_triggers_disabled(
+    app_session: AppSessionFactory,
+) -> None:
+    """Restoring brings the agent back, not its schedules: the operator turns
+    each one on again deliberately."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        dept = m.Department(tenant_id=tenant, name="Vertrieb", frame={})
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(tenant_id=tenant, department_id=dept.id, name="Nora")
+        db.add(agent)
+        await db.flush()
+        trigger = m.Trigger(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            kind="cron",
+            task_text="daily",
+            cron_expression="0 9 * * *",
+            enabled=True,
+        )
+        db.add_all([m.AgentRun(tenant_id=tenant, agent_id=agent.id, context={}), trigger])
+        await db.flush()
+        agent_id, trigger_id = agent.id, trigger.id
+
+    async with _http() as http:
+        resp = await http.delete(f"/api/v1/agents/{agent_id}", headers=_headers(tenant))
+        assert resp.json()["outcome"] == "archived"
+        resp = await http.post(f"/api/v1/agents/{agent_id}/restore", headers=_headers(tenant))
+        assert resp.status_code == 200, resp.text
+
+    async with app_session(tenant) as db:
+        refreshed = await db.get(m.Trigger, trigger_id)
+        assert refreshed is not None
+        assert refreshed.enabled is False
 
 
 async def test_restore_agent_clears_archive(app_session: AppSessionFactory) -> None:
