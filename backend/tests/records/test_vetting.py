@@ -5,7 +5,7 @@ import uuid
 import pytest
 
 from oc8.records.registry import remember_links
-from oc8.records.vetting import vet_answer_links, vet_links
+from oc8.records.vetting import urls_in, vet_answer_links, vet_links
 from tests.conftest import AppSessionFactory
 
 HOSTS = {"odoo.example.com"}
@@ -279,3 +279,15 @@ def test_a_backslash_url_longer_run_keeps_only_its_host() -> None:
         "see https://h.example\\odoo\\99. now", connected_hosts=BYPASS_HOSTS, issued={I42}
     )
     assert out == "see `h.example`. now"
+
+
+def test_urls_in_yields_whole_urls_never_their_prefixes() -> None:
+    text = "[a](https://h.example/odoo/420)[b](https://h.example/x?ids=[1,2]), and https://h.example/7."
+    found = urls_in(text)
+    assert {
+        "https://h.example/odoo/420",
+        "https://h.example/x?ids=[1,2]",
+        "https://h.example/7",
+    } <= found
+    assert "https://h.example/odoo/42" not in found
+    assert "https://h.example/x?ids=" not in found

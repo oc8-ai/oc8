@@ -278,13 +278,21 @@ def _all_candidates(text: str, hosts: set[str]) -> set[str]:
 
 
 def urls_in(text: str) -> set[str]:
-    """Every string in the text that may be read as a URL: each match and its
-    prefixes ending at punctuation, in the text as written and as a Markdown
-    parser reads it (escapes deleted, entities decoded)."""
+    """The URLs the text holds, each whole: a Markdown link's destination read
+    the way CommonMark does, and every URL with the sentence's punctuation and
+    unbalanced brackets trimmed off its end -- never a shorter prefix, so
+    `.../42` is not in a text that only says `.../420`. Read in the text as
+    written and as a Markdown parser reads it (escapes deleted, entities
+    decoded)."""
     found: set[str] = set()
     for seen in (text, *_readings(text)):
         for mt in _URL.finditer(seen):
-            found.update(_candidates(mt.group(0)))
+            found.add(_core(mt.group(0)))
+            start = mt.start()
+            angled = seen[start - 3 : start] == "](<"
+            if angled or seen[start - 2 : start] == "](":
+                found.add(seen[start : _destination_end(seen, start, angled)])
+    found.discard("")
     return found
 
 

@@ -221,6 +221,45 @@ async def test_the_browsers_reading_of_a_host_counts_too(
     assert got == {odd: (True, False)}
 
 
+async def test_a_url_the_answer_does_not_contain_says_nothing_about_its_host(
+    app_session: AppSessionFactory,
+) -> None:
+    """Otherwise any readable answer would be a host oracle: submit
+    `{url, host: "erp.internal.corp"}` pairs and see which come back
+    connected. A URL not in the answer is always `connected, not issued` --
+    rendered as text -- whatever host it or the browser names."""
+    tenant = uuid.uuid4()
+    msg = await _answer(app_session, tenant, "Nothing linked.", issued=[ISSUED])
+    other = "https://other.example/x"
+    got = await _verdicts(
+        tenant,
+        msg,
+        [GUESSED, other],
+        browser_hosts={GUESSED: "odoo.example.com", other: "other.example"},
+    )
+    assert got == {GUESSED: (True, False), other: (True, False)}
+
+
+async def test_a_strict_prefix_of_an_answer_url_is_not_in_the_answer(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    longer = f"{ISSUED}0"  # .../sale.order/420
+    msg = await _answer(app_session, tenant, f"See [S420]({longer}).", issued=[ISSUED, longer])
+    got = await _verdicts(tenant, msg, [ISSUED, longer])
+    assert got == {ISSUED: (True, False), longer: (True, True)}
+
+
+async def test_adjacent_links_and_sentence_punctuation_still_verify(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    content = f"[a]({ISSUED})[b]({BRACKETED}), see {ISSUED}."
+    msg = await _answer(app_session, tenant, content, issued=[ISSUED, BRACKETED])
+    got = await _verdicts(tenant, msg, [ISSUED, BRACKETED, REENCODED])
+    assert got == {ISSUED: (True, True), BRACKETED: (True, True), REENCODED: (True, True)}
+
+
 async def test_another_members_answer_is_not_found(app_session: AppSessionFactory) -> None:
     tenant = uuid.uuid4()
     msg = await _answer(app_session, tenant, f"[a]({ISSUED})", issued=[ISSUED])

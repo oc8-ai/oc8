@@ -45,9 +45,10 @@ async def verify(
 ) -> RecordLinkVerdictsDTO:
     """For each submitted URL: does it point at a connected system, and did oc8
     issue it within the TTL? Only an assistant answer is checked -- a member's
-    own message would let them choose the URLs -- and a URL counts only if the
-    answer contains it (verbatim, or spelled differently but leading to the
-    same place, as the browser re-encodes hrefs). 404 for an answer the caller
+    own message would let them choose the URLs -- and a URL is judged only if
+    the answer contains it whole (spelled any way that leads to the same
+    place, as the browser re-encodes hrefs); any other is reported connected
+    and not issued, which tells nothing and renders as text. 404 for an answer the caller
     may not read, the same as one that does not exist."""
     msg = await db.get(m.ChatMessage, body.message_id)
     if msg is None or msg.role != "assistant":
@@ -61,14 +62,24 @@ async def verify(
     for link in body.links:
         browser_hosts.setdefault(link.url, set()).add(normalise_host(link.host))
     urls = list(browser_hosts)
-    hosts = await linked_hosts(db, tenant_id=tenant_id) | await connection_hosts(db)
-    hosts.discard("")
-    connected = {u for u in urls if host_of(u) in hosts or browser_hosts[u] & hosts}
+    # In the answer first: only a URL the answer itself holds -- whole, by
+    # where it leads -- is judged at all. Any other gets the same fail-closed
+    # verdict whatever its host, or the endpoint would say which hosts are
+    # connected to anyone who can read one answer.
     mentioned = {c for found in urls_in(msg.content) if (c := canonical(found)) is not None}
-    in_answer = [u for u in connected if u in msg.content or canonical(u) in mentioned]
-    issued = await verified_links(db, tenant_id=tenant_id, urls=in_answer)
+    in_answer = [u for u in urls if canonical(u) in mentioned]
+    if in_answer:
+        hosts = await linked_hosts(db, tenant_id=tenant_id) | await connection_hosts(db)
+        hosts.discard("")
+    else:
+        hosts = set()
+    connected = {u for u in in_answer if host_of(u) in hosts or browser_hosts[u] & hosts}
+    issued = await verified_links(db, tenant_id=tenant_id, urls=connected)
     return RecordLinkVerdictsDTO(
         links=[
-            RecordLinkVerdictDTO(url=u, connected=u in connected, issued=u in issued) for u in urls
+            RecordLinkVerdictDTO(url=u, connected=u in connected, issued=u in issued)
+            if u in in_answer
+            else RecordLinkVerdictDTO(url=u, connected=True, issued=False)
+            for u in urls
         ]
     )
