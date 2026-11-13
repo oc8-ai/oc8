@@ -20,12 +20,13 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.db.base import uuid7
+from oc8.db.session import tenant_session
 
 logger = logging.getLogger(__name__)
 
@@ -229,6 +230,53 @@ async def scope_hosts(db: AsyncSession, *, tenant_id: uuid.UUID, scope: str) -> 
         .distinct()
     )
     return set(rows.scalars())
+
+
+#: Rows one prune transaction deletes, so a large backlog never holds one
+#: long lock; a tenant gets at most `_PRUNE_BATCHES` of them per tick.
+_PRUNE_BATCH = 500
+_PRUNE_BATCHES = 20
+
+
+async def prune_expired_links(*, batch: int = _PRUNE_BATCH) -> int:
+    """Delete issued links past `ISSUED_LINK_TTL`, in every tenant. One tick of
+    the worker's housekeeping timer; never raises.
+
+    An expired row counts for nothing (every lookup filters on the TTL), and
+    its URL may name a personal file or folder -- keeping it is cost without
+    use. Each batch is its own transaction: the tenant binding is
+    transaction-local, the same reason `evidence.sweep` works this way."""
+    from oc8.triggers.scheduler import list_active_tenant_ids
+
+    deleted = 0
+    try:
+        tenants = await list_active_tenant_ids()
+    except Exception:
+        logger.warning("record links: could not list tenants; skipping prune", exc_info=True)
+        return 0
+    for tenant_id in tenants:
+        try:
+            for _ in range(_PRUNE_BATCHES):
+                since = dt.datetime.now(dt.UTC) - ISSUED_LINK_TTL
+                async with tenant_session(tenant_id) as db:
+                    expired = (
+                        select(m.RecordLink.id)
+                        .where(m.RecordLink.tenant_id == tenant_id, m.RecordLink.issued_at < since)
+                        .limit(batch)
+                    )
+                    result = await db.execute(
+                        delete(m.RecordLink).where(m.RecordLink.id.in_(expired.scalar_subquery()))
+                    )
+                # CursorResult carries rowcount; the base Result type does not.
+                count = getattr(result, "rowcount", 0) or 0
+                deleted += count
+                if count < batch:
+                    break
+        except Exception:
+            logger.warning("record links: prune failed for tenant %s", tenant_id, exc_info=True)
+    if deleted:
+        logger.info("record links: pruned %d expired link(s)", deleted)
+    return deleted
 
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}

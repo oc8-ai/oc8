@@ -62,8 +62,13 @@ def upgrade() -> None:
         EXCEPTION WHEN duplicate_table OR duplicate_object THEN NULL;
         END $$
     """)
+    # The housekeeping prune (`registry.prune_expired_links`) finds expired
+    # rows by age. A host index from an earlier draft served a tenant-wide
+    # host listing that no longer exists.
+    op.execute("DROP INDEX IF EXISTS ix_record_link_tenant_host")
     op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_record_link_tenant_host ON record_link (tenant_id, host)"
+        "CREATE INDEX IF NOT EXISTS ix_record_link_tenant_issued_at "
+        "ON record_link (tenant_id, issued_at)"
     )
     op.execute(
         "CREATE INDEX IF NOT EXISTS ix_record_link_tenant_scope_canon "

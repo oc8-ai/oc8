@@ -27,6 +27,7 @@ class RecordLink(Base, PkMixin, TenantMixin):
     __table_args__ = (
         UniqueConstraint("tenant_id", "scope", "url", name="uq_record_link_tenant_scope_url"),
         CheckConstraint("char_length(url) <= 2000", name="ck_record_link_url"),
-        Index("ix_record_link_tenant_host", "tenant_id", "host"),
+        # `registry.prune_expired_links` finds expired rows by age.
+        Index("ix_record_link_tenant_issued_at", "tenant_id", "issued_at"),
         Index("ix_record_link_tenant_scope_canon", "tenant_id", "scope", "canon"),
     )

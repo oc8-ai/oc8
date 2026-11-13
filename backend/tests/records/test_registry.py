@@ -12,6 +12,7 @@ from oc8.records.registry import (
     canonical,
     issued_links,
     link_scope,
+    prune_expired_links,
     remember_links,
     scope_hosts,
     verified_links,
@@ -224,3 +225,33 @@ async def test_without_chat_or_task_the_run_is_the_scope(app_session: AppSession
         run = m.AgentRun(id=run_id, tenant_id=t, agent_id=uuid.uuid4(), context={})
         assert await link_scope(db, run=run) == f"run:{run_id}"
         assert (await link_scope(db)).startswith("run:")
+
+
+async def test_the_housekeeping_sweep_deletes_expired_links_only(
+    app_session: AppSessionFactory,
+) -> None:
+    """Rows past ISSUED_LINK_TTL count for nothing and may name personal files;
+    the worker's housekeeping tick deletes them, in every tenant, in batches."""
+    a, b = uuid.uuid4(), uuid.uuid4()
+    old = [f"https://odoo.example.com/odoo/sale.order/{i}" for i in range(5)]
+    fresh = "https://odoo.example.com/odoo/sale.order/99"
+    for t in (a, b):
+        async with app_session(t) as db:
+            db.add(m.Organization(id=t, slug=f"t-{t.hex[:8]}", name="T"))
+            await db.flush()
+            await remember_links(db, tenant_id=t, scope=S, urls=[*old, fresh])
+            await db.execute(
+                update(m.RecordLink)
+                .where(m.RecordLink.tenant_id == t, m.RecordLink.url.in_(old))
+                .values(issued_at=dt.datetime.now(dt.UTC) - dt.timedelta(days=31))
+            )
+
+    deleted = await prune_expired_links(batch=2)
+
+    assert deleted >= 10
+    for t in (a, b):
+        async with app_session(t) as db:
+            left = (
+                await db.execute(select(m.RecordLink.url).where(m.RecordLink.tenant_id == t))
+            ).scalars()
+            assert set(left) == {fresh}
