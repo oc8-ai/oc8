@@ -260,23 +260,25 @@ def enrich(
 
 def related_links(ctx: LinkContext | None, arguments: Mapping[str, Any]) -> list[dict[str, str]]:
     """Links to the EXISTING records a call references by argument -- the
-    customer of a quotation that does not exist yet (spec §5 item 5)."""
+    customer of a quotation that does not exist yet (spec §5 item 5).
+
+    Labelled by entity and id only. A many2one's display name ([7, "XYZ GmbH"])
+    is model-supplied text: shown on the approval card it could name a trusted
+    customer while the link opens record 7, so an approver would be misled."""
     if ctx is None:
         return []
     out: list[dict[str, str]] = []
     for path, entity in ctx.spec.related_fields.items():
         try:
             raw = _dig(arguments, [p for p in path.split(".") if p])
-            name = ""
             if isinstance(raw, list) and raw:
-                # Odoo many2one as read back: [id, "display name"].
-                name = _text(raw[1]) if len(raw) > 1 else ""
+                # Odoo many2one as read back: [id, "display name"]. The id only.
                 raw = raw[0]
             ref = _text(raw)
             url = link_for(ctx, entity=entity, ref=ref, args=arguments) if ref else None
             if url:
                 label = ctx.labels.get(entity, entity)
-                out.append({"label": f"{label} {name}" if name else f"{label} #{ref}", "url": url})
+                out.append({"label": f"{label} #{ref}", "url": url})
         except Exception:
             logger.warning("related link %s could not be built", path, exc_info=True)
     return out

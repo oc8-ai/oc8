@@ -158,8 +158,9 @@ def test_related_links_accept_odoo_many2one_shapes() -> None:
     assert related_links(ctx, {"values": {"partner_id": 7}}) == [
         {"label": "Kontakt #7", "url": "https://odoo.example.com/odoo/res.partner/7"}
     ]
+    # The model-supplied display name is never shown: it could spoof the record.
     assert related_links(ctx, {"values": {"partner_id": [7, "XYZ GmbH"]}}) == [
-        {"label": "Kontakt XYZ GmbH", "url": "https://odoo.example.com/odoo/res.partner/7"}
+        {"label": "Kontakt #7", "url": "https://odoo.example.com/odoo/res.partner/7"}
     ]
     assert related_links(ctx, {"values": {"partner_id": False}}) == []
 
