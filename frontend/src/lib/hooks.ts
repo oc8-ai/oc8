@@ -2112,6 +2112,32 @@ export function useFlowRuns() {
   });
 }
 
+/** Archive a flow: hidden from the list and no new runs; its runs stay. */
+export function useArchiveFlow() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (flowId: string) =>
+      api.post<{ id: string; name: string; archived: boolean }>(
+        `/flows/${encodeURIComponent(flowId)}/archive`,
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["flows"] }),
+  });
+}
+
+/** Cancel a running flow run: its open handoffs are rejected and the agent
+ *  runs working them cancelled. */
+export function useCancelFlowRun() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (runId: string) =>
+      api.post<FlowRunDTO>(`/flow-runs/${encodeURIComponent(runId)}/cancel`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["flow-runs"] });
+      qc.invalidateQueries({ queryKey: ["handoffs"] });
+    },
+  });
+}
+
 // --- Cost / usage (§ token accounting) ------------------------------------
 // Real recorded token usage aggregated from TokenUsageRecord. `providerCostMicros`
 // is the provider's billed cost in USD micros (1e6 micros = 1 USD).

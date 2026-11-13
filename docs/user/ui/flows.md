@@ -32,6 +32,11 @@ single approval (that is [My work](my-work.md)).
 2. Build stages on the canvas (which department / what handoff).
 3. Start a run when ready.
 4. Watch stage status; open blocked stages via Handoffs or My work.
+5. **Cancel run** on a run that should stop: its open handoffs are rejected and
+   any agent run working on them is stopped. Completed stages stay.
+6. **Archive** a flow you no longer use: it leaves the list and cannot be
+   started again, while runs already going continue. Publishing the flow again
+   brings it back.
 
 ## Where work goes next
 
