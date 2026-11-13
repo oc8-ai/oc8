@@ -7,6 +7,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// ChatMarkdown's record-link check, without a server: no connected hosts, so
+// every http(s) link is an ordinary one.
+vi.mock("@/lib/record-links", () => ({
+  useConnectedHosts: () => ({ data: new Set<string>() }),
+  useVerifiedLinks: () => ({ data: new Set<string>() }),
+}));
+
 vi.mock("@/lib/conversation-api", async (orig) => ({
   ...(await orig<typeof import("@/lib/conversation-api")>()),
   useTurnRun: () => ({ data: undefined }),

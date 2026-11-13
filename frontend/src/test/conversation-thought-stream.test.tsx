@@ -1,5 +1,12 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// ChatMarkdown's record-link check, without a server: no connected hosts, so
+// every http(s) link is an ordinary one.
+vi.mock("@/lib/record-links", () => ({
+  useConnectedHosts: () => ({ data: new Set<string>() }),
+  useVerifiedLinks: () => ({ data: new Set<string>() }),
+}));
 
 import { StreamingText } from "@/components/conversation/streaming-text";
 import { ThoughtDisclosure, thoughtOf } from "@/components/conversation/thought-disclosure";

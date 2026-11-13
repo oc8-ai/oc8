@@ -16,12 +16,15 @@ import { usePrefersReducedMotion, useSmoothReveal } from "./smooth-reveal";
 export function StreamingText({
   text,
   streaming,
+  unvetted,
   sources,
   onCitation,
   onObjectClick,
 }: {
   text: string;
   streaming: boolean;
+  /** See ChatMarkdown: links stay text until the server has checked them. */
+  unvetted?: boolean;
   sources?: ChatSourceDTO[];
   onCitation?: (n: number) => void;
   onObjectClick?: (href: string) => void;
@@ -37,6 +40,7 @@ export function StreamingText({
         onCitation={onCitation}
         onObjectClick={onObjectClick}
         streaming={streaming}
+        unvetted={unvetted}
       />
     </div>
   );

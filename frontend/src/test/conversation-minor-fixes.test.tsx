@@ -7,6 +7,13 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
+// ChatMarkdown's record-link check, without a server: no connected hosts, so
+// every http(s) link is an ordinary one.
+vi.mock("@/lib/record-links", () => ({
+  useConnectedHosts: () => ({ data: new Set<string>() }),
+  useVerifiedLinks: () => ({ data: new Set<string>() }),
+}));
+
 const feedback = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/conversation-api", async (orig) => ({
   ...(await orig<typeof import("@/lib/conversation-api")>()),

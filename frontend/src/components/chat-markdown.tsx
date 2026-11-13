@@ -5,6 +5,8 @@
 // literal HTML in an answer stays text. Every link goes through the `a`
 // renderer below, which only emits http(s) links (new tab), `#cite-n`
 // citations and resolved `oc8://` object chips; anything else is plain text.
+// An http(s) link to a connected system is a record link and is clickable
+// only once oc8 confirms it issued that exact href (see `linkable`).
 // Images are https only and load only when the member clicks to load them.
 
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -17,10 +19,34 @@ import { commonPrefixLength, splitBlocks, stabilizeTail } from "@/components/mar
 import { rehypeStreamFresh } from "@/components/stream-words";
 import type { ChatSourceDTO } from "@/lib/hooks-chat";
 import { useT } from "@/lib/i18n";
+import { useConnectedHosts, useVerifiedLinks } from "@/lib/record-links";
 import { cn } from "@/lib/utils";
 
 function isHttp(href: string | undefined): href is string {
   return !!href && /^https?:\/\//i.test(href);
+}
+
+/** Whether an http(s) href may be clickable. The host is the one the browser
+ *  will open (`new URL` applies IDNA, backslash and percent rules), so a link
+ *  spelled to dodge the server's check is still judged by where it leads.
+ *  Fails closed: no hosts yet, no link. A connected host's href is recorded
+ *  in `asked` and clickable only once the verify answer lists it verbatim. */
+function linkable(
+  href: string,
+  hosts: Set<string> | undefined,
+  verified: Set<string> | undefined,
+  asked: Set<string>,
+): boolean {
+  let host: string;
+  try {
+    host = new URL(href).hostname.toLowerCase().replace(/\.$/, "");
+  } catch {
+    return false;
+  }
+  if (!hosts) return false;
+  if (!hosts.has(host)) return true;
+  asked.add(href);
+  return !!verified?.has(href);
 }
 
 // react-markdown hands `pre` a single `<code>` child whose className carries
@@ -43,6 +69,10 @@ function CodeBlock({ children }: { children?: ReactNode }) {
   const { language, code } = codeOf(children);
   const [html, setHtml] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  // One object per highlight: React re-applies innerHTML whenever this prop is
+  // a new object, which would replace the code's nodes (and drop a selection)
+  // each time the answer around it re-renders -- as it does when links verify.
+  const highlighted = useMemo(() => (html ? { __html: html } : null), [html]);
 
   useEffect(() => {
     let alive = true;
@@ -99,11 +129,11 @@ function CodeBlock({ children }: { children?: ReactNode }) {
           {copied ? t("Copied", "Kopiert") : t("Copy", "Kopieren")}
         </button>
       </div>
-      {html ? (
+      {highlighted ? (
         // Shiki escapes the code it highlights; its output is markup it built.
         <div
           className="overflow-x-auto px-3 py-2 font-mono text-xs [&_pre]:bg-transparent"
-          dangerouslySetInnerHTML={{ __html: html }}
+          dangerouslySetInnerHTML={highlighted}
         />
       ) : (
         <pre className="overflow-x-auto px-3 py-2 font-mono text-xs">{children}</pre>
@@ -187,6 +217,9 @@ const MarkdownBlock = memo(function MarkdownBlock({
   components: Components;
   /** Only on the block still being written: where its new words start. */
   freshFrom?: number;
+  /** Not read here: a new value re-renders the block when what a link may be
+   *  changed, with the same renderers, so nothing in it remounts. */
+  linkState?: object;
 }) {
   return (
     <ReactMarkdown
@@ -209,6 +242,7 @@ export function ChatMarkdown({
   onCitation,
   onObjectClick,
   streaming = false,
+  unvetted = false,
 }: {
   text: string;
   className?: string;
@@ -221,13 +255,25 @@ export function ChatMarkdown({
    *  the newest words fading in, and the unfinished end rendered as it will
    *  look once finished (`stabilizeTail`). */
   streaming?: boolean;
+  /** The text has not been through the server's link check yet (a live
+   *  answer before its message is saved): links stay text, as while streaming. */
+  unvetted?: boolean;
 }) {
   const t = useT();
+  const plainLinks = streaming || unvetted;
+  // The hrefs the `a` renderer met on connected hosts, collected while the
+  // blocks render -- exactly what the parser produced, after react-markdown's
+  // own URL normalisation -- and asked about once the render has committed.
+  const asked = useRef(new Set<string>());
+  const [toVerify, setToVerify] = useState<string[]>([]);
+  const { data: hosts } = useConnectedHosts();
+  const { data: verified } = useVerifiedLinks(toVerify);
   // The renderers read the newest callbacks and sources through a ref, so
   // the components stay the same object between renders and finished blocks
   // are not re-rendered for a new arrow function.
-  const latest = useRef({ sources, onCitation, onObjectClick });
-  latest.current = { sources, onCitation, onObjectClick };
+  const latest = useRef({ sources, onCitation, onObjectClick, plainLinks, hosts, verified });
+  latest.current = { sources, onCitation, onObjectClick, plainLinks, hosts, verified };
+  const linkState = useMemo(() => ({ plainLinks, hosts, verified }), [plainLinks, hosts, verified]);
   const sourcesKey = sources.map((s) => `${s.n}:${s.title}`).join("|");
   const components = useMemo<Components>(
     () => ({
@@ -286,6 +332,12 @@ export function ChatMarkdown({
           );
         }
         if (!isHttp(href)) return <span>{children}</span>;
+        // Unvetted text: no link the member could follow before it is checked.
+        const gate = latest.current;
+        if (gate.plainLinks) return <span className="text-primary">{children}</span>;
+        if (!linkable(href, gate.hosts, gate.verified, asked.current)) {
+          return <span>{children}</span>;
+        }
         return (
           <a
             href={href}
@@ -315,6 +367,12 @@ export function ChatMarkdown({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [t, sourcesKey],
   );
+
+  // The blocks render only when one of these changes, so after that commit
+  // `asked` holds every href they met. It only grows: a new size is a new href.
+  useEffect(() => {
+    if (asked.current.size !== toVerify.length) setToVerify([...asked.current]);
+  }, [text, components, linkState, toVerify.length]);
 
   const count = sources.length;
   const blocks = useMemo(() => splitBlocks(text), [text]);
@@ -352,9 +410,20 @@ export function ChatMarkdown({
     >
       {blocks.map((block, i) =>
         i === last ? (
-          <MarkdownBlock key={i} markdown={tail} components={components} freshFrom={freshFrom} />
+          <MarkdownBlock
+            key={i}
+            markdown={tail}
+            components={components}
+            freshFrom={freshFrom}
+            linkState={linkState}
+          />
         ) : (
-          <MarkdownBlock key={i} markdown={withCitations(block, count)} components={components} />
+          <MarkdownBlock
+            key={i}
+            markdown={withCitations(block, count)}
+            components={components}
+            linkState={linkState}
+          />
         ),
       )}
     </div>
