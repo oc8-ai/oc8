@@ -63,16 +63,16 @@ async def _on_list_tools(
 def _result_text(result: object) -> str:
     """Tool output as the model sees it. Non-strings are JSON (record links parse
     them, and str(dict) is Python repr no parser reads). A bare string stays raw,
-    unless it is itself valid JSON (document text can be anything): then it goes
-    out as a quoted JSON string, so core never parses attacker-authored file
-    content as records."""
+    unless it LOOKS like JSON (document text can be anything): then it goes out
+    as a quoted JSON string, so core never parses attacker-authored file content
+    as records. Gated on shape, not on json.loads succeeding: core also parses
+    text with a trailing replay note stripped, which a parse check here would
+    disagree with."""
     if not isinstance(result, str):
         return json.dumps(result, ensure_ascii=False, default=str)
-    try:
-        json.loads(result)
-    except ValueError:
-        return result
-    return json.dumps(result, ensure_ascii=False)
+    if result.lstrip().lstrip("\ufeff").lstrip().startswith(("[", "{")):
+        return json.dumps(result, ensure_ascii=False)
+    return result
 
 
 async def _on_call_tool(

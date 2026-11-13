@@ -7,6 +7,8 @@ from typing import Any
 
 import pytest
 
+from oc8.agent.tool_idempotency import REPLAY_NOTE
+
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -197,3 +199,25 @@ async def test_a_json_looking_string_result_is_quoted(monkeypatch: pytest.Monkey
     params = types.CallToolRequestParams(name="mail_search", arguments={})
     result = await bridge._on_call_tool(_NO_CTX, params)
     assert json.loads(_text(result)) == doc
+
+
+@pytest.mark.parametrize(
+    ("text", "quoted"),
+    [
+        ('[{"id": "1"}]\n\n' + REPLAY_NOTE, True),
+        (" \u00a0\ufeff[1]", True),
+        ('\ufeff {"a": 1}', True),
+        ("Hello [x]", False),
+    ],
+)
+async def test_a_json_shaped_string_is_quoted_whatever_follows(
+    monkeypatch: pytest.MonkeyPatch, text: str, quoted: bool
+) -> None:
+
+    async def _handler(args: dict[str, Any]) -> object:
+        return text
+
+    monkeypatch.setitem(bridge.ALL_HANDLERS, "mail_search", _handler)
+    params = types.CallToolRequestParams(name="mail_search", arguments={})
+    result = await bridge._on_call_tool(_NO_CTX, params)
+    assert (json.loads(_text(result)) == text) if quoted else (_text(result) == text)

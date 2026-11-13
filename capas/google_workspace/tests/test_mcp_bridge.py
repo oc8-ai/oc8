@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -10,6 +11,8 @@ from typing import Any
 # sys.path (inside the fixture below) cannot shadow it.
 import mcp.types as types
 import pytest
+
+from oc8.agent.tool_idempotency import REPLAY_NOTE
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 
@@ -140,3 +143,26 @@ async def test_a_json_looking_string_result_is_quoted(monkeypatch: pytest.Monkey
     params = types.CallToolRequestParams(name="gmail_search", arguments={})
     result = await bridge._on_call_tool(_NO_CTX, params)
     assert json.loads(_text(result)) == doc
+
+
+@pytest.mark.parametrize(
+    ("text", "quoted"),
+    [
+        ('[{"id": "1"}]\n\n' + REPLAY_NOTE, True),
+        (" \u00a0\ufeff[1]", True),
+        ('\ufeff {"a": 1}', True),
+        ("Hello [x]", False),
+    ],
+)
+async def test_a_json_shaped_string_is_quoted_whatever_follows(
+    monkeypatch: pytest.MonkeyPatch, text: str, quoted: bool
+) -> None:
+    from mcp_bridge import __main__ as bridge
+
+    async def _handler(args: dict[str, Any]) -> object:
+        return text
+
+    monkeypatch.setitem(bridge.ALL_HANDLERS, "gmail_search", _handler)
+    params = types.CallToolRequestParams(name="gmail_search", arguments={})
+    result = await bridge._on_call_tool(_NO_CTX, params)
+    assert (json.loads(_text(result)) == text) if quoted else (_text(result) == text)
