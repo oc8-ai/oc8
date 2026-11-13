@@ -120,3 +120,51 @@ async def test_vet_answer_links_unlinks_only_what_oc8_never_issued(
         await remember_links(db, tenant_id=tenant, urls=[GOOD])
         out = await vet_answer_links(db, tenant_id=tenant, text=f"[ok]({GOOD}) and [no]({BAD})")
     assert out == f"[ok]({GOOD}) and no"
+
+
+I42 = "https://h.example/odoo/42"
+BYPASS_HOSTS = {"h.example"}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[t](https://o.org/x)(https://h.example/99)",  # glued after another host
+        "[t](https://o.org/x)https://h.example/99",
+        "https://h.example/1[a b](https://h.example/2)",  # overlapping spans
+        "[t](https://h.example./odoo/99)",  # host respelled
+        "[t](https://h%2Eexample/odoo/99)",
+        "[t](HTTPS://H.EXAMPLE/odoo/99)",
+        f"[a]({I42})[b](https://h.example/odoo/99)",
+    ],
+)
+def test_glued_overlapping_and_respelled_urls_are_neutralised(text: str) -> None:
+    out = vet_links(text, connected_hosts=BYPASS_HOSTS, issued={I42})
+    for guessed in ("h.example/odoo/99", "h.example/99", "h.example/2", "h.example/1"):
+        assert guessed not in out
+
+
+def test_an_issued_link_next_to_a_guessed_one_stays() -> None:
+    out = vet_links(
+        f"[a]({I42})[b](https://h.example/odoo/99)", connected_hosts=BYPASS_HOSTS, issued={I42}
+    )
+    assert f"[a]({I42})" in out
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[t](https&#58;//h.example/odoo/99)",
+        "[t](&#104;ttps://h.example/odoo/99)",
+        "[t][r]\n\n[r]: https&#58;//h.example/99",
+    ],
+)
+def test_entity_hidden_schemes_are_escaped(text: str) -> None:
+    out = vet_links(text, connected_hosts=BYPASS_HOSTS, issued={I42})
+    assert out == text.replace("&", "&amp;")
+
+
+def test_a_truncated_issued_url_is_no_longer_issued() -> None:
+    cut = f"[S42]({I42})"[:-2]  # ".../odoo/4"
+    out = vet_links(cut, connected_hosts=BYPASS_HOSTS, issued={I42})
+    assert "h.example/odoo/4" not in out

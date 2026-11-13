@@ -14,6 +14,7 @@ fails closed -- it neutralises more, never shows an unchecked link.
 
 from __future__ import annotations
 
+import html
 import logging
 import re
 import uuid
@@ -25,30 +26,32 @@ from oc8.records.registry import host_of, issued_links, linked_hosts
 
 logger = logging.getLogger(__name__)
 
-# Greedy on purpose: parentheses and brackets are legal inside URLs, so the
-# issued-URL lookup (not this pattern) decides where a URL really ends.
-_URL = re.compile(r"(?i)(?:https?://|www\.)[^\s<>\"'`]+")
+# Every scheme or `www.` is its own start; a URL runs to whitespace, one of
+# <>"'` or the next start. Parentheses and brackets are legal inside URLs, so
+# the issued-URL lookup (not this pattern) decides where a URL really ends.
+# `www.` inside a URL or word is not a start of its own.
+_START = r"https?://|(?<![A-Za-z0-9./@-])www\."
+_URL = re.compile(rf"(?i)(?:{_START})(?:(?!{_START})[^\s<>\"'`])*")
 _TRAILING = ")]>.,;:!?'\""
 _LINK_TAIL = re.compile(r"""[>]?(?:\s+(?:"[^"\n]*"|'[^'\n]*'))?\s*\)""")
+_MAX_URL = 2048
 
 
 def _host(url: str) -> str:
     if not url.lower().startswith(("http://", "https://")):
         url = f"http://{url}"
-    try:
-        return host_of(url.rstrip(_TRAILING))
-    except ValueError:
-        return ""
+    return host_of(url)
 
 
 def _candidates(found: str) -> list[str]:
-    """The match itself, then it with trailing characters taken off one at a
-    time: any of them may be the URL oc8 issued."""
-    out = [found]
-    while found and found[-1] in _TRAILING:
-        found = found[:-1]
-        out.append(found)
-    return out
+    """Prefixes of the match that end at or next to punctuation: any of them
+    may be the URL oc8 issued, the rest being the sentence around it."""
+    found = found[:_MAX_URL]
+    cuts = {len(found)}
+    for i, ch in enumerate(found):
+        if ch in _TRAILING and i > 0:
+            cuts.update((i, i + 1))
+    return [found[:c] for c in sorted(cuts, reverse=True)]
 
 
 def _core(found: str) -> str:
@@ -80,11 +83,13 @@ def _link_text_start(text: str, close: int) -> int | None:
     return None
 
 
-def _neutralise(text: str, is_connected: Callable[[str], bool], issued: set[str]) -> str:
+def _spans(
+    text: str, is_connected: Callable[[str], bool], issued: set[str]
+) -> list[tuple[int, int, str]]:
     spans: list[tuple[int, int, str]] = []
     for mt in _URL.finditer(text):
         found = mt.group(0)
-        host = _host(found)
+        host = _host(_core(found))
         if not host or not is_connected(host):
             continue
         if any(c in issued for c in _candidates(found)):
@@ -103,20 +108,54 @@ def _neutralise(text: str, is_connected: Callable[[str], bool], issued: set[str]
             spans.append((open_at, tail.end(), inner))
         else:
             spans.append((start, end, f"`{host}`"))
+    return spans
+
+
+def _neutralise(text: str, is_connected: Callable[[str], bool], issued: set[str]) -> str:
+    # Merge overlapping spans and rewrite once: a link whose text holds another
+    # URL, or two URLs glued together, must not leave either one raw.
+    merged: list[tuple[int, int, list[str]]] = []
+    for start, end, repl in sorted(_spans(text, is_connected, issued), key=lambda sp: sp[:2]):
+        if merged and start < merged[-1][1]:
+            prev = merged[-1]
+            merged[-1] = (prev[0], max(prev[1], end), [*prev[2], repl])
+        else:
+            merged.append((start, end, [repl]))
     out: list[str] = []
     pos = 0
-    for start, end, repl in sorted(spans, key=lambda sp: sp[0]):
-        if start < pos:  # inside a Markdown link already replaced
-            continue
+    for start, end, repls in merged:
         out.append(text[pos:start])
-        out.append(repl)
+        out.append(" ".join(dict.fromkeys(repls)))
         pos = end
     out.append(text[pos:])
-    return "".join(out)
+    result = "".join(out)
+    # CommonMark decodes entities in link destinations, so a scheme hidden as
+    # `https&#58;//` is a link the scan above cannot see. If such a URL is in
+    # the text, escape every `&` so nothing is decoded any more.
+    if "&" in text:
+        hidden = html.unescape(text)
+        if hidden != text and any(
+            core not in text
+            for core in (_core(u.group(0)) for u in _URL.finditer(hidden))
+            if (h := _host(core))
+            and is_connected(h)
+            and not any(c in issued for c in _candidates(core))
+        ):
+            result = result.replace("&", "&amp;")
+    return result
 
 
 def vet_links(text: str, *, connected_hosts: set[str], issued: set[str]) -> str:
     return _neutralise(text, lambda h: h in connected_hosts, issued)
+
+
+def _all_candidates(text: str, hosts: set[str]) -> set[str]:
+    wanted: set[str] = set()
+    for seen in (text, html.unescape(text)):
+        for mt in _URL.finditer(seen):
+            if _host(_core(mt.group(0))) in hosts:
+                wanted.update(_candidates(mt.group(0)))
+    return wanted
 
 
 def _has_url(text: str) -> bool:
@@ -132,12 +171,7 @@ async def vet_answer_links(db: AsyncSession, *, tenant_id: uuid.UUID, text: str)
         # A savepoint, so a failed read cannot poison the executor's transaction.
         async with db.begin_nested():
             hosts = await linked_hosts(db, tenant_id=tenant_id) | await _connection_hosts(db)
-            wanted = {
-                c
-                for mt in _URL.finditer(text)
-                if _host(mt.group(0)) in hosts
-                for c in _candidates(mt.group(0))
-            }
+            wanted = _all_candidates(text, hosts)
             issued = await issued_links(db, tenant_id=tenant_id, urls=wanted) if wanted else set()
         return vet_links(text, connected_hosts=hosts, issued=issued)
     except Exception:

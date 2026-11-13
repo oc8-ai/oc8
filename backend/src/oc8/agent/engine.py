@@ -1933,7 +1933,13 @@ async def run_agent(
                         output_text = f"{output_text}\n\n{finish_verdict.exhausted_note}"
                     # The activity log below is written before the executor's
                     # check sees this text, so it is vetted here too (idempotent).
-                    output_text = await vet_answer_links(db, tenant_id=tenant_id, text=output_text)
+                    raw_output = output_text
+                    output_text = await vet_answer_links(db, tenant_id=tenant_id, text=raw_output)
+                    # Cut first, vet after: cutting a vetted text could shorten an
+                    # issued URL into a different, unissued one.
+                    activity_detail = await vet_answer_links(
+                        db, tenant_id=tenant_id, text=raw_output[:500]
+                    )
 
                     task.state = "done"
                     if auto_cfg is not None:
@@ -1960,7 +1966,7 @@ async def run_agent(
                             "warning" if finish_verdict.exhausted_note is not None else "success"
                         ),
                         message=f"{agent.name} completed: {task_text[:80]}",
-                        detail=output_text[:500] or None,
+                        detail=activity_detail or None,
                         cache_hit=cached_result is not None,
                     )
                     await maybe_checkpoint(

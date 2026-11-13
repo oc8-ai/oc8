@@ -6,7 +6,7 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 from collections.abc import Iterable, Sequence
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
@@ -19,7 +19,14 @@ ISSUED_LINK_TTL = dt.timedelta(days=30)
 
 
 def host_of(url: str) -> str:
-    return (urlsplit(url).hostname or "").lower()
+    """The host a URL points at, spelled one way: lowercase, percent-decoded,
+    no trailing dot -- `h%2Eexample` and `H.example.` are `h.example`. Pure and
+    never raising: an unparsable URL has no host."""
+    try:
+        host = unquote(urlsplit(url).hostname or "")
+    except ValueError:
+        return ""
+    return host.lower().rstrip(".")
 
 
 async def remember_links(db: AsyncSession, *, tenant_id: uuid.UUID, urls: Sequence[str]) -> None:
