@@ -41,8 +41,8 @@ def normalise_host(host: str) -> str:
     """A host as a browser serialises it: NFKC-folded, ideographic dots as
     dots, lowercase, no trailing dot, IDNA-encoded; an IPv4 address in any
     WHATWG spelling (`3232235786`, `0xC0A8010A`, `0300.0250.1.10`) as a dotted
-    quad, an IPv6 address compressed and without brackets. Also takes the
-    `hostname` a browser reported. Never raises: the empty string if unsure."""
+    quad, an IPv6 address compressed and without brackets. Never raises: the
+    empty string if unsure."""
     try:
         host = unicodedata.normalize("NFKC", host).translate(_DOTS).lower()
         if host.startswith("[") and host.endswith("]"):

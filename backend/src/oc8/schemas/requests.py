@@ -939,13 +939,7 @@ class SetAgentToolAccessRequest(CamelModel):
     confirm_share: bool = False
 
 
-class LinkToVerifyRequest(CamelModel):
-    url: str = Field(max_length=2000)
-    #: The `hostname` the browser itself parsed out of `url`.
-    host: str = Field(max_length=253)
-
-
 class VerifyRecordLinksRequest(CamelModel):
     message_id: uuid.UUID
     #: One chat answer's worth of links; the URL cap matches what `enrich` issues.
-    links: list[LinkToVerifyRequest] = Field(max_length=100)
+    urls: list[Annotated[str, StringConstraints(max_length=2000)]] = Field(max_length=100)

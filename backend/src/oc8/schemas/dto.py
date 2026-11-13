@@ -104,6 +104,8 @@ class RecordLinkDTO(CamelModel):
 
 class RecordLinkVerdictDTO(CamelModel):
     url: str
+    #: The server's reading of the URL's host (`records.registry.host_of`).
+    host: str
     connected: bool
     issued: bool
 
