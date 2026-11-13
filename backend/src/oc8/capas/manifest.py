@@ -329,6 +329,10 @@ class ToolLabel(BaseModel):
     running: str = ""
 
 
+RECORD_URL_BUILTIN_PLACEHOLDERS: frozenset[str] = frozenset({"base_url", "model", "id"})
+_PLACEHOLDER_KINDS = ("arg:", "item:", "config:")
+
+
 class RecordUrlTemplate(BaseModel):
     """Where ONE record lives in the system behind this connection (§6 of the
     AI workplace design).
@@ -357,11 +361,22 @@ class RecordUrlTemplate(BaseModel):
     only on a re-enable, so a `config` entry would be frozen at whatever
     version created the connection. Read live off the manifest instead, like
     `scopes` and `guardrail_presets`.
+
+    Beyond the three built-in names a pack may declare its own placeholders
+    (`placeholders`), each with an ordered list of sources -- `arg:<dot.path>`
+    into the call's arguments, `item:<dot.path>` into the record inside the
+    result, `config:<dot.path>` into the connection config. A per-entity
+    `templates` override covers systems whose kinds live under different
+    paths (GitHub issues vs pulls). `native_url_fields` names fields in a
+    result record that already hold the system's own link, preferred over the
+    template. `related_fields` maps an argument path of a CREATE to the entity
+    it references, so an approval for a not-yet-existing record still links
+    its context (the customer of a new quotation).
     """
 
     model_config = ConfigDict(extra="forbid")
     #: e.g. "{base_url}/odoo/{model}/{id}"
-    template: str
+    template: str = ""
     #: Path into the connection's own `config` holding the installation's base
     #: URL, e.g. `["env", "ODOO_URL"]`. Same "a path is a list of keys" shape
     #: `value_spec.line_items.path` already uses.
@@ -369,30 +384,64 @@ class RecordUrlTemplate(BaseModel):
     #: focus entity -> the segment that goes in `{model}`. An entity absent
     #: from this map gets no link.
     models: dict[str, str] = {}
+    #: Per-entity template overrides for systems with different URL patterns
+    templates: dict[str, str] = {}
+    #: Custom placeholder names and their source paths
+    placeholders: dict[str, list[str]] = {}
+    #: Native URL fields in result records that hold the system's own link
+    native_url_fields: list[str] = []
+    #: Maps argument paths to entity models for CREATE context linking
+    related_fields: dict[str, str] = {}
+
+    def templates_for(self, entity: str) -> str:
+        """The template for `entity`: its override, else the shared one."""
+        return self.templates.get(entity) or self.template
 
     @model_validator(mode="after")
     def _only_known_placeholders(self) -> RecordUrlTemplate:
         from string import Formatter
 
-        fields = {name for _lit, name, _spec, _conv in Formatter().parse(self.template) if name}
-        unknown = sorted(fields - {"base_url", "model", "id"})
-        if unknown:
+        all_templates = [t for t in [self.template, *self.templates.values()] if t]
+        if not all_templates and not self.native_url_fields:
             raise ValueError(
-                f"record_url template has unknown placeholder(s): {', '.join(unknown)} "
-                "-- only {base_url}, {model} and {id} are substituted"
+                "record_url declares neither a template nor native_url_fields, "
+                "so it can never produce a link"
             )
-        if "base_url" not in fields:
+        known = RECORD_URL_BUILTIN_PLACEHOLDERS | set(self.placeholders)
+        for tpl in all_templates:
+            fields = {name for _lit, name, _spec, _conv in Formatter().parse(tpl) if name}
+            unknown = sorted(fields - known)
+            if unknown:
+                raise ValueError(
+                    f"record_url template has undeclared placeholder(s): {', '.join(unknown)} "
+                    "-- declare a source for each under record_url.placeholders"
+                )
+            if not (tpl.startswith("{base_url}") or tpl.startswith(("https://", "http://"))):
+                raise ValueError(
+                    "record_url template must start with {base_url} or https:// -- a "
+                    "relative link is useless to an approver reading it on a phone"
+                )
+            if "base_url" in fields and not self.base_url_path:
+                raise ValueError(
+                    "record_url template references {base_url} but declares no "
+                    "base_url_path to read it from"
+                )
+        for name, sources in self.placeholders.items():
+            if not sources or not all(s.startswith(_PLACEHOLDER_KINDS) for s in sources):
+                raise ValueError(
+                    f"record_url placeholder {name!r} needs sources starting with "
+                    "arg:, item: or config:"
+                )
+        if all_templates and not self.models:
             raise ValueError(
-                "record_url template must reference {base_url} -- a relative link is "
-                "useless to an approver reading it on a phone"
+                "record_url declares a template but no models, so it can never produce a link"
             )
-        if not self.base_url_path:
-            raise ValueError(
-                "record_url template references {base_url} but declares no base_url_path "
-                "to read it from"
-            )
-        if not self.models:
-            raise ValueError("record_url declares no models, so it can never produce a link")
+        stray = sorted(set(self.templates) - set(self.models))
+        if stray:
+            raise ValueError(f"record_url templates name unlisted models: {', '.join(stray)}")
+        stray = sorted(set(self.related_fields.values()) - set(self.models))
+        if stray:
+            raise ValueError(f"record_url related_fields name unlisted models: {', '.join(stray)}")
         return self
 
 
