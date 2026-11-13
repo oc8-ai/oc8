@@ -24,7 +24,7 @@ from oc8.api.deps import DbSession, require_departmental
 from oc8.api.v1.chat import _readable_session
 from oc8.authz.permissions import AGENT, COPILOT_USE, VIEW, perm
 from oc8.authz.scope import HumanActor
-from oc8.records.registry import canonical, host_of, linked_hosts, verified_links
+from oc8.records.registry import canonical, host_of, linked_hosts, normalise_host, verified_links
 from oc8.records.vetting import connection_hosts, urls_in
 from oc8.schemas.dto import RecordLinkVerdictDTO, RecordLinkVerdictsDTO
 from oc8.schemas.requests import VerifyRecordLinksRequest
@@ -55,9 +55,15 @@ async def verify(
     await _readable_session(request, msg.session_id, db, actor)
 
     tenant_id = actor.principal.tenant_id
-    urls = list(dict.fromkeys(body.urls))
+    # The browser's own reading of each host, beside ours: a host the two
+    # parse differently must count as connected if either reading says so.
+    browser_hosts: dict[str, set[str]] = {}
+    for link in body.links:
+        browser_hosts.setdefault(link.url, set()).add(normalise_host(link.host))
+    urls = list(browser_hosts)
     hosts = await linked_hosts(db, tenant_id=tenant_id) | await connection_hosts(db)
-    connected = {u for u in urls if host_of(u) in hosts}
+    hosts.discard("")
+    connected = {u for u in urls if host_of(u) in hosts or browser_hosts[u] & hosts}
     mentioned = {c for found in urls_in(msg.content) if (c := canonical(found)) is not None}
     in_answer = [u for u in connected if u in msg.content or canonical(u) in mentioned]
     issued = await verified_links(db, tenant_id=tenant_id, urls=in_answer)

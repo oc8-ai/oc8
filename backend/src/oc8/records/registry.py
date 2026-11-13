@@ -4,6 +4,7 @@ check (`oc8.records.vetting`), written wherever `enrich` issued links."""
 from __future__ import annotations
 
 import datetime as dt
+import ipaddress
 import json
 import unicodedata
 import uuid
@@ -25,19 +26,71 @@ _DOTS = str.maketrans({"\u3002": ".", "\uff0e": ".", "\uff61": "."})
 
 def host_of(url: str) -> str:
     """The host a URL points at, spelled the way a browser resolves it:
-    percent-decoded, NFKC-folded, ideographic dots as dots, IDNA-encoded,
-    lowercase, no trailing dot -- `h%2Eexample`, `H.example.` and `h。example`
-    are all `h.example`. Pure and never raising: a host that cannot be
-    determined is the empty string."""
+    percent-decoded, then `normalise_host` -- `h%2Eexample`, `H.example.` and
+    `h。example` are all `h.example`, `3232235786` is `192.168.1.10`. Pure and
+    never raising: a host that cannot be determined is the empty string."""
     try:
         # Browsers read `\` as `/` in http(s) URLs: `h.example\@o.org` is h.example.
         host = unquote(urlsplit(url.replace("\\", "/")).hostname or "")
+    except ValueError:
+        return ""
+    return normalise_host(host)
+
+
+def normalise_host(host: str) -> str:
+    """A host as a browser serialises it: NFKC-folded, ideographic dots as
+    dots, lowercase, no trailing dot, IDNA-encoded; an IPv4 address in any
+    WHATWG spelling (`3232235786`, `0xC0A8010A`, `0300.0250.1.10`) as a dotted
+    quad, an IPv6 address compressed and without brackets. Also takes the
+    `hostname` a browser reported. Never raises: the empty string if unsure."""
+    try:
         host = unicodedata.normalize("NFKC", host).translate(_DOTS).lower()
+        if host.startswith("[") and host.endswith("]"):
+            host = host[1:-1]
+        if ":" in host:
+            return ipaddress.IPv6Address(host).compressed
+        host = host.rstrip(".")
+        if (ipv4 := _ipv4(host)) is not None:
+            return ipv4
         if not host.isascii():
             host = host.encode("idna").decode("ascii")
     except (ValueError, UnicodeError):
         return ""
     return host.rstrip(".")
+
+
+_IPV4_DIGITS = {16: set("0123456789abcdef"), 10: set("0123456789"), 8: set("01234567")}
+
+
+def _ipv4_part(part: str) -> int | None:
+    """One dotted part as WHATWG reads it: `0x` hex, a leading `0` octal,
+    decimal otherwise. None if it is no number at all."""
+    base = 10
+    if part[:2] == "0x":
+        part, base = part[2:], 16
+    elif len(part) > 1 and part.startswith("0"):
+        part, base = part[1:], 8
+    if not part:
+        return 0 if base == 16 else None
+    if not set(part) <= _IPV4_DIGITS[base]:
+        return None
+    return int(part, base)
+
+
+def _ipv4(host: str) -> str | None:
+    """The dotted quad a browser makes of an all-numeric host, or None for a
+    name (or for an address a browser would refuse -- a name it is not)."""
+    parts = host.split(".")
+    if not host or len(parts) > 4 or "" in parts:
+        return None
+    numbers = [_ipv4_part(p) for p in parts]
+    if any(n is None for n in numbers):
+        return None
+    *head, last = [n for n in numbers if n is not None]
+    if any(n > 255 for n in head) or last >= 256 ** (4 - len(head)):
+        return None
+    value = last + sum(n << (8 * (3 - i)) for i, n in enumerate(head))
+    return str(ipaddress.IPv4Address(value))
 
 
 async def remember_links(db: AsyncSession, *, tenant_id: uuid.UUID, urls: Sequence[str]) -> None:

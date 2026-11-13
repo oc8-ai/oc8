@@ -41,23 +41,34 @@ def _h(tenant: uuid.UUID, subject: str) -> dict[str, str]:
 
 
 async def _verify_call(
-    tenant: uuid.UUID, subject: str, message_id: uuid.UUID, urls: list[str]
+    tenant: uuid.UUID,
+    subject: str,
+    message_id: uuid.UUID,
+    urls: list[str],
+    browser_hosts: dict[str, str] | None = None,
 ) -> tuple[int, Any]:
+    """Without `browser_hosts` the browser reports no host: only the server's
+    own reading of each URL decides whether it is connected."""
+    links = [{"url": u, "host": (browser_hosts or {}).get(u, "")} for u in urls]
     app = create_app()
     async with LifespanManager(app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
             resp = await c.post(
                 "/api/v1/record-links/verify",
-                json={"messageId": str(message_id), "urls": urls},
+                json={"messageId": str(message_id), "links": links},
                 headers=_h(tenant, subject),
             )
             return resp.status_code, resp.json()
 
 
 async def _verdicts(
-    tenant: uuid.UUID, message_id: uuid.UUID, urls: list[str], subject: str = "alice"
+    tenant: uuid.UUID,
+    message_id: uuid.UUID,
+    urls: list[str],
+    subject: str = "alice",
+    browser_hosts: dict[str, str] | None = None,
 ) -> dict[str, tuple[bool, bool]]:
-    code, body = await _verify_call(tenant, subject, message_id, urls)
+    code, body = await _verify_call(tenant, subject, message_id, urls, browser_hosts)
     assert code == 200, body
     return {v["url"]: (v["connected"], v["issued"]) for v in body["links"]}
 
@@ -180,6 +191,36 @@ async def test_a_connections_base_host_is_connected_before_any_link_was_issued(
     assert await _verdicts(tenant, msg, [erp]) == {erp: (True, False)}
 
 
+async def test_a_guessed_link_to_an_ip_addressed_system_is_connected(
+    app_session: AppSessionFactory,
+) -> None:
+    """A browser opens `3232235786` and `0xC0A8010A` as 192.168.1.10."""
+    tenant = uuid.uuid4()
+    decimal = "https://3232235786/odoo/sale.order/99"
+    hexadecimal = "https://0xC0A8010A/odoo/sale.order/99"
+    msg = await _answer(
+        app_session,
+        tenant,
+        f"[a]({decimal}) [b]({hexadecimal})",
+        issued=["https://192.168.1.10/odoo/sale.order/42"],
+    )
+    got = await _verdicts(tenant, msg, [decimal, hexadecimal])
+    assert got == {decimal: (True, False), hexadecimal: (True, False)}
+
+
+async def test_the_browsers_reading_of_a_host_counts_too(
+    app_session: AppSessionFactory,
+) -> None:
+    """Where Python and the browser parse a host differently, the link is
+    connected if either says so -- the client has no reason to lie to itself."""
+    tenant = uuid.uuid4()
+    odd = "https://odd.example/odoo/sale.order/99"
+    msg = await _answer(app_session, tenant, f"[a]({odd})", issued=[ISSUED])
+    assert await _verdicts(tenant, msg, [odd]) == {odd: (False, False)}
+    got = await _verdicts(tenant, msg, [odd], browser_hosts={odd: "ODOO.example.com."})
+    assert got == {odd: (True, False)}
+
+
 async def test_another_members_answer_is_not_found(app_session: AppSessionFactory) -> None:
     tenant = uuid.uuid4()
     msg = await _answer(app_session, tenant, f"[a]({ISSUED})", issued=[ISSUED])
@@ -217,4 +258,12 @@ async def test_verify_refuses_more_than_its_limits(
     app_session: AppSessionFactory, urls: list[str]
 ) -> None:
     code, _body = await _verify_call(uuid.uuid4(), "alice", uuid.uuid4(), urls)
+    assert code == 422
+
+
+async def test_verify_refuses_an_overlong_host(app_session: AppSessionFactory) -> None:
+    url = "https://o.example/x"
+    code, _body = await _verify_call(
+        uuid.uuid4(), "alice", uuid.uuid4(), [url], browser_hosts={url: "a" * 254}
+    )
     assert code == 422
