@@ -5,8 +5,9 @@
 // literal HTML in an answer stays text. Every link goes through the `a`
 // renderer below, which only emits http(s) links (new tab), `#cite-n`
 // citations and resolved `oc8://` object chips; anything else is plain text.
-// An http(s) link to a connected system is a record link and is clickable
-// only once oc8 confirms it issued that exact href (see `linkable`).
+// In an answer, an http(s) link is clickable only once the server has judged
+// it for that saved answer (see `linkable`); a member's own words are not
+// checked.
 // Images are https only and load only when the member clicks to load them.
 
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -19,34 +20,30 @@ import { commonPrefixLength, splitBlocks, stabilizeTail } from "@/components/mar
 import { rehypeStreamFresh } from "@/components/stream-words";
 import type { ChatSourceDTO } from "@/lib/hooks-chat";
 import { useT } from "@/lib/i18n";
-import { useConnectedHosts, useVerifiedLinks } from "@/lib/record-links";
+import { useVerifiedLinks, type LinkVerdict } from "@/lib/record-links";
 import { cn } from "@/lib/utils";
 
 function isHttp(href: string | undefined): href is string {
   return !!href && /^https?:\/\//i.test(href);
 }
 
-/** Whether an http(s) href may be clickable. The host is the one the browser
- *  will open (`new URL` applies IDNA, backslash and percent rules), so a link
- *  spelled to dodge the server's check is still judged by where it leads.
- *  Fails closed: no hosts yet, no link. A connected host's href is recorded
- *  in `asked` and clickable only once the verify answer lists it verbatim. */
+/** Whether an answer's http(s) href may be clickable. One the browser cannot
+ *  parse never is. Otherwise it is recorded in `asked` and needs the server's
+ *  verdict for this answer: another host, or a connected system's link that
+ *  oc8 issued. No verdict yet, or none to be had, means text (fail closed). */
 function linkable(
   href: string,
-  hosts: Set<string> | undefined,
-  verified: Set<string> | undefined,
+  verdicts: Map<string, LinkVerdict> | undefined,
   asked: Set<string>,
 ): boolean {
-  let host: string;
   try {
-    host = new URL(href).hostname.toLowerCase().replace(/\.$/, "");
+    if (!new URL(href).hostname) return false;
   } catch {
     return false;
   }
-  if (!hosts) return false;
-  if (!hosts.has(host)) return true;
   asked.add(href);
-  return !!verified?.has(href);
+  const verdict = verdicts?.get(href);
+  return !!verdict && (!verdict.connected || verdict.issued);
 }
 
 // react-markdown hands `pre` a single `<code>` child whose className carries
@@ -242,7 +239,8 @@ export function ChatMarkdown({
   onCitation,
   onObjectClick,
   streaming = false,
-  unvetted = false,
+  messageId,
+  memberAuthored = false,
 }: {
   text: string;
   className?: string;
@@ -255,25 +253,35 @@ export function ChatMarkdown({
    *  the newest words fading in, and the unfinished end rendered as it will
    *  look once finished (`stabilizeTail`). */
   streaming?: boolean;
-  /** The text has not been through the server's link check yet (a live
-   *  answer before its message is saved): links stay text, as while streaming. */
-  unvetted?: boolean;
+  /** The saved answer this text is. Its links are checked against it; text
+   *  without one (a live answer, an activity log) shows no clickable link. */
+  messageId?: string;
+  /** A member's own message: links render as written, nothing is checked. */
+  memberAuthored?: boolean;
 }) {
   const t = useT();
-  const plainLinks = streaming || unvetted;
-  // The hrefs the `a` renderer met on connected hosts, collected while the
-  // blocks render -- exactly what the parser produced, after react-markdown's
-  // own URL normalisation -- and asked about once the render has committed.
+  const plainLinks = !memberAuthored && (streaming || !messageId);
+  // The hrefs the `a` renderer met, collected while the blocks render --
+  // exactly what the parser produced, after react-markdown's own URL
+  // normalisation -- and asked about once the render has committed.
   const asked = useRef(new Set<string>());
+  const askedFor = useRef(messageId);
+  if (askedFor.current !== messageId) {
+    askedFor.current = messageId;
+    asked.current = new Set();
+  }
   const [toVerify, setToVerify] = useState<string[]>([]);
-  const { data: hosts } = useConnectedHosts();
-  const { data: verified } = useVerifiedLinks(toVerify);
+  const { data: verdicts } = useVerifiedLinks(memberAuthored ? undefined : messageId, toVerify);
   // The renderers read the newest callbacks and sources through a ref, so
   // the components stay the same object between renders and finished blocks
   // are not re-rendered for a new arrow function.
-  const latest = useRef({ sources, onCitation, onObjectClick, plainLinks, hosts, verified });
-  latest.current = { sources, onCitation, onObjectClick, plainLinks, hosts, verified };
-  const linkState = useMemo(() => ({ plainLinks, hosts, verified }), [plainLinks, hosts, verified]);
+  const gate = { memberAuthored, plainLinks, verdicts };
+  const latest = useRef({ sources, onCitation, onObjectClick, ...gate });
+  latest.current = { sources, onCitation, onObjectClick, ...gate };
+  const linkState = useMemo(
+    () => ({ memberAuthored, plainLinks, verdicts }),
+    [memberAuthored, plainLinks, verdicts],
+  );
   const sourcesKey = sources.map((s) => `${s.n}:${s.title}`).join("|");
   const components = useMemo<Components>(
     () => ({
@@ -332,11 +340,11 @@ export function ChatMarkdown({
           );
         }
         if (!isHttp(href)) return <span>{children}</span>;
-        // Unvetted text: no link the member could follow before it is checked.
-        const gate = latest.current;
-        if (gate.plainLinks) return <span className="text-primary">{children}</span>;
-        if (!linkable(href, gate.hosts, gate.verified, asked.current)) {
-          return <span>{children}</span>;
+        const now = latest.current;
+        if (!now.memberAuthored) {
+          // Unchecked text: no link the member could follow before it is checked.
+          if (now.plainLinks) return <span className="text-primary">{children}</span>;
+          if (!linkable(href, now.verdicts, asked.current)) return <span>{children}</span>;
         }
         return (
           <a
@@ -369,10 +377,11 @@ export function ChatMarkdown({
   );
 
   // The blocks render only when one of these changes, so after that commit
-  // `asked` holds every href they met. It only grows: a new size is a new href.
+  // `asked` holds every href they met.
   useEffect(() => {
-    if (asked.current.size !== toVerify.length) setToVerify([...asked.current]);
-  }, [text, components, linkState, toVerify.length]);
+    const met = [...asked.current].sort();
+    if (met.join("\n") !== toVerify.join("\n")) setToVerify(met);
+  }, [text, components, linkState, messageId, toVerify]);
 
   const count = sources.length;
   const blocks = useMemo(() => splitBlocks(text), [text]);

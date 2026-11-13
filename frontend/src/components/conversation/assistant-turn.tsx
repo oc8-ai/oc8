@@ -109,9 +109,6 @@ export function AssistantTurn({
   const answer = message
     ? message.content
     : run?.liveAnswer || (run && TERMINAL.has(run.state) ? (run.output ?? "") : "");
-  // The streamed text is never link-checked; the saved message is. Until that
-  // message replaces it -- even after the stream has ended -- its links stay text.
-  const unvetted = !message && !!run?.liveAnswer;
   const thought = run ? thoughtOf(run) : { text: null, seconds: null };
   // The live turn before its first word -- including the moment before its
   // run has loaded and an isolated run's workspace start.
@@ -187,7 +184,9 @@ export function AssistantTurn({
       <StreamingText
         text={holdText ? "" : answer}
         streaming={live || holdText}
-        unvetted={unvetted}
+        // Only a saved answer's links are checked and can be clickable: the
+        // streamed text, even once its stream ended, waits for the message.
+        messageId={message?.id}
         sources={sources}
         onObjectClick={openObject}
         onCitation={(n) => {

@@ -85,7 +85,7 @@ export function UserTurn({
         {answered ? (
           <QuestionSummary questions={answered.questions} answers={answered.answers} />
         ) : (
-          <ChatMarkdown text={m.content} onObjectClick={openObject} />
+          <ChatMarkdown text={m.content} onObjectClick={openObject} memberAuthored />
         )}
         {m.attachments.length > 0 && (
           <ul className="flex flex-wrap gap-1">

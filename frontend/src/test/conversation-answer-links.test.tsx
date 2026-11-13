@@ -1,6 +1,6 @@
-// A streamed answer never went through the server's link check; the message
-// saved from it did. So the live text keeps its links as text -- even once
-// the stream has ended -- until the saved message replaces it.
+// Only a saved answer's links are checked, so only they can be clickable: the
+// live text keeps its links as text -- even once the stream has ended -- until
+// the saved message replaces it. A member's own message is not checked.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
@@ -10,12 +10,21 @@ vi.mock("@/lib/conversation-api", async (orig) => ({
   useTurnRun: () => ({ data: undefined }),
   useMessageFeedback: () => ({ mutate: vi.fn() }),
 }));
+// The server's verdicts: no link here points at a connected system.
+const asked = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/record-links", () => ({
-  useConnectedHosts: () => ({ data: new Set(["odoo.example.com"]) }),
-  useVerifiedLinks: () => ({ data: new Set<string>() }),
+  useVerifiedLinks: (messageId: string | undefined, urls: string[]) => {
+    if (messageId && urls.length) asked(messageId);
+    return {
+      data: messageId
+        ? new Map(urls.map((url) => [url, { url, connected: false, issued: false }]))
+        : undefined,
+    };
+  },
 }));
 
 import { AssistantTurn } from "@/components/conversation/assistant-turn";
+import { UserTurn } from "@/components/conversation/user-turn";
 import type { ChatMessageDTO, RunActivityDTO } from "@/lib/hooks-chat";
 
 const ANSWER = "See [the docs](https://example.com/docs).";
@@ -75,5 +84,29 @@ describe("links in a live answer", () => {
       "href",
       "https://example.com/docs",
     );
+    expect(asked).toHaveBeenCalledWith("m1");
+  });
+});
+
+describe("links in a member's own message", () => {
+  it("are clickable as written, without a check", () => {
+    asked.mockClear();
+    const url = "https://odoo.example.com/odoo/sale.order/99";
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <UserTurn
+          turn={{
+            kind: "user",
+            key: "u1",
+            message: { ...saved, id: "u1", role: "user", content: `[my order](${url})` },
+          }}
+          viewerMemberId={null}
+          canEdit={false}
+          onEdit={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByRole("link", { name: /my order/ })).toHaveAttribute("href", url);
+    expect(asked).not.toHaveBeenCalled();
   });
 });

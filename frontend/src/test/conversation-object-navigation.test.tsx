@@ -4,11 +4,14 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// ChatMarkdown's record-link check, without a server: no connected hosts, so
-// every http(s) link is an ordinary one.
+// ChatMarkdown's record-link check, without a server: in a saved answer no
+// link points at a connected system, so each is an ordinary one.
 vi.mock("@/lib/record-links", () => ({
-  useConnectedHosts: () => ({ data: new Set<string>() }),
-  useVerifiedLinks: () => ({ data: new Set<string>() }),
+  useVerifiedLinks: (messageId: string | undefined, urls: string[]) => ({
+    data: messageId
+      ? new Map(urls.map((url) => [url, { url, connected: false, issued: false }]))
+      : undefined,
+  }),
 }));
 
 const r = vi.hoisted(() => ({ navigate: vi.fn(), search: {} as Record<string, unknown> }));

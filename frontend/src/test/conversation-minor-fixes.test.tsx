@@ -7,11 +7,14 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
-// ChatMarkdown's record-link check, without a server: no connected hosts, so
-// every http(s) link is an ordinary one.
+// ChatMarkdown's record-link check, without a server: in a saved answer no
+// link points at a connected system, so each is an ordinary one.
 vi.mock("@/lib/record-links", () => ({
-  useConnectedHosts: () => ({ data: new Set<string>() }),
-  useVerifiedLinks: () => ({ data: new Set<string>() }),
+  useVerifiedLinks: (messageId: string | undefined, urls: string[]) => ({
+    data: messageId
+      ? new Map(urls.map((url) => [url, { url, connected: false, issued: false }]))
+      : undefined,
+  }),
 }));
 
 const feedback = vi.hoisted(() => vi.fn());
@@ -27,7 +30,7 @@ import { AssistantTurn } from "@/components/conversation/assistant-turn";
 describe("long words and URLs", () => {
   it("wrap inside the answer instead of widening the column", () => {
     const url = `https://example.com/${"a".repeat(200)}`;
-    const { container } = render(<ChatMarkdown text={`See [${url}](${url})`} />);
+    const { container } = render(<ChatMarkdown text={`See [${url}](${url})`} messageId="m1" />);
     expect((container.firstElementChild as HTMLElement).className).toContain(
       "[overflow-wrap:anywhere]",
     );
