@@ -142,3 +142,22 @@ pull_request_review_write = "Reviews"
 create_or_update_file = "Updates"
 delete_file = "Deletes"
 push_files = "Commits to"
+
+# NEUTRAL SEAM (record_url): where an issue or pull request lives. A result
+# that carries its own `html_url` wins (search results, GitHub Enterprise
+# hosts: the server returns the right host); the template is the fallback for
+# results that only carry a number.
+[connections.record_url]
+template = "https://github.com/{owner}/{repo}/issues/{id}"
+native_url_fields = ["html_url"]
+
+[connections.record_url.models]
+issue = "issues"
+pull = "pull"
+
+[connections.record_url.templates]
+pull = "https://github.com/{owner}/{repo}/pull/{id}"
+
+[connections.record_url.placeholders]
+owner = ["arg:owner", "item:repository.owner.login"]
+repo = ["arg:repo", "item:repository.name"]

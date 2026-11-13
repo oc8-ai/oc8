@@ -98,6 +98,9 @@ moodle_unenrol_user = "user"
 moodle_get_completion = "student"
 moodle_grade_submission = "student"
 moodle_post_to_forum = "forum"
+moodle_search_courses = "course"
+moodle_find_users = "user"
+moodle_list_participants = "user"
 
 [connections.config.focus_spec.verbs]
 moodle_update_course = "Updates"

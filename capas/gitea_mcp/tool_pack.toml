@@ -74,3 +74,21 @@ GITEA_URL = "http://host.docker.internal:3000"
 
 [connections.config.secret_env]
 GITEA_TOKEN = "gitea/token"
+
+# NEUTRAL SEAM (record_url): where an issue or pull request lives on this
+# Gitea host. A result's own `html_url` wins when present.
+[connections.record_url]
+template = "{base_url}/{owner}/{repo}/issues/{id}"
+base_url_path = ["env", "GITEA_URL"]
+native_url_fields = ["html_url"]
+
+[connections.record_url.models]
+issue = "issues"
+pull = "pulls"
+
+[connections.record_url.templates]
+pull = "{base_url}/{owner}/{repo}/pulls/{id}"
+
+[connections.record_url.placeholders]
+owner = ["arg:owner", "item:repository.owner"]
+repo = ["arg:repo", "item:repository.name"]

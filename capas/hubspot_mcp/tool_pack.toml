@@ -45,6 +45,7 @@ args = ["-y", "@hubspot/mcp-server"]
 outward_tools = ["hubspot-create-engagement", "hubspot-update-engagement"]
 
 [connections.config.env]
+HUBSPOT_UI_URL = "https://app.hubspot.com"
 HUBSPOT_ENABLED_TOOLS = "hubspot-get-user-details,hubspot-list-objects,hubspot-search-objects,hubspot-batch-read-objects,hubspot-get-schemas,hubspot-list-properties,hubspot-get-property,hubspot-list-associations,hubspot-get-association-definitions,hubspot-get-engagement,hubspot-list-workflows,hubspot-get-workflow,hubspot-generate-feedback-link,hubspot-get-link,hubspot-batch-create-objects,hubspot-batch-update-objects,hubspot-create-property,hubspot-update-property,hubspot-batch-create-associations,hubspot-create-engagement,hubspot-update-engagement"
 
 [connections.config.secret_env]
@@ -93,3 +94,22 @@ hubspot-update-engagement = "Updates note on"
 # HubSpot login reaches the bridge when an agent uses it (connections).
 [connections.credential_env_fields]
 PRIVATE_APP_ACCESS_TOKEN = "private_app_access_token"
+HUBSPOT_PORTAL_ID = "portal_id"
+HUBSPOT_UI_URL = "ui_url"
+
+# NEUTRAL SEAM (record_url): where a CRM record lives. Without the portal id
+# no URL can be built, so a login that leaves it empty simply has no links.
+# The object type is the call's own `objectType`; HubSpot's UI wants its
+# numeric type id in the path.
+[connections.record_url]
+template = "{base_url}/contacts/{portal}/record/{model}/{id}"
+base_url_path = ["env", "HUBSPOT_UI_URL"]
+
+[connections.record_url.models]
+contacts = "0-1"
+companies = "0-2"
+deals = "0-3"
+tickets = "0-5"
+
+[connections.record_url.placeholders]
+portal = ["config:env.HUBSPOT_PORTAL_ID"]

@@ -92,7 +92,10 @@ jira_remove_watcher = "issue"
 jira_create_sprint = "sprint"
 jira_update_sprint = "sprint"
 jira_add_issues_to_sprint = "sprint"
-jira_get_sprint_issues = "sprint"
+jira_get_sprint_issues = "issue"
+jira_search = "issue"
+jira_get_project_issues = "issue"
+jira_get_board_issues = "issue"
 
 [connections.config.focus_spec.labels]
 issue = "Issue"
@@ -113,3 +116,13 @@ jira_assign_issue = "Assigns"
 JIRA_URL = "url"
 JIRA_USERNAME = "username"
 JIRA_API_TOKEN = "api_token"
+
+# NEUTRAL SEAM (record_url): where one issue lives, so a search result or an
+# approval links straight into Jira. The site URL is this connection's own env
+# (a personal login rewrites it), never a literal.
+[connections.record_url]
+template = "{base_url}/browse/{id}"
+base_url_path = ["env", "JIRA_URL"]
+
+[connections.record_url.models]
+issue = "issue"
