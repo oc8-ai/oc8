@@ -284,10 +284,14 @@ _OPERATIONS = TypeAdapter(list[Operation])
 
 
 class InvalidOperation(ValueError):
-    """Safe, value-free validation failure exposed at every boundary."""
+    """Safe, value-free validation failure exposed at every boundary.
 
-    def __init__(self) -> None:
+    `reason` is an optional fixed code saying why (never submitted text), so
+    the agent builder can tell the member which rule a step broke."""
+
+    def __init__(self, reason: str | None = None) -> None:
         super().__init__("invalid copilot operation")
+        self.reason = reason
 
 
 def parse_operations(raw: object) -> list[Operation]:
@@ -527,11 +531,11 @@ async def apply_operation(
             # rejection convention (`InvalidOperation`, which `apply_proposal`
             # turns into a rejected proposal and a 409) rather than a new
             # error surface, and value-free like every other InvalidOperation.
-            raise InvalidOperation() from exc
+            raise InvalidOperation("model_manual_only") from exc
         except InvalidTriggerConfig as exc:
             # A bad cron expression or an undeclared event: this module's one
             # value-free rejection, not a raw ValueError escaping the proposal.
-            raise InvalidOperation() from exc
+            raise InvalidOperation("trigger_invalid") from exc
         return None
     if isinstance(operation, PluginEnable):
         await enable_plugin(
@@ -758,7 +762,7 @@ async def apply_operation(
         dept = await db.get(m.Department, agent.department_id)
         frame = dept.frame if dept else {}
         if pdp.narrowing_within_frame(frame, operation.narrowing):
-            raise InvalidOperation()
+            raise InvalidOperation("system_outside_frame")
         raw_tools = (
             operation.narrowing.get("tools", {}) if isinstance(operation.narrowing, dict) else {}
         )
@@ -787,7 +791,7 @@ async def apply_operation(
                     str(cfg.get("_plugin_name", "")), str(cfg.get("_connection_key", ""))
                 )
                 if not connection_supports_value_spec(manifest_conn):
-                    raise InvalidOperation()
+                    raise InvalidOperation("system_no_amount_limit")
         # Deferred import: `oc8.api.v1`'s package __init__ eagerly aggregates
         # every route module for the router, including `copilot.py`, which
         # imports back from this module -- a top-level import here would make
@@ -804,7 +808,7 @@ async def apply_operation(
                 db, tenant_id=tenant_id, agent=agent, narrowing=operation.narrowing, frame=frame
             )
         except HTTPException as exc:
-            raise InvalidOperation() from exc
+            raise InvalidOperation("system_login_needed") from exc
         had_no_draft = await _has_no_draft(db, agent)
         agent.narrowing = operation.narrowing
         await db.flush()
@@ -860,7 +864,7 @@ async def apply_operation(
         try:
             await assert_manual_only_compatible(db, agent_id=agent.id, model_config_id=mc.id)
         except SubscriptionModelNotManualOnly as exc:
-            raise InvalidOperation() from exc
+            raise InvalidOperation("model_manual_only") from exc
         had_no_draft = await _has_no_draft(db, agent)
         agent.model_config_id = mc.id
         show_model(agent, mc)
@@ -884,7 +888,7 @@ async def apply_operation(
         )
         granted_kb_ids = {str(k) for k in granted.scalars().all()}
         if pdp.missing_skill_requirements(frame, agent.narrowing, requires, granted_kb_ids):
-            raise InvalidOperation()
+            raise InvalidOperation("skill_requirements_missing")
         resolved = await resolve_runtime_plugin(db, tenant_id=tenant_id, agent=agent)
         if resolved is not None:
             _, runtime_version = resolved
@@ -893,7 +897,7 @@ async def apply_operation(
                 has_enabled_skills=True,
                 runtime_capabilities=list(runtime_version.capabilities),
             ):
-                raise InvalidOperation()
+                raise InvalidOperation("runtime_lacks_skills")
         # Already assigned is not an error worth surfacing as a raised
         # exception -- same reasoning as `assign_skill`'s own comment
         # (`api/v1/agents_write.py:1061-1085`): the unique index would report

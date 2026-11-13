@@ -59,6 +59,10 @@ _REFUSALS: dict[str, str] = {
     "model_not_allowed": "pick a model from builder_options",
     "skill_not_allowed": "pick a skill from builder_options",
     "connection_not_allowed": "use only systems builder_options lists for that department",
+    "skill_needs_system": (
+        "a chosen skill needs a system the agent would not have; add that system "
+        "to systems (builder_options lists the usable ones) or drop the skill"
+    ),
     "unknown_field": "use only these fields: " + ", ".join(sorted(FLAT_FIELDS)),
     "mixed_shapes": "pass either the agent's fields or operations, not both",
     "missing_agent": "give at least departmentId, name and mission",
@@ -114,9 +118,7 @@ async def builder_options_text(
     departments, _total = await visible_departments(
         db, scope=actor.scope, tenant_wide=_reads_every_department(authority)
     )
-    lines = [
-        "Departments (id | name | how | connected systems | not usable yet, and why):"
-    ]
+    lines = ["Departments (id | name | how | connected systems | not usable yet, and why):"]
     own = actor.scope.viewable
     for dept in sorted(departments, key=lambda d: d.name.lower()):
         if not actor.scope.may_view(dept.id):
@@ -130,9 +132,9 @@ async def builder_options_text(
         systems = await department_systems(db, tenant_id=tenant_id, department=dept)
         mine = " (their department)" if dept.id in own else ""
         listed = ", ".join(one_line(s.key, 60) for s in systems if s.usable) or "none"
-        missing = "; ".join(
-            f"{one_line(s.key, 60)}: {s.missing}" for s in systems if s.missing
-        ) or "-"
+        missing = (
+            "; ".join(f"{one_line(s.key, 60)}: {s.missing}" for s in systems if s.missing) or "-"
+        )
         lines.append(
             f"- {dept.id} | {one_line(dept.name, 80)}{mine} | {how} | {listed} | {missing}"
         )
