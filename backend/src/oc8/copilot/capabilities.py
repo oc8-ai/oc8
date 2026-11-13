@@ -453,7 +453,7 @@ async def _has_no_draft(db: AsyncSession, agent: m.Agent) -> bool:
 
 
 async def _publish_copilot_change(
-    db: AsyncSession, agent: m.Agent, *, had_no_draft: bool, what: str
+    db: AsyncSession, agent: m.Agent, *, had_no_draft: bool, what: str, publish: bool = True
 ) -> None:
     """Make an operator-approved Copilot change to a versioned agent field
     actually take effect: runs execute the PUBLISHED version, so a write to the
@@ -471,7 +471,12 @@ async def _publish_copilot_change(
     wrote the value the version already has). A publish hook veto rejects the
     operation, which rolls the whole proposal back -- the same outcome as any
     other refusal here.
+
+    `publish=False`: the caller publishes once itself, after its last step
+    (the agent builder's brand-new agent -- `apply_builder_proposal`).
     """
+    if not publish:
+        return
     if not had_no_draft:
         logger.info(
             "copilot change deferred to existing draft: agent=%s what=%s",
@@ -493,11 +498,17 @@ async def apply_operation(
     tenant_id: uuid.UUID,
     data: dict[str, Any],
     actor_member_id: uuid.UUID | None = None,
+    publish: bool = True,
 ) -> uuid.UUID | None:
     """Apply exactly one validated operation through existing service boundaries.
 
     Returns the new agent's id for `agent.create` (builder proposals map their
-    `ref` to it) and None for every other operation."""
+    `ref` to it) and None for every other operation.
+
+    `publish=False` leaves an agent change in the working copy -- `agent.create`
+    then writes no v1 either -- for a caller that publishes the agent once
+    after its last step (`apply_builder_proposal`: the person's "Create" is
+    one decision, so the new agent's first version holds all of it)."""
     operation = parse_operations([data])[0]
     if isinstance(operation, MissionSet):
         agent = await db.get(m.Agent, operation.agentId)
@@ -506,7 +517,9 @@ async def apply_operation(
         had_no_draft = await _has_no_draft(db, agent)
         agent.mission = operation.mission
         await db.flush()
-        await _publish_copilot_change(db, agent, had_no_draft=had_no_draft, what="mission")
+        await _publish_copilot_change(
+            db, agent, had_no_draft=had_no_draft, what="mission", publish=publish
+        )
         return None
     if isinstance(operation, TriggerCreate):
         events = await list_installed_automation_events(db)
@@ -707,7 +720,8 @@ async def apply_operation(
         # v1 in the same transaction as the create, like every other creation
         # path (api/v1/agents_write.py::create_agent): runs are pinned to a
         # version, and an agent without one would run off its live row.
-        await publish_version(db, agent, note="created by the Copilot")
+        if publish:
+            await publish_version(db, agent, note="created by the Copilot")
         return agent.id
     if isinstance(operation, AgentRename):
         agent = await db.get(m.Agent, operation.agentId)
@@ -803,16 +817,21 @@ async def apply_operation(
         # and only place `capabilities.py` depends on `api/v1/*`.
         from oc8.api.v1.agents_write import enforce_narrowing_logins
 
+        # Read BEFORE `enforce_narrowing_logins`: it records the override in
+        # `narrowing_overridden_keys`, a versioned column, so reading after it
+        # always saw a draft and never published the Copilot's change.
+        had_no_draft = await _has_no_draft(db, agent)
         try:
             await enforce_narrowing_logins(
                 db, tenant_id=tenant_id, agent=agent, narrowing=operation.narrowing, frame=frame
             )
         except HTTPException as exc:
             raise InvalidOperation("system_login_needed") from exc
-        had_no_draft = await _has_no_draft(db, agent)
         agent.narrowing = operation.narrowing
         await db.flush()
-        await _publish_copilot_change(db, agent, had_no_draft=had_no_draft, what="tool access")
+        await _publish_copilot_change(
+            db, agent, had_no_draft=had_no_draft, what="tool access", publish=publish
+        )
         return None
     if isinstance(operation, AgentNarrowingReset):
         agent = await db.get(m.Agent, operation.agentId)
@@ -832,7 +851,7 @@ async def apply_operation(
         agent.narrowing_overridden_keys = sorted(overridden)
         await db.flush()
         await _publish_copilot_change(
-            db, agent, had_no_draft=had_no_draft, what="tool access reset"
+            db, agent, had_no_draft=had_no_draft, what="tool access reset", publish=publish
         )
         return None
     if isinstance(operation, AgentRuntimeAssign):
@@ -852,7 +871,9 @@ async def apply_operation(
         except (RuntimeNotFoundError, RuntimeNotExecutableError, RuntimeCapabilityError) as exc:
             raise InvalidOperation() from exc
         await db.flush()
-        await _publish_copilot_change(db, agent, had_no_draft=had_no_draft, what="runtime")
+        await _publish_copilot_change(
+            db, agent, had_no_draft=had_no_draft, what="runtime", publish=publish
+        )
         return None
     if isinstance(operation, AgentModelSwitch):
         agent = await db.get(m.Agent, operation.agentId)
@@ -869,7 +890,9 @@ async def apply_operation(
         agent.model_config_id = mc.id
         show_model(agent, mc)
         await db.flush()
-        await _publish_copilot_change(db, agent, had_no_draft=had_no_draft, what="model")
+        await _publish_copilot_change(
+            db, agent, had_no_draft=had_no_draft, what="model", publish=publish
+        )
         return None
     if isinstance(operation, AgentSkillAssign):
         agent = await db.get(m.Agent, operation.agentId)
@@ -937,7 +960,7 @@ async def apply_operation(
         await db.flush()
         return None
     if isinstance(operation, GuardrailSet):
-        await _apply_guardrail_set(db, tenant_id=tenant_id, operation=operation)
+        await _apply_guardrail_set(db, tenant_id=tenant_id, operation=operation, publish=publish)
         return None
     # Integration prepare validates the opaque reference still identifies a
     # tenant-visible integration. It deliberately does not configure credentials.
@@ -983,7 +1006,7 @@ def _connection_guardrail_attributes(conn: m.McpConnection) -> list[GuardrailAtt
 
 
 async def _apply_guardrail_set(
-    db: AsyncSession, *, tenant_id: uuid.UUID, operation: GuardrailSet
+    db: AsyncSession, *, tenant_id: uuid.UUID, operation: GuardrailSet, publish: bool = True
 ) -> None:
     """The one Copilot capability that touches real authorization: translates
     a single (connection, function, decision) triple into the same
@@ -1122,4 +1145,6 @@ async def _apply_guardrail_set(
         overridden.append(operation.connectionName)
     agent.narrowing_overridden_keys = overridden
     await db.flush()
-    await _publish_copilot_change(db, agent, had_no_draft=had_no_draft, what="guardrail")
+    await _publish_copilot_change(
+        db, agent, had_no_draft=had_no_draft, what="guardrail", publish=publish
+    )

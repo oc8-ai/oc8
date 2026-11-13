@@ -9,6 +9,7 @@ import uuid
 import pytest
 
 from oc8 import models as m
+from oc8.agents.versioning import draft_status, publish_version, version_payload
 from oc8.auth import Principal
 from oc8.copilot.proposals import ProposalRejected, apply_proposal, create_proposal
 
@@ -130,3 +131,34 @@ async def test_narrowing_reset_rejects_a_key_not_currently_set(app_session, acme
         )
         with pytest.raises(ProposalRejected):
             await apply_proposal(db, proposal.id, actor)
+
+
+async def test_narrowing_set_on_a_published_agent_is_published(app_session, acme_tenant) -> None:
+    """Runs execute the published version: an approved tool-access change on
+    an agent with no draft goes live, override marker included. It used to
+    stay a draft because the override marker (a versioned column) was written
+    before the draft check."""
+    actor = _actor(acme_tenant)
+    async with app_session(acme_tenant) as db:
+        dept = m.Department(tenant_id=acme_tenant, name="Sales", frame={"tools": {}})
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(tenant_id=acme_tenant, department_id=dept.id, name="Petra", definition={})
+        db.add(agent)
+        await db.flush()
+        await publish_version(db, agent)
+        narrowing = {"tools": {"odoo": {"enabled": True, "read": True, "modify": False}}}
+        proposal = await create_proposal(
+            db,
+            actor,
+            [{"type": "agent.narrowing.set", "agentId": str(agent.id), "narrowing": narrowing}],
+        )
+        result = await apply_proposal(db, proposal.id, actor)
+        assert result.status == "applied"
+
+        await db.refresh(agent)
+        assert agent.narrowing_overridden_keys == ["odoo"]
+        assert not (await draft_status(db, agent)).dirty
+        live = await db.get(m.AgentVersion, agent.current_version_id)
+        assert live is not None and live.version_no == 2
+        assert version_payload(live)["narrowing"] == narrowing

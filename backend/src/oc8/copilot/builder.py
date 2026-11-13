@@ -22,6 +22,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agents.hire import create_hire_request
+from oc8.agents.publish_hooks import PublishHookFailed
+from oc8.agents.versioning import NoChangesToPublish, publish_version
 from oc8.approvals import expire_approval
 from oc8.audit import append_event
 from oc8.auth import Principal
@@ -480,18 +482,44 @@ _REFUSAL_KEYS: Final = ("refusal", "failedStep", "failedReason")
 def _apply_order(steps: list[BuilderStep]) -> list[tuple[int, BuilderStep]]:
     """The steps in the order apply runs them, each with its stored index:
     `agent.create`, then the agent's tool access, then everything else as
-    proposed. A skill's requirements are checked against the agent's
-    effective tools when it is assigned (`pdp.missing_skill_requirements`),
-    and a system the department frame does not list is only reachable
-    through the narrowing -- so the narrowing must exist before the skill
-    that needs it, whatever order the proposal names them in."""
+    proposed, then its triggers. A skill's requirements are checked against
+    the agent's effective tools when it is assigned
+    (`pdp.missing_skill_requirements`), and a system the department frame
+    does not list is only reachable through the narrowing -- so the narrowing
+    must exist before the skill that needs it, whatever order the proposal
+    names them in. Triggers come last because the agent is published before
+    them (`apply_builder_proposal`): a trigger records what its creator saw of
+    the PUBLISHED agent (`connections.access.trigger_fingerprint`)."""
     indexed = list(enumerate(steps))
     first = [(i, s) for i, s in indexed if isinstance(s.operation, AgentCreate)]
     access = [(i, s) for i, s in indexed if isinstance(s.operation, AgentNarrowingSet)]
+    triggers = [(i, s) for i, s in indexed if isinstance(s.operation, TriggerCreate)]
     rest = [
-        (i, s) for i, s in indexed if not isinstance(s.operation, AgentCreate | AgentNarrowingSet)
+        (i, s)
+        for i, s in indexed
+        if not isinstance(s.operation, AgentCreate | AgentNarrowingSet | TriggerCreate)
     ]
-    return [*first, *access, *rest]
+    return [*first, *access, *rest, *triggers]
+
+
+async def _publish_new_agent(
+    db: AsyncSession, agent_id: uuid.UUID, *, published_by: uuid.UUID | None
+) -> None:
+    """Publish the builder's new agent once, with every step applied so far.
+
+    Runs execute the published version (`versioning.resolve_version`), so an
+    agent whose tool access, model or guardrails stayed in the working copy
+    would run without them -- the person's "Create" is their decision for all
+    of it, and a brand-new agent has no draft of anybody's to protect."""
+    agent = await db.get(m.Agent, agent_id)
+    if agent is None:
+        raise InvalidOperation()
+    try:
+        await publish_version(db, agent, note="created by the Copilot", published_by=published_by)
+    except NoChangesToPublish:
+        pass
+    except PublishHookFailed as exc:
+        raise InvalidOperation() from exc
 
 
 async def _member_id(db: AsyncSession, *, tenant_id: uuid.UUID, subject: str) -> uuid.UUID | None:
@@ -560,9 +588,17 @@ async def apply_builder_proposal(
     applied_by_member = await _member_id(db, tenant_id=proposal.tenant_id, subject=applied_by)
     refs: dict[str, uuid.UUID] = {}
     failed_at = 0
+    published = False
     try:
         async with db.begin_nested():
             for index, step in _apply_order(steps):
+                if isinstance(step.operation, TriggerCreate) and not published:
+                    # The agent's first version, with everything but its
+                    # triggers (`_apply_order` puts them last), before them.
+                    failed_at = 0
+                    (new_agent,) = refs.values()
+                    await _publish_new_agent(db, new_agent, published_by=applied_by_member)
+                    published = True
                 failed_at = index
                 data, ref = resolve_step(builder_operation_data(step), refs)
                 created = await apply_operation(
@@ -570,11 +606,16 @@ async def apply_builder_proposal(
                     tenant_id=proposal.tenant_id,
                     data=data,
                     actor_member_id=applied_by_member,
+                    publish=False,
                 )
                 if ref is not None:
                     if created is None:
                         raise InvalidOperation()
                     refs[ref] = created
+            if not published:
+                failed_at = 0
+                (new_agent,) = refs.values()
+                await _publish_new_agent(db, new_agent, published_by=applied_by_member)
     except (InvalidOperation, ValueError, SQLAlchemyError) as exc:
         # ValueError covers BuilderInvalid from resolve_step and any service
         # refusal that is not yet an InvalidOperation; SQLAlchemyError a step
