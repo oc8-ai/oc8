@@ -2537,7 +2537,7 @@ msgstr ""
 msgid "its model configuration"
 msgstr ""
 
-msgid "Its open handoffs are rejected and any agent run working on them is stopped. Completed stages stay as they are. This cannot be undone."
+msgid "Its open handoffs are rejected and agent runs working on them are asked to stop. A run waiting for an answer or an approval stops once it resumes. Completed stages stay as they are. This cannot be undone."
 msgstr ""
 
 msgid "Its runs then use the creator's personal accounts. Anyone who can reach this trigger can start them."
@@ -5061,6 +5061,9 @@ msgid "This company has not defined any roles of its own. As long as everybody m
 msgstr ""
 
 msgid "This connection is in no department, so no agent gets its tools yet. Choose the department whose agents should use it."
+msgstr ""
+
+msgid "This connection is in no department, so no agent gets its tools yet. Someone who manages integrations can choose the department."
 msgstr ""
 
 msgid "This connection is not set up yet. Please contact your administrator."

@@ -241,6 +241,9 @@ msgstr "Kontext hinzufügen"
 msgid "Add custom MCP server"
 msgstr "Eigenen MCP-Server hinzufügen"
 
+msgid "Add custom server or API"
+msgstr "Eigenen Server oder eigene API hinzufügen"
+
 msgid "Add existing source…"
 msgstr "Vorhandene Quelle hinzufügen…"
 
@@ -547,8 +550,14 @@ msgstr "Wirklich zustimmen?"
 msgid "Approved"
 msgstr "Zugestimmt"
 
+msgid "Archive"
+msgstr "Archivieren"
+
 msgid "Archive file"
 msgstr "Archivdatei"
+
+msgid "Archive flow?"
+msgstr "Flow archivieren?"
 
 msgid "Archived"
 msgstr "Archiviert"
@@ -784,17 +793,26 @@ msgstr "Wird ohne Argumente aufgerufen."
 msgid "Cancel"
 msgstr "Abbrechen"
 
+msgid "Cancel flow run?"
+msgstr "Flow-Run abbrechen?"
+
 msgid "Cancel requested"
 msgstr "Abbruch angefordert"
 
 msgid "Cancel responsibility"
 msgstr "Aufgabe abbrechen"
 
+msgid "Cancel run"
+msgstr "Run abbrechen"
+
 msgid "Cancel this responsibility?"
 msgstr "Diese Aufgabe abbrechen?"
 
 msgid "cancelled"
 msgstr "abgebrochen"
+
+msgid "Cancelled"
+msgstr "Abgebrochen"
 
 msgid "Cancelling…"
 msgstr "Wird abgebrochen…"
@@ -1018,6 +1036,9 @@ msgstr "Vergleich"
 msgid "Complete these live checks before inviting pilot users."
 msgstr "Erledige diese Live-Prüfungen, bevor du Pilotnutzer einlädst."
 
+msgid "Completed"
+msgstr "Abgeschlossen"
+
 msgid "Complexity router — picks among the tier models you configure (fast / balanced / strong)."
 msgstr "Komplexitäts-Router — wählt unter den konfigurierten Tier-Modellen (fast / balanced / strong)."
 
@@ -1072,6 +1093,9 @@ msgstr "Modell verbinden"
 msgid "Connect now →"
 msgstr "Jetzt verbinden →"
 
+msgid "Connect your own MCP server or a REST API."
+msgstr "Verbinde deinen eigenen MCP-Server oder eine REST-API."
+
 msgid "Connected"
 msgstr "Verbunden"
 
@@ -1125,6 +1149,12 @@ msgstr "Weiter, um den Index zu konfigurieren."
 
 msgid "Continue to export"
 msgstr "Weiter zum Export"
+
+msgid "Contract binding removed"
+msgstr "Vertragsbindung entfernt"
+
+msgid "Contract bindings"
+msgstr "Vertragsbindungen"
 
 msgid "Copied"
 msgstr "Kopiert"
@@ -1183,6 +1213,9 @@ msgstr "Sitz konnte nicht hinzugefügt werden."
 msgid "Could not add source."
 msgstr "Quelle konnte nicht hinzugefügt werden."
 
+msgid "Could not archive the flow"
+msgstr "Flow konnte nicht archiviert werden"
+
 msgid "Could not assign"
 msgstr "Zuweisen fehlgeschlagen"
 
@@ -1197,6 +1230,9 @@ msgstr "konnte nicht geprüft werden — der Schlüssel für den Manipulationssc
 
 msgid "Could not build the archive."
 msgstr "Archiv konnte nicht erstellt werden."
+
+msgid "Could not cancel the run"
+msgstr "Run konnte nicht abgebrochen werden"
 
 msgid "Could not change your email."
 msgstr "E-Mail konnte nicht geändert werden."
@@ -1242,6 +1278,9 @@ msgstr "Konnte nicht gelöscht werden — möglicherweise Agenten zugewiesen."
 
 msgid "Could not delete the department."
 msgstr "Abteilung konnte nicht gelöscht werden."
+
+msgid "Could not delete the handoff type"
+msgstr "Übergabetyp konnte nicht gelöscht werden"
 
 msgid "Could not delete the key."
 msgstr "Key konnte nicht gelöscht werden."
@@ -1311,6 +1350,9 @@ msgstr "Sitz konnte nicht entfernt werden."
 
 msgid "Could not remove source."
 msgstr "Quelle konnte nicht entfernt werden."
+
+msgid "Could not remove the binding"
+msgstr "Vertragsbindung konnte nicht entfernt werden"
 
 msgid "Could not resolve this connection, so it isn't safe to continue -- saving now could write guardrails under the wrong key."
 msgstr "Diese Verbindung konnte nicht aufgelöst werden, daher ist ein Fortfahren nicht sicher -- ein Speichern jetzt könnte Guardrails unter dem falschen Schlüssel speichern."
@@ -1579,6 +1621,9 @@ msgstr "Derzeit in diesem Unternehmen → im Archiv"
 msgid "Custom MCP capa"
 msgstr "Custom-MCP-Capa"
 
+msgid "Custom server or API"
+msgstr "Eigener Server oder eigene API"
+
 msgid "Daily"
 msgstr "Täglich"
 
@@ -1683,6 +1728,9 @@ msgstr "Abteilung löschen"
 
 msgid "Delete file"
 msgstr "Datei löschen"
+
+msgid "Delete handoff type?"
+msgstr "Übergabetyp löschen?"
 
 msgid "Delete knowledge base?"
 msgstr "Wissensdatenbank löschen?"
@@ -2056,6 +2104,9 @@ msgstr "Ereignis"
 msgid "Event"
 msgstr "Ereignis"
 
+msgid "Event to handoff"
+msgstr "Ereignis zu Übergabe"
+
 msgid "Every action, every timestamp."
 msgstr "Jede Aktion, jeder Zeitstempel."
 
@@ -2119,6 +2170,9 @@ msgstr "Exportiere…"
 msgid "failed"
 msgstr "fehlgeschlagen"
 
+msgid "Failed"
+msgstr "Fehlgeschlagen"
+
 msgid "Fetch again"
 msgstr "Erneut laden"
 
@@ -2178,6 +2232,12 @@ msgstr "passt"
 
 msgid "Floor 1 · Live operations"
 msgstr "Etage 1 · Live-Betrieb"
+
+msgid "Flow archived"
+msgstr "Flow archiviert"
+
+msgid "Flow run cancelled"
+msgstr "Flow-Run abgebrochen"
 
 msgid "Flows"
 msgstr "Abläufe"
@@ -2304,6 +2364,12 @@ msgstr "Gibt Arbeit an einen Kollegen"
 
 msgid "handoff"
 msgstr "Übergabe"
+
+msgid "Handoff type deleted"
+msgstr "Übergabetyp gelöscht"
+
+msgid "Handoff types"
+msgstr "Übergabetypen"
 
 msgid "Handoff updated"
 msgstr "Übergabe aktualisiert"
@@ -2479,6 +2545,9 @@ msgstr "Einladen"
 msgid "its model configuration"
 msgstr "seine Modellkonfiguration"
 
+msgid "Its open handoffs are rejected and agent runs working on them are asked to stop. A run waiting for an answer or an approval stops once it resumes. Completed stages stay as they are. This cannot be undone."
+msgstr "Seine offenen Übergaben werden abgelehnt, und Agenten-Runs, die daran arbeiten, werden zum Stoppen aufgefordert. Ein Run, der auf eine Antwort oder Freigabe wartet, stoppt, sobald er weiterläuft. Abgeschlossene Stufen bleiben, wie sie sind. Das kann nicht rückgängig gemacht werden."
+
 msgid "Its runs then use the creator's personal accounts. Anyone who can reach this trigger can start them."
 msgstr "Die Läufe nutzen dann die persönlichen Konten der Person, die den Auslöser angelegt hat. Wer den Auslöser erreicht, kann sie starten."
 
@@ -2496,6 +2565,9 @@ msgstr "Behalte etwas für mich im Blick"
 
 msgid "Keep it"
 msgstr "Behalten"
+
+msgid "Keep running"
+msgstr "Weiterlaufen lassen"
 
 msgid "key"
 msgstr "Schlüssel"
@@ -3057,6 +3129,9 @@ msgstr "Noch keine verbundenen Datenquellen — lege zuerst eine im Sources-Tab 
 
 msgid "No connection matches."
 msgstr "Keine Verbindung passt zur Suche."
+
+msgid "No contract bindings involve this department."
+msgstr "Keine Vertragsbindung betrifft diese Abteilung."
 
 msgid "No credential selected yet — pick or create one, or the platform's shared key is used if available."
 msgstr "Noch keine Anmeldedaten ausgewählt — wähle oder erstelle welche, sonst wird der gemeinsame Plattform-Schlüssel verwendet, falls vorhanden."
@@ -3832,6 +3907,9 @@ msgstr "Abgelehnt"
 msgid "Remove"
 msgstr "Entfernen"
 
+msgid "Remove contract binding?"
+msgstr "Vertragsbindung entfernen?"
+
 msgid "Remove from project"
 msgstr "Aus dem Projekt nehmen"
 
@@ -4008,6 +4086,9 @@ msgstr "Im Namen des Erstellers ausführen"
 
 msgid "running"
 msgstr "läuft"
+
+msgid "Running"
+msgstr "Läuft"
 
 msgid "Running a command"
 msgstr "Führt einen Befehl aus"
@@ -4555,6 +4636,9 @@ msgstr "beaufsichtigt →"
 msgid "Supervisor updated"
 msgstr "Vorgesetzter aktualisiert"
 
+msgid "Suspended"
+msgstr "Pausiert"
+
 msgid "Switch"
 msgstr "Wechseln"
 
@@ -4926,6 +5010,9 @@ msgstr "Dieses Unternehmen hat noch keine eigenen Rollen definiert. Solange jede
 
 msgid "This connection is in no department, so no agent gets its tools yet. Choose the department whose agents should use it."
 msgstr "Diese Verbindung ist in keiner Abteilung, deshalb bekommt noch kein Agent ihre Tools. Wähle die Abteilung, deren Agents sie nutzen sollen."
+
+msgid "This connection is in no department, so no agent gets its tools yet. Someone who manages integrations can choose the department."
+msgstr "Diese Verbindung ist in keiner Abteilung, deshalb bekommt noch kein Agent ihre Tools. Jemand, der Integrationen verwaltet, kann die Abteilung wählen."
 
 msgid "This connection is not set up yet. Please contact your administrator."
 msgstr "Diese Verbindung ist noch nicht eingerichtet. Bitte wende dich an deinen Administrator."
