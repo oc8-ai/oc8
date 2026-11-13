@@ -9,6 +9,7 @@ identity and therefore no link, which is one of the cases asserted here.
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any
 
@@ -226,7 +227,16 @@ async def test_an_approved_create_links_its_customer_and_then_its_result(
 
     async def _created(*_a: Any, tool: str, **_kw: Any) -> str:
         ran.append(tool)
-        return '{"id": 43, "name": "S00043"}'
+        # mcp-server-odoo 0.9.0's real CreateResult (schemas.py,
+        # tools._handle_create_record_tool): the record sits under "record".
+        return json.dumps(
+            {
+                "success": True,
+                "record": {"id": 43, "display_name": "S00043"},
+                "url": "https://odoo.example.com/odoo/sale.order/43",
+                "message": "Successfully created sale.order record with ID 43",
+            }
+        )
 
     monkeypatch.setattr("oc8.agent.mcp_pool.call", _created)
     args = {"model": "sale.order", "values": {"partner_id": 7, "amount_total": 3900}}
@@ -277,6 +287,7 @@ async def test_an_approved_create_links_its_customer_and_then_its_result(
     assert code == 200, body
     assert body["result"]["isError"] is False, body
     assert ran == ["create_record"]
-    assert "https://odoo.example.com/odoo/sale.order/43" in body["result"]["content"][0]["text"]
+    text = body["result"]["content"][0]["text"]
+    assert '"oc8_url": "https://odoo.example.com/odoo/sale.order/43"' in text
     ar = await _held_approval(app_session, tenant)
     assert ar.result_url == "https://odoo.example.com/odoo/sale.order/43"

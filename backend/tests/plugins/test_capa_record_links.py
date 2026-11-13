@@ -105,6 +105,75 @@ CASES: list[tuple[str, str, dict[str, Any], Any, dict[str, str], list[str]]] = [
         {"ODOO_URL": "https://odoo.acme.de"},
         ["https://odoo.acme.de/odoo/sale.order/42"],
     ),
+    # The four below copy mcp-server-odoo 0.9.0's real result shapes
+    # (mcp_server_odoo/schemas.py and the handlers in tools.py). The record of
+    # a single-record result sits under "record", next to the server's own
+    # "url" -- the top level has no id.
+    (
+        "odoo_mcp",
+        "search_records",
+        {"model": "sale.order", "domain": [], "limit": 10},
+        # schemas.SearchResult / tools._handle_search_tool
+        {
+            "records": [
+                {"id": 42, "display_name": "S00042"},
+                {"id": 43, "display_name": "S00043"},
+            ],
+            "total": 2,
+            "limit": 10,
+            "offset": 0,
+            "model": "sale.order",
+        },
+        {"ODOO_URL": "https://odoo.acme.de"},
+        ["https://odoo.acme.de/odoo/sale.order/42", "https://odoo.acme.de/odoo/sale.order/43"],
+    ),
+    (
+        "odoo_mcp",
+        "get_record",
+        {"model": "sale.order", "record_id": 42},
+        # schemas.RecordResult / tools._handle_get_record_tool
+        {
+            "record": {"id": 42, "name": "S00042", "amount_total": 3900.0},
+            "metadata": {
+                "fields_returned": 3,
+                "field_selection_method": "smart_defaults",
+                "total_fields_available": 120,
+                "note": None,
+            },
+            "related_summaries": None,
+            "skipped_fields": None,
+        },
+        {"ODOO_URL": "https://odoo.acme.de"},
+        ["https://odoo.acme.de/odoo/sale.order/42"],
+    ),
+    (
+        "odoo_mcp",
+        "create_record",
+        {"model": "sale.order", "values": {"partner_id": 7}},
+        # schemas.CreateResult / tools._handle_create_record_tool
+        {
+            "success": True,
+            "record": {"id": 43, "display_name": "S00043"},
+            "url": "https://odoo.acme.de/odoo/sale.order/43",
+            "message": "Successfully created sale.order record with ID 43",
+        },
+        {"ODOO_URL": "https://odoo.acme.de"},
+        ["https://odoo.acme.de/odoo/sale.order/43"],
+    ),
+    (
+        "odoo_mcp",
+        "update_record",
+        {"model": "sale.order", "record_id": 42, "values": {"note": "x"}},
+        # schemas.UpdateResult / tools._handle_update_record_tool
+        {
+            "success": True,
+            "record": {"id": 42, "display_name": "S00042"},
+            "url": "https://odoo.acme.de/odoo/sale.order/42",
+            "message": "Successfully updated sale.order record with ID 42",
+        },
+        {"ODOO_URL": "https://odoo.acme.de"},
+        ["https://odoo.acme.de/odoo/sale.order/42"],
+    ),
     (
         "moodle",
         "moodle_search_courses",
@@ -185,8 +254,19 @@ def test_capa_declares_the_expected_links(
     env: dict[str, str],
     expected: list[str],
 ) -> None:
-    _, urls = enrich(_ctx(plugin, env), tool, args, json.dumps(result))
+    out, urls = enrich(_ctx(plugin, env), tool, args, json.dumps(result))
     assert urls == expected
+    # Each issued URL sits on a record as its oc8_url, where the model reads it.
+    assert sorted(_oc8_urls(json.loads(out))) == sorted(expected)
+
+
+def _oc8_urls(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [u for v in value for u in _oc8_urls(v)]
+    if isinstance(value, dict):
+        own = [value["oc8_url"]] if "oc8_url" in value else []
+        return own + [u for v in value.values() for u in _oc8_urls(v)]
+    return []
 
 
 def test_hubspot_without_portal_id_has_no_links() -> None:

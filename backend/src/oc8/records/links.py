@@ -46,6 +46,10 @@ _CONTAINER_KEYS = (
     "messages",
     "objects",
 )
+#: Where a SINGLE record sits inside a result that has no id of its own:
+#: mcp-server-odoo answers create/update/get with {success, record: {...},
+#: url, message}. Also one level only.
+_WRAPPER_KEYS = ("record", "result", "data", "item", "object")
 
 
 @dataclass(frozen=True)
@@ -252,7 +256,7 @@ def _item_ref(item: Mapping[str, Any], focus_spec: dict[str, Any] | None) -> str
     return ""
 
 
-def _candidates(parsed: Any) -> Iterator[dict[str, Any]]:
+def _candidates(parsed: Any, focus_spec: dict[str, Any] | None) -> Iterator[dict[str, Any]]:
     if isinstance(parsed, list):
         yield from (x for x in parsed if isinstance(x, dict))
         return
@@ -262,6 +266,13 @@ def _candidates(parsed: Any) -> Iterator[dict[str, Any]]:
         inner = parsed.get(key)
         if isinstance(inner, list) and any(isinstance(x, dict) for x in inner):
             yield from (x for x in inner if isinstance(x, dict))
+            return
+    if not _item_ref(parsed, focus_spec):
+        # Only an unambiguous wrapper: two candidate dicts could be a record
+        # and its context, and guessing would link the wrong one.
+        wrapped = [v for k in _WRAPPER_KEYS if isinstance(v := parsed.get(k), dict)]
+        if len(wrapped) == 1:
+            yield wrapped[0]
             return
     yield parsed
 
@@ -288,7 +299,7 @@ def enrich(
 
         entity = call_entity(tool_name, dict(arguments), ctx.focus_spec)
         issued: list[str] = []
-        for item in _candidates(parsed):
+        for item in _candidates(parsed, ctx.focus_spec):
             if len(issued) >= MAX_LINKS_PER_RESULT:
                 break
             url = link_for(

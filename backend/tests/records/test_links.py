@@ -133,6 +133,35 @@ def test_enrich_walks_one_container_level_only() -> None:
     assert issued == ["https://github.com/o/r/issues/3"]
 
 
+def test_enrich_links_a_single_record_wrapped_under_a_known_key() -> None:
+    """mcp-server-odoo answers create/update/get with {success, record: {...},
+    url, message}: the top level has no id, the record sits under "record"."""
+    out = json.dumps(
+        {
+            "success": True,
+            "record": {"id": 43, "display_name": "S00043", "partner": {"id": 7}},
+            "url": "https://odoo.example.com/odoo/sale.order/43",
+        }
+    )
+    new, issued = enrich(_odoo(), "create_record", {"model": "sale.order"}, out)
+    data = json.loads(new)
+    assert issued == ["https://odoo.example.com/odoo/sale.order/43"]
+    assert data["record"]["oc8_url"] == issued[0]
+    assert "oc8_url" not in data
+    # Still one level: the wrapped record's own nested objects stay untouched.
+    assert "oc8_url" not in data["record"]["partner"]
+
+
+def test_enrich_unwraps_only_an_unambiguous_record_of_an_idless_result() -> None:
+    owned = json.dumps({"id": 5, "record": {"id": 6}})
+    _, issued = enrich(_odoo(), "get_record", {"model": "sale.order"}, owned)
+    assert issued == ["https://odoo.example.com/odoo/sale.order/5"]
+    two = json.dumps({"record": {"id": 6}, "result": {"id": 7}})
+    assert enrich(_odoo(), "get_record", {"model": "sale.order"}, two) == (two, [])
+    deeper = json.dumps({"record": {"record": {"id": 6}}})
+    assert enrich(_odoo(), "get_record", {"model": "sale.order"}, deeper) == (deeper, [])
+
+
 def test_enrich_caps_at_fifty_links() -> None:
     out = json.dumps([{"id": i} for i in range(MAX_LINKS_PER_RESULT + 10)])
     new, issued = enrich(_odoo(), "search_records", {"model": "sale.order"}, out)
