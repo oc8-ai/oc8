@@ -26,8 +26,8 @@ from oc8.api.deps import DbSession, require_departmental
 from oc8.api.v1.chat import _readable_session
 from oc8.authz.permissions import AGENT, COPILOT_USE, VIEW, perm
 from oc8.authz.scope import HumanActor
-from oc8.records.registry import canonical, host_of, linked_hosts, verified_links
-from oc8.records.vetting import connection_hosts, urls_in
+from oc8.records.registry import canonical, host_of, verified_links
+from oc8.records.vetting import ConnectedHosts, connected_hosts, urls_in
 from oc8.schemas.dto import RecordLinkVerdictDTO, RecordLinkVerdictsDTO
 from oc8.schemas.requests import VerifyRecordLinksRequest
 
@@ -65,19 +65,18 @@ async def verify(
     # connected to anyone who can read one answer.
     mentioned = {c for found in urls_in(msg.content) if (c := canonical(found)) is not None}
     in_answer = {u: host_of(u) for u in urls if canonical(u) in mentioned}
-    hosts: set[str] = set()
+    scope = f"chat:{msg.session_id}"
+    hosts = ConnectedHosts()
     if in_answer:
-        hosts = await linked_hosts(db, tenant_id=tenant_id) | await connection_hosts(db)
-        hosts.discard("")
+        # The same set the answer was vetted against (ruling R22).
+        hosts = await connected_hosts(db, tenant_id=tenant_id, scope=scope)
     # Only our own reading of a host decides; the client compares it with the
     # host it will open and keeps the link as text where the two disagree.
     connected = {u for u, host in in_answer.items() if host in hosts}
     # Issued in THIS answer's conversation only (spec §4.2): a link given to
     # another chat says nothing here, or this would tell which records agents
     # touched for other members.
-    issued = await verified_links(
-        db, tenant_id=tenant_id, scope=f"chat:{msg.session_id}", urls=connected
-    )
+    issued = await verified_links(db, tenant_id=tenant_id, scope=scope, urls=connected)
     return RecordLinkVerdictsDTO(
         links=[
             RecordLinkVerdictDTO(

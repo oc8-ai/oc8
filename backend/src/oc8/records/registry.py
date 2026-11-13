@@ -212,11 +212,21 @@ async def issued_links(
     return set(rows.scalars())
 
 
-async def linked_hosts(db: AsyncSession, *, tenant_id: uuid.UUID) -> set[str]:
-    """Hosts of every issued link in the tenant, whatever its scope: they only
-    decide which links are checked at all, and never leave the server."""
+async def scope_hosts(db: AsyncSession, *, tenant_id: uuid.UUID, scope: str) -> set[str]:
+    """Hosts of the links issued in this scope within the TTL -- a system the
+    conversation was given links to, however it is connected (a personal
+    login's own address). Never tenant-wide: one GitHub issue linked anywhere
+    would turn every github.com link in every answer into a guess. Served by
+    the (tenant_id, scope, url) unique index."""
+    since = dt.datetime.now(dt.UTC) - ISSUED_LINK_TTL
     rows = await db.execute(
-        select(m.RecordLink.host).where(m.RecordLink.tenant_id == tenant_id).distinct()
+        select(m.RecordLink.host)
+        .where(
+            m.RecordLink.tenant_id == tenant_id,
+            m.RecordLink.scope == scope,
+            m.RecordLink.issued_at >= since,
+        )
+        .distinct()
     )
     return set(rows.scalars())
 

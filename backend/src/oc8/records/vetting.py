@@ -18,11 +18,12 @@ import html
 import logging
 import re
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Container
+from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oc8.records.registry import host_of, issued_links, linked_hosts
+from oc8.records.registry import host_of, issued_links, normalise_host, scope_hosts
 
 logger = logging.getLogger(__name__)
 
@@ -264,11 +265,11 @@ def _neutralise(text: str, is_connected: Callable[[str], bool], issued: set[str]
     return result
 
 
-def vet_links(text: str, *, connected_hosts: set[str], issued: set[str]) -> str:
+def vet_links(text: str, *, connected_hosts: Container[str], issued: set[str]) -> str:
     return _neutralise(text, lambda h: h in connected_hosts, issued)
 
 
-def _all_candidates(text: str, hosts: set[str]) -> set[str]:
+def _all_candidates(text: str, hosts: Container[str]) -> set[str]:
     wanted: set[str] = set()
     for seen in (text, *_readings(text)):
         for mt in _URL.finditer(seen):
@@ -306,11 +307,11 @@ async def vet_answer_links(db: AsyncSession, *, tenant_id: uuid.UUID, scope: str
     this `scope` (`registry.link_scope` of the answering run) neutralised."""
     if not text or not _has_url(text):
         return text
-    hosts: set[str] | None = None
+    hosts: ConnectedHosts | None = None
     try:
         # A savepoint, so a failed read cannot poison the executor's transaction.
         async with db.begin_nested():
-            hosts = await linked_hosts(db, tenant_id=tenant_id) | await connection_hosts(db)
+            hosts = await connected_hosts(db, tenant_id=tenant_id, scope=scope)
             wanted = _all_candidates(text, hosts)
             issued = (
                 await issued_links(db, tenant_id=tenant_id, scope=scope, urls=wanted)
@@ -319,30 +320,64 @@ async def vet_answer_links(db: AsyncSession, *, tenant_id: uuid.UUID, scope: str
             )
         return vet_links(text, connected_hosts=hosts, issued=issued)
     except Exception:
-        # Fail closed (spec §7): without the issued set, every link to a
-        # connected host is unissued; without the hosts, every link is suspect.
+        # Fail closed (spec §7, ruling R7): without the issued set, every link
+        # to a connected host is unissued; without the hosts, every link is.
         logger.warning("answer links could not be checked", exc_info=True)
         if hosts is None:
-            try:
-                async with db.begin_nested():
-                    hosts = await linked_hosts(db, tenant_id=tenant_id)
-            except Exception:
-                return _neutralise(text, lambda _h: True, set())
+            return _neutralise(text, lambda _h: True, set())
         return vet_links(text, connected_hosts=hosts, issued=set())
 
 
-async def connection_hosts(db: AsyncSession) -> set[str]:
-    """Base-URL hosts of the tenant's live connections, from config only."""
+@dataclass(frozen=True)
+class ConnectedHosts:
+    """The hosts whose links are checked at all (ruling R22). `exact` hosts,
+    plus `suffixes` (".sharepoint.com") that match any subdomain."""
+
+    exact: frozenset[str] = frozenset()
+    suffixes: tuple[str, ...] = ()
+
+    def __contains__(self, host: object) -> bool:
+        if not isinstance(host, str) or not host:
+            return False
+        return host in self.exact or any(host.endswith(s) for s in self.suffixes)
+
+
+async def connected_hosts(db: AsyncSession, *, tenant_id: uuid.UUID, scope: str) -> ConnectedHosts:
+    """The tenant's connected systems (`connection_hosts`), plus the hosts of
+    links issued in this `scope`. Never the hosts other conversations were
+    given: a public host (github.com, www.google.com) linked once elsewhere
+    must not make every link to it a guess here."""
+    hosts = await connection_hosts(db)
+    issued = {h for h in await scope_hosts(db, tenant_id=tenant_id, scope=scope) if h}
+    return ConnectedHosts(exact=hosts.exact | issued, suffixes=hosts.suffixes)
+
+
+async def connection_hosts(db: AsyncSession) -> ConnectedHosts:
+    """Hosts of the tenant's live connections, from what each one declares:
+    its base URL (the row's config, else the manifest's default -- not a
+    personal login's env, which is unknown here) and its `native_url_hosts`.
+    A "*.x" entry matches subdomains; a "host/path" entry counts by host."""
     # Lazy: approvals -> records.links -> agent -> approvals is an import cycle.
     from oc8.connections.access import connected_connections
     from oc8.records.links import config_path, link_context
 
-    hosts: set[str] = set()
+    exact: set[str] = set()
+    suffixes: set[str] = set()
     for conn in await connected_connections(db):
         ctx = link_context(conn)
-        if ctx is not None and ctx.spec.base_url_path:
+        if ctx is None:
+            continue
+        if ctx.spec.base_url_path:
             base = config_path(ctx, list(ctx.spec.base_url_path))
             if base:
-                hosts.add(host_of(base))
-    hosts.discard("")
-    return hosts
+                exact.add(host_of(base))
+        for entry in ctx.spec.native_url_hosts:
+            host = entry.partition("/")[0]
+            if host.startswith("*."):
+                suffix = normalise_host(host[2:])
+                if suffix:
+                    suffixes.add(f".{suffix}")
+            else:
+                exact.add(normalise_host(host))
+    exact.discard("")
+    return ConnectedHosts(exact=frozenset(exact), suffixes=tuple(sorted(suffixes)))

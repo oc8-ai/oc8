@@ -133,12 +133,13 @@ async def test_backslash_and_port_spellings_match_by_target(
 
 
 async def test_another_tenants_or_an_expired_link_is_not_issued(
-    app_session: AppSessionFactory,
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     tenant, other = uuid.uuid4(), uuid.uuid4()
     async with app_session(other) as db:
         await remember_links(db, tenant_id=other, scope="chat:x", urls=[GUESSED])
     msg = await _answer(app_session, tenant, f"[a]({ISSUED}) [b]({GUESSED})", issued=[ISSUED])
+    await _connect_odoo(app_session, tenant, monkeypatch, "https://odoo.example.com")
     async with app_session(tenant) as db:
         await db.execute(
             update(m.RecordLink)
@@ -163,9 +164,31 @@ async def test_a_link_issued_in_another_conversation_is_not_issued(
     assert got == {ISSUED: (True, True), GUESSED: (True, False)}
 
 
-async def test_a_connections_base_host_is_connected_before_any_link_was_issued(
-    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+async def test_a_host_issued_only_in_another_conversation_is_not_connected(
+    app_session: AppSessionFactory,
 ) -> None:
+    """Ruling R22: without a GitHub connection, a github.com link another
+    conversation was given does not make a library's repo link here a guess."""
+    tenant = uuid.uuid4()
+    repo = "https://github.com/psf/requests"
+    msg = await _answer(app_session, tenant, f"[requests]({repo})", issued=[])
+    async with app_session(tenant) as db:
+        await remember_links(
+            db,
+            tenant_id=tenant,
+            scope=f"chat:{uuid.uuid4()}",
+            urls=["https://github.com/oc8-ai/oc8/issues/9"],
+        )
+    assert await _verdicts(tenant, msg, [repo]) == {repo: (False, False)}
+
+
+async def _connect_odoo(
+    app_session: AppSessionFactory,
+    tenant: uuid.UUID,
+    monkeypatch: pytest.MonkeyPatch,
+    odoo_url: str,
+) -> None:
+    """An Odoo connection whose base host is `odoo_url`'s."""
     template = RecordUrlTemplate(
         template="{base_url}/odoo/{model}/{id}",
         base_url_path=["env", "ODOO_URL"],
@@ -175,9 +198,6 @@ async def test_a_connections_base_host_is_connected_before_any_link_was_issued(
     monkeypatch.setattr(
         "oc8.capas.discovery.resolve_tool_pack_connection", lambda plugin, key: conn
     )
-    tenant = uuid.uuid4()
-    erp = "https://erp.example.com/odoo/sale.order/1"
-    msg = await _answer(app_session, tenant, f"[a]({erp})", issued=[])
     async with app_session(tenant) as db:
         dept = m.Department(tenant_id=tenant, name="Vertrieb")
         db.add(dept)
@@ -193,12 +213,21 @@ async def test_a_connections_base_host_is_connected_before_any_link_was_issued(
                 config={
                     "command": "x",
                     "args": [],
-                    "env": {"ODOO_URL": "https://ERP.Example.com."},
+                    "env": {"ODOO_URL": odoo_url},
                     "_plugin_name": "odoo_mcp",
                     "_connection_key": "primary",
                 },
             )
         )
+
+
+async def test_a_connections_base_host_is_connected_before_any_link_was_issued(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant = uuid.uuid4()
+    erp = "https://erp.example.com/odoo/sale.order/1"
+    msg = await _answer(app_session, tenant, f"[a]({erp})", issued=[])
+    await _connect_odoo(app_session, tenant, monkeypatch, "https://ERP.Example.com.")
     assert await _verdicts(tenant, msg, [erp]) == {erp: (True, False)}
 
 

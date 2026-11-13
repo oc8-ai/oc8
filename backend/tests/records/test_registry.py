@@ -12,8 +12,8 @@ from oc8.records.registry import (
     canonical,
     issued_links,
     link_scope,
-    linked_hosts,
     remember_links,
+    scope_hosts,
     verified_links,
 )
 from tests.conftest import AppSessionFactory
@@ -33,7 +33,7 @@ async def test_a_remembered_link_is_issued_for_its_tenant_only(
         assert await issued_links(
             db, tenant_id=a, scope=S, urls=[url, "https://odoo.example.com/x"]
         ) == {url}
-        assert await linked_hosts(db, tenant_id=a) == {"odoo.example.com"}
+        assert await scope_hosts(db, tenant_id=a, scope=S) == {"odoo.example.com"}
     async with app_session(b) as db:
         assert await issued_links(db, tenant_id=b, scope=S, urls=[url]) == set()
 
@@ -47,13 +47,14 @@ async def test_an_old_link_is_no_longer_issued(app_session: AppSessionFactory) -
             update(m.RecordLink).values(issued_at=dt.datetime.now(dt.UTC) - dt.timedelta(days=31))
         )
         assert await issued_links(db, tenant_id=t, scope=S, urls=[url]) == set()
+        assert await scope_hosts(db, tenant_id=t, scope=S) == set()
 
 
 async def test_remembering_nothing_is_a_no_op(app_session: AppSessionFactory) -> None:
     t = uuid.uuid4()
     async with app_session(t) as db:
         await remember_links(db, tenant_id=t, scope=S, urls=[])
-        assert await linked_hosts(db, tenant_id=t) == set()
+        assert await scope_hosts(db, tenant_id=t, scope=S) == set()
 
 
 async def test_a_link_is_stored_with_where_it_leads(app_session: AppSessionFactory) -> None:
@@ -110,8 +111,9 @@ async def test_a_link_is_issued_in_its_own_scope_only(app_session: AppSessionFac
         assert await issued_links(db, tenant_id=t, scope=other, urls=[url]) == set()
         assert await verified_links(db, tenant_id=t, scope=other, urls=[url]) == set()
         assert await verified_links(db, tenant_id=t, scope=S, urls=[url]) == {url}
-        # Hosts stay tenant-wide: they only decide what is checked at all.
-        assert await linked_hosts(db, tenant_id=t) == {"odoo.example.com"}
+        # Hosts too (ruling R22): another conversation's links say nothing here.
+        assert await scope_hosts(db, tenant_id=t, scope=S) == {"odoo.example.com"}
+        assert await scope_hosts(db, tenant_id=t, scope=other) == set()
 
 
 async def test_the_same_url_in_two_scopes_is_two_rows(app_session: AppSessionFactory) -> None:

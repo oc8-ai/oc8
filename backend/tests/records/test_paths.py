@@ -414,6 +414,22 @@ async def test_another_conversation_s_link_is_unlinked_in_the_answer(
     monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: _RecordingQueue())
     async with app_session(tenant) as s:
         await remember_links(s, tenant_id=tenant, scope=f"chat:{uuid.uuid4()}", urls=[URL])
+        # Odoo is connected (ruling R22: connectedness comes from the
+        # connections, not from links other conversations were given).
+        dept = m.Department(tenant_id=tenant, name="Odoo")
+        s.add(dept)
+        await s.flush()
+        s.add(
+            m.McpConnection(
+                tenant_id=tenant,
+                department_id=dept.id,
+                name="odoo",
+                transport="stdio",
+                server_url="stdio://odoo",
+                connected=True,
+                config={"command": "x", "args": [], **ODOO_CONFIG},
+            )
+        )
 
     async def worker(db: Any, **kw: Any) -> RunResult:
         return RunResult(sub_task_id, kw["agent"].id, "done", f"See [Ada]({URL}).", [], 1)
