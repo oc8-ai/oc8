@@ -629,3 +629,29 @@ async def test_origin_label_falls_back_when_the_parent_agent_cannot_be_resolved(
         )
     joined = "\n".join(msg.content for msg in pre.messages if isinstance(msg.content, str))
     assert "- Origin: delegation\n" in joined
+
+
+async def test_systems_you_can_reach_names_only_systems_the_agent_can_use(
+    app_session: AppSessionFactory,
+) -> None:
+    """The run context lists a system only if one of its tools can be offered:
+    not one the department switched off, nor one the agent's narrowing did."""
+    tenant = uuid.uuid4()
+    frame = {
+        "tools": {
+            "microsoft365": {"enabled": True, "read": True, "modify": True, "only": ["files_list"]},
+            "odoo": {"enabled": True, "read": True, "modify": True},
+            "jira": {"enabled": False, "read": True, "modify": True},
+        }
+    }
+    async with app_session(tenant) as db:
+        agent = await _solo_agent(db, tenant)
+        agent.narrowing = {"tools": {"odoo": {"enabled": False}}}
+        await db.flush()
+        pre = await build_run_preamble(
+            db, agent=agent, tenant_id=tenant, task_text="mach was",
+            frame=frame, model_locality="eu", caps=ModelCaps(), max_steps=40,
+        )
+
+    joined = "\n".join(msg.content for msg in pre.messages if isinstance(msg.content, str))
+    assert "- Systems you can reach: microsoft365\n" in joined

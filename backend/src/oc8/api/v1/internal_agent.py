@@ -112,6 +112,7 @@ from oc8.authz.pdp import (
     Decision,
     Effect,
     effective_tool_policies,
+    offers_tool,
     required_right,
 )
 from oc8.capas.discovery import resolve_tool_pack_connection
@@ -588,7 +589,9 @@ async def _discover_connection_tools(
         conn: m.McpConnection,
     ) -> tuple[str, list[Any], str | None, list[dict[str, str]], list[str]]:
         policy = policies.get(conn.name)
-        if len(conns) > 1 and policy is not None and not policy.enabled:
+        if policy is None or not policy.enabled:
+            # Nothing on it could be offered: the gate denies every tool of a
+            # connection the frame does not grant or has switched off.
             return conn.name, [], None, [], []
         cfg = _mcp_params(conn)
         try:
@@ -626,14 +629,16 @@ async def _discover_connection_tools(
             )
             reason = " ".join(str(exc).split())[:200] or type(exc).__name__
             return conn.name, [], reason, [], []
-        noted = list(apply_tool_notes(listed, cfg))
-        if len(conns) > 1 and policy is not None:
-            scopes = _manifest_scopes(conn)
-            noted = [
-                t
-                for t in noted
-                if policy.offers(t.name) and policy.has_right(required_right(t.name, scopes))
-            ]
+        # Offered only what the gate would let through -- with one connection
+        # too. That case used to keep the server's whole list, so a frame's
+        # `only` withheld mail_* at call time while the model was still offered
+        # every one of them (live 2026-11-13).
+        scopes = _manifest_scopes(conn)
+        noted = [
+            t
+            for t in apply_tool_notes(listed, cfg)
+            if offers_tool(policies, connection_key=conn.name, tool=t.name, scopes=scopes)
+        ]
         return conn.name, noted, None, listed_resources, listed_prompts
 
     found = await asyncio.gather(*(_one(c) for c in conns))

@@ -33,6 +33,7 @@ from oc8.agent.harness.prompts import (
 )
 from oc8.agent.provenance import RULE as PROVENANCE_RULE
 from oc8.authz.authority import authority_for_member
+from oc8.authz.pdp import effective_tool_policies, reachable_connections
 from oc8.authz.permissions import (
     AGENT,
     APPROVAL,
@@ -309,7 +310,12 @@ async def build_run_preamble(
     department = await db.get(m.Department, agent.department_id)
     department_name = department.name if department is not None else "unassigned"
 
-    connection_names = sorted(frame.get("tools", {}).keys())
+    # The systems whose tools can actually be offered (authz.pdp.offers_tool),
+    # not every key the frame names: a connection switched off for the
+    # department or the agent, or granting nothing, is not reachable, and
+    # naming it sends the model looking for tools it never gets.
+    narrowing = (pinned["narrowing"] or {}) if pinned is not None else (agent.narrowing or {})
+    connection_names = reachable_connections(effective_tool_policies(frame, narrowing))
     connection_details: dict[str, str] = {}
     if connection_names:
         rows = (
