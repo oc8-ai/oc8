@@ -113,3 +113,22 @@ async def test_related_links_are_stored_on_a_raised_approval(
         )
         await db.refresh(other)
         assert other.related_links == related
+
+
+async def test_a_failing_lookup_never_raises_into_the_call(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _boom(*_a: object, **_kw: object) -> list[m.ApprovalRequest]:
+        raise RuntimeError("db hiccup")
+
+    monkeypatch.setattr("oc8.records.approvals.approved_awaiting_result", _boom)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        await note_approved_result(
+            db,
+            tenant_id=tenant,
+            task_id=uuid.uuid4(),
+            tool_names=("create_record",),
+            arguments=ARGS,
+            urls=[URL],
+        )

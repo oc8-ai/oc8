@@ -1192,17 +1192,19 @@ async def _call_tool(
         )
         if replay is not None:
             # Enriched like the first result, so a resumed harness sees the
-            # same links. The env is where a link's base URL may come from;
-            # when it cannot be resolved the config's own is all there is, and
-            # the replay is answered either way.
+            # same links. The env is where a link's base URL may come from. A
+            # LISTING resolve without a tool: no `connection.used` audit for a
+            # call that never reached the connection, and no connect prompt on
+            # the run from a cosmetic lookup.
             replay_ctx = link_context(conn)
             if replay_ctx is not None:
                 try:
-                    replay_ctx = replace(
-                        replay_ctx, env=(await _env(conn, db, run, tool=tc.name)).env
+                    replay_env = (await _env(conn, db, run, listing=True)).env
+                    replay_ctx = replace(replay_ctx, env=replay_env)
+                except Exception:
+                    logger.warning(
+                        "record link env for %s could not be resolved", conn.name, exc_info=True
                     )
-                except Exception:  # links are cosmetic; the replay is not
-                    pass
             replay, _issued = await enrich_and_remember(
                 db,
                 tenant_id=run.tenant_id,

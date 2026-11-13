@@ -722,6 +722,30 @@ def _manifest_guardrail_attributes(
     ]
 
 
+async def _link_ctx_for(
+    conn: m.McpConnection | None, db: DbSession, run: m.AgentRun, ctx: dict[str, Any]
+) -> LinkContext | None:
+    """The connection's capa link declaration plus its RESOLVED env: a personal
+    login's base URL lives there, not in the config. None when nothing is
+    declared or the env cannot be had -- links are cosmetic and must never
+    fail a call that already succeeded."""
+    # Declared at all? Resolving the env can mint a token; a connection whose
+    # capa declares no links must not pay for that on every call.
+    declared = link_context(conn)
+    if conn is None or declared is None:
+        return None
+    try:
+        # `ctx` is written back whole after this call: a cleared call to
+        # action must be cleared in it too.
+        env = (await _mcp_env(conn, db, run, ctx=ctx)).env
+    except ConnectionRequired:
+        return None
+    except Exception:
+        logger.warning("record link env for %s could not be resolved", conn.name, exc_info=True)
+        return None
+    return replace(declared, env=env)
+
+
 async def _mcp_env(
     conn: m.McpConnection,
     db: DbSession,
@@ -1095,6 +1119,26 @@ async def _finish_elicitation(
                 return "waiting_for_input", exc.message
             except Exception as exc:
                 output = f"ERROR: {exc}"
+        if not output.startswith("ERROR:"):
+            # Linked like any tool result (the replay record above stays raw),
+            # so the answered call's records carry oc8_url too.
+            output, issued = await enrich_and_remember(
+                db,
+                tenant_id=run.tenant_id,
+                ctx=await _link_ctx_for(conn, db, run, ctx),
+                tool_name=tool,
+                arguments=arguments,
+                output=output,
+            )
+            if issued and held_writes:
+                await note_approved_result(
+                    db,
+                    tenant_id=run.tenant_id,
+                    task_id=run.task_id,
+                    tool_names=(advertised, tool),
+                    arguments=arguments,
+                    urls=issued,
+                )
     ctx.pop("pending_elicitation", None)
     transcript.append(
         _from_message(
@@ -2301,20 +2345,7 @@ async def _dispatch_one_tool(
     outward_tools = cfg.get("outward_tools") if isinstance(cfg.get("outward_tools"), list) else None
 
     async def _link_ctx() -> LinkContext | None:
-        # The connection's capa declaration plus its RESOLVED env: a personal
-        # login's base URL lives there, not in the config.
-        # Declared at all? Resolving the env can mint a token; a connection
-        # whose capa declares no links must not pay for that on every call.
-        declared = link_context(conn)
-        if conn is None or declared is None:
-            return None
-        try:
-            # `ctx` is written back whole after this call: a cleared call to
-            # action must be cleared in it too.
-            env = (await _mcp_env(conn, db, run, ctx=ctx)).env
-        except ConnectionRequired:
-            return None
-        return replace(declared, env=env)
+        return await _link_ctx_for(conn, db, run, ctx)
 
     async def _record_url() -> str | None:
         # The address of the record this call names, so the live log, the

@@ -680,6 +680,13 @@ async def run_agent(
                     )
             except ConnectionRequired:
                 return None
+            except Exception:
+                # A secret or an OAuth mint that fails here would otherwise
+                # raise into a call that already succeeded; it only costs links.
+                logger.warning(
+                    "record link env for %s could not be resolved", owner.name, exc_info=True
+                )
+                return None
             return replace(declared, env=env)
 
         async def _record_url(
@@ -1304,6 +1311,27 @@ async def run_agent(
                                 )
                             except Exception as exc:
                                 finished = f"ERROR: {exc}"
+                        if effect == "run" and not finished.startswith("ERROR:"):
+                            # Linked like any tool result (the replay record
+                            # above stays raw), so the answered call's records
+                            # carry oc8_url too.
+                            finished, held_issued = await enrich_and_remember(
+                                db,
+                                tenant_id=tenant_id,
+                                ctx=await _link_ctx(held_route[0]),
+                                tool_name=held_route[6],
+                                arguments=arguments,
+                                output=finished,
+                            )
+                            if held_issued and held_writes:
+                                await note_approved_result(
+                                    db,
+                                    tenant_id=tenant_id,
+                                    task_id=task.id,
+                                    tool_names=(tool_name, held_route[6]),
+                                    arguments=arguments,
+                                    urls=held_issued,
+                                )
                         messages.append(
                             NeutralMessage(
                                 role="user",
