@@ -2049,9 +2049,20 @@ export function useHandoffAction() {
   });
 }
 
+/** Delete a handoff type nothing uses. A type handoffs were made with, or that a
+ *  binding or a live flow names, is refused with a 409 saying which. */
+export function useDeleteHandoffType() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete<void>(`/handoff-types/${encodeURIComponent(id)}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["handoff-types"] }),
+  });
+}
+
 export interface BindingDTO {
   id: string;
   eventType: string;
+  handoffTypeId: string;
   sourceDepartmentId: string;
   targetDepartmentId: string;
 }
@@ -2060,6 +2071,14 @@ export function useContractBindings() {
   return useQuery({
     queryKey: ["contract-bindings"],
     queryFn: () => api.get<BindingDTO[]>("/contract-bindings"),
+  });
+}
+
+export function useDeleteContractBinding() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete<void>(`/contract-bindings/${encodeURIComponent(id)}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["contract-bindings"] }),
   });
 }
 

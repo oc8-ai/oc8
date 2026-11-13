@@ -188,6 +188,9 @@ msgstr ""
 msgid "Add custom MCP server"
 msgstr ""
 
+msgid "Add custom server or API"
+msgstr ""
+
 msgid "Add existing source…"
 msgstr ""
 
@@ -497,7 +500,13 @@ msgstr ""
 msgid "Approved"
 msgstr ""
 
+msgid "Archive"
+msgstr ""
+
 msgid "Archive file"
+msgstr ""
+
+msgid "Archive flow?"
 msgstr ""
 
 msgid "Archived"
@@ -743,16 +752,25 @@ msgstr ""
 msgid "Cancel"
 msgstr ""
 
+msgid "Cancel flow run?"
+msgstr ""
+
 msgid "Cancel requested"
 msgstr ""
 
 msgid "Cancel responsibility"
 msgstr ""
 
+msgid "Cancel run"
+msgstr ""
+
 msgid "Cancel this responsibility?"
 msgstr ""
 
 msgid "cancelled"
+msgstr ""
+
+msgid "Cancelled"
 msgstr ""
 
 msgid "Cancelling…"
@@ -980,6 +998,9 @@ msgstr ""
 msgid "Complete these live checks before inviting pilot users."
 msgstr ""
 
+msgid "Completed"
+msgstr ""
+
 msgid "Complexity router — picks among the tier models you configure (fast / balanced / strong)."
 msgstr ""
 
@@ -1037,6 +1058,9 @@ msgstr ""
 msgid "Connect now →"
 msgstr ""
 
+msgid "Connect your own MCP server or a REST API."
+msgstr ""
+
 msgid "Connected"
 msgstr ""
 
@@ -1089,6 +1113,12 @@ msgid "Continue to configure the selected index."
 msgstr ""
 
 msgid "Continue to export"
+msgstr ""
+
+msgid "Contract binding removed"
+msgstr ""
+
+msgid "Contract bindings"
 msgstr ""
 
 msgid "Copied"
@@ -1148,6 +1178,9 @@ msgstr ""
 msgid "Could not add source."
 msgstr ""
 
+msgid "Could not archive the flow"
+msgstr ""
+
 msgid "Could not assign"
 msgstr ""
 
@@ -1161,6 +1194,9 @@ msgid "could not be checked — the tamper-proofing key is unavailable"
 msgstr ""
 
 msgid "Could not build the archive."
+msgstr ""
+
+msgid "Could not cancel the run"
 msgstr ""
 
 msgid "Could not change your email."
@@ -1206,6 +1242,9 @@ msgid "Could not delete — it may be assigned to agents."
 msgstr ""
 
 msgid "Could not delete the department."
+msgstr ""
+
+msgid "Could not delete the handoff type"
 msgstr ""
 
 msgid "Could not delete the key."
@@ -1275,6 +1314,9 @@ msgid "Could not remove seat."
 msgstr ""
 
 msgid "Could not remove source."
+msgstr ""
+
+msgid "Could not remove the binding"
 msgstr ""
 
 msgid "Could not resolve this connection, so it isn't safe to continue -- saving now could write guardrails under the wrong key."
@@ -1547,6 +1589,9 @@ msgstr ""
 msgid "Custom MCP capa"
 msgstr ""
 
+msgid "Custom server or API"
+msgstr ""
+
 msgid "Custom setting"
 msgstr ""
 
@@ -1656,6 +1701,9 @@ msgid "Delete department"
 msgstr ""
 
 msgid "Delete file"
+msgstr ""
+
+msgid "Delete handoff type?"
 msgstr ""
 
 msgid "Delete knowledge base?"
@@ -2033,6 +2081,9 @@ msgstr ""
 msgid "Event"
 msgstr ""
 
+msgid "Event to handoff"
+msgstr ""
+
 msgid "Every action, every timestamp."
 msgstr ""
 
@@ -2102,6 +2153,9 @@ msgstr ""
 msgid "failed"
 msgstr ""
 
+msgid "Failed"
+msgstr ""
+
 msgid "Fast"
 msgstr ""
 
@@ -2163,6 +2217,12 @@ msgid "fits"
 msgstr ""
 
 msgid "Floor 1 · Live operations"
+msgstr ""
+
+msgid "Flow archived"
+msgstr ""
+
+msgid "Flow run cancelled"
 msgstr ""
 
 msgid "Flows"
@@ -2292,6 +2352,12 @@ msgid "Handing work to a colleague"
 msgstr ""
 
 msgid "handoff"
+msgstr ""
+
+msgid "Handoff type deleted"
+msgstr ""
+
+msgid "Handoff types"
 msgstr ""
 
 msgid "Handoff updated"
@@ -2471,6 +2537,9 @@ msgstr ""
 msgid "its model configuration"
 msgstr ""
 
+msgid "Its open handoffs are rejected and any agent run working on them is stopped. Completed stages stay as they are. This cannot be undone."
+msgstr ""
+
 msgid "Its runs then use the creator's personal accounts. Anyone who can reach this trigger can start them."
 msgstr ""
 
@@ -2487,6 +2556,9 @@ msgid "Keep an eye on something for me"
 msgstr ""
 
 msgid "Keep it"
+msgstr ""
+
+msgid "Keep running"
 msgstr ""
 
 msgid "key"
@@ -3054,6 +3126,9 @@ msgid "No connected data sources yet — create one first from the Sources tab, 
 msgstr ""
 
 msgid "No connection matches."
+msgstr ""
+
+msgid "No contract bindings involve this department."
 msgstr ""
 
 msgid "No credential selected yet — pick or create one, or the platform's shared key is used if available."
@@ -3845,6 +3920,9 @@ msgstr ""
 msgid "Remove"
 msgstr ""
 
+msgid "Remove contract binding?"
+msgstr ""
+
 msgid "Remove from project"
 msgstr ""
 
@@ -4020,6 +4098,9 @@ msgid "Run on behalf of the creator"
 msgstr ""
 
 msgid "running"
+msgstr ""
+
+msgid "Running"
 msgstr ""
 
 msgid "Running a command"
@@ -4578,6 +4659,9 @@ msgid "supervises →"
 msgstr ""
 
 msgid "Supervisor updated"
+msgstr ""
+
+msgid "Suspended"
 msgstr ""
 
 msgid "Switch"

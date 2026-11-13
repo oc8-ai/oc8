@@ -27,7 +27,7 @@ Departments sit between **platform setup** and **day-to-day agent work**.
 |-----|---------|
 | **Overview** | Task board, agents in this team, recent activity |
 | **Integrations & Permissions** | Which capa tools this department may use |
-| **Collaboration** | How this team participates in handoffs |
+| **Collaboration** | How this team participates in handoffs: emitted events, intakes, and the contract bindings that turn an event into a handoff (remove one there to stop it) |
 | **Settings** | Department-level options (e.g. prompt caching) |
 
 ## What you do here
