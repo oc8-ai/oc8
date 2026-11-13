@@ -316,9 +316,11 @@ def approval_to_dto(a: m.ApprovalRequest, names: ApprovalNames | None = None) ->
             else None
         ),
         related_links=[
-            RecordLinkDTO(**x)
+            RecordLinkDTO(label=x["label"], url=safe)
             for x in (a.related_links or [])
-            if isinstance(x, dict) and safe_url(x.get("url"))
+            if isinstance(x, dict)
+            and isinstance(x.get("label"), str)
+            and (safe := safe_url(x.get("url")))
         ],
         result_url=safe_url(a.result_url),
     )

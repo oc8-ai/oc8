@@ -101,3 +101,42 @@ def test_result_url_null_by_default() -> None:
     row = _row()
     dto = approval_to_dto(row)
     assert dto.result_url is None
+
+
+def test_related_links_entry_missing_label_is_skipped() -> None:
+    """A related link entry missing the label field is skipped without error."""
+    row = _row(
+        related_links=[
+            {"label": "Valid", "url": "https://o.example/odoo/res.partner/1"},
+            {"url": "https://o.example/odoo/res.partner/2"},  # missing label
+        ],
+    )
+    dto = approval_to_dto(row)
+    # Only the entry with a valid label passes through
+    assert dto.related_links == [
+        RecordLinkDTO(label="Valid", url="https://o.example/odoo/res.partner/1"),
+    ]
+
+
+def test_related_links_non_dict_entry_is_skipped() -> None:
+    """A non-dict entry in related_links is skipped without error."""
+    row = _row(
+        related_links=[
+            {"label": "Valid", "url": "https://o.example/odoo/res.partner/1"},
+            "not a dict",  # invalid entry type
+            None,  # another invalid entry type
+        ],
+    )
+    dto = approval_to_dto(row)
+    # Only the dict entry passes through
+    assert dto.related_links == [
+        RecordLinkDTO(label="Valid", url="https://o.example/odoo/res.partner/1"),
+    ]
+
+
+def test_unsafe_result_url_serializes_as_null() -> None:
+    """An unsafe result_url like javascript: serializes as null, never raises."""
+    row = _row(result_url="javascript:1")
+    dto = approval_to_dto(row)
+    # Unsafe URLs are silently filtered to null, never raise
+    assert dto.result_url is None
