@@ -289,7 +289,7 @@ async def vet_answer_links(db: AsyncSession, *, tenant_id: uuid.UUID, text: str)
     try:
         # A savepoint, so a failed read cannot poison the executor's transaction.
         async with db.begin_nested():
-            hosts = await linked_hosts(db, tenant_id=tenant_id) | await _connection_hosts(db)
+            hosts = await linked_hosts(db, tenant_id=tenant_id) | await connection_hosts(db)
             wanted = _all_candidates(text, hosts)
             issued = await issued_links(db, tenant_id=tenant_id, urls=wanted) if wanted else set()
         return vet_links(text, connected_hosts=hosts, issued=issued)
@@ -306,7 +306,7 @@ async def vet_answer_links(db: AsyncSession, *, tenant_id: uuid.UUID, text: str)
         return vet_links(text, connected_hosts=hosts, issued=set())
 
 
-async def _connection_hosts(db: AsyncSession) -> set[str]:
+async def connection_hosts(db: AsyncSession) -> set[str]:
     """Base-URL hosts of the tenant's live connections, from config only."""
     # Lazy: approvals -> records.links -> agent -> approvals is an import cycle.
     from oc8.connections.access import connected_connections

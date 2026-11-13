@@ -102,6 +102,14 @@ class RecordLinkDTO(CamelModel):
     url: str
 
 
+class RecordLinkHostsDTO(CamelModel):
+    hosts: list[str]
+
+
+class VerifiedRecordLinksDTO(CamelModel):
+    issued: list[str]
+
+
 class ApprovalOptionDTO(CamelModel):
     key: str
     label: str

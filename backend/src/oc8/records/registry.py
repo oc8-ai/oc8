@@ -75,3 +75,52 @@ async def linked_hosts(db: AsyncSession, *, tenant_id: uuid.UUID) -> set[str]:
         select(m.RecordLink.host).where(m.RecordLink.tenant_id == tenant_id).distinct()
     )
     return set(rows.scalars())
+
+
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _canonical(url: str) -> tuple[object, ...] | None:
+    """Where a URL leads, independent of how it is spelled: `[`, `%5B` and an
+    upper-case host are the same target, `:8443` and `http:` are not. None for
+    anything that is not an http(s) URL with a host."""
+    try:
+        # A browser reads `\` as `/` before the query starts, not after it.
+        cut = min((i for i in (url.find("?"), url.find("#")) if i >= 0), default=len(url))
+        parts = urlsplit(url[:cut].replace("\\", "/") + url[cut:])
+        scheme = parts.scheme.lower()
+        host = host_of(url)
+        if scheme not in _DEFAULT_PORTS or not host:
+            return None
+        port = parts.port or _DEFAULT_PORTS[scheme]
+        userinfo = (parts.username, parts.password)
+    except ValueError:
+        return None
+    path = unquote(parts.path) or "/"
+    return scheme, userinfo, host, port, path, unquote(parts.query), unquote(parts.fragment)
+
+
+async def verified_links(
+    db: AsyncSession, *, tenant_id: uuid.UUID, urls: Iterable[str]
+) -> set[str]:
+    """The submitted strings that lead exactly where an issued link does.
+
+    `issued_links` matches strings; this matches targets, for callers that see
+    a URL only after something else re-encoded it -- the browser turns an
+    issued `?ids=[1,2]` into `?ids=%5B1,2%5D`. Issued links are therefore read
+    by host and compared canonically, and the caller gets back its own
+    spelling of each match."""
+    wanted = {u: c for u in dict.fromkeys(urls) if (c := _canonical(u)) is not None}
+    hosts = {c[2] for c in wanted.values()}
+    if not hosts:
+        return set()
+    since = dt.datetime.now(dt.UTC) - ISSUED_LINK_TTL
+    rows = await db.execute(
+        select(m.RecordLink.url).where(
+            m.RecordLink.tenant_id == tenant_id,
+            m.RecordLink.host.in_(hosts),
+            m.RecordLink.issued_at >= since,
+        )
+    )
+    issued = {c for u in rows.scalars() if (c := _canonical(u)) is not None}
+    return {u for u, c in wanted.items() if c in issued}
