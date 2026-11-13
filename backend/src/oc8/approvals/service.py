@@ -254,6 +254,7 @@ async def raise_approval(
     reason_code: str | None = None,
     reason_context: dict[str, Any] | None = None,
     record_url: str | None = None,
+    related_links: list[dict[str, str]] | None = None,
 ) -> m.ApprovalRequest:
     """Create a request for a human, and tell the people who can answer it.
 
@@ -281,6 +282,9 @@ async def raise_approval(
     tool pack's manifest and the base URL to the connection's own config, and
     this funnel knows about neither -- see `oc8.approvals.record_url`. None
     for every raiser that has no record in hand, which is most of them.
+    `related_links` are the existing records the call references by argument
+    (`oc8.records.links.related_links`), resolved by the caller for the same
+    reason.
 
     `department_id` defaults to `DERIVE`, which reads it off the agent. It is
     pinned here, at the moment the question is asked, rather than joined through
@@ -308,6 +312,7 @@ async def raise_approval(
         if reason_code is not None
         else None,
         record_url=record_url,
+        related_links=related_links or [],
     )
     db.add(approval)
     await db.flush()

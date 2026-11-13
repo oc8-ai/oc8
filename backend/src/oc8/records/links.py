@@ -15,11 +15,14 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from string import Formatter
 from typing import Any
 from urllib.parse import quote
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.capas.manifest import RECORD_URL_BUILTIN_PLACEHOLDERS, RecordUrlTemplate
@@ -277,3 +280,39 @@ def related_links(ctx: LinkContext | None, arguments: Mapping[str, Any]) -> list
         except Exception:
             logger.warning("related link %s could not be built", path, exc_info=True)
     return out
+
+
+async def enrich_and_remember(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    ctx: LinkContext | None,
+    tool_name: str,
+    arguments: Mapping[str, Any],
+    output: str,
+) -> tuple[str, list[str]]:
+    """`enrich`, plus remembering what it issued in the tenant's registry, so
+    the answer check later keeps exactly these links (spec §5 items 1 and 3).
+
+    A replayed write comes back as the first result with the idempotency note
+    appended, which is no longer JSON. The JSON part is enriched and the note
+    put back, so a resumed run sees the same links the first one did.
+    """
+    if ctx is None:
+        return output, []
+    # Lazy for the same cycle as `call_entity` in `enrich`.
+    from oc8.agent.tool_idempotency import REPLAY_NOTE
+    from oc8.records.registry import remember_links
+
+    note = f"\n\n{REPLAY_NOTE}"
+    body, suffix = (output[: -len(note)], note) if output.endswith(note) else (output, "")
+    new, issued = enrich(ctx, tool_name, arguments, body)
+    if issued:
+        try:
+            async with db.begin_nested():
+                await remember_links(db, tenant_id=tenant_id, urls=issued)
+        except Exception:
+            # An unremembered link is unlinked in the answer later; that is
+            # better than failing the call over it. The model still sees it.
+            logger.warning("issued record links could not be remembered", exc_info=True)
+    return new + suffix, issued

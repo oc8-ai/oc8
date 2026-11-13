@@ -4,16 +4,20 @@
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Any
 
+from oc8.agent.tool_idempotency import REPLAY_NOTE
 from oc8.capas.manifest import RecordUrlTemplate
 from oc8.records.links import (
     MAX_LINKS_PER_RESULT,
     enrich,
+    enrich_and_remember,
     link_context_from,
     link_for,
     related_links,
 )
+from tests.conftest import AppSessionFactory
 
 ODOO = RecordUrlTemplate(
     template="{base_url}/odoo/{model}/{id}",
@@ -163,3 +167,62 @@ def test_related_links_accept_odoo_many2one_shapes() -> None:
 def test_enrich_survives_pathologically_nested_json() -> None:
     out = "[" * 100000 + "]" * 100000
     assert enrich(_odoo(), "search_records", {"model": "sale.order"}, out) == (out, [])
+
+
+async def test_enrich_and_remember_registers_what_it_issued(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.records.registry import issued_links
+
+    tenant = uuid.uuid4()
+    url = "https://odoo.example.com/odoo/sale.order/42"
+    async with app_session(tenant) as db:
+        new, issued = await enrich_and_remember(
+            db,
+            tenant_id=tenant,
+            ctx=_odoo(),
+            tool_name="search_records",
+            arguments={"model": "sale.order"},
+            output='[{"id": 42, "name": "S00042"}]',
+        )
+        assert issued == [url]
+        assert json.loads(new)[0]["oc8_url"] == url
+        assert await issued_links(db, tenant_id=tenant, urls=[url]) == {url}
+
+
+async def test_a_replayed_result_is_enriched_like_the_first_one(
+    app_session: AppSessionFactory,
+) -> None:
+    """A replay carries the idempotency note after the JSON. The model must see
+    the same links on a resume as on the first run, note included."""
+    tenant = uuid.uuid4()
+    raw = '[{"id": 42}]'
+    async with app_session(tenant) as db:
+        first, _ = await enrich_and_remember(
+            db,
+            tenant_id=tenant,
+            ctx=_odoo(),
+            tool_name="search_records",
+            arguments={"model": "sale.order"},
+            output=raw,
+        )
+        replayed, issued = await enrich_and_remember(
+            db,
+            tenant_id=tenant,
+            ctx=_odoo(),
+            tool_name="search_records",
+            arguments={"model": "sale.order"},
+            output=f"{raw}\n\n{REPLAY_NOTE}",
+        )
+    assert replayed == f"{first}\n\n{REPLAY_NOTE}"
+    assert issued == ["https://odoo.example.com/odoo/sale.order/42"]
+
+
+async def test_enrich_and_remember_without_context_changes_nothing(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        assert await enrich_and_remember(
+            db, tenant_id=tenant, ctx=None, tool_name="x", arguments={}, output='[{"id": 1}]'
+        ) == ('[{"id": 1}]', [])

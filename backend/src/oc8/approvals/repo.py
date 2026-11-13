@@ -168,3 +168,21 @@ async def load_for_actor(
     if not actor.scope.may_view(row.department_id):
         return None
     return row
+
+
+async def approved_awaiting_result(
+    db: AsyncSession, *, tenant_id: uuid.UUID, task_id: uuid.UUID
+) -> list[ApprovalRequest]:
+    """A task's approved approvals that have no result link yet.
+
+    No actor: the agent runtime reads its own task's approvals right after the
+    approved call ran, to note the record it produced (spec §5 item 5). No
+    human sees anything through this.
+    """
+    stmt = select(ApprovalRequest).where(
+        ApprovalRequest.tenant_id == tenant_id,
+        ApprovalRequest.task_id == task_id,
+        ApprovalRequest.status == "approved",
+        ApprovalRequest.result_url.is_(None),
+    )
+    return list((await db.execute(stmt)).scalars().all())
