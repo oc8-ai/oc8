@@ -84,6 +84,51 @@ async def test_create_event_posts_start_end_and_attendees(monkeypatch: pytest.Mo
     assert result == {"id": "e1"}
 
 
+async def test_list_events_with_a_range_uses_calendar_view(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    async def fake_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        captured["path"] = path
+        captured["params"] = params or {}
+        return {"value": [{"id": "e1"}]}
+
+    monkeypatch.setattr(graph, "get", fake_get)
+    monkeypatch.delenv(DEFAULT_USER_ENV, raising=False)
+    result = await CALL_HANDLERS["calendar_list_events"](
+        {
+            "start": "2026-08-20T00:00:00",
+            "end": "2026-08-27T00:00:00",
+            "userId": "sina@contoso.com",
+        }
+    )
+    # `/events` silently ignores startDateTime/endDateTime; only `/calendarView`
+    # honours them.
+    assert captured["path"] == "/users/sina@contoso.com/calendarView"
+    assert captured["params"]["startDateTime"] == "2026-08-20T00:00:00"
+    assert captured["params"]["endDateTime"] == "2026-08-27T00:00:00"
+    assert result == [{"id": "e1"}]
+
+
+async def test_list_events_without_a_range_keeps_the_events_collection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    async def fake_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        captured["path"] = path
+        captured["params"] = params or {}
+        return {"value": []}
+
+    monkeypatch.setattr(graph, "get", fake_get)
+    monkeypatch.delenv(DEFAULT_USER_ENV, raising=False)
+    await CALL_HANDLERS["calendar_list_events"]({"userId": "sina@contoso.com"})
+    assert captured["path"] == "/users/sina@contoso.com/events"
+    assert "startDateTime" not in captured["params"]
+    assert "endDateTime" not in captured["params"]
+
+
 async def test_respond_to_invite_posts_the_right_verb(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 

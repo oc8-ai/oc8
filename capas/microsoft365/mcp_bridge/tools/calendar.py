@@ -15,18 +15,28 @@ from .. import graph
 from .._user import USER_ID_PROPERTY, user_base
 
 _TIMEZONE = "UTC"
+_RANGE_PAGE_SIZE = 50
 
 
 async def calendar_list_events(args: dict[str, Any]) -> Any:
     base = user_base(args)
-    result = await graph.get(
-        f"{base}/events",
-        params={
-            "$orderby": "start/dateTime",
-            "startDateTime": args.get("start", ""),
-            "endDateTime": args.get("end", ""),
-        },
-    )
+    start = str(args.get("start") or "").strip()
+    end = str(args.get("end") or "").strip()
+    if start and end:
+        # Only `/calendarView` honours a date range (and expands recurring
+        # events into their occurrences); `/events` ignores startDateTime and
+        # endDateTime and returns its first page regardless.
+        result = await graph.get(
+            f"{base}/calendarView",
+            params={
+                "startDateTime": start,
+                "endDateTime": end,
+                "$orderby": "start/dateTime",
+                "$top": _RANGE_PAGE_SIZE,
+            },
+        )
+    else:
+        result = await graph.get(f"{base}/events", params={"$orderby": "start/dateTime"})
     return result.get("value", [])
 
 
@@ -105,7 +115,11 @@ _CALENDAR = (
 TOOLS: list[Tool] = [
     Tool(
         name="calendar_list_events",
-        description="List events in a date range." + _CALENDAR,
+        description=(
+            "List events. Pass both `start` and `end` (ISO 8601) to get the events "
+            "in that range; without them the calendar's first events are returned."
+        )
+        + _CALENDAR,
         inputSchema={
             "type": "object",
             "properties": {
