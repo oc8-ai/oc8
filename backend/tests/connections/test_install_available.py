@@ -3,6 +3,7 @@ design), but never grants a permission an update newly asks for."""
 
 from __future__ import annotations
 
+import re
 import shutil
 import uuid
 from pathlib import Path
@@ -90,7 +91,7 @@ def odoo_copy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def _bump(manifest: Path, *, extra_permission: str | None = None) -> None:
     text = manifest.read_text()
-    text = text.replace('version = "1.8.6"', 'version = "9.9.9"', 1)
+    text = re.sub(r'^version = "[^"]+"', 'version = "9.9.9"', text, count=1, flags=re.M)
     if extra_permission is not None:
         text = text.replace(
             'permissions = ["mcp:connect", "secrets:use"]',

@@ -26,7 +26,9 @@ def test_every_connectable_plugin_is_recognised_with_a_readable_name() -> None:
 
 def test_hubspot_and_jira_logins_map_onto_their_bridges() -> None:
     assert _integration("hubspot_mcp").credential_env_fields == {
-        "PRIVATE_APP_ACCESS_TOKEN": "private_app_access_token"
+        "PRIVATE_APP_ACCESS_TOKEN": "private_app_access_token",
+        "HUBSPOT_PORTAL_ID": "portal_id",
+        "HUBSPOT_UI_URL": "ui_url",
     }
     assert _integration("jira_mcp").credential_env_fields == {
         "JIRA_URL": "url",
