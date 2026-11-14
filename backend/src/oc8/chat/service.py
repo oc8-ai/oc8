@@ -32,6 +32,7 @@ from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.approvals import expire_approval
 from oc8.audit import append_event
 from oc8.auth.principal import Principal
 from oc8.chat.audience import session_audience_or_nobody
@@ -45,6 +46,7 @@ from oc8.chat.context.manifest import (
 )
 from oc8.chat.context.registry import RESOLVERS
 from oc8.chat.modes import (
+    ACT,
     ASSISTANT_ONLY_REFUSAL,
     MODES,
     ChatMode,
@@ -193,6 +195,20 @@ async def delete_session(db: AsyncSession, *, tenant_id: uuid.UUID, session: m.C
             )
         ).scalars()
     )
+    # Its grants go with it (FK cascade); an offer still waiting would grant
+    # access to a conversation that no longer exists.
+    waiting = (
+        await db.execute(
+            select(m.ApprovalRequest).where(
+                m.ApprovalRequest.tenant_id == tenant_id,
+                m.ApprovalRequest.status == "pending",
+                m.ApprovalRequest.action_type == "direct_access",
+                m.ApprovalRequest.payload["direct_access"]["session_id"].astext == str(session.id),
+            )
+        )
+    ).scalars()
+    for offer in list(waiting):
+        await expire_approval(db, offer)
     for responsibility in open_responsibilities:
         await close_responsibility(
             db,
@@ -558,6 +574,22 @@ async def _is_assistant(db: AsyncSession, session: m.ChatSession) -> bool:
     return agent is not None and agent.is_tenant_assistant
 
 
+async def _automatic_mode(
+    db: AsyncSession,
+    *,
+    session: m.ChatSession,
+    role: str,
+    chat_channel: str | None,
+) -> ChatMode | None:
+    """ACT while this Copilot web chat holds a direct-access grant (§6).
+    Only ever applied when no mode was chosen: a chosen one narrows."""
+    from oc8.connections.direct_access import active_grants
+
+    if role != "user" or chat_channel is not None or not await _is_assistant(db, session):
+        return None
+    return ACT if await active_grants(db, session_id=session.id) else None
+
+
 async def send_message(
     db: AsyncSession,
     *,
@@ -804,7 +836,8 @@ async def send_message(
         chat_channel=chat_channel,
         chat_channel_external_id=chat_channel_external_id,
         role=role,
-        mode=mode,
+        mode=mode
+        or await _automatic_mode(db, session=session, role=role, chat_channel=chat_channel),
         for_person=for_person,
         resolved_refs=resolved_refs,
         extra_context=extra_context,
@@ -822,6 +855,15 @@ async def send_message(
             # Set here and not in `_extra_context`'s allow-list: a caller can
             # never hand a turn this key.
             context[ACTING_PERSON_WITHHELD] = SOMEONE_ELSES_WORDS
+        elif (
+            owner is not None
+            and role == "user"
+            and chat_channel is None
+            and await _is_assistant(db, session)
+        ):
+            # The conversation's own member, present at the web composer: the
+            # Copilot acts for them (copilot direct access §6, Identity).
+            context["on_behalf_of"] = str(owner.id)
 
     # Open the session's Task HERE, on turn one, rather than letting the engine
     # open one implicitly when the run starts.
@@ -983,11 +1025,21 @@ async def regenerate_reply(
         chat_channel=None,
         chat_channel_external_id=None,
         role="user",
-        mode=mode,
+        mode=mode or await _automatic_mode(db, session=session, role="user", chat_channel=None),
         resolved_refs=resolved_refs,
         extra_context={"regenerated": True},
         manifest=manifest,
     )
+    if originating_operator is not None:
+        owner = await db.get(m.OrgMember, session.member_id)
+        if (
+            owner is not None
+            and owner.subject == originating_operator
+            and await _is_assistant(db, session)
+        ):
+            context["on_behalf_of"] = str(owner.id)
+        elif owner is not None and owner.subject != originating_operator:
+            context[ACTING_PERSON_WITHHELD] = SOMEONE_ELSES_WORDS
     run, _published = await enqueue_run(
         db,
         tenant_id=tenant_id,
