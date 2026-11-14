@@ -26,10 +26,11 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.approvals.repo import direct_access_owner, is_member_owned
 from oc8.audit import append_event
 from oc8.authz.authority import granted_for_member
 from oc8.authz.permissions import AGENT, APPROVAL_DECIDE_ANY, BUDGET, MANAGE, perm
-from oc8.authz.scope import DecisionActor, HumanActor
+from oc8.authz.scope import AgentActor, DecisionActor, HumanActor
 from oc8.realtime.emit import publish_after_commit, record_activity
 
 Verdict = Literal["approve", "reject"]
@@ -159,6 +160,11 @@ EFFECT_PERMISSIONS: Final[dict[str, str | None]] = {
     "tool_send": None,
     "decision": None,
     "memory_write": None,
+    # Writes one `direct_access_grant` for the decider's OWN conversation -- read
+    # access the decider already holds through a seat (`member_may_use`,
+    # re-checked when the grant is written). Who may decide is narrower than a
+    # seat: only that conversation's member (`direct_access_owner`).
+    "direct_access": None,
 }
 
 
@@ -537,7 +543,20 @@ async def decide_approval(
     # the status and the time, so checking it first would answer "does this
     # approval exist and when was it answered" for a department the caller may
     # not see.
-    if not actor.scope.may_decide(approval.department_id):
+    if is_member_owned(approval):
+        # The person decides for themselves, and only they do: no seat, no
+        # `decide_any`, no copilot:manage carve-out -- and not the department
+        # the card happens to be filed in (R21). Same sentence as a missing row
+        # for anybody else. An owned card whose member cannot be read is
+        # nobody's: fail closed.
+        owner = direct_access_owner(approval)
+        if owner is None or actor.member.id != owner:
+            raise NotYourDepartment("this approval belongs to another department")
+        if isinstance(actor, AgentActor):
+            # The Copilot's decide_approval acts AS the owner; letting it would
+            # let the model approve its own request.
+            raise NotYourSayAtAll("a direct-access approval is decided by the person, in oc8")
+    elif not actor.scope.may_decide(approval.department_id):
         raise NotYourDepartment("this approval belongs to another department")
     # SECOND: what `approval:decide` means depends on what is being decided, and
     # for two of the five action types it means a `:manage` act the seat
@@ -641,6 +660,12 @@ async def decide_approval(
         await resolve_builder_approval(
             db, approval=approval, decision=decision, reason=reason, actor=actor
         )
+    elif approval.action_type == "direct_access":
+        from oc8.copilot.direct_access import resolve_direct_access_approval
+
+        # The grant (on approve), and either way the parked run woken and told.
+        # Raises EffectRefused when the conversation or the person's right is gone.
+        resumed_run = await resolve_direct_access_approval(db, approval=approval, decision=decision)
 
     await _close_out(db, approval)
     await append_event(

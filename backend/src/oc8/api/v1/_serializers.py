@@ -24,6 +24,7 @@ from oc8.schemas.dto import (
     ClarificationDTO,
     DataSourceDTO,
     DepartmentDTO,
+    DirectAccessInfoDTO,
     IngestionJobDTO,
     IntegrationDTO,
     KbChunkDTO,
@@ -255,6 +256,20 @@ async def resolve_approval_names(
     )
 
 
+def _direct_access_dto(raw: Any) -> DirectAccessInfoDTO | None:
+    if not isinstance(raw, dict):
+        return None
+    account = raw.get("account")
+    return DirectAccessInfoDTO(
+        session_id=str(raw.get("session_id") or ""),
+        tool_key=str(raw.get("tool_key") or ""),
+        label=str(raw.get("label") or raw.get("tool_key") or ""),
+        member_name=str(raw.get("member_name") or ""),
+        account=str(account) if account in ("own", "organisation") else None,
+        decider="department" if raw.get("decider") == "department" else "member",
+    )
+
+
 def approval_to_dto(a: m.ApprovalRequest, names: ApprovalNames | None = None) -> ApprovalDTO:
     # Lazy import to avoid cycles: approvals -> records.links -> agent -> approvals
     from oc8.records.links import safe_url
@@ -294,8 +309,12 @@ def approval_to_dto(a: m.ApprovalRequest, names: ApprovalNames | None = None) ->
         agent_name=resolved.agents.get(a.agent_id, ""),
         task_id=str(a.task_id) if a.task_id else None,
         task_title=resolved.tasks.get(a.task_id, "") if a.task_id else "",
+        # The raiser's own run first: a Copilot conversation runs every turn
+        # on one task, so the task's run is only a guess there.
         run_id=(
-            str(resolved.runs[a.task_id])
+            str(payload["run_id"])
+            if isinstance(payload.get("run_id"), str)
+            else str(resolved.runs[a.task_id])
             if a.task_id is not None and a.task_id in resolved.runs
             else None
         ),
@@ -315,6 +334,7 @@ def approval_to_dto(a: m.ApprovalRequest, names: ApprovalNames | None = None) ->
             if a.action_type == "copilot.agent_builder" and payload.get("proposal_id")
             else None
         ),
+        direct_access=_direct_access_dto(payload.get("direct_access")),
         related_links=[
             RecordLinkDTO(label=x["label"], url=safe)
             for x in (a.related_links or [])

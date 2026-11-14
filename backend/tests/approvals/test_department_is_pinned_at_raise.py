@@ -45,7 +45,12 @@ SRC = pathlib.Path(__file__).resolve().parents[2] / "src" / "oc8"
 #: the Copilot (the proposed agent does not exist yet), so deriving would file
 #: the request under the Copilot's department instead of the one the new agent
 #: is for (`copilot/builder.py::request_builder_approval`).
-_MAY_OVERRIDE = {"metering/budget.py", "copilot/builder.py"}
+#:
+#: A direct-access offer passes None, and is NOT tenant-wide: it is one
+#: person's own card (`approvals.repo.is_member_owned`), listed and decided by
+#: that member alone -- deriving would file it in the Copilot's department
+#: queue, showing their private purpose to its approvers (R21).
+_MAY_OVERRIDE = {"metering/budget.py", "copilot/builder.py", "copilot/direct_access.py"}
 
 
 def _subject_uuid(subject: str) -> uuid.UUID:

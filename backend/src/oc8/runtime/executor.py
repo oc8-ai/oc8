@@ -1057,6 +1057,12 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
 
                 task_text = resume_instruction(approvals)
                 pre_decided = pre_decided_map(approvals)
+            resolved_access = run.context.get("resolved_direct_access")
+            if not approvals and isinstance(resolved_access, dict):
+                # A direct-access offer was answered: carry on with the request.
+                from oc8.copilot.direct_access import direct_access_resume_text
+
+                task_text = direct_access_resume_text(task_text, resolved_access)
 
             # Set by delegate_task (§7) when this run is a delegated sub-task, and by
             # the wake-up when a team lead is re-queued. Absent for an ordinary run.

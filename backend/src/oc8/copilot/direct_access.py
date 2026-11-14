@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.agent.control_tools import OFFER_DIRECT_ACCESS, ControlOutcome
 from oc8.agent.harness.stages.b_direct_access import DirectAccessView, offers_direct
-from oc8.approvals import raise_approval
+from oc8.approvals import EffectRefused, raise_approval
 from oc8.audit import append_event
 from oc8.connections.access import ConnectionRequired, account_of, resolve_direct_access
 from oc8.connections.direct_access import DirectAccessRun, active_grant, direct_access_run
@@ -24,8 +24,12 @@ from oc8.connections.usable import (
     member_usable_tool_keys,
     tool_key_label,
 )
+from oc8.copilot.tools import uuid_or_none
 from oc8.modelrouter import ToolCall
 from oc8.runtime.fencing import one_line
+from oc8.runtime.repository import RunRepository
+from oc8.runtime.run_context import record_direct_access_answer
+from oc8.runtime.states import RunState
 
 DIRECT_ACCESS_ACTION: Final = "direct_access"
 
@@ -34,11 +38,16 @@ _ACCOUNT_TEXT: Final = {"own": "their own login", "organisation": "the organisat
 
 def _declined_in_this_run(context: dict[str, Any], tool_key: str) -> bool:
     entry = context.get("resolved_direct_access")
-    return (
+    if (
         isinstance(entry, dict)
         and entry.get("tool_key") == tool_key
         and entry.get("decision") == "reject"
-    )
+    ):
+        return True
+    # Every decline of the run, not just the latest answer
+    # (`record_direct_access_answer`).
+    declined = context.get("declined_direct_access")
+    return isinstance(declined, list) and tool_key in declined
 
 
 def _offer_rows(session_id: uuid.UUID, status: str) -> Any:
@@ -201,6 +210,9 @@ async def execute_direct_access_tool(
         agent_id=agent.id,
         task_id=task.id,
         action_type=DIRECT_ACCESS_ACTION,
+        # The person's own card, in no department's queue (R21): only they
+        # see and decide it (`approvals.repo.is_member_owned`).
+        department_id=None,
         announce_to_member=direct.member_id,
         title=f"Copilot on behalf of {name}: read {label}",
         detail=purpose,
@@ -282,3 +294,92 @@ async def direct_access_block(
             status = "not allowed yet"
         lines.append(f"- {key} | {one_line(await tool_key_label(db, key), 80)} | {status}")
     return "\n".join(lines)
+
+
+async def resolve_direct_access_approval(
+    db: AsyncSession, *, approval: m.ApprovalRequest, decision: str
+) -> m.AgentRun | None:
+    """The offer's effect: on approve, the grant (§5) -- its conversation and
+    the person's right re-checked now; either way, the parked run is woken
+    and told. Raises EffectRefused (the caller rolls back) when the grant can
+    no longer be given.
+
+    One grant at most: `decide_approval` holds the approval row locked and
+    refuses a second decision, the conversation row is locked here like the
+    offer locks it, and the partial unique index is the last word."""
+    payload = approval.payload or {}
+    raw_info = payload.get("direct_access")
+    info: Mapping[str, Any] = raw_info if isinstance(raw_info, dict) else {}
+    session_id = uuid_or_none(info.get("session_id"))
+    member_id = uuid_or_none(info.get("member_id"))
+    key = str(info.get("tool_key") or "")
+    if decision == "approve":
+        session = (
+            await db.execute(
+                select(m.ChatSession).where(m.ChatSession.id == session_id).with_for_update()
+            )
+        ).scalar_one_or_none()
+        if session is None or member_id is None or session.member_id != member_id or not key:
+            raise EffectRefused("direct_access_conversation_gone")
+        if not await member_may_use(db, member_id=member_id, tool_key=key, right="read"):
+            raise EffectRefused("direct_access_not_allowed")
+        if await active_grant(db, session_id=session.id, tool_key=key) is None:
+            db.add(
+                m.DirectAccessGrant(
+                    tenant_id=approval.tenant_id,
+                    chat_session_id=session.id,
+                    member_id=member_id,
+                    tool_key=key,
+                    approval_id=approval.id,
+                )
+            )
+            await db.flush()
+        await append_event(
+            db,
+            tenant_id=approval.tenant_id,
+            actor_type="operator",
+            actor_id=member_id,
+            category="copilot",
+            action="direct_access.granted",
+            resource={
+                "approval_id": str(approval.id),
+                "chat_session_id": str(session.id),
+                "tool_key": key,
+            },
+        )
+    run_id = uuid_or_none(payload.get("run_id"))
+    run = await db.get(m.AgentRun, run_id) if run_id else None
+    if run is None or run.task_id != approval.task_id:
+        return None
+    await record_direct_access_answer(
+        db,
+        run,
+        {"tool_key": key, "label": str(info.get("label") or key), "decision": decision},
+    )
+    # Re-read, not the identity-mapped copy: see `resolve_tool_approval`.
+    run = await db.get(m.AgentRun, run.id, populate_existing=True)
+    if run is None or run.state != RunState.WAITING_FOR_APPROVAL.value:
+        return None
+    await RunRepository(db).transition(run, RunState.QUEUED)
+    await db.flush()
+    return run
+
+
+def direct_access_resume_text(task_text: str, entry: Mapping[str, Any]) -> str:
+    """The resumed run's task: the original request plus the person's answer
+    (§3 step 4/6). Unlike a held write's resume, the run carries on with the
+    request -- that is what the access was asked for."""
+    label = one_line(str(entry.get("label") or entry.get("tool_key") or ""), 120)
+    key = one_line(str(entry.get("tool_key") or ""), 200)
+    if entry.get("decision") == "approve":
+        note = (
+            f"[oc8] The person approved reading {label} ({key}) in this conversation. "
+            "Its tools are now available: carry on with their request. Every change "
+            "still asks them."
+        )
+    else:
+        note = (
+            f"[oc8] The person declined direct access to {label} ({key}). Answer without "
+            "it, and do not offer it again in this conversation unless they ask."
+        )
+    return f"{task_text}\n\n{note}"

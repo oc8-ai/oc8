@@ -14,8 +14,9 @@ The one shape this module exists to make unwritable:
 
 `WHERE department_id IN ()` is not valid SQL, so skipping the filter when the set
 is empty is the natural way to write it -- and it fails OPEN, handing a seatless
-employee every approval in the tenant. An empty scope returns an empty list here,
-before any statement is built.
+employee every approval in the tenant. An empty scope gets a constant-false
+department term here, never an `IN` -- it sees its own member-owned cards
+(`is_member_owned`) and nothing else.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ import datetime as dt
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ColumnElement, extract, func, select
+from sqlalchemy import ColumnElement, and_, extract, false, func, not_, or_, select
 
 from oc8.models.ops import ApprovalRequest
 
@@ -37,6 +38,53 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 #: §5 fixes the default at 100 and the ceiling at 500.
 DEFAULT_LIMIT = 100
 MAX_LIMIT = 500
+
+#: The approval an offer of direct access raises (copilot direct access §3).
+DIRECT_ACCESS_ACTION = "direct_access"
+
+
+def is_member_owned(approval: ApprovalRequest) -> bool:
+    """A card only one person answers: a direct-access offer, or a direct write
+    no department holds (copilot direct access §3). Its title and purpose are
+    that person's, so it is nobody else's to see either -- whatever
+    `department_id` it carries."""
+    info = (approval.payload or {}).get("direct_access")
+    return approval.action_type == DIRECT_ACCESS_ACTION or (
+        isinstance(info, dict) and info.get("decider") == "member"
+    )
+
+
+def direct_access_owner(approval: ApprovalRequest) -> uuid.UUID | None:
+    """The member who alone decides this approval: the conversation's member
+    for a direct-access offer, and for a direct write no department holds.
+    None for every other approval -- and for an owned one whose member cannot
+    be read, which therefore nobody decides (`is_member_owned` still holds)."""
+    if not is_member_owned(approval):
+        return None
+    info = (approval.payload or {}).get("direct_access")
+    if not isinstance(info, dict):
+        return None
+    try:
+        return uuid.UUID(str(info.get("member_id")))
+    except ValueError:
+        return None
+
+
+def _owned_clause() -> ColumnElement[bool]:
+    """`is_member_owned`, in SQL. `coalesce` because `->>` on a missing key is
+    NULL, and `NOT (x OR NULL)` is NULL -- which would hide every ordinary
+    approval from every queue."""
+    return or_(
+        ApprovalRequest.action_type == DIRECT_ACCESS_ACTION,
+        func.coalesce(ApprovalRequest.payload["direct_access"]["decider"].astext, "") == "member",
+    )
+
+
+def _owned_by(member_id: uuid.UUID) -> ColumnElement[bool]:
+    return and_(
+        _owned_clause(),
+        ApprovalRequest.payload["direct_access"]["member_id"].astext == str(member_id),
+    )
 
 
 async def visible_approvals(
@@ -61,21 +109,30 @@ async def visible_approvals(
     scope = actor.scope
     stmt = select(ApprovalRequest).where(ApprovalRequest.status == status)
 
-    if scope.is_unrestricted:
+    # A member-owned card (`is_member_owned`) is its owner's alone, from any
+    # seat or none, and nobody else's -- not the department it is filed in,
+    # not the unrestricted. Every other approval follows the department term.
+    mine = _owned_by(actor.member.id)
+    if department_id is not None:
+        if not scope.may_view(department_id):
+            return []
+        departmental: ColumnElement[bool] | None = ApprovalRequest.department_id == department_id
+        # The department picker narrows to one department; the person's own
+        # cards belong to none.
+        mine = and_(mine, ApprovalRequest.department_id == department_id)
+    elif scope.is_unrestricted:
         # No department predicate at all. This is the ONLY way `department_id IS
         # NULL` -- the tenant-scope budget incident -- is ever visible to anybody,
         # and `viewable` is empty for an unrestricted caller by design, so a
         # filter built from it would show a CEO nothing.
-        pass
+        departmental = None
     elif scope.viewable:
-        stmt = stmt.where(ApprovalRequest.department_id.in_(scope.viewable))
+        departmental = ApprovalRequest.department_id.in_(scope.viewable)
     else:
-        return []
-
-    if department_id is not None:
-        if not scope.may_view(department_id):
-            return []
-        stmt = stmt.where(ApprovalRequest.department_id == department_id)
+        # Seatless: nothing departmental -- `IN ()` is never built -- only own cards.
+        departmental = false()
+    others = not_(_owned_clause())
+    stmt = stmt.where(or_(mine, others if departmental is None else and_(others, departmental)))
 
     # `id` breaks the tie. `created_at` defaults to `now()`, which in Postgres is
     # TRANSACTION start time, so several approvals raised inside one request --
@@ -165,6 +222,8 @@ async def load_for_actor(
     ).scalar_one_or_none()
     if row is None:
         return None
+    if is_member_owned(row):
+        return row if direct_access_owner(row) == actor.member.id else None
     if not actor.scope.may_view(row.department_id):
         return None
     return row

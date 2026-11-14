@@ -7,6 +7,7 @@ one. Mirrors the clarification (ask_user) resume, one layer up for tool calls.
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Any
 
 from sqlalchemy import select
@@ -35,9 +36,22 @@ async def resolve_tool_approval(
     """
     if approval.task_id is None:
         return None
-    run = (
-        await db.execute(select(AgentRun).where(AgentRun.task_id == approval.task_id))
-    ).scalar_one_or_none()
+    # A Copilot conversation runs every turn on ONE task, so "the run of this
+    # task" is ambiguous there (MultipleResultsFound from the second turn on):
+    # a raiser that knows its run says which, and it must be of this task.
+    raw_run = (approval.payload or {}).get("run_id")
+    run: AgentRun | None
+    if raw_run:
+        try:
+            run = await db.get(AgentRun, uuid.UUID(str(raw_run)))
+        except ValueError:
+            run = None
+        if run is not None and run.task_id != approval.task_id:
+            run = None
+    else:
+        run = (
+            await db.execute(select(AgentRun).where(AgentRun.task_id == approval.task_id))
+        ).scalar_one_or_none()
     if run is None:
         return None
 

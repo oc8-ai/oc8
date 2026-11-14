@@ -120,6 +120,22 @@ class ApprovalOptionDTO(CamelModel):
     detail: str = ""
 
 
+class DirectAccessInfoDTO(CamelModel):
+    """What a direct-access approval is about (copilot direct access §8). The
+    localized title is `ApprovalDTO.title_translations`, as for every card."""
+
+    session_id: str
+    tool_key: str
+    label: str
+    member_name: str
+    #: "own" | "organisation"; null when it could not be resolved.
+    account: str | None = None
+    #: "member" (the person decides) | "department" (its policy holds it).
+    decider: str = "member"
+    grant_id: str | None = None
+    grant_active: bool = False
+
+
 class ApprovalDTO(CamelModel):
     id: str
     agent_id: str
@@ -199,6 +215,9 @@ class ApprovalDTO(CamelModel):
     #: The builder proposal a `copilot.agent_builder` approval decides, so the
     #: pane can show the same preview read-only. None for every other kind.
     proposal_id: str | None = None
+    #: Set on a direct-access offer and on a write the Copilot made through a
+    #: person's connection: on whose behalf, which system, which account.
+    direct_access: DirectAccessInfoDTO | None = None
     #: Records the approved call references, e.g. the customer for a new quotation.
     #: Links to EXISTING records only (resolved at raise time, filtered for safe URLs).
     related_links: list[RecordLinkDTO] = []
