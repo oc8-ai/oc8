@@ -1080,6 +1080,52 @@ class HttpTestCallResultDTO(CamelModel):
     message: str = ""
 
 
+class HttpToolDTO(CamelModel):
+    name: str
+    description: str = ""
+    method: str = "GET"
+    url_template: str = ""
+    param_schema: dict[str, Any] = Field(default_factory=dict)
+    param_locations: dict[str, str] = Field(default_factory=dict)
+    body_param: str | None = None
+    group: str = ""
+
+
+class HttpToolScopesDTO(CamelModel):
+    read: list[str] = Field(default_factory=list)
+    modify: list[str] = Field(default_factory=list)
+
+
+class HttpLoginShapeDTO(CamelModel):
+    """A connection's login without its secret."""
+
+    kind: str
+    location: str | None = Field(default=None, alias="in")
+    name: str | None = None
+    username: str | None = None
+    token_url: str | None = None
+    client_id: str | None = None
+    scope: str | None = None
+
+
+class ImportMetadataDTO(CamelModel):
+    source_url: str | None = None
+    fingerprint: str = ""
+    imported_at: str = ""
+    title: str = ""
+    version: str = ""
+
+
+class HttpToolsSnapshotDTO(CamelModel):
+    connection_id: str
+    name: str
+    base_url: str
+    http_tools: list[HttpToolDTO]
+    scopes: HttpToolScopesDTO
+    auth: HttpLoginShapeDTO | None = None
+    openapi: ImportMetadataDTO | None = None
+
+
 class ConnectionToolNamesDTO(CamelModel):
     names: list[str] = []
     #: Same names split by `authz.pdp.required_right`'s classification, so a

@@ -1,7 +1,9 @@
 // Wizard for registering a tenant-owned MCP server (local/stdio or
 // remote/URL) or a plain HTTP API (manually described tools) as a real capa.
-// Installed through the existing POST /capas -> enable -> setup pipeline --
-// no new backend endpoints, no vendor-specific logic anywhere in this file.
+// Installed through the existing POST /capas -> enable -> setup pipeline (an
+// HTTP API's tools edited after a test are replaced in place through
+// PATCH /mcp/connections/{id}/http-tools) -- no vendor-specific logic
+// anywhere in this file.
 import { useState } from "react";
 import {
   Check,
@@ -38,7 +40,9 @@ import {
   NO_LOGIN,
   loginComplete,
   loginSecret,
+  httpToolsUpdateBetween,
   loginToConfig,
+  patchHttpTools,
   postHttpTestCall,
   type HttpLoginDraft,
 } from "@/lib/http-tools";
@@ -93,12 +97,17 @@ interface WizardState {
   // does not re-install if step 3 already installed it (e.g. to run a test).
   installedPluginId: string | null;
   // What that install was made from, so an edit after a test (Back, change a
-  // tool, the URL or the login) is installed again instead of silently lost:
-  // the manifest it was built from, how many versions this wizard installed,
-  // and the connection its setup returned.
-  installedManifestKey: string | null;
+  // tool, the URL or the login) reaches the connection instead of being
+  // silently lost: the manifest it was built from, how many versions this
+  // wizard installed, the connection its setup returned and the setup values
+  // that connection was last configured with.
+  installedManifest: Record<string, unknown> | null;
   installedRevision: number;
   installedConnectionId: string | null;
+  installedSetupKey: string | null;
+  // A capa installed under an earlier name whose disabling has not
+  // succeeded yet; the next install, test or save tries again.
+  replacedPluginId: string | null;
 }
 
 const INITIAL_STATE: WizardState = {
@@ -119,9 +128,11 @@ const INITIAL_STATE: WizardState = {
   testError: null,
   testedConnectionId: null,
   installedPluginId: null,
-  installedManifestKey: null,
+  installedManifest: null,
   installedRevision: 0,
   installedConnectionId: null,
+  installedSetupKey: null,
+  replacedPluginId: null,
 };
 
 const SERVER_TYPES: Array<{
@@ -479,19 +490,45 @@ export function CustomMcpWizard({
   // where the plugin id is already known up front).
   //
   // When the manifest changed since this wizard installed it (the person went
-  // Back after a test and edited a tool, the URL or the login), it is installed
-  // again as a new version, and the connection the old one set up is removed
-  // first: enabling only refreshes a connection's declared seams, so the new
-  // tools, URL and login reach a connection only when it is made afresh.
+  // Back after a test and edited something), an edit of the HTTP API's tools
+  // alone replaces them on the installed connection and in its manifest
+  // (PATCH .../http-tools), with no new install. Anything else -- the name,
+  // the URL, the login -- is installed again as a new version, and the
+  // connection the old one set up is removed first: enabling only refreshes a
+  // connection's declared seams, so the new URL and login reach a connection
+  // only when it is made afresh.
   async function installEnableConfigure(): Promise<{
     pluginId: string;
     connectionId: string | null;
   }> {
     const manifest = await buildManifest(state, departments.length > 0);
-    const manifestKey = JSON.stringify(manifest);
+    const values = buildSetupValues(state, departmentId);
+    const setupKey = JSON.stringify(values);
     let pluginId = state.installedPluginId;
     let revision = state.installedRevision;
-    if (!pluginId || manifestKey !== state.installedManifestKey) {
+    const changed =
+      state.installedManifest !== null &&
+      JSON.stringify(manifest) !== JSON.stringify(state.installedManifest);
+    const toolsOnly =
+      pluginId && changed && state.installedConnectionId && state.installedManifest
+        ? httpToolsUpdateBetween(state.installedManifest, manifest)
+        : null;
+    if (pluginId && toolsOnly && state.installedConnectionId) {
+      const connectionId = state.installedConnectionId;
+      await patchHttpTools(connectionId, toolsOnly);
+      update({ installedManifest: manifest });
+      if (setupKey !== state.installedSetupKey) {
+        // A changed secret or department travels through setup, as always.
+        const result = await api.post<{ connectionId: string | null }>(`/capas/${pluginId}/setup`, {
+          values,
+        });
+        update({ installedConnectionId: result.connectionId, installedSetupKey: setupKey });
+        return { pluginId, connectionId: result.connectionId };
+      }
+      return { pluginId, connectionId };
+    }
+    let replaced = state.replacedPluginId;
+    if (!pluginId || changed) {
       if (pluginId && state.installedConnectionId) {
         await api.delete(`/mcp/connections/${state.installedConnectionId}`);
         update({ installedConnectionId: null });
@@ -502,26 +539,30 @@ export function CustomMcpWizard({
         manifest: { ...manifest, version: `1.0.${revision}` },
       });
       pluginId = installed.pluginId;
-      if (previous && previous !== pluginId) {
-        // A new name is a new capa: the one installed under the old name
-        // must not stay enabled behind the person's back.
-        await disablePlugin.mutateAsync({
-          pluginId: previous,
-          reason: "Replaced in the custom MCP wizard after a rename",
-        });
-      }
+      // A new name is a new capa: the one installed under the old name must
+      // not stay enabled behind the person's back.
+      if (previous && previous !== pluginId) replaced = previous;
+      // Recorded before anything else can fail, so a retry does not install
+      // this same version again.
       update({
         installedPluginId: pluginId,
-        installedManifestKey: manifestKey,
+        installedManifest: manifest,
         installedRevision: revision,
+        replacedPluginId: replaced,
       });
     }
+    if (replaced && replaced !== pluginId) {
+      await disablePlugin.mutateAsync({
+        pluginId: replaced,
+        reason: "Replaced in the custom MCP wizard after a rename",
+      });
+      update({ replacedPluginId: null });
+    }
     await enablePlugin.mutateAsync({ pluginId, grantedPermissions: [] });
-    const values = buildSetupValues(state, departmentId);
     const result = await api.post<{ connectionId: string | null }>(`/capas/${pluginId}/setup`, {
       values,
     });
-    update({ installedConnectionId: result.connectionId });
+    update({ installedConnectionId: result.connectionId, installedSetupKey: setupKey });
     return { pluginId, connectionId: result.connectionId };
   }
 

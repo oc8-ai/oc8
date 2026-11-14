@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import uuid
+from collections import Counter
 from typing import Annotated, Any, Literal
 
+import jsonschema
 from pydantic import (
     AwareDatetime,
     ConfigDict,
@@ -12,6 +14,7 @@ from pydantic import (
     Field,
     StringConstraints,
     field_validator,
+    model_validator,
 )
 
 from oc8.chat.context.manifest import MAX_MESSAGE_REFS, MAX_PINNED_REFS
@@ -447,6 +450,84 @@ class HttpTestCallRequest(CamelModel):
 
     tool: str = Field(min_length=1, max_length=64)
     arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+_HTTP_TOOL_NAME = r"^[A-Za-z0-9_-]{1,64}$"
+
+
+class HttpToolSpec(CamelModel):
+    """One endpoint of an HTTP API connection, as the tools editor saves it."""
+
+    name: str = Field(pattern=_HTTP_TOOL_NAME)
+    description: str = Field(default="", max_length=4000)
+    method: Literal["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]
+    url_template: str = Field(min_length=1, max_length=2000)
+    param_schema: dict[str, Any] = Field(
+        default_factory=lambda: {"type": "object", "properties": {}}
+    )
+    param_locations: dict[str, Literal["path", "query", "header", "body"]] = Field(
+        default_factory=dict
+    )
+    body_param: str | None = Field(default=None, max_length=200)
+    #: A label the editor groups endpoints by (e.g. an API's tag).
+    group: str = Field(default="", max_length=120)
+
+    @field_validator("url_template")
+    @classmethod
+    def _a_path_below_the_base_url(cls, value: str) -> str:
+        if not value.startswith("/") or value.startswith("//") or "://" in value:
+            raise ValueError("url_template must be a path below the base URL, starting with '/'")
+        return value
+
+    @field_validator("param_schema")
+    @classmethod
+    def _an_object_json_schema(cls, value: dict[str, Any]) -> dict[str, Any]:
+        try:
+            jsonschema.validators.validator_for(value).check_schema(value)
+        except jsonschema.SchemaError as exc:
+            raise ValueError(f"param_schema is not a valid JSON Schema: {exc.message}") from exc
+        if value.get("type", "object") != "object":
+            raise ValueError("param_schema must describe an object (type: object)")
+        return value
+
+
+class HttpToolScopesSpec(CamelModel):
+    read: list[str] = Field(default_factory=list)
+    modify: list[str] = Field(default_factory=list)
+
+
+class ImportMetadataSpec(CamelModel):
+    """Where a connection's tools were imported from, for re-reading later."""
+
+    source_url: str | None = Field(default=None, max_length=2000)
+    fingerprint: str = Field(max_length=128)
+    imported_at: str = Field(max_length=64)
+    title: str = Field(default="", max_length=300)
+    version: str = Field(default="", max_length=100)
+
+
+class UpdateHttpToolsRequest(CamelModel):
+    """Replace an HTTP API connection's tools and their read/modify
+    classification. A tool in neither list stays `modify` (fail-closed).
+    `openapi` omitted keeps the stored import metadata; null removes it."""
+
+    http_tools: list[HttpToolSpec] = Field(max_length=2000)
+    scopes: HttpToolScopesSpec
+    openapi: ImportMetadataSpec | None = None
+
+    @model_validator(mode="after")
+    def _consistent(self) -> UpdateHttpToolsRequest:
+        counts = Counter(t.name for t in self.http_tools)
+        dupes = sorted(name for name, n in counts.items() if n > 1)
+        if dupes:
+            raise ValueError(f"tool names must be unique: {', '.join(dupes)}")
+        unknown = sorted((set(self.scopes.read) | set(self.scopes.modify)) - set(counts))
+        if unknown:
+            raise ValueError(f"scopes name unknown tools: {', '.join(unknown)}")
+        both = sorted(set(self.scopes.read) & set(self.scopes.modify))
+        if both:
+            raise ValueError(f"a tool is either read or modify, not both: {', '.join(both)}")
+        return self
 
 
 class RunAgentRequest(CamelModel):
