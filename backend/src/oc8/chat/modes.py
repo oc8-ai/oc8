@@ -231,6 +231,8 @@ WRITING_CONTROL_TOOLS: frozenset[str] = frozenset(
         "responsibility_close",
         "schedule_followup",
         "cancel_followup",
+        # Raises an approval: a read-only turn asks nobody for anything.
+        "offer_direct_access",
     }
 )
 

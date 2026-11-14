@@ -21,6 +21,7 @@ from oc8.agent.control_tools import (
 )
 from oc8.agent.harness.stages.b_direct_access import (
     NO_DIRECT_ACCESS,
+    OFFER_DIRECT_ACCESS_TOOL,
     DirectAccessView,
     direct_access_decision,
 )
@@ -252,6 +253,15 @@ def authorize(
         # would audit and return status=denied (which the SDK treats as
         # ToolDenied).
         return Decision(Effect.ALLOW)
+    if tc.name == OFFER_DIRECT_ACCESS_TOOL:
+        # Belongs to no connection; its own approval is the gate (§6). Only the
+        # Copilot, only with the conversation's member present.
+        if agent.is_tenant_assistant and direct_access.present_member:
+            return Decision(Effect.ALLOW)
+        return Decision(
+            Effect.DENY,
+            "direct access is offered only by the Copilot, to the person in this conversation",
+        )
     if tc.name in COPILOT_TOOL_NAMES:
         # Belongs to no connection, like propose_change: the dispatch
         # (oc8.copilot.tools) is the gate -- Copilot only, and scoped to the

@@ -41,6 +41,7 @@ _ARGS: dict[str, dict[str, Any]] = {
     "responsibility_close": {"responsibility_id": str(uuid.uuid4())},
     "schedule_followup": {"when": "2030-01-01T09:00:00Z", "note": "x"},
     "cancel_followup": {"followup_id": str(uuid.uuid4())},
+    "offer_direct_access": {"connection": "things", "purpose": "find the quotation"},
 }
 
 _LOCAL = {"stdout": "hi\n", "stderr": "", "exit_code": 0, "timed_out": False}
@@ -145,6 +146,16 @@ async def _live(
         if tool == "responsibility_update":
             return cop, task, run.id, {"responsibility_id": rid, "next_step": "Call them"}
         return cop, task, run.id, {"responsibility_id": rid, "state": "done", "reason": "x"}
+
+    if tool == "offer_direct_access":
+        from tests.copilot.direct_access_helpers import chat_run, direct_office
+
+        office = await direct_office(db, tenant)
+        copilot = await db.get(m.Agent, office.copilot_id)
+        offer_task = await db.get(m.Task, office.task_id)
+        assert copilot is not None and offer_task is not None
+        offer_run = await chat_run(db, office)
+        return copilot, offer_task, offer_run.id, dict(_ARGS[tool])
 
     from tests.agents.test_control_tools import (
         _assistant_and_task,

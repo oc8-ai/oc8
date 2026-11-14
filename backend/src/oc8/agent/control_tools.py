@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.agent.components import COMPONENT_CATALOG
 from oc8.agent.harness.retrieval import ToolCard, rank_tools
+from oc8.agent.harness.stages.b_direct_access import OFFER_DIRECT_ACCESS_TOOL
 from oc8.agent.harness.state import HarnessState, ProcedureMark
 from oc8.agents.repo import visible_agent, visible_agents
 from oc8.agents.versioning import pinned_model_config_id
@@ -177,9 +178,7 @@ FIND_TOOLS = NeutralTool(
             },
             "connection": {
                 "type": "string",
-                "description": (
-                    "Optional: only search tools belonging to this connection."
-                ),
+                "description": ("Optional: only search tools belonging to this connection."),
             },
         },
         "required": ["query"],
@@ -207,8 +206,7 @@ PROCEDURE_STEP_DONE = NeutralTool(
             "skill": {
                 "type": "string",
                 "description": (
-                    "Optional: skill slug when more than one active procedure "
-                    "has this step id."
+                    "Optional: skill slug when more than one active procedure has this step id."
                 ),
             },
         },
@@ -1212,6 +1210,29 @@ COPILOT_TOOLS: tuple[NeutralTool, ...] = (
     CANCEL_FOLLOWUP,
 )
 COPILOT_TOOL_NAMES: frozenset[str] = frozenset(t.name for t in COPILOT_TOOLS)
+OFFER_DIRECT_ACCESS = NeutralTool(
+    name=OFFER_DIRECT_ACCESS_TOOL,
+    description=(
+        "Only when no agent fits the person's request: offer to do it yourself "
+        "through one connection from your direct-access list. The person sees an "
+        "approval card naming the connection and the account; nothing happens "
+        "until they allow it. Once allowed, you can read through it for the "
+        "rest of this conversation; every change asks them again."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "connection": {"type": "string", "description": "A key from your direct-access list."},
+            "purpose": {
+                "type": "string",
+                "maxLength": 300,
+                "description": "One sentence: what you will do with it.",
+            },
+        },
+        "required": ["connection", "purpose"],
+    },
+)
+
 #: The agent builder's tools (Copilot Agent Builder §3.1); the executors are in
 #: oc8.copilot.builder_tools. Offered to the Copilot on the web door only.
 BUILDER_TOOLS: tuple[NeutralTool, ...] = (ENTER_AGENT_MODE, BUILDER_OPTIONS, PROPOSE_AGENT)
@@ -1247,6 +1268,7 @@ CONTROL_TOOL_SCHEMAS: dict[str, NeutralTool] = {
     KPI_OVERVIEW.name: KPI_OVERVIEW,
     **{t.name: t for t in COPILOT_TOOLS},
     **{t.name: t for t in BUILDER_TOOLS},
+    OFFER_DIRECT_ACCESS.name: OFFER_DIRECT_ACCESS,
 }
 CONTROL_TOOL_NAMES: frozenset[str] = frozenset(CONTROL_TOOL_SCHEMAS)
 
@@ -1278,6 +1300,7 @@ def offered_tools(
     copilot_door: str | None = None,
     has_context: bool = False,
     edition_tools: Sequence[NeutralTool] = (),
+    offer_direct_access: bool = False,
 ) -> list[NeutralTool]:
     """The full tool list to offer the model this step.
 
@@ -1385,6 +1408,8 @@ def offered_tools(
                 offered.extend((BUILDER_OPTIONS, PROPOSE_AGENT))
             else:
                 offered.append(ENTER_AGENT_MODE)
+            if offer_direct_access and (chat_mode is None or chat_mode.key != "agent"):
+                offered.append(OFFER_DIRECT_ACCESS)
         if copilot_door in ("web", "followup"):
             # §7a.6: the messenger reason above still holds; a web or follow-up
             # turn's question lands in "Waiting on me" and can be answered.
@@ -2107,9 +2132,7 @@ async def _model_locality(
         pinned_model_config_id(pinned) if pinned is not None else agent.model_config_id
     )
     if model_config_id is None:
-        provider = (agent.presentation or {}).get(
-            "provider", get_settings().default_model_provider
-        )
+        provider = (agent.presentation or {}).get("provider", get_settings().default_model_provider)
         return locality_for_provider(str(provider))
     config = await db.get(m.ModelConfig, model_config_id)
     from oc8.modelrouter.auto_router import is_auto_config
@@ -2167,9 +2190,7 @@ _MISSING_DEFERRED = "No deferred tools. Every tool is already in your list."
 _NO_MATCHES = "No matching tools."
 
 
-def _execute_find_tools(
-    tc: ToolCall, harness_state: HarnessState | None
-) -> ControlOutcome:
+def _execute_find_tools(tc: ToolCall, harness_state: HarnessState | None) -> ControlOutcome:
     """Rank the deferred catalog and pin matches for the next step."""
     from oc8.agent.offering import notice_for_find
 
@@ -2219,9 +2240,7 @@ def _execute_find_tools(
     return ControlOutcome(output="\n".join(lines))
 
 
-_PROCEDURE_AMBIGUOUS = (
-    "ERROR: procedure_step_done needs one matching active procedure."
-)
+_PROCEDURE_AMBIGUOUS = "ERROR: procedure_step_done needs one matching active procedure."
 _EVIDENCE_CAP = 500
 
 
@@ -2247,11 +2266,7 @@ def _execute_procedure_step_done(
     if skill_slug is not None:
         matches = [s for s in candidates if s.definition.slug == skill_slug]
     else:
-        matches = [
-            s
-            for s in candidates
-            if any(step.id == step_id for step in s.definition.steps)
-        ]
+        matches = [s for s in candidates if any(step.id == step_id for step in s.definition.steps)]
 
     if len(matches) != 1:
         return ControlOutcome(output=_PROCEDURE_AMBIGUOUS)
@@ -2262,10 +2277,7 @@ def _execute_procedure_step_done(
         return ControlOutcome(output=_PROCEDURE_AMBIGUOUS)
     if step.requires_kind != "manual":
         return ControlOutcome(
-            output=(
-                f"ERROR: step {step_id} is tracked by the system; "
-                "do not mark it manually."
-            )
+            output=(f"ERROR: step {step_id} is tracked by the system; do not mark it manually.")
         )
 
     mark = harness_state.procedure.get(skill.definition.slug)
@@ -2318,9 +2330,7 @@ async def _execute_read_resource(
             await require_enabled(db, row)
         except ConnectionRequired as exc:
             return ControlOutcome(output=str(exc))
-        env = await resolve_mcp_env(
-            db, tenant_id=tenant_id, cfg=cfg, connection_name=row.name
-        )
+        env = await resolve_mcp_env(db, tenant_id=tenant_id, cfg=cfg, connection_name=row.name)
         reusable = not has_oauth_ref(cfg)
     command, args = wrap_with_requirements(cfg.get("command", ""), cfg.get("args", []), cfg)
     try:
@@ -2573,9 +2583,7 @@ async def execute_control_tool(
         decision.effect is Effect.DENY
         and tc.name != DELEGATE_TASK.name
         and (tc.name in CONTROL_TOOL_NAMES or tc.name in skill_by_tool)
-        and (
-            decision.reason_code != NOT_THIS_CONNECTION or tc.name in WRITING_CONTROL_TOOLS
-        )
+        and (decision.reason_code != NOT_THIS_CONNECTION or tc.name in WRITING_CONTROL_TOOLS)
     ):
         return ControlOutcome(output=f"ERROR: {decision.reason or 'denied'}")
 
@@ -2599,6 +2607,21 @@ async def execute_control_tool(
     )
     if builder_outcome is not None:
         return builder_outcome
+    if tc.name == OFFER_DIRECT_ACCESS.name and decision.effect is not Effect.ALLOW:
+        return ControlOutcome(output=f"ERROR: {decision.reason or 'denied'}")
+    from oc8.copilot.direct_access import execute_direct_access_tool
+
+    direct_outcome = await execute_direct_access_tool(
+        db,
+        tenant_id=tenant_id,
+        agent=agent,
+        task=task,
+        tc=tc,
+        run_id=run_id,
+        narrowing=(pinned or {}).get("narrowing"),
+    )
+    if direct_outcome is not None:
+        return direct_outcome
 
     if tc.name == FIND_TOOLS.name:
         return _execute_find_tools(tc, harness_state)
@@ -2611,9 +2634,7 @@ async def execute_control_tool(
         )
 
     if tc.name == PROCEDURE_STEP_DONE.name:
-        return _execute_procedure_step_done(
-            tc, harness_state, active_procedure_skills
-        )
+        return _execute_procedure_step_done(tc, harness_state, active_procedure_skills)
 
     if tc.name == SEARCH_MEMORY.name:
         query = str(tc.arguments.get("query", "")).strip()
@@ -2721,9 +2742,7 @@ async def execute_control_tool(
                 "found": bool(context.strip()),
                 "narrowed_to": sorted(
                     str(i)
-                    for i in (
-                        await _context_kb_ids(db, tenant_id=tenant_id, run_id=run_id) or ()
-                    )
+                    for i in (await _context_kb_ids(db, tenant_id=tenant_id, run_id=run_id) or ())
                 ),
                 "released": sorted(str(i) for i in (released or ())),
             },
@@ -3855,10 +3874,7 @@ async def execute_control_tool(
         else:
             block = instruction_block(skill)
         return ControlOutcome(
-            output=(
-                f"Skill '{skill.name}' activated. Follow this procedure:\n\n"
-                f"{block}"
-            ),
+            output=(f"Skill '{skill.name}' activated. Follow this procedure:\n\n{block}"),
             activated_skill=skill,
         )
 
