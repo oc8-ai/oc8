@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import json
 import logging
 import re
 import time
@@ -75,6 +76,107 @@ class _DropToolCallRequestLines(logging.Filter):
 
 
 logging.getLogger("httpx").addFilter(_DropToolCallRequestLines())
+
+ParamLocation = Literal["path", "query", "header", "body"]
+_QUERY_METHODS = frozenset({"GET", "DELETE", "HEAD"})
+#: Never settable from a tool argument: transport and credential headers.
+_RESERVED_HEADERS = frozenset(
+    {
+        "authorization",
+        "proxy-authorization",
+        "cookie",
+        "host",
+        "content-length",
+        "content-type",
+        "transfer-encoding",
+        "connection",
+        "user-agent",
+    }
+)
+_SCALARS = (str, int, float, bool)
+_NO_BODY = object()
+
+
+@dataclass(frozen=True)
+class PlacedRequest:
+    method: str
+    path: str
+    query: dict[str, Any]
+    headers: dict[str, str]
+    body: Any
+    has_body: bool
+
+
+def _query_value(value: Any) -> Any:
+    if isinstance(value, _SCALARS):
+        return value
+    if isinstance(value, list) and all(isinstance(v, _SCALARS) for v in value):
+        return value
+    return json.dumps(value)
+
+
+def place_arguments(
+    tool: dict[str, Any], arguments: dict[str, Any], *, protected_headers: frozenset[str]
+) -> PlacedRequest:
+    """Where each argument of one call goes.
+
+    URL-template placeholders always fill the path. Every other argument goes
+    where `param_locations` says; one it does not list (or every one, when the
+    tool has no `param_locations` -- every tool made before this existed)
+    follows the old rule: GET/DELETE/HEAD send it in the query string, every
+    other method in the JSON body. `body_param` names one argument that IS the
+    whole body (an array, or an object other body fields merge into). A header
+    argument never replaces a credential or transport header.
+    """
+    method = str(tool.get("method", "GET")).upper()
+    template = str(tool.get("url_template", ""))
+    placeholders = set(re.findall(r"\{(\w+)\}", template))
+    try:
+        # Quoted so a model-supplied value (e.g. containing `../`, `?` or
+        # `#`) can't escape the path segment it was meant to fill.
+        path = template.format(
+            **{k: urllib.parse.quote(str(arguments[k]), safe="") for k in placeholders}
+        )
+    except KeyError as exc:
+        raise RuntimeError(f"missing required parameter {exc}") from exc
+    raw_locations = tool.get("param_locations")
+    locations: dict[str, Any] = raw_locations if isinstance(raw_locations, dict) else {}
+    raw_body_param = tool.get("body_param")
+    body_param = raw_body_param if isinstance(raw_body_param, str) and raw_body_param else None
+    fallback: ParamLocation = "query" if method in _QUERY_METHODS else "body"
+    blocked_headers = protected_headers | _RESERVED_HEADERS
+
+    query: dict[str, Any] = {}
+    headers: dict[str, str] = {}
+    body_fields: dict[str, Any] = {}
+    whole_body: Any = _NO_BODY
+    for key, value in arguments.items():
+        if key in placeholders:
+            continue
+        if key == body_param:
+            whole_body = value
+            continue
+        where = locations.get(key, fallback)
+        if where == "query":
+            query[key] = _query_value(value)
+        elif where == "header":
+            if key.lower() not in blocked_headers:
+                headers[key] = value if isinstance(value, str) else json.dumps(value)
+        elif where == "body":
+            body_fields[key] = value
+        # "path" for a name the template does not contain has nowhere to go.
+
+    if whole_body is not _NO_BODY:
+        body = (
+            {**whole_body, **body_fields}
+            if isinstance(whole_body, dict) and body_fields
+            else whole_body
+        )
+        return PlacedRequest(method, path, query, headers, body, True)
+    if method in _QUERY_METHODS and not body_fields:
+        return PlacedRequest(method, path, query, headers, None, False)
+    return PlacedRequest(method, path, query, headers, body_fields, method != "HEAD")
+
 
 ErrorClass = Literal["auth", "token", "blocked", "unreachable", "http"]
 
@@ -367,23 +469,23 @@ class HttpToolSession:
     def _auth_header_names(self) -> frozenset[str]:
         return frozenset(name.lower() for name in self._headers)
 
+    def _protected_headers(self) -> frozenset[str]:
+        return self._auth_header_names()
+
     def _build(self, tool: dict[str, Any], arguments: dict[str, Any]) -> httpx.Request:
-        url_template = str(tool.get("url_template", ""))
-        placeholders = set(re.findall(r"\{(\w+)\}", url_template))
-        try:
-            # Quoted so a model-supplied value (e.g. containing `../`, `?` or
-            # `#`) can't escape the path segment it was meant to fill.
-            path = url_template.format(
-                **{k: urllib.parse.quote(str(arguments[k]), safe="") for k in placeholders}
+        placed = place_arguments(tool, arguments, protected_headers=self._protected_headers())
+        headers = {**placed.headers, "User-Agent": USER_AGENT, **self._headers}
+        if placed.has_body:
+            return httpx.Request(
+                placed.method,
+                self._base_url + placed.path,
+                headers=headers,
+                params=placed.query,
+                json=placed.body,
             )
-        except KeyError as exc:
-            raise RuntimeError(f"missing required parameter {exc}") from exc
-        remaining = {k: v for k, v in arguments.items() if k not in placeholders}
-        method = str(tool.get("method", "GET")).upper()
-        headers = {"User-Agent": USER_AGENT, **self._headers}
-        if method in ("GET", "DELETE", "HEAD"):
-            return httpx.Request(method, self._base_url + path, headers=headers, params=remaining)
-        return httpx.Request(method, self._base_url + path, headers=headers, json=remaining)
+        return httpx.Request(
+            placed.method, self._base_url + placed.path, headers=headers, params=placed.query
+        )
 
     async def request(self, name: str, arguments: dict[str, Any]) -> HttpResponse:
         """One call, any status. Raises HttpToolError for a refused address,
