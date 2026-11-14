@@ -47,6 +47,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
+from oc8.agent.http_tools import HttpLogin
 from oc8.agent.mcp_client import HttpToolSession, McpSession, open_tool_session
 
 logger = logging.getLogger(__name__)
@@ -87,6 +88,7 @@ async def _own(
     server_url: str = "",
     headers: dict[str, str] | None = None,
     http_tools: list[dict[str, Any]] | None = None,
+    login: HttpLogin | None = None,
 ) -> None:
     """Hold one session open for its whole life, in ONE task.
 
@@ -115,6 +117,7 @@ async def _own(
             server_url=server_url,
             headers=headers,
             http_tools=http_tools,
+            login=login,
             env=env,
         )
         async with await session_cm as session:
@@ -136,6 +139,7 @@ async def _start(
     server_url: str = "",
     headers: dict[str, str] | None = None,
     http_tools: list[dict[str, Any]] | None = None,
+    login: HttpLogin | None = None,
     keep: bool = True,
 ) -> _Live:
     """Open a session and return it, or raise what the far system raised.
@@ -158,6 +162,7 @@ async def _start(
             server_url=server_url,
             headers=headers,
             http_tools=http_tools,
+            login=login,
         )
     )
     try:
@@ -213,6 +218,7 @@ async def _single_use(
     server_url: str = "",
     headers: dict[str, str] | None = None,
     http_tools: list[dict[str, Any]] | None = None,
+    login: HttpLogin | None = None,
 ) -> AsyncIterator[McpSession | HttpToolSession]:
     """A session for exactly one use, then closed. Any cached one is dropped
     first: it was started with an environment we have now decided not to trust.
@@ -230,6 +236,7 @@ async def _single_use(
         server_url=server_url,
         headers=headers,
         http_tools=http_tools,
+        login=login,
         keep=False,
     )
     try:
@@ -250,6 +257,7 @@ async def call(
     server_url: str = "",
     headers: dict[str, str] | None = None,
     http_tools: list[dict[str, Any]] | None = None,
+    login: HttpLogin | None = None,
     now: dt.datetime | None = None,
     reusable: bool = True,
 ) -> str:
@@ -282,6 +290,7 @@ async def call(
             server_url=server_url,
             headers=headers,
             http_tools=http_tools,
+            login=login,
         ) as session:
             return await session.call(tool, arguments)
 
@@ -303,6 +312,7 @@ async def call(
             server_url=server_url,
             headers=headers,
             http_tools=http_tools,
+            login=login,
         )
 
     async with entry.lock:
@@ -328,6 +338,7 @@ async def tools(
     server_url: str = "",
     headers: dict[str, str] | None = None,
     http_tools: list[dict[str, Any]] | None = None,
+    login: HttpLogin | None = None,
     now: dt.datetime | None = None,
     reusable: bool = True,
 ) -> list[Any]:
@@ -348,6 +359,7 @@ async def tools(
             server_url=server_url,
             headers=headers,
             http_tools=http_tools,
+            login=login,
         ) as session:
             return list(session.tools)
 
@@ -367,6 +379,7 @@ async def tools(
             server_url=server_url,
             headers=headers,
             http_tools=http_tools,
+            login=login,
         )
     return list(entry.session.tools)
 

@@ -147,6 +147,68 @@ describe("CustomMcpWizard", () => {
     expect(screen.getByText(/Connected/i)).toBeInTheDocument();
   });
 
+  it("stores an API-key-in-query login as config.auth plus one sealed secret field", async () => {
+    postMock.mockImplementation((path: string) => {
+      if (path === "/capas") return Promise.resolve({ id: "cv-1", pluginId: "capa-1" });
+      if (path === "/capas/capa-1/enable") return Promise.resolve({});
+      if (path === "/capas/capa-1/setup") return Promise.resolve({ connectionId: "conn-1" });
+      return Promise.reject(new Error(`unexpected POST ${path}`));
+    });
+    render(<CustomMcpWizard open onOpenChange={() => {}} />, { wrapper });
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Tickets" } });
+    fireEvent.click(screen.getByText("Plain HTTP API"));
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+
+    fireEvent.change(screen.getByPlaceholderText("https://api.example.com"), {
+      target: { value: "https://tickets.acme.test" },
+    });
+    fireEvent.change(screen.getByLabelText("Login"), { target: { value: "api_key" } });
+    fireEvent.change(screen.getByLabelText("Send the key in"), { target: { value: "query" } });
+    fireEvent.change(screen.getByLabelText("Key name"), { target: { value: "api_key" } });
+    fireEvent.change(screen.getByLabelText("API key"), { target: { value: "k-1" } });
+    fireEvent.click(screen.getByRole("button", { name: /add tool/i }));
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledWith("/capas/capa-1/setup", {
+        values: { auth_secret: "k-1" },
+      }),
+    );
+    const manifest = postMock.mock.calls.find(([path]) => path === "/capas")?.[1].manifest;
+    expect(manifest.tool_pack.connections[0].config.auth).toEqual({
+      kind: "api_key",
+      in: "query",
+      name: "api_key",
+    });
+    expect(manifest.tool_pack.connections[0].config.auth_header_name).toBeUndefined();
+    expect(manifest.setup.fields).toContainEqual(
+      expect.objectContaining({ key: "auth_secret", kind: "password" }),
+    );
+    expect(manifest.setup.mcp.secret_env_fields).toEqual({ HTTP_AUTH_SECRET: "auth_secret" });
+  });
+
+  it("keeps Next disabled until an OAuth2 login has its token URL, client and secret", () => {
+    render(<CustomMcpWizard open onOpenChange={() => {}} />, { wrapper });
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Tickets" } });
+    fireEvent.click(screen.getByText("Plain HTTP API"));
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.change(screen.getByPlaceholderText("https://api.example.com"), {
+      target: { value: "https://tickets.acme.test" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /add tool/i }));
+    fireEvent.change(screen.getByLabelText("Login"), {
+      target: { value: "oauth2_client_credentials" },
+    });
+    expect(screen.getByRole("button", { name: /next/i })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Token URL"), {
+      target: { value: "https://auth.acme.test/token" },
+    });
+    fireEvent.change(screen.getByLabelText("Client ID"), { target: { value: "cid" } });
+    fireEvent.change(screen.getByLabelText("Client secret"), { target: { value: "cs" } });
+    expect(screen.getByRole("button", { name: /next/i })).toBeEnabled();
+  });
+
   describe("department", () => {
     const departments = {
       items: [

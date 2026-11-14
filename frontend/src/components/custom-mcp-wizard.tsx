@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Field } from "@/components/agent-identity-fields";
+import { HttpLoginFields } from "@/components/http-login-fields";
 import { McpTestLogDrawer } from "@/components/mcp-test-log-drawer";
 import { useConfirm } from "@/hooks/use-confirm";
 import { api } from "@/lib/api";
@@ -30,6 +31,15 @@ import {
   useInstallCustomCapa,
   useTestMcpConnectionById,
 } from "@/lib/hooks";
+import {
+  LOGIN_SECRET_ENV,
+  LOGIN_SECRET_FIELD,
+  NO_LOGIN,
+  loginComplete,
+  loginSecret,
+  loginToConfig,
+  type HttpLoginDraft,
+} from "@/lib/http-tools";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -67,6 +77,7 @@ interface WizardState {
   authHeaderValue: string;
   // manual_http
   baseUrl: string;
+  login: HttpLoginDraft;
   httpTools: HttpToolDraft[];
   // test step (stdio/remote_mcp only)
   testedToolNames: string[] | null;
@@ -93,6 +104,7 @@ const INITIAL_STATE: WizardState = {
   authHeaderName: "Authorization",
   authHeaderValue: "",
   baseUrl: "",
+  login: NO_LOGIN,
   httpTools: [],
   testedToolNames: null,
   testError: null,
@@ -194,12 +206,14 @@ async function buildManifest(
         plainEnv[row.key] = row.value;
       }
     }
-  } else {
-    // remote_mcp and manual_http both use one optional auth header.
+  } else if (state.serverType === "remote_mcp") {
     if (state.authHeaderName && state.authHeaderValue) {
       fields.push({ key: "auth_header_value", label: state.authHeaderName, kind: "password" });
       secretEnvFields[state.authHeaderName] = "auth_header_value";
     }
+  } else if (state.login.kind !== "none") {
+    fields.push({ key: LOGIN_SECRET_FIELD, label: "Secret", kind: "password" });
+    secretEnvFields[LOGIN_SECRET_ENV] = LOGIN_SECRET_FIELD;
   }
 
   const connectionConfig: Record<string, unknown> =
@@ -208,7 +222,7 @@ async function buildManifest(
       : state.serverType === "remote_mcp"
         ? { auth_header_name: state.authHeaderName || undefined }
         : {
-            auth_header_name: state.authHeaderName || undefined,
+            ...(loginToConfig(state.login) ? { auth: loginToConfig(state.login) } : {}),
             http_tools: state.httpTools.map((t) => ({
               name: t.name,
               description: t.description,
@@ -272,8 +286,11 @@ function buildSetupValues(state: WizardState, departmentId: string): Record<stri
     for (const row of state.envRows) {
       if (row.secret && row.key) values[`env_${row.key}`] = row.value;
     }
-  } else if (state.authHeaderName && state.authHeaderValue) {
-    values.auth_header_value = state.authHeaderValue;
+  } else if (state.serverType === "remote_mcp") {
+    if (state.authHeaderName && state.authHeaderValue)
+      values.auth_header_value = state.authHeaderValue;
+  } else if (loginSecret(state.login)) {
+    values[LOGIN_SECRET_FIELD] = loginSecret(state.login);
   }
   return values;
 }
@@ -399,7 +416,11 @@ export function CustomMcpWizard({
       if (state.serverType === "stdio") return state.command.trim().length > 0;
       if (state.serverType === "remote_mcp") return state.serverUrl.trim().length > 0;
       if (state.serverType === "manual_http") {
-        return state.baseUrl.trim().length > 0 && state.httpTools.length > 0;
+        return (
+          state.baseUrl.trim().length > 0 &&
+          state.httpTools.length > 0 &&
+          loginComplete(state.login)
+        );
       }
       return false;
     }
@@ -760,7 +781,7 @@ export function CustomMcpWizard({
                     className="w-full rounded-md border border-border bg-background/40 px-3 py-2 font-mono text-sm outline-none focus:border-primary/50"
                   />
                 </Field>
-                <AuthHeaderFields state={state} onChange={update} />
+                <HttpLoginFields value={state.login} onChange={(login) => update({ login })} />
                 <div>
                   <div className="mb-2 flex items-center justify-between">
                     <span className="text-xs uppercase tracking-wider text-muted-foreground">
@@ -1072,9 +1093,13 @@ function SummaryCard({
   const secretCount =
     state.serverType === "stdio"
       ? state.envRows.filter((r) => r.secret && r.key).length
-      : state.authHeaderName && state.authHeaderValue
-        ? 1
-        : 0;
+      : state.serverType === "manual_http"
+        ? loginSecret(state.login)
+          ? 1
+          : 0
+        : state.authHeaderName && state.authHeaderValue
+          ? 1
+          : 0;
 
   return (
     <div className="relative overflow-hidden rounded-2xl border border-primary/40 bg-gradient-to-b from-primary/10 via-panel to-panel p-5 shadow-[0_0_0_1px_var(--primary)]/10">

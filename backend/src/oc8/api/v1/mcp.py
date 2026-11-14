@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 
 from oc8 import models as m
+from oc8.agent.http_tools import resolve_http_login
 from oc8.agent.mcp_client import open_tool_session, resolve_auth_header
 from oc8.agent.mcp_env import resolve_mcp_env
 from oc8.agent.mcp_requirements import wrap_with_requirements
@@ -464,6 +465,7 @@ async def test_connection(
                     transport="manual_http",
                     server_url=conn.server_url,
                     http_tools=http_tools,
+                    login=resolve_http_login(cfg, env),
                     headers=headers,
                 )
             else:

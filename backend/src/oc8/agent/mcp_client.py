@@ -21,7 +21,7 @@ from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared._httpx_utils import MCP_DEFAULT_SSE_READ_TIMEOUT, MCP_DEFAULT_TIMEOUT
 
-from oc8.agent.http_tools import BLOCKED_MESSAGE, HttpToolSession, guarded_ip
+from oc8.agent.http_tools import BLOCKED_MESSAGE, HttpLogin, HttpToolSession, guarded_ip
 from oc8.modelrouter.types import NeutralTool
 from oc8.net.outbound import USER_AGENT, OutboundBlocked
 
@@ -568,6 +568,7 @@ async def open_tool_session(
     server_url: str = "",
     headers: dict[str, str] | None = None,
     http_tools: list[dict[str, Any]] | None = None,
+    login: HttpLogin | None = None,
     env: dict[str, str] | None = None,
     timeout_s: float | None = None,
     on_step: Callable[[str], Awaitable[None]] | None = None,
@@ -587,7 +588,7 @@ async def open_tool_session(
     not the three that precede it."""
     if transport == "manual_http":
         return HttpToolSession(
-            server_url, list(http_tools or []), headers=headers, timeout_s=timeout_s
+            server_url, list(http_tools or []), headers=headers, timeout_s=timeout_s, login=login
         )
     if transport == "http":
         return McpSession(

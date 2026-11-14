@@ -48,6 +48,7 @@ from oc8.agent.control_tools import (
     has_readable_context,
 )
 from oc8.agent.engine import _authorize, _call_sig
+from oc8.agent.http_tools import resolve_http_login
 from oc8.agent.mcp_client import resolve_auth_header
 from oc8.agent.mcp_requirements import wrap_with_requirements
 from oc8.agent.outward import (
@@ -421,6 +422,7 @@ async def _list_tools(
                 server_url=conn.server_url,
                 headers=headers,
                 http_tools=list(cfg.get("http_tools", [])),
+                login=resolve_http_login(cfg, env),
                 reusable=launch.reusable,
             )
         except Exception:
@@ -1281,6 +1283,7 @@ async def _call_tool(
             server_url=conn.server_url,
             headers=headers,
             http_tools=list(cfg.get("http_tools", [])),
+            login=resolve_http_login(cfg, env),
             reusable=launch.reusable,
         )
     except Exception as exc:  # surface to the model, not as a broken server

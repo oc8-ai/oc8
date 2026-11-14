@@ -23,15 +23,17 @@ guarded fetcher in oc8).
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextvars
+import hashlib
 import json
 import logging
 import re
 import time
 import urllib.parse
 import zlib
-from collections.abc import Iterable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, field
 from types import TracebackType
 from typing import Any, Literal
 
@@ -76,6 +78,29 @@ class _DropToolCallRequestLines(logging.Filter):
 
 
 logging.getLogger("httpx").addFilter(_DropToolCallRequestLines())
+
+
+class _HideQueryStrings(logging.Filter):
+    """httpx2 (the client under the MCP SDK, used for remote MCP servers)
+    logs each request URL at INFO too. No HTTP tool login travels through it,
+    but a remote server URL can carry a key in its query string, so the query
+    of any URL it logs is hidden."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple) and record.args:
+            record.args = tuple(_without_query(arg) for arg in record.args)
+        return True
+
+
+def _without_query(arg: Any) -> Any:
+    if not (hasattr(arg, "query") and hasattr(arg, "copy_with")):
+        return arg
+    text = str(arg)
+    base, sep, _query = text.partition("?")
+    return f"{base}?{_REDACTED}" if sep else text
+
+
+logging.getLogger("httpx2").addFilter(_HideQueryStrings())
 
 ParamLocation = Literal["path", "query", "header", "body"]
 _QUERY_METHODS = frozenset({"GET", "DELETE", "HEAD"})
@@ -306,6 +331,19 @@ def _without_auth(
     )
 
 
+def _with_query(request: httpx.Request, params: Mapping[str, str]) -> httpx.Request:
+    url = request.url
+    for name, value in params.items():
+        url = url.copy_set_param(name, value)
+    return httpx.Request(
+        request.method,
+        url,
+        headers=request.headers,
+        stream=request.stream,
+        extensions=request.extensions,
+    )
+
+
 class _Identity:
     unconsumed_tail = b""
 
@@ -382,6 +420,8 @@ async def send_guarded(
     timeout_s: float,
     auth_headers: frozenset[str] = frozenset(),
     auth_query: frozenset[str] = frozenset(),
+    login_query: Mapping[str, str] | None = None,
+    same_origin_only: bool = False,
 ) -> HttpResponse:
     """Send `request` the guarded way and read at most MAX_RESPONSE_BYTES.
 
@@ -390,7 +430,11 @@ async def send_guarded(
     decides what an error is. Raises HttpToolError("blocked"|"unreachable"|
     "http") for a refused address, a network failure or a redirect loop.
     `auth_headers` (lower-case) and `auth_query` are dropped on a redirect to
-    another origin.
+    another origin; `login_query` (a query-string login) is set again on a
+    redirect within the origin, whose Location does not carry it.
+    `same_origin_only` refuses a redirect to another origin altogether (after
+    the guard has checked it, so an internal target is still `blocked`): for
+    a request whose body carries credentials, which a 307/308 would resend.
 
     `timeout_s` bounds each network step and the whole call: a server that
     trickles one byte at a time cannot hold a call open past it.
@@ -400,7 +444,15 @@ async def send_guarded(
     token = _SENDING_TOOL_CALL.set(True)
     try:
         async with asyncio.timeout(timeout_s):
-            return await _send_hops(request, started, timeout_s, auth_headers, auth_query)
+            return await _send_hops(
+                request,
+                started,
+                timeout_s,
+                auth_headers,
+                auth_query,
+                dict(login_query or {}),
+                same_origin_only,
+            )
     except TimeoutError as exc:
         raise HttpToolError(
             "unreachable", f"The API did not answer within {timeout_s:g} seconds."
@@ -415,6 +467,8 @@ async def _send_hops(
     timeout_s: float,
     auth_headers: frozenset[str],
     auth_query: frozenset[str],
+    login_query: dict[str, str],
+    same_origin_only: bool,
 ) -> HttpResponse:
     # One client per hop: each hop is pinned to its own checked address.
     origin = _origin(request.url)
@@ -433,7 +487,14 @@ async def _send_hops(
                     nxt = response.next_request
                     if response.is_redirect and response.has_redirect_location and nxt is not None:
                         if _origin(nxt.url) != origin:
+                            if same_origin_only:
+                                await _checked_ip(str(nxt.url))
+                                raise HttpToolError(
+                                    "http", "The address redirected to another server."
+                                )
                             nxt = _without_auth(nxt, auth_headers, auth_query)
+                        elif login_query:
+                            nxt = _with_query(nxt, login_query)
                         current = nxt
                         continue
                     text, truncated = await _read_capped(response)
@@ -452,6 +513,192 @@ async def _send_hops(
     raise HttpToolError("http", f"The API redirected more than {MAX_REDIRECTS} times.")
 
 
+# ---- logins ------------------------------------------------------------------
+
+#: The env name a login's one secret is resolved under (setup field
+#: `auth_secret`, mapped by `secret_env_fields`; see the custom server wizard).
+HTTP_AUTH_SECRET_ENV = "HTTP_AUTH_SECRET"
+#: A cached token is refreshed this long before the API would reject it.
+TOKEN_EXPIRY_MARGIN_S = 60.0
+_DEFAULT_EXPIRES_IN_S = 3600.0
+
+LoginKind = Literal["api_key", "basic", "oauth2_client_credentials"]
+
+
+@dataclass(frozen=True)
+class HttpLogin:
+    """A connection's login, with its secret resolved. `repr` never shows it."""
+
+    kind: LoginKind
+    secret: str = field(repr=False)
+    location: Literal["header", "query"] = "header"
+    name: str = ""
+    username: str = ""
+    token_url: str = ""
+    client_id: str = ""
+    scope: str = ""
+
+
+def resolve_http_login(cfg: dict[str, Any], env: dict[str, str]) -> HttpLogin | None:
+    """`config.auth` plus its secret from the resolved env, or None for a
+    connection without one -- including a legacy one that only declares
+    `auth_header_name`, which `mcp_client.resolve_auth_header` still serves."""
+    auth = cfg.get("auth")
+    if not isinstance(auth, dict):
+        return None
+    secret = str(env.get(HTTP_AUTH_SECRET_ENV, ""))
+    kind = auth.get("kind")
+    if kind == "api_key":
+        name = str(auth.get("name") or "")
+        if not name:
+            return None
+        location: Literal["header", "query"] = "query" if auth.get("in") == "query" else "header"
+        return HttpLogin(kind="api_key", secret=secret, location=location, name=name)
+    if kind == "basic":
+        return HttpLogin(kind="basic", secret=secret, username=str(auth.get("username") or ""))
+    if kind == "oauth2_client_credentials":
+        return HttpLogin(
+            kind="oauth2_client_credentials",
+            secret=secret,
+            token_url=str(auth.get("token_url") or ""),
+            client_id=str(auth.get("client_id") or ""),
+            scope=str(auth.get("scope") or ""),
+        )
+    return None
+
+
+def _basic_credentials(user: str, password: str) -> str:
+    return base64.b64encode(f"{user}:{password}".encode()).decode()
+
+
+def _client_credentials(login: HttpLogin) -> str:
+    # RFC 6749 2.3.1: client id and secret are form-encoded before Basic.
+    return _basic_credentials(
+        urllib.parse.quote_plus(login.client_id), urllib.parse.quote_plus(login.secret)
+    )
+
+
+def login_secrets(login: HttpLogin | None) -> list[str]:
+    """Every form in which a login's secret can travel or come back: the raw
+    secret, and for Basic and the token request the base64 credentials."""
+    if login is None or not login.secret:
+        return []
+    if login.kind == "basic":
+        return [login.secret, _basic_credentials(login.username, login.secret)]
+    if login.kind == "oauth2_client_credentials":
+        return [login.secret, _client_credentials(login)]
+    return [login.secret]
+
+
+# ---- OAuth2 client credentials: one cached token per login ----------------
+
+_TokenKey = tuple[str, str, str, str]
+#: Monkeypatched by tests; monotonic so a wall-clock jump cannot keep a token.
+_now: Callable[[], float] = time.monotonic
+#: token per login -> (access token, monotonic time it stops being used).
+_TOKENS: dict[_TokenKey, tuple[str, float]] = {}
+#: One lock per login so simultaneous calls fetch one token, not one each.
+#: A lock belongs to the loop it was made in; a new loop gets a new one.
+_TOKEN_LOCKS: dict[_TokenKey, tuple[asyncio.AbstractEventLoop, asyncio.Lock]] = {}
+
+
+def _token_key(login: HttpLogin) -> _TokenKey:
+    # Everything that decides which token the server hands out. The secret is
+    # part of the key (hashed): a rotated client secret must not keep using a
+    # token minted with the old one.
+    digest = hashlib.sha256(login.secret.encode()).hexdigest()
+    return (login.token_url, login.client_id, login.scope, digest)
+
+
+def _token_lock(key: _TokenKey) -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    entry = _TOKEN_LOCKS.get(key)
+    if entry is None or entry[0] is not loop:
+        entry = (loop, asyncio.Lock())
+        _TOKEN_LOCKS[key] = entry
+    return entry[1]
+
+
+def forget_token(login: HttpLogin) -> None:
+    _TOKENS.pop(_token_key(login), None)
+
+
+def _forget_rejected(login: HttpLogin, rejected: str) -> None:
+    """Drop the cached token only if it is still the one the API rejected:
+    a call that raced ahead may already have fetched a fresh one."""
+    key = _token_key(login)
+    cached = _TOKENS.get(key)
+    if cached is not None and cached[0] == rejected:
+        del _TOKENS[key]
+
+
+async def _fetch_token(login: HttpLogin, *, timeout_s: float) -> tuple[str, float]:
+    """RFC 6749 4.4: client_secret_basic first; an endpoint that refuses it
+    (400/401) is asked once more with the credentials in the form
+    (client_secret_post), which some providers require. The token URL goes
+    through the same guard as every tool call, and a redirect to another
+    origin is refused: the credentials would go along."""
+    if not login.token_url:
+        raise HttpToolError("token", "The login has no token URL.")
+    form = {"grant_type": "client_credentials"}
+    if login.scope:
+        form["scope"] = login.scope
+    attempts = [
+        ({"Authorization": f"Basic {_client_credentials(login)}"}, form),
+        ({}, {**form, "client_id": login.client_id, "client_secret": login.secret}),
+    ]
+    status = 0
+    for extra_headers, data in attempts:
+        request = httpx.Request(
+            "POST",
+            login.token_url,
+            headers={"Accept": "application/json", "User-Agent": USER_AGENT, **extra_headers},
+            data=data,
+        )
+        try:
+            response = await send_guarded(
+                request,
+                timeout_s=timeout_s,
+                auth_headers=frozenset({"authorization"}),
+                same_origin_only=True,
+            )
+        except HttpToolError as exc:
+            if exc.kind == "blocked":
+                raise
+            raise HttpToolError("token", "The token URL is not reachable.") from exc
+        status = response.status
+        if status in (400, 401):
+            continue
+        if status >= 400:
+            break
+        try:
+            payload = json.loads(response.text)
+        except ValueError:
+            payload = None
+        token = payload.get("access_token") if isinstance(payload, dict) else None
+        if not isinstance(token, str) or not token:
+            raise HttpToolError("token", "The token URL answered without an access token.")
+        try:
+            expires_in = float(payload.get("expires_in", _DEFAULT_EXPIRES_IN_S))
+        except (TypeError, ValueError):
+            expires_in = _DEFAULT_EXPIRES_IN_S
+        return token, expires_in
+    raise HttpToolError("token", f"The token request failed ({status}).", status=status or None)
+
+
+async def oauth2_token(login: HttpLogin, *, timeout_s: float, force: bool = False) -> str:
+    """The login's access token: the cached one while it is valid, else one
+    fetched now. Simultaneous callers for one login wait for one fetch."""
+    key = _token_key(login)
+    async with _token_lock(key):
+        cached = _TOKENS.get(key)
+        if cached is not None and not force and cached[1] > _now():
+            return cached[0]
+        token, expires_in = await _fetch_token(login, timeout_s=timeout_s)
+        _TOKENS[key] = (token, _now() + max(0.0, expires_in - TOKEN_EXPIRY_MARGIN_S))
+        return token
+
+
 class HttpToolSession:
     """A drop-in substitute for `McpSession` over a plain REST API with no
     MCP support at all: tools are declared in the connection's config
@@ -466,15 +713,20 @@ class HttpToolSession:
         headers: dict[str, str] | None = None,
         timeout_s: float | None = None,
         secrets: Iterable[str] = (),
+        login: HttpLogin | None = None,
     ) -> None:
         """`secrets` are raw secret values a login put into a request in a
         form no header shows verbatim (a password inside a Basic credential,
-        a fetched access token); they are redacted like the header values."""
+        a fetched access token); they are redacted like the header values.
+        `login`'s own secrets (and every access token it fetches) are added
+        to them here."""
         self._base_url = base_url.rstrip("/")
-        self._extra_secrets = [str(v) for v in secrets if v]
+        self._login = login
+        self._extra_secrets = [str(v) for v in secrets if v] + login_secrets(login)
         self._http_tools = {str(t["name"]): t for t in http_tools}
         self._headers = dict(headers or {})
         self._timeout_s = HTTP_TOOL_TIMEOUT_SECONDS if timeout_s is None else timeout_s
+        self._tokens: list[str] = []
         self._started = False
         self.tools: list[NeutralTool] = []
 
@@ -499,39 +751,92 @@ class HttpToolSession:
         self._started = False
 
     def _secrets(self) -> list[str]:
-        return [*secret_parts(self._headers.values()), *self._extra_secrets]
+        return [*secret_parts(self._headers.values()), *self._extra_secrets, *self._tokens]
 
     def _auth_header_names(self) -> frozenset[str]:
-        return frozenset(name.lower() for name in self._headers)
+        names = {name.lower() for name in self._headers}
+        login = self._login
+        if login is not None:
+            if login.kind == "api_key":
+                if login.location == "header":
+                    names.add(login.name.lower())
+            else:
+                names.add("authorization")
+        return frozenset(names)
 
-    def _build(self, tool: dict[str, Any], arguments: dict[str, Any]) -> httpx.Request:
+    def _login_query(self) -> dict[str, str]:
+        login = self._login
+        if login is not None and login.kind == "api_key" and login.location == "query":
+            return {login.name: login.secret}
+        return {}
+
+    async def _login_headers(self, *, force_token: bool) -> tuple[dict[str, str], str]:
+        """The login's headers, and the access token among them (or "")."""
+        login = self._login
+        if login is None:
+            return {}, ""
+        if login.kind == "api_key":
+            if login.location == "query":
+                return {}, ""
+            name, value = _header_pair(login.name, login.secret)
+            return {name: value}, ""
+        if login.kind == "basic":
+            credentials = _basic_credentials(login.username, login.secret)
+            return {"Authorization": f"Basic {credentials}"}, ""
+        token = await oauth2_token(login, timeout_s=self._timeout_s, force=force_token)
+        if token not in self._tokens:
+            self._tokens.append(token)
+        return {"Authorization": f"Bearer {token}"}, token
+
+    async def _send(
+        self, tool: dict[str, Any], arguments: dict[str, Any], *, force_token: bool = False
+    ) -> tuple[HttpResponse, str]:
         placed = place_arguments(tool, arguments, protected_headers=self._auth_header_names())
-        headers = {**placed.headers, "User-Agent": USER_AGENT, **self._headers}
-        if placed.has_body:
-            return httpx.Request(
-                placed.method,
-                self._base_url + placed.path,
-                headers=headers,
-                params=placed.query,
-                json=placed.body,
-            )
-        return httpx.Request(
-            placed.method, self._base_url + placed.path, headers=headers, params=placed.query
+        login_headers, token = await self._login_headers(force_token=force_token)
+        login_query = self._login_query()
+        headers = {**placed.headers, "User-Agent": USER_AGENT, **self._headers, **login_headers}
+        # The login's query key last: a tool argument of the same name cannot
+        # replace it. Added to the request URL here, so it is covered by the
+        # per-call log filter and by redaction like every other part.
+        params = {**placed.query, **login_query}
+        url = self._base_url + placed.path
+        request = (
+            httpx.Request(placed.method, url, headers=headers, params=params, json=placed.body)
+            if placed.has_body
+            else httpx.Request(placed.method, url, headers=headers, params=params)
         )
+        response = await send_guarded(
+            request,
+            timeout_s=self._timeout_s,
+            auth_headers=self._auth_header_names(),
+            auth_query=frozenset(login_query),
+            login_query=login_query,
+        )
+        return response, token
 
     async def request(self, name: str, arguments: dict[str, Any]) -> HttpResponse:
-        """One call, any status. Raises HttpToolError for a refused address,
-        an unreachable API or a redirect loop."""
+        """One call, any status. An OAuth2 login whose token the API rejects
+        (401) gets one fresh token and one retry. Raises HttpToolError for a
+        refused address, an unreachable API, a failed token request or a
+        redirect loop. The token request, the call and its retry share one
+        deadline."""
         if not self._started:
             raise RuntimeError("HTTP tool session not started")
         tool = self._http_tools.get(name)
         if tool is None:
             raise RuntimeError(f"unknown tool {name!r}")
-        return await send_guarded(
-            self._build(tool, arguments),
-            timeout_s=self._timeout_s,
-            auth_headers=self._auth_header_names(),
-        )
+        try:
+            async with asyncio.timeout(self._timeout_s):
+                response, token = await self._send(tool, arguments)
+                login = self._login
+                if response.status == 401 and token and login is not None:
+                    _forget_rejected(login, token)
+                    response, _token = await self._send(tool, arguments)
+                return response
+        except TimeoutError as exc:
+            raise HttpToolError(
+                "unreachable", f"The API did not answer within {self._timeout_s:g} seconds."
+            ) from exc
 
     async def call(self, name: str, arguments: dict[str, Any]) -> str:
         response = await self.request(name, arguments)
