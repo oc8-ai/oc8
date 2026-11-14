@@ -9,7 +9,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import or_, select
 
 from oc8 import models as m
 from oc8.api.deps import DbSession, require_departmental
@@ -22,6 +22,7 @@ from oc8.approvals import (
     UnknownDecision,
     decide_approval,
     direct_access_owner,
+    owned_by,
 )
 from oc8.authz.permissions import AGENT, COPILOT_USE, VIEW, perm
 from oc8.authz.scope import HumanActor
@@ -48,10 +49,7 @@ async def _own_session(db: DbSession, actor: HumanActor, session_id: uuid.UUID) 
 
 @router.get("/chat/direct-access/approvals", response_model=list[ApprovalDTO])
 async def my_direct_access_approvals(db: DbSession, actor: _ChatActor) -> list[ApprovalDTO]:
-    mine = and_(
-        m.ApprovalRequest.payload["direct_access"]["member_id"].astext == str(actor.member.id),
-        func.coalesce(m.ApprovalRequest.payload["direct_access"]["decider"].astext, "") == "member",
-    )
+    mine = owned_by(actor.member.id)
     live_grants = select(m.DirectAccessGrant.approval_id).where(
         m.DirectAccessGrant.member_id == actor.member.id,
         m.DirectAccessGrant.revoked_at.is_(None),

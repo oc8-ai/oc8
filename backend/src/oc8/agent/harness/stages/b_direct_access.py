@@ -24,9 +24,9 @@ from oc8.authz.pdp import (
     Decision,
     Effect,
     ToolPolicy,
-    _frame_denial,
     authorize_tool_call,
     effective_tool_policies,
+    frame_denial,
     required_right,
 )
 
@@ -88,7 +88,7 @@ def offers_direct(
     right = "read" if tool is None else required_right(tool, scopes)
     read_tools = _read_tools(scopes)
     return view.present_member and any(
-        _frame_denial(
+        frame_denial(
             {connection_key: policy},
             connection_key=connection_key,
             right=right,
@@ -146,7 +146,7 @@ def direct_access_decision(
         policy = _narrowed(raw, connection_key, narrowing)
         policies = {connection_key: policy}
         if (
-            _frame_denial(policies, connection_key=connection_key, right=right, tool=tool)
+            frame_denial(policies, connection_key=connection_key, right=right, tool=tool)
             is not None
         ):
             continue

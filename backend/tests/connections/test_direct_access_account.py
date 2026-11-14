@@ -157,6 +157,58 @@ async def test_resolve_tool_access_uses_the_direct_branch_only_with_a_grant(
         assert access.credential is not None and access.credential.id == org
 
 
+async def test_a_grant_of_another_member_never_lends_its_account(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant, anna, conn_id, copilot_id = await _office(app_session, seated=True)
+    bob = await member(app_session, tenant, "bob@acme.test")
+    await credential_row(app_session, tenant, owner=None, name="Org")
+    async with app_session(tenant) as db:
+        session = m.ChatSession(tenant_id=tenant, agent_id=copilot_id, member_id=anna)
+        db.add(session)
+        await db.flush()
+        approval = m.ApprovalRequest(
+            tenant_id=tenant,
+            agent_id=copilot_id,
+            action_type="direct_access",
+            title="t",
+            status="approved",
+            payload={},
+        )
+        db.add(approval)
+        await db.flush()
+        # The conversation is Anna's, the grant row names Bob: fail closed.
+        db.add(
+            m.DirectAccessGrant(
+                tenant_id=tenant,
+                chat_session_id=session.id,
+                member_id=bob,
+                tool_key="odoo",
+                approval_id=approval.id,
+            )
+        )
+        run = m.AgentRun(
+            tenant_id=tenant,
+            agent_id=copilot_id,
+            source="chat",
+            context={"chat_session_id": str(session.id), "door": "web", "on_behalf_of": str(anna)},
+        )
+        db.add(run)
+        await db.flush()
+        conn = await db.get(m.McpConnection, conn_id)
+        copilot = await db.get(m.Agent, copilot_id)
+        assert conn is not None and copilot is not None
+        taken: list[object] = []
+
+        async def _spy(*_a: Any, **_kw: Any) -> Any:
+            taken.append(1)
+            raise AssertionError("the direct branch must not run")
+
+        monkeypatch.setattr("oc8.connections.access.resolve_direct_access", _spy)
+        await resolve_tool_access(db, run=run, agent=copilot, conn=conn)
+        assert taken == []
+
+
 async def test_other_paths_still_refuse_a_fallback(app_session: AppSessionFactory) -> None:
     """Regression: a user-mode integration on an ordinary agent's chat run --
     even one carrying on_behalf_of -- never borrows the organisation's account."""

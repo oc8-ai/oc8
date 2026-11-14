@@ -142,9 +142,14 @@ async def resolve_tool_access(
     from oc8.connections.direct_access import active_grant, direct_access_run
 
     direct = direct_access_run(run, agent)
-    if direct is not None and await active_grant(
-        db, session_id=direct.session_id, tool_key=conn.name
-    ):
+    grant = (
+        await active_grant(db, session_id=direct.session_id, tool_key=conn.name)
+        if direct is not None
+        else None
+    )
+    # The grant must be this person's own (fail closed): a grant row of another
+    # member never lends its account.
+    if direct is not None and grant is not None and grant.member_id == direct.member_id:
         return await resolve_direct_access(db, member_id=direct.member_id, conn=conn)
     acting = await resolve_acting_person(db, run)
     integration = integration_for_connection(conn)

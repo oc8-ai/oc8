@@ -639,7 +639,7 @@ def required_right(tool_name: str, scopes: Mapping[str, Any] | None) -> str:
     return "modify"
 
 
-def _frame_denial(
+def frame_denial(
     policies: Mapping[str, ToolPolicy],
     *,
     connection_key: str | None,
@@ -718,7 +718,7 @@ def offers_tool(
     leaking.
     """
     right = required_right(tool, scopes)
-    return _frame_denial(policies, connection_key=connection_key, right=right, tool=tool) is None
+    return frame_denial(policies, connection_key=connection_key, right=right, tool=tool) is None
 
 
 def reachable_connections(policies: Mapping[str, ToolPolicy]) -> list[str]:
@@ -770,10 +770,10 @@ def authorize_tool_call(
     conflated `tool_key`; see the comment on it for why the two do not
     collapse into one function.
     """
-    denied = _frame_denial(policies, connection_key=connection_key, right=right, tool=tool)
+    denied = frame_denial(policies, connection_key=connection_key, right=right, tool=tool)
     if denied is not None:
         return denied
-    # Both present: `_frame_denial` denies a missing connection or policy.
+    # Both present: `frame_denial` denies a missing connection or policy.
     policy = policies[connection_key or ""]
 
     if right in policy.approval_actions or (tool is not None and tool in policy.approval_actions):

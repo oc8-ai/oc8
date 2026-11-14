@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Final
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -220,14 +220,19 @@ async def note_direct_action(
     row = await active_grant(db, session_id=direct_session, tool_key=tool_key)
     if row is None:
         return False
-    row.actions += 1
-    await db.flush()
+    # Atomic in SQL: two concurrent direct actions must both count.
+    await db.execute(
+        update(m.DirectAccessGrant)
+        .where(m.DirectAccessGrant.id == row.id)
+        .values(actions=m.DirectAccessGrant.actions + 1)
+    )
+    await db.refresh(row)
     rows = (
         (
             await db.execute(
-                select(m.DirectAccessGrant).where(
-                    m.DirectAccessGrant.chat_session_id == direct_session
-                )
+                select(m.DirectAccessGrant)
+                .execution_options(populate_existing=True)
+                .where(m.DirectAccessGrant.chat_session_id == direct_session)
             )
         )
         .scalars()

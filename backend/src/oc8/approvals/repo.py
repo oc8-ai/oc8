@@ -80,7 +80,7 @@ def _owned_clause() -> ColumnElement[bool]:
     )
 
 
-def _owned_by(member_id: uuid.UUID) -> ColumnElement[bool]:
+def owned_by(member_id: uuid.UUID) -> ColumnElement[bool]:
     return and_(
         _owned_clause(),
         ApprovalRequest.payload["direct_access"]["member_id"].astext == str(member_id),
@@ -112,7 +112,7 @@ async def visible_approvals(
     # A member-owned card (`is_member_owned`) is its owner's alone, from any
     # seat or none, and nobody else's -- not the department it is filed in,
     # not the unrestricted. Every other approval follows the department term.
-    mine = _owned_by(actor.member.id)
+    mine = owned_by(actor.member.id)
     if department_id is not None:
         if not scope.may_view(department_id):
             return []
