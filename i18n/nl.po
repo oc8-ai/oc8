@@ -72,6 +72,10 @@ msgid "A Basic username cannot contain a colon."
 msgstr "Een Basic-gebruikersnaam mag geen dubbele punt bevatten."
 
 #, fuzzy
+msgid "A capa installed under an earlier name could not be disabled. Disable it on the Capas page."
+msgstr "Een capa die onder een eerdere naam is geïnstalleerd, kon niet worden uitgeschakeld. Schakel hem uit op de pagina Capa's."
+
+#, fuzzy
 msgid "A Capa is anything installable in oc8 — an agent template, an MCP tool pack, a guardrail set, a department template, a runtime, or a bundle of several."
 msgstr "Een Capa is alles wat je in oc8 kunt installeren — een agentsjabloon, een MCP-toolpakket, een set vangrails, een afdelingssjabloon, een runtime, of een bundel van meerdere."
 

@@ -357,6 +357,15 @@ function buildSetupValues(state: WizardState, departmentId: string): Record<stri
   return values;
 }
 
+/** A refusal saying the connection an edit targets is not there any more. */
+function connectionGone(err: unknown): boolean {
+  const status =
+    typeof err === "object" && err !== null && "status" in err
+      ? (err as { status: unknown }).status
+      : null;
+  return status === 404 || status === 409;
+}
+
 export function CustomMcpWizard({
   open,
   onOpenChange,
@@ -488,8 +497,35 @@ export function CustomMcpWizard({
           : "Could not disable this capa -- it's still enabled; disable it from the Capas page.",
       );
     } finally {
+      await disableReplacedOnce();
       await removePendingConnectionsOnce();
       close();
+    }
+  }
+
+  // A capa installed under an earlier name whose disabling failed is
+  // otherwise retried on the next test or save; closing means there is
+  // none, so try once more and say so if it is still enabled.
+  async function disableReplacedOnce() {
+    let failed = false;
+    for (const id of state.replacedPluginIds) {
+      if (id === state.installedPluginId) continue;
+      try {
+        await disablePlugin.mutateAsync({
+          pluginId: id,
+          reason: "Replaced in the custom MCP wizard after a rename",
+        });
+      } catch {
+        failed = true;
+      }
+    }
+    if (failed) {
+      toast.warning(
+        t(
+          "A capa installed under an earlier name could not be disabled. Disable it on the Capas page.",
+          "Eine Capa, die unter einem früheren Namen installiert wurde, konnte nicht deaktiviert werden. Deaktiviere sie auf der Seite Capas.",
+        ),
+      );
     }
   }
 
@@ -647,14 +683,26 @@ export function CustomMcpWizard({
 
     if (pluginId && toolsOnly && installedConnectionId) {
       const connectionId = installedConnectionId;
-      await patchHttpTools(connectionId, toolsOnly);
-      update({ installedManifest: manifest });
-      // A changed secret or department travels through setup, as always.
-      if (setupKey === state.installedSetupKey) {
-        await removeLeftConnections([]);
-        return { pluginId, connectionId };
+      let patched = true;
+      try {
+        await patchHttpTools(connectionId, toolsOnly);
+      } catch (err) {
+        // The connection was deleted (404) or no longer belongs to this
+        // capa's manifest (409): install again, as for any other change.
+        if (!connectionGone(err)) throw err;
+        patched = false;
+        installedConnectionId = null;
+        update({ installedConnectionId: null });
       }
-      return { pluginId, connectionId: await setUp(pluginId) };
+      if (patched) {
+        update({ installedManifest: manifest });
+        // A changed secret or department travels through setup, as always.
+        if (setupKey === state.installedSetupKey) {
+          await removeLeftConnections([]);
+          return { pluginId, connectionId };
+        }
+        return { pluginId, connectionId: await setUp(pluginId) };
+      }
     }
 
     let pending = state.replacedPluginIds;

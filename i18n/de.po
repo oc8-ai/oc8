@@ -55,6 +55,9 @@ msgstr "Ein Hintergrund-Agent-Lauf wurde unterbrochen."
 msgid "A Basic username cannot contain a colon."
 msgstr "Ein Basic-Benutzername darf keinen Doppelpunkt enthalten."
 
+msgid "A capa installed under an earlier name could not be disabled. Disable it on the Capas page."
+msgstr "Eine Capa, die unter einem früheren Namen installiert wurde, konnte nicht deaktiviert werden. Deaktiviere sie auf der Seite Capas."
+
 msgid "A Capa is anything installable in oc8 — an agent template, an MCP tool pack, a guardrail set, a department template, a runtime, or a bundle of several."
 msgstr "Eine Capa ist alles Installierbare in oc8 — eine Agentenvorlage, ein MCP-Tool-Paket, Guardrails, eine Abteilungsvorlage, eine Runtime oder ein Bündel davon."
 

@@ -53,6 +53,9 @@ msgstr ""
 msgid "A Basic username cannot contain a colon."
 msgstr ""
 
+msgid "A capa installed under an earlier name could not be disabled. Disable it on the Capas page."
+msgstr ""
+
 msgid "A Capa is anything installable in oc8 — an agent template, an MCP tool pack, a guardrail set, a department template, a runtime, or a bundle of several."
 msgstr ""
 

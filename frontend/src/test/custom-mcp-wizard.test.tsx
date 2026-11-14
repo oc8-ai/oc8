@@ -720,6 +720,145 @@ describe("CustomMcpWizard", () => {
     expect(screen.getByRole("button", { name: /back/i })).toBeEnabled();
   });
 
+  it("tests the same name again after a cancelled wizard, from version 1.0.0", async () => {
+    postMock.mockImplementation((path: string) => {
+      // The server replaces the version the cancelled wizard left behind.
+      if (path === "/capas") return Promise.resolve({ id: "cv-1", pluginId: "capa-1" });
+      if (/^\/capas\/capa-1\/(enable|disable)$/.test(path)) return Promise.resolve({});
+      if (path === "/capas/capa-1/setup") return Promise.resolve({ connectionId: "conn-1" });
+      if (path.endsWith("/test-call")) return Promise.resolve(CALL_WORKED);
+      return Promise.reject(new Error(`unexpected POST ${path}`));
+    });
+    const onOpenChange = vi.fn();
+    render(<CustomMcpWizard open onOpenChange={onOpenChange} />, { wrapper });
+    await testAPlainHttpApi();
+    fireEvent.click(screen.getByRole("button", { name: /close/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /disable & cancel/i }));
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+
+    await testAPlainHttpApi();
+    const installs = postMock.mock.calls.filter(([path]) => path === "/capas");
+    expect(installs.map(([, body]) => body.manifest.version)).toEqual(["1.0.0", "1.0.0"]);
+    expect(postMock.mock.calls.filter(([path]) => path === "/capas/capa-1/enable")).toHaveLength(2);
+  });
+
+  it("disables a capa left under an earlier name when the wizard is cancelled", async () => {
+    let installs = 0;
+    let failRenameDisable = true;
+    const disabled: string[] = [];
+    postMock.mockImplementation((path: string) => {
+      if (path === "/capas") {
+        installs += 1;
+        return Promise.resolve({ id: `cv-${installs}`, pluginId: `capa-${installs}` });
+      }
+      if (/^\/capas\/capa-\d\/enable$/.test(path)) return Promise.resolve({});
+      const disable = /^\/capas\/(capa-\d)\/disable$/.exec(path);
+      if (disable) {
+        if (disable[1] === "capa-1" && failRenameDisable) {
+          failRenameDisable = false;
+          return Promise.reject(new Error("The old capa could not be disabled."));
+        }
+        disabled.push(disable[1]);
+        return Promise.resolve({});
+      }
+      if (/^\/capas\/capa-\d\/setup$/.test(path)) {
+        return Promise.resolve({ connectionId: `conn-${installs}` });
+      }
+      if (path.endsWith("/test-call")) return Promise.resolve(CALL_WORKED);
+      return Promise.reject(new Error(`unexpected POST ${path}`));
+    });
+    const onOpenChange = vi.fn();
+    render(<CustomMcpWizard open onOpenChange={onOpenChange} />, { wrapper });
+    await testAPlainHttpApi();
+    fireEvent.click(screen.getByRole("button", { name: /back/i }));
+    fireEvent.click(screen.getByRole("button", { name: /back/i }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Helpdesk" } });
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Run test call" }));
+    expect(await screen.findByText("The old capa could not be disabled.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /close/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /disable & cancel/i }));
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+    expect(disabled.sort()).toEqual(["capa-1", "capa-2"]);
+    expect(toastWarning).not.toHaveBeenCalled();
+  });
+
+  it("warns on cancel about a capa under an earlier name that still cannot be disabled", async () => {
+    let installs = 0;
+    postMock.mockImplementation((path: string) => {
+      if (path === "/capas") {
+        installs += 1;
+        return Promise.resolve({ id: `cv-${installs}`, pluginId: `capa-${installs}` });
+      }
+      if (/^\/capas\/capa-\d\/enable$/.test(path)) return Promise.resolve({});
+      if (path === "/capas/capa-1/disable") return Promise.reject(new Error("no"));
+      if (path === "/capas/capa-2/disable") return Promise.resolve({});
+      if (/^\/capas\/capa-\d\/setup$/.test(path)) {
+        return Promise.resolve({ connectionId: `conn-${installs}` });
+      }
+      if (path.endsWith("/test-call")) return Promise.resolve(CALL_WORKED);
+      return Promise.reject(new Error(`unexpected POST ${path}`));
+    });
+    const onOpenChange = vi.fn();
+    render(<CustomMcpWizard open onOpenChange={onOpenChange} />, { wrapper });
+    await testAPlainHttpApi();
+    fireEvent.click(screen.getByRole("button", { name: /back/i }));
+    fireEvent.click(screen.getByRole("button", { name: /back/i }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Helpdesk" } });
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Run test call" }));
+    await screen.findByText("no");
+
+    fireEvent.click(screen.getByRole("button", { name: /close/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /disable & cancel/i }));
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+    expect(toastWarning).toHaveBeenCalledWith(
+      "A capa installed under an earlier name could not be disabled. Disable it on the Capas page.",
+    );
+  });
+
+  it("installs again when the connection a tools-only edit targets is gone", async () => {
+    let installs = 0;
+    postMock.mockImplementation((path: string) => {
+      if (path === "/capas") {
+        installs += 1;
+        return Promise.resolve({ id: `cv-${installs}`, pluginId: "capa-1" });
+      }
+      if (path === "/capas/capa-1/enable") return Promise.resolve({});
+      if (path === "/capas/capa-1/setup")
+        return Promise.resolve({ connectionId: `conn-${installs}` });
+      if (path.endsWith("/test-call")) return Promise.resolve(CALL_WORKED);
+      return Promise.reject(new Error(`unexpected POST ${path}`));
+    });
+    patchMock.mockRejectedValue(Object.assign(new Error("connection not found"), { status: 404 }));
+    render(<CustomMcpWizard open onOpenChange={() => {}} />, { wrapper });
+    await testAPlainHttpApi();
+
+    fireEvent.click(screen.getByRole("button", { name: /back/i }));
+    fireEvent.change(screen.getByPlaceholderText("Tool name"), {
+      target: { value: "list_open_tickets" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Run test call" }));
+
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledWith("/mcp/connections/conn-2/test-call", {
+        tool: "list_open_tickets",
+        arguments: {},
+      }),
+    );
+    expect(patchMock).toHaveBeenCalledTimes(1);
+    const versions = postMock.mock.calls
+      .filter(([path]) => path === "/capas")
+      .map(([, body]) => body.manifest.version);
+    expect(versions).toEqual(["1.0.0", "1.0.1"]);
+    // The gone connection is not deleted again.
+    expect(deleteMock).not.toHaveBeenCalled();
+  });
+
   describe("department", () => {
     const departments = {
       items: [
