@@ -201,7 +201,7 @@ from oc8.records.links import (
 from oc8.records.registry import link_scope
 from oc8.records.vetting import vet_answer_links
 from oc8.runtime.agent_status import settle_agent_status
-from oc8.runtime.run_context import append_tool_call
+from oc8.runtime.run_context import append_tool_call, append_waived_read_before_write
 from oc8.runtime.step_record import call_state_for, step_timing_dto
 from oc8.runtime.supervision_hook import maybe_checkpoint, maybe_create_anchor
 from oc8.skills.runtime import (
@@ -673,18 +673,28 @@ async def run_agent(
         # resolve_tool_approval). A resumed leg starts with a fresh ledger, so
         # only these are waived, once each; an approval without the mark never
         # is -- it may have been raised before that gate ever ran.
-        gate_proven: set[str] = {
-            str(e["sig"])
-            for e in (
-                ((run_row.context or {}).get("resolved_tool_approvals") or [])
-                if run_row is not None
-                else []
+        async def _consume_waiver(connection: str | None, sig: str) -> bool:
+            """Use up one approval's proof, durably: the count of proofs for
+            this (connection, call) minus those already used in ANY leg of the
+            run (`waived_read_before_write`, appended atomically in the
+            dispatching transaction). False when none is left."""
+            if run_row is None:
+                return False
+            ctx = run_row.context or {}
+            key = f"{connection or 'oc8'}\n{sig}"
+            proofs = sum(
+                1
+                for e in ctx.get("resolved_tool_approvals") or []
+                if isinstance(e, dict)
+                and e.get("decision") == "approve"
+                and e.get("read_before_write_ok") is True
+                and f"{e.get('gate_connection') or 'oc8'}\n{e.get('sig')}" == key
             )
-            if isinstance(e, dict)
-            and e.get("sig")
-            and e.get("decision") == "approve"
-            and e.get("read_before_write_ok") is True
-        }
+            used = sum(1 for k in ctx.get("waived_read_before_write") or [] if k == key)
+            if proofs <= used:
+                return False
+            await append_waived_read_before_write(db, run_row, key)
+            return True
 
         async def _direct_right_check(
             decision: Decision,
@@ -1190,7 +1200,7 @@ async def run_agent(
                 )
                 return call_key, scopes, guardrails, per_value, spec, config, real
 
-            def _held_verdict(
+            async def _held_verdict(
                 advertised: str,
                 arguments: dict[str, Any],
                 route: tuple[Any, ...],
@@ -1277,9 +1287,9 @@ async def run_agent(
                     gate.effect == "deny"
                     and gate.rule == "read_before_write"
                     and verdict == "approve"
-                    and _call_sig(held) in gate_proven
+                    and await _consume_waiver(call_key, _call_sig(held))
                 ):
-                    gate_proven.discard(_call_sig(held))  # single use
+                    pass
                 elif gate.effect == "deny":
                     return "refuse", gate.reason or "denied", decision, False
                 if gate.effect == "ask" and verdict != "approve":
@@ -1335,9 +1345,13 @@ async def run_agent(
                         )
                         parked_ctx = dict(parked.context or {})
                         held_view = await _direct_view()
-                        effect, why, held_decision, held_gate_ok = _held_verdict(
+                        effect, why, held_decision, held_gate_ok = await _held_verdict(
                             tool_name, arguments, held_route, pending, held_view
                         )
+                        # The verdict may have spent a waiver (an atomic write
+                        # to this very context): re-read, or the whole-context
+                        # assignment below would overwrite it.
+                        parked_ctx = dict(parked.context or {})
                         held_direct = (
                             direct_run is not None
                             and held_route[0] is not None
@@ -1396,7 +1410,14 @@ async def run_agent(
                                     "arguments": arguments,
                                     "justification": "",
                                     "preview": why,
-                                    **({"read_before_write_ok": True} if held_gate_ok else {}),
+                                    **(
+                                        {
+                                            "read_before_write_ok": True,
+                                            "gate_connection": held_route[0] or "oc8",
+                                        }
+                                        if held_gate_ok
+                                        else {}
+                                    ),
                                     **(held_terms[1] if held_terms is not None else {}),
                                 },
                                 **(held_terms[2] if held_terms is not None else {}),
@@ -2630,9 +2651,8 @@ async def run_agent(
                                 and gate_verdict.rule == "read_before_write"
                                 and pre_decided
                                 and pre_decided.get(_call_sig(tc)) == "approve"
-                                and _call_sig(tc) in gate_proven
+                                and await _consume_waiver(call_key, _call_sig(tc))
                             ):
-                                gate_proven.discard(_call_sig(tc))  # single use
                                 # A resumed leg starts with a fresh ledger, but
                                 # a held write passed this very gate (the read
                                 # happened) before it was parked, and a person
@@ -2729,7 +2749,10 @@ async def run_agent(
                                         # Raised after the B gate answered "ask":
                                         # read-before-write had passed for it.
                                         **(
-                                            {"read_before_write_ok": True}
+                                            {
+                                                "read_before_write_ok": True,
+                                                "gate_connection": call_key or "oc8",
+                                            }
                                             if gate_verdict is not None
                                             and gate_verdict.effect == "ask"
                                             else {}

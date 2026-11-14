@@ -127,6 +127,26 @@ async def append_resolved_approval(
     return _adopt(run, stored)
 
 
+_APPEND_WAIVED = text(
+    "UPDATE agent_run SET context = jsonb_set("
+    "  context, '{waived_read_before_write}',"
+    "  coalesce(context->'waived_read_before_write', '[]'::jsonb) || :entry"
+    ") WHERE id = :id RETURNING context"
+).bindparams(bindparam("entry", type_=JSONB))
+
+
+async def append_waived_read_before_write(
+    db: AsyncSession, run: AgentRun, key: str
+) -> dict[str, Any]:
+    """Record that one approval's read-before-write waiver was used.
+
+    Durable across legs (the run's context outlives the leg), so an approval
+    waives the check once, not once per leg. An append, like the writers above.
+    """
+    stored = (await db.execute(_APPEND_WAIVED, {"entry": [key], "id": run.id})).scalar_one()
+    return _adopt(run, stored)
+
+
 _RESOLVE_DIRECT_ACCESS = text(
     "UPDATE agent_run SET context = jsonb_set("
     "  context || :latest, '{declined_direct_access}',"

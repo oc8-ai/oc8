@@ -1051,10 +1051,23 @@ async def _two_legs(
     *,
     record_approval: bool,
 ) -> Any:
+
+    return await _two_legs_on(
+        db, office, agent, await chat_run(db, office), record_approval=record_approval
+    )
+
+
+async def _two_legs_on(
+    db: AsyncSession,
+    office: DirectOffice,
+    agent: m.Agent,
+    run: m.AgentRun,
+    *,
+    record_approval: bool = True,
+) -> Any:
     from oc8.agent.harness.calls import call_sig
     from oc8.runtime.approval_resume import resolve_tool_approval
 
-    run = await chat_run(db, office)
     leg1 = await _run(db, office, agent, run)
     assert leg1.status == "waiting_for_approval"
     held = await _held(db)
@@ -1081,7 +1094,7 @@ def _resume_script(*updates: str) -> list[Any]:
     turns += [
         _turn("", ToolCall(id=u, name="update_record", arguments=dict(_ORDER))) for u in updates
     ]
-    return turns + [_turn("done")] * 3
+    return turns + [_turn("done") for _ in range(8)]
 
 
 async def test_an_approved_write_runs_once_after_the_run_resumes(
@@ -1131,3 +1144,85 @@ async def test_the_waiver_is_single_use_within_a_leg(
         agent = await _copilot(db, office)
         await _two_legs(db, office, agent, record_approval=True)
     assert [n for n, _s, _e in recorder.windows].count("update_record") == 1
+
+
+async def test_a_waiver_is_spent_once_per_approval_across_legs(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Leg 2 runs the approved write. In leg 3 the model repeats it without
+    reading: the in-memory context of leg 3 is rebuilt, the approval is not."""
+    from oc8.agent.harness.calls import call_sig
+
+    recorder = _RecordingServer(delay_s=0)
+    _patch(monkeypatch, recorder, _resume_script("c3", "c4"))
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        await _focused(db, office)
+        await grant(db, office)
+        agent = await _copilot(db, office)
+        run = await chat_run(db, office)
+        await _two_legs_on(db, office, agent, run)
+        approved = call_sig(ToolCall(id="x", name="update_record", arguments=dict(_ORDER)))
+        # Leg 3: a fresh leg for the same run, the approval still on record.
+        await db.refresh(run)
+        assert run.context["waived_read_before_write"] == ["things\n" + approved]
+        await run_agent(
+            db,
+            agent=agent,
+            task_text="resume again",
+            tenant_id=office.tenant,
+            run_id=run.id,
+            pre_decided={approved: "approve"},
+        )
+    assert [n for n, _s, _e in recorder.windows].count("update_record") == 1
+
+
+async def test_a_pdp_hold_leaves_no_proof_so_the_resumed_write_is_refused(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The department holds every write itself, before the B gate runs: the
+    person's approval is of a call that was never read-checked."""
+    from oc8.agent.harness.calls import call_sig
+    from oc8.runtime.approval_resume import resolve_tool_approval
+
+    recorder = _RecordingServer(delay_s=0)
+    _patch(
+        monkeypatch,
+        recorder,
+        [
+            _turn("", ToolCall(id="c1", name="update_record", arguments=dict(_ORDER))),
+            _turn("", ToolCall(id="c2", name="update_record", arguments=dict(_ORDER))),
+            *[_turn("done")] * 6,
+        ],
+    )
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(
+            db,
+            tenant,
+            policy={"enabled": True, "read": True, "modify": True, "approval_actions": ["modify"]},
+        )
+        await _focused(db, office)
+        await grant(db, office)
+        agent = await _copilot(db, office)
+        run = await chat_run(db, office)
+        leg1 = await _run(db, office, agent, run)
+        assert leg1.status == "waiting_for_approval"
+        held = await _held(db)
+        assert "read_before_write_ok" not in held.payload
+        await resolve_tool_approval(db, approval=held, decision="approve")
+        await db.refresh(run)
+        (entry,) = run.context["resolved_tool_approvals"]
+        assert "read_before_write_ok" not in entry
+        await run_agent(
+            db,
+            agent=agent,
+            task_text="resume",
+            tenant_id=office.tenant,
+            run_id=run.id,
+            pre_decided={
+                call_sig(ToolCall(id="x", name="update_record", arguments=dict(_ORDER))): "approve"
+            },
+        )
+    assert recorder.windows == []

@@ -77,7 +77,10 @@ async def resolve_tool_approval(
             "decision": decision,
             # Only a raiser that saw the call pass read-before-write sets it.
             **(
-                {"read_before_write_ok": True}
+                {
+                    "read_before_write_ok": True,
+                    "gate_connection": str(approval.payload.get("gate_connection") or ""),
+                }
                 if approval.payload.get("read_before_write_ok") is True
                 else {}
             ),
