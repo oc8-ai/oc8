@@ -1,6 +1,7 @@
 // Wire types and hooks for HTTP API connections (transport "manual_http"):
 // their logins, their declared tools, the test call and the tools editor.
 
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 
 /** The setup field and env name a login's one secret travels under. */
@@ -95,55 +96,97 @@ export function postHttpTestCall(
   });
 }
 
-/** One declared tool on the wire (`GET`/`PATCH .../http-tools`). */
-export interface HttpToolWire {
-  name: string;
-  description: string;
-  method: string;
-  urlTemplate: string;
-  paramSchema: Record<string, unknown>;
-  paramLocations?: Record<string, "path" | "query" | "header" | "body">;
-  bodyParam?: string | null;
-  group?: string;
+export type HttpMethod = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE";
+export type ParamLocation = "path" | "query" | "header" | "body";
+
+/** One endpoint as an agent tool (a connection's `http_tools` entry), as
+ * `GET`/`PATCH .../http-tools` carry it. */
+export interface HttpToolDef {
+  readonly name: string;
+  readonly description: string;
+  readonly method: HttpMethod;
+  readonly urlTemplate: string;
+  readonly paramSchema: Record<string, unknown>;
+  readonly paramLocations?: Readonly<Record<string, ParamLocation>>;
+  readonly bodyParam?: string | null;
+  readonly group?: string;
 }
 
-export interface HttpToolScopes {
-  read: string[];
-  modify: string[];
+/** Which tools only read and which change something (the department's tool
+ * policy decides what each may do). */
+export interface ToolScopes {
+  readonly read: readonly string[];
+  readonly modify: readonly string[];
 }
 
 /** Where a connection's tools were imported from, for re-reading later. */
 export interface ImportMetadata {
-  sourceUrl: string | null;
-  fingerprint: string;
-  importedAt: string;
-  title: string;
-  version: string;
+  readonly sourceUrl: string | null;
+  readonly fingerprint: string;
+  readonly importedAt: string;
+  readonly title: string;
+  readonly version: string;
+}
+
+/** A stored login without its secret. */
+export interface HttpLoginShape {
+  readonly kind: string;
+  readonly in?: "header" | "query" | null;
+  readonly name?: string | null;
+  readonly username?: string | null;
+  readonly tokenUrl?: string | null;
+  readonly clientId?: string | null;
+  readonly scope?: string | null;
+}
+
+export interface HttpToolsSnapshot {
+  readonly connectionId: string;
+  readonly name: string;
+  readonly baseUrl: string;
+  readonly httpTools: readonly HttpToolDef[];
+  readonly scopes: ToolScopes;
+  readonly auth: HttpLoginShape | null;
+  readonly openapi: ImportMetadata | null;
+}
+
+/** What a custom server source hands the wizard. */
+export interface CustomServerDraft {
+  readonly baseUrl: string;
+  readonly login: HttpLoginDraft;
+  readonly httpTools: readonly HttpToolDef[];
+  readonly scopes: ToolScopes;
+  readonly openapi: ImportMetadata | null;
 }
 
 export interface UpdateHttpToolsBody {
-  httpTools: HttpToolWire[];
-  scopes: HttpToolScopes;
+  httpTools: readonly HttpToolDef[];
+  scopes: ToolScopes;
   /** Omitted keeps the stored import metadata; null removes it. */
   openapi?: ImportMetadata | null;
 }
 
-export interface HttpToolsSnapshot {
-  connectionId: string;
-  name: string;
-  baseUrl: string;
-  httpTools: HttpToolWire[];
-  scopes: HttpToolScopes;
-  auth: {
-    kind: string;
-    in: string | null;
-    name: string | null;
-    username: string | null;
-    tokenUrl: string | null;
-    clientId: string | null;
-    scope: string | null;
-  } | null;
-  openapi: ImportMetadata | null;
+/** The stored (snake_case) shape of one tool. */
+export function toolToConfig(tool: HttpToolDef): Record<string, unknown> {
+  return {
+    name: tool.name,
+    description: tool.description,
+    method: tool.method,
+    url_template: tool.urlTemplate,
+    param_schema: tool.paramSchema,
+    param_locations: { ...(tool.paramLocations ?? {}) },
+    body_param: tool.bodyParam ?? null,
+    ...(tool.group ? { group: tool.group } : {}),
+  };
+}
+
+export function metadataToConfig(meta: ImportMetadata): Record<string, unknown> {
+  return {
+    source_url: meta.sourceUrl,
+    fingerprint: meta.fingerprint,
+    imported_at: meta.importedAt,
+    title: meta.title,
+    version: meta.version,
+  };
 }
 
 /** Replace a connection's tools, their read/modify classification and its
@@ -210,12 +253,12 @@ export function httpToolsUpdateBetween(previous: Json, next: Json): UpdateHttpTo
     httpTools: tools.map((tool) => ({
       name: String(tool.name ?? ""),
       description: String(tool.description ?? ""),
-      method: String(tool.method ?? "GET"),
+      method: String(tool.method ?? "GET") as HttpMethod,
       urlTemplate: String(tool.url_template ?? ""),
       paramSchema: isObject(tool.param_schema) ? tool.param_schema : {},
       ...(isObject(tool.param_locations)
         ? {
-            paramLocations: tool.param_locations as HttpToolWire["paramLocations"],
+            paramLocations: tool.param_locations as HttpToolDef["paramLocations"],
           }
         : {}),
       ...(typeof tool.body_param === "string" ? { bodyParam: tool.body_param } : {}),
@@ -292,6 +335,49 @@ function schemaProblem(text: string): HttpToolProblem | null {
   return null;
 }
 
+/** What to tell the person about a tool's problem, in their language. */
+export function httpToolProblemText(
+  problem: HttpToolProblem,
+  t: (en: string, de?: string) => string,
+): string {
+  switch (problem) {
+    case "name_missing":
+      return t("Give this tool a name.", "Gib diesem Tool einen Namen.");
+    case "name_invalid":
+      return t(
+        "Use only letters, digits, _ and - in a tool name (at most 64).",
+        "Verwende im Tool-Namen nur Buchstaben, Ziffern, _ und - (höchstens 64).",
+      );
+    case "name_duplicate":
+      return t("Another tool already has this name.", "Ein anderes Tool hat schon diesen Namen.");
+    case "path":
+      return t(
+        "Enter the path below the base URL, starting with /.",
+        "Gib den Pfad unterhalb der Basis-URL an, beginnend mit /.",
+      );
+    case "schema_json":
+      return t(
+        "The parameter schema is not valid JSON.",
+        "Das Parameter-Schema ist kein gültiges JSON.",
+      );
+    case "schema_object":
+      return t(
+        'The parameter schema must be a JSON Schema object with "type": "object".',
+        'Das Parameter-Schema muss ein JSON-Schema-Objekt mit "type": "object" sein.',
+      );
+    case "schema_ref":
+      return t(
+        "The parameter schema may only refer to itself ($ref starting with #).",
+        "Das Parameter-Schema darf nur auf sich selbst verweisen ($ref beginnend mit #).",
+      );
+    case "schema_size":
+      return t(
+        "The parameter schema is too large or nested too deeply.",
+        "Das Parameter-Schema ist zu groß oder zu tief verschachtelt.",
+      );
+  }
+}
+
 /** One problem (or null) per tool, in order: the first rule each one breaks. */
 export function validateHttpTools(tools: readonly HttpToolFields[]): Array<HttpToolProblem | null> {
   const seen = new Map<string, number>();
@@ -303,5 +389,47 @@ export function validateHttpTools(tools: readonly HttpToolFields[]): Array<HttpT
     const path = tool.urlTemplate;
     if (!path.startsWith("/") || path.startsWith("//") || path.includes("://")) return "path";
     return schemaProblem(tool.paramSchema);
+  });
+}
+
+/** The edit form of a tool for `validateHttpTools`: its schema as JSON text. */
+export function toolFields(tool: HttpToolDef): HttpToolFields {
+  return {
+    name: tool.name,
+    urlTemplate: tool.urlTemplate,
+    paramSchema: JSON.stringify(tool.paramSchema ?? {}),
+  };
+}
+
+const httpToolsKey = (connectionId: string) => ["mcp", "http-tools", connectionId] as const;
+
+export function useHttpTools(connectionId: string | null) {
+  return useQuery<HttpToolsSnapshot>({
+    queryKey: httpToolsKey(connectionId ?? ""),
+    queryFn: () => api.get<HttpToolsSnapshot>(`/mcp/connections/${connectionId}/http-tools`),
+    enabled: connectionId !== null,
+  });
+}
+
+export function useUpdateHttpTools() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: {
+      connectionId: string;
+      httpTools: readonly HttpToolDef[];
+      scopes: ToolScopes;
+      openapi: ImportMetadata | null;
+    }) =>
+      patchHttpTools(body.connectionId, {
+        httpTools: body.httpTools,
+        scopes: body.scopes,
+        // null would remove the stored import metadata; a source that has
+        // none to give leaves it as it is.
+        ...(body.openapi ? { openapi: body.openapi } : {}),
+      }),
+    onSuccess: (snapshot) => {
+      qc.setQueryData(httpToolsKey(snapshot.connectionId), snapshot);
+      void qc.invalidateQueries({ queryKey: ["mcp", "connections"] });
+    },
   });
 }

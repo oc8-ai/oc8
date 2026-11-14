@@ -1,5 +1,6 @@
 // Wizard for registering a tenant-owned MCP server (local/stdio or
-// remote/URL) or a plain HTTP API (manually described tools) as a real capa.
+// remote/URL) or a plain HTTP API (tools described by hand, or by a custom
+// server source an edition registers) as a real capa.
 // Installed through the existing POST /capas -> enable -> setup pipeline (an
 // HTTP API's tools edited after a test are replaced in place through
 // PATCH /mcp/connections/{id}/http-tools) -- no vendor-specific logic
@@ -13,6 +14,7 @@ import {
   FlaskConical,
   Globe,
   Link2,
+  Pencil,
   Plus,
   PlugZap,
   Terminal,
@@ -25,6 +27,7 @@ import { Field } from "@/components/agent-identity-fields";
 import { HttpLoginFields } from "@/components/http-login-fields";
 import { HttpTestCallPanel, type TestableTool } from "@/components/http-test-call-panel";
 import { McpTestLogDrawer } from "@/components/mcp-test-log-drawer";
+import { useCustomServerSources } from "@/edition/composition";
 import { useConfirm } from "@/hooks/use-confirm";
 import { api } from "@/lib/api";
 import {
@@ -42,9 +45,14 @@ import {
   loginSecret,
   httpToolsUpdateBetween,
   loginToConfig,
+  metadataToConfig,
   patchHttpTools,
   postHttpTestCall,
+  toolFields,
+  toolToConfig,
   validateHttpTools,
+  type CustomServerDraft,
+  httpToolProblemText,
   type HttpToolProblem,
   type HttpLoginDraft,
 } from "@/lib/http-tools";
@@ -87,6 +95,10 @@ interface WizardState {
   baseUrl: string;
   login: HttpLoginDraft;
   httpTools: HttpToolDraft[];
+  // The custom server source chosen to describe the endpoints (null: by
+  // hand), and what it handed back.
+  sourceId: string | null;
+  draft: CustomServerDraft | null;
   // test step (stdio/remote_mcp: tools discovered)
   testedToolNames: string[] | null;
   testError: string | null;
@@ -129,6 +141,8 @@ const INITIAL_STATE: WizardState = {
   baseUrl: "",
   login: NO_LOGIN,
   httpTools: [],
+  sourceId: null,
+  draft: null,
   testedToolNames: null,
   testError: null,
   testedConnectionId: null,
@@ -208,6 +222,15 @@ const ALL_STEPS: Array<{ key: StepKey; title: string; subtitle: string; icon: ty
 // later too.
 const DEPARTMENT_FIELD = "department";
 
+/** What a source handed back, when the endpoints come from one. */
+function draftOf(state: WizardState): CustomServerDraft | null {
+  return state.sourceId ? state.draft : null;
+}
+
+function loginOf(state: WizardState): HttpLoginDraft {
+  return draftOf(state)?.login ?? state.login;
+}
+
 async function buildManifest(
   state: WizardState,
   departmentRequired: boolean,
@@ -240,26 +263,33 @@ async function buildManifest(
       fields.push({ key: "auth_header_value", label: state.authHeaderName, kind: "password" });
       secretEnvFields[state.authHeaderName] = "auth_header_value";
     }
-  } else if (state.login.kind !== "none") {
+  } else if (loginOf(state).kind !== "none") {
     fields.push({ key: LOGIN_SECRET_FIELD, label: "Secret", kind: "password" });
     secretEnvFields[LOGIN_SECRET_ENV] = LOGIN_SECRET_FIELD;
   }
 
+  const draft = draftOf(state);
   const connectionConfig: Record<string, unknown> =
     state.serverType === "stdio"
       ? {}
       : state.serverType === "remote_mcp"
         ? { auth_header_name: state.authHeaderName || undefined }
-        : {
-            ...(loginToConfig(state.login) ? { auth: loginToConfig(state.login) } : {}),
-            http_tools: state.httpTools.map((t) => ({
-              name: t.name,
-              description: t.description,
-              method: t.method,
-              url_template: t.urlTemplate,
-              param_schema: JSON.parse(t.paramSchema || "{}"),
-            })),
-          };
+        : draft
+          ? {
+              ...(loginToConfig(draft.login) ? { auth: loginToConfig(draft.login) } : {}),
+              http_tools: draft.httpTools.map(toolToConfig),
+              ...(draft.openapi ? { openapi: metadataToConfig(draft.openapi) } : {}),
+            }
+          : {
+              ...(loginToConfig(state.login) ? { auth: loginToConfig(state.login) } : {}),
+              http_tools: state.httpTools.map((t) => ({
+                name: t.name,
+                description: t.description,
+                method: t.method,
+                url_template: t.urlTemplate,
+                param_schema: JSON.parse(t.paramSchema || "{}"),
+              })),
+            };
 
   const transport =
     state.serverType === "stdio"
@@ -283,8 +313,11 @@ async function buildManifest(
               ? ""
               : state.serverType === "remote_mcp"
                 ? state.serverUrl
-                : state.baseUrl,
+                : (draft?.baseUrl ?? state.baseUrl),
           transport,
+          ...(draft
+            ? { scopes: { read: [...draft.scopes.read], modify: [...draft.scopes.modify] } }
+            : {}),
           config: connectionConfig,
         },
       ],
@@ -318,8 +351,8 @@ function buildSetupValues(state: WizardState, departmentId: string): Record<stri
   } else if (state.serverType === "remote_mcp") {
     if (state.authHeaderName && state.authHeaderValue)
       values.auth_header_value = state.authHeaderValue;
-  } else if (loginSecret(state.login)) {
-    values[LOGIN_SECRET_FIELD] = loginSecret(state.login);
+  } else if (loginSecret(loginOf(state))) {
+    values[LOGIN_SECRET_FIELD] = loginSecret(loginOf(state));
   }
   return values;
 }
@@ -357,44 +390,7 @@ export function CustomMcpWizard({
   // What is wrong with each tool, shown under it after a refused Next.
   const [toolProblems, setToolProblems] = useState<Array<HttpToolProblem | null>>([]);
 
-  function toolProblemText(problem: HttpToolProblem): string {
-    switch (problem) {
-      case "name_missing":
-        return t("Give this tool a name.", "Gib diesem Tool einen Namen.");
-      case "name_invalid":
-        return t(
-          "Use only letters, digits, _ and - in a tool name (at most 64).",
-          "Verwende im Tool-Namen nur Buchstaben, Ziffern, _ und - (höchstens 64).",
-        );
-      case "name_duplicate":
-        return t("Another tool already has this name.", "Ein anderes Tool hat schon diesen Namen.");
-      case "path":
-        return t(
-          "Enter the path below the base URL, starting with /.",
-          "Gib den Pfad unterhalb der Basis-URL an, beginnend mit /.",
-        );
-      case "schema_json":
-        return t(
-          "The parameter schema is not valid JSON.",
-          "Das Parameter-Schema ist kein gültiges JSON.",
-        );
-      case "schema_object":
-        return t(
-          'The parameter schema must be a JSON Schema object with "type": "object".',
-          'Das Parameter-Schema muss ein JSON-Schema-Objekt mit "type": "object" sein.',
-        );
-      case "schema_ref":
-        return t(
-          "The parameter schema may only refer to itself ($ref starting with #).",
-          "Das Parameter-Schema darf nur auf sich selbst verweisen ($ref beginnend mit #).",
-        );
-      case "schema_size":
-        return t(
-          "The parameter schema is too large or nested too deeply.",
-          "Das Parameter-Schema ist zu groß oder zu tief verschachtelt.",
-        );
-    }
-  }
+  const toolProblemText = (problem: HttpToolProblem) => httpToolProblemText(problem, t);
   const [busy, setBusy] = useState(false);
 
   const installCustomCapa = useInstallCustomCapa();
@@ -417,6 +413,18 @@ export function CustomMcpWizard({
 
   const steps = ALL_STEPS;
   const activeStep = steps[step] ?? steps[0];
+  const sources = useCustomServerSources();
+  const activeSource =
+    state.serverType === "manual_http" && state.sourceId
+      ? (sources.find((s) => s.id === state.sourceId) ?? null)
+      : null;
+  // The source renders its own step (and its own "continue") in a wider dialog.
+  const sourceStepActive = activeSource !== null && activeStep.key === "connection";
+  // A source that is no longer offered (the caller lacks its capability) does
+  // not describe the endpoints: what was typed by hand does.
+  const described: WizardState = activeSource ? state : { ...state, sourceId: null };
+  const byHandStepActive =
+    activeStep.key === "connection" && state.serverType === "manual_http" && !activeSource;
   const StepIcon = activeStep.icon;
   const progress = ((step + 1) / steps.length) * 100;
 
@@ -465,7 +473,30 @@ export function CustomMcpWizard({
           : "Could not disable this capa -- it's still enabled; disable it from the Capas page.",
       );
     } finally {
+      await removePendingConnectionsOnce();
       close();
+    }
+  }
+
+  // A connection left in a department the person moved away from, whose
+  // removal failed, is otherwise retried on the next test or save; closing
+  // means there is none, so try once more and say so if it still stays.
+  async function removePendingConnectionsOnce() {
+    const failed: string[] = [];
+    for (const id of state.pendingConnectionDeletes) {
+      try {
+        await api.delete(`/mcp/connections/${id}`);
+      } catch {
+        failed.push(id);
+      }
+    }
+    if (failed.length > 0) {
+      toast.warning(
+        t(
+          "The connection in the department you moved away from could not be removed. Delete it from the connections list.",
+          "Die Verbindung in der Abteilung, aus der du gewechselt bist, konnte nicht entfernt werden. Lösche sie in der Liste der Verbindungen.",
+        ),
+      );
     }
   }
 
@@ -485,6 +516,7 @@ export function CustomMcpWizard({
       if (state.serverType === "stdio") return state.command.trim().length > 0;
       if (state.serverType === "remote_mcp") return state.serverUrl.trim().length > 0;
       if (state.serverType === "manual_http") {
+        if (activeSource) return state.draft !== null;
         return (
           state.baseUrl.trim().length > 0 &&
           state.httpTools.length > 0 &&
@@ -543,8 +575,8 @@ export function CustomMcpWizard({
     pluginId: string;
     connectionId: string | null;
   }> {
-    const manifest = await buildManifest(state, departments.length > 0);
-    const values = buildSetupValues(state, departmentId);
+    const manifest = await buildManifest(described, departments.length > 0);
+    const values = buildSetupValues(described, departmentId);
     const setupKey = JSON.stringify(values);
     let pluginId = state.installedPluginId;
     let revision = state.installedRevision;
@@ -684,20 +716,45 @@ export function CustomMcpWizard({
     }
   }
 
-  const toolsForTest: TestableTool[] = state.httpTools
-    .filter((tool) => tool.name.trim() !== "")
-    .map((tool) => {
-      let schema: Record<string, unknown> = {};
-      try {
-        const parsed: unknown = JSON.parse(tool.paramSchema || "{}");
-        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-          schema = parsed as Record<string, unknown>;
-        }
-      } catch {
-        schema = {};
-      }
-      return { name: tool.name, method: tool.method, paramSchema: schema };
-    });
+  const sourceDraft = draftOf(described);
+  const toolsForTest: TestableTool[] = sourceDraft
+    ? sourceDraft.httpTools.map((tool) => ({
+        name: tool.name,
+        method: tool.method,
+        paramSchema: tool.paramSchema,
+      }))
+    : state.httpTools
+        .filter((tool) => tool.name.trim() !== "")
+        .map((tool) => {
+          let schema: Record<string, unknown> = {};
+          try {
+            const parsed: unknown = JSON.parse(tool.paramSchema || "{}");
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+              schema = parsed as Record<string, unknown>;
+            }
+          } catch {
+            schema = {};
+          }
+          return { name: tool.name, method: tool.method, paramSchema: schema };
+        });
+
+  // What a source handed back is checked by the same rules the server and the
+  // hand-written tools use, before it can be tested or saved.
+  function acceptDraft(draft: CustomServerDraft) {
+    if (draft.httpTools.length === 0) {
+      setStepError(t("Choose at least one endpoint.", "Wähle mindestens einen Endpunkt."));
+      return;
+    }
+    const problems = validateHttpTools(draft.httpTools.map(toolFields));
+    const first = problems.findIndex((problem) => problem !== null);
+    if (first >= 0) {
+      setStepError(`${draft.httpTools[first].name || "?"}: ${toolProblemText(problems[first]!)}`);
+      return;
+    }
+    update({ draft });
+    setStepError(null);
+    setStep((s) => Math.min(s + 1, steps.length - 1));
+  }
 
   // The plain HTTP API's test step: install, enable and configure the capa
   // like the MCP test does, then make one real call of the chosen tool.
@@ -779,7 +836,12 @@ export function CustomMcpWizard({
           if (e.target === e.currentTarget) void requestClose();
         }}
       >
-        <div className="w-full max-w-3xl overflow-hidden rounded-2xl border border-border bg-panel shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+        <div
+          className={cn(
+            "w-full overflow-hidden rounded-2xl border border-border bg-panel shadow-2xl animate-in fade-in zoom-in-95 duration-200",
+            sourceStepActive ? "max-w-6xl" : "max-w-3xl",
+          )}
+        >
           {/* Header */}
           <header className="relative border-b border-border px-6 pb-5 pt-6">
             <div className="flex items-start justify-between gap-4">
@@ -852,7 +914,10 @@ export function CustomMcpWizard({
           {/* Body */}
           <div
             key={step}
-            className="max-h-[62vh] space-y-4 overflow-y-auto px-6 py-6 animate-in fade-in slide-in-from-right-2 duration-300"
+            className={cn(
+              "space-y-4 overflow-y-auto px-6 py-6 animate-in fade-in slide-in-from-right-2 duration-300",
+              sourceStepActive ? "max-h-[78vh]" : "max-h-[62vh]",
+            )}
           >
             {activeStep.key === "type" && (
               <div className="space-y-4">
@@ -931,6 +996,64 @@ export function CustomMcpWizard({
                     })}
                   </div>
                 </Field>
+                {state.serverType === "manual_http" && sources.length > 0 && (
+                  <div
+                    role="group"
+                    aria-label={t(
+                      "How do you describe the endpoints?",
+                      "Wie beschreibst du die Endpunkte?",
+                    )}
+                  >
+                    <div className="mb-1.5 text-xs uppercase tracking-wider text-muted-foreground">
+                      {t("How do you describe the endpoints?", "Wie beschreibst du die Endpunkte?")}
+                    </div>
+                    <div className="space-y-2">
+                      {[
+                        ...sources.map((s) => ({
+                          id: s.id as string | null,
+                          title: t(s.label.en, s.label.de),
+                          description: t(s.description.en, s.description.de),
+                          Icon: s.icon,
+                        })),
+                        {
+                          id: null,
+                          title: t("Describe them by hand", "Von Hand beschreiben"),
+                          description: t(
+                            "Add each endpoint yourself: method, path and parameters.",
+                            "Trage jeden Endpunkt selbst ein: Methode, Pfad und Parameter.",
+                          ),
+                          Icon: Pencil,
+                        },
+                      ].map(({ id, title, description, Icon }) => (
+                        <button
+                          key={id ?? "by-hand"}
+                          type="button"
+                          aria-pressed={state.sourceId === id}
+                          onClick={() =>
+                            update({
+                              sourceId: id,
+                              draft: id === state.sourceId ? state.draft : null,
+                            })
+                          }
+                          className={cn(
+                            "flex w-full items-start gap-3 rounded-xl border-2 p-3 text-left transition",
+                            state.sourceId === id
+                              ? "border-primary bg-primary/5"
+                              : "border-border bg-background/30 hover:border-primary/40",
+                          )}
+                        >
+                          <Icon className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                          <span>
+                            <span className="block text-sm font-medium">{title}</span>
+                            <span className="block text-[11px] text-muted-foreground">
+                              {description}
+                            </span>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -974,7 +1097,27 @@ export function CustomMcpWizard({
               </div>
             )}
 
-            {activeStep.key === "connection" && state.serverType === "manual_http" && (
+            {sourceStepActive && activeSource && (
+              <div className="space-y-4">
+                <activeSource.component
+                  mode="create"
+                  initialDraft={state.draft}
+                  existing={null}
+                  onComplete={acceptDraft}
+                  onCancel={() => {
+                    setStepError(null);
+                    setStep(0);
+                  }}
+                />
+                {stepError && (
+                  <p role="alert" className="text-xs text-[color:var(--status-error)]">
+                    {stepError}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {byHandStepActive && (
               <div className="space-y-4">
                 <Field label="Base URL">
                   <input
@@ -1129,7 +1272,7 @@ export function CustomMcpWizard({
             )}
 
             {activeStep.key === "summary" && (
-              <SummaryCard state={state} departmentName={departmentName} />
+              <SummaryCard state={described} departmentName={departmentName} />
             )}
           </div>
 
@@ -1147,7 +1290,7 @@ export function CustomMcpWizard({
                 </>
               )}
             </button>
-            {!isLastStep ? (
+            {sourceStepActive ? null : !isLastStep ? (
               <button
                 onClick={handleNext}
                 disabled={!canProceed}
@@ -1301,13 +1444,13 @@ function SummaryCard({
   const typeLabel = state.serverType ? SERVER_TYPE_LABELS[state.serverType] : "—";
   const toolOrEndpointCount =
     state.serverType === "manual_http"
-      ? state.httpTools.length
+      ? (draftOf(state)?.httpTools.length ?? state.httpTools.length)
       : (state.testedToolNames?.length ?? null);
   const secretCount =
     state.serverType === "stdio"
       ? state.envRows.filter((r) => r.secret && r.key).length
       : state.serverType === "manual_http"
-        ? loginSecret(state.login)
+        ? loginSecret(loginOf(state))
           ? 1
           : 0
         : state.authHeaderName && state.authHeaderValue

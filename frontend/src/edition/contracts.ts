@@ -2,6 +2,18 @@ import type { LucideIcon } from "lucide-react";
 import type { ComponentType, ReactNode } from "react";
 
 import type { ChatMessageDTO } from "@/lib/hooks-chat";
+import type { CustomServerDraft, HttpToolsSnapshot } from "@/lib/http-tools";
+
+export type {
+  CustomServerDraft,
+  HttpLoginDraft,
+  HttpMethod,
+  HttpToolDef,
+  HttpToolsSnapshot,
+  ImportMetadata,
+  ParamLocation,
+  ToolScopes,
+} from "@/lib/http-tools";
 
 /**
  * Build-time contribution from a trusted product edition. This is deliberately
@@ -27,6 +39,9 @@ export interface FrontendEditionExtension {
   readonly homeSections?: readonly EditionHomeSection[];
   /** Chat slots (spec §6.2). Each entry may name the capabilities it needs. */
   readonly chat?: EditionChatContributions;
+  /** Extra ways to describe a plain HTTP API in the custom server wizard,
+   *  shown above "describe them by hand", in extension order. */
+  readonly customServerSources?: readonly CustomServerSource[];
 }
 
 export type Capability = string;
@@ -144,4 +159,28 @@ export interface EditionNavigationItem {
 export interface LocalizedLabel {
   readonly en: string;
   readonly de: string;
+}
+
+export interface CustomServerSourceProps {
+  readonly mode: "create" | "edit";
+  /** create: what this source handed back earlier (the person went back from the test step). */
+  readonly initialDraft: CustomServerDraft | null;
+  /** edit: the connection being edited. */
+  readonly existing: HttpToolsSnapshot | null;
+  /** create: base URL, login, tools, scopes, import metadata. edit: only tools, scopes and metadata are used. */
+  readonly onComplete: (draft: CustomServerDraft) => void;
+  readonly onCancel: () => void;
+}
+
+/** A way to describe a plain HTTP API's endpoints other than by hand. */
+export interface CustomServerSource {
+  readonly id: string;
+  readonly label: LocalizedLabel;
+  readonly description: LocalizedLabel;
+  readonly icon: LucideIcon;
+  readonly component: ComponentType<CustomServerSourceProps>;
+  /** Capabilities the caller must all hold for the source to show. */
+  readonly needs?: readonly Capability[];
+  /** Whether "Edit endpoints" opens this source for an existing connection. */
+  readonly canEdit?: (existing: HttpToolsSnapshot) => boolean;
 }

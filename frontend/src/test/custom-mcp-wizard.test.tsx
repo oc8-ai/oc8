@@ -845,6 +845,37 @@ describe("CustomMcpWizard", () => {
       expect(toastWarning).toHaveBeenCalledTimes(1);
     });
 
+    // Cancels after a move whose removal failed: the left department's
+    // connection must not stay behind just because no test or save follows.
+    async function moveThenCancel(retryFails: boolean) {
+      deleteMock.mockRejectedValueOnce(new Error("busy"));
+      if (retryFails) deleteMock.mockRejectedValueOnce(new Error("still busy"));
+      await testThenMoveToSales(false);
+      expect(toastWarning).toHaveBeenCalledTimes(1);
+      const installPosts = postMock.getMockImplementation()!;
+      postMock.mockImplementation((path: string, body?: unknown) =>
+        path === "/capas/capa-1/disable" ? Promise.resolve({}) : installPosts(path, body),
+      );
+      fireEvent.click(screen.getByRole("button", { name: /close/i }));
+      fireEvent.click(await screen.findByRole("button", { name: /disable & cancel/i }));
+      await waitFor(() => expect(deleteMock).toHaveBeenCalledTimes(2));
+      expect(deleteMock).toHaveBeenLastCalledWith("/mcp/connections/conn-1");
+    }
+
+    it("removes the left department's connection when the wizard is cancelled", async () => {
+      await moveThenCancel(false);
+      // Closed (and reset): the first step again, empty.
+      await waitFor(() => expect(screen.getByLabelText("Name")).toHaveValue(""));
+      expect(toastWarning).toHaveBeenCalledTimes(1);
+    });
+
+    it("warns when the left department's connection still cannot be removed on cancel", async () => {
+      await moveThenCancel(true);
+      await waitFor(() => expect(toastWarning).toHaveBeenCalledTimes(2));
+      expect(toastWarning.mock.calls[1][0]).toMatch(/could not be removed/);
+      expect(toastWarning.mock.calls[1][0]).toMatch(/connections/);
+    });
+
     it("needs a department before going on when the organisation has departments", async () => {
       getMock.mockResolvedValue(departments);
       render(<CustomMcpWizard open onOpenChange={() => {}} />, { wrapper });

@@ -532,6 +532,124 @@ async def test_an_edit_does_not_lock_unrelated_connections(app_session: AppSessi
     assert r.status_code == 200, r.text
 
 
+async def _edit_under_the_capa_lock(holder: Any, conn_ids: list[uuid.UUID]) -> None:
+    """What PATCH .../http-tools writes under the capa lock: the manifest's
+    connection and every row, with the edited tools and classification."""
+    capa = (
+        await holder.execute(
+            select(m.Capa).where(m.Capa.name == "acme_tickets_api").with_for_update()
+        )
+    ).scalar_one()
+    version = await holder.get(m.CapaVersion, capa.current_version_id)
+    manifest = copy.deepcopy(version.manifest)
+    entry = manifest["tool_pack"]["connections"][0]
+    edited_tools = [
+        {
+            "name": t["name"],
+            "description": t["description"],
+            "method": t["method"],
+            "url_template": t["urlTemplate"],
+            "param_schema": t["paramSchema"],
+        }
+        for t in _NEW_TOOLS
+    ]
+    entry["config"] = {**entry["config"], "http_tools": edited_tools}
+    entry["scopes"] = {"read": ["get_ticket", "list_tickets"], "modify": []}
+    version.manifest = manifest
+    for conn_id in conn_ids:
+        row = await holder.get(m.McpConnection, conn_id)
+        assert row is not None
+        row.config = {**row.config, "http_tools": edited_tools}
+        row.scopes = {"read": ["get_ticket", "list_tickets"], "modify": []}
+    await holder.flush()
+
+
+async def test_an_enable_waits_for_an_edit_and_keeps_it(app_session: AppSessionFactory) -> None:
+    """Enabling rewrites each row's scopes from the manifest. It takes the capa
+    lock first, like PATCH .../http-tools: one started while an edit holds it
+    waits and then reads the edited manifest, instead of writing the old
+    classification over the edit."""
+    tenant = uuid.uuid4()
+    app = create_app()
+    async with (
+        LifespanManager(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c,
+    ):
+        plugin_id = await _installed(c, tenant)
+        conn_id = (await _rows(app_session, tenant))[0].id
+        async with app_session(tenant) as holder:
+            await _edit_under_the_capa_lock(holder, [conn_id])
+            enable = asyncio.create_task(
+                c.post(
+                    f"/api/v1/capas/{plugin_id}/enable",
+                    json={"grantedPermissions": []},
+                    headers=_h(tenant),
+                )
+            )
+            await asyncio.sleep(0.5)
+            assert not enable.done()
+            await holder.commit()
+        r = await asyncio.wait_for(enable, timeout=15)
+    assert r.status_code == 200, r.text
+    row = (await _rows(app_session, tenant))[0]
+    assert row.scopes == {"read": ["get_ticket", "list_tickets"], "modify": []}
+    assert [t["name"] for t in row.config["http_tools"]] == ["list_tickets", "get_ticket"]
+
+
+async def test_a_setup_waits_for_an_edit_and_seeds_the_edited_tools(
+    app_session: AppSessionFactory,
+) -> None:
+    """A further department's row is seeded from the manifest. Setup takes the
+    capa lock first, like PATCH .../http-tools: one started while an edit holds
+    it waits and then seeds the edited tools, not the ones read before."""
+    tenant = uuid.uuid4()
+    dept_a, dept_b = await _departments(app_session, tenant, 2)
+    app = create_app()
+    async with (
+        LifespanManager(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c,
+    ):
+        r = await c.post(
+            "/api/v1/capas",
+            json={"manifest": _department_manifest(), "origin": "custom"},
+            headers=_h(tenant),
+        )
+        assert r.status_code == 201, r.text
+        plugin_id = r.json()["pluginId"]
+        r = await c.post(
+            f"/api/v1/capas/{plugin_id}/enable", json={"grantedPermissions": []}, headers=_h(tenant)
+        )
+        assert r.status_code == 200, r.text
+        r = await c.post(
+            f"/api/v1/capas/{plugin_id}/setup",
+            json={"values": {"department": dept_a}},
+            headers=_h(tenant),
+        )
+        assert r.status_code == 200, r.text
+        conn_a = uuid.UUID(r.json()["connectionId"])
+        async with app_session(tenant) as holder:
+            await _edit_under_the_capa_lock(holder, [conn_a])
+            setup = asyncio.create_task(
+                c.post(
+                    f"/api/v1/capas/{plugin_id}/setup",
+                    json={"values": {"department": dept_b}},
+                    headers=_h(tenant),
+                )
+            )
+            await asyncio.sleep(0.5)
+            assert not setup.done()
+            await holder.commit()
+        r = await asyncio.wait_for(setup, timeout=15)
+        assert r.status_code == 200, r.text
+        conn_b = r.json()["connectionId"]
+    async with app_session(tenant) as db:
+        row_b = await db.get(m.McpConnection, uuid.UUID(conn_b))
+        assert row_b is not None
+        assert str(row_b.department_id) == dept_b
+        assert [t["name"] for t in row_b.config["http_tools"]] == ["list_tickets", "get_ticket"]
+        assert row_b.scopes == {"read": ["get_ticket", "list_tickets"], "modify": []}
+
+
 async def test_scope_lists_are_deduplicated(app_session: AppSessionFactory) -> None:
     tenant = uuid.uuid4()
     app = create_app()

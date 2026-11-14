@@ -13,6 +13,7 @@ ENTERPRISE_CHAT_SEARCH: Capability = "enterprise.chat_search"
 ENTERPRISE_CHAT_SHARING: Capability = "enterprise.chat_sharing"
 ENTERPRISE_DICTATION: Capability = "enterprise.dictation"
 ENTERPRISE_PROMPT_TEMPLATES: Capability = "enterprise.prompt_templates"
+ENTERPRISE_OPENAPI_IMPORT: Capability = "enterprise.openapi_import"
 
 ALL_CAPABILITIES: frozenset[Capability] = frozenset(
     {
@@ -25,5 +26,6 @@ ALL_CAPABILITIES: frozenset[Capability] = frozenset(
         ENTERPRISE_CHAT_SHARING,
         ENTERPRISE_DICTATION,
         ENTERPRISE_PROMPT_TEMPLATES,
+        ENTERPRISE_OPENAPI_IMPORT,
     }
 )

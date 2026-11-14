@@ -496,7 +496,11 @@ async def configure_plugin(
     against the installed manifest, encrypts password fields, and maps the
     remaining values into the plugin's materialised MCP connection.
     """
-    plugin = await db.get(m.Capa, capa_id)
+    # The capa row is locked before its manifest is read: the setup of a
+    # further department seeds its row from that manifest, and an edit of the
+    # connection's tools (PATCH /mcp/connections/{id}/http-tools) rewrites it
+    # under the same lock. Both take the capa first, then its rows.
+    plugin = await _lock_capa(db, principal.tenant_id, capa_id)
     if plugin is None or plugin.current_version_id is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "plugin not found")
     installation = (
@@ -525,6 +529,20 @@ async def configure_plugin(
         raise
 
 
+async def _lock_capa(db: AsyncSession, tenant_id: uuid.UUID, capa_id: uuid.UUID) -> m.Capa | None:
+    """The capa row, locked for this transaction and read afresh: the one mutex
+    for a plugin's manifest and all of its connection rows (always taken before
+    any of those rows)."""
+    return (
+        await db.execute(
+            select(m.Capa)
+            .where(m.Capa.tenant_id == tenant_id, m.Capa.id == capa_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+
+
 async def _apply_plugin_setup(
     plugin: m.Capa,
     version: m.CapaVersion,
@@ -533,7 +551,12 @@ async def _apply_plugin_setup(
     db: AsyncSession,
     principal: Principal,
 ) -> PluginSetupResult:
-    """Validate and apply the setup form of an enabled plugin (configure_plugin)."""
+    """Validate and apply the setup form of an enabled plugin (configure_plugin).
+
+    Runs with the capa row locked (`configure_plugin` takes the lock before it
+    reads the version), so the manifest a new department's row is seeded from
+    cannot be replaced by a concurrent tools edit halfway through.
+    """
     manifest = parse_manifest(version.manifest)
     setup = manifest.setup
     if setup is None:
@@ -1413,6 +1436,10 @@ async def export_capas(
 async def enable(
     capa_id: uuid.UUID, body: EnableRequest, db: DbSession, principal: CurrentPrincipal
 ) -> InstallationDTO:
+    # Enabling rewrites each connection row's scopes from the manifest: lock the
+    # capa first, in the order an edit of its tools takes (capa, then rows), so
+    # an enable and an edit run one after the other and the edit is not undone.
+    await _lock_capa(db, principal.tenant_id, capa_id)
     try:
         inst = await enable_plugin(
             db,
