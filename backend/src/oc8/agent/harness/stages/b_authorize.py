@@ -19,6 +19,11 @@ from oc8.agent.control_tools import (
     DEPTH_LIMIT_REASON,
     MAX_DELEGATION_DEPTH,
 )
+from oc8.agent.harness.stages.b_direct_access import (
+    NO_DIRECT_ACCESS,
+    DirectAccessView,
+    direct_access_decision,
+)
 from oc8.agent.tool_semantics import extract_attributes, extract_value
 from oc8.authz.pdp import (
     NOT_THIS_CONNECTION,
@@ -53,6 +58,7 @@ def authorize(
     chat_mode: ChatMode | None = None,
     edition_offer: EditionOffer = NO_EDITION_OFFER,
     routed: bool = False,
+    direct_access: DirectAccessView = NO_DIRECT_ACCESS,
 ) -> Decision:
     """PEP for a tool call. Every connection tool is decided against the
     department frame (§5.3): which entry governs it is the connection key, and
@@ -92,7 +98,12 @@ def authorize(
     (`<connection>.<tool>`), so `tc.name` is the CONNECTION's tool name. It may
     match a core tool's name, and must not inherit that core tool's early
     ALLOW: the call runs on the connection's server, so the frame decides it.
-    Nor is a routed call ever an edition call."""
+    Nor is a routed call ever an edition call.
+
+    `direct_access` is the Copilot's per-call view of its grants
+    (`b_direct_access`). For the tenant Assistant every connection tool is
+    decided against it alone -- its own department grants it no system --
+    and the default refuses every one."""
     if narrowing is None:
         narrowing = agent.narrowing or {}
     if is_team_lead is None:
@@ -130,6 +141,26 @@ def authorize(
         return Decision(Effect.ALLOW)
     if skill_call:
         return Decision(Effect.ALLOW)
+    if not core_call and agent.is_tenant_assistant:
+        # The Copilot acts through a connection only on a grant in this
+        # conversation, for the person present (copilot direct access §6).
+        # Its own EUR threshold still applies: a department policy only adds
+        # gates.
+        agent_threshold = (agent.presentation or {}).get("approval_value_eur")
+        return direct_access_decision(
+            direct_access,
+            connection_key=connection_key,
+            tool=tc.name,
+            scopes=tool_scopes,
+            value=extract_value(tc.arguments, value_spec),
+            attributes=extract_attributes(
+                tc.arguments, _applicable_attributes(tc, guardrail_attribute_specs)
+            ),
+            extra_thresholds=(
+                float(agent_threshold) if agent_threshold is not None else None,
+                *skill_thresholds,
+            ),
+        )
     if not core_call:
         # A connection's tool, even if it shares a core tool's name: none of the
         # name-based branches below may decide it.
@@ -289,6 +320,11 @@ def is_core_call(name: str, *, routed: bool) -> bool:
     return name in CONTROL_TOOL_NAMES and not routed
 
 
+def _applicable_attributes(tc: ToolCall, specs: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The guardrail attribute specs that apply to this tool."""
+    return [spec for spec in specs if not spec.get("tools") or tc.name in spec["tools"]]
+
+
 def _frame_decision(
     agent: m.Agent,
     tc: ToolCall,
@@ -302,18 +338,15 @@ def _frame_decision(
 ) -> Decision:
     """The department frame's verdict on a connection tool (§5.3)."""
     agent_threshold = (agent.presentation or {}).get("approval_value_eur")
-    applicable_attributes = [
-        spec
-        for spec in guardrail_attribute_specs
-        if not spec.get("tools") or tc.name in spec["tools"]
-    ]
     return authorize_tool_call(
         policies=tool_policies,
         connection_key=connection_key,
         right=required_right(tc.name, tool_scopes),
         tool=tc.name,
         value=extract_value(tc.arguments, value_spec),
-        attributes=extract_attributes(tc.arguments, applicable_attributes),
+        attributes=extract_attributes(
+            tc.arguments, _applicable_attributes(tc, guardrail_attribute_specs)
+        ),
         extra_thresholds=(
             float(agent_threshold) if agent_threshold is not None else None,
             *skill_thresholds,
