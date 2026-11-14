@@ -7,16 +7,21 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 from dataclasses import dataclass
-from typing import Final
+from typing import Any, Final
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.agent.harness.stages.b_direct_access import NO_DIRECT_ACCESS, DirectAccessView
+from oc8.agent.harness.stages.b_direct_access import (
+    HOLDING_DEPARTMENT,
+    NO_DIRECT_ACCESS,
+    DirectAccessView,
+)
 from oc8.audit import append_event
-from oc8.authz.pdp import ToolPolicy
+from oc8.authz.pdp import Decision, ToolPolicy
 from oc8.connections.acting import ACTING_PERSON_WITHHELD
+from oc8.connections.integrations import integration_for_connection
 from oc8.connections.usable import direct_connection, member_departments_for, tool_key_connected
 from oc8.copilot.tools import uuid_or_none
 
@@ -211,4 +216,53 @@ async def revoke_grant(
             "chat_session_id": str(grant.chat_session_id),
             "tool_key": grant.tool_key,
         },
+    )
+
+
+@dataclass(frozen=True)
+class DirectHold:
+    """What a held direct-access call's approval carries (§8)."""
+
+    payload: dict[str, Any]
+    #: The department whose policy holds it -- its approvers decide; None:
+    #: the person decides (every write asks, §1).
+    department_id: uuid.UUID | None
+
+
+async def direct_hold(
+    db: AsyncSession,
+    *,
+    run: m.AgentRun,
+    conn: m.McpConnection | None,
+    decision: Decision,
+    direct: DirectAccessRun,
+) -> DirectHold:
+    from oc8.connections.access import ConnectionRequired, account_of, resolve_direct_access
+
+    member = await db.get(m.OrgMember, direct.member_id, populate_existing=True)
+    name = (member.display_name or member.subject) if member is not None else ""
+    account: str | None = None
+    label = conn.name if conn is not None else ""
+    if conn is not None:
+        integration = integration_for_connection(conn)
+        label = integration.label if integration is not None else conn.name
+        try:
+            account = account_of(
+                await resolve_direct_access(db, member_id=direct.member_id, conn=conn)
+            )
+        except (ConnectionRequired, PermissionError):
+            account = None
+    holding = uuid_or_none(decision.context.get(HOLDING_DEPARTMENT))
+    return DirectHold(
+        payload={
+            "member_id": str(direct.member_id),
+            "member_name": name,
+            "session_id": str(direct.session_id),
+            "tool_key": conn.name if conn is not None else "",
+            "label": label,
+            "account": account,
+            "decider": "department" if holding is not None else "member",
+            "department_id": str(holding) if holding is not None else None,
+        },
+        department_id=holding,
     )
