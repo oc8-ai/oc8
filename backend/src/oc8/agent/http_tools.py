@@ -977,10 +977,14 @@ class HttpToolSession:
         try:
             response = await self.request(name, arguments)
         except HttpToolError as exc:
+            # A refusal reports no time: how long the guard's lookup took (an
+            # internal name answering fast, an unknown one slowly) would tell
+            # internal names apart where the message deliberately does not.
+            elapsed = 0 if exc.kind == "blocked" else time.monotonic() - started
             return CallOutcome(
                 ok=False,
                 status=exc.status,
-                duration_ms=int((time.monotonic() - started) * 1000),
+                duration_ms=int(elapsed * 1000),
                 excerpt="",
                 truncated=False,
                 error_class=exc.kind,

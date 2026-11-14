@@ -92,6 +92,13 @@ interface WizardState {
   // the capa id from a successful useInstallCustomCapa call, so step 4's Save
   // does not re-install if step 3 already installed it (e.g. to run a test).
   installedPluginId: string | null;
+  // What that install was made from, so an edit after a test (Back, change a
+  // tool, the URL or the login) is installed again instead of silently lost:
+  // the manifest it was built from, how many versions this wizard installed,
+  // and the connection its setup returned.
+  installedManifestKey: string | null;
+  installedRevision: number;
+  installedConnectionId: string | null;
 }
 
 const INITIAL_STATE: WizardState = {
@@ -112,6 +119,9 @@ const INITIAL_STATE: WizardState = {
   testError: null,
   testedConnectionId: null,
   installedPluginId: null,
+  installedManifestKey: null,
+  installedRevision: 0,
+  installedConnectionId: null,
 };
 
 const SERVER_TYPES: Array<{
@@ -467,22 +477,51 @@ export function CustomMcpWizard({
   // hook into a dynamic-argument shape (see capa-setup-dialog.tsx for the
   // same enable-then-configure-then-test sequence via hooks, for the case
   // where the plugin id is already known up front).
+  //
+  // When the manifest changed since this wizard installed it (the person went
+  // Back after a test and edited a tool, the URL or the login), it is installed
+  // again as a new version, and the connection the old one set up is removed
+  // first: enabling only refreshes a connection's declared seams, so the new
+  // tools, URL and login reach a connection only when it is made afresh.
   async function installEnableConfigure(): Promise<{
     pluginId: string;
     connectionId: string | null;
   }> {
+    const manifest = await buildManifest(state, departments.length > 0);
+    const manifestKey = JSON.stringify(manifest);
     let pluginId = state.installedPluginId;
-    if (!pluginId) {
-      const manifest = await buildManifest(state, departments.length > 0);
-      const installed = await installCustomCapa.mutateAsync({ manifest });
+    let revision = state.installedRevision;
+    if (!pluginId || manifestKey !== state.installedManifestKey) {
+      if (pluginId && state.installedConnectionId) {
+        await api.delete(`/mcp/connections/${state.installedConnectionId}`);
+        update({ installedConnectionId: null });
+      }
+      const previous = pluginId;
+      revision = previous ? revision + 1 : 0;
+      const installed = await installCustomCapa.mutateAsync({
+        manifest: { ...manifest, version: `1.0.${revision}` },
+      });
       pluginId = installed.pluginId;
-      update({ installedPluginId: pluginId });
+      if (previous && previous !== pluginId) {
+        // A new name is a new capa: the one installed under the old name
+        // must not stay enabled behind the person's back.
+        await disablePlugin.mutateAsync({
+          pluginId: previous,
+          reason: "Replaced in the custom MCP wizard after a rename",
+        });
+      }
+      update({
+        installedPluginId: pluginId,
+        installedManifestKey: manifestKey,
+        installedRevision: revision,
+      });
     }
     await enablePlugin.mutateAsync({ pluginId, grantedPermissions: [] });
     const values = buildSetupValues(state, departmentId);
     const result = await api.post<{ connectionId: string | null }>(`/capas/${pluginId}/setup`, {
       values,
     });
+    update({ installedConnectionId: result.connectionId });
     return { pluginId, connectionId: result.connectionId };
   }
 
@@ -962,7 +1001,8 @@ export function CustomMcpWizard({
           <footer className="flex items-center justify-between gap-3 border-t border-border bg-background/30 px-6 py-4">
             <button
               onClick={handleBack}
-              className="inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm text-muted-foreground transition hover:text-foreground"
+              disabled={busy}
+              className="inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
             >
               {step === 0 ? (
                 "Cancel"

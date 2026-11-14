@@ -549,6 +549,9 @@ async def run_test_call(
         login=resolve_http_login(cfg, env),
         timeout_s=_TEST_TIMEOUT_S,
     )
+    # Everything the call needs is loaded: end the transaction now, so its
+    # pooled connection is not held for as long as the API takes to answer.
+    await db.commit()
     try:
         async with session:
             outcome = await session.try_call(body.tool, body.arguments)

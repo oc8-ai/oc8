@@ -3,14 +3,18 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CustomMcpWizard } from "@/components/custom-mcp-wizard";
 
-const { postMock, getMock } = vi.hoisted(() => ({ postMock: vi.fn(), getMock: vi.fn() }));
+const { postMock, getMock, deleteMock } = vi.hoisted(() => ({
+  postMock: vi.fn(),
+  getMock: vi.fn(),
+  deleteMock: vi.fn(),
+}));
 
 vi.mock("@/lib/api", () => ({
   api: {
     post: postMock,
     get: getMock,
     patch: vi.fn(),
-    delete: vi.fn(),
+    delete: deleteMock,
   },
 }));
 
@@ -39,6 +43,8 @@ describe("CustomMcpWizard", () => {
   beforeEach(() => {
     postMock.mockReset();
     getMock.mockReset();
+    deleteMock.mockReset();
+    deleteMock.mockResolvedValue(undefined);
     getMock.mockResolvedValue({ items: [], totalCount: 0 });
   });
 
@@ -269,6 +275,171 @@ describe("CustomMcpWizard", () => {
       }),
     );
     expect(await screen.findByText("The call worked.")).toBeInTheDocument();
+  });
+
+  it("installs the edited connection again when it changed after a test call", async () => {
+    let setups = 0;
+    postMock.mockImplementation((path: string) => {
+      if (path === "/capas") return Promise.resolve({ id: "cv-1", pluginId: "capa-1" });
+      if (path === "/capas/capa-1/enable") return Promise.resolve({});
+      if (path === "/capas/capa-1/setup") {
+        setups += 1;
+        return Promise.resolve({ connectionId: `conn-${setups}` });
+      }
+      if (path.endsWith("/test-call")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          durationMs: 5,
+          excerpt: "[]",
+          truncated: false,
+          errorClass: null,
+          message: "The API answered 200.",
+        });
+      }
+      return Promise.reject(new Error(`unexpected POST ${path}`));
+    });
+    render(<CustomMcpWizard open onOpenChange={() => {}} />, { wrapper });
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Tickets" } });
+    fireEvent.click(screen.getByText("Plain HTTP API"));
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.change(screen.getByPlaceholderText("https://api.example.com"), {
+      target: { value: "https://tickets.acme.test" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /add tool/i }));
+    fireEvent.change(screen.getByPlaceholderText("Tool name"), {
+      target: { value: "list_tickets" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Run test call" }));
+    expect(await screen.findByText("The call worked.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /back/i }));
+    fireEvent.change(screen.getByPlaceholderText("Tool name"), {
+      target: { value: "list_open_tickets" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("https://api.example.com"), {
+      target: { value: "https://v2.tickets.acme.test" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Run test call" }));
+
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledWith("/mcp/connections/conn-2/test-call", {
+        tool: "list_open_tickets",
+        arguments: {},
+      }),
+    );
+    // The stale connection goes, so enabling the new version materialises
+    // a fresh one from the edited manifest.
+    expect(deleteMock).toHaveBeenCalledWith("/mcp/connections/conn-1");
+    const installs = postMock.mock.calls.filter(([path]) => path === "/capas");
+    expect(installs).toHaveLength(2);
+    const second = installs[1][1].manifest;
+    expect(second.version).not.toBe(installs[0][1].manifest.version);
+    expect(second.tool_pack.connections[0].server_url).toBe("https://v2.tickets.acme.test");
+    expect(second.tool_pack.connections[0].config.http_tools[0].name).toBe("list_open_tickets");
+
+    await screen.findByText("The call worked.");
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => expect(setups).toBe(3));
+    // Unchanged since the last test: Save keeps that install.
+    expect(postMock.mock.calls.filter(([path]) => path === "/capas")).toHaveLength(2);
+    expect(deleteMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables the capa installed under the old name after a rename", async () => {
+    let installs = 0;
+    postMock.mockImplementation((path: string) => {
+      if (path === "/capas") {
+        installs += 1;
+        return Promise.resolve({ id: `cv-${installs}`, pluginId: `capa-${installs}` });
+      }
+      if (/^\/capas\/capa-\d\/(enable|disable)$/.test(path)) return Promise.resolve({});
+      if (/^\/capas\/capa-\d\/setup$/.test(path)) {
+        return Promise.resolve({ connectionId: `conn-${installs}` });
+      }
+      if (path.endsWith("/test-call")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          durationMs: 5,
+          excerpt: "[]",
+          truncated: false,
+          errorClass: null,
+          message: "The API answered 200.",
+        });
+      }
+      return Promise.reject(new Error(`unexpected POST ${path}`));
+    });
+    render(<CustomMcpWizard open onOpenChange={() => {}} />, { wrapper });
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Tickets" } });
+    fireEvent.click(screen.getByText("Plain HTTP API"));
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.change(screen.getByPlaceholderText("https://api.example.com"), {
+      target: { value: "https://tickets.acme.test" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /add tool/i }));
+    fireEvent.change(screen.getByPlaceholderText("Tool name"), {
+      target: { value: "list_tickets" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Run test call" }));
+    await screen.findByText("The call worked.");
+
+    fireEvent.click(screen.getByRole("button", { name: /back/i }));
+    fireEvent.click(screen.getByRole("button", { name: /back/i }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Helpdesk" } });
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Run test call" }));
+
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledWith("/mcp/connections/conn-2/test-call", {
+        tool: "list_tickets",
+        arguments: {},
+      }),
+    );
+    expect(postMock).toHaveBeenCalledWith("/capas/capa-1/disable", {
+      reason: "Replaced in the custom MCP wizard after a rename",
+    });
+  });
+
+  it("keeps Back disabled while a test call runs", async () => {
+    let answer: (value: unknown) => void = () => {};
+    postMock.mockImplementation((path: string) => {
+      if (path === "/capas") return Promise.resolve({ id: "cv-1", pluginId: "capa-1" });
+      if (path === "/capas/capa-1/enable") return Promise.resolve({});
+      if (path === "/capas/capa-1/setup") return Promise.resolve({ connectionId: "conn-1" });
+      if (path.endsWith("/test-call")) return new Promise((resolve) => (answer = resolve));
+      return Promise.reject(new Error(`unexpected POST ${path}`));
+    });
+    render(<CustomMcpWizard open onOpenChange={() => {}} />, { wrapper });
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Tickets" } });
+    fireEvent.click(screen.getByText("Plain HTTP API"));
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.change(screen.getByPlaceholderText("https://api.example.com"), {
+      target: { value: "https://tickets.acme.test" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /add tool/i }));
+    fireEvent.change(screen.getByPlaceholderText("Tool name"), {
+      target: { value: "list_tickets" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Run test call" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /back/i })).toBeDisabled());
+    answer({
+      ok: true,
+      status: 200,
+      durationMs: 5,
+      excerpt: "[]",
+      truncated: false,
+      errorClass: null,
+      message: "The API answered 200.",
+    });
+    await screen.findByText("The call worked.");
+    expect(screen.getByRole("button", { name: /back/i })).toBeEnabled();
   });
 
   describe("department", () => {

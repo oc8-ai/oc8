@@ -80,4 +80,35 @@ describe("HttpTestCallPanel", () => {
       await screen.findByText("Only the beginning of the answer is shown."),
     ).toBeInTheDocument();
   });
+
+  it("says the call could not be made, and why, when the API never answered", async () => {
+    const run = vi.fn().mockResolvedValue(
+      result({
+        ok: false,
+        status: null,
+        errorClass: "http",
+        message: "Header 'X-Note' can only carry ASCII text.",
+      }),
+    );
+    render(<HttpTestCallPanel tools={TOOLS} run={run} />);
+    fireEvent.click(screen.getByRole("button", { name: "Run test call" }));
+    expect(await screen.findByText("The call could not be made.")).toBeInTheDocument();
+    expect(screen.getByText("Header 'X-Note' can only carry ASCII text.")).toBeInTheDocument();
+    expect(screen.queryByText("The API answered with an error.")).not.toBeInTheDocument();
+  });
+
+  it("warns that a call other than GET can change data", () => {
+    render(<HttpTestCallPanel tools={TOOLS} run={vi.fn()} />);
+    expect(screen.queryByText("This call can change data in the API.")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Endpoint to test"), {
+      target: { value: "create_ticket" },
+    });
+    expect(screen.getByText("This call can change data in the API.")).toBeInTheDocument();
+  });
+
+  it("explains an empty endpoint list", () => {
+    render(<HttpTestCallPanel tools={[]} run={vi.fn()} />);
+    expect(screen.getByText("Give each endpoint a name first.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run test call" })).toBeDisabled();
+  });
 });

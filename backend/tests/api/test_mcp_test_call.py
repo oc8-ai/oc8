@@ -13,7 +13,9 @@ from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
 
 from oc8 import models as m
+from oc8.agent.http_tools import HttpToolSession
 from oc8.auth import get_identity_provider
+from oc8.db.engine import get_engine
 from oc8.main import create_app
 from tests.conftest import AppSessionFactory
 
@@ -206,6 +208,9 @@ async def test_a_blocked_address(app_session: AppSessionFactory) -> None:
     conn_id = await _conn(app_session, tenant, "http://10.0.0.7")
     body = (await _call(tenant, conn_id, {"tool": "boom", "arguments": {}})).json()
     assert body["errorClass"] == "blocked"
+    # No timing: how long the refusal took (a DNS answer for an internal name
+    # versus a slow NXDOMAIN) would tell internal names apart.
+    assert body["durationMs"] == 0
 
 
 async def test_an_unreachable_api(app_session: AppSessionFactory) -> None:
@@ -251,3 +256,23 @@ async def test_unknown_tool_missing_parameter_and_wrong_transport(
     assert "missing required parameter" in missing.text
     stdio = await _conn(app_session, tenant, "", transport="stdio")
     assert (await _call(tenant, stdio, {"tool": "boom", "arguments": {}})).status_code == 409
+
+
+async def test_no_database_connection_is_held_during_the_call(
+    app_session: AppSessionFactory, api_server: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The call can take up to its timeout; the request's transaction must be
+    # over by then, or a burst of test calls ties up the shared pool.
+    checked_out: list[int] = []
+    original = HttpToolSession.try_call
+
+    async def spy(self: HttpToolSession, name: str, arguments: dict[str, object]):
+        checked_out.append(get_engine().pool.checkedout())
+        return await original(self, name, arguments)
+
+    monkeypatch.setattr(HttpToolSession, "try_call", spy)
+    tenant = uuid.uuid4()
+    conn_id = await _conn(app_session, tenant, api_server)
+    r = await _call(tenant, conn_id, {"tool": "get_ticket", "arguments": {"id": "1"}})
+    assert r.status_code == 200, r.text
+    assert checked_out == [0]

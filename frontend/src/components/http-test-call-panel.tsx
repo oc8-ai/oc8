@@ -52,6 +52,16 @@ export function HttpTestCallPanel({
     http: t("The API answered with an error.", "Die API hat mit einem Fehler geantwortet."),
   };
 
+  // auth and http with no status: the request never got an answer (refused
+  // before sending, a redirect loop, a body that cannot be decoded), so the
+  // API neither "refused the login" nor "answered with an error".
+  const notSent = result !== null && !result.ok && result.status === null;
+  const neutral =
+    notSent && (result.errorClass === "auth" || result.errorClass === "http" || !result.errorClass);
+  const selected = tools.find((x) => x.name === tool);
+  const changesData =
+    selected !== undefined && !["GET", "HEAD"].includes(selected.method.toUpperCase());
+
   async function onRun() {
     let args: unknown;
     try {
@@ -116,6 +126,19 @@ export function HttpTestCallPanel({
           />
         </label>
       </div>
+      {tools.length === 0 && (
+        <p className="text-xs text-muted-foreground">
+          {t("Give each endpoint a name first.", "Gib zuerst jedem Endpunkt einen Namen.")}
+        </p>
+      )}
+      {changesData && (
+        <p className="text-xs text-[color:var(--status-warning)]">
+          {t(
+            "This call can change data in the API.",
+            "Dieser Aufruf kann Daten in der API ändern.",
+          )}
+        </p>
+      )}
       <button
         type="button"
         onClick={() => void onRun()}
@@ -123,7 +146,7 @@ export function HttpTestCallPanel({
         className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background/40 px-3 py-2 text-sm font-medium transition hover:bg-background/70 disabled:cursor-not-allowed disabled:opacity-50"
       >
         <FlaskConical className="h-4 w-4" />
-        {busy ? t("Calling…", "Rufe auf…") : t("Run test call", "Testaufruf starten")}
+        {busy ? t("Calling…", "Wird aufgerufen…") : t("Run test call", "Testaufruf starten")}
       </button>
       {problem && <p className="text-xs text-[color:var(--status-error)]">{problem}</p>}
       {result && (
@@ -136,16 +159,23 @@ export function HttpTestCallPanel({
           >
             {result.ok
               ? t("The call worked.", "Der Aufruf hat funktioniert.")
-              : MESSAGES[result.errorClass ?? "http"]}
+              : neutral
+                ? t("The call could not be made.", "Der Aufruf war nicht möglich.")
+                : MESSAGES[result.errorClass ?? "http"]}
           </p>
-          <p className="text-[11px] text-muted-foreground">
-            {result.status !== null && (
-              <>
-                {t("Status", "Status")} {result.status} ·{" "}
-              </>
-            )}
-            {result.durationMs} ms
-          </p>
+          {neutral && result.message && (
+            <p className="text-xs text-muted-foreground">{result.message}</p>
+          )}
+          {result.errorClass !== "blocked" && (
+            <p className="text-[11px] text-muted-foreground">
+              {result.status !== null && (
+                <>
+                  {t("Status", "Status")} {result.status} ·{" "}
+                </>
+              )}
+              {result.durationMs} ms
+            </p>
+          )}
           {result.excerpt && (
             <pre className="max-h-60 overflow-auto whitespace-pre-wrap rounded bg-background/40 p-2 font-mono text-[11px]">
               {result.excerpt}
