@@ -248,7 +248,9 @@ export type HttpToolProblem =
   | "schema_size";
 
 export const HTTP_TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
-const PARAM_SCHEMA_MAX_BYTES = 64_000;
+/** Measured as compact UTF-8 JSON bytes, as the server measures it
+ * (`schemas/requests.py`, PARAM_SCHEMA_MAX_BYTES), so both refuse the same schema. */
+export const PARAM_SCHEMA_MAX_BYTES = 64_000;
 const PARAM_SCHEMA_MAX_DEPTH = 32;
 
 /** The fields of a tool as an editor holds them: the schema still as text. */
@@ -270,7 +272,9 @@ function schemaProblem(text: string): HttpToolProblem | null {
   if (!isObject(schema) || (schema.type !== undefined && schema.type !== "object")) {
     return "schema_object";
   }
-  if (JSON.stringify(schema).length > PARAM_SCHEMA_MAX_BYTES) return "schema_size";
+  if (new TextEncoder().encode(JSON.stringify(schema)).length > PARAM_SCHEMA_MAX_BYTES) {
+    return "schema_size";
+  }
   const stack: Array<[unknown, number]> = [[schema, 1]];
   while (stack.length > 0) {
     const [node, depth] = stack.pop()!;

@@ -3,11 +3,16 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CustomMcpWizard } from "@/components/custom-mcp-wizard";
 
-const { postMock, getMock, deleteMock, patchMock } = vi.hoisted(() => ({
+const { postMock, getMock, deleteMock, patchMock, toastWarning } = vi.hoisted(() => ({
   postMock: vi.fn(),
   getMock: vi.fn(),
   deleteMock: vi.fn(),
   patchMock: vi.fn(),
+  toastWarning: vi.fn(),
+}));
+
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn(), warning: toastWarning },
 }));
 
 vi.mock("@/lib/api", () => ({
@@ -57,6 +62,7 @@ describe("CustomMcpWizard", () => {
     deleteMock.mockReset();
     deleteMock.mockResolvedValue(undefined);
     patchMock.mockReset();
+    toastWarning.mockReset();
     getMock.mockResolvedValue({ items: [], totalCount: 0 });
   });
 
@@ -743,13 +749,15 @@ describe("CustomMcpWizard", () => {
     // Tests the API in Support, goes back, picks Sales and optionally edits
     // the tool, then tests again.
     async function testThenMoveToSales(editTool: boolean) {
-      let setups = 0;
-      postMock.mockImplementation((path: string) => {
+      // One connection per department, as the server keeps them.
+      const byDepartment: Record<string, string> = { "d-support": "conn-1", "d-sales": "conn-2" };
+      postMock.mockImplementation((path: string, body?: { values?: Record<string, string> }) => {
         if (path === "/capas") return Promise.resolve({ id: "cv-1", pluginId: "capa-1" });
         if (path === "/capas/capa-1/enable") return Promise.resolve({});
         if (path === "/capas/capa-1/setup") {
-          setups += 1;
-          return Promise.resolve({ connectionId: `conn-${setups}` });
+          return Promise.resolve({
+            connectionId: byDepartment[body?.values?.department ?? ""] ?? null,
+          });
         }
         if (path.endsWith("/test-call")) {
           return Promise.resolve({
@@ -822,6 +830,19 @@ describe("CustomMcpWizard", () => {
       expect(patchMock).not.toHaveBeenCalled();
       expect(deleteMock).toHaveBeenCalledWith("/mcp/connections/conn-1");
       expect(deleteMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("removes the left department's connection on the next save when removing it failed", async () => {
+      deleteMock.mockRejectedValueOnce(new Error("busy"));
+      await testThenMoveToSales(false);
+      expect(toastWarning).toHaveBeenCalledTimes(1);
+      expect(deleteMock).toHaveBeenCalledTimes(1);
+
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+      fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+      await waitFor(() => expect(deleteMock).toHaveBeenCalledTimes(2));
+      expect(deleteMock).toHaveBeenLastCalledWith("/mcp/connections/conn-1");
+      expect(toastWarning).toHaveBeenCalledTimes(1);
     });
 
     it("needs a department before going on when the organisation has departments", async () => {

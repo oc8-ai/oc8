@@ -110,6 +110,9 @@ interface WizardState {
   // Capas installed under earlier names whose disabling has not succeeded
   // yet; the next install, test or save tries again.
   replacedPluginIds: string[];
+  // Connections of a department the person moved away from whose removal
+  // failed; the next test or save tries again.
+  pendingConnectionDeletes: string[];
 }
 
 const INITIAL_STATE: WizardState = {
@@ -135,6 +138,7 @@ const INITIAL_STATE: WizardState = {
   installedConnectionId: null,
   installedSetupKey: null,
   replacedPluginIds: [],
+  pendingConnectionDeletes: [],
 };
 
 const SERVER_TYPES: Array<{
@@ -554,6 +558,32 @@ export function CustomMcpWizard({
         ? httpToolsUpdateBetween(state.installedManifest, manifest)
         : null;
 
+    // Removes connections left behind in a department the person moved away
+    // from. One that cannot be removed now stays queued for the next test or
+    // save -- the setup that replaced it already worked -- with a warning.
+    async function removeLeftConnections(extra: string[]): Promise<void> {
+      const queued = [...state.pendingConnectionDeletes, ...extra].filter(
+        (id, i, all) => id !== installedConnectionId && all.indexOf(id) === i,
+      );
+      const failed: string[] = [];
+      for (const id of queued) {
+        try {
+          await api.delete(`/mcp/connections/${id}`);
+        } catch {
+          failed.push(id);
+        }
+      }
+      update({ pendingConnectionDeletes: failed });
+      if (failed.length > 0) {
+        toast.warning(
+          t(
+            "The connection in the department you moved away from could not be removed yet. It is tried again on the next test or save.",
+            "Die Verbindung in der Abteilung, aus der du gewechselt bist, konnte noch nicht entfernt werden. Beim nächsten Test oder Speichern wird es erneut versucht.",
+          ),
+        );
+      }
+    }
+
     // Setup makes one connection per department, so a changed department
     // yields a new connection; the one the first department had -- with the
     // login -- must not stay reachable to that department's agents.
@@ -564,9 +594,7 @@ export function CustomMcpWizard({
       const before = installedConnectionId;
       installedConnectionId = result.connectionId;
       update({ installedConnectionId: result.connectionId, installedSetupKey: setupKey });
-      if (before && before !== result.connectionId) {
-        await api.delete(`/mcp/connections/${before}`);
-      }
+      await removeLeftConnections(before && before !== result.connectionId ? [before] : []);
       return result.connectionId;
     }
 
@@ -575,7 +603,10 @@ export function CustomMcpWizard({
       await patchHttpTools(connectionId, toolsOnly);
       update({ installedManifest: manifest });
       // A changed secret or department travels through setup, as always.
-      if (setupKey === state.installedSetupKey) return { pluginId, connectionId };
+      if (setupKey === state.installedSetupKey) {
+        await removeLeftConnections([]);
+        return { pluginId, connectionId };
+      }
       return { pluginId, connectionId: await setUp(pluginId) };
     }
 

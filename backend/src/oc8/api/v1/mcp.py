@@ -10,7 +10,7 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from oc8 import models as m
 from oc8.agent import mcp_pool
@@ -659,12 +659,9 @@ def _http_tools_snapshot(conn: m.McpConnection) -> HttpToolsSnapshotDTO:
 
 
 async def _http_api_connection(
-    db: DbSession, conn_id: uuid.UUID, principal: CurrentPrincipal, *, lock: bool = False
+    db: DbSession, conn_id: uuid.UUID, principal: CurrentPrincipal
 ) -> m.McpConnection:
-    query = select(m.McpConnection).where(m.McpConnection.id == conn_id)
-    if lock:
-        query = query.with_for_update()
-    conn = (await db.execute(query)).scalar_one_or_none()
+    conn = await db.get(m.McpConnection, conn_id)
     if conn is None or conn.tenant_id != principal.tenant_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "connection not found")
     if conn.transport != "manual_http":
@@ -709,11 +706,14 @@ async def update_http_tools(
     custom capa owns its tools: 409. So is a capa whose current manifest no
     longer has this connection: the rows alone would revert on the next enable.
 
-    The capa and every row are locked for the transaction, so an install of a
-    new version or another edit of the same connection waits instead of
-    writing past this one.
+    Locks, in this order: the capa row (the one mutex for all of a plugin's
+    connections, and the order the Copilot's apply of an enable or setup
+    takes: capa, then its rows), then only this plugin connection's rows,
+    by id. An unstamped row has no capa and is locked alone. So an install of
+    a new version, an enable or another edit of the same plugin waits instead
+    of writing past this one, and unrelated connections are never held.
     """
-    conn = await _http_api_connection(db, conn_id, principal, lock=True)
+    conn = await _http_api_connection(db, conn_id, principal)
     cfg = conn.config or {}
     tools = [
         {
@@ -735,7 +735,6 @@ async def update_http_tools(
     replace_meta = "openapi" in body.model_fields_set
     meta = body.openapi.model_dump(mode="json") if body.openapi is not None else None
 
-    rows = [conn]
     plugin_name = cfg.get("_plugin_name")
     connection_key = cfg.get("_connection_key", "default")
     if isinstance(plugin_name, str) and plugin_name:
@@ -746,19 +745,28 @@ async def update_http_tools(
                 .with_for_update()
             )
         ).scalar_one_or_none()
-        rows = [
-            row
-            for row in (
+        rows = list(
+            (
                 await db.execute(
                     select(m.McpConnection)
-                    .where(m.McpConnection.tenant_id == principal.tenant_id)
+                    .where(
+                        m.McpConnection.tenant_id == principal.tenant_id,
+                        m.McpConnection.config["_plugin_name"].astext == plugin_name,
+                        func.coalesce(m.McpConnection.config["_connection_key"].astext, "default")
+                        == connection_key,
+                    )
                     .order_by(m.McpConnection.id)
                     .with_for_update()
+                    .execution_options(populate_existing=True)
                 )
             ).scalars()
-            if (row.config or {}).get("_plugin_name") == plugin_name
-            and (row.config or {}).get("_connection_key", "default") == connection_key
-        ]
+        )
+        if conn not in rows:
+            # Moved to another plugin connection (or deleted) between the read
+            # and the lock: the edit would land on the wrong rows.
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "this connection changed meanwhile; load it again"
+            )
         if capa is not None:
             if capa.origin != "custom":
                 raise HTTPException(
@@ -768,6 +776,20 @@ async def update_http_tools(
             await _write_custom_manifest(
                 db, capa, connection_key, tools, scopes, meta, replace_meta=replace_meta
             )
+    else:
+        locked = (
+            await db.execute(
+                select(m.McpConnection)
+                .where(m.McpConnection.id == conn.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if locked is None or (locked.config or {}).get("_plugin_name"):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "this connection changed meanwhile; load it again"
+            )
+        rows = [locked]
 
     names = [t["name"] for t in tools]
     for row in rows:

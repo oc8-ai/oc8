@@ -5,7 +5,9 @@ and in the custom capa's own manifest so an enable cannot undo it."""
 
 from __future__ import annotations
 
+import asyncio
 import copy
+import json
 import uuid
 from typing import Any
 
@@ -427,6 +429,109 @@ async def test_pooled_sessions_close_after_the_edit_is_committed(
     assert seen == [["list_tickets", "get_ticket"]]
 
 
+async def _sibling(app_session: AppSessionFactory, tenant: uuid.UUID) -> uuid.UUID:
+    """A second department's row of the same plugin connection."""
+    first = (await _rows(app_session, tenant))[0]
+    async with app_session(tenant) as db:
+        sibling = m.McpConnection(
+            tenant_id=tenant,
+            name="acme_tickets_api",
+            server_url=first.server_url,
+            transport="manual_http",
+            scopes=first.scopes,
+            config=dict(first.config),
+            connected=False,
+        )
+        db.add(sibling)
+        await db.flush()
+        sibling_id = sibling.id
+        await db.commit()
+    return sibling_id
+
+
+async def test_concurrent_edits_of_sibling_rows_wait_for_the_plugin_not_each_other(
+    app_session: AppSessionFactory,
+) -> None:
+    """The capa row is the one lock for all of a plugin's connections, taken
+    first -- the order the Copilot's apply of an enable or setup takes (capa,
+    then its rows). While something holds the capa and updates a row, two
+    edits of sibling rows queue behind it instead of deadlocking with it."""
+    tenant = uuid.uuid4()
+    app = create_app()
+    async with (
+        LifespanManager(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c,
+    ):
+        await _installed(c, tenant)
+        first_id = (await _rows(app_session, tenant))[0].id
+        sibling_id = await _sibling(app_session, tenant)
+        async with app_session(tenant) as holder:
+            await holder.execute(
+                select(m.Capa).where(m.Capa.name == "acme_tickets_api").with_for_update()
+            )
+            edits = [
+                asyncio.create_task(
+                    c.patch(
+                        f"/api/v1/mcp/connections/{conn_id}/http-tools",
+                        json=_patch_body(),
+                        headers=_h(tenant),
+                    )
+                )
+                for conn_id in (first_id, sibling_id)
+            ]
+            await asyncio.sleep(0.5)
+            assert not any(edit.done() for edit in edits)
+            # What an enable applied under the capa lock does next: touch a row.
+            row = await holder.get(m.McpConnection, first_id)
+            assert row is not None
+            row.health = {"status": "unknown"}
+            await asyncio.wait_for(holder.flush(), timeout=5)
+        results = await asyncio.wait_for(asyncio.gather(*edits), timeout=15)
+    assert [r.status_code for r in results] == [200, 200], [r.text for r in results]
+    for row in await _rows(app_session, tenant):
+        assert [t["name"] for t in row.config["http_tools"]] == ["list_tickets", "get_ticket"]
+
+
+async def test_an_edit_does_not_lock_unrelated_connections(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        other = m.McpConnection(
+            tenant_id=tenant,
+            name="other",
+            server_url="https://other.acme.test",
+            transport="manual_http",
+            scopes=[],
+            config={"http_tools": _TOOLS},
+            connected=False,
+        )
+        db.add(other)
+        await db.flush()
+        other_id = other.id
+        await db.commit()
+    app = create_app()
+    async with (
+        LifespanManager(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c,
+    ):
+        await _installed(c, tenant)
+        conn_id = (await _rows(app_session, tenant))[0].id
+        async with app_session(tenant) as holder:
+            # A health write on another connection, still open.
+            held = await holder.get(m.McpConnection, other_id, with_for_update=True)
+            assert held is not None
+            held.health = {"status": "ok"}
+            await holder.flush()
+            r = await asyncio.wait_for(
+                c.patch(
+                    f"/api/v1/mcp/connections/{conn_id}/http-tools",
+                    json=_patch_body(),
+                    headers=_h(tenant),
+                ),
+                timeout=10,
+            )
+    assert r.status_code == 200, r.text
+
+
 async def test_scope_lists_are_deduplicated(app_session: AppSessionFactory) -> None:
     tenant = uuid.uuid4()
     app = create_app()
@@ -548,6 +653,25 @@ def _huge_schema() -> dict[str, Any]:
         "type": "object",
         "properties": {f"p{i}": {"type": "string", "description": "x" * 100} for i in range(700)},
     }
+
+
+def _schema_of_bytes(n: int) -> dict[str, Any]:
+    """An object schema whose compact UTF-8 JSON is exactly `n` bytes, most of
+    it in a German description (two bytes per umlaut)."""
+    base = {"type": "object", "description": ""}
+    empty = len(json.dumps(base, separators=(",", ":"), ensure_ascii=False).encode())
+    room = n - empty
+    base["description"] = "ä" * (room // 2) + "a" * (room % 2)
+    return base
+
+
+def test_the_schema_size_limit_counts_compact_utf8_bytes() -> None:
+    from oc8.schemas.requests import PARAM_SCHEMA_MAX_BYTES, HttpToolSpec
+
+    at_limit = _schema_of_bytes(PARAM_SCHEMA_MAX_BYTES)
+    HttpToolSpec.model_validate(_tool(paramSchema=at_limit))
+    with pytest.raises(ValueError, match="larger than"):
+        HttpToolSpec.model_validate(_tool(paramSchema=_schema_of_bytes(PARAM_SCHEMA_MAX_BYTES + 1)))
 
 
 def test_a_local_ref_is_accepted() -> None:

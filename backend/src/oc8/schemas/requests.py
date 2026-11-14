@@ -456,7 +456,9 @@ class HttpTestCallRequest(CamelModel):
 _HTTP_TOOL_NAME = r"^[A-Za-z0-9_-]{1,64}$"
 #: Bounds on one tool's parameter schema, checked before it is walked by the
 #: JSON Schema meta-validator (which recurses) or forwarded to a model.
-_PARAM_SCHEMA_MAX_BYTES = 64_000
+#: Measured as compact UTF-8 JSON bytes, the way the frontend measures it
+#: (`lib/http-tools.ts`, PARAM_SCHEMA_MAX_BYTES), so both refuse the same schema.
+PARAM_SCHEMA_MAX_BYTES = 64_000
 _PARAM_SCHEMA_MAX_DEPTH = 32
 
 
@@ -511,8 +513,9 @@ class HttpToolSpec(CamelModel):
         problem = _schema_shape_problem(value)
         if problem:
             raise ValueError(problem)
-        if len(json.dumps(value)) > _PARAM_SCHEMA_MAX_BYTES:
-            raise ValueError(f"param_schema is larger than {_PARAM_SCHEMA_MAX_BYTES} bytes")
+        size = len(json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode())
+        if size > PARAM_SCHEMA_MAX_BYTES:
+            raise ValueError(f"param_schema is larger than {PARAM_SCHEMA_MAX_BYTES} bytes")
         try:
             jsonschema.validators.validator_for(value).check_schema(value)
         except jsonschema.SchemaError as exc:
