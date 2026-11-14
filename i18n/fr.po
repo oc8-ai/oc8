@@ -1,15 +1,9 @@
 msgid ""
 msgstr ""
 "Project-Id-Version: oc8\n"
-"PO-Revision-Date: 2026-11-10 14:08+0000\n"
-"Last-Translator: oc8 Admin <jm@oc8.ai>\n"
-"Language-Team: French <https://translate.oc8.ai/projects/oc8/core-ui/fr/>\n"
-"Language: fr\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"Plural-Forms: nplurals=2; plural=n > 1;\n"
-"X-Generator: Weblate 2026.11.1\n"
 "X-Native-Name: Français\n"
 "X-Flag: 🇫🇷\n"
 
@@ -20,90 +14,6 @@ msgstr " (s'ouvre dans un nouvel onglet)"
 #, fuzzy
 msgid " of "
 msgstr " sur "
-
-#, fuzzy
-msgid "Answers right away, barely thinks"
-msgstr "Répond tout de suite, réfléchit à peine"
-
-#, fuzzy
-msgid "Balanced"
-msgstr "Équilibré"
-
-#, fuzzy
-msgid "Can think"
-msgstr "Peut réfléchir"
-
-#, fuzzy
-msgid "Custom effort value"
-msgstr "Valeur d'effort personnalisée"
-
-#, fuzzy
-msgid "Custom setting"
-msgstr "Réglage personnalisé"
-
-#, fuzzy
-msgid "Custom value"
-msgstr "Valeur personnalisée"
-
-#, fuzzy
-msgid "e.g. max"
-msgstr "p. ex. max"
-
-#, fuzzy
-msgid "Fast"
-msgstr "Rapide"
-
-#, fuzzy
-msgid "from extra parameters"
-msgstr "issu des paramètres supplémentaires"
-
-#, fuzzy
-msgid "How hard this model thinks when neither the chat nor the agent sets a level. A custom value is forwarded to the provider as typed."
-msgstr "Intensité de réflexion de ce modèle lorsque ni le chat ni l'agent ne fixent de niveau. Une valeur personnalisée est transmise telle quelle au fournisseur."
-
-#, fuzzy
-msgid "Not set"
-msgstr "Non défini"
-
-#, fuzzy
-msgid "Reasoning"
-msgstr "Réflexion"
-
-#, fuzzy
-msgid "Reasoning level not supported by this model, answered without thinking."
-msgstr "Niveau de réflexion non pris en charge par ce modèle, réponse sans réflexion."
-
-#, fuzzy
-msgid "Reasoning: {level}"
-msgstr "Réflexion : {level}"
-
-#, fuzzy
-msgid "Shows the reasoning-level control in chats on this model and sends the chosen level to the provider."
-msgstr "Affiche le choix du niveau de réflexion dans les chats sur ce modèle et transmet le niveau choisi au fournisseur."
-
-#, fuzzy
-msgid "That reasoning level isn't available. Pick another one."
-msgstr "Ce niveau de réflexion n'est pas disponible. Choisissez-en un autre."
-
-#, fuzzy
-msgid "The reasoning level couldn't be changed. Try again."
-msgstr "Le niveau de réflexion n'a pas pu être modifié. Réessayez."
-
-#, fuzzy
-msgid "The reasoning level you picked couldn't be set. Your message wasn't sent – send it again or pick another level."
-msgstr "Le niveau de réflexion choisi n'a pas pu être appliqué. Votre message n'a pas été envoyé – renvoyez-le ou choisissez un autre niveau."
-
-#, fuzzy
-msgid "The usual choice"
-msgstr "Le choix habituel"
-
-#, fuzzy
-msgid "Thinks longer for tricky questions; slower and costs more"
-msgstr "Réfléchit plus longtemps aux questions difficiles ; plus lent et plus coûteux"
-
-#, fuzzy
-msgid "Thorough"
-msgstr "Approfondi"
 
 #, fuzzy
 msgid "— no agent"
@@ -158,6 +68,10 @@ msgid "A background agent's run was interrupted."
 msgstr "L'exécution d'un agent en arrière-plan a été interrompue."
 
 #, fuzzy
+msgid "A Basic username cannot contain a colon."
+msgstr "Un nom d'utilisateur Basic ne peut pas contenir de deux-points."
+
+#, fuzzy
 msgid "A Capa is anything installable in oc8 — an agent template, an MCP tool pack, a guardrail set, a department template, a runtime, or a bundle of several."
 msgstr "Une Capa est tout ce qui s'installe dans oc8 : un modèle d'agent, un pack d'outils MCP, un ensemble de garde-fous, un modèle de département, un runtime ou un bundle regroupant plusieurs de ces éléments."
 
@@ -202,8 +116,24 @@ msgid "A skill is no longer available."
 msgstr "Une compétence n'est plus disponible."
 
 #, fuzzy
+msgid "A skill needs a system this agent would not have."
+msgstr "Une compétence a besoin d'un système que cet agent n'aurait pas."
+
+#, fuzzy
+msgid "A system cannot report amounts, so it cannot take an amount limit."
+msgstr "Un système ne peut pas indiquer de montants, il ne peut donc pas avoir de limite de montant."
+
+#, fuzzy
 msgid "A system is no longer connected or not released for this department."
 msgstr "Un système n'est plus connecté ou n'est pas autorisé pour ce département."
+
+#, fuzzy
+msgid "A system is switched off or restricted for this department."
+msgstr "Un système est désactivé ou restreint pour ce service."
+
+#, fuzzy
+msgid "A system needs a login chosen for this agent first. Set it up under Connections."
+msgstr "Il faut d'abord choisir une connexion pour cet agent dans un système. Configure-la sous Connexions."
 
 #, fuzzy
 msgid "A template only — it ticks boxes now and is not stored. There is no inheritance."
@@ -328,6 +258,10 @@ msgstr "Ajouter un serveur MCP personnalisé"
 #, fuzzy
 msgid "Add custom server or API"
 msgstr "Ajouter un serveur ou une API personnalisés"
+
+#, fuzzy
+msgid "Add each endpoint yourself: method, path and parameters."
+msgstr "Ajoute chaque endpoint toi-même : méthode, chemin et paramètres."
 
 #, fuzzy
 msgid "Add existing source…"
@@ -578,12 +512,20 @@ msgid "An answer is still being written. Try again once it's done."
 msgstr "Une réponse est encore en cours de rédaction. Réessayez une fois qu'elle est terminée."
 
 #, fuzzy
+msgid "An endpoint either reads or modifies, not both:"
+msgstr "Un endpoint lit ou modifie, pas les deux :"
+
+#, fuzzy
 msgid "Analytics"
 msgstr "Analytique"
 
 #, fuzzy
 msgid "another agent"
 msgstr "un autre agent"
+
+#, fuzzy
+msgid "Another tool already has this name."
+msgstr "Un autre outil porte déjà ce nom."
 
 #, fuzzy
 msgid "Answer"
@@ -614,6 +556,10 @@ msgid "Answered from the department cache, not a fresh model call"
 msgstr "Réponse issue du cache du département, sans nouvel appel au modèle"
 
 #, fuzzy
+msgid "Answers right away, barely thinks"
+msgstr "Répond tout de suite, réfléchit à peine"
+
+#, fuzzy
 msgid "Answers to the questions"
 msgstr "Réponses aux questions"
 
@@ -632,6 +578,10 @@ msgstr "Tout système capable d'envoyer un POST JSON peut déclencher cet agent,
 #, fuzzy
 msgid "Any trust level"
 msgstr "Tout niveau de confiance"
+
+#, fuzzy
+msgid "API key"
+msgstr "Clé d'API"
 
 #, fuzzy
 msgid "API key deleted"
@@ -754,6 +704,10 @@ msgid "Archived"
 msgstr "Archivé"
 
 #, fuzzy
+msgid "Arguments (JSON)"
+msgstr "Arguments (JSON)"
+
+#, fuzzy
 msgid "Ask an administrator to add you — your queue appears the moment they do."
 msgstr "Demandez à un administrateur de vous ajouter : votre file apparaît dès que c'est fait."
 
@@ -780,6 +734,10 @@ msgstr "A demandé une décision"
 #, fuzzy
 msgid "Asked you"
 msgstr "Vous a posé la question"
+
+#, fuzzy
+msgid "Asking a colleague …"
+msgstr "Demande à un collègue …"
 
 #, fuzzy
 msgid "Asking a question"
@@ -974,6 +932,10 @@ msgid "Bad answer"
 msgstr "Mauvaise réponse"
 
 #, fuzzy
+msgid "Balanced"
+msgstr "Équilibré"
+
+#, fuzzy
 msgid "Bar"
 msgstr "Barres"
 
@@ -1056,6 +1018,14 @@ msgstr "en cache"
 #, fuzzy
 msgid "Called with no arguments."
 msgstr "Appelé sans argument."
+
+#, fuzzy
+msgid "Calling…"
+msgstr "Appel en cours…"
+
+#, fuzzy
+msgid "Can think"
+msgstr "Peut réfléchir"
 
 #, fuzzy
 msgid "Cancel"
@@ -1254,6 +1224,10 @@ msgid "Checking what needs a decision"
 msgstr "Vérifie ce qui nécessite une décision"
 
 #, fuzzy
+msgid "Checking your approvals …"
+msgstr "Vérifie tes validations …"
+
+#, fuzzy
 msgid "Choose a company, or create a safely isolated one for local testing."
 msgstr "Choisissez une entreprise ou créez-en une isolée en toute sécurité pour des tests locaux."
 
@@ -1272,6 +1246,10 @@ msgstr "Choisissez une disposition de départ"
 #, fuzzy
 msgid "Choose an agent…"
 msgstr "Choisir un agent…"
+
+#, fuzzy
+msgid "Choose at least one endpoint."
+msgstr "Choisis au moins un endpoint."
 
 #, fuzzy
 msgid "Choose from a data source"
@@ -1316,6 +1294,14 @@ msgstr "Cliquez sur Exporter pour télécharger le fichier ZIP."
 #, fuzzy
 msgid "Click to review"
 msgstr "Cliquer pour examiner"
+
+#, fuzzy
+msgid "Client ID"
+msgstr "ID client"
+
+#, fuzzy
+msgid "Client secret"
+msgstr "Secret client"
 
 #, fuzzy
 msgid "Close"
@@ -1452,6 +1438,10 @@ msgstr "Connecter un autre fournisseur"
 #, fuzzy
 msgid "Connect existing vector index"
 msgstr "Connecter un index vectoriel existant"
+
+#, fuzzy
+msgid "Connect first"
+msgstr "Connecte d'abord"
 
 #, fuzzy
 msgid "Connect model"
@@ -1862,6 +1852,10 @@ msgid "Could not save settings."
 msgstr "Impossible d'enregistrer les paramètres."
 
 #, fuzzy
+msgid "Could not save the endpoints."
+msgstr "Impossible d'enregistrer les endpoints."
+
+#, fuzzy
 msgid "Could not save the preset."
 msgstr "Impossible d'enregistrer le préréglage."
 
@@ -2162,12 +2156,24 @@ msgid "Currently in this company → in the archive"
 msgstr "Actuellement dans cette entreprise → dans l'archive"
 
 #, fuzzy
+msgid "Custom effort value"
+msgstr "Valeur d'effort personnalisée"
+
+#, fuzzy
 msgid "Custom MCP capa"
 msgstr "Capa MCP personnalisée"
 
 #, fuzzy
 msgid "Custom server or API"
 msgstr "Serveur ou API personnalisés"
+
+#, fuzzy
+msgid "Custom setting"
+msgstr "Réglage personnalisé"
+
+#, fuzzy
+msgid "Custom value"
+msgstr "Valeur personnalisée"
 
 #, fuzzy
 msgid "Daily"
@@ -2446,6 +2452,10 @@ msgid "Describe step by step what the skill should do…"
 msgstr "Décrivez étape par étape ce que la compétence doit faire…"
 
 #, fuzzy
+msgid "Describe them by hand"
+msgstr "Décris-les à la main"
+
+#, fuzzy
 msgid "Description"
 msgstr "Description"
 
@@ -2610,6 +2620,10 @@ msgid "e.g. Legal & Compliance"
 msgstr "p. ex. Juridique et conformité"
 
 #, fuzzy
+msgid "e.g. max"
+msgstr "p. ex. max"
+
+#, fuzzy
 msgid "e.g. Nova, Atlas, Miro …"
 msgstr "p. ex. Nova, Atlas, Miro …"
 
@@ -2648,6 +2662,10 @@ msgstr "Modifier les identifiants"
 #, fuzzy
 msgid "Edit data source"
 msgstr "Modifier la source de données"
+
+#, fuzzy
+msgid "Edit endpoints"
+msgstr "Modifier les endpoints"
 
 #, fuzzy
 msgid "Edit model"
@@ -2726,6 +2744,10 @@ msgid "End schedule"
 msgstr "Mettre fin à la planification"
 
 #, fuzzy
+msgid "Endpoint to test"
+msgstr "Endpoint à tester"
+
+#, fuzzy
 msgid "Ends"
 msgstr "Se termine"
 
@@ -2756,6 +2778,10 @@ msgstr "Entrer dans la salle"
 #, fuzzy
 msgid "Enter the 6-digit code"
 msgstr "Saisissez le code à 6 chiffres"
+
+#, fuzzy
+msgid "Enter the path below the base URL, starting with /."
+msgstr "Indique le chemin sous l'URL de base, en commençant par /."
 
 #, fuzzy
 msgid "Enter this code on that page:"
@@ -2834,8 +2860,16 @@ msgid "Every export, with or without a passphrase, carries every member's passwo
 msgstr "Chaque export, avec ou sans phrase secrète, contient le hachage du mot de passe de chaque membre. Avec une phrase secrète, le fichier contient aussi tous les identifiants de fournisseurs et jetons OAuth de cette entreprise, chiffrés avec elle : quiconque possède le fichier ET la phrase secrète détient aussi ces identifiants. La phrase secrète est irrécupérable en cas de perte ; la perdre ne coûte que les secrets, tout le reste se restaure toujours."
 
 #, fuzzy
+msgid "Every hour"
+msgstr "Toutes les heures"
+
+#, fuzzy
 msgid "Every installable capability — connectors, tools, guardrails, templates."
 msgstr "Toutes les fonctionnalités installables : connecteurs, outils, garde-fous, modèles."
+
+#, fuzzy
+msgid "Every minute"
+msgstr "Toutes les minutes"
 
 #, fuzzy
 msgid "Every save is kept — nothing is pruned."
@@ -2900,6 +2934,10 @@ msgstr "échoué"
 #, fuzzy
 msgid "Failed"
 msgstr "Échoué"
+
+#, fuzzy
+msgid "Fast"
+msgstr "Rapide"
 
 #, fuzzy
 msgid "Fetch again"
@@ -3042,6 +3080,10 @@ msgid "From a chat"
 msgstr "Depuis un chat"
 
 #, fuzzy
+msgid "from extra parameters"
+msgstr "issu des paramètres supplémentaires"
+
+#, fuzzy
 msgid "From store"
 msgstr "Depuis le catalogue"
 
@@ -3092,6 +3134,14 @@ msgstr "Dépôt Git ou archive"
 #, fuzzy
 msgid "Give a reason first — a rejection with none is a dead end for the agent that has to act on it"
 msgstr "Indiquez d'abord un motif : un refus sans motif est une impasse pour l'agent qui doit y donner suite"
+
+#, fuzzy
+msgid "Give each endpoint a name first."
+msgstr "Donne d'abord un nom à chaque endpoint."
+
+#, fuzzy
+msgid "Give this tool a name."
+msgstr "Donne un nom à cet outil."
 
 #, fuzzy
 msgid "Go to my work"
@@ -3186,6 +3236,10 @@ msgid "Hard limit exceeded — new tasks are paused."
 msgstr "Limite stricte dépassée : nouvelles tâches en pause."
 
 #, fuzzy
+msgid "Header"
+msgstr "En-tête"
+
+#, fuzzy
 msgid "Held by"
 msgstr "Détenu par"
 
@@ -3216,6 +3270,14 @@ msgstr "Recrutez un agent depuis la page Agents."
 #, fuzzy
 msgid "History"
 msgstr "Historique"
+
+#, fuzzy
+msgid "How do you describe the endpoints?"
+msgstr "Comment décris-tu les endpoints ?"
+
+#, fuzzy
+msgid "How hard this model thinks when neither the chat nor the agent sets a level. A custom value is forwarded to the provider as typed."
+msgstr "Intensité de réflexion de ce modèle lorsque ni le chat ni l'agent ne fixent de niveau. Une valeur personnalisée est transmise telle quelle au fournisseur."
 
 #, fuzzy
 msgid "How many tool-using steps this agent may take in one run before it stops. Blank inherits the framework default (currently high, not unlimited -- budget/token metering only checks once per run)."
@@ -3432,6 +3494,10 @@ msgstr "Continuer"
 #, fuzzy
 msgid "key"
 msgstr "clé"
+
+#, fuzzy
+msgid "Key name"
+msgstr "Nom de la clé"
 
 #, fuzzy
 msgid "Knowledge"
@@ -3718,6 +3784,10 @@ msgid "Looking through its notes"
 msgstr "Parcourt ses notes"
 
 #, fuzzy
+msgid "Looking through its notes …"
+msgstr "Parcourt ses notes …"
+
+#, fuzzy
 msgid "Made a note"
 msgstr "A pris une note"
 
@@ -3970,6 +4040,10 @@ msgid "Narrowed"
 msgstr "Restreint"
 
 #, fuzzy
+msgid "Needs an organisation connection"
+msgstr "Nécessite une connexion de l'organisation"
+
+#, fuzzy
 msgid "Needs reconnecting"
 msgstr "Reconnexion nécessaire"
 
@@ -4118,6 +4192,10 @@ msgid "Next step"
 msgstr "Étape suivante"
 
 #, fuzzy
+msgid "No access token: the token URL refused or did not answer. The API itself was not called."
+msgstr "Pas de jeton d'accès : l'URL du jeton a refusé ou n'a pas répondu. L'API elle-même n'a pas été appelée."
+
+#, fuzzy
 msgid "No activity yet for this agent."
 msgstr "Aucune activité pour cet agent pour l'instant."
 
@@ -4176,6 +4254,10 @@ msgstr "Aucune source de données connectée pour l'instant : créez-en d'abord
 #, fuzzy
 msgid "No connection matches."
 msgstr "Aucune connexion ne correspond."
+
+#, fuzzy
+msgid "No connection was created to test."
+msgstr "Aucune connexion n'a été créée pour le test."
 
 #, fuzzy
 msgid "No contract bindings involve this department."
@@ -4268,6 +4350,10 @@ msgstr "Aucune limite définie pour l'instant. Ajoutez-en une pour protéger vot
 #, fuzzy
 msgid "No locally authored skills to export."
 msgstr "Aucune compétence créée localement à exporter."
+
+#, fuzzy
+msgid "No login"
+msgstr "Sans connexion"
 
 #, fuzzy
 msgid "No mail server is configured for this instance, so the invite could not be emailed. Copy this link and send it to the new user yourself — it lets them set their own password."
@@ -4466,6 +4552,10 @@ msgid "not set"
 msgstr "non défini"
 
 #, fuzzy
+msgid "Not set"
+msgstr "Non défini"
+
+#, fuzzy
 msgid "not set up"
 msgstr "non configuré"
 
@@ -4546,6 +4636,10 @@ msgid "Notify — alert only"
 msgstr "Notifier : alerte uniquement"
 
 #, fuzzy
+msgid "OAuth2 client credentials"
+msgstr "Identifiants client OAuth2"
+
+#, fuzzy
 msgid "Observe reasoning traces"
 msgstr "Observer les traces de raisonnement"
 
@@ -4596,6 +4690,10 @@ msgstr "Pour moi uniquement"
 #, fuzzy
 msgid "Only on-prem models are offered: this deployment routes every embedding through the local Ollama instance, so a cloud model would fail the moment a document is ingested."
 msgstr "Seuls les modèles sur site sont proposés : le déploiement fait passer tous les embeddings par l'instance Ollama locale, un modèle cloud échouerait donc dès l'ingestion d'un document."
+
+#, fuzzy
+msgid "Only the beginning of the answer is shown."
+msgstr "Seul le début de la réponse est affiché."
 
 #, fuzzy
 msgid "Only these surfaces (optional)"
@@ -5018,6 +5116,10 @@ msgid "QR code"
 msgstr "Code QR"
 
 #, fuzzy
+msgid "Query string"
+msgstr "Chaîne de requête"
+
+#, fuzzy
 msgid "Questions"
 msgstr "Questions"
 
@@ -5082,6 +5184,10 @@ msgid "Reading a resource"
 msgstr "Lit la ressource"
 
 #, fuzzy
+msgid "Reading a web page …"
+msgstr "Lit une page web …"
+
+#, fuzzy
 msgid "Reading archive…"
 msgstr "Lecture de l'archive…"
 
@@ -5106,8 +5212,20 @@ msgid "Reason"
 msgstr "Motif"
 
 #, fuzzy
+msgid "Reasoning"
+msgstr "Réflexion"
+
+#, fuzzy
 msgid "reasoning engine"
 msgstr "moteur de raisonnement"
+
+#, fuzzy
+msgid "Reasoning level not supported by this model, answered without thinking."
+msgstr "Niveau de réflexion non pris en charge par ce modèle, réponse sans réflexion."
+
+#, fuzzy
+msgid "Reasoning: {level}"
+msgstr "Réflexion : {level}"
 
 #, fuzzy
 msgid "Recent"
@@ -5450,6 +5568,10 @@ msgid "Run on behalf of the creator"
 msgstr "Exécuter au nom du créateur"
 
 #, fuzzy
+msgid "Run test call"
+msgstr "Lancer l'appel de test"
+
+#, fuzzy
 msgid "running"
 msgstr "en cours d'exécution"
 
@@ -5590,6 +5712,10 @@ msgid "Scope"
 msgstr "Portée"
 
 #, fuzzy
+msgid "Scope (optional)"
+msgstr "Scope (facultatif)"
+
+#, fuzzy
 msgid "Search"
 msgstr "Rechercher"
 
@@ -5686,6 +5812,14 @@ msgid "Searching the knowledge base"
 msgstr "Interroge la base de connaissances"
 
 #, fuzzy
+msgid "Searching the knowledge base …"
+msgstr "Recherche dans la base de connaissances …"
+
+#, fuzzy
+msgid "Searching the web …"
+msgstr "Recherche sur le web …"
+
+#, fuzzy
 msgid "Seat added"
 msgstr "Poste ajouté"
 
@@ -5772,6 +5906,10 @@ msgstr "Soumettre pour approbation"
 #, fuzzy
 msgid "Send reset link"
 msgstr "Envoyer le lien de réinitialisation"
+
+#, fuzzy
+msgid "Send the key in"
+msgstr "Envoyer la clé dans"
 
 #, fuzzy
 msgid "Sending…"
@@ -5914,8 +6052,16 @@ msgid "Show work panel"
 msgstr "Afficher le panneau de travail"
 
 #, fuzzy
+msgid "Show work panel ({count} items)"
+msgstr "Afficher le panneau de travail ({count} éléments)"
+
+#, fuzzy
 msgid "Showed a summary"
 msgstr "A affiché un résumé"
+
+#, fuzzy
+msgid "Shows the reasoning-level control in chats on this model and sends the chosen level to the provider."
+msgstr "Affiche le choix du niveau de réflexion dans les chats sur ce modèle et transmet le niveau choisi au fournisseur."
 
 #, fuzzy
 msgid "Sign in"
@@ -6358,6 +6504,10 @@ msgid "That name is already taken."
 msgstr "Ce nom est déjà pris."
 
 #, fuzzy
+msgid "That reasoning level isn't available. Pick another one."
+msgstr "Ce niveau de réflexion n'est pas disponible. Choisissez-en un autre."
+
+#, fuzzy
 msgid "The access could not be saved. Please try again."
 msgstr "L'accès n'a pas pu être enregistré. Veuillez réessayer."
 
@@ -6382,12 +6532,44 @@ msgid "The agent was not created. Try again."
 msgstr "L'agent n'a pas été créé. Réessayez."
 
 #, fuzzy
+msgid "The agent's runtime cannot run skills."
+msgstr "L'environnement d'exécution de l'agent ne peut pas exécuter de compétences."
+
+#, fuzzy
 msgid "The answer was not stopped. Try again."
 msgstr "La réponse n'a pas été arrêtée. Réessayez."
 
 #, fuzzy
+msgid "The API answered with an error."
+msgstr "L'API a répondu par une erreur."
+
+#, fuzzy
+msgid "The API is not reachable."
+msgstr "L'API est injoignable."
+
+#, fuzzy
+msgid "The API needs a base URL starting with http:// or https://."
+msgstr "L'API a besoin d'une URL de base commençant par http:// ou https://."
+
+#, fuzzy
+msgid "The API refused the login. Check the login."
+msgstr "L'API a refusé la connexion. Vérifie la connexion."
+
+#, fuzzy
+msgid "The arguments must be a JSON object."
+msgstr "Les arguments doivent être un objet JSON."
+
+#, fuzzy
 msgid "The assistant returned no answer. Try again or rephrase."
 msgstr "L'assistant n'a renvoyé aucune réponse. Réessayez ou reformulez."
+
+#, fuzzy
+msgid "The call could not be made."
+msgstr "L'appel n'a pas pu être effectué."
+
+#, fuzzy
+msgid "The call worked."
+msgstr "L'appel a fonctionné."
 
 #, fuzzy
 msgid "The chat was not changed. Try again."
@@ -6422,6 +6604,14 @@ msgid "The connection did not work. Please check your entries and try again."
 msgstr "La connexion n'a pas fonctionné. Vérifiez votre saisie et réessayez."
 
 #, fuzzy
+msgid "The connection in the department you moved away from could not be removed yet. It is tried again on the next test or save."
+msgstr "La connexion du service que tu as quitté n'a pas encore pu être supprimée. Une nouvelle tentative aura lieu au prochain test ou à l'enregistrement."
+
+#, fuzzy
+msgid "The connection in the department you moved away from could not be removed. Delete it from the connections list."
+msgstr "La connexion du service que tu as quitté n'a pas pu être supprimée. Supprime-la depuis la liste des connexions."
+
+#, fuzzy
 msgid "The copilot found nothing in the instructions to restrict here."
 msgstr "Copilot n'a rien trouvé à restreindre ici dans les instructions."
 
@@ -6436,6 +6626,10 @@ msgstr "La décision n'a pas été enregistrée. Réessayez."
 #, fuzzy
 msgid "The embedding model used for queries must be the same family (and dimension) that built the remote collection — otherwise search returns noise."
 msgstr "Le modèle d'embedding utilisé pour les requêtes doit être de la même famille (et de la même dimension) que celui qui a servi à construire la collection distante, sinon la recherche renvoie du bruit."
+
+#, fuzzy
+msgid "The endpoints are saved."
+msgstr "Les endpoints sont enregistrés."
 
 #, fuzzy
 msgid "The folder could not be loaded. Try again."
@@ -6460,6 +6654,10 @@ msgstr "La dernière synchronisation a échoué."
 #, fuzzy
 msgid "The link doesn't fill the code in for you — type or paste it yourself."
 msgstr "Le lien ne renseigne pas le code à votre place : saisissez-le ou collez-le vous-même."
+
+#, fuzzy
+msgid "The login is incomplete: fill in every field and the secret."
+msgstr "La connexion est incomplète : remplis tous les champs et le secret."
 
 #, fuzzy
 msgid "The mode could not be changed."
@@ -6498,6 +6696,22 @@ msgid "The org_admin role is not set up for this tenant."
 msgstr "Le rôle org_admin n'est pas configuré pour cette organisation."
 
 #, fuzzy
+msgid "The parameter schema is not valid JSON."
+msgstr "Le schéma des paramètres n'est pas un JSON valide."
+
+#, fuzzy
+msgid "The parameter schema is too large or nested too deeply."
+msgstr "Le schéma des paramètres est trop volumineux ou trop imbriqué."
+
+#, fuzzy
+msgid "The parameter schema may only refer to itself ($ref starting with #)."
+msgstr "Le schéma des paramètres ne peut renvoyer qu'à lui-même ($ref commençant par #)."
+
+#, fuzzy
+msgid "The parameter schema must be a JSON Schema object with \"type\": \"object\"."
+msgstr "Le schéma des paramètres doit être un objet JSON Schema avec \"type\": \"object\"."
+
+#, fuzzy
 msgid "The permission model could not be loaded."
 msgstr "Le modèle d'autorisations n'a pas pu être chargé."
 
@@ -6516,6 +6730,18 @@ msgstr "Le projet n'a pas été supprimé. Réessayez."
 #, fuzzy
 msgid "The provider needs you to sign in again. Please try once more."
 msgstr "Le fournisseur exige que vous vous reconnectiez. Veuillez réessayer."
+
+#, fuzzy
+msgid "The read/modify choice names endpoints that are not there:"
+msgstr "Le choix lecture/modification nomme des endpoints qui n'existent pas :"
+
+#, fuzzy
+msgid "The reasoning level couldn't be changed. Try again."
+msgstr "Le niveau de réflexion n'a pas pu être modifié. Réessayez."
+
+#, fuzzy
+msgid "The reasoning level you picked couldn't be set. Your message wasn't sent – send it again or pick another level."
+msgstr "Le niveau de réflexion choisi n'a pas pu être appliqué. Votre message n'a pas été envoyé – renvoyez-le ou choisissez un autre niveau."
 
 #, fuzzy
 msgid "The role list could not be loaded."
@@ -6542,12 +6768,20 @@ msgid "The schedule has ended"
 msgstr "La planification est terminée"
 
 #, fuzzy
+msgid "The schedule or event is not valid."
+msgstr "La planification ou l'événement n'est pas valide."
+
+#, fuzzy
 msgid "The server cannot be reached. Please check the address."
 msgstr "Le serveur est injoignable. Vérifiez l'adresse."
 
 #, fuzzy
 msgid "The setting could not be saved. Please try again."
 msgstr "Le paramètre n'a pas pu être enregistré. Veuillez réessayer."
+
+#, fuzzy
+msgid "The skill needs a system this agent does not have. Add the system or leave the skill out."
+msgstr "La compétence a besoin d'un système que cet agent n'a pas. Ajoute le système ou retire la compétence."
 
 #, fuzzy
 msgid "The source did not answer. Try again."
@@ -6564,6 +6798,10 @@ msgstr "Le tableau des tâches n'a pas pu être chargé"
 #, fuzzy
 msgid "The team lead observes reasoning traces and daily behavior to prevent role drift — separate from human-in-the-loop approvals, which stay off-agent."
 msgstr "Le responsable d'équipe observe les traces de raisonnement et le comportement quotidien pour éviter la dérive des rôles, indépendamment des approbations humaines (human-in-the-loop), qui restent hors de l'agent."
+
+#, fuzzy
+msgid "The test call failed."
+msgstr "L'appel de test a échoué."
 
 #, fuzzy
 msgid "The test failed. Please try again."
@@ -6586,8 +6824,16 @@ msgid "The user list could not be loaded."
 msgstr "La liste des utilisateurs n'a pas pu être chargée."
 
 #, fuzzy
+msgid "The username can't contain a colon."
+msgstr "Le nom d'utilisateur ne peut pas contenir de deux-points."
+
+#, fuzzy
 msgid "The username or API key is not correct."
 msgstr "Le nom d'utilisateur ou la clé d'API est incorrect."
+
+#, fuzzy
+msgid "The usual choice"
+msgstr "Le choix habituel"
 
 #, fuzzy
 msgid "These describe what an AGENT may do in your systems. They are never given to a person, and they can only ever subtract: what an agent actually does is this, intersected with its department’s frame and with its own narrowing."
@@ -6602,8 +6848,16 @@ msgid "They will disappear from the users list and will not be able to sign in. 
 msgstr "Ils disparaîtront de la liste des utilisateurs et ne pourront plus se connecter. Les liens d'invitation et de réinitialisation non utilisés sont invalidés et ne peuvent donc plus revenir par d'anciens e-mails."
 
 #, fuzzy
+msgid "Thinking …"
+msgstr "Réfléchit …"
+
+#, fuzzy
 msgid "Thinking…"
 msgstr "Réflexion…"
+
+#, fuzzy
+msgid "Thinks longer for tricky questions; slower and costs more"
+msgstr "Réfléchit plus longtemps aux questions difficiles ; plus lent et plus coûteux"
 
 #, fuzzy
 msgid "This access already exists."
@@ -6624,6 +6878,10 @@ msgstr "Ce compte est déjà connecté par quelqu'un d'autre."
 #, fuzzy
 msgid "This action is blocked by an OC8 security policy."
 msgstr "Cette action est bloquée par la politique de sécurité d'oc8."
+
+#, fuzzy
+msgid "This address is not allowed."
+msgstr "Cette adresse n'est pas autorisée."
 
 #, fuzzy
 msgid "This agent has no published versions yet."
@@ -6664,6 +6922,10 @@ msgstr "Cette base contient déjà du contenu ingéré : son modèle d'embeddin
 #, fuzzy
 msgid "This browser does not support push notifications."
 msgstr "Ce navigateur ne prend pas en charge les notifications push."
+
+#, fuzzy
+msgid "This call can change data in the API."
+msgstr "Cet appel peut modifier des données dans l'API."
 
 #, fuzzy
 msgid "This cannot be undone."
@@ -6762,6 +7024,10 @@ msgid "This model can see images (vision)"
 msgstr "Ce modèle peut voir les images (vision)"
 
 #, fuzzy
+msgid "This model may only answer chats, not run on a schedule or an event."
+msgstr "Ce modèle ne peut répondre qu'au chat, pas s'exécuter selon une planification ou un événement."
+
+#, fuzzy
 msgid "This proposal has expired."
 msgstr "Cette proposition a expiré."
 
@@ -6814,6 +7080,10 @@ msgid "This schedule has no owner. Please save it once again."
 msgstr "Cette planification n'a pas de propriétaire. Veuillez l'enregistrer à nouveau."
 
 #, fuzzy
+msgid "This sends one real request to the API with the login you entered."
+msgstr "Cela envoie une vraie requête à l'API avec la connexion saisie."
+
+#, fuzzy
 msgid "This skill has no published version yet, so there is nothing to assign."
 msgstr "Cette compétence n'a pas encore de version publiée : il n'y a donc rien à attribuer."
 
@@ -6850,8 +7120,16 @@ msgid "This widget could not be displayed."
 msgstr "Ce widget n'a pas pu être affiché."
 
 #, fuzzy
+msgid "Thorough"
+msgstr "Approfondi"
+
+#, fuzzy
 msgid "Thought"
 msgstr "Réflexion"
+
+#, fuzzy
+msgid "Thoughts"
+msgstr "Pensées"
 
 #, fuzzy
 msgid "Throttle"
@@ -6928,6 +7206,10 @@ msgstr "Consommation de jetons par agent et par département, mesurée par la pl
 #, fuzzy
 msgid "Token spend across agents and departments."
 msgstr "Consommation de jetons par agent et par département."
+
+#, fuzzy
+msgid "Token URL"
+msgstr "URL du jeton"
 
 #, fuzzy
 msgid "tokens"
@@ -7074,10 +7356,6 @@ msgid "Untested"
 msgstr "Non testé"
 
 #, fuzzy
-msgid "Untitled chat"
-msgstr "Chat sans titre"
-
-#, fuzzy
 msgid "Update"
 msgstr "Mettre à jour"
 
@@ -7130,6 +7408,10 @@ msgid "USD per 1M tokens — managed by your platform operator"
 msgstr "USD par million de jetons : géré par l'opérateur de la plateforme"
 
 #, fuzzy
+msgid "Use only letters, digits, _ and - in a tool name (at most 64)."
+msgstr "Utilise uniquement des lettres, chiffres, _ et - dans le nom d'un outil (64 au maximum)."
+
+#, fuzzy
 msgid "Use sign-in default"
 msgstr "Utiliser la valeur par défaut de la connexion"
 
@@ -7176,6 +7458,14 @@ msgstr "Identifiant utilisateur"
 #, fuzzy
 msgid "User not found."
 msgstr "Utilisateur introuvable."
+
+#, fuzzy
+msgid "Username"
+msgstr "Nom d'utilisateur"
+
+#, fuzzy
+msgid "Username and password (Basic)"
+msgstr "Nom d'utilisateur et mot de passe (Basic)"
 
 #, fuzzy
 msgid "Users"

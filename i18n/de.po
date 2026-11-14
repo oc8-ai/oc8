@@ -13,69 +13,6 @@ msgstr " (öffnet in neuem Tab)"
 msgid " of "
 msgstr " von "
 
-msgid "Answers right away, barely thinks"
-msgstr "Antwortet sofort, denkt kaum nach"
-
-msgid "Balanced"
-msgstr "Ausgewogen"
-
-msgid "Can think"
-msgstr "Kann nachdenken"
-
-msgid "Custom effort value"
-msgstr "Eigener Effort-Wert"
-
-msgid "Custom setting"
-msgstr "Eigene Einstellung"
-
-msgid "Custom value"
-msgstr "Eigener Wert"
-
-msgid "e.g. max"
-msgstr "z. B. max"
-
-msgid "Fast"
-msgstr "Schnell"
-
-msgid "from extra parameters"
-msgstr "aus Extra-Parametern"
-
-msgid "How hard this model thinks when neither the chat nor the agent sets a level. A custom value is forwarded to the provider as typed."
-msgstr "Wie gründlich dieses Modell nachdenkt, wenn weder der Chat noch der Agent eine Stufe setzt. Ein eigener Wert geht unverändert an den Anbieter."
-
-msgid "Not set"
-msgstr "Nicht gesetzt"
-
-msgid "Reasoning"
-msgstr "Denkstufe"
-
-msgid "Reasoning level not supported by this model, answered without thinking."
-msgstr "Denkstufe von diesem Modell nicht unterstützt, ohne Nachdenken geantwortet."
-
-msgid "Reasoning: {level}"
-msgstr "Denkstufe: {level}"
-
-msgid "Shows the reasoning-level control in chats on this model and sends the chosen level to the provider."
-msgstr "Zeigt im Chat auf diesem Modell die Denkstufe an und schickt die gewählte Stufe an den Anbieter."
-
-msgid "That reasoning level isn't available. Pick another one."
-msgstr "Diese Denkstufe ist nicht verfügbar. Wähl eine andere."
-
-msgid "The reasoning level couldn't be changed. Try again."
-msgstr "Die Denkstufe konnte nicht geändert werden. Versuch es noch einmal."
-
-msgid "The reasoning level you picked couldn't be set. Your message wasn't sent – send it again or pick another level."
-msgstr "Die gewählte Denkstufe konnte nicht gesetzt werden. Deine Nachricht wurde nicht gesendet – sende sie noch einmal oder wähl eine andere Stufe."
-
-msgid "The usual choice"
-msgstr "Der Normalfall"
-
-msgid "Thinks longer for tricky questions; slower and costs more"
-msgstr "Denkt länger nach, für knifflige Fragen; dauert länger und kostet mehr"
-
-msgid "Thorough"
-msgstr "Gründlich"
-
 msgid "— no agent"
 msgstr "— kein Agent"
 
@@ -115,6 +52,9 @@ msgstr "Ein Hintergrund-Agent-Lauf ist fehlgeschlagen."
 msgid "A background agent's run was interrupted."
 msgstr "Ein Hintergrund-Agent-Lauf wurde unterbrochen."
 
+msgid "A Basic username cannot contain a colon."
+msgstr "Ein Basic-Benutzername darf keinen Doppelpunkt enthalten."
+
 msgid "A Capa is anything installable in oc8 — an agent template, an MCP tool pack, a guardrail set, a department template, a runtime, or a bundle of several."
 msgstr "Eine Capa ist alles Installierbare in oc8 — eine Agentenvorlage, ein MCP-Tool-Paket, Guardrails, eine Abteilungsvorlage, eine Runtime oder ein Bündel davon."
 
@@ -148,8 +88,20 @@ msgstr "Ein Platz wird je Abteilung von einer Administratorin vergeben und gilt 
 msgid "A skill is no longer available."
 msgstr "Ein Skill ist nicht mehr verfügbar."
 
+msgid "A skill needs a system this agent would not have."
+msgstr "Ein Skill braucht ein System, das dieser Agent nicht hätte."
+
+msgid "A system cannot report amounts, so it cannot take an amount limit."
+msgstr "Ein System kann keine Beträge melden, also auch kein Betragslimit bekommen."
+
 msgid "A system is no longer connected or not released for this department."
 msgstr "Ein System ist nicht mehr verbunden oder für diese Abteilung nicht freigegeben."
+
+msgid "A system is switched off or restricted for this department."
+msgstr "Ein System ist für diese Abteilung abgeschaltet oder eingeschränkt."
+
+msgid "A system needs a login chosen for this agent first. Set it up under Connections."
+msgstr "Für ein System muss erst ein Login für diesen Agenten gewählt werden. Richte es unter Verbindungen ein."
 
 msgid "A template only — it ticks boxes now and is not stored. There is no inheritance."
 msgstr "Nur eine Vorlage — sie setzt jetzt Häkchen und wird nicht gespeichert. Es gibt keine Vererbung."
@@ -243,6 +195,9 @@ msgstr "Eigenen MCP-Server hinzufügen"
 
 msgid "Add custom server or API"
 msgstr "Eigenen Server oder eigene API hinzufügen"
+
+msgid "Add each endpoint yourself: method, path and parameters."
+msgstr "Trage jeden Endpunkt selbst ein: Methode, Pfad und Parameter."
 
 msgid "Add existing source…"
 msgstr "Vorhandene Quelle hinzufügen…"
@@ -430,11 +385,17 @@ msgstr "Eine Antwort geht nur als Text. Entfern die Anhänge oder schick sie nac
 msgid "An answer is still being written. Try again once it's done."
 msgstr "Es wird noch eine Antwort geschrieben. Versuch es noch einmal, wenn sie fertig ist."
 
+msgid "An endpoint either reads or modifies, not both:"
+msgstr "Ein Endpunkt liest oder ändert, nicht beides:"
+
 msgid "Analytics"
 msgstr "Analyse"
 
 msgid "another agent"
 msgstr "einem anderen Agenten"
+
+msgid "Another tool already has this name."
+msgstr "Ein anderes Tool hat schon diesen Namen."
 
 msgid "Answer"
 msgstr "Antwort"
@@ -457,6 +418,9 @@ msgstr "Wird als neue Nachricht beantwortet"
 msgid "Answered from the department cache, not a fresh model call"
 msgstr "Aus dem Department-Cache beantwortet, kein frischer Modell-Aufruf"
 
+msgid "Answers right away, barely thinks"
+msgstr "Antwortet sofort, denkt kaum nach"
+
 msgid "Answers to the questions"
 msgstr "Antworten auf die Fragen"
 
@@ -471,6 +435,9 @@ msgstr "Jedes System, das per POST JSON senden kann, kann diesen Agenten auslös
 
 msgid "Any trust level"
 msgstr "Jede Vertrauensstufe"
+
+msgid "API key"
+msgstr "API-Schlüssel"
 
 msgid "API key deleted"
 msgstr "API-Key gelöscht"
@@ -562,6 +529,9 @@ msgstr "Flow archivieren?"
 msgid "Archived"
 msgstr "Archiviert"
 
+msgid "Arguments (JSON)"
+msgstr "Argumente (JSON)"
+
 msgid "Ask an administrator to add you — your queue appears the moment they do."
 msgstr "Bitte einen Administrator, dich einzutragen — deine Liste erscheint, sobald das geschehen ist."
 
@@ -582,6 +552,9 @@ msgstr "Um eine Entscheidung gebeten"
 
 msgid "Asked you"
 msgstr "Hat gefragt"
+
+msgid "Asking a colleague …"
+msgstr "Fragt einen Kollegen …"
 
 msgid "Asking a question"
 msgstr "Stellt eine Frage"
@@ -727,6 +700,9 @@ msgstr "Sicherung heruntergeladen"
 msgid "Bad answer"
 msgstr "Schlechte Antwort"
 
+msgid "Balanced"
+msgstr "Ausgewogen"
+
 msgid "Bar"
 msgstr "Balken"
 
@@ -789,6 +765,12 @@ msgstr "aus Cache"
 
 msgid "Called with no arguments."
 msgstr "Wird ohne Argumente aufgerufen."
+
+msgid "Calling…"
+msgstr "Wird aufgerufen…"
+
+msgid "Can think"
+msgstr "Kann nachdenken"
 
 msgid "Cancel"
 msgstr "Abbrechen"
@@ -937,6 +919,9 @@ msgstr "Prüft die Zahlen"
 msgid "Checking what needs a decision"
 msgstr "Prüft, was zu entscheiden ist"
 
+msgid "Checking your approvals …"
+msgstr "Prüft deine Freigaben …"
+
 msgid "Choose a company, or create a safely isolated one for local testing."
 msgstr "Wähle eine Firma oder lege eine isolierte Testfirma an."
 
@@ -951,6 +936,9 @@ msgstr "Wähle eine Startanordnung"
 
 msgid "Choose an agent…"
 msgstr "Agent wählen…"
+
+msgid "Choose at least one endpoint."
+msgstr "Wähle mindestens einen Endpunkt."
 
 msgid "Choose from a data source"
 msgstr "Aus einer Datenquelle wählen"
@@ -984,6 +972,12 @@ msgstr "Klicke Export, um die ZIP-Datei herunterzuladen."
 
 msgid "Click to review"
 msgstr "Zum Prüfen klicken"
+
+msgid "Client ID"
+msgstr "Client-ID"
+
+msgid "Client secret"
+msgstr "Client-Secret"
 
 msgid "Close"
 msgstr "Schließen"
@@ -1086,6 +1080,9 @@ msgstr "Weiteren Anbieter verbinden"
 
 msgid "Connect existing vector index"
 msgstr "Bestehenden Vector-Index verbinden"
+
+msgid "Connect first"
+msgstr "Erst verbinden"
 
 msgid "Connect model"
 msgstr "Modell verbinden"
@@ -1393,6 +1390,9 @@ msgstr "Prompt-Caching-Einstellung konnte nicht gespeichert werden"
 msgid "Could not save settings."
 msgstr "Speichern fehlgeschlagen."
 
+msgid "Could not save the endpoints."
+msgstr "Die Endpunkte konnten nicht gespeichert werden."
+
 msgid "Could not save the preset."
 msgstr "Preset konnte nicht gespeichert werden."
 
@@ -1618,11 +1618,20 @@ msgstr "Derzeit"
 msgid "Currently in this company → in the archive"
 msgstr "Derzeit in diesem Unternehmen → im Archiv"
 
+msgid "Custom effort value"
+msgstr "Eigener Effort-Wert"
+
 msgid "Custom MCP capa"
 msgstr "Custom-MCP-Capa"
 
 msgid "Custom server or API"
 msgstr "Eigener Server oder eigene API"
+
+msgid "Custom setting"
+msgstr "Eigene Einstellung"
+
+msgid "Custom value"
+msgstr "Eigener Wert"
 
 msgid "Daily"
 msgstr "Täglich"
@@ -1831,6 +1840,9 @@ msgstr "Beschreib grob, was der Agent tun soll"
 msgid "Describe step by step what the skill should do…"
 msgstr "Beschreibe Schritt für Schritt, was der Skill tun soll…"
 
+msgid "Describe them by hand"
+msgstr "Von Hand beschreiben"
+
 msgid "Description"
 msgstr "Beschreibung"
 
@@ -1954,6 +1966,9 @@ msgstr "z. B. Rechnung prüfen"
 msgid "e.g. Legal & Compliance"
 msgstr "z. B. Recht & Compliance"
 
+msgid "e.g. max"
+msgstr "z. B. max"
+
 msgid "e.g. Nova, Atlas, Miro …"
 msgstr "z. B. Nova, Atlas, Miro …"
 
@@ -1983,6 +1998,9 @@ msgstr "Zugangsdaten bearbeiten"
 
 msgid "Edit data source"
 msgstr "Datenquelle bearbeiten"
+
+msgid "Edit endpoints"
+msgstr "Endpunkte bearbeiten"
 
 msgid "Edit model"
 msgstr "Modell bearbeiten"
@@ -2041,6 +2059,9 @@ msgstr "Wird aktiviert …"
 msgid "End schedule"
 msgstr "Zeitplan beenden"
 
+msgid "Endpoint to test"
+msgstr "Zu testender Endpunkt"
+
 msgid "Ends"
 msgstr "Endet"
 
@@ -2064,6 +2085,9 @@ msgstr "Raum betreten"
 
 msgid "Enter the 6-digit code"
 msgstr "6-stelligen Code eingeben"
+
+msgid "Enter the path below the base URL, starting with /."
+msgstr "Gib den Pfad unterhalb der Basis-URL an, beginnend mit /."
 
 msgid "Enter this code on that page:"
 msgstr "Diesen Code auf der Seite eingeben:"
@@ -2122,8 +2146,14 @@ msgstr "Alle Abteilungen — Entscheidungen und Rückfragen, die auf einen Mensc
 msgid "Every export, with or without a passphrase, carries every member's password hash. With a passphrase, the file also carries every provider credential and OAuth token this company holds, encrypted under it — anyone with the file AND the passphrase holds those credentials too. The passphrase cannot be recovered if lost; losing it only costs the secrets, everything else still restores."
 msgstr "Jeder Export, mit oder ohne Passphrase, enthält den Passwort-Hash jedes Mitglieds. Mit Passphrase enthält die Datei zusätzlich jedes Provider-Zugangsdatum und jeden OAuth-Token dieses Unternehmens, damit verschlüsselt — wer Datei UND Passphrase besitzt, besitzt auch diese Zugangsdaten. Eine verlorene Passphrase ist nicht wiederherstellbar; ihr Verlust kostet nur die Zugangsdaten, alles andere lässt sich weiterhin wiederherstellen."
 
+msgid "Every hour"
+msgstr "Jede Stunde"
+
 msgid "Every installable capability — connectors, tools, guardrails, templates."
 msgstr "Jede installierbare Fähigkeit — Connectoren, Tools, Guardrails, Vorlagen."
+
+msgid "Every minute"
+msgstr "Jede Minute"
 
 msgid "Every save is kept — nothing is pruned."
 msgstr "Jede Speicherung bleibt erhalten — nichts wird gelöscht."
@@ -2172,6 +2202,9 @@ msgstr "fehlgeschlagen"
 
 msgid "Failed"
 msgstr "Fehlgeschlagen"
+
+msgid "Fast"
+msgstr "Schnell"
 
 msgid "Fetch again"
 msgstr "Erneut laden"
@@ -2278,6 +2311,9 @@ msgstr "Von (UTC)"
 msgid "From a chat"
 msgstr "Aus einem Chat"
 
+msgid "from extra parameters"
+msgstr "aus Extra-Parametern"
+
 msgid "From store"
 msgstr "Aus Store"
 
@@ -2316,6 +2352,12 @@ msgstr "Git-Repository oder Archiv"
 
 msgid "Give a reason first — a rejection with none is a dead end for the agent that has to act on it"
 msgstr "Bitte zuerst begründen — eine Ablehnung ohne Begründung ist eine Sackgasse für den Agenten, der damit weiterarbeiten muss"
+
+msgid "Give each endpoint a name first."
+msgstr "Gib zuerst jedem Endpunkt einen Namen."
+
+msgid "Give this tool a name."
+msgstr "Gib diesem Tool einen Namen."
 
 msgid "Go to my work"
 msgstr "Zu meiner Arbeit"
@@ -2386,6 +2428,9 @@ msgstr "Hartes Limit überschritten"
 msgid "Hard limit exceeded — new tasks are paused."
 msgstr "Hartes Limit überschritten — neue Tasks pausiert."
 
+msgid "Header"
+msgstr "Header"
+
 msgid "Held by"
 msgstr "Gehalten von"
 
@@ -2409,6 +2454,12 @@ msgstr "Stelle einen Agenten dafür auf der Agenten-Seite ein."
 
 msgid "History"
 msgstr "Verlauf"
+
+msgid "How do you describe the endpoints?"
+msgstr "Wie beschreibst du die Endpunkte?"
+
+msgid "How hard this model thinks when neither the chat nor the agent sets a level. A custom value is forwarded to the provider as typed."
+msgstr "Wie gründlich dieses Modell nachdenkt, wenn weder der Chat noch der Agent eine Stufe setzt. Ein eigener Wert geht unverändert an den Anbieter."
 
 msgid "How many tool-using steps this agent may take in one run before it stops. Blank inherits the framework default (currently high, not unlimited -- budget/token metering only checks once per run)."
 msgstr "Wie viele Tool-Schritte dieser Agent pro Lauf ausführen darf, bevor er stoppt. Leer übernimmt den Framework-Standard (aktuell hoch, aber nicht unbegrenzt -- Budget-/Token-Metering wird nur einmal pro Lauf geprüft)."
@@ -2571,6 +2622,9 @@ msgstr "Weiterlaufen lassen"
 
 msgid "key"
 msgstr "Schlüssel"
+
+msgid "Key name"
+msgstr "Name des Schlüssels"
 
 msgid "Knowledge"
 msgstr "Wissen"
@@ -2785,6 +2839,9 @@ msgstr "Sucht nach einem Werkzeug"
 msgid "Looking through its notes"
 msgstr "Sieht seine Notizen durch"
 
+msgid "Looking through its notes …"
+msgstr "Sieht seine Notizen durch …"
+
 msgid "Made a note"
 msgstr "Notiz gemacht"
 
@@ -2974,6 +3031,9 @@ msgstr "Arbeitsbereich benennen"
 msgid "Narrowed"
 msgstr "Eingeschränkt"
 
+msgid "Needs an organisation connection"
+msgstr "Braucht eine Verbindung der Organisation"
+
 msgid "Needs reconnecting"
 msgstr "Erneut verbinden nötig"
 
@@ -3085,6 +3145,9 @@ msgstr "Nächster Lauf"
 msgid "Next step"
 msgstr "Nächster Schritt"
 
+msgid "No access token: the token URL refused or did not answer. The API itself was not called."
+msgstr "Kein Zugriffstoken: Die Token-URL hat abgelehnt oder nicht geantwortet. Die API selbst wurde nicht aufgerufen."
+
 msgid "No activity yet for this agent."
 msgstr "Noch keine Aktivität für diesen Agenten."
 
@@ -3129,6 +3192,9 @@ msgstr "Noch keine verbundenen Datenquellen — lege zuerst eine im Sources-Tab 
 
 msgid "No connection matches."
 msgstr "Keine Verbindung passt zur Suche."
+
+msgid "No connection was created to test."
+msgstr "Es wurde keine Verbindung zum Testen angelegt."
 
 msgid "No contract bindings involve this department."
 msgstr "Keine Vertragsbindung betrifft diese Abteilung."
@@ -3198,6 +3264,9 @@ msgstr "Noch keine Limits gesetzt. Füge eines hinzu, um dein Budget zu schütze
 
 msgid "No locally authored skills to export."
 msgstr "Keine lokal erstellten Skills zum Exportieren."
+
+msgid "No login"
+msgstr "Keine Anmeldung"
 
 msgid "No mail server is configured for this instance, so the invite could not be emailed. Copy this link and send it to the new user yourself — it lets them set their own password."
 msgstr "Für diese Instanz ist kein Mailserver konfiguriert, daher konnte die Einladung nicht per E-Mail versendet werden. Kopiere diesen Link und sende ihn selbst an den neuen Benutzer — damit kann er sein eigenes Passwort festlegen."
@@ -3346,6 +3415,9 @@ msgstr "Nicht wiederhergestellt:"
 msgid "not set"
 msgstr "nicht gesetzt"
 
+msgid "Not set"
+msgstr "Nicht gesetzt"
+
 msgid "not set up"
 msgstr "nicht angelegt"
 
@@ -3406,6 +3478,9 @@ msgstr "Benachrichtigen"
 msgid "Notify — alert only"
 msgstr "Benachrichtigen — nur Hinweis"
 
+msgid "OAuth2 client credentials"
+msgstr "OAuth2 Client Credentials"
+
 msgid "Observe reasoning traces"
 msgstr "Denkspuren beobachten"
 
@@ -3444,6 +3519,9 @@ msgstr "Nur für mich"
 
 msgid "Only on-prem models are offered: this deployment routes every embedding through the local Ollama instance, so a cloud model would fail the moment a document is ingested."
 msgstr "Es werden nur On-Prem-Modelle angeboten: dieses Deployment leitet jedes Embedding über die lokale Ollama-Instanz, ein Cloud-Modell würde beim ersten Dokument fehlschlagen."
+
+msgid "Only the beginning of the answer is shown."
+msgstr "Es wird nur der Anfang der Antwort gezeigt."
 
 msgid "Only these surfaces (optional)"
 msgstr "Nur diese Bereiche (optional)"
@@ -3760,6 +3838,9 @@ msgstr "Push-Benachrichtigungen für neue Freigaben"
 msgid "QR code"
 msgstr "QR-Code"
 
+msgid "Query string"
+msgstr "Query-String"
+
 msgid "Questions"
 msgstr "Rückfragen"
 
@@ -3808,6 +3889,9 @@ msgstr "E-Mails in Outlook lesen, sortieren und senden"
 msgid "Reading a resource"
 msgstr "Liest eine Ressource"
 
+msgid "Reading a web page …"
+msgstr "Liest eine Webseite …"
+
 msgid "Reading archive…"
 msgstr "Archiv wird gelesen…"
 
@@ -3826,8 +3910,17 @@ msgstr "Echte Serververbindungen, die Agenten als Tools nutzen können – getre
 msgid "Reason"
 msgstr "Begründung"
 
+msgid "Reasoning"
+msgstr "Denkstufe"
+
 msgid "reasoning engine"
 msgstr "Denkmaschine"
+
+msgid "Reasoning level not supported by this model, answered without thinking."
+msgstr "Denkstufe von diesem Modell nicht unterstützt, ohne Nachdenken geantwortet."
+
+msgid "Reasoning: {level}"
+msgstr "Denkstufe: {level}"
 
 msgid "Recent"
 msgstr "Zuletzt"
@@ -4084,6 +4177,9 @@ msgstr "Jetzt ausführen"
 msgid "Run on behalf of the creator"
 msgstr "Im Namen des Erstellers ausführen"
 
+msgid "Run test call"
+msgstr "Testaufruf starten"
+
 msgid "running"
 msgstr "läuft"
 
@@ -4189,6 +4285,9 @@ msgstr "Geplant"
 msgid "Scope"
 msgstr "Ebene"
 
+msgid "Scope (optional)"
+msgstr "Scope (optional)"
+
 msgid "Search"
 msgstr "Suchen"
 
@@ -4261,6 +4360,12 @@ msgstr "Wissensdatenbank durchsucht"
 msgid "Searching the knowledge base"
 msgstr "Durchsucht die Wissensdatenbank"
 
+msgid "Searching the knowledge base …"
+msgstr "Sucht im Wissen …"
+
+msgid "Searching the web …"
+msgstr "Sucht im Web …"
+
 msgid "Seat added"
 msgstr "Sitz hinzugefügt"
 
@@ -4326,6 +4431,9 @@ msgstr "Zur Freigabe senden"
 
 msgid "Send reset link"
 msgstr "Reset-Link senden"
+
+msgid "Send the key in"
+msgstr "Schlüssel senden im"
 
 msgid "Sending…"
 msgstr "Wird gesendet…"
@@ -4432,8 +4540,14 @@ msgstr "Rechte anzeigen, die eine Rolle nicht halten darf — und warum"
 msgid "Show work panel"
 msgstr "Arbeitsbereich einblenden"
 
+msgid "Show work panel ({count} items)"
+msgstr "Arbeitsbereich einblenden ({count} Einträge)"
+
 msgid "Showed a summary"
 msgstr "Auswertung gezeigt"
+
+msgid "Shows the reasoning-level control in chats on this model and sends the chosen level to the provider."
+msgstr "Zeigt im Chat auf diesem Modell die Denkstufe an und schickt die gewählte Stufe an den Anbieter."
 
 msgid "Sign in"
 msgstr "Anmelden"
@@ -4765,6 +4879,9 @@ msgstr "Dieses Modell ist für diesen Chat nicht freigegeben. Wähl ein anderes.
 msgid "That name is already taken."
 msgstr "Diesen Namen gibt es schon."
 
+msgid "That reasoning level isn't available. Pick another one."
+msgstr "Diese Denkstufe ist nicht verfügbar. Wähl eine andere."
+
 msgid "The access could not be saved. Please try again."
 msgstr "Der Zugang konnte nicht gespeichert werden. Bitte versuch es erneut."
 
@@ -4783,11 +4900,35 @@ msgstr "Der Agent ist gerade nicht erreichbar. Deine Nachricht wurde nicht gesen
 msgid "The agent was not created. Try again."
 msgstr "Der Agent wurde nicht angelegt. Versuch es noch einmal."
 
+msgid "The agent's runtime cannot run skills."
+msgstr "Die Laufzeit des Agenten kann keine Skills ausführen."
+
 msgid "The answer was not stopped. Try again."
 msgstr "Die Antwort wurde nicht gestoppt. Versuch es noch einmal."
 
+msgid "The API answered with an error."
+msgstr "Die API hat mit einem Fehler geantwortet."
+
+msgid "The API is not reachable."
+msgstr "Die API ist nicht erreichbar."
+
+msgid "The API needs a base URL starting with http:// or https://."
+msgstr "Die API braucht eine Basis-URL, die mit http:// oder https:// beginnt."
+
+msgid "The API refused the login. Check the login."
+msgstr "Die API hat die Anmeldung abgelehnt. Prüfe die Anmeldung."
+
+msgid "The arguments must be a JSON object."
+msgstr "Die Argumente müssen ein JSON-Objekt sein."
+
 msgid "The assistant returned no answer. Try again or rephrase."
 msgstr "Der Assistent hat keine Antwort geliefert. Versuch es nochmal oder formuliere anders."
+
+msgid "The call could not be made."
+msgstr "Der Aufruf war nicht möglich."
+
+msgid "The call worked."
+msgstr "Der Aufruf hat funktioniert."
 
 msgid "The chat was not changed. Try again."
 msgstr "Der Chat wurde nicht geändert. Versuch es noch einmal."
@@ -4813,6 +4954,12 @@ msgstr "Die Konfigurationsversion, auf die dieser Lauf festgelegt ist"
 msgid "The connection did not work. Please check your entries and try again."
 msgstr "Die Verbindung hat nicht geklappt. Bitte prüf deine Eingaben und versuch es erneut."
 
+msgid "The connection in the department you moved away from could not be removed yet. It is tried again on the next test or save."
+msgstr "Die Verbindung in der Abteilung, aus der du gewechselt bist, konnte noch nicht entfernt werden. Beim nächsten Test oder Speichern wird es erneut versucht."
+
+msgid "The connection in the department you moved away from could not be removed. Delete it from the connections list."
+msgstr "Die Verbindung in der Abteilung, aus der du gewechselt bist, konnte nicht entfernt werden. Lösche sie in der Liste der Verbindungen."
+
 msgid "The copilot found nothing in the instructions to restrict here."
 msgstr "Der Copilot hat in der Instruction nichts gefunden, das hier eingeschränkt werden sollte."
 
@@ -4824,6 +4971,9 @@ msgstr "Die Entscheidung wurde nicht gespeichert. Versuch es noch einmal."
 
 msgid "The embedding model used for queries must be the same family (and dimension) that built the remote collection — otherwise search returns noise."
 msgstr "Das Embedding-Modell für Abfragen muss dieselbe Familie (und Dimension) haben wie die Remote-Collection — sonst liefert die Suche Müll."
+
+msgid "The endpoints are saved."
+msgstr "Die Endpunkte sind gespeichert."
 
 msgid "The folder could not be loaded. Try again."
 msgstr "Der Ordner konnte nicht geladen werden. Versuch es noch einmal."
@@ -4842,6 +4992,9 @@ msgstr "Der letzte Sync ist fehlgeschlagen."
 
 msgid "The link doesn't fill the code in for you — type or paste it yourself."
 msgstr "Der Link trägt den Code nicht ein — bitte selbst eintippen oder einfügen."
+
+msgid "The login is incomplete: fill in every field and the secret."
+msgstr "Die Anmeldung ist unvollständig: Fülle alle Felder und das Geheimnis aus."
 
 msgid "The mode could not be changed."
 msgstr "Der Modus konnte nicht geändert werden."
@@ -4870,6 +5023,18 @@ msgstr "Die Büroetage ist für Administratoren. Was auf dich wartet — Entsche
 msgid "The org_admin role is not set up for this tenant."
 msgstr "Die Rolle org_admin ist für diesen Mandanten nicht angelegt."
 
+msgid "The parameter schema is not valid JSON."
+msgstr "Das Parameter-Schema ist kein gültiges JSON."
+
+msgid "The parameter schema is too large or nested too deeply."
+msgstr "Das Parameter-Schema ist zu groß oder zu tief verschachtelt."
+
+msgid "The parameter schema may only refer to itself ($ref starting with #)."
+msgstr "Das Parameter-Schema darf nur auf sich selbst verweisen ($ref beginnend mit #)."
+
+msgid "The parameter schema must be a JSON Schema object with \"type\": \"object\"."
+msgstr "Das Parameter-Schema muss ein JSON-Schema-Objekt mit \"type\": \"object\" sein."
+
 msgid "The permission model could not be loaded."
 msgstr "Das Berechtigungsmodell konnte nicht geladen werden."
 
@@ -4884,6 +5049,15 @@ msgstr "Das Projekt wurde nicht gelöscht. Versuch es noch einmal."
 
 msgid "The provider needs you to sign in again. Please try once more."
 msgstr "Der Anbieter verlangt eine erneute Anmeldung. Bitte versuch es noch einmal."
+
+msgid "The read/modify choice names endpoints that are not there:"
+msgstr "Die Auswahl Lesen/Ändern nennt Endpunkte, die es nicht gibt:"
+
+msgid "The reasoning level couldn't be changed. Try again."
+msgstr "Die Denkstufe konnte nicht geändert werden. Versuch es noch einmal."
+
+msgid "The reasoning level you picked couldn't be set. Your message wasn't sent – send it again or pick another level."
+msgstr "Die gewählte Denkstufe konnte nicht gesetzt werden. Deine Nachricht wurde nicht gesendet – sende sie noch einmal oder wähl eine andere Stufe."
 
 msgid "The role list could not be loaded."
 msgstr "Die Rollenliste konnte nicht geladen werden."
@@ -4903,11 +5077,17 @@ msgstr "Der Lauf stoppt beim nächsten Schritt."
 msgid "The schedule has ended"
 msgstr "Der Zeitplan ist beendet"
 
+msgid "The schedule or event is not valid."
+msgstr "Der Zeitplan oder das Ereignis ist ungültig."
+
 msgid "The server cannot be reached. Please check the address."
 msgstr "Der Server ist nicht erreichbar. Bitte prüf die Adresse."
 
 msgid "The setting could not be saved. Please try again."
 msgstr "Die Einstellung konnte nicht gespeichert werden. Bitte versuch es erneut."
+
+msgid "The skill needs a system this agent does not have. Add the system or leave the skill out."
+msgstr "Der Skill braucht ein System, das dieser Agent nicht hat. Nimm das System dazu oder lass den Skill weg."
 
 msgid "The source did not answer. Try again."
 msgstr "Die Quelle hat nicht geantwortet. Versuch es noch einmal."
@@ -4920,6 +5100,9 @@ msgstr "Das Aufgaben-Board konnte nicht geladen werden"
 
 msgid "The team lead observes reasoning traces and daily behavior to prevent role drift — separate from human-in-the-loop approvals, which stay off-agent."
 msgstr "Der Teamleiter beobachtet Denkspuren und tägliches Verhalten, um Rollen-Drift zu verhindern — getrennt von Human-in-the-Loop-Approvals, die weiterhin off-agent bleiben."
+
+msgid "The test call failed."
+msgstr "Der Testaufruf ist fehlgeschlagen."
 
 msgid "The test failed. Please try again."
 msgstr "Der Test ist fehlgeschlagen. Bitte versuch es erneut."
@@ -4936,8 +5119,14 @@ msgstr "Das Update hat das Setup-Formular geändert -- auf Aktivieren klicken, u
 msgid "The user list could not be loaded."
 msgstr "Die Benutzerliste konnte nicht geladen werden."
 
+msgid "The username can't contain a colon."
+msgstr "Der Benutzername darf keinen Doppelpunkt enthalten."
+
 msgid "The username or API key is not correct."
 msgstr "Benutzername oder API-Schlüssel stimmen nicht."
+
+msgid "The usual choice"
+msgstr "Der Normalfall"
 
 msgid "These describe what an AGENT may do in your systems. They are never given to a person, and they can only ever subtract: what an agent actually does is this, intersected with its department’s frame and with its own narrowing."
 msgstr "Diese beschreiben, was ein AGENT in deinen Systemen tun darf. Sie werden nie an einen Menschen vergeben und können immer nur einschränken: Was ein Agent tatsächlich tut, ist diese Menge, geschnitten mit dem Rahmen seiner Abteilung und seiner eigenen Einschränkung."
@@ -4948,8 +5137,14 @@ msgstr "Diese fünf Rollen liefert das Produkt mit, damit keine Autorisierung da
 msgid "They will disappear from the users list and will not be able to sign in. Unused invite and reset links are spent so they cannot come back through an old mail."
 msgstr "Sie verschwinden aus der Benutzerliste und können sich nicht mehr anmelden. Ungenutzte Einladungs- und Reset-Links werden ungültig, damit sie nicht über eine alte Mail zurückkommen."
 
+msgid "Thinking …"
+msgstr "Denkt nach …"
+
 msgid "Thinking…"
 msgstr "Denkt nach …"
+
+msgid "Thinks longer for tricky questions; slower and costs more"
+msgstr "Denkt länger nach, für knifflige Fragen; dauert länger und kostet mehr"
 
 msgid "This access already exists."
 msgstr "Dieser Zugang existiert bereits."
@@ -4965,6 +5160,9 @@ msgstr "Dieses Konto ist bereits von jemand anderem verbunden."
 
 msgid "This action is blocked by an OC8 security policy."
 msgstr "Diese Aktion ist durch eine OC8-Sicherheitsrichtlinie gesperrt."
+
+msgid "This address is not allowed."
+msgstr "Diese Adresse ist nicht erlaubt."
 
 msgid "This agent has no published versions yet."
 msgstr "Dieser Agent hat noch keine veröffentlichten Versionen."
@@ -4995,6 +5193,9 @@ msgstr "Diese Wissensdatenbank enthält bereits Inhalte, daher kann das Embeddin
 
 msgid "This browser does not support push notifications."
 msgstr "Dieser Browser unterstützt keine Push-Benachrichtigungen."
+
+msgid "This call can change data in the API."
+msgstr "Dieser Aufruf kann Daten in der API ändern."
 
 msgid "This cannot be undone."
 msgstr "Das kann nicht rückgängig gemacht werden."
@@ -5068,6 +5269,9 @@ msgstr "Dieses Mitglied"
 msgid "This model can see images (vision)"
 msgstr "Dieses Modell kann Bilder verarbeiten (Vision)"
 
+msgid "This model may only answer chats, not run on a schedule or an event."
+msgstr "Dieses Modell darf nur im Chat antworten, nicht nach Zeitplan oder auf ein Ereignis."
+
 msgid "This proposal has expired."
 msgstr "Dieser Vorschlag ist abgelaufen."
 
@@ -5107,6 +5311,9 @@ msgstr "Diese Runtime ist nicht mehr verfügbar."
 msgid "This schedule has no owner. Please save it once again."
 msgstr "Dieser Zeitplan hat keinen Besitzer. Bitte speicher ihn einmal neu."
 
+msgid "This sends one real request to the API with the login you entered."
+msgstr "Das schickt eine echte Anfrage mit der eingegebenen Anmeldung an die API."
+
 msgid "This skill has no published version yet, so there is nothing to assign."
 msgstr "Dieser Skill hat noch keine veröffentlichte Version — es gibt nichts zuzuweisen."
 
@@ -5134,8 +5341,14 @@ msgstr "Dieser Webhook hat keinen Besitzer."
 msgid "This widget could not be displayed."
 msgstr "Dieses Widget konnte nicht angezeigt werden."
 
+msgid "Thorough"
+msgstr "Gründlich"
+
 msgid "Thought"
 msgstr "Nachgedacht"
+
+msgid "Thoughts"
+msgstr "Gedanken"
 
 msgid "Throttle"
 msgstr "Drosseln"
@@ -5193,6 +5406,9 @@ msgstr "Token-Verbrauch über Agenten und Abteilungen — vom System gemessen."
 
 msgid "Token spend across agents and departments."
 msgstr "Token-Verbrauch über Agenten und Abteilungen."
+
+msgid "Token URL"
+msgstr "Token-URL"
 
 msgid "tokens"
 msgstr "Token"
@@ -5302,9 +5518,6 @@ msgstr "Nicht registriert"
 msgid "Untested"
 msgstr "Ungetestet"
 
-msgid "Untitled chat"
-msgstr "Unbenannter Chat"
-
 msgid "Update"
 msgstr "Aktualisieren"
 
@@ -5344,6 +5557,9 @@ msgstr "USD pro 1 Mio. Token — bearbeitbar"
 msgid "USD per 1M tokens — managed by your platform operator"
 msgstr "USD pro 1 Mio. Token — vom Plattformbetreiber gepflegt"
 
+msgid "Use only letters, digits, _ and - in a tool name (at most 64)."
+msgstr "Verwende im Tool-Namen nur Buchstaben, Ziffern, _ und - (höchstens 64)."
+
 msgid "Use sign-in default"
 msgstr "Anmeldungs-Standard nutzen"
 
@@ -5379,6 +5595,12 @@ msgstr "Benutzer-ID"
 
 msgid "User not found."
 msgstr "Benutzer nicht gefunden."
+
+msgid "Username"
+msgstr "Benutzername"
+
+msgid "Username and password (Basic)"
+msgstr "Benutzername und Passwort (Basic)"
 
 msgid "Users"
 msgstr "Benutzer"

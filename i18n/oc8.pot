@@ -50,6 +50,9 @@ msgstr ""
 msgid "A background agent's run was interrupted."
 msgstr ""
 
+msgid "A Basic username cannot contain a colon."
+msgstr ""
+
 msgid "A Capa is anything installable in oc8 — an agent template, an MCP tool pack, a guardrail set, a department template, a runtime, or a bundle of several."
 msgstr ""
 
@@ -189,6 +192,9 @@ msgid "Add custom MCP server"
 msgstr ""
 
 msgid "Add custom server or API"
+msgstr ""
+
+msgid "Add each endpoint yourself: method, path and parameters."
 msgstr ""
 
 msgid "Add existing source…"
@@ -377,10 +383,16 @@ msgstr ""
 msgid "An answer is still being written. Try again once it's done."
 msgstr ""
 
+msgid "An endpoint either reads or modifies, not both:"
+msgstr ""
+
 msgid "Analytics"
 msgstr ""
 
 msgid "another agent"
+msgstr ""
+
+msgid "Another tool already has this name."
 msgstr ""
 
 msgid "Answer"
@@ -420,6 +432,9 @@ msgid "Any system that can send a JSON POST can trigger this agent — no signat
 msgstr ""
 
 msgid "Any trust level"
+msgstr ""
+
+msgid "API key"
 msgstr ""
 
 msgid "API key deleted"
@@ -510,6 +525,9 @@ msgid "Archive flow?"
 msgstr ""
 
 msgid "Archived"
+msgstr ""
+
+msgid "Arguments (JSON)"
 msgstr ""
 
 msgid "Ask an administrator to add you — your queue appears the moment they do."
@@ -746,6 +764,9 @@ msgstr ""
 msgid "Called with no arguments."
 msgstr ""
 
+msgid "Calling…"
+msgstr ""
+
 msgid "Can think"
 msgstr ""
 
@@ -914,6 +935,9 @@ msgstr ""
 msgid "Choose an agent…"
 msgstr ""
 
+msgid "Choose at least one endpoint."
+msgstr ""
+
 msgid "Choose from a data source"
 msgstr ""
 
@@ -945,6 +969,12 @@ msgid "Click Export to download the ZIP file."
 msgstr ""
 
 msgid "Click to review"
+msgstr ""
+
+msgid "Client ID"
+msgstr ""
+
+msgid "Client secret"
 msgstr ""
 
 msgid "Close"
@@ -1356,6 +1386,9 @@ msgid "Could not save prompt caching setting"
 msgstr ""
 
 msgid "Could not save settings."
+msgstr ""
+
+msgid "Could not save the endpoints."
 msgstr ""
 
 msgid "Could not save the preset."
@@ -1808,6 +1841,9 @@ msgstr ""
 msgid "Describe step by step what the skill should do…"
 msgstr ""
 
+msgid "Describe them by hand"
+msgstr ""
+
 msgid "Description"
 msgstr ""
 
@@ -1964,6 +2000,9 @@ msgstr ""
 msgid "Edit data source"
 msgstr ""
 
+msgid "Edit endpoints"
+msgstr ""
+
 msgid "Edit model"
 msgstr ""
 
@@ -2021,6 +2060,9 @@ msgstr ""
 msgid "End schedule"
 msgstr ""
 
+msgid "Endpoint to test"
+msgstr ""
+
 msgid "Ends"
 msgstr ""
 
@@ -2043,6 +2085,9 @@ msgid "Enter room"
 msgstr ""
 
 msgid "Enter the 6-digit code"
+msgstr ""
+
+msgid "Enter the path below the base URL, starting with /."
 msgstr ""
 
 msgid "Enter this code on that page:"
@@ -2309,6 +2354,12 @@ msgstr ""
 msgid "Give a reason first — a rejection with none is a dead end for the agent that has to act on it"
 msgstr ""
 
+msgid "Give each endpoint a name first."
+msgstr ""
+
+msgid "Give this tool a name."
+msgstr ""
+
 msgid "Go to my work"
 msgstr ""
 
@@ -2378,6 +2429,9 @@ msgstr ""
 msgid "Hard limit exceeded — new tasks are paused."
 msgstr ""
 
+msgid "Header"
+msgstr ""
+
 msgid "Held by"
 msgstr ""
 
@@ -2400,6 +2454,9 @@ msgid "Hire an agent into it from the Agents page."
 msgstr ""
 
 msgid "History"
+msgstr ""
+
+msgid "How do you describe the endpoints?"
 msgstr ""
 
 msgid "How hard this model thinks when neither the chat nor the agent sets a level. A custom value is forwarded to the provider as typed."
@@ -2565,6 +2622,9 @@ msgid "Keep running"
 msgstr ""
 
 msgid "key"
+msgstr ""
+
+msgid "Key name"
 msgstr ""
 
 msgid "Knowledge"
@@ -3086,6 +3146,9 @@ msgstr ""
 msgid "Next step"
 msgstr ""
 
+msgid "No access token: the token URL refused or did not answer. The API itself was not called."
+msgstr ""
+
 msgid "No activity yet for this agent."
 msgstr ""
 
@@ -3129,6 +3192,9 @@ msgid "No connected data sources yet — create one first from the Sources tab, 
 msgstr ""
 
 msgid "No connection matches."
+msgstr ""
+
+msgid "No connection was created to test."
 msgstr ""
 
 msgid "No contract bindings involve this department."
@@ -3198,6 +3264,9 @@ msgid "No limits set yet. Add one to protect your budget."
 msgstr ""
 
 msgid "No locally authored skills to export."
+msgstr ""
+
+msgid "No login"
 msgstr ""
 
 msgid "No mail server is configured for this instance, so the invite could not be emailed. Copy this link and send it to the new user yourself — it lets them set their own password."
@@ -3410,6 +3479,9 @@ msgstr ""
 msgid "Notify — alert only"
 msgstr ""
 
+msgid "OAuth2 client credentials"
+msgstr ""
+
 msgid "Observe reasoning traces"
 msgstr ""
 
@@ -3447,6 +3519,9 @@ msgid "Only for me"
 msgstr ""
 
 msgid "Only on-prem models are offered: this deployment routes every embedding through the local Ollama instance, so a cloud model would fail the moment a document is ingested."
+msgstr ""
+
+msgid "Only the beginning of the answer is shown."
 msgstr ""
 
 msgid "Only these surfaces (optional)"
@@ -3762,6 +3837,9 @@ msgid "Push notifications for new approvals"
 msgstr ""
 
 msgid "QR code"
+msgstr ""
+
+msgid "Query string"
 msgstr ""
 
 msgid "Questions"
@@ -4100,6 +4178,9 @@ msgstr ""
 msgid "Run on behalf of the creator"
 msgstr ""
 
+msgid "Run test call"
+msgstr ""
+
 msgid "running"
 msgstr ""
 
@@ -4203,6 +4284,9 @@ msgid "Scheduled"
 msgstr ""
 
 msgid "Scope"
+msgstr ""
+
+msgid "Scope (optional)"
 msgstr ""
 
 msgid "Search"
@@ -4347,6 +4431,9 @@ msgid "Send for approval"
 msgstr ""
 
 msgid "Send reset link"
+msgstr ""
+
+msgid "Send the key in"
 msgstr ""
 
 msgid "Sending…"
@@ -4820,7 +4907,28 @@ msgstr ""
 msgid "The answer was not stopped. Try again."
 msgstr ""
 
+msgid "The API answered with an error."
+msgstr ""
+
+msgid "The API is not reachable."
+msgstr ""
+
+msgid "The API needs a base URL starting with http:// or https://."
+msgstr ""
+
+msgid "The API refused the login. Check the login."
+msgstr ""
+
+msgid "The arguments must be a JSON object."
+msgstr ""
+
 msgid "The assistant returned no answer. Try again or rephrase."
+msgstr ""
+
+msgid "The call could not be made."
+msgstr ""
+
+msgid "The call worked."
 msgstr ""
 
 msgid "The chat was not changed. Try again."
@@ -4847,6 +4955,12 @@ msgstr ""
 msgid "The connection did not work. Please check your entries and try again."
 msgstr ""
 
+msgid "The connection in the department you moved away from could not be removed yet. It is tried again on the next test or save."
+msgstr ""
+
+msgid "The connection in the department you moved away from could not be removed. Delete it from the connections list."
+msgstr ""
+
 msgid "The copilot found nothing in the instructions to restrict here."
 msgstr ""
 
@@ -4857,6 +4971,9 @@ msgid "The decision was not saved. Try again."
 msgstr ""
 
 msgid "The embedding model used for queries must be the same family (and dimension) that built the remote collection — otherwise search returns noise."
+msgstr ""
+
+msgid "The endpoints are saved."
 msgstr ""
 
 msgid "The folder could not be loaded. Try again."
@@ -4875,6 +4992,9 @@ msgid "The last sync failed."
 msgstr ""
 
 msgid "The link doesn't fill the code in for you — type or paste it yourself."
+msgstr ""
+
+msgid "The login is incomplete: fill in every field and the secret."
 msgstr ""
 
 msgid "The mode could not be changed."
@@ -4904,6 +5024,18 @@ msgstr ""
 msgid "The org_admin role is not set up for this tenant."
 msgstr ""
 
+msgid "The parameter schema is not valid JSON."
+msgstr ""
+
+msgid "The parameter schema is too large or nested too deeply."
+msgstr ""
+
+msgid "The parameter schema may only refer to itself ($ref starting with #)."
+msgstr ""
+
+msgid "The parameter schema must be a JSON Schema object with \"type\": \"object\"."
+msgstr ""
+
 msgid "The permission model could not be loaded."
 msgstr ""
 
@@ -4917,6 +5049,9 @@ msgid "The project was not deleted. Try again."
 msgstr ""
 
 msgid "The provider needs you to sign in again. Please try once more."
+msgstr ""
+
+msgid "The read/modify choice names endpoints that are not there:"
 msgstr ""
 
 msgid "The reasoning level couldn't be changed. Try again."
@@ -4967,6 +5102,9 @@ msgstr ""
 msgid "The team lead observes reasoning traces and daily behavior to prevent role drift — separate from human-in-the-loop approvals, which stay off-agent."
 msgstr ""
 
+msgid "The test call failed."
+msgstr ""
+
 msgid "The test failed. Please try again."
 msgstr ""
 
@@ -4980,6 +5118,9 @@ msgid "The update changed the setup form -- click Enable to review and confirm i
 msgstr ""
 
 msgid "The user list could not be loaded."
+msgstr ""
+
+msgid "The username can't contain a colon."
 msgstr ""
 
 msgid "The username or API key is not correct."
@@ -5021,6 +5162,9 @@ msgstr ""
 msgid "This action is blocked by an OC8 security policy."
 msgstr ""
 
+msgid "This address is not allowed."
+msgstr ""
+
 msgid "This agent has no published versions yet."
 msgstr ""
 
@@ -5049,6 +5193,9 @@ msgid "This base already has ingested content, so its embedding model can't chan
 msgstr ""
 
 msgid "This browser does not support push notifications."
+msgstr ""
+
+msgid "This call can change data in the API."
 msgstr ""
 
 msgid "This cannot be undone."
@@ -5165,6 +5312,9 @@ msgstr ""
 msgid "This schedule has no owner. Please save it once again."
 msgstr ""
 
+msgid "This sends one real request to the API with the login you entered."
+msgstr ""
+
 msgid "This skill has no published version yet, so there is nothing to assign."
 msgstr ""
 
@@ -5256,6 +5406,9 @@ msgid "Token spend across agents and departments — metered by the platform."
 msgstr ""
 
 msgid "Token spend across agents and departments."
+msgstr ""
+
+msgid "Token URL"
 msgstr ""
 
 msgid "tokens"
@@ -5405,6 +5558,9 @@ msgstr ""
 msgid "USD per 1M tokens — managed by your platform operator"
 msgstr ""
 
+msgid "Use only letters, digits, _ and - in a tool name (at most 64)."
+msgstr ""
+
 msgid "Use sign-in default"
 msgstr ""
 
@@ -5439,6 +5595,12 @@ msgid "User ID"
 msgstr ""
 
 msgid "User not found."
+msgstr ""
+
+msgid "Username"
+msgstr ""
+
+msgid "Username and password (Basic)"
 msgstr ""
 
 msgid "Users"
