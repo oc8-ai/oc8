@@ -283,3 +283,108 @@ async def test_the_prompt_marks_a_connection_the_person_declined(
         block = await direct_access_block(db, run=await chat_run(db, office), agent=agent)
         assert block is not None
         assert "declined" in block and "offer again only if the person asks" in block
+
+
+READ_ONLY_LIST: dict[str, Any] = {
+    "enabled": True,
+    "read": True,
+    "modify": True,
+    "only": ["search_records"],
+}
+
+
+@pytest.mark.asyncio
+async def test_a_frame_with_an_only_list_still_offers_its_read_tool(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant, policy=READ_ONLY_LIST)
+        agent = await db.get(m.Agent, office.copilot_id)
+        assert agent is not None
+        block = await direct_access_block(db, run=await chat_run(db, office), agent=agent)
+        assert block is not None and "things |" in block
+        outcome = await _offer(db, office, await chat_run(db, office))
+        assert outcome.suspend == "waiting_for_approval" and len(await _offers(db)) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "narrowing",
+    [
+        {"tools": {"things": {"only": ["update_record"]}}},
+        {"tools": {"things": {"only": ["search_records"], "read": False}}},
+    ],
+    ids=["only-without-a-read-tool", "read-denied"],
+)
+async def test_a_narrowing_that_leaves_no_read_refuses_the_offer(
+    app_session: AppSessionFactory, redis_url: str, narrowing: dict[str, Any]
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant, policy=READ_ONLY_LIST)
+        agent = await db.get(m.Agent, office.copilot_id)
+        assert agent is not None
+        agent.narrowing = narrowing
+        await db.flush()
+        outcome = await _offer(db, office, await chat_run(db, office))
+        assert outcome.output.startswith("ERROR") and await _offers(db) == []
+
+
+class _SpyBus:
+    def __init__(self) -> None:
+        self.tenant_wide: list[str] = []
+        self.member: list[tuple[list[uuid.UUID], str, dict[str, Any]]] = []
+
+    async def publish_event(
+        self, tenant_id: uuid.UUID, type_: str, data: dict[str, Any], *, source: str
+    ) -> None:
+        self.tenant_wide.append(type_)
+
+    async def publish_member_event(
+        self,
+        tenant_id: uuid.UUID,
+        member_ids: Any,
+        type_: str,
+        data: dict[str, Any],
+        *,
+        source: str,
+    ) -> None:
+        self.member.append((list(member_ids), type_, data))
+
+
+@pytest.mark.asyncio
+async def test_an_offer_is_announced_to_its_member_only(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spy = _SpyBus()
+    monkeypatch.setattr("oc8.realtime.bus.get_event_bus", lambda: spy)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        await _offer(db, office, await chat_run(db, office))
+    assert "approval.created" not in spy.tenant_wide
+    ((audience, type_, data),) = spy.member
+    assert audience == [office.member_id] and type_ == "approval.created"
+    assert data["title"].startswith("Copilot on behalf of Anna")
+
+
+@pytest.mark.asyncio
+async def test_a_declined_key_later_allowed_is_not_declined(
+    app_session: AppSessionFactory,
+) -> None:
+    import datetime as dt
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        now = dt.datetime.now(dt.UTC)
+        old = await approved_offer(db, office, status="rejected")
+        old.decided_at = now - dt.timedelta(minutes=5)
+        new = await approved_offer(db, office, status="approved")
+        new.decided_at = now
+        await db.flush()
+        agent = await db.get(m.Agent, office.copilot_id)
+        assert agent is not None
+        block = await direct_access_block(db, run=await chat_run(db, office), agent=agent)
+        assert block is not None and "declined" not in block

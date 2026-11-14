@@ -31,10 +31,6 @@ DIRECT_ACCESS_ACTION: Final = "direct_access"
 
 _ACCOUNT_TEXT: Final = {"own": "their own login", "organisation": "the organisation account"}
 
-#: Stands for "a read through this connection" when asking the narrowing
-#: whether the Copilot may read there at all.
-_READ_PROBE: Final = "offer_direct_access.read"
-
 
 def _declined_in_this_run(context: dict[str, Any], tool_key: str) -> bool:
     entry = context.get("resolved_direct_access")
@@ -66,8 +62,23 @@ async def _waiting_offer(
 
 
 async def _declined_keys(db: AsyncSession, *, session_id: uuid.UUID) -> set[str]:
-    rows = (await db.execute(_offer_rows(session_id, "rejected"))).scalars()
-    return {str(r.payload.get("direct_access", {}).get("tool_key") or "") for r in rows}
+    """Keys whose LATEST decided offer was rejected: one allowed afterwards
+    (and maybe revoked since) is not declined."""
+    rows = (
+        await db.execute(
+            select(m.ApprovalRequest)
+            .where(
+                m.ApprovalRequest.action_type == DIRECT_ACCESS_ACTION,
+                m.ApprovalRequest.status.in_(("approved", "rejected")),
+                m.ApprovalRequest.payload["direct_access"]["session_id"].astext == str(session_id),
+            )
+            .order_by(m.ApprovalRequest.decided_at, m.ApprovalRequest.created_at)
+        )
+    ).scalars()
+    latest: dict[str, str] = {}
+    for r in rows:
+        latest[str(r.payload.get("direct_access", {}).get("tool_key") or "")] = r.status
+    return {key for key, status in latest.items() if status == "rejected"}
 
 
 async def _copilot_may_read(
@@ -76,6 +87,7 @@ async def _copilot_may_read(
     direct: DirectAccessRun,
     tool_key: str,
     narrowing: Mapping[str, Any] | None,
+    scopes: Mapping[str, Any] | None = None,
 ) -> bool:
     """The person may read through the key AND the Copilot's own pinned
     narrowing, a ceiling (R14), leaves it a read."""
@@ -86,8 +98,8 @@ async def _copilot_may_read(
     return offers_direct(
         view,
         connection_key=tool_key,
-        tool=_READ_PROBE,
-        scopes={"read": [_READ_PROBE]},
+        tool=None,
+        scopes=scopes,
         narrowing=narrowing,
     )
 
@@ -148,7 +160,7 @@ async def execute_direct_access_tool(
             output=f"Direct access to {key} is already offered and waiting for the person; "
             "do not offer it again, tell them it is waiting for their decision."
         )
-    if not await _copilot_may_read(db, direct=direct, tool_key=key, narrowing=narrowing):
+    if not await member_may_use(db, member_id=direct.member_id, tool_key=key, right="read"):
         return ControlOutcome(
             output=f"ERROR: {key} is not a connection this person may use; offer only one "
             "from your direct-access list"
@@ -163,6 +175,17 @@ async def execute_direct_access_tool(
     )
     if conn is None:
         return ControlOutcome(output=f"ERROR: {key} is not connected")
+    if not await _copilot_may_read(
+        db,
+        direct=direct,
+        tool_key=key,
+        narrowing=narrowing,
+        scopes=conn.scopes if isinstance(conn.scopes, dict) else None,
+    ):
+        return ControlOutcome(
+            output=f"ERROR: your own configuration leaves you no read through {key}; "
+            "offer only a connection from your direct-access list"
+        )
     try:
         access = await resolve_direct_access(db, member_id=direct.member_id, conn=conn)
     except (ConnectionRequired, PermissionError) as exc:
@@ -178,6 +201,7 @@ async def execute_direct_access_tool(
         agent_id=agent.id,
         task_id=task.id,
         action_type=DIRECT_ACCESS_ACTION,
+        announce_to_member=direct.member_id,
         title=f"Copilot on behalf of {name}: read {label}",
         detail=purpose,
         payload={
@@ -197,19 +221,6 @@ async def execute_direct_access_tool(
             },
             "i18n": {"de": {"title": f"Copilot im Auftrag von {name}: {label} lesen"}},
         },
-    )
-    from oc8.realtime.bus import get_event_bus
-
-    await get_event_bus().publish_event(
-        tenant_id,
-        "approval.created",
-        {
-            "approval_id": str(approval.id),
-            "agent_id": str(agent.id),
-            "title": approval.title,
-            "detail": approval.detail,
-        },
-        source=f"oc8/approval/{approval.id}",
     )
     await append_event(
         db,

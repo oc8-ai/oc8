@@ -74,13 +74,19 @@ def offers_direct(
     view: DirectAccessView,
     *,
     connection_key: str,
-    tool: str,
+    tool: str | None,
     scopes: Mapping[str, Any] | None,
     narrowing: Mapping[str, Any] | None = None,
 ) -> bool:
     """Whether a granted connection's tool may be offered at all -- the same
-    rule `direct_access_decision` applies, without the per-call value."""
-    right = required_right(tool, scopes)
+    rule `direct_access_decision` applies, without the per-call value.
+
+    `tool=None` asks about the connection instead: may anything be READ
+    through it. The right is "read"; a department's or the Copilot's `only`
+    list does not refuse it unless it leaves no read tool (none of the
+    `scopes`' read tools, or -- with no scopes to compare -- nothing at all)."""
+    right = "read" if tool is None else required_right(tool, scopes)
+    read_tools = _read_tools(scopes)
     return view.present_member and any(
         _frame_denial(
             {connection_key: policy},
@@ -89,9 +95,21 @@ def offers_direct(
             tool=tool,
         )
         is None
+        and (tool is not None or _leaves_a_read(policy, read_tools))
         for _department, raw in view.granted.get(connection_key, ())
         for policy in (_narrowed(raw, connection_key, narrowing),)
     )
+
+
+def _read_tools(scopes: Mapping[str, Any] | None) -> frozenset[str] | None:
+    names = scopes.get("read") if scopes else None
+    return frozenset(str(n) for n in names) if isinstance(names, (list, tuple)) else None
+
+
+def _leaves_a_read(policy: ToolPolicy, read_tools: frozenset[str] | None) -> bool:
+    if policy.only is None:
+        return True
+    return bool(policy.only & read_tools) if read_tools is not None else bool(policy.only)
 
 
 _RANK = {Effect.ALLOW: 0, Effect.REQUIRE_APPROVAL: 1, Effect.DENY: 2}

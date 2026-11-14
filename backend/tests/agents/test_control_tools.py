@@ -2083,7 +2083,9 @@ async def test_status_tools_need_assistant_and_the_permission() -> None:
     lead.is_tenant_assistant = True
     names = [
         t.name
-        for t in offered_tools(lead, assigned_skills=[], active_skills=[], mcp_tools=MCP_TOOLS)
+        for t in offered_tools(
+            lead, assigned_skills=[], active_skills=[], mcp_tools=MCP_TOOLS
+        )
     ]
     assert "list_pending_approvals" not in names, (
         "no copilot_permissions given, so nothing is offered"

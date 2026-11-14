@@ -63,6 +63,10 @@ ALLOWED: dict[str, str] = {
     # A new builder proposal expires its chat's due request: it locks the one
     # approval that proposal names (`result.approvalId`) to close it as expired.
     # No person reads it -- nothing about it is returned or shown.
+    # The Copilot's direct-access offer looks for the offers of its OWN
+    # conversation (pending: to avoid a second card; decided: to tell the
+    # model what was declined). Nothing is shown to a person from it.
+    "copilot/direct_access.py": "finds the offers of the Copilot's own conversation; no human here",
     "copilot/builder.py": "closes the approval its own expired proposal names; nothing is shown",
 }
 

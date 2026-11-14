@@ -255,6 +255,7 @@ async def raise_approval(
     reason_context: dict[str, Any] | None = None,
     record_url: str | None = None,
     related_links: list[dict[str, str]] | None = None,
+    announce_to_member: uuid.UUID | None = None,
 ) -> m.ApprovalRequest:
     """Create a request for a human, and tell the people who can answer it.
 
@@ -286,6 +287,9 @@ async def raise_approval(
     (`oc8.records.links.related_links`), resolved by the caller for the same
     reason.
 
+    `announce_to_member` makes the announcement that member's alone (see the
+    branch below); None is every other approval's behaviour.
+
     `department_id` defaults to `DERIVE`, which reads it off the agent. It is
     pinned here, at the moment the question is asked, rather than joined through
     `Agent` at read time: moving an agent between departments must not drag its
@@ -316,7 +320,27 @@ async def raise_approval(
     )
     db.add(approval)
     await db.flush()
-    await _announce(db, approval)
+    if announce_to_member is not None:
+        # A member-owned card (copilot direct access): its title and detail name
+        # the person and their private purpose. Neither the tenant-wide event,
+        # a push to every subscriber nor the department's messenger fan-out may
+        # carry it -- only that member's own sockets hear of it.
+        from oc8.realtime.bus import get_event_bus
+
+        await get_event_bus().publish_member_event(
+            tenant_id,
+            [announce_to_member],
+            "approval.created",
+            {
+                "approval_id": str(approval.id),
+                "agent_id": str(agent_id),
+                "title": approval.title,
+                "detail": approval.detail,
+            },
+            source=f"oc8/approval/{approval.id}",
+        )
+    else:
+        await _announce(db, approval)
     return approval
 
 
