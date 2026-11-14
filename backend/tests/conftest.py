@@ -300,3 +300,13 @@ def minio_url() -> Iterator[str]:
 @pytest.fixture(scope="session")
 def acme_tenant() -> uuid.UUID:
     return ACME_TENANT_ID
+
+
+@pytest.fixture
+def allow_loopback_outbound(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Outbound HTTP to 127.0.0.1 is refused by `oc8.net.outbound` unless the
+    operator allows it. Tests that talk to a server they started on loopback
+    allow exactly that address, the way an operator would."""
+    from oc8.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "outbound_allowed_private", "127.0.0.1/32")

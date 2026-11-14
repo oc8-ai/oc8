@@ -12,7 +12,7 @@ import pytest
 
 from oc8.agent.mcp_client import HttpToolSession
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("allow_loopback_outbound")]
 
 
 class _Handler(BaseHTTPRequestHandler):
