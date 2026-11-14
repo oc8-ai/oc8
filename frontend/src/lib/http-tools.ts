@@ -47,6 +47,12 @@ export function loginSecret(login: HttpLoginDraft): string {
   return login.kind === "none" ? "" : login.secret;
 }
 
+/** RFC 7617: a Basic username cannot contain a colon (the server would read
+ * everything after the first one as the password). */
+export function basicUsernameHasColon(login: HttpLoginDraft): boolean {
+  return login.kind === "basic" && login.username.includes(":");
+}
+
 /** Whether the non-secret parts are complete enough to save. */
 export function loginComplete(login: HttpLoginDraft): boolean {
   switch (login.kind) {
@@ -55,7 +61,7 @@ export function loginComplete(login: HttpLoginDraft): boolean {
     case "api_key":
       return login.name.trim() !== "" && login.secret !== "";
     case "basic":
-      return login.username.trim() !== "" && login.secret !== "";
+      return login.username.trim() !== "" && !basicUsernameHasColon(login) && login.secret !== "";
     case "oauth2_client_credentials":
       return (
         /^https?:\/\//.test(login.tokenUrl.trim()) &&

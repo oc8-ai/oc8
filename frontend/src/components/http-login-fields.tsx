@@ -2,7 +2,7 @@
 // string), Basic, or OAuth2 client credentials. The secret is stored sealed
 // by the setup form; only the other parts reach the connection's config.
 import { Field } from "@/components/agent-identity-fields";
-import type { HttpLoginDraft } from "@/lib/http-tools";
+import { basicUsernameHasColon, type HttpLoginDraft } from "@/lib/http-tools";
 import { useT } from "@/lib/i18n";
 
 const INPUT =
@@ -84,8 +84,17 @@ export function HttpLoginFields({
               aria-label={t("Username", "Benutzername")}
               value={value.username}
               onChange={(e) => onChange({ ...value, username: e.target.value })}
+              aria-invalid={basicUsernameHasColon(value) || undefined}
               className={INPUT}
             />
+            {basicUsernameHasColon(value) && (
+              <p className="mt-1 text-xs text-destructive">
+                {t(
+                  "The username can't contain a colon.",
+                  "Der Benutzername darf keinen Doppelpunkt enthalten.",
+                )}
+              </p>
+            )}
           </Field>
           <Field label={t("Password", "Passwort")}>
             <input

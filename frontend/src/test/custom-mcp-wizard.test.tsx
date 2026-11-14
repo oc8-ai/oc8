@@ -188,6 +188,26 @@ describe("CustomMcpWizard", () => {
     expect(manifest.setup.mcp.secret_env_fields).toEqual({ HTTP_AUTH_SECRET: "auth_secret" });
   });
 
+  it("refuses a Basic username with a colon and says why", () => {
+    render(<CustomMcpWizard open onOpenChange={() => {}} />, { wrapper });
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Tickets" } });
+    fireEvent.click(screen.getByText("Plain HTTP API"));
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.change(screen.getByPlaceholderText("https://api.example.com"), {
+      target: { value: "https://tickets.acme.test" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /add tool/i }));
+    fireEvent.change(screen.getByLabelText("Login"), { target: { value: "basic" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "pw" } });
+    fireEvent.change(screen.getByLabelText("Username"), { target: { value: "ada:lovelace" } });
+    expect(screen.getByText("The username can't contain a colon.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /next/i })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Username"), { target: { value: "ada" } });
+    expect(screen.queryByText("The username can't contain a colon.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /next/i })).toBeEnabled();
+  });
+
   it("keeps Next disabled until an OAuth2 login has its token URL, client and secret", () => {
     render(<CustomMcpWizard open onOpenChange={() => {}} />, { wrapper });
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Tickets" } });
