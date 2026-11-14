@@ -196,15 +196,19 @@ async def delete_session(db: AsyncSession, *, tenant_id: uuid.UUID, session: m.C
         ).scalars()
     )
     # Its grants go with it (FK cascade); an offer still waiting would grant
-    # access to a conversation that no longer exists.
+    # access to a conversation that no longer exists, and neither would a held
+    # direct write (any action type: whatever names this session under
+    # payload["direct_access"]). Rows are locked; expire_approval skips any
+    # that was decided meanwhile.
     waiting = (
         await db.execute(
-            select(m.ApprovalRequest).where(
+            select(m.ApprovalRequest)
+            .where(
                 m.ApprovalRequest.tenant_id == tenant_id,
                 m.ApprovalRequest.status == "pending",
-                m.ApprovalRequest.action_type == "direct_access",
                 m.ApprovalRequest.payload["direct_access"]["session_id"].astext == str(session.id),
             )
+            .with_for_update()
         )
     ).scalars()
     for offer in list(waiting):
@@ -580,14 +584,57 @@ async def _automatic_mode(
     session: m.ChatSession,
     role: str,
     chat_channel: str | None,
+    acting: tuple[str | None, bool],
 ) -> ChatMode | None:
     """ACT while this Copilot web chat holds a direct-access grant (§6).
     Only ever applied when no mode was chosen: a chosen one narrows."""
     from oc8.connections.direct_access import active_grants
 
+    if acting[0] is None:  # nobody to act for (someone else's words): no ACT
+        return None
     if role != "user" or chat_channel is not None or not await _is_assistant(db, session):
         return None
     return ACT if await active_grants(db, session_id=session.id) else None
+
+
+async def _acting_person(
+    db: AsyncSession,
+    *,
+    session: m.ChatSession,
+    originating_operator: str | None,
+    role: str,
+    chat_channel: str | None,
+    author_member_id: uuid.UUID | None,
+) -> tuple[str | None, bool]:
+    """`(on_behalf_of, withheld)`: who a turn acts for, decided in ONE place for
+    a new turn and a regenerated one. `on_behalf_of` only for the conversation's
+    own member, present at the web composer, speaking their own words (author is
+    the owner; no recorded author only counts for a plain web turn). Anyone
+    else's words in this chat act for nobody, and the run says so."""
+    if originating_operator is None:
+        return None, False
+    owner = await db.get(m.OrgMember, session.member_id)
+    if owner is None:
+        return None, False
+    own_words = author_member_id is None or author_member_id == owner.id
+    if owner.subject != originating_operator or not own_words:
+        return None, True
+    if role == "user" and chat_channel is None and await _is_assistant(db, session):
+        # Copilot direct access §6, Identity.
+        return str(owner.id), False
+    return None, False
+
+
+def _apply_acting_person(context: dict[str, Any], acting: tuple[str | None, bool]) -> None:
+    on_behalf_of, withheld = acting
+    if withheld:
+        # Someone else writes into this member's chat (an oversight reply): the
+        # run acts for nobody, and says so, so that no fixed binding to the
+        # owner's own account carries these words out. Set here and not in
+        # `_extra_context`'s allow-list: a caller can never hand a turn this key.
+        context[ACTING_PERSON_WITHHELD] = SOMEONE_ELSES_WORDS
+    elif on_behalf_of is not None:
+        context["on_behalf_of"] = on_behalf_of
 
 
 async def send_message(
@@ -826,6 +873,14 @@ async def send_message(
         )
         task_text += label
 
+    acting = await _acting_person(
+        db,
+        session=session,
+        originating_operator=originating_operator,
+        role=role,
+        chat_channel=chat_channel,
+        author_member_id=user_message.author_member_id,
+    )
     context = _build_turn_context(
         session=session,
         task_text=task_text,
@@ -837,7 +892,9 @@ async def send_message(
         chat_channel_external_id=chat_channel_external_id,
         role=role,
         mode=mode
-        or await _automatic_mode(db, session=session, role=role, chat_channel=chat_channel),
+        or await _automatic_mode(
+            db, session=session, role=role, chat_channel=chat_channel, acting=acting
+        ),
         for_person=for_person,
         resolved_refs=resolved_refs,
         extra_context=extra_context,
@@ -846,24 +903,7 @@ async def send_message(
         notice=notice,
     )
     task_text = str(context["task"])
-    if originating_operator is not None:
-        owner = await db.get(m.OrgMember, session.member_id)
-        if owner is not None and owner.subject != originating_operator:
-            # Someone else writes into this member's chat (an oversight
-            # reply): the run acts for nobody, and says so, so that no fixed
-            # binding to the owner's own account carries these words out.
-            # Set here and not in `_extra_context`'s allow-list: a caller can
-            # never hand a turn this key.
-            context[ACTING_PERSON_WITHHELD] = SOMEONE_ELSES_WORDS
-        elif (
-            owner is not None
-            and role == "user"
-            and chat_channel is None
-            and await _is_assistant(db, session)
-        ):
-            # The conversation's own member, present at the web composer: the
-            # Copilot acts for them (copilot direct access §6, Identity).
-            context["on_behalf_of"] = str(owner.id)
+    _apply_acting_person(context, acting)
 
     # Open the session's Task HERE, on turn one, rather than letting the engine
     # open one implicitly when the run starts.
@@ -1015,6 +1055,14 @@ async def regenerate_reply(
         task_text += (
             att.extracted_text if att.extracted_text else "(could not read this file's content)"
         )
+    acting = await _acting_person(
+        db,
+        session=session,
+        originating_operator=originating_operator,
+        role="user",
+        chat_channel=None,
+        author_member_id=user_message.author_member_id,
+    )
     context = _build_turn_context(
         session=session,
         task_text=task_text,
@@ -1025,21 +1073,15 @@ async def regenerate_reply(
         chat_channel=None,
         chat_channel_external_id=None,
         role="user",
-        mode=mode or await _automatic_mode(db, session=session, role="user", chat_channel=None),
+        mode=mode
+        or await _automatic_mode(
+            db, session=session, role="user", chat_channel=None, acting=acting
+        ),
         resolved_refs=resolved_refs,
         extra_context={"regenerated": True},
         manifest=manifest,
     )
-    if originating_operator is not None:
-        owner = await db.get(m.OrgMember, session.member_id)
-        if (
-            owner is not None
-            and owner.subject == originating_operator
-            and await _is_assistant(db, session)
-        ):
-            context["on_behalf_of"] = str(owner.id)
-        elif owner is not None and owner.subject != originating_operator:
-            context[ACTING_PERSON_WITHHELD] = SOMEONE_ELSES_WORDS
+    _apply_acting_person(context, acting)
     run, _published = await enqueue_run(
         db,
         tenant_id=tenant_id,

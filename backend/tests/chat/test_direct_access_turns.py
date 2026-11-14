@@ -154,3 +154,67 @@ async def test_deleting_the_chat_takes_its_grants_and_open_offers(
         assert left == []
         await db.refresh(pending)
         assert pending.status == "expired"
+
+
+async def test_regenerating_someone_elses_words_acts_for_nobody(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        await grant(db, office)
+        session = await _session(db, office.session_id)
+        msg, _run = await send_message(
+            db,
+            session=session,
+            tenant_id=tenant,
+            message="look at this",
+            originating_operator="admin",
+            author_member_id=uuid.uuid4(),
+        )
+        again = await regenerate_reply(
+            db,
+            session=session,
+            tenant_id=tenant,
+            user_message=msg,
+            originating_operator="anna",
+            operator_role=None,
+        )
+        assert "on_behalf_of" not in again.context
+        assert again.context["acting_person_withheld"] == "someone_elses_words"
+        assert "chat_mode" not in again.context
+
+
+async def test_deleting_the_chat_expires_every_pending_card_that_names_it(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        held = await approved_offer(db, office, status="pending")
+        held.action_type = "tool_send"
+        other_offer = await approved_offer(db, office, status="pending")
+        other_offer.payload = {
+            "direct_access": {
+                **other_offer.payload["direct_access"],
+                "session_id": str(uuid.uuid4()),
+            }
+        }
+        unrelated = m.ApprovalRequest(
+            tenant_id=tenant,
+            agent_id=office.copilot_id,
+            task_id=office.task_id,
+            action_type="tool_send",
+            title="unrelated",
+            status="pending",
+            payload={},
+        )
+        db.add(unrelated)
+        await db.flush()
+        await delete_session(db, tenant_id=tenant, session=await _session(db, office.session_id))
+        await db.flush()
+        for row in (held, other_offer, unrelated):
+            await db.refresh(row)
+        assert held.status == "expired"
+        assert other_offer.status == "pending"
+        assert unrelated.status == "pending"
