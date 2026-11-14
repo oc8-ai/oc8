@@ -192,23 +192,10 @@ function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((x): x is string => typeof x === "string") : [];
 }
 
-/** A tool `PATCH .../http-tools` accepts: a name of at most 64 letters,
- * digits, `_` or `-`, and a path below the base URL. */
-function patchableTool(tool: HttpToolWire): boolean {
-  const path = tool.urlTemplate;
-  return (
-    /^[A-Za-z0-9_-]{1,64}$/.test(tool.name) &&
-    path.startsWith("/") &&
-    !path.startsWith("//") &&
-    !path.includes("://")
-  );
-}
-
 /** When `next` differs from the installed `previous` manifest only in its HTTP
  * API connection's tools, read/modify classification or import metadata, the
  * body that replaces them in place; otherwise (a new name, base URL, login,
- * anything else, or a tool the in-place update would refuse) null, and the
- * manifest has to be installed again. */
+ * anything else) null, and the manifest has to be installed again. */
 export function httpToolsUpdateBetween(previous: Json, next: Json): UpdateHttpToolsBody | null {
   const conn = firstConnection(next);
   if (!conn || conn.transport !== "manual_http") return null;
@@ -245,5 +232,72 @@ export function httpToolsUpdateBetween(previous: Json, next: Json): UpdateHttpTo
         }
       : null,
   };
-  return body.httpTools.every(patchableTool) ? body : null;
+  return body;
+}
+
+/** Why a tool cannot be saved, by the same rules the server applies when it
+ * stores an HTTP API's tools (`HttpToolSpec`/`UpdateHttpToolsRequest`). */
+export type HttpToolProblem =
+  | "name_missing"
+  | "name_invalid"
+  | "name_duplicate"
+  | "path"
+  | "schema_json"
+  | "schema_object"
+  | "schema_ref"
+  | "schema_size";
+
+export const HTTP_TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+const PARAM_SCHEMA_MAX_BYTES = 64_000;
+const PARAM_SCHEMA_MAX_DEPTH = 32;
+
+/** The fields of a tool as an editor holds them: the schema still as text. */
+export interface HttpToolFields {
+  readonly name: string;
+  readonly urlTemplate: string;
+  /** JSON text; empty means "no parameters". */
+  readonly paramSchema: string;
+}
+
+function schemaProblem(text: string): HttpToolProblem | null {
+  if (!text.trim()) return null;
+  let schema: unknown;
+  try {
+    schema = JSON.parse(text);
+  } catch {
+    return "schema_json";
+  }
+  if (!isObject(schema) || (schema.type !== undefined && schema.type !== "object")) {
+    return "schema_object";
+  }
+  if (JSON.stringify(schema).length > PARAM_SCHEMA_MAX_BYTES) return "schema_size";
+  const stack: Array<[unknown, number]> = [[schema, 1]];
+  while (stack.length > 0) {
+    const [node, depth] = stack.pop()!;
+    if (depth > PARAM_SCHEMA_MAX_DEPTH) return "schema_size";
+    if (Array.isArray(node)) {
+      for (const child of node) stack.push([child, depth + 1]);
+    } else if (isObject(node)) {
+      const ref = node.$ref;
+      if (ref !== undefined && !(typeof ref === "string" && ref.startsWith("#"))) {
+        return "schema_ref";
+      }
+      for (const child of Object.values(node)) stack.push([child, depth + 1]);
+    }
+  }
+  return null;
+}
+
+/** One problem (or null) per tool, in order: the first rule each one breaks. */
+export function validateHttpTools(tools: readonly HttpToolFields[]): Array<HttpToolProblem | null> {
+  const seen = new Map<string, number>();
+  for (const tool of tools) seen.set(tool.name, (seen.get(tool.name) ?? 0) + 1);
+  return tools.map((tool) => {
+    if (tool.name === "") return "name_missing";
+    if (!HTTP_TOOL_NAME.test(tool.name)) return "name_invalid";
+    if ((seen.get(tool.name) ?? 0) > 1) return "name_duplicate";
+    const path = tool.urlTemplate;
+    if (!path.startsWith("/") || path.startsWith("//") || path.includes("://")) return "path";
+    return schemaProblem(tool.paramSchema);
+  });
 }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections import Counter
 from typing import Annotated, Any, Literal
@@ -453,6 +454,31 @@ class HttpTestCallRequest(CamelModel):
 
 
 _HTTP_TOOL_NAME = r"^[A-Za-z0-9_-]{1,64}$"
+#: Bounds on one tool's parameter schema, checked before it is walked by the
+#: JSON Schema meta-validator (which recurses) or forwarded to a model.
+_PARAM_SCHEMA_MAX_BYTES = 64_000
+_PARAM_SCHEMA_MAX_DEPTH = 32
+
+
+def _schema_shape_problem(value: Any) -> str | None:
+    """Why a parameter schema is too deep or refers outside itself, or None.
+
+    Walked iteratively, so a hostile nesting cannot exhaust the stack here.
+    Only a local `$ref` ("#/...") is allowed: a remote one would be handed to
+    model providers as part of the tool's input schema."""
+    stack: list[tuple[Any, int]] = [(value, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if depth > _PARAM_SCHEMA_MAX_DEPTH:
+            return f"param_schema is nested deeper than {_PARAM_SCHEMA_MAX_DEPTH} levels"
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if ref is not None and not (isinstance(ref, str) and ref.startswith("#")):
+                return "param_schema may only use a local $ref (starting with '#')"
+            stack.extend((child, depth + 1) for child in node.values())
+        elif isinstance(node, list):
+            stack.extend((child, depth + 1) for child in node)
+    return None
 
 
 class HttpToolSpec(CamelModel):
@@ -482,10 +508,17 @@ class HttpToolSpec(CamelModel):
     @field_validator("param_schema")
     @classmethod
     def _an_object_json_schema(cls, value: dict[str, Any]) -> dict[str, Any]:
+        problem = _schema_shape_problem(value)
+        if problem:
+            raise ValueError(problem)
+        if len(json.dumps(value)) > _PARAM_SCHEMA_MAX_BYTES:
+            raise ValueError(f"param_schema is larger than {_PARAM_SCHEMA_MAX_BYTES} bytes")
         try:
             jsonschema.validators.validator_for(value).check_schema(value)
         except jsonschema.SchemaError as exc:
             raise ValueError(f"param_schema is not a valid JSON Schema: {exc.message}") from exc
+        except RecursionError as exc:
+            raise ValueError("param_schema is nested too deeply") from exc
         if value.get("type", "object") != "object":
             raise ValueError("param_schema must describe an object (type: object)")
         return value

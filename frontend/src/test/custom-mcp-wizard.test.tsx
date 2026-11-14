@@ -40,6 +40,16 @@ async function installAndTestAStdioServer() {
   await screen.findByText(/Connected/i);
 }
 
+// Adds one tool with a name and a path below the base URL, the least the
+// tools step lets through.
+function addTool(name = "list_tickets", path = "/tickets") {
+  fireEvent.click(screen.getByRole("button", { name: /add tool/i }));
+  const names = screen.getAllByPlaceholderText("Tool name");
+  fireEvent.change(names[names.length - 1], { target: { value: name } });
+  const paths = screen.getAllByPlaceholderText("/orders/{order_id}");
+  fireEvent.change(paths[paths.length - 1], { target: { value: path } });
+}
+
 describe("CustomMcpWizard", () => {
   beforeEach(() => {
     postMock.mockReset();
@@ -174,7 +184,7 @@ describe("CustomMcpWizard", () => {
     fireEvent.change(screen.getByLabelText("Send the key in"), { target: { value: "query" } });
     fireEvent.change(screen.getByLabelText("Key name"), { target: { value: "api_key" } });
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "k-1" } });
-    fireEvent.click(screen.getByRole("button", { name: /add tool/i }));
+    addTool();
     fireEvent.click(screen.getByRole("button", { name: /next/i }));
     fireEvent.click(screen.getByRole("button", { name: /next/i }));
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
@@ -263,10 +273,7 @@ describe("CustomMcpWizard", () => {
     fireEvent.change(screen.getByPlaceholderText("https://api.example.com"), {
       target: { value: "https://tickets.acme.test" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /add tool/i }));
-    fireEvent.change(screen.getByPlaceholderText("Tool name"), {
-      target: { value: "list_tickets" },
-    });
+    addTool("list_tickets");
     fireEvent.click(screen.getByRole("button", { name: /next/i }));
 
     fireEvent.click(screen.getByRole("button", { name: "Run test call" }));
@@ -281,12 +288,18 @@ describe("CustomMcpWizard", () => {
 
   it("installs the edited connection again when it changed after a test call", async () => {
     let setups = 0;
+    let installCount = 0;
     postMock.mockImplementation((path: string) => {
-      if (path === "/capas") return Promise.resolve({ id: "cv-1", pluginId: "capa-1" });
+      if (path === "/capas") {
+        installCount += 1;
+        return Promise.resolve({ id: "cv-1", pluginId: "capa-1" });
+      }
       if (path === "/capas/capa-1/enable") return Promise.resolve({});
       if (path === "/capas/capa-1/setup") {
         setups += 1;
-        return Promise.resolve({ connectionId: `conn-${setups}` });
+        // One connection per install: a reinstall's enable makes a new one,
+        // a setup of the same department finds it again.
+        return Promise.resolve({ connectionId: `conn-${installCount}` });
       }
       if (path.endsWith("/test-call")) {
         return Promise.resolve({
@@ -308,10 +321,7 @@ describe("CustomMcpWizard", () => {
     fireEvent.change(screen.getByPlaceholderText("https://api.example.com"), {
       target: { value: "https://tickets.acme.test" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /add tool/i }));
-    fireEvent.change(screen.getByPlaceholderText("Tool name"), {
-      target: { value: "list_tickets" },
-    });
+    addTool("list_tickets");
     fireEvent.click(screen.getByRole("button", { name: /next/i }));
     fireEvent.click(screen.getByRole("button", { name: "Run test call" }));
     expect(await screen.findByText("The call worked.")).toBeInTheDocument();
@@ -382,10 +392,7 @@ describe("CustomMcpWizard", () => {
     fireEvent.change(screen.getByPlaceholderText("https://api.example.com"), {
       target: { value: "https://tickets.acme.test" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /add tool/i }));
-    fireEvent.change(screen.getByPlaceholderText("Tool name"), {
-      target: { value: "list_tickets" },
-    });
+    addTool("list_tickets");
     fireEvent.click(screen.getByRole("button", { name: /next/i }));
     fireEvent.click(screen.getByRole("button", { name: "Run test call" }));
     await screen.findByText("The call worked.");
@@ -417,10 +424,7 @@ describe("CustomMcpWizard", () => {
     fireEvent.change(screen.getByPlaceholderText("https://api.example.com"), {
       target: { value: "https://tickets.acme.test" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /add tool/i }));
-    fireEvent.change(screen.getByPlaceholderText("Tool name"), {
-      target: { value: "list_tickets" },
-    });
+    addTool("list_tickets");
     fireEvent.click(screen.getByRole("button", { name: /next/i }));
     fireEvent.click(screen.getByRole("button", { name: "Run test call" }));
     await screen.findByText("The call worked.");
@@ -487,14 +491,91 @@ describe("CustomMcpWizard", () => {
     expect(deleteMock).not.toHaveBeenCalled();
   });
 
-  it("installs again when an edited tool is one the in-place update would refuse", async () => {
-    let setups = 0;
+  it.each([
+    ["", "/tickets", "", "Give this tool a name."],
+    [
+      "list tickets",
+      "/tickets",
+      "",
+      "Use only letters, digits, _ and - in a tool name (at most 64).",
+    ],
+    ["list_tickets", "", "", "Enter the path below the base URL, starting with /."],
+    [
+      "list_tickets",
+      "https://evil.test/x",
+      "",
+      "Enter the path below the base URL, starting with /.",
+    ],
+    ["list_tickets", "/tickets", "{", "The parameter schema is not valid JSON."],
+    [
+      "list_tickets",
+      "/tickets",
+      '{"type": "string"}',
+      'The parameter schema must be a JSON Schema object with "type": "object".',
+    ],
+    [
+      "list_tickets",
+      "/tickets",
+      '{"type": "object", "properties": {"a": {"$ref": "https://evil.test/s.json"}}}',
+      "The parameter schema may only refer to itself ($ref starting with #).",
+    ],
+  ])("blocks Next for a tool named %j at %j with schema %j", (name, path, schema, message) => {
+    render(<CustomMcpWizard open onOpenChange={() => {}} />, { wrapper });
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Tickets" } });
+    fireEvent.click(screen.getByText("Plain HTTP API"));
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.change(screen.getByPlaceholderText("https://api.example.com"), {
+      target: { value: "https://tickets.acme.test" },
+    });
+    addTool(name, path);
+    if (schema) {
+      fireEvent.change(screen.getByPlaceholderText('{"type": "object", "properties": {…}}'), {
+        target: { value: schema },
+      });
+    }
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    expect(screen.getByText(message)).toBeInTheDocument();
+    // Still on the tools step.
+    expect(screen.getByPlaceholderText("Tool name")).toBeInTheDocument();
+    expect(postMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks Next for two tools with the same name", () => {
+    render(<CustomMcpWizard open onOpenChange={() => {}} />, { wrapper });
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Tickets" } });
+    fireEvent.click(screen.getByText("Plain HTTP API"));
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.change(screen.getByPlaceholderText("https://api.example.com"), {
+      target: { value: "https://tickets.acme.test" },
+    });
+    addTool("list_tickets", "/tickets");
+    addTool("list_tickets", "/tickets/open");
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    expect(screen.getAllByText("Another tool already has this name.")).toHaveLength(2);
+    expect(screen.getAllByPlaceholderText("Tool name")).toHaveLength(2);
+  });
+
+  it("disables every capa left under an earlier name, even after two renames", async () => {
+    let installs = 0;
+    const disabled: string[] = [];
+    let failedOnce = false;
     postMock.mockImplementation((path: string) => {
-      if (path === "/capas") return Promise.resolve({ id: "cv-1", pluginId: "capa-1" });
-      if (path === "/capas/capa-1/enable") return Promise.resolve({});
-      if (path === "/capas/capa-1/setup") {
-        setups += 1;
-        return Promise.resolve({ connectionId: `conn-${setups}` });
+      if (path === "/capas") {
+        installs += 1;
+        return Promise.resolve({ id: `cv-${installs}`, pluginId: `capa-${installs}` });
+      }
+      if (/^\/capas\/capa-\d\/enable$/.test(path)) return Promise.resolve({});
+      const disable = /^\/capas\/(capa-\d)\/disable$/.exec(path);
+      if (disable) {
+        if (!failedOnce) {
+          failedOnce = true;
+          return Promise.reject(new Error("The old capa could not be disabled."));
+        }
+        disabled.push(disable[1]);
+        return Promise.resolve({});
+      }
+      if (/^\/capas\/capa-\d\/setup$/.test(path)) {
+        return Promise.resolve({ connectionId: `conn-${installs}` });
       }
       if (path.endsWith("/test-call")) return Promise.resolve(CALL_WORKED);
       return Promise.reject(new Error(`unexpected POST ${path}`));
@@ -502,22 +583,20 @@ describe("CustomMcpWizard", () => {
     render(<CustomMcpWizard open onOpenChange={() => {}} />, { wrapper });
     await testAPlainHttpApi();
 
-    fireEvent.click(screen.getByRole("button", { name: /back/i }));
-    // No URL template: not a path the in-place update accepts.
-    fireEvent.change(screen.getByPlaceholderText("Tool name"), {
-      target: { value: "list_open_tickets" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: /next/i }));
-    fireEvent.click(screen.getByRole("button", { name: "Run test call" }));
-
-    await waitFor(() =>
-      expect(postMock).toHaveBeenCalledWith("/mcp/connections/conn-2/test-call", {
-        tool: "list_open_tickets",
-        arguments: {},
-      }),
-    );
-    expect(patchMock).not.toHaveBeenCalled();
-    expect(postMock.mock.calls.filter(([path]) => path === "/capas")).toHaveLength(2);
+    async function renameAndTest(name: string) {
+      fireEvent.click(screen.getByRole("button", { name: /back/i }));
+      fireEvent.click(screen.getByRole("button", { name: /back/i }));
+      fireEvent.change(screen.getByLabelText("Name"), { target: { value: name } });
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Run test call" }));
+    }
+    await renameAndTest("Helpdesk");
+    expect(await screen.findByText("The old capa could not be disabled.")).toBeInTheDocument();
+    await renameAndTest("Support");
+    await screen.findByText("The call worked.");
+    expect(installs).toBe(3);
+    expect(disabled.sort()).toEqual(["capa-1", "capa-2"]);
   });
 
   it("does not install the renamed capa again when disabling the old one failed", async () => {
@@ -580,10 +659,7 @@ describe("CustomMcpWizard", () => {
     fireEvent.change(screen.getByPlaceholderText("https://api.example.com"), {
       target: { value: "https://tickets.acme.test" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /add tool/i }));
-    fireEvent.change(screen.getByPlaceholderText("Tool name"), {
-      target: { value: "list_tickets" },
-    });
+    addTool("list_tickets");
     fireEvent.click(screen.getByRole("button", { name: /next/i }));
     fireEvent.click(screen.getByRole("button", { name: "Run test call" }));
     await waitFor(() => expect(screen.getByRole("button", { name: /back/i })).toBeDisabled());
@@ -646,7 +722,7 @@ describe("CustomMcpWizard", () => {
       fireEvent.change(screen.getByPlaceholderText("https://api.example.com"), {
         target: { value: "https://tickets.acme.test" },
       });
-      fireEvent.click(screen.getByRole("button", { name: /add tool/i }));
+      addTool();
       fireEvent.click(screen.getByRole("button", { name: /next/i }));
       fireEvent.click(screen.getByRole("button", { name: /next/i }));
       fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
@@ -662,6 +738,90 @@ describe("CustomMcpWizard", () => {
         expect.objectContaining({ key: "department", kind: "department", required: true }),
       );
       expect(setup.mcp.department_field).toBe("department");
+    });
+
+    // Tests the API in Support, goes back, picks Sales and optionally edits
+    // the tool, then tests again.
+    async function testThenMoveToSales(editTool: boolean) {
+      let setups = 0;
+      postMock.mockImplementation((path: string) => {
+        if (path === "/capas") return Promise.resolve({ id: "cv-1", pluginId: "capa-1" });
+        if (path === "/capas/capa-1/enable") return Promise.resolve({});
+        if (path === "/capas/capa-1/setup") {
+          setups += 1;
+          return Promise.resolve({ connectionId: `conn-${setups}` });
+        }
+        if (path.endsWith("/test-call")) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            durationMs: 5,
+            excerpt: "[]",
+            truncated: false,
+            errorClass: null,
+            message: "The API answered 200.",
+          });
+        }
+        return Promise.reject(new Error(`unexpected POST ${path}`));
+      });
+      patchMock.mockResolvedValue({});
+      getMock.mockResolvedValue(departments);
+      render(<CustomMcpWizard open onOpenChange={() => {}} defaultDepartmentId="d-support" />, {
+        wrapper,
+      });
+      await nameAndType();
+      const select = (await screen.findByLabelText("Department")) as HTMLSelectElement;
+      await waitFor(() => expect(select.value).toBe("d-support"));
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+      fireEvent.change(screen.getByPlaceholderText("https://api.example.com"), {
+        target: { value: "https://tickets.acme.test" },
+      });
+      addTool();
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Run test call" }));
+      await screen.findByText("The call worked.");
+
+      fireEvent.click(screen.getByRole("button", { name: /back/i }));
+      if (editTool) {
+        fireEvent.change(screen.getByPlaceholderText("Tool name"), {
+          target: { value: "list_open_tickets" },
+        });
+      }
+      fireEvent.click(screen.getByRole("button", { name: /back/i }));
+      fireEvent.change(screen.getByLabelText("Department"), { target: { value: "d-sales" } });
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+      fireEvent.click(screen.getByRole("button", { name: "Run test call" }));
+      await waitFor(() =>
+        expect(postMock).toHaveBeenCalledWith("/mcp/connections/conn-2/test-call", {
+          tool: editTool ? "list_open_tickets" : "list_tickets",
+          arguments: {},
+        }),
+      );
+      expect(postMock).toHaveBeenLastCalledWith("/mcp/connections/conn-2/test-call", {
+        tool: editTool ? "list_open_tickets" : "list_tickets",
+        arguments: {},
+      });
+      expect(postMock).toHaveBeenCalledWith("/capas/capa-1/setup", {
+        values: { department: "d-sales" },
+      });
+    }
+
+    it("moves the connection to the new department when the tools changed too", async () => {
+      await testThenMoveToSales(true);
+      expect(patchMock).toHaveBeenCalledTimes(1);
+      expect(patchMock.mock.calls[0][0]).toBe("/mcp/connections/conn-1/http-tools");
+      // The first department's connection, with its login, does not stay behind.
+      expect(deleteMock).toHaveBeenCalledWith("/mcp/connections/conn-1");
+      expect(deleteMock).toHaveBeenCalledTimes(1);
+      expect(postMock.mock.calls.filter(([path]) => path === "/capas")).toHaveLength(1);
+    });
+
+    it("moves the connection to the new department when only the department changed", async () => {
+      await testThenMoveToSales(false);
+      expect(patchMock).not.toHaveBeenCalled();
+      expect(deleteMock).toHaveBeenCalledWith("/mcp/connections/conn-1");
+      expect(deleteMock).toHaveBeenCalledTimes(1);
     });
 
     it("needs a department before going on when the organisation has departments", async () => {

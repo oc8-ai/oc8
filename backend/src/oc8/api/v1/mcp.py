@@ -570,12 +570,29 @@ async def run_test_call(
 
 
 _IMPORT_METADATA_KEYS = ("source_url", "fingerprint", "imported_at", "title", "version")
+_LOGIN_SHAPE_KEYS = ("in", "name", "username", "token_url", "client_id", "scope")
+
+
+def _text(value: object) -> str | None:
+    """A stored scalar as text; anything else (a list, a dict, None) as None.
+    Rows and custom manifests are written by hand too, so the read path never
+    trusts their types."""
+    if value is None or isinstance(value, (dict, list)):
+        return None
+    return str(value)
+
+
+def _names(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [text for text in (_text(x) for x in value) if text is not None]
 
 
 def _http_tools_snapshot(conn: m.McpConnection) -> HttpToolsSnapshotDTO:
     cfg = conn.config or {}
     tools: list[HttpToolDTO] = []
-    for raw in cfg.get("http_tools", []):
+    raw_tools = cfg.get("http_tools", [])
+    for raw in raw_tools if isinstance(raw_tools, list) else []:
         if not isinstance(raw, dict):
             continue
         schema = raw.get("param_schema")
@@ -600,15 +617,16 @@ def _http_tools_snapshot(conn: m.McpConnection) -> HttpToolsSnapshotDTO:
     scopes = conn.scopes if isinstance(conn.scopes, dict) else {}
     auth = cfg.get("auth")
     login: HttpLoginShapeDTO | None = None
-    if isinstance(auth, dict) and isinstance(auth.get("kind"), str):
+    if isinstance(auth, dict) and _text(auth.get("kind")):
+        shape = {key: _text(auth.get(key)) for key in _LOGIN_SHAPE_KEYS}
         login = HttpLoginShapeDTO(
-            kind=auth["kind"],
-            location=auth.get("in"),
-            name=auth.get("name"),
-            username=auth.get("username"),
-            token_url=auth.get("token_url"),
-            client_id=auth.get("client_id"),
-            scope=auth.get("scope"),
+            kind=str(auth["kind"]),
+            location=shape["in"],
+            name=shape["name"],
+            username=shape["username"],
+            token_url=shape["token_url"],
+            client_id=shape["client_id"],
+            scope=shape["scope"],
         )
     elif cfg.get("auth_header_name"):
         # A connection from before logins existed: its one header is an API
@@ -617,28 +635,36 @@ def _http_tools_snapshot(conn: m.McpConnection) -> HttpToolsSnapshotDTO:
             kind="api_key", location="header", name=str(cfg["auth_header_name"])
         )
     meta = cfg.get("openapi")
+    openapi: ImportMetadataDTO | None = None
+    if isinstance(meta, dict):
+        found = {key: _text(meta.get(key)) for key in _IMPORT_METADATA_KEYS}
+        openapi = ImportMetadataDTO(
+            source_url=found["source_url"],
+            fingerprint=found["fingerprint"] or "",
+            imported_at=found["imported_at"] or "",
+            title=found["title"] or "",
+            version=found["version"] or "",
+        )
     return HttpToolsSnapshotDTO(
         connection_id=str(conn.id),
         name=conn.name,
         base_url=conn.server_url,
         http_tools=tools,
         scopes=HttpToolScopesDTO(
-            read=[str(x) for x in scopes.get("read", [])],
-            modify=[str(x) for x in scopes.get("modify", [])],
+            read=_names(scopes.get("read")), modify=_names(scopes.get("modify"))
         ),
         auth=login,
-        openapi=(
-            ImportMetadataDTO(**{k: meta[k] for k in _IMPORT_METADATA_KEYS if k in meta})
-            if isinstance(meta, dict)
-            else None
-        ),
+        openapi=openapi,
     )
 
 
 async def _http_api_connection(
-    db: DbSession, conn_id: uuid.UUID, principal: CurrentPrincipal
+    db: DbSession, conn_id: uuid.UUID, principal: CurrentPrincipal, *, lock: bool = False
 ) -> m.McpConnection:
-    conn = await db.get(m.McpConnection, conn_id)
+    query = select(m.McpConnection).where(m.McpConnection.id == conn_id)
+    if lock:
+        query = query.with_for_update()
+    conn = (await db.execute(query)).scalar_one_or_none()
     if conn is None or conn.tenant_id != principal.tenant_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "connection not found")
     if conn.transport != "manual_http":
@@ -680,9 +706,14 @@ async def update_http_tools(
     row's `scopes` from the manifest (materialise._refresh_declared_seams) and
     a further department's row is seeded from the manifest's config, so an
     edit kept only on the row would silently revert. A plugin that is not a
-    custom capa owns its tools: 409.
+    custom capa owns its tools: 409. So is a capa whose current manifest no
+    longer has this connection: the rows alone would revert on the next enable.
+
+    The capa and every row are locked for the transaction, so an install of a
+    new version or another edit of the same connection waits instead of
+    writing past this one.
     """
-    conn = await _http_api_connection(db, conn_id, principal)
+    conn = await _http_api_connection(db, conn_id, principal, lock=True)
     cfg = conn.config or {}
     tools = [
         {
@@ -697,7 +728,10 @@ async def update_http_tools(
         }
         for t in body.http_tools
     ]
-    scopes = {"read": sorted(body.scopes.read), "modify": sorted(body.scopes.modify)}
+    scopes = {
+        "read": sorted(set(body.scopes.read)),
+        "modify": sorted(set(body.scopes.modify)),
+    }
     replace_meta = "openapi" in body.model_fields_set
     meta = body.openapi.model_dump(mode="json") if body.openapi is not None else None
 
@@ -705,23 +739,26 @@ async def update_http_tools(
     plugin_name = cfg.get("_plugin_name")
     connection_key = cfg.get("_connection_key", "default")
     if isinstance(plugin_name, str) and plugin_name:
+        capa = (
+            await db.execute(
+                select(m.Capa)
+                .where(m.Capa.tenant_id == principal.tenant_id, m.Capa.name == plugin_name)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
         rows = [
             row
             for row in (
                 await db.execute(
-                    select(m.McpConnection).where(m.McpConnection.tenant_id == principal.tenant_id)
+                    select(m.McpConnection)
+                    .where(m.McpConnection.tenant_id == principal.tenant_id)
+                    .order_by(m.McpConnection.id)
+                    .with_for_update()
                 )
             ).scalars()
             if (row.config or {}).get("_plugin_name") == plugin_name
             and (row.config or {}).get("_connection_key", "default") == connection_key
         ]
-        capa = (
-            await db.execute(
-                select(m.Capa).where(
-                    m.Capa.tenant_id == principal.tenant_id, m.Capa.name == plugin_name
-                )
-            )
-        ).scalar_one_or_none()
         if capa is not None:
             if capa.origin != "custom":
                 raise HTTPException(
@@ -748,11 +785,16 @@ async def update_http_tools(
             health["tools"] = names
             health["toolCount"] = len(names)
             row.health = health
-    await db.flush()
-    # A pooled session still serves the old tool list until it ages out.
-    for row in rows:
-        await mcp_pool.close(row.id)
-    return _http_tools_snapshot(conn)
+    snapshot = _http_tools_snapshot(conn)
+    row_ids = [row.id for row in rows]
+    # Committed BEFORE the pooled sessions are closed: one reopened in between
+    # would be built from the old committed tools and serve them until it ages
+    # out. The pool is per process, so another replica keeps its session (and
+    # the old tool list) until mcp_pool.MAX_AGE; nothing invalidates it sooner.
+    await db.commit()
+    for row_id in row_ids:
+        await mcp_pool.close(row_id)
+    return snapshot
 
 
 async def _write_custom_manifest(
@@ -765,15 +807,22 @@ async def _write_custom_manifest(
     *,
     replace_meta: bool,
 ) -> None:
-    if capa.current_version_id is None:
-        return
-    version = await db.get(m.CapaVersion, capa.current_version_id)
+    version = (
+        await db.get(m.CapaVersion, capa.current_version_id)
+        if capa.current_version_id is not None
+        else None
+    )
     if version is None:
-        return
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "this connection's plugin has no installed manifest to keep the edit in",
+        )
     manifest = copy.deepcopy(version.manifest)
+    found = False
     for entry in (manifest.get("tool_pack") or {}).get("connections", []):
         if entry.get("key", "default") != connection_key:
             continue
+        found = True
         entry_cfg = dict(entry.get("config") or {})
         entry_cfg["http_tools"] = tools
         if replace_meta:
@@ -783,6 +832,18 @@ async def _write_custom_manifest(
                 entry_cfg["openapi"] = meta
         entry["config"] = entry_cfg
         entry["scopes"] = scopes
+    if not found:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "this connection is no longer in its plugin's manifest; install it again",
+        )
+    # A setup form's own `scopes` (a flat list) wins over the connection's when
+    # a further department is set up (api/v1/capas.py `_apply_plugin_setup`),
+    # and it cannot hold a read/modify classification: clear it, so the edited
+    # classification above is the one every department gets.
+    setup_mcp = (manifest.get("setup") or {}).get("mcp")
+    if isinstance(setup_mcp, dict) and setup_mcp.get("connection_key", "default") == connection_key:
+        setup_mcp["scopes"] = []
     parsed = parse_manifest(manifest)
     version.manifest = parsed.model_dump(mode="json")
     version.artifact_hash = _artifact_hash(parsed)

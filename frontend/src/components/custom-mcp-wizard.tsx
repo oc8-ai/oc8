@@ -44,6 +44,8 @@ import {
   loginToConfig,
   patchHttpTools,
   postHttpTestCall,
+  validateHttpTools,
+  type HttpToolProblem,
   type HttpLoginDraft,
 } from "@/lib/http-tools";
 import { useT } from "@/lib/i18n";
@@ -105,9 +107,9 @@ interface WizardState {
   installedRevision: number;
   installedConnectionId: string | null;
   installedSetupKey: string | null;
-  // A capa installed under an earlier name whose disabling has not
-  // succeeded yet; the next install, test or save tries again.
-  replacedPluginId: string | null;
+  // Capas installed under earlier names whose disabling has not succeeded
+  // yet; the next install, test or save tries again.
+  replacedPluginIds: string[];
 }
 
 const INITIAL_STATE: WizardState = {
@@ -132,7 +134,7 @@ const INITIAL_STATE: WizardState = {
   installedRevision: 0,
   installedConnectionId: null,
   installedSetupKey: null,
-  replacedPluginId: null,
+  replacedPluginIds: [],
 };
 
 const SERVER_TYPES: Array<{
@@ -348,6 +350,47 @@ export function CustomMcpWizard({
       : "";
   const departmentName = departments.find((d) => d.id === departmentId)?.name ?? null;
   const [stepError, setStepError] = useState<string | null>(null);
+  // What is wrong with each tool, shown under it after a refused Next.
+  const [toolProblems, setToolProblems] = useState<Array<HttpToolProblem | null>>([]);
+
+  function toolProblemText(problem: HttpToolProblem): string {
+    switch (problem) {
+      case "name_missing":
+        return t("Give this tool a name.", "Gib diesem Tool einen Namen.");
+      case "name_invalid":
+        return t(
+          "Use only letters, digits, _ and - in a tool name (at most 64).",
+          "Verwende im Tool-Namen nur Buchstaben, Ziffern, _ und - (höchstens 64).",
+        );
+      case "name_duplicate":
+        return t("Another tool already has this name.", "Ein anderes Tool hat schon diesen Namen.");
+      case "path":
+        return t(
+          "Enter the path below the base URL, starting with /.",
+          "Gib den Pfad unterhalb der Basis-URL an, beginnend mit /.",
+        );
+      case "schema_json":
+        return t(
+          "The parameter schema is not valid JSON.",
+          "Das Parameter-Schema ist kein gültiges JSON.",
+        );
+      case "schema_object":
+        return t(
+          'The parameter schema must be a JSON Schema object with "type": "object".',
+          'Das Parameter-Schema muss ein JSON-Schema-Objekt mit "type": "object" sein.',
+        );
+      case "schema_ref":
+        return t(
+          "The parameter schema may only refer to itself ($ref starting with #).",
+          "Das Parameter-Schema darf nur auf sich selbst verweisen ($ref beginnend mit #).",
+        );
+      case "schema_size":
+        return t(
+          "The parameter schema is too large or nested too deeply.",
+          "Das Parameter-Schema ist zu groß oder zu tief verschachtelt.",
+        );
+    }
+  }
   const [busy, setBusy] = useState(false);
 
   const installCustomCapa = useInstallCustomCapa();
@@ -453,17 +496,12 @@ export function CustomMcpWizard({
 
   function handleNext() {
     if (activeStep.key === "connection" && state.serverType === "manual_http") {
-      for (const tool of state.httpTools) {
-        if (!tool.paramSchema.trim()) continue;
-        try {
-          JSON.parse(tool.paramSchema);
-        } catch {
-          setStepError(
-            `Invalid JSON in the parameter schema for "${tool.name || "unnamed tool"}".`,
-          );
-          return;
-        }
+      const problems = validateHttpTools(state.httpTools);
+      if (problems.some((problem) => problem !== null)) {
+        setToolProblems(problems);
+        return;
       }
+      setToolProblems([]);
     }
     if (!canProceed) return;
     setStepError(null);
@@ -506,31 +544,46 @@ export function CustomMcpWizard({
     const setupKey = JSON.stringify(values);
     let pluginId = state.installedPluginId;
     let revision = state.installedRevision;
+    // Tracked locally from here on: `update` only reaches `state` after this run.
+    let installedConnectionId = state.installedConnectionId;
     const changed =
       state.installedManifest !== null &&
       JSON.stringify(manifest) !== JSON.stringify(state.installedManifest);
     const toolsOnly =
-      pluginId && changed && state.installedConnectionId && state.installedManifest
+      pluginId && changed && installedConnectionId && state.installedManifest
         ? httpToolsUpdateBetween(state.installedManifest, manifest)
         : null;
-    if (pluginId && toolsOnly && state.installedConnectionId) {
-      const connectionId = state.installedConnectionId;
+
+    // Setup makes one connection per department, so a changed department
+    // yields a new connection; the one the first department had -- with the
+    // login -- must not stay reachable to that department's agents.
+    async function setUp(id: string): Promise<string | null> {
+      const result = await api.post<{ connectionId: string | null }>(`/capas/${id}/setup`, {
+        values,
+      });
+      const before = installedConnectionId;
+      installedConnectionId = result.connectionId;
+      update({ installedConnectionId: result.connectionId, installedSetupKey: setupKey });
+      if (before && before !== result.connectionId) {
+        await api.delete(`/mcp/connections/${before}`);
+      }
+      return result.connectionId;
+    }
+
+    if (pluginId && toolsOnly && installedConnectionId) {
+      const connectionId = installedConnectionId;
       await patchHttpTools(connectionId, toolsOnly);
       update({ installedManifest: manifest });
-      if (setupKey !== state.installedSetupKey) {
-        // A changed secret or department travels through setup, as always.
-        const result = await api.post<{ connectionId: string | null }>(`/capas/${pluginId}/setup`, {
-          values,
-        });
-        update({ installedConnectionId: result.connectionId, installedSetupKey: setupKey });
-        return { pluginId, connectionId: result.connectionId };
-      }
-      return { pluginId, connectionId };
+      // A changed secret or department travels through setup, as always.
+      if (setupKey === state.installedSetupKey) return { pluginId, connectionId };
+      return { pluginId, connectionId: await setUp(pluginId) };
     }
-    let replaced = state.replacedPluginId;
+
+    let pending = state.replacedPluginIds;
     if (!pluginId || changed) {
-      if (pluginId && state.installedConnectionId) {
-        await api.delete(`/mcp/connections/${state.installedConnectionId}`);
+      if (pluginId && installedConnectionId) {
+        await api.delete(`/mcp/connections/${installedConnectionId}`);
+        installedConnectionId = null;
         update({ installedConnectionId: null });
       }
       const previous = pluginId;
@@ -541,29 +594,32 @@ export function CustomMcpWizard({
       pluginId = installed.pluginId;
       // A new name is a new capa: the one installed under the old name must
       // not stay enabled behind the person's back.
-      if (previous && previous !== pluginId) replaced = previous;
+      if (previous && previous !== pluginId && !pending.includes(previous)) {
+        pending = [...pending, previous];
+      }
       // Recorded before anything else can fail, so a retry does not install
       // this same version again.
       update({
         installedPluginId: pluginId,
         installedManifest: manifest,
         installedRevision: revision,
-        replacedPluginId: replaced,
+        replacedPluginIds: pending,
       });
     }
-    if (replaced && replaced !== pluginId) {
+    // Renamed back to an earlier name: that capa is the current one again.
+    const current = pluginId;
+    pending = pending.filter((id) => id !== current);
+    update({ replacedPluginIds: pending });
+    for (const replaced of pending) {
       await disablePlugin.mutateAsync({
         pluginId: replaced,
         reason: "Replaced in the custom MCP wizard after a rename",
       });
-      update({ replacedPluginId: null });
+      pending = pending.filter((id) => id !== replaced);
+      update({ replacedPluginIds: pending });
     }
     await enablePlugin.mutateAsync({ pluginId, grantedPermissions: [] });
-    const result = await api.post<{ connectionId: string | null }>(`/capas/${pluginId}/setup`, {
-      values,
-    });
-    update({ installedConnectionId: result.connectionId, installedSetupKey: setupKey });
-    return { pluginId, connectionId: result.connectionId };
+    return { pluginId, connectionId: await setUp(pluginId) };
   }
 
   async function runTest() {
@@ -670,12 +726,14 @@ export function CustomMcpWizard({
   }
 
   function updateHttpTool(index: number, patch: Partial<HttpToolDraft>) {
+    setToolProblems((problems) => problems.map((p, i) => (i === index ? null : p)));
     update({
       httpTools: state.httpTools.map((tool, i) => (i === index ? { ...tool, ...patch } : tool)),
     });
   }
 
   function removeHttpTool(index: number) {
+    setToolProblems([]);
     update({ httpTools: state.httpTools.filter((_, i) => i !== index) });
   }
 
@@ -975,6 +1033,11 @@ export function CustomMcpWizard({
                           rows={3}
                           className="w-full rounded-md border border-border bg-background/40 px-3 py-1.5 font-mono text-xs outline-none focus:border-primary/50"
                         />
+                        {toolProblems[i] && (
+                          <p role="alert" className="text-xs text-[color:var(--status-error)]">
+                            {toolProblemText(toolProblems[i])}
+                          </p>
+                        )}
                       </div>
                     ))}
                   </div>
