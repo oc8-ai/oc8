@@ -82,6 +82,19 @@ export interface ApprovalOption {
   detail: string;
 }
 
+/** What a Copilot direct-access approval is about (copilot direct access §8). */
+export interface DirectAccessInfo {
+  sessionId: string;
+  toolKey: string;
+  label: string;
+  memberName: string;
+  account: "own" | "organisation" | null;
+  /** "member": the person decides; "department": its own policy holds the call. */
+  decider: "member" | "department";
+  grantId: string | null;
+  grantActive: boolean;
+}
+
 export interface Approval {
   id: string;
   agentId: string;
@@ -140,6 +153,8 @@ export interface Approval {
   // The builder proposal a "copilot.agent_builder" approval decides (the pane
   // shows the same preview read-only). null/absent for every other kind.
   proposalId?: string | null;
+  // A Copilot direct-access offer or held write; null/absent for every other kind.
+  directAccess?: DirectAccessInfo | null;
 }
 
 /** A question an agent parked mid-run. The other half of the workspace queue. */

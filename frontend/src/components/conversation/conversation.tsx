@@ -47,6 +47,7 @@ import { Composer, type ComposerSubmit, type PlusMenuItem } from "./composer";
 import { ContextSearchDialog } from "./context-search";
 import { DataSourceBrowser } from "./data-source-browser";
 import { DecisionCard } from "./decision-card";
+import { DirectAccessBanner } from "./direct-access-card";
 import { AgentModeChip } from "./agent-mode-chip";
 import { PinnedBar } from "./pinned-bar";
 import { PromptStarters, type PromptStarter } from "./prompt-starters";
@@ -492,9 +493,12 @@ function ConversationBody(props: ConversationProps) {
       ? setChatMode.error.message
       : t("The mode could not be changed.", "Der Modus konnte nicht geändert werden.")
     : null;
+  const directAccess =
+    props.sessionId && !readOnly ? <DirectAccessBanner sessionId={props.sessionId} /> : null;
   const modeAbove =
-    (chatMode === "agent" && !readOnly) || modeError ? (
+    (chatMode === "agent" && !readOnly) || modeError || directAccess ? (
       <>
+        {directAccess}
         {chatMode === "agent" && !readOnly && (
           <AgentModeChip onLeave={leaveMode} busy={setChatMode.isPending} />
         )}

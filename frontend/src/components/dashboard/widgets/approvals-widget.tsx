@@ -606,14 +606,14 @@ function formatReasonContext(
   }
 }
 
-function isHttpUrl(url: string | null | undefined): url is string {
+export function isHttpUrl(url: string | null | undefined): url is string {
   return !!url && (url.startsWith("http://") || url.startsWith("https://"));
 }
 
 /** A link out to a record in a connected system. Only http(s) reaches here:
  *  the server already refuses anything else, and this is the second guard
  *  against a `javascript:` URI in an `href`. */
-function RecordLink({ href, children }: { href: string; children: ReactNode }) {
+export function RecordLink({ href, children }: { href: string; children: ReactNode }) {
   return (
     <a
       href={href}
@@ -699,6 +699,17 @@ export function ApprovalPane({
             approval.detail && (
               <p className="mt-2 text-sm leading-relaxed text-foreground/90">{approval.detail}</p>
             )
+          )}
+          {approval.directAccess && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              {t("Copilot on behalf of", "Copilot im Auftrag von")}{" "}
+              {approval.directAccess.memberName}
+              {approval.directAccess.account === "own"
+                ? ` · ${t("their own login", "eigenes Login")}`
+                : approval.directAccess.account === "organisation"
+                  ? ` · ${t("organisation account", "Organisationskonto")}`
+                  : ""}
+            </p>
           )}
           {isHttpUrl(approval.recordUrl) && (
             <RecordLink href={approval.recordUrl}>
