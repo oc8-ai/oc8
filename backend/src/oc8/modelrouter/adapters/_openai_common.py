@@ -146,7 +146,53 @@ def to_openai_messages(messages: list[NeutralMessage]) -> list[dict[str, Any]]:
             out.append(
                 {"role": "tool", "tool_call_id": msg.tool_call_id or "", "content": msg.content}
             )
-    return out
+    return _merge_consecutive_turns(out)
+
+
+def _as_blocks(content: Any) -> list[dict[str, Any]]:
+    if isinstance(content, list):
+        return list(content)
+    return [{"type": "text", "text": content}] if content else []
+
+
+def _join_content(first: Any, second: Any) -> Any:
+    if not first:
+        return second
+    if not second:
+        return first
+    if isinstance(first, str) and isinstance(second, str):
+        return f"{first}\n\n{second}"
+    return _as_blocks(first) + _as_blocks(second)
+
+
+def _merge_consecutive_turns(out: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # Strict chat templates (vLLM/Mistral style) require user and assistant turns
+    # to alternate: two user turns in a row are rejected with 400 "conversation
+    # roles must alternate", and so are two assistant turns. oc8 sends several
+    # user turns in a row as a matter of course (clarify stage, compaction), so
+    # fold each run of same-role turns into one. An assistant turn is only folded
+    # into the next one when it carries no tool calls of its own -- its calls must
+    # stay directly in front of their results. Tool results are never folded:
+    # each one answers its own call id.
+    merged: list[dict[str, Any]] = []
+    for msg in out:
+        prev = merged[-1] if merged else None
+        same_role = prev is not None and prev["role"] == msg["role"]
+        if prev is not None and same_role and msg["role"] == "user":
+            prev["content"] = _join_content(prev["content"], msg["content"])
+            continue
+        if (
+            prev is not None
+            and same_role
+            and msg["role"] == "assistant"
+            and not prev.get("tool_calls")
+        ):
+            prev["content"] = _join_content(prev["content"], msg["content"]) or None
+            if msg.get("tool_calls"):
+                prev["tool_calls"] = msg["tool_calls"]
+            continue
+        merged.append(msg)
+    return merged
 
 
 #: Keys this adapter always sets itself. An operator-supplied `extra` key
