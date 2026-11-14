@@ -9,7 +9,7 @@ import uuid
 from typing import Any, cast
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
-from packaging.version import Version
+from packaging.version import InvalidVersion, Version
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -254,11 +254,18 @@ async def install_plugin(
         raise DependencyError(f"unmet capabilities: {missing}")
 
     effective_trust = trust_level or manifest.trust
+    if origin == "custom" and find_plugin(manifest.name) is not None:
+        # A connection is classified by the shipped plugin of its capa's name
+        # (`resolve_tool_pack_connection`), so a custom capa under that name
+        # would be judged by someone else's manifest.
+        raise PluginError(f"{manifest.name!r} is the name of a shipped capa; choose another name")
     plugin = (
         await db.execute(
             select(Capa).where(Capa.tenant_id == tenant_id, Capa.name == manifest.name)
         )
     ).scalar_one_or_none()
+    if plugin is not None and (origin == "custom") != (plugin.origin == "custom"):
+        raise PluginError(f"{manifest.name!r} is already installed from elsewhere")
     if plugin is None:
         plugin = Capa(
             tenant_id=tenant_id,
@@ -281,23 +288,62 @@ async def install_plugin(
         )
     ).scalar_one_or_none()
     if dup is not None:
-        raise DuplicateVersionError(f"{manifest.name}@{manifest.version} already installed")
+        if origin != "custom" or not await _replaceable(db, plugin, dup):
+            raise DuplicateVersionError(f"{manifest.name}@{manifest.version} already installed")
+        # A custom capa's versions are numbered by the wizard that installs
+        # them, from 1.0.0 in every session: one a cancelled wizard left
+        # behind is replaced in place (see `_replaceable`).
+        _fill_version(dup, manifest)
+        await db.flush()
+        plugin.current_version_id = dup.id
+        await db.flush()
+        return dup
 
-    version = CapaVersion(
-        tenant_id=tenant_id,
-        capa_id=plugin.id,
-        semver=manifest.version,
-        manifest=manifest.model_dump(mode="json"),
-        artifact_hash=_artifact_hash(manifest),
-        permissions=list(manifest.permissions),
-        capabilities=list(manifest.capabilities),
-        entry_points=dict(manifest.entry_points),
-    )
+    version = CapaVersion(tenant_id=tenant_id, capa_id=plugin.id, semver=manifest.version)
+    _fill_version(version, manifest)
     db.add(version)
     await db.flush()
     plugin.current_version_id = version.id
     await db.flush()
     return version
+
+
+def _fill_version(version: CapaVersion, manifest: Manifest) -> None:
+    version.manifest = manifest.model_dump(mode="json")
+    version.artifact_hash = _artifact_hash(manifest)
+    version.permissions = list(manifest.permissions)
+    version.capabilities = list(manifest.capabilities)
+    version.entry_points = dict(manifest.entry_points)
+
+
+async def _replaceable(db: AsyncSession, plugin: Capa, version: CapaVersion) -> bool:
+    """Whether a custom capa's `version` may be replaced by a reinstall of the
+    same version: when the capa is not enabled (a cancelled wizard disabled
+    it), or when `version` is newer than the one it runs on -- left behind
+    by such a wizard, while the one installing now already replaced the
+    older ones. The version an enabled capa runs on, and anything older,
+    stays: a second wizard under a name in use must not take that capa over."""
+    inst = (
+        await db.execute(
+            select(CapaInstallation).where(
+                CapaInstallation.tenant_id == plugin.tenant_id,
+                CapaInstallation.capa_id == plugin.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if inst is None or inst.status != "enabled":
+        return True
+    current = (
+        await db.get(CapaVersion, plugin.current_version_id)
+        if plugin.current_version_id is not None
+        else None
+    )
+    if current is None or current.id == version.id:
+        return False
+    try:
+        return Version(version.semver) > Version(current.semver)
+    except InvalidVersion:
+        return False
 
 
 async def install_with_dependencies(
