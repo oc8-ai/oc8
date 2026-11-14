@@ -108,6 +108,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send(401, {"error": "expired"})
             else:
                 self._send(200, {"ok": True})
+        elif parsed.path == "/always-401":
+            self._send(401, {"error": "insufficient_scope"})
         elif parsed.path == "/echo-url":
             self._send(500, f"failed for {self.path}")
         elif parsed.path == "/to-same":
@@ -174,6 +176,7 @@ def server(allow_loopback_outbound: None) -> Iterator[str]:
         yield from _serve(handler)
     finally:
         ht._TOKENS.clear()
+        ht._TOKEN_LOCKS.clear()
 
 
 @pytest.fixture
@@ -187,6 +190,7 @@ def servers(
             yield url, other[1]
     finally:
         ht._TOKENS.clear()
+        ht._TOKEN_LOCKS.clear()
 
 
 def _tools(*paths: str) -> list[dict[str, object]]:
@@ -364,9 +368,11 @@ async def test_oauth2_token_is_refetched_after_expiry(
 
 async def test_a_401_refetches_the_token_once_and_retries(server: str) -> None:
     login = _oauth(server)
-    async with HttpToolSession(server, _tools("/stale-once"), login=login) as s:
+    async with HttpToolSession(server, _tools("/whoami", "/stale-once"), login=login) as s:
+        await s.call("whoami", {})  # the token is now cached
         body = json.loads(await s.call("stale_once", {}))
     assert body == {"ok": True}
+    assert _STATE["token_calls"] == 2
     assert _STATE["seen"] == ["Bearer tok-1", "Bearer tok-2"]
 
 
@@ -467,3 +473,140 @@ def test_forget_token_drops_the_cache_entry() -> None:
     ht._TOKENS[ht._token_key(login)] = ("t", 1e12)
     forget_token(login)
     assert ht._token_key(login) not in ht._TOKENS
+
+
+# --- fix round 1 ---------------------------------------------------------------
+
+
+def _chain(exc: BaseException | None) -> list[BaseException]:
+    seen: list[BaseException] = []
+    while exc is not None and exc not in seen:
+        seen.append(exc)
+        exc = exc.__cause__ or exc.__context__
+    return seen
+
+
+async def test_a_non_ascii_header_key_is_an_auth_error_that_never_shows_it(server: str) -> None:
+    login = HttpLogin(kind="api_key", secret="s\u00ebcret-KEY", name="X-Api-Key")
+    async with HttpToolSession(server, _tools("/whoami"), login=login) as s:
+        with pytest.raises(HttpToolError) as caught:
+            await s.call("whoami", {})
+    assert caught.value.kind == "auth"
+    for exc in _chain(caught.value):
+        assert "cret-KEY" not in str(exc)
+        assert "cret-KEY" not in repr(exc)
+        assert "cret-KEY" not in repr(getattr(exc, "object", ""))
+    assert "gets" not in _STATE  # nothing was sent
+
+
+async def test_a_non_ascii_connection_header_is_an_auth_error(server: str) -> None:
+    async with HttpToolSession(
+        server, _tools("/whoami"), headers={"X-Api-Key": "k\u00e4y-SECRET"}
+    ) as s:
+        with pytest.raises(HttpToolError) as caught:
+            await s.call("whoami", {})
+    assert caught.value.kind == "auth"
+    assert all("SECRET" not in repr(exc) for exc in _chain(caught.value))
+
+
+async def test_a_fresh_token_rejected_with_401_is_not_fetched_again(server: str) -> None:
+    login = _oauth(server)
+    async with HttpToolSession(server, _tools("/always-401"), login=login) as s:
+        with pytest.raises(HttpToolError):
+            await s.call("always_401", {})
+        assert _STATE["token_calls"] == 1  # fetched in this call: no retry
+        with pytest.raises(HttpToolError):
+            await s.call("always_401", {})
+        # The cached token was rejected: one fresh token, one retry.
+        assert _STATE["token_calls"] == 2
+
+
+@pytest.mark.parametrize(
+    ("raw", "lifetime"),
+    [
+        (3600, 3600 - 60),
+        ("1e999", 24 * 3600 - 60),
+        (float("inf"), 24 * 3600 - 60),
+        (float("nan"), 3600 - 60),
+        (-5, 0.0),
+        (60, 30.0),
+        (10, 5.0),
+        (True, 3600 - 60),
+        (None, 3600 - 60),
+        ("soon", 3600 - 60),
+    ],
+)
+def test_token_lifetime_is_clamped(raw: object, lifetime: float) -> None:
+    assert ht._token_lifetime(raw) == lifetime
+
+
+async def test_a_failed_fetch_leaves_no_lock_or_token_behind(server: str) -> None:
+    with pytest.raises(HttpToolError):
+        await oauth2_token(_oauth(server, secret="wrong"), timeout_s=5)
+    assert not ht._TOKENS
+    assert not any(ht._TOKEN_LOCKS.values())
+
+
+async def test_a_successful_fetch_leaves_no_idle_lock(server: str) -> None:
+    await oauth2_token(_oauth(server), timeout_s=5)
+    assert len(ht._TOKENS) == 1
+    assert not any(ht._TOKEN_LOCKS.values())
+
+
+def test_the_token_cache_drops_expired_entries_and_is_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = [1000.0]
+    monkeypatch.setattr(ht, "_now", lambda: clock[0])
+    try:
+        ht._remember_token(("u", "old", "", "h"), "t-old", 10.0)
+        clock[0] += 20
+        ht._remember_token(("u", "new", "", "h"), "t-new", 3600.0)
+        assert ("u", "old", "", "h") not in ht._TOKENS
+        for i in range(ht._MAX_TOKENS + 10):
+            ht._remember_token(("u", f"c{i}", "", "h"), f"t{i}", 3600.0)
+        assert len(ht._TOKENS) == ht._MAX_TOKENS
+        assert ("u", f"c{ht._MAX_TOKENS + 9}", "", "h") in ht._TOKENS
+    finally:
+        ht._TOKENS.clear()
+
+
+async def test_a_missing_secret_is_an_auth_error_and_nothing_is_sent(server: str) -> None:
+    cfg = {"auth": {"kind": "api_key", "in": "header", "name": "X-Api-Key"}}
+    login = resolve_http_login(cfg, {})
+    assert login is not None
+    async with HttpToolSession(server, _tools("/whoami"), login=login) as s:
+        with pytest.raises(HttpToolError) as caught:
+            await s.call("whoami", {})
+    assert caught.value.kind == "auth"
+    assert "gets" not in _STATE
+
+
+async def test_an_api_key_without_a_name_is_an_auth_error(server: str) -> None:
+    login = resolve_http_login(
+        {"auth": {"kind": "api_key", "in": "query"}}, {"HTTP_AUTH_SECRET": "k"}
+    )
+    assert login is not None
+    async with HttpToolSession(server, _tools("/whoami"), login=login) as s:
+        with pytest.raises(HttpToolError) as caught:
+            await s.call("whoami", {})
+    assert caught.value.kind == "auth"
+    assert "gets" not in _STATE
+
+
+async def test_an_oauth2_login_without_a_secret_fetches_no_token(server: str) -> None:
+    login = _oauth(server, secret="")
+    async with HttpToolSession(server, _tools("/whoami"), login=login) as s:
+        with pytest.raises(HttpToolError) as caught:
+            await s.call("whoami", {})
+    assert caught.value.kind == "auth"
+    assert "token_calls" not in _STATE
+
+
+async def test_a_basic_username_with_a_colon_is_refused(server: str) -> None:
+    login = HttpLogin(kind="basic", secret="pw-secret", username="ada:lovelace")
+    async with HttpToolSession(server, _tools("/whoami"), login=login) as s:
+        with pytest.raises(HttpToolError) as caught:
+            await s.call("whoami", {})
+    assert caught.value.kind == "auth"
+    assert "gets" not in _STATE

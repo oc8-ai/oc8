@@ -24,15 +24,18 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import contextvars
 import hashlib
 import json
 import logging
+import math
 import re
 import time
 import urllib.parse
+import weakref
 import zlib
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import AsyncIterator, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from types import TracebackType
 from typing import Any, Literal
@@ -549,9 +552,9 @@ def resolve_http_login(cfg: dict[str, Any], env: dict[str, str]) -> HttpLogin | 
     secret = str(env.get(HTTP_AUTH_SECRET_ENV, ""))
     kind = auth.get("kind")
     if kind == "api_key":
+        # A nameless key still resolves: sending it refuses the call (an
+        # "auth" error) rather than going out without any login.
         name = str(auth.get("name") or "")
-        if not name:
-            return None
         location: Literal["header", "query"] = "query" if auth.get("in") == "query" else "header"
         return HttpLogin(kind="api_key", secret=secret, location=location, name=name)
     if kind == "basic":
@@ -565,6 +568,29 @@ def resolve_http_login(cfg: dict[str, Any], env: dict[str, str]) -> HttpLogin | 
             scope=str(auth.get("scope") or ""),
         )
     return None
+
+
+def _check_login(login: HttpLogin) -> None:
+    """Refuse a login that cannot be sent as configured, before anything is
+    sent: a call must never go out without the login it was set up with."""
+    if not login.secret:
+        raise HttpToolError("auth", "The login's secret is not set.")
+    if login.kind == "api_key" and not login.name:
+        raise HttpToolError("auth", "The login has no key name.")
+    if login.kind == "basic" and ":" in login.username:
+        # RFC 7617: the user-id cannot contain a colon.
+        raise HttpToolError("auth", "A Basic login's username cannot contain ':'.")
+
+
+def _check_header_values(headers: Mapping[str, str]) -> None:
+    """Credential headers must be ASCII (httpx encodes header values as
+    ASCII). Checked up front, so no codec error -- whose repr carries the
+    whole value -- is ever raised or chained."""
+    for value in headers.values():
+        if not value.isascii():
+            raise HttpToolError(
+                "auth", "The login's secret contains characters a header cannot carry."
+            )
 
 
 def _basic_credentials(user: str, password: str) -> str:
@@ -595,11 +621,26 @@ def login_secrets(login: HttpLogin | None) -> list[str]:
 _TokenKey = tuple[str, str, str, str]
 #: Monkeypatched by tests; monotonic so a wall-clock jump cannot keep a token.
 _now: Callable[[], float] = time.monotonic
+#: The longest a token is kept, whatever `expires_in` says.
+_MAX_TOKEN_LIFETIME_S = 24 * 3600.0
+#: The most tokens kept at once; the oldest goes first.
+_MAX_TOKENS = 256
 #: token per login -> (access token, monotonic time it stops being used).
 _TOKENS: dict[_TokenKey, tuple[str, float]] = {}
-#: One lock per login so simultaneous calls fetch one token, not one each.
-#: A lock belongs to the loop it was made in; a new loop gets a new one.
-_TOKEN_LOCKS: dict[_TokenKey, tuple[asyncio.AbstractEventLoop, asyncio.Lock]] = {}
+
+
+@dataclass
+class _LockEntry:
+    lock: asyncio.Lock
+    users: int = 0
+
+
+#: Per event loop (weakly: a closed loop is not kept alive), one lock per
+#: login, so simultaneous calls fetch one token, not one each. An entry
+#: lives only while some call holds or waits for it.
+_TOKEN_LOCKS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[_TokenKey, _LockEntry]] = (
+    weakref.WeakKeyDictionary()
+)
 
 
 def _token_key(login: HttpLogin) -> _TokenKey:
@@ -610,13 +651,52 @@ def _token_key(login: HttpLogin) -> _TokenKey:
     return (login.token_url, login.client_id, login.scope, digest)
 
 
-def _token_lock(key: _TokenKey) -> asyncio.Lock:
+@contextlib.asynccontextmanager
+async def _token_lock(key: _TokenKey) -> AsyncIterator[None]:
     loop = asyncio.get_running_loop()
-    entry = _TOKEN_LOCKS.get(key)
-    if entry is None or entry[0] is not loop:
-        entry = (loop, asyncio.Lock())
-        _TOKEN_LOCKS[key] = entry
-    return entry[1]
+    entries = _TOKEN_LOCKS.setdefault(loop, {})
+    entry = entries.get(key)
+    if entry is None:
+        entry = entries[key] = _LockEntry(asyncio.Lock())
+    entry.users += 1
+    try:
+        async with entry.lock:
+            yield
+    finally:
+        entry.users -= 1
+        if entry.users == 0:
+            entries.pop(key, None)
+            if not entries:
+                _TOKEN_LOCKS.pop(loop, None)
+
+
+def _token_lifetime(expires_in: Any) -> float:
+    """How long a token is used: `expires_in` clamped to 0..24 h (a missing,
+    non-numeric or NaN value counts as an hour), less a margin of at most
+    TOKEN_EXPIRY_MARGIN_S and at most half the lifetime."""
+    if isinstance(expires_in, bool) or expires_in is None:
+        seconds = _DEFAULT_EXPIRES_IN_S
+    else:
+        try:
+            seconds = float(expires_in)
+        except (TypeError, ValueError):
+            seconds = _DEFAULT_EXPIRES_IN_S
+    if math.isnan(seconds):
+        seconds = _DEFAULT_EXPIRES_IN_S
+    seconds = min(max(seconds, 0.0), _MAX_TOKEN_LIFETIME_S)
+    return seconds - min(TOKEN_EXPIRY_MARGIN_S, seconds / 2)
+
+
+def _remember_token(key: _TokenKey, token: str, lifetime_s: float) -> None:
+    """Cache a token: expired entries are dropped first, and the cache never
+    holds more than _MAX_TOKENS (the oldest goes)."""
+    now = _now()
+    for stale in [k for k, (_t, until) in _TOKENS.items() if until <= now]:
+        del _TOKENS[stale]
+    _TOKENS.pop(key, None)
+    while len(_TOKENS) >= _MAX_TOKENS:
+        del _TOKENS[next(iter(_TOKENS))]
+    _TOKENS[key] = (token, now + lifetime_s)
 
 
 def forget_token(login: HttpLogin) -> None:
@@ -633,6 +713,7 @@ def _forget_rejected(login: HttpLogin, rejected: str) -> None:
 
 
 async def _fetch_token(login: HttpLogin, *, timeout_s: float) -> tuple[str, float]:
+    # Returns the token and how long to use it (already clamped).
     """RFC 6749 4.4: client_secret_basic first; an endpoint that refuses it
     (400/401) is asked once more with the credentials in the form
     (client_secret_post), which some providers require. The token URL goes
@@ -678,25 +759,28 @@ async def _fetch_token(login: HttpLogin, *, timeout_s: float) -> tuple[str, floa
         token = payload.get("access_token") if isinstance(payload, dict) else None
         if not isinstance(token, str) or not token:
             raise HttpToolError("token", "The token URL answered without an access token.")
-        try:
-            expires_in = float(payload.get("expires_in", _DEFAULT_EXPIRES_IN_S))
-        except (TypeError, ValueError):
-            expires_in = _DEFAULT_EXPIRES_IN_S
-        return token, expires_in
+        return token, _token_lifetime(payload.get("expires_in"))
     raise HttpToolError("token", f"The token request failed ({status}).", status=status or None)
+
+
+async def _oauth2_token(login: HttpLogin, *, timeout_s: float, force: bool) -> tuple[str, bool]:
+    """The token, and whether it was fetched by this call (not cached)."""
+    _check_login(login)
+    key = _token_key(login)
+    async with _token_lock(key):
+        cached = _TOKENS.get(key)
+        if cached is not None and not force and cached[1] > _now():
+            return cached[0], False
+        token, lifetime_s = await _fetch_token(login, timeout_s=timeout_s)
+        _remember_token(key, token, lifetime_s)
+        return token, True
 
 
 async def oauth2_token(login: HttpLogin, *, timeout_s: float, force: bool = False) -> str:
     """The login's access token: the cached one while it is valid, else one
     fetched now. Simultaneous callers for one login wait for one fetch."""
-    key = _token_key(login)
-    async with _token_lock(key):
-        cached = _TOKENS.get(key)
-        if cached is not None and not force and cached[1] > _now():
-            return cached[0]
-        token, expires_in = await _fetch_token(login, timeout_s=timeout_s)
-        _TOKENS[key] = (token, _now() + max(0.0, expires_in - TOKEN_EXPIRY_MARGIN_S))
-        return token
+    token, _fresh = await _oauth2_token(login, timeout_s=timeout_s, force=force)
+    return token
 
 
 class HttpToolSession:
@@ -770,11 +854,14 @@ class HttpToolSession:
             return {login.name: login.secret}
         return {}
 
-    async def _login_headers(self, *, force_token: bool) -> tuple[dict[str, str], str]:
-        """The login's headers, and the access token among them (or "")."""
+    async def _login_headers(self) -> tuple[dict[str, str], str]:
+        """The login's headers, and the access token among them if it came
+        from the cache (or ""): only a cached token is worth replacing when
+        the API rejects it."""
         login = self._login
         if login is None:
             return {}, ""
+        _check_login(login)
         if login.kind == "api_key":
             if login.location == "query":
                 return {}, ""
@@ -783,16 +870,20 @@ class HttpToolSession:
         if login.kind == "basic":
             credentials = _basic_credentials(login.username, login.secret)
             return {"Authorization": f"Basic {credentials}"}, ""
-        token = await oauth2_token(login, timeout_s=self._timeout_s, force=force_token)
+        token, fresh = await _oauth2_token(login, timeout_s=self._timeout_s, force=False)
         if token not in self._tokens:
             self._tokens.append(token)
-        return {"Authorization": f"Bearer {token}"}, token
+        if not token.isascii():
+            raise HttpToolError("token", "The token URL answered with an unusable access token.")
+        return {"Authorization": f"Bearer {token}"}, "" if fresh else token
 
     async def _send(
-        self, tool: dict[str, Any], arguments: dict[str, Any], *, force_token: bool = False
+        self, tool: dict[str, Any], arguments: dict[str, Any]
     ) -> tuple[HttpResponse, str]:
         placed = place_arguments(tool, arguments, protected_headers=self._auth_header_names())
-        login_headers, token = await self._login_headers(force_token=force_token)
+        _check_header_values(self._headers)
+        login_headers, token = await self._login_headers()
+        _check_header_values(login_headers)
         login_query = self._login_query()
         headers = {**placed.headers, "User-Agent": USER_AGENT, **self._headers, **login_headers}
         # The login's query key last: a tool argument of the same name cannot
@@ -815,8 +906,8 @@ class HttpToolSession:
         return response, token
 
     async def request(self, name: str, arguments: dict[str, Any]) -> HttpResponse:
-        """One call, any status. An OAuth2 login whose token the API rejects
-        (401) gets one fresh token and one retry. Raises HttpToolError for a
+        """One call, any status. An OAuth2 login whose cached token the API
+        rejects (401) gets one fresh token and one retry. Raises HttpToolError for a
         refused address, an unreachable API, a failed token request or a
         redirect loop. The token request, the call and its retry share one
         deadline."""
@@ -830,6 +921,8 @@ class HttpToolSession:
                 response, token = await self._send(tool, arguments)
                 login = self._login
                 if response.status == 401 and token and login is not None:
+                    # A 401 means the request was refused before it was
+                    # processed, so one resend is safe for any method.
                     _forget_rejected(login, token)
                     response, _token = await self._send(tool, arguments)
                 return response
