@@ -271,7 +271,7 @@ def test_the_copilots_narrowing_threshold_holds_a_direct_call() -> None:
     assert _write(view, {}, value=100.0).effect is Effect.ALLOW
     held = _write(view, {}, value=100.0, narrowing=narrowing)
     assert held.effect is Effect.REQUIRE_APPROVAL
-    assert held.context[HOLDING_DEPARTMENT] == str(SALES)
+    assert HOLDING_DEPARTMENT not in held.context
 
 
 def test_a_disabling_narrowing_withdraws_the_offer_and_a_narrowing_only_key_grants_nothing() -> (
@@ -322,3 +322,35 @@ def test_authorize_applies_the_copilots_pinned_narrowing_to_a_direct_call() -> N
         direct_access=_view((SALES, READ_WRITE)),
     )
     assert decision.effect is Effect.DENY
+
+
+def test_a_narrowing_approval_action_holds_without_naming_a_department() -> None:
+    narrowing = {
+        "tools": {
+            "things": {
+                "enabled": True,
+                "read": True,
+                "modify": True,
+                "approval_actions": ["update_record"],
+            }
+        }
+    }
+    held = _write(_view((SALES, READ_WRITE)), {}, narrowing=narrowing)
+    assert held.effect is Effect.REQUIRE_APPROVAL
+    assert HOLDING_DEPARTMENT not in held.context
+
+
+def test_a_department_hold_is_named_even_when_the_narrowing_also_holds() -> None:
+    gated = ToolPolicy(enabled=True, read=True, modify=True, approval_actions=frozenset({"modify"}))
+    narrowing = {
+        "tools": {
+            "things": {
+                "enabled": True,
+                "read": True,
+                "modify": True,
+                "approval_actions": ["update_record"],
+            }
+        }
+    }
+    held = _write(_view((SALES, READ_WRITE), (SUPPORT, gated)), {}, narrowing=narrowing)
+    assert held.context[HOLDING_DEPARTMENT] == str(SUPPORT)

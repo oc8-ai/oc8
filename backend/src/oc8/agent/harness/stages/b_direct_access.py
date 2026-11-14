@@ -140,7 +140,9 @@ def direct_access_decision(
             "value": value,
             "attributes": attributes,
         }
-        own = authorize_tool_call(**common)
+        # Attribution: only the department's RAW policy may name it as the
+        # holder, never a hold the Copilot's narrowing or a threshold caused.
+        own = authorize_tool_call(**{**common, "policies": {connection_key: raw}})
         full = authorize_tool_call(**common, extra_thresholds=extra_thresholds)
         granting.append((department_id, own, full))
     if not granting:
