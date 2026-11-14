@@ -1085,18 +1085,25 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             approvals = run.context.get("resolved_tool_approvals", [])
             pre_decided: dict[str, str] = {}
             if approvals:
-                from oc8.runtime.approval_resume import pre_decided_map, resume_instruction
+                from oc8.runtime.approval_resume import pre_decided_map
 
-                task_text = resume_instruction(approvals)
                 pre_decided = pre_decided_map(approvals)
+            # The resume text tells only the answer that woke this leg. Both
+            # lists accumulate over the run, so an unconsumed offer answer is
+            # the waker: the run carries on with the request (a held write's
+            # instruction would tell it to stop). Consumed here, so the next
+            # leg -- woken by a held write -- is not told it again.
             resolved_access = run.context.get("resolved_direct_access")
             if isinstance(resolved_access, dict):
-                # A direct-access offer was answered: carry on with the request.
-                # Told after a held write's instruction too, when the same run
-                # had both decided -- else the person's answer would be lost.
                 from oc8.copilot.direct_access import direct_access_resume_text
+                from oc8.runtime.run_context import take_direct_access_answer
 
                 task_text = direct_access_resume_text(task_text, resolved_access)
+                await take_direct_access_answer(db, run)
+            elif approvals:
+                from oc8.runtime.approval_resume import resume_instruction
+
+                task_text = resume_instruction(approvals)
 
             # Set by delegate_task (§7) when this run is a delegated sub-task, and by
             # the wake-up when a team lead is re-queued. Absent for an ordinary run.

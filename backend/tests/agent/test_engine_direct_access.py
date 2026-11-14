@@ -407,64 +407,114 @@ async def test_the_copilots_own_narrowing_binds_a_direct_call(
     assert entry["state"] == "denied"
 
 
-async def test_a_write_never_runs_on_a_department_row_that_cannot_make_it(
+async def _two_departments(db: AsyncSession, tenant: uuid.UUID) -> tuple[DirectOffice, uuid.UUID]:
+    """Anna reads through Sales (the older row) and may also change through
+    Ops (read + modify, a newer row)."""
+    office = await direct_office(db, tenant, policy=READ_ONLY)
+    ops = m.Department(tenant_id=tenant, name="Ops", frame={"tools": {"things": READ_WRITE}})
+    db.add(ops)
+    await db.flush()
+    db.add(
+        m.OrgMemberDepartment(
+            tenant_id=tenant,
+            member_id=office.member_id,
+            department_id=ops.id,
+            seat_role="dept_viewer",
+        )
+    )
+    db.add(
+        m.McpConnection(
+            tenant_id=tenant,
+            department_id=ops.id,
+            name="things",
+            transport="stdio",
+            server_url="stdio://things-ops",
+            connected=True,
+            config={"command": "y", "args": []},
+            scopes=SCOPES,
+            created_at=dt.datetime.now(dt.UTC) + dt.timedelta(minutes=1),
+        )
+    )
+    await db.flush()
+    await grant(db, office)
+    return office, ops.id
+
+
+async def test_a_key_opens_on_the_department_that_may_also_change_it(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """R17: the run opens the reading department's row; a change only another
-    department may make is refused, not held to run on the reader's identity."""
+    """R23: read-only Sales and read+modify Ops -- the run opens Ops's row, so
+    reads run and a write reaches the person's hold instead of a refusal."""
     recorder = _RecordingServer(delay_s=0)
-    opened, _bus, _stream = _patch(
+    opened_rows: list[str] = []
+
+    async def _open(*_a: Any, mcp_conn: m.McpConnection, **_kw: Any) -> _StubSession:
+        opened_rows.append(mcp_conn.server_url)
+        return _StubSession(recorder, TOOLS)
+
+    _patch(
         monkeypatch,
         recorder,
         [
-            _turn("", ToolCall(id="c1", name="update_record", arguments={"id": 7})),
+            _turn("", ToolCall(id="c1", name="search_records", arguments={"q": "a"})),
+            _turn("", ToolCall(id="c2", name="update_record", arguments={"id": 7})),
+            _turn("done"),
+        ],
+    )
+    monkeypatch.setattr("oc8.agent.engine._open_mcp_session", _open)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office, _ops = await _two_departments(db, tenant)
+        agent = await _copilot(db, office)
+        run = await chat_run(db, office)
+        result = await _run(db, office, agent, run)
+        held = await _held(db)
+    assert opened_rows == ["stdio://things-ops"]
+    assert [name for name, _s, _e in recorder.windows] == ["search_records"]
+    assert result.status == "waiting_for_approval"
+    assert held.payload["direct_access"]["decider"] == "member"
+    assert held.payload["run_id"] == str(run.id)
+
+
+async def test_a_seat_lost_in_the_opened_department_refuses_even_a_read(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R17: the opened row is Ops's. Losing that seat mid-run leaves Sales
+    granting the read -- but not on Ops's identity: refused, not run there."""
+    holder: dict[str, Any] = {}
+
+    class _LosingOps(_RecordingServer):
+        async def call(self, name: str, arguments: dict[str, Any]) -> str:
+            out = await super().call(name, arguments)
+            db: AsyncSession = holder["db"]
+            await db.execute(
+                delete(m.OrgMemberDepartment).where(
+                    m.OrgMemberDepartment.department_id == holder["ops"]
+                )
+            )
+            await db.flush()
+            return out
+
+    recorder = _LosingOps(delay_s=0)
+    _patch(
+        monkeypatch,
+        recorder,
+        [
+            _turn("", ToolCall(id="c1", name="search_records", arguments={"q": "a"})),
+            _turn("", ToolCall(id="c2", name="search_records", arguments={"q": "b"})),
             _turn("done"),
         ],
     )
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
-        office = await direct_office(db, tenant, policy=READ_ONLY)
-        ops = m.Department(tenant_id=tenant, name="Ops", frame={"tools": {"things": READ_WRITE}})
-        db.add(ops)
-        await db.flush()
-        db.add(
-            m.OrgMemberDepartment(
-                tenant_id=tenant,
-                member_id=office.member_id,
-                department_id=ops.id,
-                seat_role="dept_viewer",
-            )
-        )
-        db.add(
-            m.McpConnection(
-                tenant_id=tenant,
-                department_id=ops.id,
-                name="things",
-                transport="stdio",
-                server_url="stdio://things-ops",
-                connected=True,
-                config={"command": "y", "args": []},
-                scopes=SCOPES,
-                created_at=dt.datetime.now(dt.UTC) + dt.timedelta(minutes=1),
-            )
-        )
-        await db.flush()
-        await grant(db, office)
+        office, ops = await _two_departments(db, tenant)
+        holder.update(db=db, ops=ops)
         agent = await _copilot(db, office)
         result = await _run(db, office, agent, await chat_run(db, office))
-        held = (
-            (
-                await db.execute(
-                    select(m.ApprovalRequest).where(m.ApprovalRequest.action_type == "tool_send")
-                )
-            )
-            .scalars()
-            .all()
-        )
-    assert opened == ["things"]
-    assert held == [] and recorder.windows == []
-    (entry,) = [e for e in result.tool_calls if e["tool"] == "update_record"]
-    assert entry["state"] == "denied"
+    assert len(recorder.windows) == 1
+    second = [e for e in result.tool_calls if e["tool"] == "search_records"][1]
+    assert second["state"] == "denied"
+    assert "through another department" in second["reason"]
 
 
 async def test_an_elicited_direct_write_parks_for_the_person(
@@ -543,8 +593,57 @@ async def test_an_elicited_direct_write_after_the_grant_was_revoked_is_refused(
 
         monkeypatch.setattr("oc8.agent.engine._open_mcp_session", _open_then_revoke)
         result = await _run(db, office, agent, run)
+    async with app_session(tenant) as db:
+        decided = (
+            (
+                await db.execute(
+                    select(m.AuditEvent).where(m.AuditEvent.action == "tool.call:search_records")
+                )
+            )
+            .scalars()
+            .all()
+        )
     assert recorder.windows == []
     assert result.status == "done"
+    assert [a.decision for a in decided] == ["deny"]
+    (entry,) = [e for e in result.tool_calls if e["tool"] == "search_records"]
+    assert "offer it with offer_direct_access first" in entry["result"]
+
+
+async def test_an_elicited_direct_action_can_be_the_one_that_suggests_an_agent(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The held re-run counts like any direct call -- and when it is the
+    second action, the model is nudged after it as well."""
+    recorder = _RecordingServer(delay_s=0)
+    _opened, _bus, stream = _patch(monkeypatch, recorder, [_turn("done")])
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        row = await grant(db, office)
+        row.actions = 1
+        await db.flush()
+        agent = await _copilot(db, office)
+        run = await chat_run(
+            db,
+            office,
+            extra={
+                "pending_elicitation": {
+                    "connection": "things",
+                    "tool": "search_records",
+                    "arguments": {"q": "x"},
+                    "question": "Which?",
+                },
+                "clarifications": [{"question": "Which?", "answer": "ACME"}],
+            },
+        )
+        result = await _run(db, office, agent, run)
+        await db.refresh(row)
+    assert [name for name, _s, _e in recorder.windows] == ["search_records"]
+    assert row.actions == 2 and row.agent_suggested_at is not None
+    assert DIRECT_ACTION_NUDGE in stream.sent[0]
+    (entry,) = [e for e in result.tool_calls if e["tool"] == "search_records"]
+    assert entry["actingMember"] == str(office.member_id)
 
 
 async def test_an_offer_parks_the_run(
@@ -580,3 +679,5 @@ async def test_an_offer_parks_the_run(
     assert result.status == "waiting_for_approval"
     assert offer.payload["run_id"] == str(run.id)
     assert recorder.windows == []
+    (entry,) = [e for e in result.tool_calls if e["tool"] == "offer_direct_access"]
+    assert entry["state"] == "awaiting_approval"

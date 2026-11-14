@@ -187,3 +187,17 @@ def clean_suggestions(raw: list[Any]) -> list[str]:
         if chip:
             out.append(chip)
     return out[:3]
+
+
+_TAKE_DIRECT_ACCESS = text(
+    "UPDATE agent_run SET context = context - 'resolved_direct_access' "
+    "WHERE id = :id RETURNING context"
+)
+
+
+async def take_direct_access_answer(db: AsyncSession, run: AgentRun) -> dict[str, Any]:
+    """Consume the offer answer that woke this leg, in the leg's own
+    transaction: a later leg (woken by something else) must not be told it
+    again. Declines stay in `declined_direct_access`. One statement, as above."""
+    stored = (await db.execute(_TAKE_DIRECT_ACCESS, {"id": run.id})).scalar_one()
+    return _adopt(run, stored)

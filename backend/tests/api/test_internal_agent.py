@@ -1332,6 +1332,45 @@ async def test_a_frame_denial_is_recorded_and_told_to_the_model_plainly(
     assert denied["departmentId"] == str(agent.department_id)
 
 
+@pytest.mark.asyncio
+async def test_the_tenant_assistant_reaches_no_connection_through_the_isolated_runtime(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Copilot direct access is wired into the in-process engine only. The
+    isolated runtime's /tool decides the Copilot's connection calls against
+    no grants (NO_DIRECT_ACCESS): refused, never through its own department."""
+    from oc8 import models as m
+
+    class _NeverSession:
+        tools: list[Any] = []
+
+        def __init__(self, *a: Any, **kw: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> Any:
+            return self
+
+        async def __aexit__(self, *a: Any) -> None:
+            return None
+
+        async def call(self, name: str, arguments: dict[str, Any]) -> str:
+            raise AssertionError("the Copilot's call must never reach the tool server")
+
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _NeverSession)
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id = await _mcp_backed_run(db, tenant)
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        agent.is_tenant_assistant = True
+        await db.flush()
+
+    code, body = await _post_tool(tenant, agent_id, run_id, "search_records", {"model": "x"})
+    assert code == 200, body
+    assert body["status"] == "denied", body
+
+
 # ------------------------------------------------- real remote MCP transport
 
 #: A real FastMCP server bound to a real port, reused verbatim from

@@ -648,10 +648,11 @@ async def run_agent(
             _direct.direct_access_run(run_row, agent) if agent.is_tenant_assistant else None
         )
         if agent.is_tenant_assistant and toolset is None:
-            # Opened for reading: the row of a department that grants read
-            # (R17). A write is checked against its own right per call.
+            # One row per key, of the department granting the strongest
+            # right the person holds there (R23); every call is checked
+            # against the right it needs on that row (R17).
             extra_conns = (
-                await _direct.direct_connections(db, run=run_row, agent=agent, right="read")
+                await _direct.direct_connections(db, run=run_row, agent=agent, right=None)
                 if direct_run is not None
                 else []
             )
@@ -674,33 +675,37 @@ async def run_agent(
             owner: m.McpConnection | None,
             right: str,
         ) -> Decision:
-            """A direct call runs on a row of a department that grants its
-            right (R17). The run opened each grant's row for reading; a change
-            only another department's row may make is refused, not run on the
-            reading department's identity."""
-            if right == "read" or call_key is None:
+            """A direct call runs only on a row of a department that grants
+            the right it needs, for the person as they stand now (R17): never
+            on another department's identity. The run opened each key on its
+            strongest department's row (R23), so this bites only when that
+            department no longer grants the right (a seat or a policy lost)."""
+            if call_key is None:
                 return decision
             departments = view.granted.get(call_key, ())
             granting = {d for d, policy in departments if policy.has_right(right)}
-            expected = (
-                await direct_connection(
+            if owner is not None and owner.department_id is not None:
+                allowed = owner.department_id in granting
+            elif owner is not None:
+                # An organisation-wide row: only while no granting department
+                # has a row of its own (`direct_connection`'s fallback).
+                expected = await direct_connection(
                     db,
                     tenant_id=tenant_id,
                     tool_key=call_key,
                     departments=departments,
                     right=right,
                 )
-                # Never resolved for a row outside the granting departments:
-                # that lookup could materialise a fallback row for nothing.
-                if owner is not None
-                and (owner.department_id is None or owner.department_id in granting)
-                else None
-            )
-            if owner is not None and expected is not None and expected.id == owner.id:
+                allowed = expected is not None and expected.id == owner.id
+            else:
+                allowed = False
+            if allowed:
                 return decision
+            action = "read" if right == "read" else "change"
             return Decision(
                 Effect.DENY,
-                f"the person you act for may not {right} through {call_key!r} on this connection",
+                f"this conversation reaches {call_key!r} through another department; "
+                f"this {action} is not possible here",
                 reason_code=NOT_THIS_CONNECTION,
             )
 
@@ -1304,6 +1309,7 @@ async def run_agent(
                             and held_route[0] is not None
                             and held_route[0] in held_view.granted
                         )
+                        held_nudge = False
                         if held_direct and effect != "refuse":
                             checked = await _direct_right_check(
                                 held_decision,
@@ -1477,7 +1483,7 @@ async def run_agent(
                             if held_direct and run_row is not None:
                                 # Ran through the grant: audited and counted
                                 # like the step loop's direct calls.
-                                await _direct.note_direct_action(
+                                held_nudge = await _direct.note_direct_action(
                                     db,
                                     run=run_row,
                                     tool_key=held_route[0] or "",
@@ -1515,6 +1521,10 @@ async def run_agent(
                                 ),
                             )
                         )
+                        if held_nudge:
+                            messages.append(
+                                NeutralMessage(role="user", content=_direct.DIRECT_ACTION_NUDGE)
+                            )
                         tool_trace.append(
                             {
                                 "tool": tool_name,
@@ -1527,6 +1537,9 @@ async def run_agent(
                                 ),
                             }
                         )
+                        if held_direct and direct_run is not None:
+                            # Run log: whom the Copilot acted for (§8).
+                            tool_trace[-1]["actingMember"] = str(direct_run.member_id)
                         await _live_tool_call(tool_trace[-1])
                         parked_ctx.pop("pending_elicitation", None)
                         parked.context = parked_ctx
@@ -2954,7 +2967,20 @@ async def run_agent(
                                 # executor's one transaction, so nobody can
                                 # decide it before the run is parked; the
                                 # executor's requeue_if_already_decided guards
-                                # the rest.
+                                # the rest. Logged like a held write's park.
+                                tool_trace.append(
+                                    {
+                                        "tool": tc.name,
+                                        "arguments": tc.arguments,
+                                        "result": control.output[:300],
+                                        "decision": "require_approval",
+                                        "step": steps,
+                                        "connection": None,
+                                        "state": "awaiting_approval",
+                                    }
+                                )
+                                await _live_tool_call(tool_trace[-1])
+                                checkpoint_trace_delta.append(tool_trace[-1])
                                 task.state = "waiting_for_approval"
                                 await settle_agent_status(db, agent, "waiting_for_approval")
                                 await _finish_step_timing(step_rec, step_tool_wait_ms)

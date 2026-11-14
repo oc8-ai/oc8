@@ -123,26 +123,71 @@ async def load_direct_access(
 
 
 async def direct_connections(
-    db: AsyncSession, *, run: m.AgentRun | None, agent: m.Agent, right: str
+    db: AsyncSession, *, run: m.AgentRun | None, agent: m.Agent, right: str | None
 ) -> list[m.McpConnection]:
     """The rows a Copilot run opens: one per granted key, resolved for the
     person (§6) from a department granting `right`, never from the Copilot's
-    own department."""
+    own department.
+
+    `right=None` opens each key with the STRONGEST right the person holds for
+    it (R23): a row of a department granting modify -- one granting read too
+    when there is one -- else a reading department's. A run opens one row per
+    key, so it must be one both its reads and its writes may use."""
     view = await load_direct_access(db, run=run, agent=agent)
     if not view.granted or run is None:
         return []
     out: list[m.McpConnection] = []
     for key, departments in view.granted.items():
-        conn = await direct_connection(
-            db,
-            tenant_id=run.tenant_id,
-            tool_key=key,
-            departments=departments,
-            right=right,
+        conn = (
+            await direct_connection(
+                db, tenant_id=run.tenant_id, tool_key=key, departments=departments, right=right
+            )
+            if right is not None
+            else await _strongest_connection(
+                db, tenant_id=run.tenant_id, tool_key=key, departments=departments
+            )
         )
         if conn is not None:
             out.append(conn)
     return out
+
+
+async def _strongest_connection(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    tool_key: str,
+    departments: tuple[tuple[uuid.UUID, ToolPolicy], ...],
+) -> m.McpConnection | None:
+    modifying = [(d, p) for d, p in departments if p.has_right("modify")]
+    both = [(d, p) for d, p in modifying if p.has_right("read")]
+    for candidates in (both, modifying):
+        if not candidates:
+            continue
+        # Only a row that exists already: resolving for modify must never
+        # materialise a fallback row while a reading department has one.
+        connected = await db.scalar(
+            select(m.McpConnection.id)
+            .where(
+                m.McpConnection.tenant_id == tenant_id,
+                m.McpConnection.name == tool_key,
+                m.McpConnection.connected.is_(True),
+                m.McpConnection.department_id.in_([d for d, _p in candidates])
+                | m.McpConnection.department_id.is_(None),
+            )
+            .limit(1)
+        )
+        if connected is not None:
+            return await direct_connection(
+                db,
+                tenant_id=tenant_id,
+                tool_key=tool_key,
+                departments=candidates,
+                right="modify",
+            )
+    return await direct_connection(
+        db, tenant_id=tenant_id, tool_key=tool_key, departments=departments, right="read"
+    )
 
 
 async def note_direct_action(

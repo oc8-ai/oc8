@@ -21,6 +21,7 @@ from oc8.runtime.approval_resume import call_signature
 from oc8.runtime.executor import execute_run, requeue_if_already_decided
 from oc8.runtime.queue import RunMessage
 from oc8.runtime.repository import RunRepository
+from oc8.runtime.run_context import append_resolved_approval
 from oc8.runtime.states import RunState
 from tests.conftest import AppSessionFactory
 
@@ -171,38 +172,78 @@ class _FnRuntime:
         return result
 
 
-async def test_a_resume_after_a_held_write_and_an_answered_offer_tells_both(
-    app_session: AppSessionFactory,
-) -> None:
+OFFER_NOTE = "The person approved reading Things (things)"
+ANSWER = {"tool_key": "things", "label": "Things", "decision": "approve"}
+
+
+async def _queued_run(app_session: AppSessionFactory, context: dict[str, Any]) -> uuid.UUID:
     tenant = uuid.UUID(str(ACME_TENANT_ID))
     async with app_session(tenant) as s:
         agent = m.Agent(tenant_id=tenant, department_id=uuid.uuid4(), name="Dev")
         s.add(agent)
         await s.flush()
         created = await RunRepository(s).create(
-            tenant_id=tenant,
-            agent_id=agent.id,
-            context={
-                "task": "find the quotation",
-                "resolved_tool_approvals": [_decided_write()],
-                "resolved_direct_access": {
-                    "tool_key": "things",
-                    "label": "Things",
-                    "decision": "approve",
-                },
-            },
+            tenant_id=tenant, agent_id=agent.id, context={"task": "find the quotation", **context}
         )
-        run_id = created.id
+        return created.id
+
+
+async def _resume(run_id: uuid.UUID, status: str = "done") -> str:
+    """One leg; returns the task text the runtime was handed."""
     seen: dict[str, Any] = {}
 
     async def capturing(db: Any, **kw: Any) -> RunResult:
         seen.update(kw)
-        return RunResult(task_id=uuid.uuid4(), agent_id=kw["agent"].id, status="done", output="ok")
+        return RunResult(task_id=uuid.uuid4(), agent_id=kw["agent"].id, status=status, output="ok")
 
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
     await execute_run(
         RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
         runtime=_FnRuntime(capturing),
     )
-    text = str(seen["task_text"])
-    assert "FREIGEGEBEN" in text and "update_record" in text
-    assert "The person approved reading Things (things)" in text
+    return str(seen["task_text"])
+
+
+async def _requeue_with(
+    app_session: AppSessionFactory, run_id: uuid.UUID, entry: dict[str, Any]
+) -> None:
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        await append_resolved_approval(s, run, entry)
+        await RunRepository(s).transition(run, RunState.QUEUED)
+
+
+async def test_each_leg_is_told_only_the_answer_that_woke_it(
+    app_session: AppSessionFactory,
+) -> None:
+    """offer approved -> the leg carries on with the request; then a held write
+    approved -> the next leg gets the write's instruction alone, not the old
+    offer note (which would tell it to carry on)."""
+    run_id = await _queued_run(app_session, {"resolved_direct_access": ANSWER})
+    first = await _resume(run_id, status="waiting_for_approval")
+    assert first.startswith("find the quotation") and OFFER_NOTE in first
+
+    await _requeue_with(app_session, run_id, _decided_write())
+    second = await _resume(run_id)
+    assert "FREIGEGEBEN" in second and "update_record" in second
+    assert OFFER_NOTE not in second
+    async with app_session(uuid.UUID(str(ACME_TENANT_ID))) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        assert "resolved_direct_access" not in run.context
+
+
+async def test_an_offer_answered_after_an_earlier_held_write_wakes_its_leg_with_the_answer(
+    app_session: AppSessionFactory,
+) -> None:
+    """The held write was decided in an earlier leg; THIS leg was woken by the
+    offer's answer, so the run carries on with the request."""
+    run_id = await _queued_run(
+        app_session,
+        {"resolved_tool_approvals": [_decided_write()], "resolved_direct_access": ANSWER},
+    )
+    text = await _resume(run_id)
+    assert OFFER_NOTE in text
+    assert "FREIGEGEBEN" not in text
