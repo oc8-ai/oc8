@@ -91,6 +91,40 @@ def test_write_is_denied_until_entity_was_read() -> None:
     )
 
 
+def _denial(config: dict) -> str:
+    text = read_before_write_denial(
+        tool="write",
+        tier="write",
+        identity=("sale.order", "115"),
+        ledger=Ledger(),
+        connection="odoo",
+        config=config,
+        label="Order",
+    )
+    assert text is not None
+    return text
+
+
+def test_denial_names_a_single_record_read_not_a_search() -> None:
+    text = _denial(
+        {
+            "entity_lookup_tools": ["search_records", "get_record"],
+            "focus_spec": {"search_tools": ["search_records"]},
+        }
+    )
+    assert "e.g. get_record" in text and "search_records" not in text
+
+
+def test_denial_without_a_single_record_tool_is_generic() -> None:
+    text = _denial(
+        {
+            "entity_lookup_tools": ["search_records"],
+            "focus_spec": {"search_tools": ["search_records"]},
+        }
+    )
+    assert "e.g. a tool that reads that one record" in text and "search_records" not in text
+
+
 def test_denial_uses_generic_suggestion_without_lookup_tool() -> None:
     assert read_before_write_denial(
         tool="update_document",

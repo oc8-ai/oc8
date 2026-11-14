@@ -73,7 +73,17 @@ def read_before_write_denial(
         return None
 
     lookup_tools = cfg.get("entity_lookup_tools") or []
-    suggestion = lookup_tools[0] if lookup_tools else "a search/read tool"
+    # A search names a kind of record, never one (`record_identity`), so it can
+    # not satisfy this rule: point at a tool that reads the single record.
+    focus = cfg.get("focus_spec")
+    searches = (focus.get("search_tools") or []) if isinstance(focus, dict) else []
+    readers = [t for t in lookup_tools if t not in searches]
+    if readers:
+        suggestion = readers[0]
+    elif lookup_tools:
+        suggestion = "a tool that reads that one record"
+    else:
+        suggestion = "a search/read tool"
     return (
         f"Precondition not met: you have not read {label} ({kind} {id}) in this run.\n"
         f"Read it first — e.g. {suggestion} —\n"
