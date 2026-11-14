@@ -1154,7 +1154,7 @@ async def test_a_waiver_is_spent_once_per_approval_across_legs(
     from oc8.agent.harness.calls import call_sig
 
     recorder = _RecordingServer(delay_s=0)
-    _patch(monkeypatch, recorder, _resume_script("c3", "c4"))
+    _opened, _bus, stream = _patch(monkeypatch, recorder, _resume_script("c3"))
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         office = await direct_office(db, tenant)
@@ -1167,7 +1167,12 @@ async def test_a_waiver_is_spent_once_per_approval_across_legs(
         # Leg 3: a fresh leg for the same run, the approval still on record.
         await db.refresh(run)
         assert run.context["waived_read_before_write"] == ["things\n" + approved]
-        await run_agent(
+        # Leg 3's own script: its first call is the same write, unread.
+        stream.script[:] = [
+            _turn("", ToolCall(id="c4", name="update_record", arguments=dict(_ORDER))),
+            *[_turn("done") for _ in range(8)],
+        ]
+        leg3 = await run_agent(
             db,
             agent=agent,
             task_text="resume again",
@@ -1175,6 +1180,8 @@ async def test_a_waiver_is_spent_once_per_approval_across_legs(
             run_id=run.id,
             pre_decided={approved: "approve"},
         )
+    (entry,) = [e for e in leg3.tool_calls if e["tool"] == "update_record"]
+    assert "have not read" in str(entry["result"])
     assert [n for n, _s, _e in recorder.windows].count("update_record") == 1
 
 
@@ -1242,11 +1249,9 @@ async def test_a_proof_is_spent_when_the_approved_write_runs_after_a_read(
         # Leg 2: read, then the approved write.
         _turn("", ToolCall(id="c3", name="get_record", arguments=dict(_ORDER))),
         _turn("", ToolCall(id="c4", name="update_record", arguments=dict(_ORDER))),
-        # Leg 3: the same write, unread.
-        _turn("", ToolCall(id="c5", name="update_record", arguments=dict(_ORDER))),
         *[_turn("done") for _ in range(8)],
     ]
-    _patch(monkeypatch, recorder, turns)
+    _opened, _bus, stream = _patch(monkeypatch, recorder, turns)
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         office = await direct_office(db, tenant)
@@ -1262,7 +1267,13 @@ async def test_a_proof_is_spent_when_the_approved_write_runs_after_a_read(
         await resolve_tool_approval(db, approval=await _held(db), decision="approve")
         await db.refresh(run)
         for text in ("resume", "resume again"):
-            await run_agent(
+            if text == "resume again":
+                # Leg 3's own script: the same write, unread.
+                stream.script[:] = [
+                    _turn("", ToolCall(id="c5", name="update_record", arguments=dict(_ORDER))),
+                    *[_turn("done") for _ in range(8)],
+                ]
+            leg = await run_agent(
                 db,
                 agent=agent,
                 task_text=text,
@@ -1272,4 +1283,6 @@ async def test_a_proof_is_spent_when_the_approved_write_runs_after_a_read(
             )
         await db.refresh(run)
         assert run.context["waived_read_before_write"] == ["things\n" + approved]
+    (entry,) = [e for e in leg.tool_calls if e["tool"] == "update_record"]
+    assert "have not read" in str(entry["result"])
     assert [n for n, _s, _e in recorder.windows].count("update_record") == 1
