@@ -35,7 +35,7 @@ from oc8.modelrouter import ToolCall
 
 pytestmark = pytest.mark.asyncio
 
-TOOLS = ["search_records", "update_record"]
+TOOLS = ["search_records", "update_record", "get_record"]
 
 
 class _SpyBus:
@@ -963,3 +963,82 @@ async def test_a_denied_read_resource_is_not_audited_as_a_direct_call(
             .all()
         )
     assert audited == []
+
+
+async def _focused(db: AsyncSession, office: DirectOffice) -> None:
+    """Give the granted connection a focus spec, so a single-record call has an
+    identity and read-before-write applies to it."""
+    conn = await db.get(m.McpConnection, office.connection_id)
+    assert conn is not None
+    conn.config = {
+        "command": "x",
+        "args": [],
+        "focus_spec": {
+            "entity_field": "model",
+            "id_fields": ["id"],
+            "search_tools": ["search_records"],
+            "labels": {"sale.order": "Order"},
+        },
+    }
+    conn.scopes = {"read": ["search_records", "get_record"], "modify": ["update_record"]}
+    await db.flush()
+
+
+_ORDER = {"model": "sale.order", "id": 115}
+
+
+async def test_a_granted_copilot_may_write_a_record_it_read(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch(
+        monkeypatch,
+        _RecordingServer(delay_s=0),
+        [
+            _turn("", ToolCall(id="c1", name="get_record", arguments=dict(_ORDER))),
+            _turn("", ToolCall(id="c2", name="update_record", arguments=dict(_ORDER))),
+            _turn("done"),
+        ],
+    )
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        await _focused(db, office)
+        await grant(db, office)
+        agent = await _copilot(db, office)
+        result = await _run(db, office, agent, await chat_run(db, office))
+        held = await _held(db)
+    assert result.status == "waiting_for_approval"
+    assert held.payload["direct_access"]["member_id"] == str(office.member_id)
+
+
+async def test_a_granted_copilot_may_not_write_a_record_it_did_not_read(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorder = _RecordingServer(delay_s=0)
+    _patch(
+        monkeypatch,
+        recorder,
+        [
+            _turn("", ToolCall(id="c2", name="update_record", arguments=dict(_ORDER))),
+            _turn("done"),
+        ],
+    )
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        await _focused(db, office)
+        await grant(db, office)
+        agent = await _copilot(db, office)
+        result = await _run(db, office, agent, await chat_run(db, office))
+        held = (
+            (
+                await db.execute(
+                    select(m.ApprovalRequest).where(m.ApprovalRequest.action_type == "tool_send")
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert held == [] and recorder.windows == []
+    (entry,) = [e for e in result.tool_calls if e["tool"] == "update_record"]
+    assert "have not read" in str(entry["result"])

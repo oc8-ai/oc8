@@ -3264,10 +3264,15 @@ async def run_agent(
                         before_sat = _satisfied_map(procs, harness)
                         if succeeded:
                             record_tool(harness.state.ledger, tc.name)
-                            if access_identity is not None and mcp_conn is not None:
+                            if access_identity is not None:
+                                # Under the connection the call RAN on -- the
+                                # key the gate reads it back under -- not the
+                                # run's single bound `mcp_conn`: a Copilot's
+                                # granted connections (and any multi-connection
+                                # agent's) have none.
                                 note_access(
                                     harness.state.ledger,
-                                    connection=mcp_conn.name,
+                                    connection=call_key or "oc8",
                                     kind=access_identity[0],
                                     id=access_identity[1],
                                     label=record_label,
