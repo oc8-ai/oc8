@@ -136,6 +136,15 @@ class DirectAccessInfoDTO(CamelModel):
     grant_active: bool = False
 
 
+class DirectAccessGrantDTO(CamelModel):
+    id: str
+    session_id: str
+    tool_key: str
+    label: str
+    approval_id: str
+    granted_at: str
+
+
 class ApprovalDTO(CamelModel):
     id: str
     agent_id: str
