@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from oc8.agent.http_tools import place_arguments
+from oc8.agent.http_tools import HttpToolError, place_arguments
 
 _PROTECTED = frozenset({"authorization", "x-api-key"})
 
@@ -94,3 +94,48 @@ def test_structured_query_values_are_sent_as_json() -> None:
 def test_missing_path_parameter() -> None:
     with pytest.raises(RuntimeError, match="missing required parameter"):
         place_arguments(_tool("GET", "/users/{id}"), {}, protected_headers=_PROTECTED)
+
+
+@pytest.mark.parametrize("template", ["/users/{id}", "/users/{id}/orders"])
+@pytest.mark.parametrize(("value", "encoded"), [("..", "%2E%2E"), (".", "%2E"), ("../x", "..%2Fx")])
+def test_dot_segments_are_encoded_in_the_path(template: str, value: str, encoded: str) -> None:
+    import httpx
+
+    placed = place_arguments(_tool("GET", template), {"id": value}, protected_headers=_PROTECTED)
+    assert encoded in placed.path
+    url = httpx.Request("GET", "https://api.example.com/v1" + placed.path).url
+    assert url.path.startswith("/v1/users/")
+
+
+def test_path_values_are_serialised_like_query_values() -> None:
+    tool = _tool("GET", "/a/{flag}/{ids}/{obj}")
+    placed = place_arguments(
+        tool, {"flag": True, "ids": [1, 2], "obj": {"k": 1}}, protected_headers=_PROTECTED
+    )
+    assert placed.path == "/a/true/%5B1%2C%202%5D/%7B%22k%22%3A%201%7D"
+
+
+def test_none_path_value_is_an_error_and_none_query_value_is_omitted() -> None:
+    with pytest.raises(RuntimeError, match="missing required parameter"):
+        place_arguments(_tool("GET", "/u/{id}"), {"id": None}, protected_headers=_PROTECTED)
+    placed = place_arguments(_tool("GET", "/u"), {"q": None}, protected_headers=_PROTECTED)
+    assert placed.query == {}
+
+
+@pytest.mark.parametrize("value", ["a\r\nX-Evil: 1", "a\nb", "a\x00b"])
+def test_header_values_with_control_characters_are_rejected(value: str) -> None:
+    tool = _tool("GET", "/x", param_locations={"X-T": "header"})
+    with pytest.raises(HttpToolError):
+        place_arguments(tool, {"X-T": value}, protected_headers=_PROTECTED)
+
+
+@pytest.mark.parametrize("name", ["a b", "a\r\nX", "a:b", ""])
+def test_invalid_header_names_are_rejected(name: str) -> None:
+    tool = _tool("GET", "/x", param_locations={name: "header"})
+    with pytest.raises(HttpToolError):
+        place_arguments(tool, {name: "v"}, protected_headers=_PROTECTED)
+
+
+def test_numeric_placeholder_does_not_break_the_template() -> None:
+    placed = place_arguments(_tool("GET", "/a/{0}"), {"0": "x"}, protected_headers=_PROTECTED)
+    assert placed.path == "/a/x"

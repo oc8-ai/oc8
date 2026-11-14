@@ -107,12 +107,45 @@ class PlacedRequest:
     has_body: bool
 
 
+_HEADER_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+_PLACEHOLDER = re.compile(r"\{(\w+)\}")
+
+
+def _text(value: Any) -> str:
+    """One text form of a value for a path segment, a header or a structured
+    query value: booleans as true/false, structures as JSON."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float)):
+        return str(value)
+    return json.dumps(value)
+
+
+def _path_segment(value: Any) -> str:
+    # Quoted so a model-supplied value (e.g. containing `/`, `?` or `#`) can't
+    # escape the segment it fills. Dots are unreserved, so a bare `.` or `..`
+    # is encoded by hand: the URL layer would otherwise resolve it away.
+    quoted = urllib.parse.quote(_text(value), safe="")
+    return quoted.replace(".", "%2E") if set(quoted) == {"."} else quoted
+
+
 def _query_value(value: Any) -> Any:
     if isinstance(value, _SCALARS):
         return value
     if isinstance(value, list) and all(isinstance(v, _SCALARS) for v in value):
         return value
-    return json.dumps(value)
+    return _text(value)
+
+
+def _header_pair(name: str, value: Any) -> tuple[str, str]:
+    text = _text(value)
+    if not _HEADER_NAME.match(name):
+        raise HttpToolError("http", f"Invalid header name {name!r}.")
+    if any(c in text for c in "\r\n\x00"):
+        raise HttpToolError("http", f"Invalid value for header {name!r}.")
+    return name, text
 
 
 def place_arguments(
@@ -130,15 +163,15 @@ def place_arguments(
     """
     method = str(tool.get("method", "GET")).upper()
     template = str(tool.get("url_template", ""))
-    placeholders = set(re.findall(r"\{(\w+)\}", template))
-    try:
-        # Quoted so a model-supplied value (e.g. containing `../`, `?` or
-        # `#`) can't escape the path segment it was meant to fill.
-        path = template.format(
-            **{k: urllib.parse.quote(str(arguments[k]), safe="") for k in placeholders}
-        )
-    except KeyError as exc:
-        raise RuntimeError(f"missing required parameter {exc}") from exc
+    placeholders = set(_PLACEHOLDER.findall(template))
+
+    def _fill(match: re.Match[str]) -> str:
+        key = match.group(1)
+        if arguments.get(key) is None:
+            raise RuntimeError(f"missing required parameter {key!r}")
+        return _path_segment(arguments[key])
+
+    path = _PLACEHOLDER.sub(_fill, template)
     raw_locations = tool.get("param_locations")
     locations: dict[str, Any] = raw_locations if isinstance(raw_locations, dict) else {}
     raw_body_param = tool.get("body_param")
@@ -158,10 +191,12 @@ def place_arguments(
             continue
         where = locations.get(key, fallback)
         if where == "query":
-            query[key] = _query_value(value)
+            if value is not None:
+                query[key] = _query_value(value)
         elif where == "header":
-            if key.lower() not in blocked_headers:
-                headers[key] = value if isinstance(value, str) else json.dumps(value)
+            if key.lower() not in blocked_headers and value is not None:
+                name, text = _header_pair(key, value)
+                headers[name] = text
         elif where == "body":
             body_fields[key] = value
         # "path" for a name the template does not contain has nowhere to go.
@@ -469,11 +504,8 @@ class HttpToolSession:
     def _auth_header_names(self) -> frozenset[str]:
         return frozenset(name.lower() for name in self._headers)
 
-    def _protected_headers(self) -> frozenset[str]:
-        return self._auth_header_names()
-
     def _build(self, tool: dict[str, Any], arguments: dict[str, Any]) -> httpx.Request:
-        placed = place_arguments(tool, arguments, protected_headers=self._protected_headers())
+        placed = place_arguments(tool, arguments, protected_headers=self._auth_header_names())
         headers = {**placed.headers, "User-Agent": USER_AGENT, **self._headers}
         if placed.has_body:
             return httpx.Request(
