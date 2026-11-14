@@ -194,6 +194,21 @@ def authorize(
             return Decision(Effect.DENY, "read_resource requires a uri")
         if not key:
             return Decision(Effect.DENY, "read_resource requires a connection")
+        if agent.is_tenant_assistant:
+            # The Copilot's own frame grants no system: it may read a
+            # connection's resources only through this conversation's grant,
+            # exactly like one of that connection's read tools.
+            agent_threshold = (agent.presentation or {}).get("approval_value_eur")
+            return direct_access_decision(
+                direct_access,
+                connection_key=key,
+                tool=tc.name,
+                scopes={"read": [tc.name]},
+                value=None,
+                attributes={},
+                extra_thresholds=(float(agent_threshold) if agent_threshold is not None else None,),
+                narrowing=narrowing,
+            )
         return authorize_tool_call(
             policies=tool_policies,
             connection_key=key,

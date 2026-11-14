@@ -2311,8 +2311,13 @@ async def _execute_read_resource(
     agent: m.Agent,
     tc: ToolCall,
     run_id: uuid.UUID | None = None,
+    direct_row: m.McpConnection | None = None,
 ) -> ControlOutcome:
-    """One resource body, through the same pool as a tool call."""
+    """One resource body, through the same pool as a tool call.
+
+    `direct_row` is the connection the engine opened for the Copilot's grant:
+    the Copilot's own department owns no system, so it is read through that
+    row, never looked up by the agent's department."""
     from sqlalchemy import select
 
     from oc8.agent import mcp_pool
@@ -2323,13 +2328,16 @@ async def _execute_read_resource(
 
     connection = str(tc.arguments.get("connection", "")).strip()
     uri = str(tc.arguments.get("uri", "")).strip()
-    row = await db.scalar(
-        select(m.McpConnection).where(
-            m.McpConnection.department_id == agent.department_id,
-            m.McpConnection.name == connection,
-            m.McpConnection.connected.is_(True),
+    if agent.is_tenant_assistant:
+        row = direct_row if direct_row is not None and direct_row.name == connection else None
+    else:
+        row = await db.scalar(
+            select(m.McpConnection).where(
+                m.McpConnection.department_id == agent.department_id,
+                m.McpConnection.name == connection,
+                m.McpConnection.connected.is_(True),
+            )
         )
-    )
     if row is None:
         return ControlOutcome(output=f"ERROR: no connected system named {connection}")
     cfg = row.config if isinstance(row.config, dict) else {}
@@ -2541,6 +2549,7 @@ async def execute_control_tool(
     harness_state: HarnessState | None = None,
     active_procedure_skills: Sequence[LoadedSkill] | None = None,
     edition_offer: EditionOffer = NO_EDITION_OFFER,
+    direct_read_conn: m.McpConnection | None = None,
 ) -> ControlOutcome | None:
     """Run one core-owned tool call, or return None if it isn't one.
 
@@ -2650,7 +2659,12 @@ async def execute_control_tool(
         if decision.effect is not Effect.ALLOW:
             return ControlOutcome(output=f"ERROR: {decision.reason or 'denied'}")
         return await _execute_read_resource(
-            db, tenant_id=tenant_id, agent=agent, tc=tc, run_id=run_id
+            db,
+            tenant_id=tenant_id,
+            agent=agent,
+            tc=tc,
+            run_id=run_id,
+            direct_row=direct_read_conn,
         )
 
     if tc.name == PROCEDURE_STEP_DONE.name:

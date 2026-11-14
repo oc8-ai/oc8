@@ -31,6 +31,7 @@ from oc8.agent.control_tools import (
     ENTER_AGENT_MODE,
     FIND_TOOLS,
     MAX_DELEGATION_DEPTH,  # re-exported for tests/coding/test_engine_delegation.py
+    READ_RESOURCE,
     audit_edition_call,
     execute_control_tool,
     has_readable_context,
@@ -2428,6 +2429,30 @@ async def run_agent(
                             owner=next((c for c in extra_conns if c.name == call_key), None),
                             right=required_right(auth_tc.name, call_scopes),
                         )
+                    # The Copilot's read_resource is a core tool, so it is not a
+                    # `direct_call` above; it still reads through the
+                    # connection this run opened for its grant, and needs the
+                    # same per-call right check (R17).
+                    direct_read_conn: m.McpConnection | None = None
+                    if (
+                        agent.is_tenant_assistant
+                        and direct_run is not None
+                        and auth_tc.name == READ_RESOURCE.name
+                        and tc.name == auth_tc.name
+                    ):
+                        read_key = str(tc.arguments.get("connection", "")).strip() or None
+                        if read_key is not None and read_key in direct_view.granted:
+                            direct_read_conn = next(
+                                (c for c in extra_conns if c.name == read_key), None
+                            )
+                            if decision.effect is not Effect.DENY:
+                                decision = await _direct_right_check(
+                                    decision,
+                                    view=direct_view,
+                                    call_key=read_key,
+                                    owner=direct_read_conn,
+                                    right="read",
+                                )
                     if tc.id in call_justifications:
                         justification = call_justifications[tc.id]
                     else:
@@ -2865,6 +2890,7 @@ async def run_agent(
                                 s for s in active_skills if s.definition.steps
                             ],
                             edition_offer=edition,
+                            direct_read_conn=direct_read_conn,
                         )
                         if control is not None:
                             if tc.name == ENTER_AGENT_MODE.name and not control.output.startswith(

@@ -126,6 +126,40 @@ def test_the_copilot_reaches_a_connection_only_through_the_view() -> None:
     assert allowed.effect is Effect.ALLOW
 
 
+def _decide_read_resource(
+    view: DirectAccessView, *, narrowing: dict[str, Any] | None = None
+) -> Any:
+    copilot = _copilot()
+    if narrowing is not None:
+        copilot.narrowing = narrowing
+    return authorize(
+        copilot,
+        ToolCall(id="c", name="read_resource", arguments={"connection": "things", "uri": "x/1"}),
+        frame={},
+        tool_policies={"things": READ_WRITE},
+        connection_key=None,
+        tool_scopes=None,
+        direct_access=view,
+    )
+
+
+def test_the_copilots_read_resource_with_a_grant_is_allowed() -> None:
+    assert _decide_read_resource(_view((SALES, READ_ONLY))).effect is Effect.ALLOW
+
+
+def test_the_copilots_read_resource_without_a_grant_is_denied() -> None:
+    decision = _decide_read_resource(NO_DIRECT_ACCESS)
+    assert decision.effect is Effect.DENY and decision.reason_code == NOT_THIS_CONNECTION
+
+
+def test_the_copilots_narrowing_that_denies_read_denies_read_resource() -> None:
+    decision = _decide_read_resource(
+        _view((SALES, READ_ONLY)),
+        narrowing={"tools": {"things": {"enabled": True, "read": False, "modify": False}}},
+    )
+    assert decision.effect is Effect.DENY
+
+
 def test_a_connection_tool_named_like_a_core_tool_is_decided_as_the_connections() -> None:
     """A routed `fetch_url` is the connection's tool: no core ALLOW for it."""
     scopes = {"read": ["fetch_url"]}

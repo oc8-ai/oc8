@@ -809,3 +809,71 @@ async def test_an_offer_parks_the_run(
     assert recorder.windows == []
     (entry,) = [e for e in result.tool_calls if e["tool"] == "offer_direct_access"]
     assert entry["state"] == "awaiting_approval"
+
+
+def _stub_read_resource(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    reads: list[dict[str, Any]] = []
+
+    async def _read(connection_id: Any, **kw: Any) -> str:
+        reads.append({"connection_id": connection_id, **kw})
+        return "BODY-OF-RECORD"
+
+    monkeypatch.setattr("oc8.agent.mcp_pool.read_resource", _read)
+    return reads
+
+
+async def test_a_granted_copilot_reads_a_resource_through_the_opened_connection(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reads = _stub_read_resource(monkeypatch)
+    _opened, _bus, _stream = _patch(
+        monkeypatch,
+        _RecordingServer(delay_s=0),
+        [
+            _turn(
+                "",
+                ToolCall(
+                    id="c1",
+                    name="read_resource",
+                    arguments={"connection": "things", "uri": "order/115"},
+                ),
+            ),
+            _turn("done"),
+        ],
+    )
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        await grant(db, office)
+        agent = await _copilot(db, office)
+        result = await _run(db, office, agent, await chat_run(db, office))
+    assert [r["uri"] for r in reads] == ["order/115"]
+    assert reads[0]["connection_id"] == office.connection_id
+    assert result.status == "done"
+
+
+async def test_without_a_grant_the_copilot_cannot_read_a_resource(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reads = _stub_read_resource(monkeypatch)
+    _patch(
+        monkeypatch,
+        _RecordingServer(delay_s=0),
+        [
+            _turn(
+                "",
+                ToolCall(
+                    id="c1",
+                    name="read_resource",
+                    arguments={"connection": "things", "uri": "order/115"},
+                ),
+            ),
+            _turn("I cannot."),
+        ],
+    )
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        agent = await _copilot(db, office)
+        await _run(db, office, agent, await chat_run(db, office))
+    assert reads == []
