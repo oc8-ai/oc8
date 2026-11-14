@@ -24,7 +24,9 @@ from oc8.authz.pdp import (
     Decision,
     Effect,
     ToolPolicy,
+    _frame_denial,
     authorize_tool_call,
+    effective_tool_policies,
     required_right,
 )
 
@@ -56,20 +58,43 @@ class DirectAccessView:
 NO_DIRECT_ACCESS: Final = DirectAccessView()
 
 
+def _narrowed(
+    policy: ToolPolicy, connection_key: str, narrowing: Mapping[str, Any] | None
+) -> ToolPolicy:
+    """The department's policy intersected with the Copilot's own pinned
+    narrowing, by the one intersection every agent's frame goes through. A
+    narrowing-only key never grants: only the department frames do."""
+    if not narrowing:
+        return policy
+    frame = {"tools": {connection_key: policy.to_json()}}
+    return effective_tool_policies(frame, dict(narrowing))[connection_key]
+
+
 def offers_direct(
     view: DirectAccessView,
     *,
     connection_key: str,
     tool: str,
     scopes: Mapping[str, Any] | None,
+    narrowing: Mapping[str, Any] | None = None,
 ) -> bool:
     """Whether a granted connection's tool may be offered at all -- the same
     rule `direct_access_decision` applies, without the per-call value."""
     right = required_right(tool, scopes)
     return view.present_member and any(
-        policy.enabled and policy.has_right(right) and policy.offers(tool)
-        for _department, policy in view.granted.get(connection_key, ())
+        _frame_denial(
+            {connection_key: policy},
+            connection_key=connection_key,
+            right=right,
+            tool=tool,
+        )
+        is None
+        for _department, raw in view.granted.get(connection_key, ())
+        for policy in (_narrowed(raw, connection_key, narrowing),)
     )
+
+
+_RANK = {Effect.ALLOW: 0, Effect.REQUIRE_APPROVAL: 1, Effect.DENY: 2}
 
 
 def direct_access_decision(
@@ -81,7 +106,11 @@ def direct_access_decision(
     value: float | None,
     attributes: Mapping[str, Any],
     extra_thresholds: Sequence[float | None] = (),
+    narrowing: Mapping[str, Any] | None = None,
 ) -> Decision:
+    """A department that does not grant the call is skipped; among those that
+    do, the strictest verdict wins (DENY > REQUIRE_APPROVAL > ALLOW), so a
+    policy only ever adds a gate (§1)."""
     right = required_right(tool, scopes)
     terms = {"connection": connection_key, "tool": tool, "right": right}
     departments = view.granted.get(connection_key, ()) if connection_key else ()
@@ -93,33 +122,48 @@ def direct_access_decision(
             reason_code=NOT_THIS_CONNECTION,
             context=terms,
         )
-    allowed = False
-    held: Decision | None = None
-    for department_id, policy in departments:
-        verdict = authorize_tool_call(
-            policies={connection_key: policy},
-            connection_key=connection_key,
-            right=right,
-            tool=tool,
-            value=value,
-            attributes=attributes,
-            extra_thresholds=extra_thresholds,
-        )
-        if verdict.effect is Effect.DENY:
+    #: (department id, its own verdict, the verdict with the extra thresholds)
+    granting: list[tuple[uuid.UUID, Decision, Decision]] = []
+    for department_id, raw in departments:
+        policy = _narrowed(raw, connection_key, narrowing)
+        policies = {connection_key: policy}
+        if (
+            _frame_denial(policies, connection_key=connection_key, right=right, tool=tool)
+            is not None
+        ):
             continue
-        allowed = True
-        if verdict.effect is Effect.REQUIRE_APPROVAL and held is None:
-            held = Decision(
-                Effect.REQUIRE_APPROVAL,
-                verdict.reason,
-                reason_code=verdict.reason_code,
-                context={**verdict.context, HOLDING_DEPARTMENT: str(department_id)},
-            )
-    if not allowed:
+        common: dict[str, Any] = {
+            "policies": policies,
+            "connection_key": connection_key,
+            "right": right,
+            "tool": tool,
+            "value": value,
+            "attributes": attributes,
+        }
+        own = authorize_tool_call(**common)
+        full = authorize_tool_call(**common, extra_thresholds=extra_thresholds)
+        granting.append((department_id, own, full))
+    if not granting:
         return Decision(
             Effect.DENY,
             f"the person you act for may not {right} through {connection_key!r}",
             reason_code=NOT_THIS_CONNECTION,
             context=terms,
         )
-    return held if held is not None else Decision(Effect.ALLOW)
+    strictest = max(_RANK[full.effect] for _d, _o, full in granting)
+    tied = [(d, o, f) for d, o, f in granting if _RANK[f.effect] == strictest]
+    if strictest == _RANK[Effect.ALLOW]:
+        return Decision(Effect.ALLOW)
+    if strictest == _RANK[Effect.DENY]:
+        return tied[0][2]
+    # Held: name a department only when its OWN policy produced the hold; a hold
+    # that only the Copilot's / a skill's threshold caused is the person's.
+    for department_id, own, full in tied:
+        if own.effect is Effect.REQUIRE_APPROVAL:
+            return Decision(
+                Effect.REQUIRE_APPROVAL,
+                full.reason,
+                reason_code=full.reason_code,
+                context={**full.context, HOLDING_DEPARTMENT: str(department_id)},
+            )
+    return tied[0][2]

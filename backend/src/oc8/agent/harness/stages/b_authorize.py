@@ -160,6 +160,7 @@ def authorize(
                 float(agent_threshold) if agent_threshold is not None else None,
                 *skill_thresholds,
             ),
+            narrowing=narrowing,
         )
     if not core_call:
         # A connection's tool, even if it shares a core tool's name: none of the

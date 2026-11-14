@@ -18,7 +18,14 @@ from oc8.agent.harness.stages.b_direct_access import (
     offers_direct,
 )
 from oc8.agent.harness.state import Ledger
-from oc8.authz.pdp import NOT_THIS_CONNECTION, Effect, ToolPolicy
+from oc8.authz.pdp import (
+    NOT_THIS_CONNECTION,
+    Condition,
+    ConditionDatatype,
+    ConditionOperator,
+    Effect,
+    ToolPolicy,
+)
 from oc8.modelrouter import ToolCall
 
 SCOPES: dict[str, list[str]] = {"read": ["search_records"], "modify": ["update_record"]}
@@ -202,3 +209,116 @@ def test_the_copilots_own_eur_threshold_still_applies_to_a_direct_call() -> None
         direct_access=view,
     )
     assert allowed.effect is Effect.ALLOW
+
+
+def _deny_when_blocked() -> ToolPolicy:
+    return ToolPolicy(
+        enabled=True,
+        read=True,
+        modify=True,
+        conditions=(
+            Condition(
+                attribute="kind",
+                datatype=ConditionDatatype.STRING,
+                operator=ConditionOperator.EQ,
+                value="blocked",
+                then=Effect.DENY,
+            ),
+        ),
+    )
+
+
+def _write(view: DirectAccessView, attributes: dict[str, Any], **kw: Any) -> Any:
+    return direct_access_decision(
+        view,
+        connection_key="things",
+        tool="update_record",
+        scopes=SCOPES,
+        value=kw.pop("value", None),
+        attributes=attributes,
+        **kw,
+    )
+
+
+def test_a_granting_departments_deny_condition_beats_another_departments_allow() -> None:
+    view = _view((SALES, READ_WRITE), (SUPPORT, _deny_when_blocked()))
+    assert _write(view, {"kind": "blocked"}).effect is Effect.DENY
+    assert _write(view, {"kind": "fine"}).effect is Effect.ALLOW
+
+
+def test_a_department_that_does_not_grant_the_right_is_skipped_not_strictest() -> None:
+    view = _view((SALES, READ_WRITE), (SUPPORT, READ_ONLY))
+    assert _write(view, {}).effect is Effect.ALLOW
+
+
+def test_the_copilots_narrowing_denies_a_direct_write() -> None:
+    narrowing = {"tools": {"things": {"enabled": True, "read": True, "modify": False}}}
+    view = _view((SALES, READ_WRITE))
+    assert _write(view, {}, narrowing=narrowing).effect is Effect.DENY
+    assert not offers_direct(
+        view, connection_key="things", tool="update_record", scopes=SCOPES, narrowing=narrowing
+    )
+    assert offers_direct(
+        view, connection_key="things", tool="search_records", scopes=SCOPES, narrowing=narrowing
+    )
+
+
+def test_the_copilots_narrowing_threshold_holds_a_direct_call() -> None:
+    narrowing = {
+        "tools": {"things": {"enabled": True, "read": True, "modify": True, "approval_eur": 50}}
+    }
+    view = _view((SALES, ToolPolicy(enabled=True, read=True, modify=True, approval_eur=500)))
+    assert _write(view, {}, value=100.0).effect is Effect.ALLOW
+    held = _write(view, {}, value=100.0, narrowing=narrowing)
+    assert held.effect is Effect.REQUIRE_APPROVAL
+    assert held.context[HOLDING_DEPARTMENT] == str(SALES)
+
+
+def test_a_disabling_narrowing_withdraws_the_offer_and_a_narrowing_only_key_grants_nothing() -> (
+    None
+):
+    off = {"tools": {"things": {"enabled": False}}}
+    view = _view((SALES, READ_WRITE))
+    assert not offers_direct(
+        view, connection_key="things", tool="search_records", scopes=SCOPES, narrowing=off
+    )
+    only = {"tools": {"other": {"enabled": True, "read": True, "modify": True}}}
+    decision = direct_access_decision(
+        view,
+        connection_key="other",
+        tool="search_records",
+        scopes=SCOPES,
+        value=None,
+        attributes={},
+        narrowing=only,
+    )
+    assert decision.effect is Effect.DENY
+
+
+def test_a_hold_from_the_agents_own_threshold_names_no_department() -> None:
+    held = _write(_view((SALES, READ_WRITE)), {}, value=500.0, extra_thresholds=(100.0,))
+    assert held.effect is Effect.REQUIRE_APPROVAL
+    assert HOLDING_DEPARTMENT not in held.context
+
+
+def test_a_departments_own_hold_names_it_even_with_an_extra_threshold() -> None:
+    gated = ToolPolicy(enabled=True, read=True, modify=True, approval_actions=frozenset({"modify"}))
+    held = _write(
+        _view((SALES, READ_WRITE), (SUPPORT, gated)), {}, value=500.0, extra_thresholds=(100.0,)
+    )
+    assert held.context[HOLDING_DEPARTMENT] == str(SUPPORT)
+
+
+def test_authorize_applies_the_copilots_pinned_narrowing_to_a_direct_call() -> None:
+    agent = _copilot()
+    agent.narrowing = {"tools": {"things": {"enabled": True, "read": True, "modify": False}}}
+    decision = authorize(
+        agent,
+        ToolCall(id="c", name="update_record", arguments={}),
+        frame={},
+        tool_policies={},
+        connection_key="things",
+        tool_scopes=SCOPES,
+        direct_access=_view((SALES, READ_WRITE)),
+    )
+    assert decision.effect is Effect.DENY
