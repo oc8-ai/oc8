@@ -37,6 +37,7 @@ from oc8.connections.integrations import (
     installed_integrations,
     integration_for_connection,
 )
+from oc8.departments.repo import member_departments
 
 #: Why a connected system in no department is not usable (for the Copilot).
 NO_DEPARTMENT = (
@@ -184,20 +185,6 @@ async def department_systems(
 # department they belong to. "Belong" is a live seat or `all_departments`.
 
 
-def _tenant_departments(member: m.OrgMember) -> Select[tuple[m.Department]]:
-    # populate_existing: a frame edited since this session loaded the row (it
-    # keeps rows across commits) must be seen on the very next call.
-    return (
-        select(m.Department)
-        .execution_options(populate_existing=True)
-        .where(
-            m.Department.tenant_id == member.tenant_id,
-            m.Department.deleted_at.is_(None),
-            m.Department.is_assistant_department.is_(False),
-        )
-    )
-
-
 async def member_departments_for(
     db: AsyncSession, *, member_id: uuid.UUID, tool_key: str
 ) -> list[tuple[uuid.UUID, ToolPolicy]]:
@@ -207,15 +194,8 @@ async def member_departments_for(
     member = await db.get(m.OrgMember, member_id, populate_existing=True)
     if member is None or member.deleted_at is not None:
         return []
-    query = _tenant_departments(member)
-    if not member.all_departments:
-        seated = select(m.OrgMemberDepartment.department_id).where(
-            m.OrgMemberDepartment.member_id == member.id,
-            m.OrgMemberDepartment.revoked_at.is_(None),
-        )
-        query = query.where(m.Department.id.in_(seated))
     out: list[tuple[uuid.UUID, ToolPolicy]] = []
-    for dept in (await db.execute(query.order_by(m.Department.name, m.Department.id))).scalars():
+    for dept in await member_departments(db, member=member):
         if frame_enables(dept.frame, tool_key):
             out.append((dept.id, ToolPolicy.from_json(_frame_tools(dept.frame)[tool_key])))
     return out
@@ -273,7 +253,7 @@ async def member_usable_tool_keys(db: AsyncSession, *, member_id: uuid.UUID) -> 
         return []
     keys = {
         str(key)
-        for dept in (await db.execute(_tenant_departments(member))).scalars()
+        for dept in await member_departments(db, member=member)
         for key in _frame_tools(dept.frame)
     }
     return [
