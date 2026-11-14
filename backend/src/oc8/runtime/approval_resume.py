@@ -75,6 +75,12 @@ async def resolve_tool_approval(
             "tool": tool,
             "arguments": arguments,
             "decision": decision,
+            # Only a raiser that saw the call pass read-before-write sets it.
+            **(
+                {"read_before_write_ok": True}
+                if approval.payload.get("read_before_write_ok") is True
+                else {}
+            ),
         },
     )
     await db.flush()

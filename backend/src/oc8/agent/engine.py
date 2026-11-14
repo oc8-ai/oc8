@@ -668,6 +668,24 @@ async def run_agent(
 
         initial_direct = await _direct_view()
 
+        # Writes a person approved that had PASSED the read-before-write gate
+        # before they were parked (the raiser marks the approval, see
+        # resolve_tool_approval). A resumed leg starts with a fresh ledger, so
+        # only these are waived, once each; an approval without the mark never
+        # is -- it may have been raised before that gate ever ran.
+        gate_proven: set[str] = {
+            str(e["sig"])
+            for e in (
+                ((run_row.context or {}).get("resolved_tool_approvals") or [])
+                if run_row is not None
+                else []
+            )
+            if isinstance(e, dict)
+            and e.get("sig")
+            and e.get("decision") == "approve"
+            and e.get("read_before_write_ok") is True
+        }
+
         async def _direct_right_check(
             decision: Decision,
             *,
@@ -1178,7 +1196,7 @@ async def run_agent(
                 route: tuple[Any, ...],
                 stored: Mapping[str, Any],
                 direct_view: DirectAccessView,
-            ) -> tuple[str, str, Decision]:
+            ) -> tuple[str, str, Decision, bool]:
                 """("run" | "refuse" | "park", why, the PEP's decision) for an
                 answered elicitation. `direct_view` is the Copilot's grants
                 loaded for THIS call, never the run's first view.
@@ -1241,11 +1259,11 @@ async def run_agent(
                 )
                 verdict = (pre_decided or {}).get(_call_sig(held))
                 if decision.effect is Effect.DENY:
-                    return "refuse", decision.reason or "denied", decision
+                    return "refuse", decision.reason or "denied", decision, False
                 if verdict == "reject":
-                    return "refuse", "operator rejected this action", decision
+                    return "refuse", "operator rejected this action", decision, False
                 if decision.effect is Effect.REQUIRE_APPROVAL and verdict != "approve":
-                    return "park", decision.reason or "", decision
+                    return "park", decision.reason or "", decision, False
                 gate = _gate(
                     auth_held,
                     scopes=scopes,
@@ -1255,13 +1273,18 @@ async def run_agent(
                     advertised=advertised,
                     direct=call_key is not None and call_key in direct_view.granted,
                 )
-                if gate.effect == "deny" and not (
-                    gate.rule == "read_before_write" and verdict == "approve"
+                if (
+                    gate.effect == "deny"
+                    and gate.rule == "read_before_write"
+                    and verdict == "approve"
+                    and _call_sig(held) in gate_proven
                 ):
-                    return "refuse", gate.reason or "denied", decision
+                    gate_proven.discard(_call_sig(held))  # single use
+                elif gate.effect == "deny":
+                    return "refuse", gate.reason or "denied", decision, False
                 if gate.effect == "ask" and verdict != "approve":
-                    return "park", gate.preview or "", decision
-                return "run", "", decision
+                    return "park", gate.preview or "", decision, True
+                return "run", "", decision, False
 
             steps = 0
             step_timings: list[dict[str, Any]] = []
@@ -1312,7 +1335,7 @@ async def run_agent(
                         )
                         parked_ctx = dict(parked.context or {})
                         held_view = await _direct_view()
-                        effect, why, held_decision = _held_verdict(
+                        effect, why, held_decision, held_gate_ok = _held_verdict(
                             tool_name, arguments, held_route, pending, held_view
                         )
                         held_direct = (
@@ -1373,6 +1396,7 @@ async def run_agent(
                                     "arguments": arguments,
                                     "justification": "",
                                     "preview": why,
+                                    **({"read_before_write_ok": True} if held_gate_ok else {}),
                                     **(held_terms[1] if held_terms is not None else {}),
                                 },
                                 **(held_terms[2] if held_terms is not None else {}),
@@ -2606,7 +2630,9 @@ async def run_agent(
                                 and gate_verdict.rule == "read_before_write"
                                 and pre_decided
                                 and pre_decided.get(_call_sig(tc)) == "approve"
+                                and _call_sig(tc) in gate_proven
                             ):
+                                gate_proven.discard(_call_sig(tc))  # single use
                                 # A resumed leg starts with a fresh ledger, but
                                 # a held write passed this very gate (the read
                                 # happened) before it was parked, and a person
@@ -2699,6 +2725,14 @@ async def run_agent(
                                         "justification": justification,
                                         "preview": (
                                             gate_verdict.preview if gate_verdict is not None else ""
+                                        ),
+                                        # Raised after the B gate answered "ask":
+                                        # read-before-write had passed for it.
+                                        **(
+                                            {"read_before_write_ok": True}
+                                            if gate_verdict is not None
+                                            and gate_verdict.effect == "ask"
+                                            else {}
                                         ),
                                         **({"record_url": link} if link else {}),
                                         **(hold_terms[1] if hold_terms is not None else {}),

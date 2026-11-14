@@ -1044,45 +1044,90 @@ async def test_a_granted_copilot_may_not_write_a_record_it_did_not_read(
     assert "have not read" in str(entry["result"])
 
 
+async def _two_legs(
+    db: AsyncSession,
+    office: DirectOffice,
+    agent: m.Agent,
+    *,
+    record_approval: bool,
+) -> Any:
+    from oc8.agent.harness.calls import call_sig
+    from oc8.runtime.approval_resume import resolve_tool_approval
+
+    run = await chat_run(db, office)
+    leg1 = await _run(db, office, agent, run)
+    assert leg1.status == "waiting_for_approval"
+    held = await _held(db)
+    if record_approval:
+        # What the person's approval writes into the run's context.
+        await resolve_tool_approval(db, approval=held, decision="approve")
+        await db.refresh(run)
+    approved = call_sig(ToolCall(id="x", name="update_record", arguments=dict(_ORDER)))
+    return await run_agent(
+        db,
+        agent=agent,
+        task_text="resume",
+        tenant_id=office.tenant,
+        run_id=run.id,
+        pre_decided={approved: "approve"},
+    )
+
+
+def _resume_script(*updates: str) -> list[Any]:
+    turns = [
+        _turn("", ToolCall(id="c1", name="get_record", arguments=dict(_ORDER))),
+        _turn("", ToolCall(id="c2", name="update_record", arguments=dict(_ORDER))),
+    ]
+    turns += [
+        _turn("", ToolCall(id=u, name="update_record", arguments=dict(_ORDER))) for u in updates
+    ]
+    return turns + [_turn("done")] * 3
+
+
 async def test_an_approved_write_runs_once_after_the_run_resumes(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Leg 2 starts with a fresh ledger: the read happened in leg 1. The person
-    approved this exact call, so read-before-write must not refuse it."""
-    from oc8.agent.harness.calls import call_sig
-
+    """Leg 2 starts with a fresh ledger: the read happened in leg 1 and the
+    held write passed read-before-write before it parked. The person approved
+    this exact call, so read-before-write must not refuse it."""
     recorder = _RecordingServer(delay_s=0)
-    _patch(
-        monkeypatch,
-        recorder,
-        [
-            _turn("", ToolCall(id="c1", name="get_record", arguments=dict(_ORDER))),
-            _turn("", ToolCall(id="c2", name="update_record", arguments=dict(_ORDER))),
-            _turn("", ToolCall(id="c3", name="update_record", arguments=dict(_ORDER))),
-            _turn("done"),
-            _turn("done"),
-            _turn("done"),
-        ],
-    )
+    _patch(monkeypatch, recorder, _resume_script("c3"))
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         office = await direct_office(db, tenant)
         await _focused(db, office)
         await grant(db, office)
         agent = await _copilot(db, office)
-        run = await chat_run(db, office)
-        leg1 = await _run(db, office, agent, run)
-        assert leg1.status == "waiting_for_approval"
-        # Leg 2: the engine is handed the person's verdict for the held call.
-        approved = call_sig(ToolCall(id="x", name="update_record", arguments=dict(_ORDER)))
-        recorder.windows.clear()
-        result = await run_agent(
-            db,
-            agent=agent,
-            task_text="resume",
-            tenant_id=office.tenant,
-            run_id=run.id,
-            pre_decided={approved: "approve"},
-        )
-    assert [name for name, _s, _e in recorder.windows] == ["update_record"]
+        result = await _two_legs(db, office, agent, record_approval=True)
+    assert [name for name, _s, _e in recorder.windows] == ["get_record", "update_record"]
     assert result.status == "done"
+
+
+async def test_an_approval_without_proof_does_not_waive_read_before_write(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorder = _RecordingServer(delay_s=0)
+    _patch(monkeypatch, recorder, _resume_script("c3"))
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        await _focused(db, office)
+        await grant(db, office)
+        agent = await _copilot(db, office)
+        await _two_legs(db, office, agent, record_approval=False)
+    assert "update_record" not in [n for n, _s, _e in recorder.windows]
+
+
+async def test_the_waiver_is_single_use_within_a_leg(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorder = _RecordingServer(delay_s=0)
+    _patch(monkeypatch, recorder, _resume_script("c3", "c4"))
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        await _focused(db, office)
+        await grant(db, office)
+        agent = await _copilot(db, office)
+        await _two_legs(db, office, agent, record_approval=True)
+    assert [n for n, _s, _e in recorder.windows].count("update_record") == 1
