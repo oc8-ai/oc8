@@ -1286,3 +1286,48 @@ async def test_a_proof_is_spent_when_the_approved_write_runs_after_a_read(
     (entry,) = [e for e in leg.tool_calls if e["tool"] == "update_record"]
     assert "have not read" in str(entry["result"])
     assert [n for n, _s, _e in recorder.windows].count("update_record") == 1
+
+
+async def test_a_policy_held_write_that_was_read_carries_a_proof(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The department holds every write itself (the PEP, before the B gate). The
+    record WAS read, so the hold carries the read-before-write proof: after the
+    approval the resumed leg runs the write once; the next leg's unread repeat is
+    refused."""
+    from oc8.agent.harness.calls import call_sig
+
+    recorder = _RecordingServer(delay_s=0)
+    _opened, _bus, stream = _patch(monkeypatch, recorder, _resume_script("c3"))
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(
+            db,
+            tenant,
+            policy={"enabled": True, "read": True, "modify": True, "approval_actions": ["modify"]},
+        )
+        await _focused(db, office)
+        await grant(db, office)
+        agent = await _copilot(db, office)
+        run = await chat_run(db, office)
+        await _two_legs_on(db, office, agent, run)
+        approved = call_sig(ToolCall(id="x", name="update_record", arguments=dict(_ORDER)))
+        await db.refresh(run)
+        (entry,) = run.context["resolved_tool_approvals"]
+        assert entry["read_before_write_ok"] is True
+        assert run.context["waived_read_before_write"] == ["things\n" + approved]
+        stream.script[:] = [
+            _turn("", ToolCall(id="c4", name="update_record", arguments=dict(_ORDER))),
+            *[_turn("done") for _ in range(8)],
+        ]
+        leg3 = await run_agent(
+            db,
+            agent=agent,
+            task_text="resume again",
+            tenant_id=office.tenant,
+            run_id=run.id,
+            pre_decided={approved: "approve"},
+        )
+    (entry3,) = [e for e in leg3.tool_calls if e["tool"] == "update_record"]
+    assert "have not read" in str(entry3["result"])
+    assert [n for n, _s, _e in recorder.windows].count("update_record") == 1

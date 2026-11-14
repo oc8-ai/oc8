@@ -2736,6 +2736,25 @@ async def run_agent(
                                     if direct_call
                                     else None
                                 )
+                                # Did read-before-write pass for this call as it
+                                # stands? The B gate answered "ask" (it ran, so it
+                                # passed), or the PEP held the call before the gate
+                                # ever ran: probe the gate on the current ledger.
+                                if gate_verdict is not None:
+                                    read_ok_at_hold = gate_verdict.effect == "ask"
+                                elif is_core_call(auth_tc.name, routed=auth_tc.name != tc.name):
+                                    read_ok_at_hold = False
+                                else:
+                                    probe = _gate(
+                                        auth_tc,
+                                        scopes=call_scopes,
+                                        config=call_config,
+                                        connection=call_key,
+                                        spec=call_focus,
+                                        advertised=tc.name,
+                                        direct=direct_call,
+                                    )
+                                    read_ok_at_hold = probe.effect != "deny"
                                 ar = await raise_approval(
                                     db,
                                     tenant_id=tenant_id,
@@ -2762,8 +2781,7 @@ async def run_agent(
                                                 "read_before_write_ok": True,
                                                 "gate_connection": call_key or "oc8",
                                             }
-                                            if gate_verdict is not None
-                                            and gate_verdict.effect == "ask"
+                                            if read_ok_at_hold
                                             else {}
                                         ),
                                         **({"record_url": link} if link else {}),
