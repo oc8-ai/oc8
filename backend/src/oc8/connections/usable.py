@@ -185,10 +185,16 @@ async def department_systems(
 
 
 def _tenant_departments(member: m.OrgMember) -> Select[tuple[m.Department]]:
-    return select(m.Department).where(
-        m.Department.tenant_id == member.tenant_id,
-        m.Department.deleted_at.is_(None),
-        m.Department.is_assistant_department.is_(False),
+    # populate_existing: a frame edited since this session loaded the row (it
+    # keeps rows across commits) must be seen on the very next call.
+    return (
+        select(m.Department)
+        .execution_options(populate_existing=True)
+        .where(
+            m.Department.tenant_id == member.tenant_id,
+            m.Department.deleted_at.is_(None),
+            m.Department.is_assistant_department.is_(False),
+        )
     )
 
 
@@ -198,7 +204,7 @@ async def member_departments_for(
     """The departments the member belongs to whose frame enables `tool_key`,
     with that frame's policy for it, ordered by department name. Never the
     Copilot's own department."""
-    member = await db.get(m.OrgMember, member_id)
+    member = await db.get(m.OrgMember, member_id, populate_existing=True)
     if member is None or member.deleted_at is not None:
         return []
     query = _tenant_departments(member)
@@ -262,7 +268,7 @@ async def member_may_use(
 async def member_usable_tool_keys(db: AsyncSession, *, member_id: uuid.UUID) -> list[str]:
     """Every key the member may read through, sorted: what the Copilot is told
     it may offer."""
-    member = await db.get(m.OrgMember, member_id)
+    member = await db.get(m.OrgMember, member_id, populate_existing=True)
     if member is None:
         return []
     keys = {
@@ -282,24 +288,33 @@ async def direct_connection(
     *,
     tenant_id: uuid.UUID,
     tool_key: str,
-    department_ids: Sequence[uuid.UUID],
+    departments: Sequence[tuple[uuid.UUID, ToolPolicy]],
+    right: str,
 ) -> m.McpConnection | None:
-    """The row a direct-access run launches for `tool_key`: a connected one of
-    the member's departments (oldest first), else a connected department-less
-    one, else the enabled integration's row: its own department-less row, or
-    one materialised now. Never another department's: it carries that
-    department's identity."""
+    """The row a direct-access call of `right` launches for `tool_key`.
+
+    It must belong to a department whose policy grants `right` -- the one that
+    authorised the call -- never to another department of the member's, whose
+    connection carries that department's identity. Among those, the oldest
+    connected one wins (created_at, id: stable). Only when none of them has a
+    connected row does it fall back to a connected department-less
+    (organisation-wide) one, else the enabled integration's row: its own
+    department-less row, or one materialised now. None otherwise."""
+    granting = [dept for dept, policy in departments if policy.has_right(right)]
+    if not granting:
+        return None
     candidates = (
         (
             await db.execute(
                 select(m.McpConnection)
+                .execution_options(populate_existing=True)
                 .where(
                     m.McpConnection.tenant_id == tenant_id,
                     m.McpConnection.name == tool_key,
-                    m.McpConnection.department_id.in_(list(department_ids))
+                    m.McpConnection.department_id.in_(granting)
                     | m.McpConnection.department_id.is_(None),
                 )
-                .order_by(m.McpConnection.created_at)
+                .order_by(m.McpConnection.created_at, m.McpConnection.id)
             )
         )
         .scalars()

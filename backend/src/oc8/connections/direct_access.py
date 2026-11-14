@@ -63,6 +63,7 @@ async def active_grants(db: AsyncSession, *, session_id: uuid.UUID) -> list[m.Di
         (
             await db.execute(
                 select(m.DirectAccessGrant)
+                .execution_options(populate_existing=True)
                 .where(
                     m.DirectAccessGrant.chat_session_id == session_id,
                     m.DirectAccessGrant.revoked_at.is_(None),
@@ -77,7 +78,9 @@ async def active_grant(
     db: AsyncSession, *, session_id: uuid.UUID, tool_key: str
 ) -> m.DirectAccessGrant | None:
     row: m.DirectAccessGrant | None = await db.scalar(
-        select(m.DirectAccessGrant).where(
+        select(m.DirectAccessGrant)
+        .execution_options(populate_existing=True)
+        .where(
             m.DirectAccessGrant.chat_session_id == session_id,
             m.DirectAccessGrant.tool_key == tool_key,
             m.DirectAccessGrant.revoked_at.is_(None),
@@ -87,7 +90,7 @@ async def active_grant(
 
 
 async def _session_is_members(db: AsyncSession, direct: DirectAccessRun) -> bool:
-    session = await db.get(m.ChatSession, direct.session_id)
+    session = await db.get(m.ChatSession, direct.session_id, populate_existing=True)
     return session is not None and session.member_id == direct.member_id
 
 
@@ -115,10 +118,11 @@ async def load_direct_access(
 
 
 async def direct_connections(
-    db: AsyncSession, *, run: m.AgentRun | None, agent: m.Agent
+    db: AsyncSession, *, run: m.AgentRun | None, agent: m.Agent, right: str = "read"
 ) -> list[m.McpConnection]:
     """The rows a Copilot run opens: one per granted key, resolved for the
-    person (§6), never from the Copilot's own department."""
+    person (§6) from a department granting `right`, never from the Copilot's
+    own department."""
     view = await load_direct_access(db, run=run, agent=agent)
     if not view.granted or run is None:
         return []
@@ -128,7 +132,8 @@ async def direct_connections(
             db,
             tenant_id=run.tenant_id,
             tool_key=key,
-            department_ids=[d for d, _p in departments],
+            departments=departments,
+            right=right,
         )
         if conn is not None:
             out.append(conn)

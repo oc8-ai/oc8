@@ -7,7 +7,7 @@ import uuid
 from typing import Any
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -21,7 +21,7 @@ from oc8.connections.direct_access import (
     revoke_grant,
 )
 from tests.conftest import AppSessionFactory
-from tests.copilot.direct_access_helpers import chat_run, direct_office, grant
+from tests.copilot.direct_access_helpers import READ_ONLY, chat_run, direct_office, grant
 
 pytestmark = pytest.mark.asyncio
 
@@ -162,3 +162,38 @@ async def test_the_second_successful_action_suggests_an_agent_once(
         )
         await db.refresh(row)
         assert row.actions == 3 and row.agent_suggested_at is not None
+
+
+async def test_the_view_follows_a_frame_changed_in_another_session(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as first:
+        office = await direct_office(first, tenant)
+        await grant(first, office)
+        run = await chat_run(first, office)
+        await first.commit()
+        await first.execute(
+            text("SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant)}
+        )
+        # Held strongly, as a running turn holds them (the identity map is weak).
+        held = [
+            await first.get(m.Department, office.department_id),
+            await first.get(m.OrgMember, office.member_id),
+            await first.get(m.ChatSession, office.session_id),
+        ]
+        agent = await _copilot(first, office.copilot_id)
+        view = await load_direct_access(first, run=run, agent=agent)
+        assert view.granted["things"][0][1].modify is True
+        async with app_session(tenant) as second:
+            dept = await second.get(m.Department, office.department_id)
+            assert dept is not None
+            dept.frame = {"tools": {"things": dict(READ_ONLY)}}
+        view = await load_direct_access(first, run=run, agent=agent)
+        assert view.granted["things"][0][1].modify is False
+        async with app_session(tenant) as second:
+            dept = await second.get(m.Department, office.department_id)
+            assert dept is not None
+            dept.frame = {"tools": {"things": {"enabled": False}}}
+        assert (await load_direct_access(first, run=run, agent=agent)).granted == {}
+        assert all(row is not None for row in held)
